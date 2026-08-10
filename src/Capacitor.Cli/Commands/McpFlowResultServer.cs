@@ -246,7 +246,7 @@ static class McpFlowResultServer {
                 return ("Result recorded. You may end your reply now.", false);
 
             if (response.StatusCode == HttpStatusCode.Unauthorized)
-                return ("Not logged in. Run 'kcap login' on the host shell.", true);
+                return (await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), true);
 
             var errorNode = TryParse(responseBody);
             var code      = errorNode?["error"]?.GetValue<string>();
@@ -322,7 +322,7 @@ static class McpFlowResultServer {
                 return ("Message sent to the flow driver. It will be delivered with the driver's next flow call — you may continue.", false);
 
             if (response.StatusCode == HttpStatusCode.Unauthorized)
-                return ("Not logged in. Run 'kcap login' on the host shell.", true);
+                return (await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), true);
 
             var responseBody = await response.Content.ReadAsStringAsync();
             var errorNode    = TryParse(responseBody);

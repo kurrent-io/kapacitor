@@ -242,7 +242,7 @@ static class McpFlowsServer {
                 var postBody = await postResponse.Content.ReadAsStringAsync();
 
                 if (postResponse.StatusCode == HttpStatusCode.Unauthorized)
-                    return BuildToolResult(id, "Not logged in. Run 'kcap login' on the host shell.", isError: true);
+                    return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), isError: true);
 
                 // Catalog-start protocol-v2 skew seam (404 means an old server, before any run
                 // started) plus an explicit-vendor echo check once the route matched.
@@ -334,7 +334,7 @@ static class McpFlowsServer {
                     // send already had its go) is an auth problem, not a vendor one — say so, rather
                     // than printing a raw HTTP 401 the caller would read as a flow rejection.
                     if (retryResponse.StatusCode == HttpStatusCode.Unauthorized)
-                        return BuildToolResult(id, "Not logged in. Run 'kcap login' on the host shell.", isError: true);
+                        return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), isError: true);
 
                     if (CheckVendorOverrideResult(toolName, preference, retryResponse.StatusCode, retryResponse.IsSuccessStatusCode, retryBody, out var retryRunIdToClose) is { } retryVendorCheck) {
                         if (retryRunIdToClose is not null)
@@ -389,7 +389,7 @@ static class McpFlowsServer {
             var body = await httpResponse.Content.ReadAsStringAsync();
 
             if (httpResponse.StatusCode == HttpStatusCode.Unauthorized) {
-                return BuildToolResult(id, "Not logged in. Run 'kcap login' on the host shell.", isError: true);
+                return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), isError: true);
             }
 
             if (!httpResponse.IsSuccessStatusCode) {
@@ -432,7 +432,8 @@ static class McpFlowsServer {
     /// the refresh flow for WorkOS / GitHubApp), update the client's <c>Authorization</c>
     /// header, and retry the same request once. If refresh fails (genuinely not logged in
     /// or refresh-token expired), the original 401 is returned and the caller surfaces the
-    /// friendly "Not logged in" message.
+    /// store-aware <see cref="AuthRejectionNotice"/> line (which keeps the legacy
+    /// "Not logged in" wording only for a genuinely missing login).
     /// </summary>
     static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(
             HttpClient client, string baseUrl, Func<HttpClient, CancellationToken, Task<HttpResponseMessage>> send,
@@ -1392,7 +1393,7 @@ static class McpFlowsServer {
                 }
 
                 if (resp.StatusCode == HttpStatusCode.Unauthorized)
-                    return new("Not logged in. Run 'kcap login' on the host shell.", true);
+                    return new(await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), true);
 
                 // Fix #4: non-transient 4xx (e.g. 400, 403, 409 budget_unverifiable) fail
                 // immediately — coded bodies surface via FormatFlowStartError like the POST path.
@@ -1502,7 +1503,7 @@ static class McpFlowsServer {
 
             using (resp) {
                 if (resp.StatusCode == HttpStatusCode.Unauthorized)
-                    return new("Not logged in. Run 'kcap login' on the host shell.", true);
+                    return new(await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), true);
 
                 var statusCode = (int)resp.StatusCode;
                 if (statusCode is >= 400 and < 500) {

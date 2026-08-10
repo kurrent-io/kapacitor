@@ -108,4 +108,31 @@ assert.strictEqual(describeRole("kcap.exe watch"), "kcap process");
   }
 }
 
+// Source-shape guard for runUpdate's report-version call: execFileSync has no mock seam (module-load-destructured), so this checks presence/ordering/try-catch by text instead of exact literals.
+{
+  const src = fs.readFileSync(path.join(__dirname, "kcap.js"), "utf8");
+
+  const updateStart = src.indexOf("function runUpdate(");
+  assert(updateStart >= 0, "expected a runUpdate function in kcap.js");
+  const updateEnd = src.indexOf("\nfunction ", updateStart + 1);
+  const runUpdateBody = src.slice(updateStart, updateEnd >= 0 ? updateEnd : undefined);
+
+  const refreshIdx = runUpdateBody.indexOf("runRefreshes(");
+  const reportIdx  = runUpdateBody.indexOf("report-version");
+  const exitIdx    = runUpdateBody.lastIndexOf("process.exit(0)");
+
+  assert(refreshIdx >= 0, "expected runUpdate to call runRefreshes(...)");
+  assert(reportIdx >= 0, "expected runUpdate to spawn report-version");
+  assert(exitIdx >= 0, "expected runUpdate to still exit 0 on its success path");
+  assert(refreshIdx < reportIdx, "report-version must be spawned AFTER the refresh step");
+  assert(reportIdx < exitIdx, "report-version must be spawned BEFORE runUpdate's process.exit(0)");
+
+  // Guarded by its own try/catch: the nearest preceding `try {` must be closer than any `} catch`.
+  const precedingSlice = runUpdateBody.slice(0, reportIdx);
+  const lastTryIdx      = precedingSlice.lastIndexOf("try {");
+  const lastCatchIdx    = precedingSlice.lastIndexOf("} catch");
+  assert(lastTryIdx >= 0 && lastTryIdx > lastCatchIdx,
+    "report-version must be guarded by its own try/catch");
+}
+
 console.log("ok");
