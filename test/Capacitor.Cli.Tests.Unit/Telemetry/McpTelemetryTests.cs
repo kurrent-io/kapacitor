@@ -25,21 +25,7 @@ public class McpTelemetryTests {
         CliTelemetry.TestSink = sink;
         CliTelemetry.Initialize("mcp-server", null, loggedIn: false);
 
-        // This fired once on Ubuntu CI as an opaque "Sequence contains no elements" from a
-        // downstream Single(), and the cause was never pinned down. Enabled can be false for
-        // three distinct reasons, so report which one rather than guessing again: the resolver
-        // said no (env var or persisted flag), the command isn't reportable, or the device-id
-        // write failed and Initialize bailed. Whatever recurs, the message should name it.
-        if (!CliTelemetry.Enabled) {
-            var decision = TelemetrySettings.Resolve(TelemetryState.PersistedEnabled());
-            throw new InvalidOperationException(
-                $"CliTelemetry did not enable. resolver={decision.Enabled} (reason={decision.Reason}), "
-              + $"reportable={CommandEvents.IsReportable("mcp-server")}, "
-              + $"deviceId={(TelemetryState.Read().Id is null ? "null" : "present")}, "
-              + $"path={TelemetryState.PathOverride}. "
-              + "If resolver=True and reportable=True, the device-id write failed; otherwise state "
-              + "leaked from an earlier test and this helper's Reset() is not covering it.");
-        }
+        TelemetryTestGuards.AssertEnabled("mcp-server");
 
         sink.Clear();
 

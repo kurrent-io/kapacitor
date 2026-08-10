@@ -30,10 +30,7 @@ public class CliTelemetryTests {
         CliTelemetry.TestSink = sink;
         CliTelemetry.Initialize(command, serverUrl, loggedIn: false);
 
-        if (!CliTelemetry.Enabled)
-            throw new InvalidOperationException(
-                "CliTelemetry did not enable — static state leaked from an earlier test. " +
-                "Capture helpers must call CliTelemetry.Reset() before assigning TestSink.");
+        TelemetryTestGuards.AssertEnabled(command);
 
         return sink;
     }

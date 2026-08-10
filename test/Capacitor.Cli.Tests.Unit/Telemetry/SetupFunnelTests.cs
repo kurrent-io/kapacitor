@@ -28,10 +28,7 @@ public class SetupFunnelTests {
         CliTelemetry.TestSink = sink;
         CliTelemetry.Initialize("setup", null, loggedIn: false);
 
-        if (!CliTelemetry.Enabled)
-            throw new InvalidOperationException(
-                "CliTelemetry did not enable — static state leaked from an earlier test. " +
-                "Capture helpers must call CliTelemetry.Reset() before assigning TestSink.");
+        TelemetryTestGuards.AssertEnabled("setup");
 
         sink.Clear();   // drop cli_first_run
 
