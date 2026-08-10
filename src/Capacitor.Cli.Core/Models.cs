@@ -168,6 +168,12 @@ class WatchState {
     // eventually fire and end the session — adding a ceiling here would be YAGNI.
     public HashSet<string> PendingCodexToolCalls { get; } = new(StringComparer.Ordinal);
 
+    // Same guard for a Claude SUBAGENT watcher's idle ceiling: a tool_use content block adds its
+    // id, the matching tool_result removes it. A subagent running a long build or test suite
+    // writes nothing between the two, so without this the ceiling would reap a live subagent.
+    // Only populated for claude child watchers — nothing else reads it.
+    public HashSet<string> PendingClaudeToolCalls { get; } = new(StringComparer.Ordinal);
+
     // Highwater mark of the last Antigravity gen_metadata row already streamed as a
     // synthetic USAGE line, so the watcher only sends newly-appended cost rows on each
     // poll (server dedup by deterministic id is the backstop). -1 = none seen yet.

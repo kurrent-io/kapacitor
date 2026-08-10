@@ -445,6 +445,128 @@ public class WatchCommandTests {
             lastActivityAt: idle, now: now, idleTimeout: TimeSpan.FromMinutes(60))).IsFalse();
     }
 
+    // A Claude CHILD (subagent) watcher's only exit paths were the SubagentStop-driven
+    // StopWatcher signal and the parent-exit watchdog, so a missed SubagentStop leaked the watcher
+    // for the whole life of the parent session (observed: 8 watchers surviving 1-12 days against a
+    // live parent). Child watchers join the ceiling; like Cursor's, they never buffer, so the
+    // threshold gate cannot apply.
+    [Test]
+    public async Task Claude_child_watcher_is_idle_ceiling_eligible_without_threshold_reached() {
+        var now = DateTimeOffset.UtcNow;
+
+        await Assert.That(WatchCommand.ShouldEndOnIdle(
+            vendor: "claude", isSessionWatcher: false, thresholdReached: false,
+            lastActivityAt: now.AddMinutes(-61), now: now, idleTimeout: TimeSpan.FromMinutes(60))).IsTrue();
+
+        await Assert.That(WatchCommand.ShouldEndOnIdle(
+            vendor: "claude", isSessionWatcher: false, thresholdReached: false,
+            lastActivityAt: now.AddMinutes(-5), now: now, idleTimeout: TimeSpan.FromMinutes(60))).IsFalse();
+    }
+
+    // The whole reason the ceiling is safe: a subagent running a long tool call writes nothing to
+    // its transcript between the tool_use and its tool_result, so transcript silence alone must
+    // never end it.
+    [Test]
+    public async Task Claude_child_watcher_never_idle_exits_while_a_tool_is_in_flight() {
+        var now = DateTimeOffset.UtcNow;
+
+        await Assert.That(WatchCommand.ShouldEndOnIdle(
+            vendor: "claude", isSessionWatcher: false, thresholdReached: false,
+            lastActivityAt: now.AddMinutes(-61), now: now, idleTimeout: TimeSpan.FromMinutes(60),
+            toolInFlight: true)).IsFalse();
+    }
+
+    // Regression guard: the ceiling is scoped to CHILD watchers. A Claude SESSION watcher has a
+    // working parent-exit watchdog and a sessionEnd hook, so it must stay ineligible — otherwise a
+    // user idling in a live Claude session would have their session ended out from under them.
+    [Test]
+    public async Task Claude_session_watcher_stays_ineligible_for_the_idle_ceiling() {
+        var now = DateTimeOffset.UtcNow;
+
+        await Assert.That(WatchCommand.ShouldEndOnIdle(
+            vendor: "claude", isSessionWatcher: true, thresholdReached: true,
+            lastActivityAt: now.AddMinutes(-61), now: now, idleTimeout: TimeSpan.FromMinutes(60))).IsFalse();
+    }
+
+    // The tool tracker is what stops the ceiling reaping a LIVE subagent that is quiet because a
+    // build/test run is in flight. If this gate ever stops matching the watchers the ceiling
+    // applies to, PendingClaudeToolCalls stays empty, toolInFlight is permanently false, and the
+    // suppression silently disappears — so the gate is a predicate rather than an inline
+    // condition buried in the drain loop.
+    [Test]
+    [Arguments("claude", false, true)]   // child watcher: the only one with a ceiling, so the only one that needs the guard
+    [Arguments("claude", true,  false)]  // session watcher: no ceiling, so parsing every line would be pure waste
+    [Arguments("codex",  false, false)]  // other vendors have their own trackers
+    [Arguments("cursor", false, false)]
+    public async Task TracksClaudeToolCalls_matches_the_watchers_the_ceiling_applies_to(
+            string vendor, bool isSessionWatcher, bool expected) {
+        await Assert.That(WatchCommand.TracksClaudeToolCalls(vendor, isSessionWatcher)).IsEqualTo(expected);
+    }
+
+    // Guard on the composed policy at its REAL default, not a test-supplied window: a Claude
+    // subagent goes quiet for six hours before it is reaped, and never while a tool is in flight.
+    [Test]
+    public async Task Claude_subagent_ceiling_composes_to_six_hours_and_yields_to_tools_in_flight() {
+        var now    = DateTimeOffset.UtcNow;
+        var window = WatchCommand.ResolveIdleWindow("claude", isSessionWatcher: false, _ => null);
+
+        bool ExitsAfter(TimeSpan quiet, bool toolInFlight = false) => WatchCommand.ShouldEndOnIdle(
+            vendor: "claude", isSessionWatcher: false, thresholdReached: false,
+            lastActivityAt: now - quiet, now: now, idleTimeout: window, toolInFlight: toolInFlight);
+
+        await Assert.That(ExitsAfter(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1))).IsTrue();
+        await Assert.That(ExitsAfter(TimeSpan.FromHours(5) + TimeSpan.FromMinutes(59))).IsFalse();
+
+        // A 12-hour build still holds the watcher open — transcript silence alone never reaps.
+        await Assert.That(ExitsAfter(TimeSpan.FromHours(12), toolInFlight: true)).IsFalse();
+    }
+
+    // The ceiling only reaps anything if RunWatch actually hands a Claude CHILD watcher the
+    // subagent window rather than the 60-minute Codex default the `_` branch used to give it.
+    [Test]
+    public async Task ResolveIdleWindow_gives_claude_child_watchers_the_subagent_ceiling() {
+        var window = WatchCommand.ResolveIdleWindow("claude", isSessionWatcher: false, _ => null);
+
+        await Assert.That(window).IsEqualTo(WatchCommand.DefaultClaudeSubagentIdleCeiling);
+    }
+
+    [Test]
+    public async Task ResolveIdleWindow_honours_the_claude_subagent_env_override() {
+        var window = WatchCommand.ResolveIdleWindow(
+            "claude", isSessionWatcher: false,
+            name => name == "KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES" ? "90" : null);
+
+        await Assert.That(window).IsEqualTo(TimeSpan.FromMinutes(90));
+    }
+
+    // Each vendor keeps reading its OWN knob — a Claude subagent must not be retunable via the
+    // Codex knob, and vice versa.
+    [Test]
+    [Arguments("codex",       true,  "KCAP_CODEX_IDLE_MINUTES",           "15", 15)]
+    [Arguments("antigravity", true,  "KCAP_ANTIGRAVITY_IDLE_MINUTES",     "20", 20)]
+    [Arguments("cursor",      true,  "KCAP_CURSOR_IDLE_CEILING_MINUTES",  "25", 25)]
+    [Arguments("claude",      false, "KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES", "30", 30)]
+    public async Task ResolveIdleWindow_reads_the_vendors_own_knob(
+            string vendor, bool isSessionWatcher, string knob, string value, int expectedMinutes) {
+        var window = WatchCommand.ResolveIdleWindow(
+            vendor, isSessionWatcher, name => name == knob ? value : null);
+
+        await Assert.That(window).IsEqualTo(TimeSpan.FromMinutes(expectedMinutes));
+    }
+
+    [Test]
+    [Arguments(null, 360)]    // unset → default 6h
+    [Arguments("", 360)]      // empty → default
+    [Arguments("abc", 360)]   // non-numeric → default
+    [Arguments("0", 360)]     // non-positive → default
+    [Arguments("-5", 360)]    // negative → default
+    [Arguments("90", 90)]     // valid override
+    public async Task ResolveClaudeSubagentIdleCeiling_parses_env_with_default(string? env, int expectedMinutes) {
+        var result = WatchCommand.ResolveClaudeSubagentIdleCeiling(env);
+
+        await Assert.That(result).IsEqualTo(TimeSpan.FromMinutes(expectedMinutes));
+    }
+
     // ResolveCursorIdleClock: the idle clock is the LATER of transcript
     // activity and the hook heartbeat, for Cursor only.
     [Test]
@@ -639,6 +761,86 @@ public class UpdateCodexPendingToolCallsTests {
 
         // Must not throw; set must remain unchanged
         WatchCommand.UpdateCodexPendingToolCalls(pending, "not json at all {{}}");
+
+        await Assert.That(pending.Count).IsEqualTo(1);
+        await Assert.That(pending.Contains("existing")).IsTrue();
+    }
+}
+
+// Claude's in-flight guard for the subagent idle ceiling. Shapes below are taken verbatim from a
+// real subagent transcript: tool_use carries `id`, tool_result carries `tool_use_id`, both inside
+// message.content[].
+public class UpdateClaudePendingToolCallsTests {
+    [Test]
+    public async Task ToolUse_AddsId() {
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        const string line = """{"isSidechain":true,"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01A","name":"Bash","input":{"command":"ls"}}]}}""";
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, line);
+
+        await Assert.That(pending.Contains("toolu_01A")).IsTrue();
+    }
+
+    [Test]
+    public async Task ToolResult_RemovesId() {
+        var pending = new HashSet<string>(StringComparer.Ordinal) { "toolu_01A" };
+        const string line = """{"isSidechain":true,"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01A","type":"tool_result","content":"ok"}]}}""";
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, line);
+
+        await Assert.That(pending.Contains("toolu_01A")).IsFalse();
+    }
+
+    // One assistant turn can start several tools before any result arrives.
+    [Test]
+    public async Task MultipleToolUses_InOneMessage_AllTracked() {
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        const string line = """{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"},{"type":"tool_use","id":"toolu_01A","name":"Bash","input":{}},{"type":"tool_use","id":"toolu_01B","name":"Read","input":{}}]}}""";
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, line);
+
+        await Assert.That(pending.Count).IsEqualTo(2);
+        await Assert.That(pending.Contains("toolu_01B")).IsTrue();
+    }
+
+    [Test]
+    public async Task AssistantTextOnly_LeavesSetUnchanged() {
+        var pending = new HashSet<string>(StringComparer.Ordinal) { "existing" };
+        const string line = """{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"just thinking"}]}}""";
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, line);
+
+        await Assert.That(pending.Count).IsEqualTo(1);
+        await Assert.That(pending.Contains("existing")).IsTrue();
+    }
+
+    // Claude Code writes a string content for plain user prompts, not an array.
+    [Test]
+    public async Task StringContent_LeavesSetUnchanged() {
+        var pending = new HashSet<string>(StringComparer.Ordinal) { "existing" };
+        const string line = """{"type":"user","message":{"role":"user","content":"go on then"}}""";
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, line);
+
+        await Assert.That(pending.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task CodexLine_LeavesSetUnchanged() {
+        var pending = new HashSet<string>(StringComparer.Ordinal) { "existing" };
+        const string line = """{"type":"response_item","payload":{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"}}""";
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, line);
+
+        await Assert.That(pending.Count).IsEqualTo(1);
+        await Assert.That(pending.Contains("existing")).IsTrue();
+    }
+
+    [Test]
+    public async Task MalformedJson_LeavesSetUnchanged_NoThrow() {
+        var pending = new HashSet<string>(StringComparer.Ordinal) { "existing" };
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, "not json at all {{}}");
 
         await Assert.That(pending.Count).IsEqualTo(1);
         await Assert.That(pending.Contains("existing")).IsTrue();

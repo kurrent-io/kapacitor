@@ -459,16 +459,7 @@ static partial class WatchCommand {
         // cases) or in the final-drain/end-synthesis gates (both explicitly agentId-is-null-gated
         // too), so setting it unconditionally here is a no-op for them either way.
         if (SkipsThresholdBuffering(vendor)) state.ThresholdReached = true;
-        // Antigravity is a GUI app like the Codex desktop: its shared process never
-        // exits per-conversation, so (like Codex) the idle timeout — not a parent-exit
-        // watchdog — is the per-conversation session-end path. Its own knob so tenants
-        // can tune the two GUIs independently.
-        var idleTimeout = vendor switch {
-            "antigravity" => ResolveCodexIdleTimeout(Environment.GetEnvironmentVariable("KCAP_ANTIGRAVITY_IDLE_MINUTES")),
-            // Task 11 (D1): Cursor's own idle-ceiling knob — see ResolveCursorIdleCeiling.
-            "cursor"      => ResolveCursorIdleCeiling(Environment.GetEnvironmentVariable("KCAP_CURSOR_IDLE_CEILING_MINUTES")),
-            _             => ResolveCodexIdleTimeout(Environment.GetEnvironmentVariable("KCAP_CODEX_IDLE_MINUTES")),
-        };
+        var idleTimeout = ResolveIdleWindow(vendor, isSessionWatcher: agentId is null, Environment.GetEnvironmentVariable);
         var idleExit = false;
 
         if (skipTitle) {
@@ -718,10 +709,13 @@ static partial class WatchCommand {
                         DateTimeOffset.UtcNow,
                         idleTimeout,
                         // A tool awaiting its result suppresses idle-end: Codex tracks call_ids,
-                        // Antigravity counts PLANNER_RESPONSE calls vs result steps.
-                        toolInFlight: vendor == "antigravity"
-                            ? state.PendingAntigravityToolCalls > 0
-                            : state.PendingCodexToolCalls.Count > 0,
+                        // Antigravity counts PLANNER_RESPONSE calls vs result steps, Claude tracks
+                        // tool_use ids awaiting their tool_result.
+                        toolInFlight: vendor switch {
+                            "antigravity" => state.PendingAntigravityToolCalls > 0,
+                            "claude"      => state.PendingClaudeToolCalls.Count > 0,
+                            _             => state.PendingCodexToolCalls.Count > 0,
+                        },
                         disconnectedSinceActivity: state.AccumulatedDisconnected)) {
                     Log($"{vendor} transcript idle for >{idleTimeout.TotalMinutes:F0}m; ending session (idle_timeout)");
                     idleExit = true;
@@ -1033,23 +1027,63 @@ static partial class WatchCommand {
             : DefaultCursorIdleCeiling;
 
     /// <summary>
+    /// Reap ceiling for a Claude CHILD (subagent) watcher, whose only other exits are the
+    /// SubagentStop-driven StopWatcher signal and the parent-exit watchdog — so a missed
+    /// SubagentStop leaks the watcher for the entire life of the parent session (days, for a
+    /// long-running session).
+    ///
+    /// Deliberately far longer than the 60-minute vendor ceilings: this is a leak backstop, not an
+    /// end-of-conversation detector. Nothing depends on ending promptly (a child watcher posts no
+    /// session-end — see the agentId gate on PostSessionEndOnParentExitAsync), whereas ending a
+    /// LIVE subagent early would drop the rest of its transcript. <see cref="UpdateClaudePendingToolCalls"/>
+    /// already suppresses the ceiling while a tool is in flight; this window is the second layer,
+    /// covering a subagent quiet for a reason the tool tracker cannot see.
+    /// </summary>
+    internal static readonly TimeSpan DefaultClaudeSubagentIdleCeiling = TimeSpan.FromHours(6);
+
+    /// <summary>
+    /// Resolves the Claude subagent idle ceiling from KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES, falling
+    /// back to <see cref="DefaultClaudeSubagentIdleCeiling"/> for unset/blank/non-numeric/
+    /// non-positive values. Pure so the parsing is unit-testable.
+    /// </summary>
+    internal static TimeSpan ResolveClaudeSubagentIdleCeiling(string? envValue) =>
+        int.TryParse(envValue, out var minutes) && minutes > 0
+            ? TimeSpan.FromMinutes(minutes)
+            : DefaultClaudeSubagentIdleCeiling;
+
+    /// <summary>
+    /// The idle window <see cref="RunWatch"/> measures against, per vendor and watcher role. Each
+    /// vendor reads its OWN knob so the windows stay independently tunable. <paramref name="env"/>
+    /// is injected so the mapping is unit-testable without touching process environment.
+    ///
+    /// The role argument exists for Claude: only its CHILD watchers have a ceiling at all, and
+    /// theirs is the generous subagent backstop rather than a conversation-idle window. Every
+    /// other vendor/role combination that <see cref="ShouldEndOnIdle"/> rejects still resolves to
+    /// a window here — it is simply never consulted.
+    /// </summary>
+    internal static TimeSpan ResolveIdleWindow(string vendor, bool isSessionWatcher, Func<string, string?> env) =>
+        vendor switch {
+            "antigravity"                     => ResolveCodexIdleTimeout(env("KCAP_ANTIGRAVITY_IDLE_MINUTES")),
+            "cursor"                          => ResolveCursorIdleCeiling(env("KCAP_CURSOR_IDLE_CEILING_MINUTES")),
+            "claude" when !isSessionWatcher   => ResolveClaudeSubagentIdleCeiling(env("KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES")),
+            _                                 => ResolveCodexIdleTimeout(env("KCAP_CODEX_IDLE_MINUTES")),
+        };
+
+    /// <summary>
     /// Whether the watcher should self-terminate because the vendor's transcript file has gone
-    /// idle. Pure so the policy is unit-testable. Gated to: the vendors whose parent-exit
-    /// watchdog can't fire per-conversation — codex (the desktop app's shared app-server never
-    /// exits per session), antigravity (the IDE process outlives any one conversation), and
-    /// cursor (no shell hooks fire a reliable per-conversation parent-exit signal
-    /// either — its own idle ceiling is the fallback). Session watchers additionally require
-    /// threshold-reached (below-threshold short-lived sessions have no server session to end);
-    /// Cursor CHILD (subagent) watchers are eligible too WITHOUT the
-    /// threshold gate — they never buffer, so ThresholdReached never flips true for them; see
-    /// <see cref="RunWatch"/>'s call site for the same fix's heartbeat-aware idle clock. Uses
-    /// strictly-greater-than so the boundary tick is not yet considered idle. Also
-    /// suppressed when a tool call is in flight (<paramref name="toolInFlight"/> true): a
-    /// long-running shell command / custom tool legitimately produces no new rollout lines
-    /// between its function_call start and its _output completion — ending while it's running
-    /// would falsely terminate an active session. No hard ceiling on tool duration: if the
-    /// process dies, the parent-exit watchdog takes over; a hung-but-alive tool is a real
-    /// in-flight turn (YAGNI — no ceiling).
+    /// idle. Pure so the policy is unit-testable. Gated to the vendor/role combinations whose
+    /// parent-exit watchdog can't fire per-conversation — see the switch below for which, and
+    /// why each one qualifies. Session watchers additionally require threshold-reached
+    /// (below-threshold short-lived sessions have no server session to end); CHILD (subagent)
+    /// watchers are eligible WITHOUT the threshold gate — they never buffer, so ThresholdReached
+    /// never flips true for them; see <see cref="RunWatch"/>'s call site for the
+    /// heartbeat-aware idle clock. Uses strictly-greater-than so the boundary tick is not yet
+    /// considered idle. Also suppressed when a tool call is in flight
+    /// (<paramref name="toolInFlight"/> true): a long-running shell command / custom tool
+    /// legitimately produces no new transcript lines between its start and completion records —
+    /// ending while it's running would falsely terminate an active session. No hard ceiling on
+    /// tool duration for the vendors with a live parent-exit watchdog; for Claude subagents the
+    /// generous <see cref="DefaultClaudeSubagentIdleCeiling"/> is itself the second layer.
     ///
     /// For Cursor specifically the caller must NOT follow this up with a session-end POST —
     /// unlike Codex/Antigravity, end synthesis for Cursor has exactly one owner (the sessionEnd
@@ -1066,22 +1100,32 @@ static partial class WatchCommand {
             bool           toolInFlight              = false,
             TimeSpan       disconnectedSinceActivity = default
         ) {
-        if (vendor != "codex" && vendor != "antigravity" && vendor != "cursor") return false;
+        // Which vendors may idle-exit, and in which role:
+        //   codex/antigravity — session watcher only; their shared GUI process never exits
+        //                       per-conversation, so nothing else ends the session.
+        //   cursor            — both roles; no shell hook fires a reliable per-conversation
+        //                       parent-exit signal either.
+        //   claude            — CHILD only. Its session watcher has a working parent-exit
+        //                       watchdog AND a sessionEnd hook, so a ceiling there could end a
+        //                       live session out from under a thinking user. A child watcher has
+        //                       neither: its only exits are the SubagentStop-driven StopWatcher
+        //                       signal and the parent's death, so one missed SubagentStop leaks it
+        //                       for the whole life of the parent session. This is that backstop.
+        var eligible = vendor switch {
+            "codex" or "antigravity" => isSessionWatcher,
+            "cursor"                 => true,
+            "claude"                 => !isSessionWatcher,
+            _                        => false,
+        };
 
-        // a Cursor CHILD (subagent) watcher never buffers and so never
-        // sets ThresholdReached (WatchState.ThresholdReached only ever flips true on the
-        // agentId==null buffering-flush branch in DrainNewLines) — requiring it here would make
-        // child watchers permanently ineligible for the idle ceiling. Session watchers keep the
-        // threshold gate (a below-threshold session was never flushed to the server, so there's
-        // nothing to end); the exemption is scoped to Cursor specifically — Codex/Antigravity
-        // never spawn agentId!=null watchers via WatcherManager, so a non-session-watcher of
-        // either vendor should never reach this predicate true in practice, and this makes that
-        // explicit rather than accidental.
-        if (isSessionWatcher) {
-            if (!thresholdReached) return false;
-        } else if (vendor != "cursor") {
-            return false;
-        }
+        if (!eligible) return false;
+
+        // A CHILD (subagent) watcher never buffers and so never sets ThresholdReached
+        // (WatchState.ThresholdReached only ever flips true on the agentId==null buffering-flush
+        // branch in DrainNewLines) — requiring it here would make every child watcher permanently
+        // ineligible. Session watchers keep the gate: a below-threshold session was never flushed
+        // to the server, so there's nothing to end.
+        if (isSessionWatcher && !thresholdReached) return false;
 
         return now - lastActivityAt - disconnectedSinceActivity > idleTimeout && !toolInFlight;
     }
@@ -1166,6 +1210,48 @@ static partial class WatchCommand {
                   or "custom_tool_call_output":
                     pending.Remove(callId);
                     break;
+            }
+        } catch {
+            // Ignore malformed / non-JSON lines — never break the drain loop
+        }
+    }
+
+    /// <summary>
+    /// Claude's counterpart to <see cref="UpdateCodexPendingToolCalls"/>, guarding the subagent
+    /// idle ceiling: a <c>tool_use</c> block adds its <c>id</c>, the matching <c>tool_result</c>
+    /// removes it via <c>tool_use_id</c>. While the set is non-empty the subagent has a tool
+    /// running and transcript silence is expected, so the ceiling is suppressed.
+    ///
+    /// Keyed off the content blocks rather than the record's top-level <c>type</c>: the block
+    /// types are what actually carry the ids, so this stays correct regardless of how the
+    /// envelope is labelled.
+    /// </summary>
+    /// <summary>
+    /// Which watchers feed <see cref="UpdateClaudePendingToolCalls"/>. Must stay in step with the
+    /// watchers <see cref="ShouldEndOnIdle"/> gives a ceiling to: a watcher that is reaped on idle
+    /// but never tracks its tool calls has no in-flight suppression at all, and would end a live
+    /// subagent mid-build. The session watcher is excluded because it has no ceiling, so parsing
+    /// every line of the (much larger) parent transcript would buy nothing.
+    /// </summary>
+    internal static bool TracksClaudeToolCalls(string vendor, bool isSessionWatcher) =>
+        vendor == "claude" && !isSessionWatcher;
+
+    internal static void UpdateClaudePendingToolCalls(HashSet<string> pending, string line) {
+        try {
+            using var doc = JsonDocument.Parse(line);
+
+            if (doc.RootElement.Obj("message")?.Arr("content") is not { } content) return;
+
+            foreach (var block in content.EnumerateArray()) {
+                switch (block.Str("type")) {
+                    case "tool_use" when block.Str("id") is { } id:
+                        pending.Add(id);
+                        break;
+
+                    case "tool_result" when block.Str("tool_use_id") is { } resultId:
+                        pending.Remove(resultId);
+                        break;
+                }
             }
         } catch {
             // Ignore malformed / non-JSON lines — never break the drain loop
@@ -1533,6 +1619,15 @@ static partial class WatchCommand {
             // response_item), so this is a cheap no-op for them.
             foreach (var line in newLines) {
                 UpdateCodexPendingToolCalls(state.PendingCodexToolCalls, line);
+            }
+
+            // Claude subagent idle-ceiling guard. Scoped rather than run unconditionally like the
+            // Codex tracker above: this one parses every line's message.content[], which is real
+            // work on a busy transcript and pure waste for watchers that have no ceiling.
+            if (TracksClaudeToolCalls(vendor, isSessionWatcher: agentId is null)) {
+                foreach (var line in newLines) {
+                    UpdateClaudePendingToolCalls(state.PendingClaudeToolCalls, line);
+                }
             }
 
             // Capture first user text (needed for title generation)

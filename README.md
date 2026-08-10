@@ -1425,6 +1425,16 @@ verbatim, exactly like every other agent, with no Cursor/ACP-specific redaction.
 | `KCAP_CODEX_IDLE_MINUTES` | `60` | How long a Codex rollout file may be idle (no new rollout lines and no Codex tool call in flight) before the `kcap watch` background watcher ends the session (`reason: idle_timeout`). Increase for very long thinking/compute turns; decrease for faster cleanup of abandoned sessions. Invalid or non-positive values fall back to the 60-minute default. |
 | `KCAP_PARENT_DEAD_CEILING_MINUTES` | `360` | Staged recovery ceiling for a watcher whose parent coding-agent PID was already dead at startup (a resolution glitch) and can't be re-resolved. The watcher first periodically re-resolves and re-arms the parent-exit watchdog; only if that keeps failing AND the transcript makes no progress for this long does it post `session-end` (`reason: parent_dead_ceiling`). Deliberately far above the idle timeout so a user parked at a Kiro/OpenCode prompt is never ended prematurely. Invalid or non-positive values fall back to 360 minutes (6h). |
 | `KCAP_CURSOR_IDLE_CEILING_MINUTES` | `60` | How long a Cursor session's transcript watcher may go idle before it exits (AI-1382). Unlike Codex/Antigravity, this exit does NOT itself POST `session-end` — Cursor's end-of-session synthesis stays owned by the `sessionEnd` hook or, as a backstop, a server-side lease-gated sweep; the next hook for that session reactivates a fresh watcher. Invalid or non-positive values fall back to the 60-minute default. |
+| `KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES` | `360` | How long a Claude **subagent** watcher may go idle before it reaps itself (see below). Applies only to subagent watchers — a Claude *session* watcher has no idle ceiling and is unaffected. Deliberately generous (6h): this is a leak backstop, not an end-of-conversation signal. Invalid or non-positive values fall back to 360 minutes. |
+
+**Claude subagent watcher reaping.** A `kcap watch` subagent watcher normally exits when the
+`SubagentStop` hook fires. If that hook is disrupted, the watcher used to survive until the entire
+parent `claude` process exited — accumulating one leaked ~40 MB process per missed stop for the
+life of the session (issue #514). Subagent watchers now also self-reap after
+`KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES` of transcript silence. A subagent with a tool still in flight
+(a `tool_use` with no matching `tool_result`) is never reaped no matter how long it is quiet, so a
+long build or test run cannot be cut short. Like Cursor's ceiling, this exit posts no
+`session-end` — a subagent watcher never owned that.
 
 ### Hosted Pi agents
 
