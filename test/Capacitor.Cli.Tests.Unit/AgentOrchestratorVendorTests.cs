@@ -2272,6 +2272,21 @@ public partial class AgentOrchestratorVendorTests {
         public int AgentRegisteredFailTimes { get; init; }
         public int AgentRegisteredCallCount { get; private set; }
 
+        /// <summary>Completed the instant AgentRegisteredAsync is entered — lets a test hold
+        /// re-registration inside that await and publish a verdict there (finding 1 refinement).</summary>
+        public TaskCompletionSource? AgentRegisteredEntered { get; init; }
+
+        /// <summary>When set, AgentRegisteredAsync awaits this before returning — holding the
+        /// re-registration open across the AgentRegistered await.</summary>
+        public TaskCompletionSource? AgentRegisteredGate { get; init; }
+
+        /// <summary>When set, every non-failure AgentStatusChanged send checks this runtime's verdict
+        /// AT SEND TIME (via the lock-synchronised ReadVerdict); if a launch-window verdict is already
+        /// published, <see cref="NonFailureStatusSentAfterVerdictPublished"/> latches true — the exact
+        /// "non-failure status after publication" invariant violation finding 1 closes.</summary>
+        public AcpHostedAgentRuntime? VerdictCaptureRuntime { get; set; }
+        public bool NonFailureStatusSentAfterVerdictPublished { get; private set; }
+
         /// <summary>Every (agentId, model) pair the orchestrator registered — proves the AgentInstance
         /// the server sees carries the model the process actually runs (the pinned explicit-reviewer
         /// LaunchModel, not the dispatched cmd.Model).</summary>
@@ -2281,7 +2296,7 @@ public partial class AgentOrchestratorVendorTests {
         /// initial registration and every reconnect re-registration report the same pair.</summary>
         public List<(string AgentId, string? Sandbox, string? Approval)> AgentRegisteredPostures { get; } = [];
 
-        public override Task AgentRegisteredAsync(
+        public override async Task AgentRegisteredAsync(
                 string agentId, string? prompt, string? model, string? effort, string? repoPath,
                 string? sandboxPolicy = null, string? approvalPolicy = null) {
             AgentRegisteredCallCount++;
@@ -2289,9 +2304,11 @@ public partial class AgentOrchestratorVendorTests {
             lock (AgentRegisteredCalls) AgentRegisteredCalls.Add((agentId, model));
             lock (AgentRegisteredPostures) AgentRegisteredPostures.Add((agentId, sandboxPolicy, approvalPolicy));
 
-            return AgentRegisteredCallCount <= AgentRegisteredFailTimes
-                ? Task.FromException(new InvalidOperationException("transient re-register failure"))
-                : Task.CompletedTask;
+            AgentRegisteredEntered?.TrySetResult();
+            if (AgentRegisteredGate is { } gate) await gate.Task.ConfigureAwait(false);
+
+            if (AgentRegisteredCallCount <= AgentRegisteredFailTimes)
+                throw new InvalidOperationException("transient re-register failure");
         }
 
         // ── Option B task 4: ACP bind/forward capture ────────────────────────────────────
@@ -2398,6 +2415,12 @@ public partial class AgentOrchestratorVendorTests {
         public List<(string AgentId, string Status)> StatusChangedCalls { get; } = [];
 
         public override Task AgentStatusChangedAsync(string agentId, string status, string? sessionId) {
+            // Capture BEFORE recording: was a launch-window verdict already published when this
+            // non-failure status was sent? (finding 1 — the invariant a check-to-send race breaks.)
+            if (status is "Completed" or "Running" or "Starting"
+                && VerdictCaptureRuntime?.ReadVerdict() is { ReapedInsideLaunchWindow: true })
+                NonFailureStatusSentAfterVerdictPublished = true;
+
             lock (StatusChangedCalls) StatusChangedCalls.Add((agentId, status));
 
             return Task.CompletedTask;

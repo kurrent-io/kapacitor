@@ -507,7 +507,7 @@ public partial class AgentOrchestratorVendorTests {
     /// ReadVerdict() until the publish and reports. No deadlock: the starter returns the reap task
     /// WITHOUT awaiting termination, so the claimant releases _reapLock promptly (here the starter is
     /// a no-op returning a completed task) and never waits on the finalizer.</summary>
-    [Test]
+    [Test, NotInParallel] // holds a pool thread blocked on _reapLock up to the bound; must not starve timing-sensitive peers
     public async Task Finalizer_verdict_read_synchronizes_with_the_claim() {
         var server = new CaptureServerConnection();
         await using var orch = BuildOrchestrator(
@@ -544,8 +544,12 @@ public partial class AgentOrchestratorVendorTests {
         await reaperInStarter.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         // Drive the finalizer concurrently — the production shape where the starter's own
-        // _cts.Cancel() terminalises the child and drives FinalizeAgentRunAsync on another thread.
-        var finalizeTask = Task.Run(() => orch.FinalizeAgentRunForTest(agent));
+        // _cts.Cancel() terminalises the child and drives FinalizeAgentRunAsync on another thread. On a
+        // DEDICATED thread (not the pool): post-fix it blocks synchronously on ReadVerdict/_reapLock
+        // until release, and a blocked pool thread would starve timing-sensitive sibling tests.
+        var finalizeTask = Task.Factory.StartNew(
+            () => orch.FinalizeAgentRunForTest(agent),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
 
         // Hold the claim section open until the finalizer has provably reached its verdict read while
         // the lock is held and the verdict is null:
@@ -665,5 +669,84 @@ public partial class AgentOrchestratorVendorTests {
 
         await Assert.That(server.StatusChangedCalls.Any(
             c => c.AgentId == "stop-toctou-1" && c.Status == "Completed")).IsFalse();
+    }
+
+    // ── Finding 1 refinement: the check and the send-initiation must be ATOMIC under _reapLock ─────
+    // Round-1's second VerdictForbidsNonFailureStatus check narrowed but did not CLOSE the window: a
+    // verdict published between the check and the send still permits a post-publication non-failure
+    // send. The fix holds the publication lock (_reapLock) across BOTH the check and the send's
+    // initiation, so publication cannot interleave there.
+
+    /// <summary>Stop gate: publish the verdict between the gate's verdict check and its Completed
+    /// send-initiation (via the runtime's between-check-and-send hook, on ANOTHER thread). Post-fix
+    /// the gate holds _reapLock, so the publish blocks and the Completed is initiated with no verdict
+    /// published; pre-fix it publishes and the Completed is initiated after publication.</summary>
+    [Test, NotInParallel] // the gate blocks the stop's pool thread on a Join up to the bound; keep it off peers
+    public async Task Stop_gate_atomically_serializes_a_publish_against_the_completed_send() {
+        var server = new CaptureServerConnection();
+        await using var orch = BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var (runtime, process, fake) = BuildVerdictRuntime("stop-atomic-1");
+        await using var _ = fake;
+
+        var agent = SeedAcpAgent(orch, "stop-atomic-1", runtime, status: "Running");
+        process.SignalExited(0);
+        server.VerdictCaptureRuntime = runtime;
+
+        runtime.BeforeGatedSendHookForTest = () => {
+            // Dedicated thread (not the pool): the gate holds _reapLock, so TryStartReap blocks here
+            // post-fix — Join times out and the gate proceeds to send with no verdict published.
+            // Pre-fix (no gate) it publishes fast and Join returns, so the send follows publication.
+            var t = new Thread(() => runtime.TryStartReap(
+                "kiro_reviewer_mcp_surface_unexpected: violation", () => Task.CompletedTask)) { IsBackground = true };
+            t.Start();
+            t.Join(TimeSpan.FromMilliseconds(500));
+        };
+
+        // The stop runs on a DEDICATED thread (not the pool): the gate blocks it on the hook's Join,
+        // and a blocked pool thread would starve timing-sensitive sibling tests.
+        await Task.Factory.StartNew(
+            () => orch.HandleStopAgentForTest("stop-atomic-1"),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
+
+        await Assert.That(server.NonFailureStatusSentAfterVerdictPublished).IsFalse();
+    }
+
+    /// <summary>Re-registration: publish the verdict DURING the AgentRegistered await — the wider,
+    /// natural interleave round-1's single pre-loop check cannot cover. Post-fix the per-attempt gate
+    /// re-checks under _reapLock and suppresses the status send; pre-fix the status send proceeds after
+    /// publication.</summary>
+    [Test]
+    public async Task Reregistration_rechecks_a_verdict_published_during_the_agent_registered_await() {
+        var registeredEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRegistered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var server = new CaptureServerConnection {
+            AgentRegisteredEntered = registeredEntered,
+            AgentRegisteredGate    = releaseRegistered
+        };
+        await using var orch = BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var (runtime, process, fake) = BuildVerdictRuntime("rereg-await-1");
+        await using var _ = fake;
+
+        var agent = SeedAcpAgent(orch, "rereg-await-1", runtime, status: "Running");
+        server.VerdictCaptureRuntime = runtime;
+
+        var rereg = orch.ReRegisterAgentsForTestAsync();
+
+        // Re-registration is now blocked inside the AgentRegistered await.
+        await registeredEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        // Publish the verdict during that await.
+        runtime.TryStartReap("kiro_reviewer_mcp_surface_unexpected: violation", () => Task.CompletedTask);
+
+        releaseRegistered.TrySetResult();
+        await rereg.WaitAsync(TimeSpan.FromSeconds(30));
+
+        await Assert.That(server.NonFailureStatusSentAfterVerdictPublished).IsFalse();
+        await Assert.That(server.StatusChangedCalls.Any(
+            c => c.AgentId == "rereg-await-1" && c.Status is "Running" or "Starting")).IsFalse();
     }
 }

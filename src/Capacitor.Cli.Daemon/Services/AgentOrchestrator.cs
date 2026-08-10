@@ -2580,11 +2580,17 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             // An unregistered agent has no server-side row to update.
             if (!agent.IsPrivate) {
-                // Re-check immediately before the send, not only at the snapshot (finding 2): a verdict
-                // PUBLISHED in the window between the snapshot above and here — the reap runs on another
-                // thread — must still suppress this non-failure transition, or it clears the
-                // FailureReason the finalizer's LaunchFailed set server-side.
-                if (!suppressCompleted && !VerdictForbidsNonFailureStatus(agent))
+                // Atomic check + send-INITIATION under _reapLock for an ACP runtime (finding 1
+                // refinement): the round-1 second check narrowed but did not CLOSE the check-to-send
+                // race — a verdict could publish between the check and this send. The gate holds the
+                // publication lock across BOTH, so a Completed frame, if sent at all, is initiated
+                // before publication and is therefore ordered-before any LaunchFailed on the single
+                // hub connection. Non-ACP runtimes never carry a launch-window verdict, so the
+                // snapshot is authoritative for them.
+                if (agent.Runtime is AcpHostedAgentRuntime acpRuntime)
+                    acpRuntime.TryInitiateNonFailureStatusSend(
+                        () => _server.AgentStatusChangedAsync(agentId, "Completed", agent.SessionId), out _);
+                else if (!suppressCompleted)
                     _ = _server.AgentStatusChangedAsync(agentId, "Completed", agent.SessionId);
                 _ = _server.AppendAgentRunEventAsync(agentId, new AgentRunStopped("user", null));
             }
@@ -3243,7 +3249,21 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             for (var attempt = 1; ; attempt++) {
                 try {
                     await _server.AgentRegisteredAsync(agent.Id, agent.Prompt, agent.Model, agent.Effort, agent.RepoPath, agent.SandboxPolicy, agent.ApprovalPolicy);
-                    await _server.AgentStatusChangedAsync(agent.Id, agent.Status, agent.SessionId);
+
+                    // Re-gate the status send atomically under _reapLock, per attempt (finding 1
+                    // refinement): the outer pre-check cannot cover a verdict published DURING the
+                    // AgentRegistered await above (or on a later retry). The gate suppresses the send
+                    // if a verdict is now published, else initiates it before publication can proceed
+                    // so it is ordered-before any LaunchFailed. Awaited OUTSIDE the lock (the gate only
+                    // holds it across initiation), preserving the retry-on-failure semantics.
+                    if (agent.Runtime is AcpHostedAgentRuntime acpRuntime) {
+                        if (!acpRuntime.TryInitiateNonFailureStatusSend(
+                                () => _server.AgentStatusChangedAsync(agent.Id, agent.Status, agent.SessionId), out var statusSend))
+                            break; // verdict published → terminal Failed; skip this agent's re-registration
+                        await statusSend;
+                    } else {
+                        await _server.AgentStatusChangedAsync(agent.Id, agent.Status, agent.SessionId);
+                    }
 
                     // Re-send the fixed PTY dims. The server stores them in memory, so a
                     // server restart (not just a daemon blip) wipes them — without this

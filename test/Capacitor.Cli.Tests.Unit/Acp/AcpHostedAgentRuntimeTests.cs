@@ -31,6 +31,7 @@ public class AcpHostedAgentRuntimeTests {
         public bool HasExited      { get; private set; }
         public int? ExitCode       { get; private set; }
         public int  TerminateCalls { get; private set; }
+        public int  DisposeCalls   { get; private set; }
 
         /// <summary>Simulates the child process exiting on its own (no Terminate call).</summary>
         public void SignalExited(int exitCode = 0) {
@@ -54,7 +55,11 @@ public class AcpHostedAgentRuntimeTests {
             return Task.CompletedTask;
         }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync() {
+            DisposeCalls++;
+
+            return ValueTask.CompletedTask;
+        }
     }
 
     sealed class Harness : IAsyncDisposable {
@@ -652,6 +657,31 @@ public class AcpHostedAgentRuntimeTests {
 
         await Assert.That(h.Runtime.Verdict).IsNotNull();
         await Assert.That(h.Runtime.Verdict!.Reason).IsEqualTo("winner-reason");
+    }
+
+    /// <summary>Finding 2: DisposeAsync latches _disposed BEFORE its early cancellation phase, and
+    /// only reaches the reap wait + connection/process disposal much later. If a cancellation callback
+    /// on _cts throws (cancellation callbacks can throw), the early phase must NOT abort teardown —
+    /// the child/streams would leak with retry impossible (the latch is set). This registers a
+    /// throwing callback so _cts.CancelAsync() faults, then asserts the child is STILL disposed and
+    /// the coded verdict still surfaces.</summary>
+    [Test]
+    public async Task DisposeAsync_early_cancellation_fault_still_disposes_child_and_keeps_verdict() {
+        await using var h = new Harness();
+
+        // Faults DisposeAsync's early phase at `await _cts.CancelAsync()`. The no-op reap starter below
+        // does NOT cancel _cts, so this callback fires only during DisposeAsync.
+        h.Runtime.RuntimeShutdownTokenForTest.Register(() => throw new InvalidOperationException("early-cancel-fault"));
+
+        h.Runtime.TryStartReap("kiro_reviewer_mcp_surface_unexpected: violation", () => Task.CompletedTask);
+        await Assert.That(h.Runtime.ReadVerdict()).IsNotNull(); // precondition: a verdict exists to preserve
+
+        // Pre-fix: the early fault aborts DisposeAsync before the guaranteed teardown, so the child is
+        // never disposed (DisposeCalls == 0). Post-fix the early phase is contained and teardown runs.
+        try { await h.Runtime.DisposeAsync(); } catch { /* pre-fix: the early fault propagates */ }
+
+        await Assert.That(h.Process.DisposeCalls).IsGreaterThan(0);  // child disposed despite the fault
+        await Assert.That(h.Runtime.ReadVerdict()).IsNotNull();      // coded verdict still surfaces
     }
 
     /// <summary>Reviewer launches always carry a prompt, but the window still needs a defined close

@@ -332,6 +332,41 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// </summary>
     internal TerminationVerdict? ReadVerdict() { lock (_reapLock) return Verdict; }
 
+    /// <summary>Test-only: invoked inside <see cref="TryInitiateNonFailureStatusSend"/> BETWEEN the
+    /// verdict check and the send initiation, while <see cref="_reapLock"/> is held — so a test can
+    /// prove a concurrent verdict publication cannot interleave there. Null in production.</summary>
+    internal Action? BeforeGatedSendHookForTest;
+
+    /// <summary>
+    /// ATOMICALLY, under <see cref="_reapLock"/> (the gate <see cref="TryStartReap"/> publishes the
+    /// verdict under): checks for a published launch-window verdict AND, if none, INITIATES
+    /// <paramref name="send"/> (finding-2 refinement). Verdict publication therefore cannot interleave
+    /// between the check and the send's initiation — either publication wins the lock first (this
+    /// returns <see langword="false"/>, nothing is sent), or <paramref name="send"/> is invoked before
+    /// the lock is released.
+    ///
+    /// <para><b>Ordering.</b> <paramref name="send"/> is <c>ServerConnection.AgentStatusChangedAsync</c>
+    /// → <c>HubConnection.InvokeAsync</c>, whose synchronous prefix enters the SignalR connection
+    /// send-semaphore (FIFO) before its first await — so the non-failure frame is queued while this
+    /// lock is still held, strictly before any <c>LaunchFailed</c> the finalizer can only send AFTER
+    /// publication (which needs this lock). On the single ordered hub connection the server processes
+    /// the non-failure status BEFORE the LaunchFailed and ends Failed+reason — never a non-failure
+    /// clear. <paramref name="sendTask"/> is the in-flight send so the caller can await COMPLETION
+    /// (the server round-trip) OUTSIDE the lock; the lock is only held across INITIATION.</para>
+    /// </summary>
+    internal bool TryInitiateNonFailureStatusSend(Func<Task> send, out Task sendTask) {
+        lock (_reapLock) {
+            if (Verdict is { ReapedInsideLaunchWindow: true }) {
+                sendTask = Task.CompletedTask;
+                return false;
+            }
+
+            BeforeGatedSendHookForTest?.Invoke();
+            sendTask = send();
+            return true;
+        }
+    }
+
     /// <summary>
     /// Claims the single reap slot and, on success, publishes the fused <see cref="TerminationVerdict"/>.
     /// The claim, the launch-window snapshot, and the publication all happen under ONE lock, and
@@ -417,6 +452,12 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// settle it directly — simulating a reap's own cancel — without driving a real turn through the
     /// connection. Never touched by production code.</summary>
     internal TaskCompletionSource FirstTurnSettledForTest => _firstTurnSettled;
+
+    /// <summary>Test-only: the runtime's shutdown token, so a test can register a THROWING
+    /// cancellation callback and fault <see cref="DisposeAsync"/>'s early cancellation phase
+    /// (<c>_cts.CancelAsync()</c>) — proving the guaranteed-teardown path still disposes the child
+    /// (finding 2). Never touched by production code.</summary>
+    internal CancellationToken RuntimeShutdownTokenForTest => _cts.Token;
 
     /// <summary>Agent capabilities negotiated by <see cref="StartAsync"/>'s <c>initialize</c> call; null before that.</summary>
     AgentCapabilities? _negotiatedCapabilities;
@@ -1696,78 +1737,97 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        // Captured up front so the GUARANTEED-TEARDOWN section below can reach the child even if the
+        // early cancellation phase faults (finding 2): _disposed is already latched, so a leaked
+        // child/streams could never be retried. _installed is refined under the lock for a consistent
+        // snapshot, but this top read is what keeps `installed` definitely-assigned on the fault path.
+        var installed = _installed;
+
         // Only emit the session-ended lifecycle event when a session actually started — a startup
         // failure (bad protocol version / handshake / session/new) disposes the runtime before
         // _sessionId is assigned, and pairing "ended" with a session that never started would make
-        // the lifecycle telemetry incoherent.
-        if (_sessionId is { Length: > 0 } endedSessionId)
-            LogSessionEnded(_agentId, endedSessionId);
-
-        // Intentional stop is marked FIRST (reconnect spec §9): a concurrent crash cannot
-        // resurrect a disposing runtime, an in-flight owner's next checkpoint unwinds, and the
-        // send gate opens into the terminal path so a parked worker never waits on a gate nobody
-        // will reopen.
-        Incarnation installed;
-        List<PendingInteraction>? swept;
-
-        lock (_reconnectLock) {
-            _intentionalStop = true;
-            _phase           = (int)RuntimePhase.Terminal;
-            _ownerCts?.Cancel();
-            swept     = MarkPendingInteractionsCancelledLocked();
-            installed = _installed;
-            _gateOpen.TrySetResult();
+        // the lifecycle telemetry incoherent. Contained: a logging fault must not skip teardown.
+        if (_sessionId is { Length: > 0 } endedSessionId) {
+            try { LogSessionEnded(_agentId, endedSessionId); }
+            catch (Exception ex) { _logger.LogDebug(ex, "ACP: session-ended log failed during dispose for agent {AgentId}.", _agentId); }
         }
 
-        ScheduleInteractionSweep(swept);
-        _runtimeTerminal.TrySetResult();
-
-        installed.Connection.OnNotification -= HandleNotification;
-
-        await _cts.CancelAsync().ConfigureAwait(false);
-        _updates.Writer.TryComplete();
-        _pendingTurns.Writer.TryComplete();
-
-        // Best-effort, bounded: the owner's own finally disposes any candidate it still holds; a
-        // stuck owner must never hang dispose.
-        try {
-            await _ownerTask.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-        } catch {
-            // Best-effort.
-        }
-
-        // The turn worker's in-flight SendPromptAsync await is keyed off _cts.Token via
-        // AcpConnection.RequestAsync's own cancellation registration, so cancelling _cts above
-        // already unblocks it — ProcessAdmittedTurnAsync's own `finally` still runs a courtesy flush of that
-        // turn's partial buffer (see FlushOpenRun) before the worker loop observes the cancellation
-        // and returns. This is just a bounded wait for that to actually happen.
-        try {
-            await _turnWorkerTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        } catch {
-            // Best-effort — a stuck turn worker must never hang dispose.
-        }
-
-        // Session-end flush: a belt-and-suspenders flush of any still-open aggregation run. In the
-        // normal shutdown path ProcessAdmittedTurnAsync's own finally already flushed the active turn's
-        // buffer above, making this a no-op — it only matters for the (currently unreachable in
-        // practice) case where the worker task itself never ran a turn to begin with.
-        FlushOpenRun();
-        _transcript.Writer.TryComplete();
-
-        try {
-            await installed.LoopTask.ConfigureAwait(false);
-        } catch (OperationCanceledException) {
-            // expected shutdown path
-        }
-
-        _cts.Dispose();
-
-        // In a finally, because _disposed is latched at the top: if connection or process disposal
-        // faults, a retry returns immediately and the callback would never run at all. For the Kiro
-        // reviewer that callback deletes the transcript-bearing home, so skipping it on a faulted
-        // teardown is precisely the leak this hook exists to close.
         // Set false only when the child's exit could not be confirmed — see below.
         var cleanupSafe = true;
+
+        // ── Early phase: mark terminal, cancel, drain workers ── CONTAINED (finding 2). A throwing
+        // cancellation callback on _ownerCts/_cts (cancellation callbacks can throw) would otherwise
+        // abort DisposeAsync here, BEFORE the reap wait + connection/process disposal below, leaking
+        // the child and its streams with no possible retry (the _disposed latch is already set).
+        try {
+            // Intentional stop is marked FIRST (reconnect spec §9): a concurrent crash cannot
+            // resurrect a disposing runtime, an in-flight owner's next checkpoint unwinds, and the
+            // send gate opens into the terminal path so a parked worker never waits on a gate nobody
+            // will reopen.
+            List<PendingInteraction>? swept;
+
+            lock (_reconnectLock) {
+                _intentionalStop = true;
+                _phase           = (int)RuntimePhase.Terminal;
+                _ownerCts?.Cancel();
+                swept     = MarkPendingInteractionsCancelledLocked();
+                installed = _installed;
+                _gateOpen.TrySetResult();
+            }
+
+            ScheduleInteractionSweep(swept);
+            _runtimeTerminal.TrySetResult();
+
+            installed.Connection.OnNotification -= HandleNotification;
+
+            await _cts.CancelAsync().ConfigureAwait(false);
+            _updates.Writer.TryComplete();
+            _pendingTurns.Writer.TryComplete();
+
+            // Best-effort, bounded: the owner's own finally disposes any candidate it still holds; a
+            // stuck owner must never hang dispose.
+            try {
+                await _ownerTask.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+            } catch {
+                // Best-effort.
+            }
+
+            // The turn worker's in-flight SendPromptAsync await is keyed off _cts.Token via
+            // AcpConnection.RequestAsync's own cancellation registration, so cancelling _cts above
+            // already unblocks it — ProcessAdmittedTurnAsync's own `finally` still runs a courtesy flush of that
+            // turn's partial buffer (see FlushOpenRun) before the worker loop observes the cancellation
+            // and returns. This is just a bounded wait for that to actually happen.
+            try {
+                await _turnWorkerTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            } catch {
+                // Best-effort — a stuck turn worker must never hang dispose.
+            }
+
+            // Session-end flush: a belt-and-suspenders flush of any still-open aggregation run. In the
+            // normal shutdown path ProcessAdmittedTurnAsync's own finally already flushed the active turn's
+            // buffer above, making this a no-op — it only matters for the (currently unreachable in
+            // practice) case where the worker task itself never ran a turn to begin with.
+            FlushOpenRun();
+            _transcript.Writer.TryComplete();
+
+            try {
+                await installed.LoopTask.ConfigureAwait(false);
+            } catch (OperationCanceledException) {
+                // expected shutdown path
+            }
+
+            _cts.Dispose();
+        } catch (Exception ex) {
+            // The early cancellation/drain phase faulted — proceed to the guaranteed teardown below
+            // regardless, so the child and its streams are still disposed (finding 2).
+            _logger.LogDebug(ex, "ACP: dispose early phase faulted; proceeding to guaranteed teardown for agent {AgentId}.", _agentId);
+        }
+
+        // ── Guaranteed teardown: ALWAYS reached, even when the early phase above faulted (finding 2).
+        // In a finally-equivalent position because _disposed is latched at the top: if connection or
+        // process disposal faults, a retry returns immediately and the callback would never run at
+        // all. For the Kiro reviewer that callback deletes the transcript-bearing home, so skipping it
+        // on a faulted teardown is precisely the leak this hook exists to close.
 
         // UNCONDITIONAL, independent of _onDisposed: a claimed reap's Verdict is published
         // synchronously at claim time (TryStartReap), but "post-disposal the verdict is final" also
