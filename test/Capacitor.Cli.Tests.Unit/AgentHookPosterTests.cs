@@ -100,7 +100,13 @@ public class AgentHookPosterTests : IDisposable {
     /// These vendors have no user-facing stdout channel (their stdout is a handshake contract the
     /// vendor parses), so stderr is the only place a nudge can go.
     /// </summary>
-    [Test, NotInParallel("ConsoleErrorRedirect")]
+    // Globally sequential rather than keyed. "ConsoleErrorRedirect" has no other member, so it
+    // serialized this Console.Error capture against nothing: Server_error_reports_Failed below
+    // writes to Console.Error with no serialization at all and could land inside this window, and
+    // the classic save/restore interleave with this suite's other Console.SetError sites could
+    // leave Console.Error pointing at an abandoned StringWriter. Bare NotInParallel serializes
+    // against every other bare-NotInParallel test in the assembly, which is what this needs.
+    [Test, NotInParallel]
     public async Task Unauthorized_reports_Failed_and_names_kcap_login_on_stderr() {
         _server.Given(Request.Create().WithPath("/hooks/stop/codex").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(401));
@@ -119,7 +125,7 @@ public class AgentHookPosterTests : IDisposable {
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Failed);
         await Assert.That(captured.ToString().Trim()).IsEqualTo(
-            AuthLapseNotice.VendorStderr("codex-hook", "stop/codex"));
+            AuthLapseNotice.VendorStderrLine("codex-hook", "stop/codex", 401));
     }
 
     [Test]

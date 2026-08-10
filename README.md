@@ -111,10 +111,12 @@ Verify with `kcap whoami` and `kcap status`. `kcap whoami` prints your identity 
 resolved, then asks the server whether it actually accepts your token — it exits non-zero if the
 server rejects it, or if the token was issued by a different server than the profile now targets
 (re-run `kcap login`). If the server can't be reached it says so and still exits 0, so it stays
-usable offline. If the server rejects your token while a session is running, the hook now says so
-in the agent — `[kcap] The server rejected your credentials (HTTP 401) — session recording is
-paused. Run 'kcap login' to resume.` — instead of surfacing an opaque hook error, so you no longer
-have to run `kcap whoami` to work out why recording stopped. `kcap status` prints its own
+usable offline. If the server rejects your token while a session is running, Claude Code's hook
+says so as an in-session notice — `[kcap] The server rejected your credentials (HTTP 401) —
+session recording is paused. Run 'kcap login' to resume.` — instead of surfacing an opaque hook
+error, so you no longer have to run `kcap whoami` to work out why recording stopped. Other agents'
+hooks print the same advice to stderr instead of an in-session notice, since not every agent
+surfaces hook output in its UI. `kcap status` prints its own
 **Version** line — the installed CLI version, with an inline `(update available: …)` annotation
 when a newer one is out — see [`kcap update`](#other-commands) for the full opt-out story.
 

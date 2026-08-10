@@ -30,10 +30,17 @@ public class AuthLapseNoticeTests {
     }
 
     [Test]
-    public async Task vendor_stderr_carries_the_tag_route_status_and_command() {
-        var line = AuthLapseNotice.VendorStderr("codex-hook", "stop");
+    public async Task vendor_stderr_line_carries_the_tag_route_status_and_command_on_401() {
+        var line = AuthLapseNotice.VendorStderrLine("codex-hook", "stop", 401);
 
         await Assert.That(line).IsEqualTo(
             "[kcap] codex-hook stop: HTTP 401 — the server rejected your credentials; run 'kcap login' to resume recording");
+    }
+
+    [Test]
+    public async Task vendor_stderr_line_stays_the_bare_status_line_for_a_non_401_code() {
+        var line = AuthLapseNotice.VendorStderrLine("codex-hook", "stop", 500);
+
+        await Assert.That(line).IsEqualTo("[kcap] codex-hook stop: HTTP 500");
     }
 }

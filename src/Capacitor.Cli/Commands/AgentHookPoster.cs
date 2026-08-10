@@ -48,9 +48,12 @@ internal enum HookPostOutcome {
 /// cleanly — carrying the Claude hook's #183 behaviour to the other hooks.
 ///
 /// These agents have no user-facing stdout notice channel (stdout is either unused or a JSON
-/// decision/context channel), so no re-login nudge is surfaced here — the expired state is
-/// visible via <c>kcap status</c> and the interactive CLI. A no-op for the <c>None</c> provider
-/// (posts normally, unauthenticated) and unchanged when authenticated.
+/// decision/context channel). A pre-flight lapse (<see cref="IsAuthLapsed"/> — the token store
+/// already knows the credential is dead) stays silent here too, same as before: the doomed POST is
+/// skipped and the expired state is visible via <c>kcap status</c> and the interactive CLI. A
+/// server-returned 401 is different — the store thought the credential was fine, so nothing warned
+/// the user before the request — and names the fix on stderr, the only channel these vendors have.
+/// A no-op for the <c>None</c> provider (posts normally, unauthenticated) and unchanged when authenticated.
 /// </summary>
 internal static class AgentHookPoster {
     /// <summary>Auth has genuinely lapsed → any POST would 401. <c>Ok</c> and <c>NoAuthRequired</c> are usable.</summary>
@@ -105,9 +108,7 @@ internal static class AgentHookPoster {
                     var code = (int)resp.StatusCode;
                     // These vendors have no systemMessage channel, so the stderr line is the only
                     // place a rejected credential can name its own fix.
-                    Console.Error.WriteLine(code == 401
-                        ? AuthLapseNotice.VendorStderr(agentTag, endpoint)
-                        : $"[kcap] {agentTag} {endpoint}: HTTP {code}");
+                    Console.Error.WriteLine(AuthLapseNotice.VendorStderrLine(agentTag, endpoint, code));
                     return HookPostOutcome.Failed;
                 }
 
@@ -315,9 +316,7 @@ internal static class AgentHookPoster {
                     return SpoolOrSkip(spool, sessionId, route, body, agentTag);
                 }
 
-                Console.Error.WriteLine(code == 401
-                    ? AuthLapseNotice.VendorStderr(agentTag, endpoint)
-                    : $"[kcap] {agentTag} {endpoint}: HTTP {code}");
+                Console.Error.WriteLine(AuthLapseNotice.VendorStderrLine(agentTag, endpoint, code));
 
                 return HookPostOutcome.Failed;
             } catch (HttpRequestException) {
