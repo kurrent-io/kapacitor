@@ -459,6 +459,37 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// (finding 2). Never touched by production code.</summary>
     internal CancellationToken RuntimeShutdownTokenForTest => _cts.Token;
 
+    /// <summary>Test-only: invoked in <see cref="DisposeAsync"/> IMMEDIATELY before it takes
+    /// <see cref="_reconnectLock"/> — the exact window a round-2 pre-lock incarnation read left open —
+    /// so a test can commit a reconnect successor there and prove the guaranteed teardown disposes the
+    /// SUCCESSOR (finding 2, round 3), not a stale predecessor. Null in production.</summary>
+    internal Action? BeforeReconnectLockOnDisposeForTest;
+
+    /// <summary>Test-only: the logical-terminal signal, so a test can assert it fired even when the
+    /// early cancellation phase faulted (parked read/finalizer waiters must not be stranded — finding
+    /// 2, round 3). Never touched by production code.</summary>
+    internal Task RuntimeTerminalForTest => _runtimeTerminal.Task;
+
+    /// <summary>Test-only: installs a throwing owner CTS so <see cref="DisposeAsync"/>'s owner-cancel
+    /// (the EARLY cancellation callback) faults. Never touched by production code.</summary>
+    internal void SetOwnerCtsForTest(CancellationTokenSource cts) { lock (_reconnectLock) _ownerCts = cts; }
+
+    /// <summary>Test-only: commits a reconnect SUCCESSOR incarnation (swaps <see cref="_installed"/> to
+    /// a fresh incarnation wrapping <paramref name="successorProcess"/>, reusing the current
+    /// connection), simulating a reconnect that committed between a pre-lock read and the lock. The
+    /// guaranteed teardown must dispose THIS successor, not the predecessor. Never touched by
+    /// production code.</summary>
+    internal void CommitSuccessorIncarnationForTest(IAcpProcess successorProcess) {
+        lock (_reconnectLock) {
+            _installed = new Incarnation {
+                Id         = Interlocked.Increment(ref _nextIncarnationId),
+                Connection = _installed.Connection,
+                Process    = successorProcess,
+                LoopCts    = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token)
+            };
+        }
+    }
+
     /// <summary>Agent capabilities negotiated by <see cref="StartAsync"/>'s <c>initialize</c> call; null before that.</summary>
     AgentCapabilities? _negotiatedCapabilities;
 
@@ -1737,12 +1768,6 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        // Captured up front so the GUARANTEED-TEARDOWN section below can reach the child even if the
-        // early cancellation phase faults (finding 2): _disposed is already latched, so a leaked
-        // child/streams could never be retried. _installed is refined under the lock for a consistent
-        // snapshot, but this top read is what keeps `installed` definitely-assigned on the fault path.
-        var installed = _installed;
-
         // Only emit the session-ended lifecycle event when a session actually started — a startup
         // failure (bad protocol version / handshake / session/new) disposes the runtime before
         // _sessionId is assigned, and pairing "ended" with a session that never started would make
@@ -1755,30 +1780,45 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // Set false only when the child's exit could not be confirmed — see below.
         var cleanupSafe = true;
 
-        // ── Early phase: mark terminal, cancel, drain workers ── CONTAINED (finding 2). A throwing
-        // cancellation callback on _ownerCts/_cts (cancellation callbacks can throw) would otherwise
-        // abort DisposeAsync here, BEFORE the reap wait + connection/process disposal below, leaking
-        // the child and its streams with no possible retry (the _disposed latch is already set).
+        BeforeReconnectLockOnDisposeForTest?.Invoke();
+
+        // Capture the CURRENT incarnation + owner AND publish the terminal/gate signals BEFORE any
+        // throwing cancellation callback (finding 2, round 3). A fault in the owner-cancel below must
+        // neither (a) select a STALE incarnation — leaking a reconnect successor committed since (a
+        // successor can no longer be committed once _intentionalStop is set here: TryCommit throws
+        // under this SAME lock) — nor (b) skip _gateOpen / the interaction sweep / _runtimeTerminal,
+        // which unpark parked send/read/finalizer work. So `installed` is assigned ONLY under the lock
+        // (never a pre-lock read that a Cancel throw could strand), and every signal fires before the
+        // cancel.
+        //
+        // Intentional stop is marked FIRST (reconnect spec §9): a concurrent crash cannot resurrect a
+        // disposing runtime, an in-flight owner's next checkpoint unwinds, and the send gate opens into
+        // the terminal path so a parked worker never waits on a gate nobody will reopen.
+        Incarnation installed;
+        CancellationTokenSource? ownerCts;
+        List<PendingInteraction>? swept;
+
+        lock (_reconnectLock) {
+            _intentionalStop = true;
+            _phase           = (int)RuntimePhase.Terminal;
+            installed        = _installed; // successor-consistent: the CURRENT incarnation, final under _intentionalStop
+            ownerCts         = _ownerCts;  // captured to cancel OUTSIDE the lock, below
+            swept            = MarkPendingInteractionsCancelledLocked();
+            _gateOpen.TrySetResult();
+        }
+
+        ScheduleInteractionSweep(swept);
+        _runtimeTerminal.TrySetResult();
+        installed.Connection.OnNotification -= HandleNotification;
+
+        // ── Early cancellation/drain phase ── CONTAINED (finding 2). The owner cancel and
+        // _cts.CancelAsync() run cancellation callbacks that can throw; a fault must not skip the
+        // guaranteed teardown below (the child/streams would leak with the _disposed latch set). The
+        // owner is cancelled here — OUTSIDE _reconnectLock and AFTER the terminal/gate signals — so a
+        // throwing owner callback can neither run under the lock nor strand waiters, and teardown still
+        // runs against the successor-consistent `installed` captured above.
         try {
-            // Intentional stop is marked FIRST (reconnect spec §9): a concurrent crash cannot
-            // resurrect a disposing runtime, an in-flight owner's next checkpoint unwinds, and the
-            // send gate opens into the terminal path so a parked worker never waits on a gate nobody
-            // will reopen.
-            List<PendingInteraction>? swept;
-
-            lock (_reconnectLock) {
-                _intentionalStop = true;
-                _phase           = (int)RuntimePhase.Terminal;
-                _ownerCts?.Cancel();
-                swept     = MarkPendingInteractionsCancelledLocked();
-                installed = _installed;
-                _gateOpen.TrySetResult();
-            }
-
-            ScheduleInteractionSweep(swept);
-            _runtimeTerminal.TrySetResult();
-
-            installed.Connection.OnNotification -= HandleNotification;
+            ownerCts?.Cancel();
 
             await _cts.CancelAsync().ConfigureAwait(false);
             _updates.Writer.TryComplete();

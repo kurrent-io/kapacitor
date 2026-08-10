@@ -684,6 +684,37 @@ public class AcpHostedAgentRuntimeTests {
         await Assert.That(h.Runtime.ReadVerdict()).IsNotNull();      // coded verdict still surfaces
     }
 
+    /// <summary>Finding 2 (round 3): the EARLY owner-cancel (`_ownerCts.Cancel()`) can throw too, and
+    /// it ran BEFORE the incarnation was captured under the lock and BEFORE the terminal/gate signals.
+    /// If a reconnect commits a SUCCESSOR incarnation in the window before the lock, a throwing owner
+    /// cancel left the STALE predecessor selected (successor leaked) and skipped the signals that
+    /// unpark parked waiters. Commits a successor right before the lock, faults the owner cancel, and
+    /// asserts the LIVE successor is disposed (not the predecessor) and the terminal signal fired.</summary>
+    [Test]
+    public async Task DisposeAsync_owner_cancel_fault_disposes_the_successor_and_fires_terminal_signal() {
+        await using var h = new Harness();
+
+        // A throwing owner CTS — the EARLY cancellation callback, distinct from the _cts.CancelAsync()
+        // the previous test faults.
+        var ownerCts = new CancellationTokenSource();
+        ownerCts.Token.Register(() => throw new InvalidOperationException("owner-cancel-fault"));
+        h.Runtime.SetOwnerCtsForTest(ownerCts);
+
+        h.Runtime.TryStartReap("kiro_reviewer_mcp_surface_unexpected: violation", () => Task.CompletedTask);
+
+        // Commit a reconnect SUCCESSOR right before DisposeAsync takes _reconnectLock — the window the
+        // round-2 code read `installed` before, so a stale-incarnation dispose would leak this one.
+        var successorProcess = new FakeAcpProcess();
+        h.Runtime.BeforeReconnectLockOnDisposeForTest =
+            () => h.Runtime.CommitSuccessorIncarnationForTest(successorProcess);
+
+        try { await h.Runtime.DisposeAsync(); } catch { /* pre-fix: the owner-cancel fault propagates */ }
+
+        await Assert.That(successorProcess.DisposeCalls).IsGreaterThan(0);        // the LIVE successor disposed
+        await Assert.That(h.Process.DisposeCalls).IsEqualTo(0);                   // the stale predecessor NOT disposed
+        await Assert.That(h.Runtime.RuntimeTerminalForTest.IsCompleted).IsTrue(); // terminal signal fired despite the fault
+    }
+
     /// <summary>Reviewer launches always carry a prompt, but the window still needs a defined close
     /// for a launch that doesn't — otherwise no turn ever runs, ProcessAdmittedTurnAsync's finally
     /// never fires, and the marker (so the window) would stay open forever.</summary>
