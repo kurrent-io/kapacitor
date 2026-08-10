@@ -1701,9 +1701,17 @@ Finally, choose what its sessions are visible to, **on the machine itself**:
 kcap config set default_visibility org_public
 ```
 
-Visibility is the machine's own setting, exactly as it is for a person. The
-`--visibility` flag on `create` only selects the value printed in the instructions —
-it does not configure the runner for you.
+Visibility is the machine's own setting, exactly as it is for a person — a machine
+records with the `default_visibility` of the profile it runs under, and with no
+profile it records `org_public`. It is **not** steered to private. The `--visibility`
+flag on `create` only selects the value printed in the setup instructions (defaulting
+to your own profile's default, so `create` shows you the value your machine will
+actually use) — it does not configure the runner for you.
+
+> **Heads up:** `KCAP_CLIENT_ID`/`KCAP_CLIENT_SECRET` in your environment divert **all**
+> of this CLI's auth onto the machine credential, so those variables belong on a runner,
+> not in an interactive shell. `kcap status` prints a line naming them when it detects
+> them, so a shell that has accidentally inherited them is easy to spot.
 
 Revoking stops a machine authenticating from its next request. A token it already
 holds stays valid until it expires (up to an hour) but is no longer honoured. To cut
