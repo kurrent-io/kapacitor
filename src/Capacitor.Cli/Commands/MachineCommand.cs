@@ -348,20 +348,35 @@ public static class MachineCommand {
 
     /// <summary>
     /// The visibility PRINTED in the setup instructions, with a label for where it came from. An
-    /// explicit <c>--visibility</c> flag wins; otherwise the active profile's
-    /// <c>default_visibility</c> (what <c>kcap setup</c> wrote — non-null once a profile exists);
-    /// otherwise the product default <c>org_public</c>, which is what a profile-less runner records
-    /// with anyway (the server treats an absent <c>default_visibility</c> as <c>org_public</c>).
+    /// explicit <c>--visibility</c> flag wins (validated by the caller — only the flag can be an
+    /// invalid value); otherwise the active profile's <c>default_visibility</c> when a machine can
+    /// actually record with it; otherwise the product default <c>org_public</c>, which is what a
+    /// profile-less runner records with anyway (the server treats an absent
+    /// <c>default_visibility</c> as <c>org_public</c>).
+    ///
+    /// <para>A profile may legitimately carry <c>project</c> (a per-viewer, member-only audience) —
+    /// but a machine is never a project member, so that value is not one it can record with. Rather
+    /// than inherit it and then reject the whole <c>create</c> with a message that falsely blames a
+    /// <c>--visibility</c> flag the operator never passed, it falls back to the product default and
+    /// the provenance says why. So after this resolver the value is always in the machine-valid set
+    /// UNLESS it came from an explicit flag, which is the only case the caller's validation rejects.</para>
     ///
     /// <para>Deliberately never invents <c>private</c>: it appears only because the flag or the
     /// operator's own profile chose it, and the provenance label then says which. Pure so it is
     /// unit-tested directly, without the profile/HTTP machinery around it.</para>
     /// </summary>
     internal static (string Value, string Provenance) ResolveCreateVisibility(
-            string? flagValue, string? profileDefault) =>
-        flagValue      is not null ? (flagValue,      "from --visibility")
-      : profileDefault is not null ? (profileDefault, "your profile default")
-      :                              ("org_public",   "product default");
+            string? flagValue, string? profileDefault) {
+        if (flagValue is not null) return (flagValue, "from --visibility");
+
+        if (profileDefault is not null && Visibilities.Contains(profileDefault, StringComparer.Ordinal))
+            return (profileDefault, "your profile default");
+
+        if (!string.IsNullOrEmpty(profileDefault))
+            return ("org_public", $"product default; a machine cannot record with your profile's '{profileDefault}' visibility");
+
+        return ("org_public", "product default");
+    }
 
     // ── list ────────────────────────────────────────────────────────────────────────────────────
 

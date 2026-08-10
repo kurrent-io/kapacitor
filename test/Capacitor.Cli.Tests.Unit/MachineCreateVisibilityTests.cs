@@ -39,4 +39,16 @@ public class MachineCreateVisibilityTests {
         await Assert.That(value).IsEqualTo("org_public");
         await Assert.That(provenance).IsEqualTo("product default");
     }
+
+    [Test]
+    public async Task Project_profile_default_a_machine_cannot_use_falls_back_without_erroring() {
+        // 'project' is a valid PROFILE default_visibility (a per-viewer, member-only audience) but a
+        // machine is never a project member, so it can't record with it. It must fall back to the
+        // product default rather than inherit a value the create-time validation would then reject
+        // with a message that falsely blames a --visibility flag the operator never passed.
+        var (value, provenance) = MachineCommand.ResolveCreateVisibility(null, "project");
+        await Assert.That(value).IsEqualTo("org_public");
+        await Assert.That(provenance).Contains("project")
+            .Because("the operator should see why their profile's value was not used");
+    }
 }

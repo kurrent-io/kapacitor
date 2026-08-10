@@ -124,17 +124,21 @@ public static class MachineAuth {
 
     /// <summary>
     /// The one-line <c>kcap status</c> explanation of the auth diversion <see cref="Intended"/>
-    /// causes: with either variable present, this CLI records as the machine rather than as the
-    /// signed-in user, silently bypassing the profile token store. Names exactly the variable(s)
-    /// present — <see cref="Intended"/> is either-var, so a fixed "ID is set" line would be false in
-    /// the secret-only case — and returns null when machine auth is not in play so the caller prints
-    /// nothing. The trailing clause is what turns a status curiosity into an actionable warning: a
-    /// developer who exported these into an interactive shell is unknowingly re-owning every session.
+    /// causes. Returns null when machine auth is not in play (caller prints nothing).
+    ///
+    /// <para>Distinguishes the two states <see cref="Intended"/> (either-var) collapses, because they
+    /// are not the same to a reader: with BOTH variables present the CLI genuinely records as the
+    /// machine instead of the signed-in user; with only ONE the credential is incomplete, so
+    /// <see cref="TryRead"/> refuses it and NOTHING records — the diversion still happens (the token
+    /// store is bypassed), so <c>kcap login</c> is not the fix. Saying "records as the machine" in
+    /// the one-variable case, or letting the profile token-store line then advise <c>kcap login</c>,
+    /// would both be false. Names exactly which variable(s) are present so the message is truthful in
+    /// every case.</para>
     /// </summary>
     public static string? DescribeDiversion(bool idSet, bool secretSet) => (idSet, secretSet) switch {
         (false, false) => null,
-        (true,  false) => $"machine credential ({ClientIdVar} is set) — kcap records as the machine, not as your login.",
-        (false, true)  => $"machine credential ({ClientSecretVar} is set) — kcap records as the machine, not as your login.",
-        (true,  true)  => $"machine credential ({ClientIdVar} and {ClientSecretVar} are set) — kcap records as the machine, not as your login.",
+        (true,  true)  => $"machine credential ({ClientIdVar} and {ClientSecretVar} set) — kcap records as the machine, not as your login.",
+        (true,  false) => $"machine credential incomplete — {ClientIdVar} is set but {ClientSecretVar} is not. Auth is diverted off your login and will fail until both are set.",
+        (false, true)  => $"machine credential incomplete — {ClientSecretVar} is set but {ClientIdVar} is not. Auth is diverted off your login and will fail until both are set.",
     };
 }
