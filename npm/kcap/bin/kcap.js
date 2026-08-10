@@ -372,6 +372,20 @@ function runUpdate(binaryPath, updArgs) {
   require("./refresh").runRefreshes(fs.realpathSync(__filename));
   console.log("kcap updated.");
 
+  // Tell the server about the new version right away, so its "CLI out of
+  // date" banner/notification clear immediately instead of lingering until
+  // whatever the user runs next happens to hit the server. `binaryPath` now
+  // points at the freshly-installed NEW binary (overwritten in place above,
+  // or laid down at the same path after Windows's rename-aside). Best-effort
+  // and silent: this must never fail or slow down `kcap update` — the server
+  // observes the new version from the next incidental request anyway if this
+  // doesn't run or doesn't complete.
+  try {
+    execFileSync(binaryPath, ["report-version", "--no-update-check"], { stdio: "ignore", timeout: 8000 });
+  } catch {
+    // fire-and-forget: the server will observe on the next request anyway
+  }
+
   // A running daemon keeps executing the old image until restarted. On
   // macOS/Linux it self-detects the new binary and restarts when idle; on
   // Windows self-detection is off (the running image was moved, not replaced),

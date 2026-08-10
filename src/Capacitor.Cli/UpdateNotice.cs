@@ -20,7 +20,8 @@ internal static class UpdateNotice {
     /// <summary>
     /// The suppression predicate. False (suppressed) for:
     /// <see cref="CrashReporter.FailOpenCommands"/> (<c>hook</c>, <c>generate-whats-done</c>,
-    /// <c>set-title</c>, <c>copilot-finalize</c> — agent-spawned, nobody reads their stderr);
+    /// <c>set-title</c>, <c>copilot-finalize</c>, <c>report-version</c> — agent/tooling-spawned,
+    /// nobody reads their stderr);
     /// <c>mcp</c> (a stdio JSON-RPC server — stderr is not a terminal) and <c>watch</c> (a
     /// long-lived background process); the entire <c>daemon</c> command family (there is no
     /// separate <c>run</c> subcommand — the foreground shape is plain <c>kcap daemon start</c>

@@ -731,6 +731,13 @@ switch (command) {
 
         return 0;
     }
+    // Hidden, tooling-internal: spawned once by the npm wrapper's `runUpdate` right after
+    // `npm install` lands the new binary, so the server observes the new version immediately
+    // instead of waiting for whatever the user runs next. Not in PrintUsage — like
+    // generate-whats-done/set-title/copilot-finalize, nobody types this by hand. See
+    // ReportVersionCommand for why it never surfaces an error.
+    case "report-version":
+        return await ReportVersionCommand.HandleAsync(baseUrl);
     case "hook": {
         // Task 12: global, session-agnostic drain pass run early in EVERY non-Codex hook
         // invocation — centralizes the per-vendor AgentHookPoster.DrainSpoolsAsync calls Tasks 4-6
