@@ -17,7 +17,7 @@ namespace Capacitor.Cli.Commands;
 /// memory this server has no repo/machine context to resolve — the only per-call input is the
 /// session id and the declare selector, both carried in the tool arguments.</summary>
 static class McpWorkItemsServer {
-    internal const string NotLoggedInMessage = "Not logged in. Run 'kcap login' on the host shell.";
+    internal const string NotLoggedInMessage = AuthRejectionNotice.NotLoggedIn;
 
     internal const string NoSessionIdMessage =
         "No session id: pass session_id explicitly or run inside a kcap-hooked session (KCAP_SESSION_ID or CODEX_THREAD_ID).";
@@ -176,7 +176,7 @@ static class McpWorkItemsServer {
             var body = await httpResponse.Content.ReadAsStringAsync();
 
             if (httpResponse.StatusCode == HttpStatusCode.Unauthorized) {
-                return BuildToolResult(id, NotLoggedInMessage, isError: true);
+                return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(baseUrl), isError: true);
             }
 
             if (!httpResponse.IsSuccessStatusCode) {
@@ -199,7 +199,8 @@ static class McpWorkItemsServer {
     /// the refresh flow for WorkOS / GitHubApp), update the client's <c>Authorization</c>
     /// header, and retry the same request once. If refresh fails (genuinely not logged in
     /// or refresh-token expired), the original 401 is returned and the caller surfaces the
-    /// friendly "Not logged in" message.
+    /// store-aware <see cref="AuthRejectionNotice"/> line (which keeps the legacy
+    /// "Not logged in" wording only for a genuinely missing login).
     /// </summary>
     static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, string baseUrl, Func<HttpClient, Task<HttpResponseMessage>> send) {
         var response = await send(client);
