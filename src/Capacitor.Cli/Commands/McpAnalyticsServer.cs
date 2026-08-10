@@ -17,7 +17,7 @@ namespace Capacitor.Cli.Commands;
 /// rejection reasons. Structure cloned from McpMemoryServer.
 /// </summary>
 static class McpAnalyticsServer {
-    internal const string NotLoggedInMessage = "Not logged in. Run 'kcap login' on the host shell.";
+    internal const string NotLoggedInMessage = AuthRejectionNotice.NotLoggedIn;
 
     internal const string NotSupportedMessage =
         "This server does not support analytics queries — upgrade kcap-server.";
@@ -181,6 +181,14 @@ static class McpAnalyticsServer {
             };
 
             var body = await httpResponse.Content.ReadAsStringAsync();
+
+            // The 401 wording is store-aware (a locally-valid stored credential the
+            // server rejects must not read as "not logged in"), which needs an async store
+            // read — resolved here so MapResponse stays a pure, unit-testable mapper (its own
+            // 401 arm remains as the fallback wording).
+            if (httpResponse.StatusCode == HttpStatusCode.Unauthorized) {
+                return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(baseUrl), isError: true);
+            }
 
             return BuildToolResult(id, MapResponse(toolName, httpResponse.StatusCode, body, out var isError), isError);
         } catch (ArgumentException ex) {
