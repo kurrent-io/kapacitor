@@ -111,4 +111,20 @@ static class LaunchdUnit {
             ? ServiceState.Running
             : ServiceState.Installed;
     }
+
+    public static LabelProbe ClassifyPrint(int exitCode, string stdout, string stderr) {
+        if (exitCode == 0) return LabelProbe.Loaded;
+        return stderr.Contains("Could not find service", StringComparison.OrdinalIgnoreCase)
+            ? LabelProbe.Absent
+            : LabelProbe.Unknown;
+    }
+
+    public static int? PidFromPrint(string stdout) {
+        foreach (var line in stdout.Split('\n')) {
+            var t = line.Trim();
+            if (t.StartsWith("pid = ", StringComparison.Ordinal) && int.TryParse(t["pid = ".Length..].Trim(), out var pid))
+                return pid;
+        }
+        return null;
+    }
 }

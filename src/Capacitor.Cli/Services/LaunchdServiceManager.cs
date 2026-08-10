@@ -38,6 +38,16 @@ sealed partial class LaunchdServiceManager(UnitFileWriter? writeUnit = null) : I
         return new ServiceStatus(LaunchdUnit.StatusFromPrint(code, stdout), bin);
     }
 
+    public ServiceQuery Query(string serviceId) {
+        var path        = LaunchdUnit.PlistPath(serviceId);
+        var unitPresent = File.Exists(path);
+        var bin         = unitPresent ? LaunchdUnit.BinaryFromPlist(File.ReadAllText(path)) : null;
+        var (code, stdout, stderr) = ServiceProcess.Run("launchctl", LaunchdUnit.PrintArgs(Uid(), serviceId));
+        var probe = LaunchdUnit.ClassifyPrint(code, stdout, stderr);
+        var state = probe == LabelProbe.Loaded ? LaunchdUnit.StatusFromPrint(code, stdout) : ServiceState.NotInstalled;
+        return new ServiceQuery(probe, unitPresent, state, bin, probe == LabelProbe.Loaded ? LaunchdUnit.PidFromPrint(stdout) : null);
+    }
+
     public void Install(ServiceSpec spec, bool startNow) {
         var plistPath = LaunchdUnit.PlistPath(spec.ServiceId);
         // idempotent: bootout an existing job (ignore failure), then rewrite + bootstrap.

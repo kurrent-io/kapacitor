@@ -36,6 +36,15 @@ sealed class WindowsScheduledTaskServiceManager(UnitFileWriter? writeUnit = null
         return new ServiceStatus(WindowsTaskUnit.StatusFromQuery(code, stdout), bin);
     }
 
+    public ServiceQuery Query(string serviceId) {
+        var (code, stdout, _) = ServiceProcess.Run("schtasks", WindowsTaskUnit.QueryArgs(serviceId));
+        var wrapper = WindowsTaskUnit.WrapperPath(serviceId);
+        var bin = File.Exists(wrapper) ? WindowsTaskUnit.BinaryFromWrapper(File.ReadAllText(wrapper)) : null;
+        var state = WindowsTaskUnit.StatusFromQuery(code, stdout);
+        var probe = state != ServiceState.NotInstalled ? LabelProbe.Loaded : LabelProbe.Absent;
+        return new ServiceQuery(probe, File.Exists(wrapper), state, bin, null);
+    }
+
     /// <summary>The unit-writing half of <see cref="Install"/>, split out so it is testable without
     /// invoking schtasks.</summary>
     internal IReadOnlyList<GeneratedFile> WriteUnitFiles(ServiceSpec spec) {
