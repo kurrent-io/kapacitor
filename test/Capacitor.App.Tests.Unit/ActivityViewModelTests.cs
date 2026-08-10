@@ -248,7 +248,7 @@ public class ActivityViewModelTests {
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Tab_visible_triggers_immediate_refresh() {
-        var (readCalls, count) = await AvaloniaSession.DispatchAsync(async () => {
+        var (readCallsBefore, readCallsAfter, count) = await AvaloniaSession.DispatchAsync(async () => {
             var reader = new ScriptedReader();
             reader.Set(new ConsentLogReadResult([Rec()], true));
             var vm = new ActivityViewModel(reader.Read, new ScriptedStat().Get, new FakeTicker());
@@ -257,10 +257,11 @@ public class ActivityViewModelTests {
             vm.OnTabVisibleChanged(true);
             await vm.PendingRefreshForTesting!;
 
-            return (readCallsBefore, vm.Rows.Count);
+            return (readCallsBefore, reader.ReadCalls, vm.Rows.Count);
         });
 
-        await Assert.That(readCalls).IsEqualTo(0);
+        await Assert.That(readCallsBefore).IsEqualTo(0);
+        await Assert.That(readCallsAfter).IsEqualTo(1); // exactly one read — guards against an accidental double-read
         await Assert.That(count).IsEqualTo(1);
     }
 

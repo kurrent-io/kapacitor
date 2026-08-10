@@ -116,7 +116,7 @@ public sealed class ActivityViewModel : ReactiveObject, IDisposable {
             var (nextKey, result) = await Task.Run(() => ComputeOffUiThread(mode, previousKey)).ConfigureAwait(false);
             await Dispatcher.UIThread.InvokeAsync(() => ApplyOutcome(nextKey, result));
         } finally {
-            _refreshInFlight = false;
+            _refreshInFlight = false; // runs on the UI thread (InvokeAsync's continuation), but a plain bool write is safe either way
         }
     }
 
