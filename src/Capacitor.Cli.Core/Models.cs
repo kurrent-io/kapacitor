@@ -1055,6 +1055,7 @@ public sealed record CurationApplyResponse {
 // serializes each hub-invocation argument independently by its declared type.
 [JsonSerializable(typeof(IReadOnlyDictionary<string, string>))]
 [JsonSerializable(typeof(TelemetryStateFile))]
+[JsonSerializable(typeof(TelemetryDeviceIdFile))]
 // UseStringEnumConverter=true matches the server's SignalR JSON protocol, which
 // serialises enums (e.g. LaunchKind) as camelCase strings. Without it the
 // source-gen LaunchKind JsonTypeInfo defaults to numeric and silently drops the

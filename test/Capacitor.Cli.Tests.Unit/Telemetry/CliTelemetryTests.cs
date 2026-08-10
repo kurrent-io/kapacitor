@@ -7,11 +7,15 @@ using TUnit.Core;
 
 namespace Capacitor.Cli.Tests.Unit.Telemetry;
 
-// Shares the TelemetryState.PathOverride lock key with TelemetryStateTests (Task 2's convention):
-// keying on the resource, not the class, so any test class touching this shared static serialises
-// against every other one. This class also mutates CliTelemetry's own statics (TestSink, the
-// Initialize-set state), which the same lock covers.
-[NotInParallel(nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride))]
+// Shares the TelemetryState.PathOverride and TelemetryDeviceId.PathOverride lock keys with
+// TelemetryStateTests/TelemetryDeviceIdTests (Task 2's convention, extended for the device-id
+// split): keying on the resource, not the class, so any test class touching either shared static
+// serialises against every other one. This class also mutates CliTelemetry's own statics
+// (TestSink, the Initialize-set state), which the same lock covers.
+[NotInParallel([
+    nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
+    nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
+])]
 public class CliTelemetryTests {
     // CliTelemetry holds process-global static state (Enabled, TestSink, ...). A prior test
     // elsewhere in the suite (e.g. one that persists `telemetry off`) can leave Enabled=false
@@ -21,8 +25,13 @@ public class CliTelemetryTests {
     [Before(Test)]
     public void ResetTelemetry() => CliTelemetry.Reset();
 
-    static string NewStatePath() =>
-        Path.Combine(Path.GetTempPath(), $"kcap-facade-{Guid.NewGuid():N}", "telemetry.json");
+    // Side effect: also points TelemetryDeviceId at a fresh, colocated file, so every Initialize()
+    // call below mints its own device id rather than reading a leftover from another test.
+    static string NewStatePath() {
+        var dir = Path.Combine(Path.GetTempPath(), $"kcap-facade-{Guid.NewGuid():N}");
+        TelemetryDeviceId.PathOverride = Path.Combine(dir, "telemetry-device.json");
+        return Path.Combine(dir, "telemetry.json");
+    }
 
     static List<TelemetryEvent> StartCapturing(string command = "setup", string? serverUrl = null) {
         TelemetryState.PathOverride = NewStatePath();
@@ -173,11 +182,11 @@ public class CliTelemetryTests {
     }
 
     // The property "never mint a device id while opted out" still holds — only its enforcement
-    // point moved. TelemetryState.GetOrCreateDeviceId no longer re-checks state.Enabled itself
-    // (TelemetryStateTests.Get_or_create_device_id_mints_unconditionally_regardless_of_the_persisted_flag
-    // pins that it now mints even when called directly against a disabled state); Initialize's
-    // own `if (!Enabled) return;` is the one gate left, and it must never reach
-    // GetOrCreateDeviceId at all when TelemetrySettings.Resolve says disabled.
+    // point moved. TelemetryDeviceId.GetOrCreate no longer has any notion of state.Enabled to
+    // re-check (TelemetryDeviceIdTests.Get_or_create_is_unaffected_by_telemetry_state pins that it
+    // now mints even when called directly against a disabled state); Initialize's own
+    // `if (!Enabled) return;` is the one gate left, and it must never reach
+    // TelemetryDeviceId.GetOrCreate at all when TelemetrySettings.Resolve says disabled.
     [Test]
     public async Task Initialize_never_mints_a_device_id_while_opted_out_via_persisted_config() {
         TelemetryState.PathOverride = NewStatePath();
@@ -188,7 +197,7 @@ public class CliTelemetryTests {
         CliTelemetry.Initialize("status", null, loggedIn: false);
 
         await Assert.That(CliTelemetry.Enabled).IsFalse();
-        await Assert.That(TelemetryState.Read().Id).IsNull();
+        await Assert.That(TelemetryDeviceId.ReadPersisted()).IsNull();
     }
 
     // Regression test for the P2 finding: GetOrCreateDeviceId used to independently veto minting
@@ -212,7 +221,7 @@ public class CliTelemetryTests {
             CliTelemetry.Initialize("status", null, loggedIn: false);
 
             await Assert.That(CliTelemetry.Enabled).IsTrue();
-            await Assert.That(TelemetryState.Read().Id).IsNotNull();
+            await Assert.That(TelemetryDeviceId.ReadPersisted()).IsNotNull();
         } finally {
             Environment.SetEnvironmentVariable("KCAP_TELEMETRY", saved);
         }
@@ -238,7 +247,7 @@ public class CliTelemetryTests {
         // Sanity: telemetry actually came up live and minted an id — otherwise the assertions
         // below would trivially pass having exercised nothing.
         await Assert.That(CliTelemetry.Enabled).IsTrue();
-        await Assert.That(TelemetryState.Read().Id).IsNotNull();
+        await Assert.That(TelemetryDeviceId.ReadPersisted()).IsNotNull();
         await Assert.That(sink.Any(e => e.Name == "cli_first_run")).IsTrue();
 
         var exit = await ConfigCommand.HandleAsync(["config", "set", "telemetry", "off"]);
@@ -246,7 +255,7 @@ public class CliTelemetryTests {
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(CliTelemetry.Enabled).IsFalse();
         await Assert.That(sink).IsEmpty();
-        await Assert.That(TelemetryState.Read().Id).IsNull();
+        await Assert.That(TelemetryDeviceId.ReadPersisted()).IsNull();
         await Assert.That(TelemetryState.PersistedEnabled()).IsEqualTo((bool?)false);
 
         // The disabled facade must not resurrect anything on the exit-time flush either.

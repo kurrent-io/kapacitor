@@ -127,14 +127,24 @@ New namespace `Capacitor.Cli.Core/Telemetry/`:
 | Component | Responsibility |
 |---|---|
 | `TelemetrySettings` | Resolves enabled/disabled once, as a pure function over an injected env dictionary plus persisted config. No environment access at the seam, so the precedence table is directly testable. |
-| `TelemetryDeviceId` | Anonymous device id in `~/.config/kcap/telemetry.json`, using the same `FileMode.CreateNew` race discipline as `MachineId` (exclusive create; loser adopts the winner's id; persistent corruption heals by overwrite). Also holds the `notice_shown` marker and the persisted enable flag. No id is generated while telemetry is disabled — a user who opts out before first run never gets one written. |
+| `TelemetryDeviceId` | Anonymous device id in its own file, `~/.config/kcap/telemetry-device.json`, using the same `FileMode.CreateNew` race discipline as `MachineId` (exclusive create; loser adopts the winner's id; persistent corruption heals by overwrite). No `ConfigFileLock` and no atomic temp-file-then-rename: a device id is a single immutable random value with no consistency relationship to anything else, so if two processes race to create it, either GUID winning is fine — the `CreateNew`/adopt-the-winner discipline handles that by construction. A failed persist falls back to an in-memory-only id for the current process rather than disabling telemetry (see Failure handling). |
+| `TelemetryState` | `telemetry.json`: the persisted enable flag and the `notice_shown` marker — the two fields where a *lost* update matters (a dropped `SetEnabled(false)` silently clobbers an opt-out). Every mutation acquires `ConfigFileLock` and writes atomically (temp file + rename) inside it, unlike `TelemetryDeviceId`, because these fields need read-modify-write correctness that a bare `CreateNew` can't give a value that changes over time. `SetEnabled(false)` also deletes the device id file as a side effect. No id is generated while telemetry is disabled — a user who opts out before first run never gets one written. |
 | `TelemetryClient` | Queue, batch POST to `/batch/`, budgeted flush, spill-on-failure, spool replay. The only component that knows PostHog's wire format. |
 | `CliTelemetry` | Static facade the call sites use: `Command`, `Funnel`, `McpTool`, `Flush`. Every method swallows. |
 
-`telemetry.json` is deliberately **not** `machine.json`. The latter is an auth-relevant identifier
-sent to the Capacitor server to prove daemon/machine identity; conflating an analytics id with an
-authentication id mixes purposes that should be separable, and a separate file means opt-out can
-delete the analytics id outright without touching authentication.
+The device id and the consent/notice state deliberately live in **two separate files**, not because
+of any relationship between them but because of the different failure mode each one has. The id is
+lock-free because it is a single immutable random value: a write race has no wrong outcome, only two
+equally-valid GUIDs where one must simply win. The consent flag keeps the `ConfigFileLock`-guarded
+read-modify-write because a lost update there is a privacy failure, not a coin flip — silently
+resurrecting an opted-out `Enabled=false` is a materially different kind of bug than minting an extra
+GUID nobody will ever notice. Splitting them let the device id drop all of `telemetry.json`'s locking
+and atomic-rename machinery, which existed only to protect the enable flag in the first place.
+
+Neither file is `machine.json`. That file is an auth-relevant identifier sent to the Capacitor server
+to prove daemon/machine identity; conflating an analytics id with an authentication id mixes purposes
+that should be separable, and keeping the device id in its own file means opt-out can delete the
+analytics id outright without touching authentication.
 
 ### Call sites
 
@@ -266,7 +276,8 @@ file paths, or transcript content. Opt out: kcap config set telemetry off (or DO
 https://capacitor.kurrent.io/privacy
 ```
 
-`kcap uninstall` already removes the config directory, which takes `telemetry.json` with it.
+`kcap uninstall` already removes the config directory, which takes both `telemetry.json` and
+`telemetry-device.json` with it.
 
 ## Failure handling
 
@@ -276,6 +287,12 @@ swallows; the flush is budgeted; the spool is bounded.
 This is stricter than ordinary defensiveness because `Program.cs:113` documents that an exception
 escaping to the NativeAOT runtime aborts the process with SIGABRT and a macOS crash report. A
 throwing telemetry path would turn a reporting feature into a crash-on-every-command regression.
+
+A device id that can't be persisted (disk full, unwritable config dir, ...) is not treated as a
+reason to disable telemetry: `CliTelemetry.Initialize` falls back to an in-memory-only id generated
+for that process alone. Silently going dark on a disk hiccup costs more in data quality — an entire
+process's worth of events, invisibly — than the alternative cost, a marginally inflated
+unique-device count on the rare run where persistence failed.
 
 `KCAP_TELEMETRY_DEBUG=1` prints what would be sent to stderr, for our own diagnosis.
 

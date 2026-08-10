@@ -30,24 +30,27 @@ namespace Capacitor.Cli.Tests.Unit.Telemetry;
 /// share that class's <see cref="NotInParallelAttribute"/> key so nothing else deletes or
 /// rewrites <c>config.json</c> underneath this test.
 ///
-/// Deliberately does NOT set <see cref="TelemetryState.PathOverride"/>. That static has its own
-/// dedicated lock key (<c>nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride)</c>,
-/// see <c>TelemetryStateTests</c>), shared by every class that mutates it
-/// (<c>TelemetryStateTests</c>, <c>SetupFunnelTests</c>, <c>CliTelemetryTests</c>,
-/// <c>McpTelemetryTests</c>, <c>ConfigTelemetryKeyTests</c>). This class locks under
-/// <c>TokenStoreProfileTests</c> instead, for the config dir it genuinely shares — setting
-/// <c>PathOverride</c> too would race those five telemetry classes under local (non-CI)
-/// parallelism, a gap CI's <c>--maximum-parallel-tests 1</c> would never expose. It doesn't need
-/// to: left unset, telemetry state falls back to its own default
-/// (<c>PathHelpers.ConfigPath("telemetry.json")</c>), which already resolves inside the same
-/// <c>KCAP_CONFIG_DIR</c> the module initializer pinned. <c>telemetry.json</c> is cleaned up in
-/// <c>[After(Test)]</c> so it can't leak into a later test that reads persisted telemetry state
+/// Deliberately does NOT set <see cref="TelemetryState.PathOverride"/> or
+/// <see cref="TelemetryDeviceId.PathOverride"/>. Those statics have their own dedicated lock keys
+/// (<c>nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride)</c> and the
+/// <c>TelemetryDeviceId</c> equivalent, see <c>TelemetryStateTests</c>/<c>TelemetryDeviceIdTests</c>),
+/// shared by every class that mutates them (<c>TelemetryStateTests</c>, <c>TelemetryDeviceIdTests</c>,
+/// <c>SetupFunnelTests</c>, <c>CliTelemetryTests</c>, <c>McpTelemetryTests</c>,
+/// <c>ConfigTelemetryKeyTests</c>). This class locks under <c>TokenStoreProfileTests</c> instead,
+/// for the config dir it genuinely shares — setting either override too would race those telemetry
+/// classes under local (non-CI) parallelism, a gap CI's <c>--maximum-parallel-tests 1</c> would
+/// never expose. It doesn't need to: left unset, telemetry state and the device id both fall back
+/// to their own defaults (<c>PathHelpers.ConfigPath("telemetry.json")</c> and
+/// <c>PathHelpers.ConfigPath("telemetry-device.json")</c>), which already resolve inside the same
+/// <c>KCAP_CONFIG_DIR</c> the module initializer pinned. Both files are cleaned up in
+/// <c>[After(Test)]</c> so neither can leak into a later test that reads persisted telemetry state
 /// without an override.
 /// </summary>
 [NotInParallel(nameof(TokenStoreProfileTests))]
 public class ConfigSetTelemetryCompositionTests {
     static string ConfigPath    => AppConfig.GetConfigPath();
     static string TelemetryPath => PathHelpers.ConfigPath("telemetry.json");
+    static string DeviceIdPath  => PathHelpers.ConfigPath("telemetry-device.json");
 
     [Before(Test)]
     public void Cleanup() {
@@ -56,8 +59,10 @@ public class ConfigSetTelemetryCompositionTests {
     }
 
     [After(Test)]
-    public void CleanupTelemetryState() =>
+    public void CleanupTelemetryState() {
         SharedConfigDirCleanup.ClearWithRetry("telemetry.json", () => File.Delete(TelemetryPath));
+        SharedConfigDirCleanup.ClearWithRetry("telemetry-device.json", () => File.Delete(DeviceIdPath));
+    }
 
     [Test]
     public async Task Set_telemetry_off_returns_zero_and_leaves_an_existing_profile_on_disk_byte_for_byte_unchanged() {

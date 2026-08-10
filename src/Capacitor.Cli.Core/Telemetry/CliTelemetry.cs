@@ -46,9 +46,13 @@ public static class CliTelemetry {
                    && CommandEvents.IsReportable(command);
             if (!Enabled) return;
 
-            _debug    = Environment.GetEnvironmentVariable("KCAP_TELEMETRY_DEBUG") == "1";
-            _deviceId = TelemetryState.GetOrCreateDeviceId();
-            if (_deviceId is null) { Enabled = false; return; }
+            _debug = Environment.GetEnvironmentVariable("KCAP_TELEMETRY_DEBUG") == "1";
+
+            // A device id that can't be persisted still gets an in-memory-only id for this
+            // process, rather than disabling telemetry outright: silently going dark on a disk
+            // hiccup costs more in data quality than a marginally inflated unique-device count in
+            // this rare fallback case.
+            _deviceId = TelemetryDeviceId.GetOrCreate() ?? Guid.NewGuid().ToString("N");
 
             _orgGroup = PostHogPayload.OrgGroup(serverUrl);
             _shared   = new JsonObject {

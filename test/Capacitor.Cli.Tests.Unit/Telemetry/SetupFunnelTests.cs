@@ -9,10 +9,14 @@ using DiscoveryResult = Capacitor.Cli.Core.Auth.DiscoveryResult;
 
 namespace Capacitor.Cli.Tests.Unit.Telemetry;
 
-// Shares the TelemetryState.PathOverride lock key with TelemetryStateTests and CliTelemetryTests
-// (Task 2's convention): keying on the resource, not the class, so any test class touching this
+// Shares the TelemetryState.PathOverride and TelemetryDeviceId.PathOverride lock keys with
+// TelemetryStateTests/CliTelemetryTests/TelemetryDeviceIdTests (Task 2's convention, extended for
+// the device-id split): keying on the resource, not the class, so any test class touching either
 // shared static serialises against every other one.
-[NotInParallel(nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride))]
+[NotInParallel([
+    nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
+    nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
+])]
 public class SetupFunnelTests {
     // CliTelemetry holds process-global static state (Enabled, TestSink, ...). A prior test
     // elsewhere in the suite (e.g. one that persists `telemetry off`) can leave Enabled=false
@@ -22,8 +26,9 @@ public class SetupFunnelTests {
     public void ResetTelemetry() => CliTelemetry.Reset();
 
     static List<TelemetryEvent> StartCapturing() {
-        TelemetryState.PathOverride =
-            Path.Combine(Path.GetTempPath(), $"kcap-funnel-{Guid.NewGuid():N}", "telemetry.json");
+        var dir = Path.Combine(Path.GetTempPath(), $"kcap-funnel-{Guid.NewGuid():N}");
+        TelemetryState.PathOverride    = Path.Combine(dir, "telemetry.json");
+        TelemetryDeviceId.PathOverride = Path.Combine(dir, "telemetry-device.json");
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
         CliTelemetry.Initialize("setup", null, loggedIn: false);

@@ -3,22 +3,24 @@ using System.Text.Json;
 namespace Capacitor.Cli.Core.Telemetry;
 
 /// <summary>On-disk shape of <c>telemetry.json</c>.</summary>
-public readonly record struct TelemetryStateFile(string? Id, bool? Enabled, bool NoticeShown);
+public readonly record struct TelemetryStateFile(bool? Enabled, bool NoticeShown);
 
 /// <summary>
-/// Owns <c>telemetry.json</c> in the CLI config directory: the anonymous device id, the
-/// persisted enable flag, and the first-run-notice marker.
+/// Owns <c>telemetry.json</c> in the CLI config directory: the persisted enable flag and the
+/// first-run-notice marker. The anonymous device id lives in its own, lock-free file instead (see
+/// <see cref="TelemetryDeviceId"/>) — this file keeps only the fields where a lost update actually
+/// matters: a dropped <see cref="SetEnabled"/> silently clobbers a user's opt-out, where a device-id
+/// write race just means one of two equally-fine GUIDs wins.
 ///
-/// Deliberately NOT <see cref="MachineId"/>'s <c>machine.json</c>. That file is an
-/// auth-relevant identifier sent to the Capacitor server to prove machine identity;
-/// an analytics id is a different purpose with a different lifetime, and keeping it separate
-/// means opting out can delete it without touching authentication.
+/// Deliberately NOT <see cref="MachineId"/>'s <c>machine.json</c> either. That file is an
+/// auth-relevant identifier sent to the Capacitor server to prove machine identity; an analytics
+/// id is a different purpose with a different lifetime.
 ///
-/// Each mutation (device id creation, toggling enabled, marking notice shown) acquires a
-/// cross-process lock and performs its read-modify-write atomically inside the lock to prevent
-/// lost-update races. On lock-acquisition failure, degrades to best-effort unlocked write rather
-/// than silently dropping the change — this is critical for opt-out enforcement, where a lost
-/// SetEnabled(false) would be a privacy failure.
+/// Each mutation (toggling enabled, marking notice shown) acquires a cross-process lock and
+/// performs its read-modify-write atomically inside the lock to prevent lost-update races. On
+/// lock-acquisition failure, degrades to best-effort unlocked write rather than silently dropping
+/// the change — this is critical for opt-out enforcement, where a lost SetEnabled(false) would be
+/// a privacy failure.
 /// </summary>
 public static class TelemetryState {
     /// <summary>Test seam. Null in production, where the path resolves under the config dir.</summary>
@@ -41,38 +43,17 @@ public static class TelemetryState {
     public static bool? PersistedEnabled() => Read().Enabled;
 
     /// <summary>
-    /// Returns the stable device id, creating one on first call. Mints unconditionally — whether
-    /// telemetry is enabled is NOT this method's decision. That precedence is
-    /// <see cref="TelemetrySettings.Resolve"/>'s job alone; <see cref="CliTelemetry.Initialize"/>
-    /// is the one gate that gets to skip this call entirely when disabled. An earlier revision
-    /// re-checked <c>state.Enabled is false</c> here too, which meant an explicit
-    /// <c>KCAP_TELEMETRY=1</c> could never override a persisted opt-out: Initialize would resolve
-    /// enabled, call this method, and this method would independently veto it and return null,
-    /// disabling the facade right back.
+    /// Persists the enable flag. Disabling also deletes the device id file (see
+    /// <see cref="TelemetryDeviceId.Delete"/>): the spec's rationale for keeping the analytics id
+    /// separate from <c>machine.json</c> is that opt-out can delete it outright, not merely stop
+    /// minting new ones. Re-enabling later mints a fresh id on the next
+    /// <see cref="TelemetryDeviceId.GetOrCreate"/> call, which is more private than resurrecting the
+    /// discarded one.
     /// </summary>
-    public static string? GetOrCreateDeviceId() {
-        string? result = null;
-        Mutate(state => {
-            if (!string.IsNullOrWhiteSpace(state.Id)) {
-                result = state.Id;
-                return null;   // signal: no write needed
-            }
-            var id = Guid.NewGuid().ToString("N");
-            result = id;
-            return state with { Id = id };
-        });
-        return result;
+    public static void SetEnabled(bool enabled) {
+        Mutate(state => state with { Enabled = enabled });
+        if (!enabled) TelemetryDeviceId.Delete();
     }
-
-    /// <summary>
-    /// Persists the enable flag. Disabling also clears <see cref="TelemetryStateFile.Id"/>: the
-    /// spec's rationale for a device id file separate from <c>machine.json</c> is that opt-out
-    /// can delete the analytics id outright, not merely stop minting new ones. Re-enabling later
-    /// mints a fresh id (see <see cref="GetOrCreateDeviceId"/>), which is more private than
-    /// resurrecting the discarded one.
-    /// </summary>
-    public static void SetEnabled(bool enabled) =>
-        Mutate(state => state with { Enabled = enabled, Id = enabled ? state.Id : null });
 
     public static void MarkNoticeShown() =>
         Mutate(state => state with { NoticeShown = true });
@@ -114,11 +95,10 @@ public static class TelemetryState {
             if (newState.HasValue) {
                 WriteLocked(path, newState.Value);
             }
-            // Note: without cross-process locking in this fallback path, two concurrent processes
-            // can each mint different GUIDs, and last-writer-wins on disk. A process that loses the
-            // race will have returned its own id, now orphaned on disk. This is acceptable as a
-            // graceful degradation when the lock mechanism is unavailable, and is documented so
-            // future readers don't conclude the re-read was omitted by oversight.
+            // Note: without cross-process locking in this fallback path, two concurrent writers can
+            // race read-modify-write and last-writer-wins on disk, dropping whichever change lost.
+            // This is acceptable as a graceful degradation when the lock mechanism is unavailable,
+            // and is documented so future readers don't conclude the re-read was omitted by oversight.
         } catch (Exception) {
             // Best effort. Telemetry must never throw to the NativeAOT runtime.
         }
