@@ -470,6 +470,12 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// 2, round 3). Never touched by production code.</summary>
     internal Task RuntimeTerminalForTest => _runtimeTerminal.Task;
 
+    /// <summary>Test-only: the turn-worker task, so a test can assert DisposeAsync always SIGNALS the
+    /// worker to exit (channels completed / token cancelled) even when the early cancellation phase
+    /// faults — otherwise it parks forever while teardown disposes its resources (Bug 1). Never touched
+    /// by production code.</summary>
+    internal Task TurnWorkerTaskForTest => _turnWorkerTask;
+
     /// <summary>Test-only: installs a throwing owner CTS so <see cref="DisposeAsync"/>'s owner-cancel
     /// (the EARLY cancellation callback) faults. Never touched by production code.</summary>
     internal void SetOwnerCtsForTest(CancellationTokenSource cts) { lock (_reconnectLock) _ownerCts = cts; }
@@ -702,11 +708,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             return;
     }
 
-    async Task ReapUnexpectedInteractionAsync(string method) {
+    async Task ReapUnexpectedInteractionAsync(string reason) {
         try {
             await _installed.Process.TerminateAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
         } catch (Exception ex) {
-            _logger.LogDebug(ex, "ACP: failed to reap unattended reviewer after forbidden {Method} interaction.", method);
+            // Bug 4: callers now pass the full coded reap reason / monitor violation, not a bare
+            // JSON-RPC method — label it {Reason}, not {Method}.
+            _logger.LogDebug(ex, "ACP: failed to reap unattended reviewer after {Reason}.", reason);
         }
     }
 
@@ -1818,9 +1826,18 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // throwing owner callback can neither run under the lock nor strand waiters, and teardown still
         // runs against the successor-consistent `installed` captured above.
         try {
-            ownerCts?.Cancel();
+            // INDEPENDENTLY guarded (Bug 1): the owner cancel and _cts.CancelAsync() each run a
+            // cancellation callback that can throw (the whole reason finding 2 exists). Their faults
+            // must not skip the worker-unblock below — cancelling _cts AND completing _pendingTurns are
+            // exactly the two signals RunTurnWorkerAsync exits on (it parks on
+            // _pendingTurns.WaitToReadAsync(_cts.Token)); skipping them would leave the worker parked
+            // while the guaranteed teardown disposes its connection/process out from under it.
+            try { ownerCts?.Cancel(); }
+            catch (Exception ex) { _logger.LogDebug(ex, "ACP: owner cancel faulted during dispose for agent {AgentId}.", _agentId); }
 
-            await _cts.CancelAsync().ConfigureAwait(false);
+            try { await _cts.CancelAsync().ConfigureAwait(false); }
+            catch (Exception ex) { _logger.LogDebug(ex, "ACP: shutdown-token cancel faulted during dispose for agent {AgentId}.", _agentId); }
+
             _updates.Writer.TryComplete();
             _pendingTurns.Writer.TryComplete();
 

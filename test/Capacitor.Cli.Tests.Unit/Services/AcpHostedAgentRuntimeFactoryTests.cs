@@ -28,7 +28,12 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// replaces.
 /// </summary>
 public class AcpHostedAgentRuntimeFactoryTests {
-    static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(5);
+    // 20s (was 5s): several barrier tests poll a REAL handshake for its "initialize" send within this
+    // window; on the slower/differently-scheduled windows CI runner, under parallel load, that send
+    // was not recorded within 5s and three ACP reap tests failed on the same
+    // `ReceivedCalls.Any(c => c.Method == "initialize")` assertion (green on ubuntu). A longer bound
+    // only lengthens a genuinely-hung failure; a passing poll still exits the instant the call lands.
+    static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(20);
 
     sealed class FakeAcpProcess : IAcpProcess {
         readonly TaskCompletionSource _exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2952,8 +2957,11 @@ public class AcpHostedAgentRuntimeFactoryTests {
             // OpenCode is a GATED reviewer vendor (like Kiro/Gemini) — see OpenCodeEnabledConfig.
             descriptor: AcpVendorDescriptors.OpenCode,
             // Real wall-clock budget — ReviewerLaunchDeadline's CancelAfter has no TimeProvider seam.
-            // Short but not razor-thin, so CI contention can't starve the reap-trigger write before it fires.
-            config: OpenCodeEnabledConfig(launchTimeoutSeconds: 2),
+            // 12s (was 2s): must comfortably exceed the real handshake's spawn+initialize+reap-trigger
+            // latency on the slower windows CI runner under parallel load (a 2s deadline fired before
+            // "initialize" was even sent there), yet stay below HangGuard so startTask.WaitAsync(HangGuard)
+            // still observes the deadline-driven throw. The deadline catch is still the path under test.
+            config: OpenCodeEnabledConfig(launchTimeoutSeconds: 12),
             loggerFactory: NullLoggerFactory.Instance,
             connection: new CaptureServerConnection(),
             connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess()),
@@ -2969,7 +2977,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
             await Task.Delay(10);
         await Assert.That(fake.ReceivedCalls.Any(c => c.Method == "initialize")).IsTrue();
 
-        // Publish the verdict well before the 2s launch deadline fires below.
+        // Publish the verdict well before the launch deadline fires below.
         await WriteReapTriggerFrameAsync(fake);
 
         var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(

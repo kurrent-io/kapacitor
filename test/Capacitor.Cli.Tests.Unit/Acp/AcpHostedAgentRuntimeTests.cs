@@ -715,6 +715,32 @@ public class AcpHostedAgentRuntimeTests {
         await Assert.That(h.Runtime.RuntimeTerminalForTest.IsCompleted).IsTrue(); // terminal signal fired despite the fault
     }
 
+    /// <summary>Bug 1: DisposeAsync's contained early phase must still SIGNAL the turn worker to exit
+    /// (cancel _cts AND complete _pendingTurns — the two things RunTurnWorkerAsync exits on) even when
+    /// `ownerCts.Cancel()` throws. Otherwise the worker parks forever on _pendingTurns.WaitToReadAsync
+    /// while teardown disposes its connection/process out from under it. Establishes a parked worker,
+    /// faults the owner cancel, and asserts the worker completed (not parked).</summary>
+    [Test]
+    public async Task DisposeAsync_owner_cancel_fault_still_unblocks_the_turn_worker() {
+        await using var h = new Harness();
+        h.StartFakeAgentLoop();
+
+        // No initial prompt → the single turn worker parks on _pendingTurns, still running.
+        await h.Runtime.StartAsync("/abs/worktree", initialPrompt: null, h.Cts.Token).WaitAsync(HangGuard);
+        await Assert.That(h.Runtime.TurnWorkerTaskForTest.IsCompleted).IsFalse(); // precondition: parked
+
+        var ownerCts = new CancellationTokenSource();
+        ownerCts.Token.Register(() => throw new InvalidOperationException("owner-cancel-fault"));
+        h.Runtime.SetOwnerCtsForTest(ownerCts);
+
+        try { await h.Runtime.DisposeAsync(); } catch { /* the fault is contained either way */ }
+
+        // Pre-fix: the owner-cancel throw skips _cts.CancelAsync() + both channel completions, so the
+        // worker stays parked (IsCompleted == false). Post-fix each cancel is independently guarded, so
+        // the worker is signaled and DisposeAsync's bounded wait sees it exit.
+        await Assert.That(h.Runtime.TurnWorkerTaskForTest.IsCompleted).IsTrue();
+    }
+
     /// <summary>Reviewer launches always carry a prompt, but the window still needs a defined close
     /// for a launch that doesn't — otherwise no turn ever runs, ProcessAdmittedTurnAsync's finally
     /// never fires, and the marker (so the window) would stay open forever.</summary>

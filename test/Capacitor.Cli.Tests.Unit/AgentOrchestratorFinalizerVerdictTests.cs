@@ -557,9 +557,10 @@ public partial class AgentOrchestratorVendorTests {
         //     WaitForExitEntered signal fires, and the bound is never approached.
         //   • Post-fix (ReadVerdict): it blocks on _reapLock and never reaches WaitForExitAsync, so
         //     this falls to the bound. The bound is immaterial to post-fix correctness — the lock
-        //     guarantees the finalizer reads the published verdict once released — so a generous value
-        //     only costs this one test its tail; what it buys is a RELIABLE pre-fix null-read.
-        await Task.WhenAny(process.WaitForExitEntered.Task, Task.Delay(TimeSpan.FromSeconds(3)));
+        //     guarantees the finalizer reads the published verdict once released — so it is kept SHORT
+        //     (the dedicated finalizer thread blocks for it, and an oversubscribed windows runner must
+        //     not have it starve sibling barrier tests); the pre-fix null-read fires far inside 1s.
+        await Task.WhenAny(process.WaitForExitEntered.Task, Task.Delay(TimeSpan.FromSeconds(1)));
 
         // Close the claim section: verdict published, _reapLock released.
         releaseStarter.TrySetResult();
