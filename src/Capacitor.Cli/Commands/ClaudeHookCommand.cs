@@ -612,9 +612,8 @@ public static class ClaudeHookCommand {
                 resp?.Dispose();
                 if (!permanent && sessionId is not null) spool.Append(sessionId, "session-start", body);
 
-                // Without this the session's start event is dropped in silence — the user learns
-                // nothing, and recording stays off for the rest of the session. The envelope below
-                // is only built from a 2xx body, so this is the only stdout write on this arm.
+                // The envelope below is built only from a 2xx body, so this is the arm's only
+                // stdout write — without it the start event is dropped in silence.
                 if (code == 401) {
                     writer.WriteLine(new JsonObject { ["systemMessage"] = AuthLapseNotice.Rejected }.ToJsonString());
                 }
@@ -796,10 +795,9 @@ public static class ClaudeHookCommand {
             var code = (int)response.StatusCode;
             response.Dispose();
 
-            // A rejected credential is not a transient fault: exit 0 so Claude renders a clean
-            // notice instead of its opaque hook-error banner, and nudge from `stop` only — the
-            // one once-per-turn event on this path. `notification` fires per permission prompt,
-            // so nudging there would stack duplicates within a single turn.
+            // Exit 0 is deliberate: any non-zero exit renders as Claude's opaque hook-error banner
+            // instead of the notice. `stop` only — `notification` fires per permission prompt and
+            // would stack duplicates within one turn.
             if (code == 401) {
                 if (command == "stop") {
                     writer.WriteLine(new JsonObject { ["systemMessage"] = AuthLapseNotice.Rejected }.ToJsonString());

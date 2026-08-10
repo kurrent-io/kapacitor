@@ -901,6 +901,16 @@ public static class CursorHookCommand {
             using var content = new StringContent(bodyJson, Encoding.UTF8, "application/json");
             using var resp = await client.PostOnceAsync(
                 $"{baseUrl}/hooks/{routeSegment}", content, HookPostTimeout, ct);
+
+            // Cursor posts directly instead of through AgentHookPoster, so the rejected-credential
+            // nudge has to be repeated here — otherwise Cursor is the one vendor left with no
+            // explanation and no `kcap login` hint. Live path only: the spool drain replays many
+            // entries per pass and would repeat this line for each one.
+            if ((int)resp.StatusCode == 401) {
+                await Console.Error.WriteLineAsync(
+                    AuthLapseNotice.VendorStderrLine("cursor-hook", routeSegment, 401));
+            }
+
             return resp.IsSuccessStatusCode;
         } catch { return false; }
     }

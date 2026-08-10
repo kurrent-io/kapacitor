@@ -82,6 +82,46 @@ public class CursorHookCommandTests {
         await Assert.That(fx.SpoolFiles).IsEmpty();
     }
 
+    /// <summary>
+    /// Cursor POSTs directly rather than through <c>AgentHookPoster</c>, so it needs its own
+    /// rejected-credential nudge — without it Cursor is the one vendor whose users get no
+    /// explanation and no <c>kcap login</c> hint. Redirects the process-global Console.Error, so
+    /// it runs alone.
+    /// </summary>
+    [Test, NotInParallel]
+    public async Task server_rejected_credential_names_kcap_login_on_stderr() {
+        using var fx = new Fixture(postStatus: HttpStatusCode.Unauthorized);
+        var originalError = Console.Error;
+        var captured = new StringWriter { NewLine = "\n" };
+
+        try {
+            Console.SetError(captured);
+            await fx.HandleAsync($$"""{"hook_event_name":"sessionEnd","session_id":"{{Sid}}"}""");
+        } finally {
+            Console.SetError(originalError);
+        }
+
+        await Assert.That(captured.ToString()).Contains("kcap login");
+    }
+
+    /// <summary>Non-vacuous control: a non-401 failure keeps the bare status line, so the test
+    /// above is proving 401 recognition rather than that any failure mentions the command.</summary>
+    [Test, NotInParallel]
+    public async Task server_error_does_not_name_kcap_login_on_stderr() {
+        using var fx = new Fixture(postStatus: HttpStatusCode.InternalServerError);
+        var originalError = Console.Error;
+        var captured = new StringWriter { NewLine = "\n" };
+
+        try {
+            Console.SetError(captured);
+            await fx.HandleAsync($$"""{"hook_event_name":"sessionEnd","session_id":"{{Sid}}"}""");
+        } finally {
+            Console.SetError(originalError);
+        }
+
+        await Assert.That(captured.ToString()).DoesNotContain("kcap login");
+    }
+
     [Test]
     public async Task canonical_events_spool_on_POST_failure() {
         using var fx = new Fixture(postStatus: HttpStatusCode.InternalServerError);

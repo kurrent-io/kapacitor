@@ -89,7 +89,7 @@ vendor-neutral text in Core, the vendor's JSON envelope at the call site.
 
 ### Other vendors
 
-Codex, Cursor, Gemini, Copilot, Pi, Kiro and OpenCode all funnel their recording POST through
+Codex, Gemini, Copilot, Pi, Kiro, OpenCode and Antigravity funnel their recording POST through
 `AgentHookPoster` (`:105` and `:313`). None can carry a `systemMessage` — their stdout is a strict
 handshake contract that the vendor parses — so only the stderr text changes:
 
@@ -98,7 +98,15 @@ handshake contract that the vendor parses — so only the stderr text changes:
 ```
 
 Outcome classification (`HookPostOutcome.Failed`) and exit codes are untouched. One edit covers every
-vendor because they share the poster.
+vendor that shares the poster.
+
+> **Correction (2026-08-10, after PR review).** This section originally listed Cursor among the
+> vendors sharing the poster. It does not: `CursorHookCommand` POSTs directly
+> (`TryPostHookAsync`, and its own spool-drain lambda), using `AgentHookPoster` only for the
+> `IsAuthLapsed` predicate. A 401 there returned `false`/`DrainOutcome.Drop` in silence, so Cursor
+> would have been the one vendor left with no explanation — the exact bug this change exists to fix.
+> `TryPostHookAsync` (the live path) now emits the same stderr line. The drain lambda deliberately
+> stays silent: it replays many entries per pass and would repeat the line for each.
 
 ### 401 only
 
