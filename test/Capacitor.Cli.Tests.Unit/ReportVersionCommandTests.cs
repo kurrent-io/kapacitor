@@ -11,12 +11,14 @@ namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
 /// The hidden <c>kcap report-version</c> command, invoked by the npm wrapper right after
-/// `kcap update` installs a new binary. Its whole purpose is to make ONE authenticated request
-/// through <see cref="HttpClientExtensions.CreateClientWithAuthStatusAsync"/> — the single choke
-/// point that attaches <see cref="HttpClientExtensions.CliVersionHeader"/> — so the server's
-/// version observer sees the new version immediately instead of waiting for the next incidental
-/// request. It must never surface an error: not-authenticated makes no request at all, and a
-/// server fault or a slow server still returns 0 within its own request budget.
+/// `kcap update` installs a new binary. Its whole purpose is to make ONE authenticated,
+/// side-effect-free GET through <see cref="HttpClientExtensions.CreateClientWithAuthStatusAsync"/>
+/// — the single choke point that attaches <see cref="HttpClientExtensions.CliVersionHeader"/> — so
+/// the server's version observer sees the new version immediately instead of waiting for the next
+/// incidental request. It reuses <see cref="WhoamiCommand.ProbePath"/> (the same read-only
+/// identity GET <c>kcap whoami</c> uses) rather than any write-side-effecting endpoint. It must
+/// never surface an error: not-authenticated makes no request at all, and a server fault, a slow
+/// server, or no server configured at all still returns 0.
 ///
 /// <para><c>[NotInParallel(nameof(TokenStoreProfileTests))]</c>: shares
 /// <c>ObservationHeaderTests</c>'s serialization key — these tests touch the process-wide
@@ -25,7 +27,7 @@ namespace Capacitor.Cli.Tests.Unit;
 /// </summary>
 [NotInParallel(nameof(TokenStoreProfileTests))]
 public class ReportVersionCommandTests : IDisposable {
-    const string ReportPath = "/api/users/me/cli-setup";
+    const string ProbePath = WhoamiCommand.ProbePath;
 
     readonly WireMockServer _server = WireMockServer.Start();
 
@@ -61,12 +63,12 @@ public class ReportVersionCommandTests : IDisposable {
         });
     }
 
-    // ── Authenticated: exactly one request, carrying the version header ───────────────────────
+    // ── Authenticated: exactly one GET, carrying the version header, no write side effect ──────
 
     [Test]
-    public async Task Authenticated_MakesOneRequestCarryingTheVersionHeader() {
+    public async Task Authenticated_MakesOneGetCarryingTheVersionHeader() {
         StubDiscovery("github_app");
-        _server.Given(Request.Create().WithPath(ReportPath).UsingPost())
+        _server.Given(Request.Create().WithPath(ProbePath).UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200));
 
         await SeedValidTokenAsync("report-version-ok");
@@ -75,7 +77,30 @@ public class ReportVersionCommandTests : IDisposable {
 
         await Assert.That(result).IsEqualTo(0);
 
-        var requests = _server.LogEntries.Where(e => e.RequestMessage.Path == ReportPath).ToList();
+        var requests = _server.LogEntries.Where(e => e.RequestMessage.Path == ProbePath).ToList();
+        await Assert.That(requests.Count).IsEqualTo(1);
+        await Assert.That(requests[0].RequestMessage.Method).IsEqualTo("GET");
+        await Assert.That(requests[0].RequestMessage.Headers![HttpClientExtensions.CliVersionHeader].Single())
+            .IsEqualTo(CapacitorVersion.CurrentDisplay());
+    }
+
+    /// <summary>
+    /// An <c>Auth:Provider=None</c> tenant: no bearer token exists (there is nothing to log
+    /// into), but the request still authenticates via the server's synthetic principal, so the
+    /// middleware still observes it — <see cref="AuthStatus.NoAuthRequired"/> must proceed exactly
+    /// like <see cref="AuthStatus.Ok"/>, not be treated as "not authenticated".
+    /// </summary>
+    [Test]
+    public async Task NoAuthTenant_MakesOneGetCarryingTheVersionHeader() {
+        StubDiscovery("None");
+        _server.Given(Request.Create().WithPath(ProbePath).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        var result = await ReportVersionCommand.HandleAsync(_server.Urls[0]);
+
+        await Assert.That(result).IsEqualTo(0);
+
+        var requests = _server.LogEntries.Where(e => e.RequestMessage.Path == ProbePath).ToList();
         await Assert.That(requests.Count).IsEqualTo(1);
         await Assert.That(requests[0].RequestMessage.Headers![HttpClientExtensions.CliVersionHeader].Single())
             .IsEqualTo(CapacitorVersion.CurrentDisplay());
@@ -86,20 +111,20 @@ public class ReportVersionCommandTests : IDisposable {
     [Test]
     public async Task NotAuthenticated_MakesNoRequest_AndReturnsZero() {
         StubDiscovery("github_app");
-        _server.Given(Request.Create().WithPath(ReportPath).UsingPost())
+        _server.Given(Request.Create().WithPath(ProbePath).UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200));
 
         // No token stored, no resolved profile — AuthStatus resolves to NotAuthenticated.
         var result = await ReportVersionCommand.HandleAsync(_server.Urls[0]);
 
         await Assert.That(result).IsEqualTo(0);
-        await Assert.That(_server.LogEntries.Any(e => e.RequestMessage.Path == ReportPath)).IsFalse();
+        await Assert.That(_server.LogEntries.Any(e => e.RequestMessage.Path == ProbePath)).IsFalse();
     }
 
     [Test]
     public async Task ExpiredToken_MakesNoRequest_AndReturnsZero() {
         StubDiscovery("github_app");
-        _server.Given(Request.Create().WithPath(ReportPath).UsingPost())
+        _server.Given(Request.Create().WithPath(ProbePath).UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200));
 
         const string profileName = "report-version-expired";
@@ -115,7 +140,7 @@ public class ReportVersionCommandTests : IDisposable {
         var result = await ReportVersionCommand.HandleAsync(_server.Urls[0]);
 
         await Assert.That(result).IsEqualTo(0);
-        await Assert.That(_server.LogEntries.Any(e => e.RequestMessage.Path == ReportPath)).IsFalse();
+        await Assert.That(_server.LogEntries.Any(e => e.RequestMessage.Path == ProbePath)).IsFalse();
     }
 
     // ── Server-side failures: fail-open, never throws ──────────────────────────────────────────
@@ -123,7 +148,7 @@ public class ReportVersionCommandTests : IDisposable {
     [Test]
     public async Task ServerErrorResponse_StillReturnsZero() {
         StubDiscovery("github_app");
-        _server.Given(Request.Create().WithPath(ReportPath).UsingPost())
+        _server.Given(Request.Create().WithPath(ProbePath).UsingGet())
             .RespondWith(Response.Create().WithStatusCode(500));
 
         await SeedValidTokenAsync("report-version-500");
@@ -136,7 +161,7 @@ public class ReportVersionCommandTests : IDisposable {
     [Test]
     public async Task SlowServer_StillReturnsZero_WithinItsOwnBudget() {
         StubDiscovery("github_app");
-        _server.Given(Request.Create().WithPath(ReportPath).UsingPost())
+        _server.Given(Request.Create().WithPath(ProbePath).UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithDelay(TimeSpan.FromSeconds(10)));
 
         await SeedValidTokenAsync("report-version-slow");
@@ -155,6 +180,22 @@ public class ReportVersionCommandTests : IDisposable {
         // catch falls back to local tokens, finds none, resolves NotAuthenticated; even if it
         // somehow resolved Ok, the command's own try/catch must still swallow the failure.
         var result = await ReportVersionCommand.HandleAsync("http://127.0.0.1:1");
+
+        await Assert.That(result).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// Mirrors <c>Program.cs</c>'s dispatch: <c>report-version</c> is in <c>offlineCommands</c>,
+    /// so a host with no server configured at all reaches this command with a null
+    /// <c>baseUrl</c> — it must still hit this command's own fail-open logic and return 0 silently
+    /// rather than the generic "No server configured" exit 1 the pre-dispatch gate would
+    /// otherwise produce for any command not on that list.
+    /// </summary>
+    [Test]
+    public async Task NoServerConfigured_MakesNoRequest_AndReturnsZero() {
+        // No AppConfig.SetResolvedState, no KCAP_URL: CreateClientWithAuthStatusAsync falls back
+        // to its hardcoded "http://localhost:5108" default, which nothing is listening on here.
+        var result = await ReportVersionCommand.HandleAsync(null);
 
         await Assert.That(result).IsEqualTo(0);
     }
