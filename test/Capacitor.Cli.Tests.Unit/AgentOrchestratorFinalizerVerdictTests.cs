@@ -507,7 +507,7 @@ public partial class AgentOrchestratorVendorTests {
     /// ReadVerdict() until the publish and reports. No deadlock: the starter returns the reap task
     /// WITHOUT awaiting termination, so the claimant releases _reapLock promptly (here the starter is
     /// a no-op returning a completed task) and never waits on the finalizer.</summary>
-    [Test, NotInParallel] // holds a pool thread blocked on _reapLock up to the bound; must not starve timing-sensitive peers
+    [Test, NotInParallel] // blocks two DEDICATED threads (reaper + finalizer) briefly, released deterministically; keep off timing-sensitive peers
     public async Task Finalizer_verdict_read_synchronizes_with_the_claim() {
         var server = new CaptureServerConnection();
         await using var orch = BuildOrchestrator(
@@ -543,32 +543,40 @@ public partial class AgentOrchestratorVendorTests {
 
         await reaperInStarter.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
+        // Deterministic signal that the finalizer reached the SYNCHRONISED read (fires at the top of
+        // ReadVerdict, before it blocks on _reapLock). The regressed plain-Verdict read never calls it.
+        var readVerdictEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        runtime.BeforeReadVerdictLockForTest = () => readVerdictEntered.TrySetResult();
+
         // Drive the finalizer concurrently — the production shape where the starter's own
         // _cts.Cancel() terminalises the child and drives FinalizeAgentRunAsync on another thread. On a
-        // DEDICATED thread (not the pool): post-fix it blocks synchronously on ReadVerdict/_reapLock
-        // until release, and a blocked pool thread would starve timing-sensitive sibling tests.
+        // DEDICATED thread (not the pool) so a synchronous blocked read never occupies a pool thread.
         var finalizeTask = Task.Factory.StartNew(
             () => orch.FinalizeAgentRunForTest(agent),
             CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
 
-        // Hold the claim section open until the finalizer has provably reached its verdict read while
-        // the lock is held and the verdict is null:
-        //   • Pre-fix (plain read): it reads null, skips the arm and reaches WaitForExitAsync — the
-        //     WaitForExitEntered signal fires, and the bound is never approached.
-        //   • Post-fix (ReadVerdict): it blocks on _reapLock and never reaches WaitForExitAsync, so
-        //     this falls to the bound. The bound is immaterial to post-fix correctness — the lock
-        //     guarantees the finalizer reads the published verdict once released — so it is kept SHORT
-        //     (the dedicated finalizer thread blocks for it, and an oversubscribed windows runner must
-        //     not have it starve sibling barrier tests); the pre-fix null-read fires far inside 1s.
-        await Task.WhenAny(process.WaitForExitEntered.Task, Task.Delay(TimeSpan.FromSeconds(1)));
-
-        // Close the claim section: verdict published, _reapLock released.
-        releaseStarter.TrySetResult();
-        await Assert.That(await reaperResult.Task.WaitAsync(TimeSpan.FromSeconds(30))).IsTrue();
+        // DETERMINISTIC barrier — no wall-clock hold (Bug B). The reaper is NOT released until after the
+        // assertion below, so the verdict stays NULL throughout, and exactly one of these fires:
+        //   • readVerdictEntered — the finalizer reached the SYNCHRONISED ReadVerdict and is blocking on
+        //     _reapLock (the fixed path); OR
+        //   • WaitForExitEntered — the finalizer took the UNSYNCHRONISED plain-Verdict read, saw null,
+        //     skipped the arm and reached WaitForExitAsync (the regressed path).
+        // A slow/oversubscribed runner can only DELAY whichever fires, never swap it — so this can FAIL
+        // or hang, never false-pass. The 30s is a pure hang guard (yields a fail, never a pass).
+        var reached = await Task.WhenAny(readVerdictEntered.Task, process.WaitForExitEntered.Task)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+        var blockedInReadVerdict = reached == readVerdictEntered.Task;
 
         try {
-            // Post-fix: the finalizer's ReadVerdict() unblocks and reports. Pre-fix: it already read
-            // null and skipped the arm, so no report ever lands and this times out at 0.
+            // The finalizer must be BLOCKED in the synchronised ReadVerdict (proven), not merely slow,
+            // and must NOT have taken the regressed plain-read path (which reaches WaitForExitAsync).
+            await Assert.That(blockedInReadVerdict).IsTrue();
+
+            // Close the claim section: verdict published, _reapLock released → the blocked ReadVerdict
+            // returns the published verdict and the finalizer reports.
+            releaseStarter.TrySetResult();
+            await Assert.That(await reaperResult.Task.WaitAsync(TimeSpan.FromSeconds(30))).IsTrue();
+
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
             while (server.LaunchFailedCalls.Count == 0 && DateTime.UtcNow < deadline)
                 await Task.Delay(10);
@@ -576,8 +584,9 @@ public partial class AgentOrchestratorVendorTests {
             await Assert.That(server.LaunchFailedCalls.Count(c => c.AgentId == "barrier-verdict-1")).IsEqualTo(1);
             await Assert.That(server.LaunchFailedCalls[0].Reason).Contains("kiro_reviewer_mcp_surface_unexpected");
         } finally {
+            releaseStarter.TrySetResult(); // release the reaper even if the assertion above failed
             process.SignalExited(0);
-            try { await finalizeTask.WaitAsync(TimeSpan.FromSeconds(30)); } catch { /* pre-fix leaves it parked past the failed assertion */ }
+            try { await finalizeTask.WaitAsync(TimeSpan.FromSeconds(30)); } catch { /* regressed impl leaves it parked past the failed assertion */ }
         }
 
         await Assert.That(agent.Status).IsEqualTo("Failed");

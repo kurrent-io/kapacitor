@@ -330,7 +330,17 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// promptly and never itself waits on any finalizer — the lock is only ever held for that bounded
     /// synchronous burst.</para>
     /// </summary>
-    internal TerminationVerdict? ReadVerdict() { lock (_reapLock) return Verdict; }
+    /// <summary>Test-only: fires at the TOP of <see cref="ReadVerdict"/>, before the lock — lets the
+    /// finding-1 barrier detect, deterministically, that the finalizer took the SYNCHRONISED read path
+    /// and is about to block on <see cref="_reapLock"/> (vs. the regressed plain-<see cref="Verdict"/>
+    /// read, which never calls this). That removes any wall-clock hold from the barrier. Null in
+    /// production (a single null check per read).</summary>
+    internal Action? BeforeReadVerdictLockForTest;
+
+    internal TerminationVerdict? ReadVerdict() {
+        BeforeReadVerdictLockForTest?.Invoke();
+        lock (_reapLock) return Verdict;
+    }
 
     /// <summary>Test-only: invoked inside <see cref="TryInitiateNonFailureStatusSend"/> BETWEEN the
     /// verdict check and the send initiation, while <see cref="_reapLock"/> is held — so a test can
@@ -713,8 +723,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             await _installed.Process.TerminateAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
         } catch (Exception ex) {
             // Bug 4: callers now pass the full coded reap reason / monitor violation, not a bare
-            // JSON-RPC method — label it {Reason}, not {Method}.
-            _logger.LogDebug(ex, "ACP: failed to reap unattended reviewer after {Reason}.", reason);
+            // JSON-RPC method — label it {Reason}. Bug A: SANITIZED (single-line, length-bounded,
+            // surrogate-safe) because a coded reason embeds variable, agent-influenced content (MCP
+            // server names, a monitor's 'why' string) that can carry line breaks or run long and
+            // bloat this log line — the same normalization the forwarded verdict already uses.
+            _logger.LogDebug(ex, "ACP: failed to reap unattended reviewer after {Reason}.", SanitizeForForward(reason));
         }
     }
 
