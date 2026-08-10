@@ -19,8 +19,10 @@ static class SessionImporter {
     /// "claude" (default) or "codex". Stamped on every <see cref="TranscriptBatch"/>
     /// so the server's <c>INormalizerSelector</c> picks the matching normalizer.
     /// Codex rollouts have no <c>subagents/</c> sibling directory and no
-    /// agent-progress markers, so the agent walk is short-circuited when
-    /// <paramref name="vendor"/> is <c>"codex"</c>.
+    /// agent-progress markers, so the Claude agent walk is short-circuited when
+    /// <paramref name="vendor"/> is <c>"codex"</c>; Codex collab subagents (0.146+)
+    /// are instead discovered from the shared sessions tree by parent_thread_id and
+    /// appended after the parent transcript (see the isCodex descendant walk below).
     /// </param>
     internal static async Task<ImportResult> ImportSessionAsync(
             HttpClient                 httpClient,
@@ -38,8 +40,9 @@ static class SessionImporter {
         var cwd = metadata.Cwd ?? (encodedCwd is not null ? DecodeCwdFromDirName(encodedCwd) : null) ?? "";
 
         // Codex rollouts don't ship a subagents/ sibling directory and don't carry
-        // agent-progress markers in-band, so the entire agent walk is skipped — we
-        // stream the rollout straight through the batch loop with vendor="codex".
+        // agent-progress markers in-band, so the Claude-shaped agent walk is skipped — we
+        // stream the rollout straight through the batch loop with vendor="codex", and pick
+        // up collab subagent rollouts (parent_thread_id-linked) after the main transcript.
         var isCodex = vendor == "codex";
 
         var agentTranscripts = isCodex
@@ -139,6 +142,22 @@ static class SessionImporter {
                 await SendAgentLifecycle(httpClient, baseUrl, sessionId, agentId, agentType, agentPath, cwd, transcriptPath, progress);
                 sentAgents.Add(agentId);
                 agentIds.Add(agentId);
+            }
+        }
+
+        // Codex collab subagents (0.146+, multi-agent v2) fork into their own rollouts in the
+        // shared sessions tree, linked back via session_meta parent_thread_id — there is no
+        // subagents/ sibling dir to walk. Import every TRANSITIVE descendant as a DIRECT
+        // subagent of this root (the server's AgentSubsession model is flat, mirroring the
+        // Gemini import), AFTER the parent transcript so the interleave-position machinery —
+        // which Codex rollouts have no markers for — is simply not needed.
+        if (isCodex) {
+            foreach (var sub in CodexSubagentDiscovery.EnumerateDescendantRollouts(transcriptPath, sessionId)) {
+                var subType = CodexSubagentDiscovery.AgentTypeFrom(sub.AgentPath, sub.AgentNickname);
+                await SendAgentLifecycle(
+                    httpClient, baseUrl, sessionId, sub.ChildDashlessId, subType, sub.FilePath, cwd,
+                    transcriptPath, progress, vendor: "codex");
+                agentIds.Add(sub.ChildDashlessId);
             }
         }
 
@@ -405,7 +424,8 @@ static class SessionImporter {
             string                     agentPath,
             string                     cwd,
             string                     sessionTranscriptPath,
-            IProgress<ImportProgress>? progress
+            IProgress<ImportProgress>? progress,
+            string                     vendor = "claude"
         ) {
         var resolvedAgentType = agentType ?? "task";
 
@@ -427,7 +447,7 @@ static class SessionImporter {
         }
 
         progress?.Report(new SubagentStarted(agentId));
-        var agentLines = await SendTranscriptBatches(httpClient, baseUrl, sessionId, agentPath, agentId, startLine: 0, progress: progress);
+        var agentLines = await SendTranscriptBatches(httpClient, baseUrl, sessionId, agentPath, agentId, startLine: 0, progress: progress, vendor: vendor);
         progress?.Report(new SubagentFinished(agentId, agentLines));
 
         // Stop agent

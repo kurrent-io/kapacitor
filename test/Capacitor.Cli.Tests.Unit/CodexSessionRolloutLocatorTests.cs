@@ -240,4 +240,34 @@ public class CodexSessionRolloutLocatorTests {
             Directory.Delete(root, recursive: true);
         }
     }
+
+    // ── collab subagent rollouts must never be claimed (AI-1839) ──────────
+
+    [Test]
+    public async Task SubagentRollout_WithMatchingCwd_ReturnsNo() {
+        // A collab subagent (Codex 0.146+) inherits the parent's cwd and is created moments
+        // after it — without the thread_source guard the reviewer could be correlated to its
+        // own child instead of its top-level rollout.
+        var subagentMeta =
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"019f0021-9999-7461-a781-e2646e16e271\","
+          + "\"session_id\":\"019f0021-29e3-7461-a781-e2646e16e271\","
+          + "\"parent_thread_id\":\"019f0021-29e3-7461-a781-e2646e16e271\","
+          + "\"thread_source\":\"subagent\",\"agent_path\":\"/root/spec_quality\","
+          + "\"cwd\":" + JsonSerializer.Serialize(Cwd) + "}}";
+
+        await Assert.That(CodexSessionRolloutLocator.MatchRollout([subagentMeta], Cwd, StringComparison.Ordinal))
+            .IsEqualTo(CodexSessionRolloutLocator.CwdMatch.No);
+    }
+
+    [Test]
+    public async Task ParentThreadIdAlone_ReturnsNo() {
+        // Belt-and-braces: parent_thread_id without thread_source is still a child rollout.
+        var subagentMeta =
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"019f0021-9999-7461-a781-e2646e16e271\","
+          + "\"parent_thread_id\":\"019f0021-29e3-7461-a781-e2646e16e271\","
+          + "\"cwd\":" + JsonSerializer.Serialize(Cwd) + "}}";
+
+        await Assert.That(CodexSessionRolloutLocator.MatchRollout([subagentMeta], Cwd, StringComparison.Ordinal))
+            .IsEqualTo(CodexSessionRolloutLocator.CwdMatch.No);
+    }
 }
