@@ -784,7 +784,22 @@ public static class ClaudeHookCommand {
         }
 
         if (!response.IsSuccessStatusCode) {
-            Console.Error.WriteLine($"HTTP {(int)response.StatusCode}");
+            var code = (int)response.StatusCode;
+            response.Dispose();
+
+            // A rejected credential is not a transient fault: exit 0 so Claude renders a clean
+            // notice instead of its opaque hook-error banner, and nudge from `stop` only — the
+            // one once-per-turn event on this path. `notification` fires per permission prompt,
+            // so nudging there would stack duplicates within a single turn.
+            if (code == 401) {
+                if (command == "stop") {
+                    writer.WriteLine(new JsonObject { ["systemMessage"] = AuthLapseNotice.Rejected }.ToJsonString());
+                }
+
+                return 0;
+            }
+
+            Console.Error.WriteLine($"HTTP {code}");
 
             return 1;
         }

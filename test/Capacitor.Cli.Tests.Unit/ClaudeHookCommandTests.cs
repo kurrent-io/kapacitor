@@ -643,6 +643,62 @@ public class ClaudeHookCommandTests {
         await Assert.That(all).Contains("\"route\":\"subagent-stop\"");
     }
 
+    // ── Server-rejected credential (HTTP 401) ───────────────────────────────────────────────
+    // A 401 is not a transient failure the user can wait out. Exiting non-zero makes Claude
+    // render its opaque "non-blocking status code" banner, which says nothing about recording
+    // being paused; exit 0 plus a systemMessage says exactly what to do. Only `stop` nudges on
+    // this path — `notification` fires on every permission prompt, so nudging there would stack
+    // duplicate notices within one turn.
+
+    [Test]
+    public async Task stop_on_401_exits_zero_and_nudges_the_user_to_log_in() {
+        using var fx = new Fixture(HttpStatusCode.Unauthorized);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await ClaudeHookCommand.HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+            "http://localhost", new StringReader(
+                $$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+
+        var notice = JsonNode.Parse(stdout.ToString().Trim());
+        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthLapseNotice.Rejected);
+    }
+
+    [Test]
+    public async Task notification_on_401_exits_zero_without_a_notice() {
+        using var fx = new Fixture(HttpStatusCode.Unauthorized);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await ClaudeHookCommand.HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+            "http://localhost", new StringReader(
+                $$"""{"hook_event_name":"Notification","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(stdout.ToString()).IsEmpty();
+    }
+
+    /// <summary>Regression guard on the arm this change must NOT touch: a real server fault keeps
+    /// its bare-status stderr line and its non-zero exit, so a 500 still reads as a failure.</summary>
+    [Test]
+    public async Task stop_on_500_still_exits_non_zero_without_a_notice() {
+        using var fx = new Fixture(HttpStatusCode.InternalServerError);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await ClaudeHookCommand.HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+            "http://localhost", new StringReader(
+                $$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(stdout.ToString()).IsEmpty();
+    }
+
     sealed class Fixture : IDisposable {
         readonly string _tmpHome = Path.Combine(Path.GetTempPath(), $"kcap-claude-hook-{Guid.NewGuid():N}");
         readonly string _spoolPath;
