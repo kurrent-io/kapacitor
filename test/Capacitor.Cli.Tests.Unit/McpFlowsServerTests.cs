@@ -811,23 +811,14 @@ public class McpFlowsServerTests {
 
     static void CleanupDefaultToken() {
         // Loud, not best-effort: a silently-leaked "default" token makes any later test that
-        // resolves the default profile authenticate for real (ReportVersionCommandTests'
-        // NotAuthenticated_* proved a probe was NOT made — a leftover token here fires it).
-        // Retry the transient Windows sharing violation on a just-written file, then throw
-        // naming the leak instead of leaving a poisoned token store behind.
-        for (var attempt = 1; ; attempt++) {
-            try {
-                TokenStore.Delete("default");
-                break;
-            } catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-                if (attempt >= 5)
-                    throw new InvalidOperationException(
-                        "Could not delete the seeded 'default' profile token; leaving it behind poisons later auth-sensitive tests.", e);
-                Thread.Sleep(40);
-            }
+        // resolves the default profile authenticate for real. ClearWithRetry throws a named
+        // cause after its bounded retry; the config cleanup still runs either way.
+        try {
+            SharedConfigDirCleanup.ClearWithRetry("the seeded default-profile token", () => TokenStore.Delete("default"));
+        } finally {
+            var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
+            try { if (File.Exists(cfg)) File.Delete(cfg); } catch { /* best effort */ }
         }
-        var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
-        try { if (File.Exists(cfg)) File.Delete(cfg); } catch { /* best effort */ }
     }
 
     [Test]
