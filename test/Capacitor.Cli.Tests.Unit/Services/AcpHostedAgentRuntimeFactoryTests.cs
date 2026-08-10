@@ -2643,11 +2643,17 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// matrix cell exists to prove that, not to find a NEW divergent behavior.</summary>
     [Test]
     public async Task ReapDuringInitialize_WithDisposalHook_FactoryReclassifiesToVerdict_NoAuthHint() {
-        // inlineAgentReads: the connection writes `initialize` synchronously in StartAsync, so inline
-        // reads make the fake RECORD it synchronously — the reap below can never preempt it, on any
-        // runner (the windows ordering race). We then gate the reap on the deterministic
-        // InitializeReceived signal rather than a wall-clock poll.
-        var fake = new FakeAcpAgent(inlineAgentReads: true);
+        // POSIX-only. This launches the OpenCode unattended reviewer, which OpenCodeReviewerCapability
+        // refuses on Windows (UnsupportedPlatform — its containment is an owner-only empty config dir,
+        // impossible without 0700). RequireReviewerCapability therefore throws BEFORE _connectionSource
+        // runs, so no connection is created, `initialize` is never sent, and there is no handshake to
+        // reap — the InitializeReceived await below would simply time out. The reclassification
+        // behaviour under test is platform-independent managed logic, fully exercised on the POSIX
+        // (ubuntu/macOS) legs; the skip aligns the test's platform with the production path it drives.
+        Skip.When(OperatingSystem.IsWindows(),
+            "OpenCode unattended reviewer is POSIX-only; the review launch is refused pre-handshake on Windows. Behaviour is covered on the POSIX legs.");
+
+        var fake = new FakeAcpAgent();
         fake.HoldInitializeResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var factory = new AcpHostedAgentRuntimeFactory(
@@ -2866,9 +2872,13 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// regress the shape that ALREADY awaited the reap pre-fix.</summary>
     [Test]
     public async Task ReapLandsDuringDisposalAwait_WithDisposalHook_BlocksFactoryUntilReapCompletes() {
-        // inlineAgentReads: record `initialize` synchronously with the connection's write so the reap
-        // can never preempt it (windows ordering race); the reap is gated on InitializeReceived below.
-        var fake    = new FakeAcpAgent(inlineAgentReads: true);
+        // POSIX-only — see ReapDuringInitialize_WithDisposalHook_ for the full reason: this launches the
+        // OpenCode unattended reviewer, which is refused on Windows before a connection exists, so there
+        // is no handshake to reap. Behaviour is covered on the POSIX legs.
+        Skip.When(OperatingSystem.IsWindows(),
+            "OpenCode unattended reviewer is POSIX-only; the review launch is refused pre-handshake on Windows. Behaviour is covered on the POSIX legs.");
+
+        var fake    = new FakeAcpAgent();
         var process = new GatedAcpProcess();
         fake.HoldInitializeResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -2954,19 +2964,22 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// generic <c>{vendor}_reviewer_launch_timeout</c> text instead.</summary>
     [Test]
     public async Task Deadline_catch_racing_verdict_reclassifies() {
-        // inlineAgentReads: record `initialize` synchronously with the connection's write so the reap
-        // below can never preempt the handshake on any runner (the windows ordering race).
-        //
-        // HONEST NOTE on which catch arm this traverses: the reap's own `_cts.Cancel()` faults the
-        // pending `initialize` request, so StartAsync throws via the GENERAL handshake-failure catch
-        // (sub-second — the ~700ms runtime confirms it), NOT the launch-deadline catch, which the
-        // generous 12s budget is never allowed to reach. Both arms funnel through the SAME
-        // ReclassifyIfReaped, so this still pins the property the deadline arm shares: a published
-        // verdict is surfaced (never the generic `{vendor}_reviewer_launch_timeout`). The deadline arm
-        // cannot be reached deterministically WITH a reap-published verdict without a TimeProvider seam
-        // on the launch deadline (deliberately absent) — because a real verdict only exists once the
-        // reap has already cancelled `_cts` and faulted the handshake. Flagged to the coordinator.
-        var fake = new FakeAcpAgent(inlineAgentReads: true);
+        // POSIX-only — see ReapDuringInitialize_WithDisposalHook_ for the full reason: this launches the
+        // OpenCode unattended reviewer, refused on Windows before a connection exists.
+        Skip.When(OperatingSystem.IsWindows(),
+            "OpenCode unattended reviewer is POSIX-only; the review launch is refused pre-handshake on Windows. Behaviour is covered on the POSIX legs.");
+
+        // HONEST NOTE on which catch arm this traverses (on the POSIX legs where it runs): the reap's
+        // own `_cts.Cancel()` faults the pending `initialize` request, so StartAsync throws via the
+        // GENERAL handshake-failure catch (sub-second — the ~700ms runtime confirms it), NOT the
+        // launch-deadline catch, which the generous 12s budget is never allowed to reach. Both arms
+        // funnel through the SAME ReclassifyIfReaped, so this still pins the property the deadline arm
+        // shares: a published verdict is surfaced (never the generic `{vendor}_reviewer_launch_timeout`).
+        // The deadline arm cannot be reached deterministically WITH a reap-published verdict without a
+        // TimeProvider seam on the launch deadline (deliberately absent) — because a real verdict only
+        // exists once the reap has already cancelled `_cts` and faulted the handshake. Flagged to the
+        // coordinator.
+        var fake = new FakeAcpAgent();
         fake.HoldInitializeResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var factory = new AcpHostedAgentRuntimeFactory(

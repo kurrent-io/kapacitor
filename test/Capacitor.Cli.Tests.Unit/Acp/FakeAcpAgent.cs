@@ -38,8 +38,8 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
     static readonly JsonElement DefaultPromptResult =
         JsonDocument.Parse("""{"stopReason":"end_turn"}""").RootElement.Clone();
 
-    readonly Pipe   _toAgent;            // connection writes here; fake reads here (simulated stdin)
-    readonly Pipe   _toClient = new();   // fake writes here; connection reads here (simulated stdout)
+    readonly Pipe   _toAgent  = new();  // connection writes here; fake reads here (simulated stdin)
+    readonly Pipe   _toClient = new();  // fake writes here; connection reads here (simulated stdout)
     readonly Stream _agentReadsFromConnection;
     readonly Stream _agentWritesToConnection;
 
@@ -140,30 +140,17 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
     }
 
     readonly TaskCompletionSource _initializeReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    readonly TaskCompletionSource _sessionNewReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    /// <summary>Completes the instant the fake RECORDS an <c>initialize</c> call. A reap test awaits
-    /// this before triggering its reap/disposal, so the reap can never preempt the handshake's
-    /// <c>initialize</c> — the deterministic replacement for a wall-clock poll that a slower CI runner
-    /// races (windows). Pair with <c>inlineAgentReads: true</c> so recording is synchronous with the
-    /// connection's write (see the constructor), removing the pool-scheduling window entirely.</summary>
+    /// <summary>Completes the instant the fake RECORDS an <c>initialize</c> call — an awaitable,
+    /// deterministic replacement for a wall-clock poll of <see cref="ReceivedCalls"/>. A reap test
+    /// awaits this to prove the runtime actually reached (and the fake observed) the initialize stage
+    /// before it triggers the reap, so "reap DURING initialize" is a recorded fact rather than a timing
+    /// hope. On a POSIX host the runtime always sends initialize during a review launch, so this always
+    /// fires; a runtime that never sent it would hang the await, which is the regression the awaiting
+    /// tests still catch.</summary>
     public Task InitializeReceived => _initializeReceived.Task;
 
-    /// <summary>As <see cref="InitializeReceived"/>, for the <c>session/new</c> handshake stage.</summary>
-    public Task SessionNewReceived => _sessionNewReceived.Task;
-
-    /// <param name="inlineAgentReads">Run the fake's READ continuations INLINE on the connection's
-    /// write/flush thread rather than the thread pool. The connection writes <c>initialize</c>
-    /// synchronously inside StartAsync, so inline reads make the fake RECORD it synchronously too —
-    /// closing the pool-scheduling window in which a launch-deadline/disposal on a slow CI runner could
-    /// tear down the transport before <c>initialize</c> is ever read (the windows ordering race).
-    /// Opt-in: only the reap tests that need determinism pass true; every other fixture keeps the
-    /// default thread-pool scheduler and its established behaviour.</param>
-    public FakeAcpAgent(bool inlineAgentReads = false) {
-        _toAgent = inlineAgentReads
-            ? new Pipe(new PipeOptions(readerScheduler: PipeScheduler.Inline, useSynchronizationContext: false))
-            : new Pipe();
-
+    public FakeAcpAgent() {
         _agentReadsFromConnection = _toAgent.Reader.AsStream();
         _agentWritesToConnection  = _toClient.Writer.AsStream();
 
@@ -623,10 +610,10 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
         lock (_receivedCallsLock)
             _receivedCalls.Add((method, @params));
 
-        // Fire the per-stage handshake signals so a test can await a stage being provably RECEIVED
-        // instead of polling ReceivedCalls on a wall-clock bound (deterministic; windows-race-free).
-        if (method == "initialize")       _initializeReceived.TrySetResult();
-        else if (method == "session/new") _sessionNewReceived.TrySetResult();
+        // Fire the initialize signal so a test can await it being provably RECORDED instead of polling
+        // ReceivedCalls on a wall-clock bound. TrySetResult is idempotent — a second initialize (never
+        // sent in these fixtures) is harmless.
+        if (method == "initialize") _initializeReceived.TrySetResult();
     }
 
     // ---- probe-confirmed canned response shapes (docs/acp-probe-findings.md) ----
