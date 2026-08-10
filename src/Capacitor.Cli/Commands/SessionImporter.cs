@@ -150,18 +150,56 @@ static class SessionImporter {
         // subagents/ sibling dir to walk. Import every TRANSITIVE descendant as a DIRECT
         // subagent of this root (the server's AgentSubsession model is flat, mirroring the
         // Gemini import), AFTER the parent transcript so the interleave-position machinery —
-        // which Codex rollouts have no markers for — is simply not needed.
+        // which Codex rollouts have no markers for — is simply not needed. Fail-closed like
+        // the Gemini/OpenCode descendant imports: no content without an ACKNOWLEDGED
+        // subagent-start (a subagent stream must never exist without the SubagentStarted that
+        // lets chat/trace nest it), strict transcript delivery, and no subagent-stop after a
+        // failed tail — a re-import retries (deterministic event ids make that idempotent).
         if (isCodex) {
             foreach (var sub in CodexSubagentDiscovery.EnumerateDescendantRollouts(transcriptPath, sessionId)) {
-                var subType = CodexSubagentDiscovery.AgentTypeFrom(sub.AgentPath, sub.AgentNickname);
-                await SendAgentLifecycle(
-                    httpClient, baseUrl, sessionId, sub.ChildDashlessId, subType, sub.FilePath, cwd,
-                    transcriptPath, progress, vendor: "codex");
-                agentIds.Add(sub.ChildDashlessId);
+                var subType    = CodexSubagentDiscovery.AgentTypeFrom(sub.AgentPath, sub.AgentNickname);
+                var subAgentId = sub.ChildDashlessId;
+
+                if (!await PostSubagentHookAsync(httpClient, baseUrl, "subagent-start",
+                        CodexSubagentDiscovery.BuildStartPayload(sessionId, subAgentId, subType, sub.FilePath))) {
+                    continue;
+                }
+
+                progress?.Report(new SubagentStarted(subAgentId));
+
+                int subLines;
+
+                try {
+                    subLines = await SendTranscriptBatches(
+                        httpClient, baseUrl, sessionId, sub.FilePath, subAgentId,
+                        startLine: 0, progress: progress, vendor: "codex", failOnError: true);
+                } catch (HttpRequestException) {
+                    continue; // leave subagent-stop unsent; a re-import retries (idempotent)
+                }
+
+                progress?.Report(new SubagentFinished(subAgentId, subLines));
+
+                await PostSubagentHookAsync(httpClient, baseUrl, "subagent-stop",
+                    CodexSubagentDiscovery.BuildStopPayload(sessionId, subAgentId, subType, sub.FilePath));
+
+                agentIds.Add(subAgentId);
             }
         }
 
         return new ImportResult(sessionId, agentIds, totalSent);
+    }
+
+    /// <summary>POSTs one subagent lifecycle hook; false on any failure so the caller can
+    /// fail closed (skip content for an unregistered subagent) instead of streaming anyway.</summary>
+    static async Task<bool> PostSubagentHookAsync(HttpClient httpClient, string baseUrl, string route, JsonObject payload) {
+        try {
+            using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+            using var resp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/{route}", content);
+
+            return resp.IsSuccessStatusCode;
+        } catch {
+            return false;
+        }
     }
 
     /// <summary>
@@ -424,8 +462,7 @@ static class SessionImporter {
             string                     agentPath,
             string                     cwd,
             string                     sessionTranscriptPath,
-            IProgress<ImportProgress>? progress,
-            string                     vendor = "claude"
+            IProgress<ImportProgress>? progress
         ) {
         var resolvedAgentType = agentType ?? "task";
 
@@ -447,7 +484,7 @@ static class SessionImporter {
         }
 
         progress?.Report(new SubagentStarted(agentId));
-        var agentLines = await SendTranscriptBatches(httpClient, baseUrl, sessionId, agentPath, agentId, startLine: 0, progress: progress, vendor: vendor);
+        var agentLines = await SendTranscriptBatches(httpClient, baseUrl, sessionId, agentPath, agentId, startLine: 0, progress: progress);
         progress?.Report(new SubagentFinished(agentId, agentLines));
 
         // Stop agent

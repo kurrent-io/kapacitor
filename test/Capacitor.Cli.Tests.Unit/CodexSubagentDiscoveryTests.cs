@@ -1,3 +1,4 @@
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -61,51 +62,113 @@ public class CodexSubagentDiscoveryTests {
         return path;
     }
 
-    // ── TryReadMeta ───────────────────────────────────────────────────────
+    // ── ReadHeader ────────────────────────────────────────────────────────
 
     [Test]
-    public async Task TryReadMeta_Child_UsesOwnId_NotTheParentBearingSessionId() {
+    public async Task ReadHeader_Child_UsesOwnId_NotTheParentBearingSessionId() {
         var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
         try {
             var child = WriteChild(DayDir(tmp));
 
-            var meta = CodexSubagentDiscovery.TryReadMeta(child);
+            var (outcome, meta) = CodexSubagentDiscovery.ReadHeader(child);
 
-            await Assert.That(meta).IsNotNull();
-            await Assert.That(meta!.Value.IdDashless).IsEqualTo(Dashless(ChildDashed));
-            await Assert.That(meta.Value.ParentThreadIdDashless).IsEqualTo(Dashless(ParentDashed));
-            await Assert.That(meta.Value.IsSubagent).IsTrue();
-            await Assert.That(meta.Value.AgentPath).IsEqualTo("/root/spec_quality");
-            await Assert.That(meta.Value.AgentNickname).IsEqualTo("Hegel");
+            await Assert.That(outcome).IsEqualTo(CodexSubagentDiscovery.RolloutHeader.Subagent);
+            await Assert.That(meta.IdDashless).IsEqualTo(Dashless(ChildDashed));
+            await Assert.That(meta.ParentThreadIdDashless).IsEqualTo(Dashless(ParentDashed));
+            await Assert.That(meta.AgentPath).IsEqualTo("/root/spec_quality");
+            await Assert.That(meta.AgentNickname).IsEqualTo("Hegel");
         } finally {
             Directory.Delete(tmp, recursive: true);
         }
     }
 
     [Test]
-    public async Task TryReadMeta_TopLevelSession_IsNotSubagent() {
+    public async Task ReadHeader_TopLevelSession_IsNotSubagent() {
         var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
         try {
             var parent = WriteParent(DayDir(tmp));
 
-            var meta = CodexSubagentDiscovery.TryReadMeta(parent);
+            var (outcome, meta) = CodexSubagentDiscovery.ReadHeader(parent);
 
-            await Assert.That(meta).IsNotNull();
-            await Assert.That(meta!.Value.IsSubagent).IsFalse();
-            await Assert.That(meta.Value.ParentThreadIdDashless).IsNull();
+            await Assert.That(outcome).IsEqualTo(CodexSubagentDiscovery.RolloutHeader.NotSubagent);
+            await Assert.That(meta.ParentThreadIdDashless).IsNull();
         } finally {
             Directory.Delete(tmp, recursive: true);
         }
     }
 
     [Test]
-    public async Task TryReadMeta_MidWriteHeader_ReturnsNull() {
+    public async Task ReadHeader_MidWriteHeader_IsIndeterminate() {
+        // Truncated first line (no newline yet) — could still become a valid session_meta.
         var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
         try {
             var path = Path.Combine(DayDir(tmp), $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
             File.WriteAllText(path, """{"timestamp":"2026-08-10T15:21:59.231Z","type":"session_me""");
 
-            await Assert.That(CodexSubagentDiscovery.TryReadMeta(path)).IsNull();
+            await Assert.That(CodexSubagentDiscovery.ReadHeader(path).Outcome)
+                .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.Indeterminate);
+        } finally {
+            Directory.Delete(tmp, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task ReadHeader_EmptyFile_IsIndeterminate() {
+        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
+        try {
+            var path = Path.Combine(DayDir(tmp), $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
+            File.WriteAllText(path, "");
+
+            await Assert.That(CodexSubagentDiscovery.ReadHeader(path).Outcome)
+                .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.Indeterminate);
+        } finally {
+            Directory.Delete(tmp, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task ReadHeader_CompleteGarbageLine_IsDefinitivelyNotSubagent() {
+        // A newline-terminated first line that isn't parseable session_meta is a permanently
+        // malformed file — it must classify definitively so polling callers can cache it as
+        // ruled-out instead of re-opening it on every tick.
+        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
+        try {
+            var path = Path.Combine(DayDir(tmp), $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
+            File.WriteAllText(path, "this is not json\n");
+
+            await Assert.That(CodexSubagentDiscovery.ReadHeader(path).Outcome)
+                .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.NotSubagent);
+        } finally {
+            Directory.Delete(tmp, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task ReadHeader_CompleteNonSessionMetaJson_IsDefinitivelyNotSubagent() {
+        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
+        try {
+            var path = Path.Combine(DayDir(tmp), $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
+            File.WriteAllText(path, """{"type":"event_msg","payload":{"type":"task_started"}}""" + "\n");
+
+            await Assert.That(CodexSubagentDiscovery.ReadHeader(path).Outcome)
+                .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.NotSubagent);
+        } finally {
+            Directory.Delete(tmp, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task ReadHeader_TruncatedButCompleteJson_IsJudgedOnContent() {
+        // The writer flushed the whole session_meta JSON but not the trailing newline yet —
+        // parseable content wins over line-completeness.
+        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
+        try {
+            var child = WriteChild(DayDir(tmp));
+            var text  = File.ReadAllText(child).TrimEnd('\n');
+            File.WriteAllText(child, text); // strip the newline
+
+            await Assert.That(CodexSubagentDiscovery.ReadHeader(child).Outcome)
+                .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.Subagent);
         } finally {
             Directory.Delete(tmp, recursive: true);
         }
@@ -124,6 +187,8 @@ public class CodexSubagentDiscoveryTests {
             var otherChild = WriteChild(day, dashedId: "019fec46-3858-7900-9d86-c6e79b604ac5",
                 parentDashedId: OtherDashed, agentPath: "/root/standards_review", nickname: "Huygens",
                 stamp: "2026-08-10T17-24-12");
+            var garbage = Path.Combine(day, "rollout-2026-08-10T17-25-00-019fec46-51e6-7a03-9f0b-cc6f701a9134.jsonl");
+            File.WriteAllText(garbage, "not json at all\n"); // permanently malformed — must be ruled out, not re-read forever
 
             var ruledOut = new HashSet<string>(StringComparer.Ordinal);
             var subs     = CodexSubagentDiscovery.EnumerateSubagentRollouts(parent, Dashless(ParentDashed), ruledOut);
@@ -132,11 +197,12 @@ public class CodexSubagentDiscoveryTests {
             await Assert.That(subs[0].ChildDashlessId).IsEqualTo(Dashless(ChildDashed));
             await Assert.That(subs[0].AgentPath).IsEqualTo("/root/spec_quality");
 
-            // Foreign rollouts are cached as definitive non-children; the parent's own child
-            // is NOT ruled out (it stays enumerable for the teardown's fresh scan).
+            // Foreign/malformed rollouts are cached as definitive non-children; the parent's
+            // own child is NOT ruled out (it stays enumerable for the teardown's fresh scan).
             await Assert.That(ruledOut.Contains(other)).IsTrue();
             await Assert.That(ruledOut.Contains(otherChild)).IsTrue();
-            await Assert.That(ruledOut.Count).IsEqualTo(2);
+            await Assert.That(ruledOut.Contains(garbage)).IsTrue();
+            await Assert.That(ruledOut.Count).IsEqualTo(3);
         } finally {
             Directory.Delete(tmp, recursive: true);
         }
@@ -211,6 +277,44 @@ public class CodexSubagentDiscoveryTests {
                 .Contains(Dashless(ChildDashed));
             await Assert.That(subs.Select(s => s.ChildDashlessId).ToList())
                 .Contains(Dashless(grandDashed));
+        } finally {
+            Directory.Delete(tmp, recursive: true);
+        }
+    }
+
+    // ── CodexImportSource.DiscoverAsync filter ────────────────────────────
+
+    [Test]
+    public async Task ImportDiscovery_ExcludesSubagentAndIndeterminate_KeepsTopLevelAndMalformed() {
+        // Top-level discovery must contain ONLY definitive non-subagents: a child rollout
+        // imports nested under its parent (never as an unrelated top-level session), and a
+        // rollout whose header can't be judged yet (actively starting mid-import) is skipped
+        // for this pass instead of being imported top-level now and nested on the next run.
+        // A permanently malformed header stays importable — it can never be proven a child.
+        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
+        try {
+            var day = DayDir(tmp);
+            WriteParent(day);
+            WriteChild(day);
+
+            const string truncatedDashed = "019fec46-3858-7900-9d86-c6e79b604ac5";
+            File.WriteAllText(
+                Path.Combine(day, $"rollout-2026-08-10T17-24-12-{truncatedDashed}.jsonl"),
+                """{"timestamp":"2026-08-10T15:24:12.000Z","type":"session_me""");
+
+            const string malformedDashed = "019fec46-51e6-7a03-9f0b-cc6f701a9134";
+            File.WriteAllText(
+                Path.Combine(day, $"rollout-2026-08-10T17-24-19-{malformedDashed}.jsonl"),
+                "not json at all\n");
+
+            var source     = new CodexImportSource(rootOverride: tmp);
+            var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
+            var ids        = discovered.Select(d => d.SessionId).OrderBy(x => x, StringComparer.Ordinal).ToList();
+
+            await Assert.That(ids).IsEquivalentTo(new[] {
+                Dashless(ParentDashed),
+                Dashless(malformedDashed),
+            });
         } finally {
             Directory.Delete(tmp, recursive: true);
         }

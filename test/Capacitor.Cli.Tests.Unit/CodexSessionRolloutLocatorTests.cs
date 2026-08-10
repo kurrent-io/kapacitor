@@ -241,7 +241,7 @@ public class CodexSessionRolloutLocatorTests {
         }
     }
 
-    // ── collab subagent rollouts must never be claimed (AI-1839) ──────────
+    // ── collab subagent rollouts must never be claimed ────────────────────
 
     [Test]
     public async Task SubagentRollout_WithMatchingCwd_ReturnsNo() {

@@ -45,7 +45,10 @@ static class CodexSubagentTeardown {
     }
 
     static async Task PostStopAsync(string baseUrl, string sessionId, string agentId, string agentType, string subFile) {
-        using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        // baseUrl is threaded into auth resolution so token/server selection matches the URL
+        // actually posted to (a process configured for a different default server must not
+        // resolve the wrong credential).
+        using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
         var       payload = CodexSubagentDiscovery.BuildStopPayload(sessionId, agentId, agentType, subFile);
         using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
         await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-stop", content);

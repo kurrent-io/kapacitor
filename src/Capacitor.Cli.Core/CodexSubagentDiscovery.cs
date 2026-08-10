@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -28,52 +29,136 @@ public static class CodexSubagentDiscovery {
     /// <summary>
     /// Linkage facts parsed from a rollout's opening <c>session_meta</c> line.
     /// <see cref="IdDashless"/> is the rollout's OWN id (payload <c>id</c>, never
-    /// <c>session_id</c> — see the class doc trap). Null when the first non-blank line is not
-    /// yet a parseable <c>session_meta</c> (file mid-write) — callers must retry, not cache.
+    /// <c>session_id</c> — see the class doc trap).
     /// </summary>
     public readonly record struct RolloutMeta(
         string? IdDashless,
         string? ParentThreadIdDashless,
-        bool    IsSubagent,
         string? AgentPath,
         string? AgentNickname);
 
     /// <summary>
-    /// Reads the first non-blank line of <paramref name="rolloutPath"/> and extracts the
-    /// subagent linkage facts. Returns null when the file is missing/unreadable or the line
-    /// is not (yet) a parseable <c>session_meta</c> envelope — a rollout whose header is still
-    /// being written must be retried, never negatively cached.
+    /// Tri-state classification of a rollout's header. The Subagent/NotSubagent verdicts are
+    /// DEFINITIVE (a header, once written, never changes) and safe to cache;
+    /// <see cref="Indeterminate"/> means the header could not be judged YET (empty file,
+    /// truncated first line still being written, I/O error) and must be retried — never cached.
     /// </summary>
-    public static RolloutMeta? TryReadMeta(string rolloutPath) {
+    public enum RolloutHeader {
+        /// <summary>A collab subagent rollout (thread_source/source.subagent linkage present).</summary>
+        Subagent,
+        /// <summary>Definitively not a subagent: a top-level session's header, or a COMPLETE
+        /// first line that is not a parseable <c>session_meta</c> at all (a permanently
+        /// malformed file must not be re-opened on every polling tick).</summary>
+        NotSubagent,
+        /// <summary>Header mid-write or unreadable — retry, don't cache.</summary>
+        Indeterminate,
+    }
+
+    /// <summary>Outcome + parsed linkage of one header read. <see cref="Meta"/> is only
+    /// meaningful for <see cref="RolloutHeader.Subagent"/>/<see cref="RolloutHeader.NotSubagent"/>
+    /// verdicts that actually parsed a <c>session_meta</c>; default otherwise.</summary>
+    public readonly record struct HeaderReadResult(RolloutHeader Outcome, RolloutMeta Meta);
+
+    /// <summary>
+    /// Ceiling on how many bytes of a rollout are scanned for the first newline. A real
+    /// <c>session_meta</c> line (even with large embedded <c>base_instructions</c>) is tens of
+    /// KB; a file whose first "line" exceeds this is pathological and classified
+    /// <see cref="RolloutHeader.NotSubagent"/> rather than re-read forever.
+    /// </summary>
+    const int MaxHeaderBytes = 4 * 1024 * 1024;
+
+    /// <summary>
+    /// Reads and classifies the first non-blank line of <paramref name="rolloutPath"/>.
+    /// The completeness of the line decides how a parse failure is treated: a
+    /// newline-terminated line that isn't a parseable <c>session_meta</c> is DEFINITIVELY
+    /// <see cref="RolloutHeader.NotSubagent"/> (permanently malformed files must be cacheable
+    /// as ruled-out), while an EOF-truncated line is <see cref="RolloutHeader.Indeterminate"/>
+    /// (mid-write — retry). A truncated line that nonetheless parses as a complete
+    /// <c>session_meta</c> is judged on its content (the writer just hasn't flushed the
+    /// newline yet).
+    /// </summary>
+    public static HeaderReadResult ReadHeader(string rolloutPath) {
+        string? line;
+        bool    lineComplete;
+
         try {
-            using var stream = new FileStream(rolloutPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream);
-
-            while (reader.ReadLine() is { } line) {
-                if (string.IsNullOrWhiteSpace(line)) continue;
-
-                using var doc  = JsonDocument.Parse(line);
-                var       root = doc.RootElement;
-
-                if (root.Str("type") != "session_meta" || root.Obj("payload") is not { } payload) return null;
-
-                // thread_source is the primary signal; the source.subagent object is the
-                // belt-and-braces fallback in case a future Codex drops one but not the other.
-                var isSubagent = payload.Str("thread_source") == "subagent"
-                              || payload.Obj("source")?.Obj("subagent") is not null;
-
-                return new RolloutMeta(
-                    IdDashless:             Dashless(payload.Str("id")),
-                    ParentThreadIdDashless: Dashless(payload.Str("parent_thread_id")),
-                    IsSubagent:             isSubagent,
-                    AgentPath:              payload.Str("agent_path"),
-                    AgentNickname:          payload.Str("agent_nickname"));
-            }
+            (line, lineComplete) = ReadFirstNonBlankLine(rolloutPath);
         } catch {
-            // Missing, locked, or header mid-write — caller retries next tick.
+            return new(RolloutHeader.Indeterminate, default); // missing/locked — retry
         }
 
-        return null;
+        if (line is null) return new(RolloutHeader.Indeterminate, default); // empty file — just created
+
+        try {
+            using var doc  = JsonDocument.Parse(line);
+            var       root = doc.RootElement;
+
+            if (root.Str("type") != "session_meta" || root.Obj("payload") is not { } payload) {
+                // Parsed fine but the wrong shape — a definitive non-header, not a mid-write.
+                return new(RolloutHeader.NotSubagent, default);
+            }
+
+            // thread_source is the primary signal; the source.subagent object is the
+            // belt-and-braces fallback in case a future Codex drops one but not the other.
+            var isSubagent = payload.Str("thread_source") == "subagent"
+                          || payload.Obj("source")?.Obj("subagent") is not null;
+
+            var meta = new RolloutMeta(
+                IdDashless:             Dashless(payload.Str("id")),
+                ParentThreadIdDashless: Dashless(payload.Str("parent_thread_id")),
+                AgentPath:              payload.Str("agent_path"),
+                AgentNickname:          payload.Str("agent_nickname"));
+
+            return new(isSubagent ? RolloutHeader.Subagent : RolloutHeader.NotSubagent, meta);
+        } catch (JsonException) {
+            return new(lineComplete ? RolloutHeader.NotSubagent : RolloutHeader.Indeterminate, default);
+        }
+    }
+
+    /// <summary>
+    /// First non-blank line of the file plus whether it was newline-terminated (Complete) or
+    /// ended at EOF (possibly mid-write). Reads with ReadWrite sharing — Codex is appending.
+    /// A line that hits <see cref="MaxHeaderBytes"/> without a newline reports Complete so the
+    /// caller classifies it definitively instead of retrying forever.
+    /// </summary>
+    static (string? Line, bool Complete) ReadFirstNonBlankLine(string path) {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var ms = new MemoryStream();
+
+        var buf       = new byte[8192];
+        var lineStart = 0;
+        var scanned   = 0;
+
+        while (ms.Length < MaxHeaderBytes) {
+            var n = fs.Read(buf, 0, buf.Length);
+            if (n == 0) break;
+
+            ms.Write(buf, 0, n);
+            var arr = ms.GetBuffer();
+
+            for (var i = scanned; i < ms.Length; i++) {
+                if (arr[i] != (byte)'\n') continue;
+
+                var text = Encoding.UTF8.GetString(arr, lineStart, i - lineStart).TrimEnd('\r');
+
+                if (text.AsSpan().Trim().Length == 0) {
+                    lineStart = i + 1; // blank line — keep looking
+                    continue;
+                }
+
+                return (text, true);
+            }
+
+            scanned = (int)ms.Length;
+        }
+
+        var tail = Encoding.UTF8.GetString(ms.GetBuffer(), lineStart, (int)ms.Length - lineStart).TrimEnd('\r');
+
+        if (tail.AsSpan().Trim().Length == 0) return (null, false);
+
+        // Cap hit without a newline: report Complete so the pathological file is judged
+        // definitively (it can never become a valid header by growing further).
+        return (tail, ms.Length >= MaxHeaderBytes);
     }
 
     /// <summary>
@@ -103,12 +188,19 @@ public static class CodexSubagentDiscovery {
             if (filePath == parentTranscriptPath) continue;
             if (ruledOut?.Contains(filePath) == true) continue;
 
-            if (TryReadMeta(filePath) is not { } meta) continue; // header mid-write — retry next tick
+            var (outcome, meta) = ReadHeader(filePath);
 
-            if (meta.IsSubagent && meta.ParentThreadIdDashless == parentDashlessId) {
-                results.Add(new SubagentRollout(filePath, meta.IdDashless ?? childId, meta.AgentPath, meta.AgentNickname));
-            } else {
-                ruledOut?.Add(filePath); // a header, once written, never changes — definitive
+            switch (outcome) {
+                case RolloutHeader.Subagent when meta.ParentThreadIdDashless == parentDashlessId:
+                    results.Add(new SubagentRollout(filePath, meta.IdDashless ?? childId, meta.AgentPath, meta.AgentNickname));
+                    break;
+
+                case RolloutHeader.Subagent:    // another parent's child
+                case RolloutHeader.NotSubagent: // top-level session, or permanently malformed header
+                    ruledOut?.Add(filePath); // a header, once written, never changes — definitive
+                    break;
+
+                // Indeterminate: header mid-write — retry next tick, never cache.
             }
         }
 
