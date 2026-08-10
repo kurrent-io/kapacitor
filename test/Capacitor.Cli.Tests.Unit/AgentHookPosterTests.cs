@@ -94,6 +94,34 @@ public class AgentHookPosterTests : IDisposable {
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Failed);
     }
 
+    /// <summary>
+    /// A 401 must stay <see cref="HookPostOutcome.Failed"/> — the outcome drives the caller's exit
+    /// code and is not part of this change — while the line the user actually reads names the fix.
+    /// These vendors have no user-facing stdout channel (their stdout is a handshake contract the
+    /// vendor parses), so stderr is the only place a nudge can go.
+    /// </summary>
+    [Test, NotInParallel("ConsoleErrorRedirect")]
+    public async Task Unauthorized_reports_Failed_and_names_kcap_login_on_stderr() {
+        _server.Given(Request.Create().WithPath("/hooks/stop/codex").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(401));
+
+        var originalError = Console.Error;
+        var captured = new StringWriter { NewLine = "\n" };
+        HookPostOutcome outcome;
+
+        try {
+            Console.SetError(captured);
+            outcome = await AgentHookPoster.PostAsync(
+                Factory(AuthStatus.Ok), _server.Url!, "stop/codex", "{}", "codex-hook");
+        } finally {
+            Console.SetError(originalError);
+        }
+
+        await Assert.That(outcome).IsEqualTo(HookPostOutcome.Failed);
+        await Assert.That(captured.ToString().Trim()).IsEqualTo(
+            AuthLapseNotice.VendorStderr("codex-hook", "stop/codex"));
+    }
+
     [Test]
     public async Task IsAuthLapsed_is_true_only_for_expired_or_unauthenticated() {
         await Assert.That(AgentHookPoster.IsAuthLapsed(AuthStatus.Expired)).IsTrue();

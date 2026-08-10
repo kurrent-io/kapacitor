@@ -102,7 +102,12 @@ internal static class AgentHookPoster {
                 using var resp = await client.PostWithRetryAsync($"{baseUrl}/hooks/{endpoint}", content);
 
                 if (!resp.IsSuccessStatusCode) {
-                    Console.Error.WriteLine($"[kcap] {agentTag} {endpoint}: HTTP {(int)resp.StatusCode}");
+                    var code = (int)resp.StatusCode;
+                    // These vendors have no systemMessage channel, so the stderr line is the only
+                    // place a rejected credential can name its own fix.
+                    Console.Error.WriteLine(code == 401
+                        ? AuthLapseNotice.VendorStderr(agentTag, endpoint)
+                        : $"[kcap] {agentTag} {endpoint}: HTTP {code}");
                     return HookPostOutcome.Failed;
                 }
 
@@ -310,7 +315,9 @@ internal static class AgentHookPoster {
                     return SpoolOrSkip(spool, sessionId, route, body, agentTag);
                 }
 
-                Console.Error.WriteLine($"[kcap] {agentTag} {endpoint}: HTTP {code}");
+                Console.Error.WriteLine(code == 401
+                    ? AuthLapseNotice.VendorStderr(agentTag, endpoint)
+                    : $"[kcap] {agentTag} {endpoint}: HTTP {code}");
 
                 return HookPostOutcome.Failed;
             } catch (HttpRequestException) {
