@@ -689,10 +689,15 @@ throughout — no real sleeps).
 - Capability: `LocalControlCapabilities.Current` advertises `consent/2` alongside
   `consent/1`; mixed-version acceptance — an app facing a `consent/1`-only capability set
   starts no subscription and sends no resolve.
-- Incarnation swap (the restart TOCTOU): against a faithful v1 fake — a server whose
-  *decoder* rejects frame bytes 17/18 before routing and closes the connection without
-  writing a frame, mirroring the shipped v1 `FrameCodec.Decode`/`HandleConnectionAsync`
-  behavior (NOT a routing-default `Error` reply, which no deployed v1 daemon produces) — a
+- Incarnation swap (the restart TOCTOU): against a faithful v1 fake — a server that consumes
+  the full frame (5-byte header, then exactly the declared payload length) before its
+  *decoder* rejects frame bytes 17/18 and closes the connection without writing a frame,
+  mirroring the shipped v1 `FrameCodec.ReadAsync`/`Decode`/`HandleConnectionAsync` behavior:
+  `ReadAsync` always reads header **and** payload off the wire before `Decode` ever throws on
+  the unknown type byte, so the fake must too — a header-only close would leave a non-empty
+  request payload (e.g. `ConsentResolveV2`'s JSON) unread in the kernel buffer, and closing
+  with unread bytes sends RST on Linux (ECONNRESET, not clean EOF) even though it doesn't on
+  macOS (NOT a routing-default `Error` reply, which no deployed v1 daemon produces) — a
   cached v2 prompt's resolve via `ConsentResolveV2` observes EOF → `unexpected_reply` and
   **no resolution occurs; a same-id pending on that daemon is untouched**;
   `ConsentSubscribeV2` against the same fake yields `Subscribed` then ends on EOF without

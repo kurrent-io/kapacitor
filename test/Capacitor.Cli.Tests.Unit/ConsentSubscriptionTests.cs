@@ -76,7 +76,9 @@ public class ConsentSubscriptionTests {
 
     /// A faithful v1 daemon: reads the raw 5-byte header, sees a type byte its codec has no case
     /// for, and closes without writing ANY frame — never a routing-default Error reply (spec §4.1,
-    /// the V1CodecReject shape from Task 4).
+    /// the V1CodecReject shape from Task 4). Header-only is the full frame here ONLY because
+    /// ConsentSubscribeV2 carries an empty payload (len=0, see ConsentSubscription.RunAsync); a
+    /// non-empty request would need the payload read too (see LocalControlOpsTests.V1CodecReject).
     static ConnScript V1CodecReject() => async (_, s, ct) => {
         var head = new byte[5];
         var read = 0;

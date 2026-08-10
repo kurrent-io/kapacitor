@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Net.Sockets;
 using System.Text.Json;
 using Capacitor.Cli.Core;
@@ -88,10 +89,15 @@ public class LocalControlOpsTests {
             await FrameCodec.WriteAsync(s, LocalFrame.ConsentJson(FrameType.ConsentAck, json), ct);
         }
     };
-    /// A faithful v1 daemon: reads the raw 5-byte header, sees a type byte its codec has no case
-    /// for, and closes without writing ANY frame (FrameCodec.Decode throws InvalidDataException →
-    /// HandleConnectionAsync catches/logs/closes). NOT a routing-default Error reply — no deployed
-    /// v1 daemon produces one for byte 18 (spec §4.1).
+    /// A faithful v1 daemon: reads the raw 5-byte header AND the full payload it declares — the
+    /// real FrameCodec.ReadAsync (src/Capacitor.Cli.Core/LocalIpc/FrameCodec.cs) always consumes
+    /// header+payload before Decode ever runs, so it only throws InvalidDataException (unknown
+    /// type byte) once the whole frame is off the wire. HandleConnectionAsync then catches/logs/
+    /// closes, writing nothing. A header-only close would leave the ConsentResolveV2 JSON payload
+    /// unread in the kernel socket buffer; closing with unread bytes sends RST on Linux (not on
+    /// macOS), so CI would observe ECONNRESET (daemon_unreachable) instead of the intended clean
+    /// EOF (unexpected_reply) — this is the ubuntu-latest-only CI failure this script fixes. NOT a
+    /// routing-default Error reply — no deployed v1 daemon produces one for byte 18 (spec §4.1).
     static ConnScript V1CodecReject() => async (_, s, ct) => {
         var head = new byte[5];
         var read = 0;
@@ -100,7 +106,16 @@ public class LocalControlOpsTests {
             if (n == 0) return;
             read += n;
         }
-        // v1 FrameCodec would throw here — the server closes the socket, writing nothing.
+        var len = BinaryPrimitives.ReadInt32BigEndian(head.AsSpan(1));
+        var payload = new byte[len];
+        var got = 0;
+        while (got < len) {
+            var n = await s.ReadAsync(payload.AsMemory(got), ct);
+            if (n == 0) return;
+            got += n;
+        }
+        // v1 FrameCodec would throw here (Decode sees an unmapped type byte) — the server closes
+        // the socket, writing nothing.
     };
     static ConnScript Eof() => async (_, s, ct) => { await FrameCodec.ReadAsync(s, ct); }; // read, close silently
     static ConnScript TruncatedHeader() => async (_, s, ct) => {
