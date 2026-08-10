@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json.Nodes;
-using Capacitor.Cli.Core;
+using Capacitor.Cli.Core; using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.SessionStartMemory;
 
@@ -377,9 +377,8 @@ public static class ClaudeHookCommand {
         if (authStatus is AuthStatus.Expired or AuthStatus.NotAuthenticated or AuthStatus.WrongServer) {
             if (command == "session-start") {
                 var notice = new JsonObject {
-                    ["systemMessage"] = authStatus == AuthStatus.Expired
-                        ? AuthLapseNotice.Expired
-                        : AuthLapseNotice.NotAuthenticated
+                    ["systemMessage"] = AuthRejectionNotice.RecordingNotice(
+                        AuthRejectionNotice.FromAuthStatus(authStatus))
                 };
                 writer.WriteLine(notice.ToJsonString());
             }
@@ -615,7 +614,7 @@ public static class ClaudeHookCommand {
                 // The envelope below is built only from a 2xx body, so this is the arm's only
                 // stdout write — without it the start event is dropped in silence.
                 if (code == 401) {
-                    writer.WriteLine(new JsonObject { ["systemMessage"] = AuthLapseNotice.Rejected }.ToJsonString());
+                    writer.WriteLine(new JsonObject { ["systemMessage"] = AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid) }.ToJsonString());
                 }
 
                 return 0;
@@ -800,7 +799,7 @@ public static class ClaudeHookCommand {
             // would stack duplicates within one turn.
             if (code == 401) {
                 if (command == "stop") {
-                    writer.WriteLine(new JsonObject { ["systemMessage"] = AuthLapseNotice.Rejected }.ToJsonString());
+                    writer.WriteLine(new JsonObject { ["systemMessage"] = AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid) }.ToJsonString());
                 }
 
                 return 0;

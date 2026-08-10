@@ -11,6 +11,14 @@
 **Spec:** `docs/superpowers/specs/2026-08-10-hook-401-login-nudge-design.md`
 **Issue:** #509 / AI-1835. **Branch:** `alexeyzimarev/ai-1835-hook-401-login-nudge`
 
+> **Historical record.** This plan was executed as written. Two things changed afterwards and are
+> NOT reflected below — read the spec for the current design:
+> 1. `AuthLapseNotice` was folded into `AuthRejectionNotice` (landed on main as #516 mid-review) and
+>    deleted. Every `AuthLapseNotice.X` in the tasks below is now
+>    `AuthRejectionNotice.RecordingNotice(StoredCredentialState.Y)` or `.VendorStderrLine(...)`.
+> 2. Task 4 assumed all non-Claude vendors share `AgentHookPoster`. Cursor does not — it POSTs
+>    directly and needed its own nudge.
+
 ## Global Constraints
 
 - **401 only.** Never treat 403 as a credential problem — `kcap login` would not fix it.

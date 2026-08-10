@@ -1,5 +1,5 @@
 using System.Text;
-using Capacitor.Cli.Core;
+using Capacitor.Cli.Core; using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Commands;
@@ -108,7 +108,7 @@ internal static class AgentHookPoster {
                     var code = (int)resp.StatusCode;
                     // These vendors have no systemMessage channel, so the stderr line is the only
                     // place a rejected credential can name its own fix.
-                    Console.Error.WriteLine(AuthLapseNotice.VendorStderrLine(agentTag, endpoint, code));
+                    Console.Error.WriteLine(AuthRejectionNotice.VendorStderrLine(agentTag, endpoint, code));
                     return HookPostOutcome.Failed;
                 }
 
@@ -316,7 +316,7 @@ internal static class AgentHookPoster {
                     return SpoolOrSkip(spool, sessionId, route, body, agentTag);
                 }
 
-                Console.Error.WriteLine(AuthLapseNotice.VendorStderrLine(agentTag, endpoint, code));
+                Console.Error.WriteLine(AuthRejectionNotice.VendorStderrLine(agentTag, endpoint, code));
 
                 return HookPostOutcome.Failed;
             } catch (HttpRequestException) {

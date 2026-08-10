@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
-using Capacitor.Cli.Core;
+using Capacitor.Cli.Core; using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Cursor;
 using Capacitor.Cli.SessionStartMemory;
@@ -908,7 +908,7 @@ public static class CursorHookCommand {
             // entries per pass and would repeat this line for each one.
             if ((int)resp.StatusCode == 401) {
                 await Console.Error.WriteLineAsync(
-                    AuthLapseNotice.VendorStderrLine("cursor-hook", routeSegment, 401));
+                    AuthRejectionNotice.VendorStderrLine("cursor-hook", routeSegment, 401));
             }
 
             return resp.IsSuccessStatusCode;

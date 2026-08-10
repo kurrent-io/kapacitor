@@ -73,9 +73,29 @@ A 401 becomes a recognized outcome rather than a generic failure.
 
 ### Notice text
 
-The three strings live together in one Core type (`AuthLapseNotice`), so the pre-flight nudge and the
-server-rejection nudge cannot drift apart in wording. Follows the `VersionNudgeEmitter` precedent:
-vendor-neutral text in Core, the vendor's JSON envelope at the call site.
+> **Superseded (2026-08-10, after PR review).** This section originally introduced a new Core type,
+> `AuthLapseNotice`. While this branch was in review, #516 landed `AuthRejectionNotice` on main for
+> the MCP surface, carrying a `StoredCredentialState` vocabulary (`Missing` / `WrongServer` /
+> `Expired` / `LooksValid`) whose `LooksValid` case is exactly this design's "the server rejected a
+> locally-valid credential". Two near-identically-named auth-notice types would have been the drift
+> this section exists to prevent, so `AuthLapseNotice` was folded into `AuthRejectionNotice` and
+> deleted. What follows describes the folded result.
+
+The states live in one Core type, `AuthRejectionNotice`, with **two renderings of the same
+vocabulary** rather than two vocabularies:
+
+- `Render(state, stored, target)` — the pre-existing MCP form: several sentences in a tool result.
+- `RecordingNotice(state)` — one line, because a Claude `systemMessage` is a single transcript
+  warning and the other vendors get a single stderr line. A five-sentence paragraph there would be
+  unreadable.
+- `VendorStderrLine(agentTag, endpoint, code)` — the vendor stderr status line, enriched only on 401.
+- `FromAuthStatus(status)` — maps the `AuthStatus` the hook already holds onto the shared states, so
+  the per-turn hook path pays none of the two disk reads `ForPersistentUnauthorizedAsync` makes.
+
+Sharing the enum rather than the prose is the point: the states must not drift, but the surfaces have
+genuinely different length budgets. `WrongServer` renders as the not-authenticated line in the short
+form, preserving the pre-existing hook wording — naming both servers there (as `Render` does) would be
+more truthful and is a cheap follow-up, but it is a behaviour change this PR does not make.
 
 | Member | Text |
 |---|---|

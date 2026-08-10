@@ -1,7 +1,7 @@
 using System.Net;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
+using Capacitor.Cli.Core; using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.SessionStartMemory;
 
@@ -459,7 +459,7 @@ public class ClaudeHookCommandTests {
         await Assert.That(exit).IsEqualTo(0);
 
         var notice = JsonNode.Parse(stdout.ToString().Trim());
-        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthLapseNotice.Rejected);
+        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid));
     }
 
     [Test]
@@ -683,7 +683,7 @@ public class ClaudeHookCommandTests {
 
         await Assert.That(exit).IsEqualTo(0);
         var notice = JsonNode.Parse(stdout.ToString().Trim());
-        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthLapseNotice.Expired);
+        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthRejectionNotice.RecordingNotice(StoredCredentialState.Expired));
     }
 
     [Test]
@@ -701,7 +701,7 @@ public class ClaudeHookCommandTests {
 
         await Assert.That(exit).IsEqualTo(0);
         var notice = JsonNode.Parse(stdout.ToString().Trim());
-        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthLapseNotice.NotAuthenticated);
+        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthRejectionNotice.RecordingNotice(StoredCredentialState.Missing));
     }
 
     [Test]
@@ -740,7 +740,7 @@ public class ClaudeHookCommandTests {
         await Assert.That(exit).IsEqualTo(0);
 
         var notice = JsonNode.Parse(stdout.ToString().Trim());
-        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthLapseNotice.Rejected);
+        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid));
     }
 
     [Test]

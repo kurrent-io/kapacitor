@@ -1,5 +1,5 @@
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
+using Capacitor.Cli.Core; using Capacitor.Cli.Core.Auth;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -125,7 +125,7 @@ public class AgentHookPosterTests : IDisposable {
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Failed);
         await Assert.That(captured.ToString().Trim()).IsEqualTo(
-            AuthLapseNotice.VendorStderrLine("codex-hook", "stop/codex", 401));
+            AuthRejectionNotice.VendorStderrLine("codex-hook", "stop/codex", 401));
     }
 
     [Test]
