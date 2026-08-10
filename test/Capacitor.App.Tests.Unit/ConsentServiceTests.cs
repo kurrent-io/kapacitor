@@ -498,8 +498,14 @@ sealed class TimerCountingTimeProvider(FakeTimeProvider inner) : TimeProvider {
     public override long TimestampFrequency      => inner.TimestampFrequency;
 
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) {
+        // Register with the fake FIRST: the count is the harness's "armed" signal, and a count
+        // that rises before the inner registration completes lets RetryAsync advance the clock
+        // while the timer does not exist yet — the delay then gets scheduled one second into a
+        // future nothing ever advances to, and the wait for the resubscribe times out. That
+        // window is preemption-sized, which is exactly what a loaded CI runner provides.
+        var timer = inner.CreateTimer(callback, state, dueTime, period);
         Interlocked.Increment(ref _timersCreated);
-        return inner.CreateTimer(callback, state, dueTime, period);
+        return timer;
     }
 }
 
