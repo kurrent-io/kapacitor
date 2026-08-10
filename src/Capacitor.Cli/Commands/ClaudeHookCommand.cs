@@ -607,9 +607,18 @@ public static class ClaudeHookCommand {
             } catch { resp = null; }
 
             if (resp is null || !resp.IsSuccessStatusCode) {
-                var permanent = resp is not null && (int)resp.StatusCode is < 500 and not 408 and not 429;
+                var code      = resp is null ? 0 : (int)resp.StatusCode;
+                var permanent = resp is not null && code is < 500 and not 408 and not 429;
                 resp?.Dispose();
                 if (!permanent && sessionId is not null) spool.Append(sessionId, "session-start", body);
+
+                // Without this the session's start event is dropped in silence — the user learns
+                // nothing, and recording stays off for the rest of the session. The envelope below
+                // is only built from a 2xx body, so this is the only stdout write on this arm.
+                if (code == 401) {
+                    writer.WriteLine(new JsonObject { ["systemMessage"] = AuthLapseNotice.Rejected }.ToJsonString());
+                }
+
                 return 0;
             }
 

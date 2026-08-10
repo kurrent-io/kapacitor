@@ -443,6 +443,25 @@ public class ClaudeHookCommandTests {
             .IsEqualTo(Sid);
     }
 
+    [Test, NotInParallel]
+    public async Task session_start_on_401_exits_zero_and_nudges_the_user_to_log_in() {
+        using var fx = new Fixture(HttpStatusCode.Unauthorized);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await ClaudeHookCommand.HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+            "http://localhost", new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            memoryStoreFactory: () => new SessionStartMemoryLeaseStore(
+                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+
+        var notice = JsonNode.Parse(stdout.ToString().Trim());
+        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthLapseNotice.Rejected);
+    }
+
     [Test]
     public async Task pending_backlog_is_drained_on_next_hook_when_server_up() {
         using var fx = new Fixture(); // 200 OK
