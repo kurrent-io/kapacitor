@@ -2237,6 +2237,27 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         if (path is not null) LogFailedLaunchCaptured(agent.Id, path);
     }
 
+    /// <summary>
+    /// True when a published launch-window reap verdict (or its already-claimed report flag) forbids
+    /// any NON-failure <c>AgentStatusChanged</c> for this agent — such a transition clears the
+    /// <c>FailureReason</c> the verdict's <c>LaunchFailed</c> set server-side (design spec §3.3). The
+    /// single source of that rule, consulted by every non-failure status emitter that can race the
+    /// finalizer's report: the finalizer's own exit-code classification, the stop gate, and reconnect
+    /// re-registration (finding 2).
+    ///
+    /// <para>Both signals are read with proper cross-thread ordering — the flag via
+    /// <see cref="System.Threading.Volatile.Read(ref int)"/>, the verdict via the runtime's
+    /// lock-synchronised <see cref="AcpHostedAgentRuntime.ReadVerdict"/> — and ORed because the
+    /// verdict is PUBLISHED (at reap-claim time) strictly before the finalizer's CAS flips the flag,
+    /// so a same-tick emitter could otherwise read the flag as still 0 while the verdict already
+    /// exists. Post-window reaps leave both false, preserving byte-identical teardown for that
+    /// case.</para>
+    /// </summary>
+    static bool VerdictForbidsNonFailureStatus(AgentInstance agent) =>
+        Volatile.Read(ref agent.LaunchFailureVerdictReported) != 0
+     || (agent.Runtime is AcpHostedAgentRuntime runtime
+         && runtime.ReadVerdict() is { ReapedInsideLaunchWindow: true });
+
     async Task FinalizeAgentRunAsync(AgentInstance agent) {
         try {
             // Design spec §3.3: the registered-agent report seam, and the FIRST action here —
@@ -2246,8 +2267,21 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // Post-window reaps (ReapedInsideLaunchWindow == false) are deliberately NOT reported
             // here — today's teardown for that case must stay byte-identical (documented residual,
             // spec §1).
-            if (agent.Runtime is AcpHostedAgentRuntime { Verdict: { ReapedInsideLaunchWindow: true } verdict }
+            // ReadVerdict (not the plain Verdict property): the reap that produced this verdict can be
+            // racing us on another thread, publishing it at the tail of a critical section its own
+            // _cts.Cancel() drove us into — reading the plain property there sees null and skips the
+            // report permanently (finding 1). ReadVerdict blocks until the claim has committed.
+            if (agent.Runtime is AcpHostedAgentRuntime acpRuntime
+                && acpRuntime.ReadVerdict() is { ReapedInsideLaunchWindow: true } verdict
                 && Interlocked.CompareExchange(ref agent.LaunchFailureVerdictReported, 1, 0) == 0) {
+                // Force terminal Failed BEFORE the report await, not after (finding 2). A concurrent
+                // status emitter — a reconnect re-registration, a racing stop — must observe the
+                // failure state so it cannot emit a non-failure AgentStatusChanged that clears the
+                // FailureReason the LaunchFailed below is about to set server-side. Setting it here
+                // also makes the exit-code-driven classification further down a no-op for this agent.
+                // The CAS above (already committed) and this status are both visible before we await.
+                SetAgentStatus(agent, "Failed");
+
                 if (!agent.IsPrivate) {
                     // Own try/catch, deliberately separate from this method's own outer one below —
                     // a report fault must never skip CleanupAgentAsync or the normal unregister
@@ -2261,14 +2295,6 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                         LogVerdictReportFailed(ex, agent.Id);
                     }
                 }
-
-                // Force terminal Failed regardless of the child's exit code. This also makes the
-                // exit-code-driven classification below a no-op for this agent (agent.Status is
-                // already terminal), which is what keeps the daemon's status pipeline from ever
-                // emitting a non-failure AgentStatusChanged after a published verdict — a
-                // non-failure transition would clear the FailureReason the LaunchFailed call above
-                // just set server-side.
-                SetAgentStatus(agent, "Failed");
             }
 
             // PTY output can end before waitpid reports the child as exited.
@@ -2497,6 +2523,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         await StopAgentCoreAsync(agent);
     }
 
+    /// <summary>Test-only: invoked ONCE inside <see cref="StopAgentCoreAsync"/> immediately AFTER the
+    /// suppress-Completed snapshot and BEFORE the Completed send, so a test can publish a verdict in
+    /// exactly that TOCTOU window and prove the pre-send re-check suppresses it (finding 2). Null in
+    /// production (a single null check, no behavioural effect).</summary>
+    internal Action? StopGateAfterSnapshotHookForTest;
+
     /// <summary>
     /// The stop itself, with no caller-authorisation policy: graceful /exit, then terminate.
     /// Server-origin stops reach this through <see cref="HandleStopAgent"/> (which refuses
@@ -2529,9 +2561,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // false, preserving the byte-identical teardown for that case. Gated on these two
             // signals specifically, not `Status == "Failed"` — an unrelated Failed state must not
             // by itself block a legitimate Completed transition.
-            var suppressCompleted =
-                Volatile.Read(ref agent.LaunchFailureVerdictReported) != 0
-             || agent.Runtime is AcpHostedAgentRuntime { Verdict.ReapedInsideLaunchWindow: true };
+            var suppressCompleted = VerdictForbidsNonFailureStatus(agent);
+
+            // Test seam: lets a test publish a verdict in the TOCTOU window between this snapshot and
+            // the Completed send below. No-op in production.
+            StopGateAfterSnapshotHookForTest?.Invoke();
 
             // Set status BEFORE cancelling ReadCts so the read loop's finally
             // block sees "Completed" and skips its own status change / event append.
@@ -2546,7 +2580,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             // An unregistered agent has no server-side row to update.
             if (!agent.IsPrivate) {
-                if (!suppressCompleted) _ = _server.AgentStatusChangedAsync(agentId, "Completed", agent.SessionId);
+                // Re-check immediately before the send, not only at the snapshot (finding 2): a verdict
+                // PUBLISHED in the window between the snapshot above and here — the reap runs on another
+                // thread — must still suppress this non-failure transition, or it clears the
+                // FailureReason the finalizer's LaunchFailed set server-side.
+                if (!suppressCompleted && !VerdictForbidsNonFailureStatus(agent))
+                    _ = _server.AgentStatusChangedAsync(agentId, "Completed", agent.SessionId);
                 _ = _server.AppendAgentRunEventAsync(agentId, new AgentRunStopped("user", null));
             }
 
@@ -3192,6 +3231,15 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     internal async Task ReRegisterAgentsAsync() {
         // PrivateLocal agents are never registered with the server, so never re-register them.
         foreach (var agent in _agents.Values.Where(a => (a.Status is "Starting" or "Running") && !a.IsPrivate)) {
+            // A published launch-window verdict (or its reported flag) means this agent is terminally
+            // Failed and about to be unregistered by the finalizer — re-sending its (possibly stale
+            // "Running") non-failure Status would clear the FailureReason the verdict's LaunchFailed
+            // set server-side (finding 2). The outer Status filter can still admit it during the race
+            // where the finalizer has flipped the flag but not yet the Status field, so this inner
+            // re-check — on the properly-ordered flag/verdict, not the plain Status — is what closes
+            // it. Skip re-registration entirely; the finalizer owns this agent's terminal transition.
+            if (VerdictForbidsNonFailureStatus(agent)) continue;
+
             for (var attempt = 1; ; attempt++) {
                 try {
                     await _server.AgentRegisteredAsync(agent.Id, agent.Prompt, agent.Model, agent.Effort, agent.RepoPath, agent.SandboxPolicy, agent.ApprovalPolicy);
@@ -3263,7 +3311,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// the same mapping also covers a pre-<c>StartAsync</c> factory failure's plain exception message
     /// if a future call site adopts it.</summary>
     internal static string MapLaunchFailureReason(string? reason, string fallbackSource) =>
-        !string.IsNullOrWhiteSpace(reason) ? reason : $"launch_failed:{fallbackSource} — see daemon log";
+        !string.IsNullOrWhiteSpace(reason)
+            ? reason
+            : AcpHostedAgentRuntimeFactory.FormatFallbackLaunchReason(fallbackSource); // finding 5: single owner of the format
 
     static readonly HashSet<string> ValidEffortLevels = ["low", "medium", "high", "max"];
 

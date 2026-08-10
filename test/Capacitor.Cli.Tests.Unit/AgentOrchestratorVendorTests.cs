@@ -2223,6 +2223,16 @@ public partial class AgentOrchestratorVendorTests {
         /// fault-containment test (a report fault must never skip CleanupAgentAsync/unregister).</summary>
         public Exception? LaunchFailedThrow { get; init; }
 
+        /// <summary>Completed the instant LaunchFailedAsync is entered (after recording the call) —
+        /// lets a test prove the finalizer is genuinely INSIDE its verdict-report await, so a
+        /// concurrent status emitter (reconnect re-registration) can be driven in exactly that
+        /// window (finding 2).</summary>
+        public TaskCompletionSource? LaunchFailedEntered { get; init; }
+
+        /// <summary>When set, LaunchFailedAsync awaits this task before returning — holding the
+        /// finalizer's report open so a concurrent emission can race it deterministically.</summary>
+        public TaskCompletionSource? LaunchFailedGate { get; init; }
+
         /// <summary>When set, EndAgentSessionAsync blocks until this token is cancelled,
         /// simulating a session-end call stuck waiting for a SignalR reconnect.</summary>
         public CancellationTokenSource? EndSessionBlockUntil { get; init; }
@@ -2230,10 +2240,12 @@ public partial class AgentOrchestratorVendorTests {
         /// <summary>Reasons passed to EndAgentSessionAsync, in call order.</summary>
         public List<string> EndSessionReasons { get; } = [];
 
-        public override Task LaunchFailedAsync(string agentId, string reason) {
+        public override async Task LaunchFailedAsync(string agentId, string reason) {
             LaunchFailedCalls.Add((agentId, reason));
+            LaunchFailedEntered?.TrySetResult();
 
-            return LaunchFailedThrow is { } ex ? Task.FromException(ex) : Task.CompletedTask;
+            if (LaunchFailedGate is { } gate) await gate.Task.ConfigureAwait(false);
+            if (LaunchFailedThrow is { } ex) throw ex;
         }
 
         /// <summary>Every <see cref="DaemonStatusReport"/> the orchestrator sent, in order — the

@@ -37,6 +37,15 @@ public partial class AgentOrchestratorVendorTests {
         public int? ExitCode       { get; private set; }
         public int  TerminateCalls { get; private set; }
 
+        /// <summary>Completed when the FINALIZER'S process-exit wait is entered — keyed on a NON-NULL
+        /// timeout, because the finalizer calls <c>WaitForExitAsync(5s)</c> while the runtime's own
+        /// construction-time watcher (<c>WatchProcessExitAsync</c>) calls the null-timeout overload;
+        /// firing on the null call would (wrongly) complete this at construction, before the finalizer
+        /// ever runs. The finalizer reaches this wait ONLY after passing (and skipping) the verdict
+        /// arm, so it fires exactly when a finalizer read the verdict as null and moved on — the
+        /// finding-1 barrier's deterministic proof the pre-fix (unsynchronized) read happened.</summary>
+        public readonly TaskCompletionSource WaitForExitEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         /// <summary>Sets exit state AND releases the wait gate — the normal production coupling,
         /// for tests that don't care about ordering.</summary>
         public void SignalExited(int exitCode = 0) {
@@ -45,7 +54,11 @@ public partial class AgentOrchestratorVendorTests {
             _waitGate.TrySetResult();
         }
 
-        public Task WaitForExitAsync(TimeSpan? timeout = null) => _waitGate.Task;
+        public Task WaitForExitAsync(TimeSpan? timeout = null) {
+            if (timeout is not null) WaitForExitEntered.TrySetResult(); // the finalizer's call, not the ctor watcher's
+
+            return _waitGate.Task;
+        }
 
         public Task TerminateAsync(TimeSpan? timeout = null) {
             TerminateCalls++;
@@ -477,5 +490,180 @@ public partial class AgentOrchestratorVendorTests {
         } finally {
             cleanup();
         }
+    }
+
+    // ── Finding 1: the finalizer's verdict observation must synchronise with the claim ──────────
+    // TryStartReap claims the slot, snapshots the window, runs the (connection-cancelling) starter,
+    // and publishes the verdict — ALL inside one _reapLock critical section. The starter's
+    // _cts.Cancel() can drive FinalizeAgentRunAsync onto another thread WHILE that section is still
+    // executing and the verdict is still null. A finalizer reading the plain Verdict auto-property
+    // there sees null and skips LaunchFailed permanently; reading through the lock-synchronised
+    // ReadVerdict() blocks until the claimant commits the publish.
+
+    /// <summary>Holds the claimant INSIDE its starter (lock held, verdict not yet published), drives
+    /// the finalizer concurrently, and asserts it still reports. WaitForExitEntered is deterministic
+    /// proof that a pre-fix (unsynchronised) finalizer already read null and moved past the verdict
+    /// arm — so pre-fix this test times out with zero reports; post-fix the finalizer blocks in
+    /// ReadVerdict() until the publish and reports. No deadlock: the starter returns the reap task
+    /// WITHOUT awaiting termination, so the claimant releases _reapLock promptly (here the starter is
+    /// a no-op returning a completed task) and never waits on the finalizer.</summary>
+    [Test]
+    public async Task Finalizer_verdict_read_synchronizes_with_the_claim() {
+        var server = new CaptureServerConnection();
+        await using var orch = BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var (runtime, process, fake) = BuildVerdictRuntime("barrier-verdict-1");
+        await using var _ = fake;
+
+        var agent = SeedAcpAgent(orch, "barrier-verdict-1", runtime);
+
+        var reaperInStarter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseStarter  = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reaperResult    = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // The claimant blocks inside its starter, so the whole claim section — _reapLock held, window
+        // snapshotted, verdict NOT yet published — stays open until the test releases it. It runs on a
+        // DEDICATED thread, never the thread pool: a blocked pool thread throttles the pool's thread
+        // injection, which would delay the finalizer's own Task.Run past the barrier and let it read
+        // the verdict only AFTER release (a false pass this test measured).
+        var reaperThread = new Thread(() => {
+            try {
+                reaperResult.SetResult(runtime.TryStartReap(
+                    "kiro_reviewer_mcp_surface_unexpected: violation", () => {
+                        reaperInStarter.TrySetResult();
+                        releaseStarter.Task.GetAwaiter().GetResult(); // synchronous block INSIDE _reapLock
+                        return Task.CompletedTask;
+                    }));
+            } catch (Exception ex) {
+                reaperResult.SetException(ex);
+            }
+        }) { IsBackground = true };
+        reaperThread.Start();
+
+        await reaperInStarter.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        // Drive the finalizer concurrently — the production shape where the starter's own
+        // _cts.Cancel() terminalises the child and drives FinalizeAgentRunAsync on another thread.
+        var finalizeTask = Task.Run(() => orch.FinalizeAgentRunForTest(agent));
+
+        // Hold the claim section open until the finalizer has provably reached its verdict read while
+        // the lock is held and the verdict is null:
+        //   • Pre-fix (plain read): it reads null, skips the arm and reaches WaitForExitAsync — the
+        //     WaitForExitEntered signal fires, and the bound is never approached.
+        //   • Post-fix (ReadVerdict): it blocks on _reapLock and never reaches WaitForExitAsync, so
+        //     this falls to the bound. The bound is immaterial to post-fix correctness — the lock
+        //     guarantees the finalizer reads the published verdict once released — so a generous value
+        //     only costs this one test its tail; what it buys is a RELIABLE pre-fix null-read.
+        await Task.WhenAny(process.WaitForExitEntered.Task, Task.Delay(TimeSpan.FromSeconds(3)));
+
+        // Close the claim section: verdict published, _reapLock released.
+        releaseStarter.TrySetResult();
+        await Assert.That(await reaperResult.Task.WaitAsync(TimeSpan.FromSeconds(30))).IsTrue();
+
+        try {
+            // Post-fix: the finalizer's ReadVerdict() unblocks and reports. Pre-fix: it already read
+            // null and skipped the arm, so no report ever lands and this times out at 0.
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (server.LaunchFailedCalls.Count == 0 && DateTime.UtcNow < deadline)
+                await Task.Delay(10);
+
+            await Assert.That(server.LaunchFailedCalls.Count(c => c.AgentId == "barrier-verdict-1")).IsEqualTo(1);
+            await Assert.That(server.LaunchFailedCalls[0].Reason).Contains("kiro_reviewer_mcp_surface_unexpected");
+        } finally {
+            process.SignalExited(0);
+            try { await finalizeTask.WaitAsync(TimeSpan.FromSeconds(30)); } catch { /* pre-fix leaves it parked past the failed assertion */ }
+        }
+
+        await Assert.That(agent.Status).IsEqualTo("Failed");
+    }
+
+    // ── Finding 2: a concurrent status sender must not clear the just-reported failure ──────────
+
+    /// <summary>The finalizer transitions the agent to Failed BEFORE awaiting the report, so a
+    /// reconnect re-registration racing that await sees the failure state and cannot re-send the
+    /// (pre-fix still "Running") non-failure status — which would clear the FailureReason the report
+    /// is setting server-side.</summary>
+    [Test]
+    public async Task Reregistration_during_the_verdict_report_await_does_not_emit_a_non_failure_status() {
+        var launchFailedEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var launchFailedGate    = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var server = new CaptureServerConnection {
+            LaunchFailedEntered = launchFailedEntered,
+            LaunchFailedGate    = launchFailedGate
+        };
+        await using var orch = BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var (runtime, process, fake) = BuildVerdictRuntime("rereg-race-1");
+        await using var _ = fake;
+
+        runtime.TryStartReap("kiro_reviewer_mcp_surface_unexpected: violation", () => Task.CompletedTask);
+
+        var agent = SeedAcpAgent(orch, "rereg-race-1", runtime, status: "Running");
+
+        var finalizeTask = orch.FinalizeAgentRunForTest(agent);
+
+        // The finalizer is now genuinely inside its verdict-report await.
+        await launchFailedEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        // A reconnect re-registration racing that await must NOT re-send this agent's status.
+        await orch.ReRegisterAgentsForTestAsync();
+
+        await Assert.That(server.StatusChangedCalls.Any(
+            c => c.AgentId == "rereg-race-1" && c.Status is "Running" or "Starting")).IsFalse();
+
+        launchFailedGate.TrySetResult();
+        process.SignalExited(0);
+        await finalizeTask.WaitAsync(TimeSpan.FromSeconds(30));
+
+        await Assert.That(agent.Status).IsEqualTo("Failed");
+        await Assert.That(server.LaunchFailedCalls.Count(c => c.AgentId == "rereg-race-1")).IsEqualTo(1);
+    }
+
+    /// <summary>The stale-Status race: the finalizer has set LaunchFailureVerdictReported (with
+    /// proper memory ordering) but a concurrent ReRegister still reads the agent's Status field as
+    /// "Running". The INNER re-check on the flag — not the outer Status filter — must suppress the
+    /// resend. Seeds that state directly so the window is exercised without a race.</summary>
+    [Test]
+    public async Task Reregistration_of_a_reported_verdict_agent_skips_its_status_resend() {
+        var server = new CaptureServerConnection();
+        await using var orch = BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var agent = orch.SeedAgentForTest("rereg-reported-1", status: "Running");
+        agent.LaunchFailureVerdictReported = 1; // the finalizer already claimed the report
+
+        await orch.ReRegisterAgentsForTestAsync();
+
+        await Assert.That(server.StatusChangedCalls.Any(c => c.AgentId == "rereg-reported-1")).IsFalse();
+    }
+
+    /// <summary>The stop-gate TOCTOU: StopAgentCoreAsync snapshots the suppression signals once, then
+    /// (synchronously) reaches the Completed send. A verdict published in that window must still be
+    /// suppressed — which only a pre-send RE-CHECK, not the snapshot, can do. The hook publishes the
+    /// verdict in exactly that window.</summary>
+    [Test]
+    public async Task Stop_gate_rechecks_a_verdict_published_after_its_snapshot() {
+        var server = new CaptureServerConnection();
+        await using var orch = BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var (runtime, process, fake) = BuildVerdictRuntime("stop-toctou-1");
+        await using var _ = fake;
+
+        var agent = SeedAcpAgent(orch, "stop-toctou-1", runtime, status: "Running");
+        process.SignalExited(0);
+
+        // No verdict yet — the stop gate's snapshot reads "no suppression". The hook then publishes an
+        // in-window verdict between that snapshot and the Completed send, so only a pre-send re-check
+        // can suppress the transition.
+        orch.StopGateAfterSnapshotHookForTest = () =>
+            runtime.TryStartReap("kiro_reviewer_mcp_surface_unexpected: violation", () => Task.CompletedTask);
+
+        await orch.HandleStopAgentForTest("stop-toctou-1");
+
+        await Assert.That(server.StatusChangedCalls.Any(
+            c => c.AgentId == "stop-toctou-1" && c.Status == "Completed")).IsFalse();
     }
 }

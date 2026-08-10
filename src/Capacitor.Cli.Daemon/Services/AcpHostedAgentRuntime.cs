@@ -305,8 +305,32 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
     /// <summary>Null until a reap wins the claim (and forever null if none ever does, or the sole
     /// claim's starter throws). Read by the orchestrator to reclassify a launch/registration failure
-    /// with the daemon's coded reason instead of surfacing as an unknown failure.</summary>
+    /// with the daemon's coded reason instead of surfacing as an unknown failure.
+    ///
+    /// <para>The plain auto-property is safe only for a reader that CANNOT race a concurrent claim —
+    /// the factory's launch path, which reads it strictly after an ordered
+    /// <see cref="DisposeAsync"/> that already awaited the reap. The orchestrator's finalizer CAN race
+    /// the claim (the reap's own <c>_cts.Cancel()</c> drives finalization on another thread while the
+    /// claimant still holds <see cref="_reapLock"/> and this is still null), so it must read through
+    /// <see cref="ReadVerdict"/> instead.</para></summary>
     public TerminationVerdict? Verdict { get; private set; }
+
+    /// <summary>
+    /// The verdict, observed UNDER <see cref="_reapLock"/> — so a reader that can race a concurrent
+    /// claim blocks until the claimant has committed the publish (or observes the absence of any
+    /// claim), never the transient window where the slot is claimed but <see cref="Verdict"/> is not
+    /// yet assigned (finding 1). <see cref="TryStartReap"/> publishes the verdict at the tail of the
+    /// SAME critical section that claims the slot and runs the (connection-cancelling) starter, so a
+    /// finalizer reading the plain auto-property mid-claim would see null and skip
+    /// <c>LaunchFailed</c> permanently.
+    ///
+    /// <para><b>No deadlock:</b> the starter returns the reap Task WITHOUT awaiting termination (it
+    /// runs only synchronous log + <c>_cts.Cancel()</c> work before the first await inside
+    /// <see cref="ReapUnexpectedInteractionAsync"/>), so the claimant releases <see cref="_reapLock"/>
+    /// promptly and never itself waits on any finalizer — the lock is only ever held for that bounded
+    /// synchronous burst.</para>
+    /// </summary>
+    internal TerminationVerdict? ReadVerdict() { lock (_reapLock) return Verdict; }
 
     /// <summary>
     /// Claims the single reap slot and, on success, publishes the fused <see cref="TerminationVerdict"/>.

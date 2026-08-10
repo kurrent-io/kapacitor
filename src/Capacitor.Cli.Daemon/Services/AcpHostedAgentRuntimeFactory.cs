@@ -342,8 +342,9 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // No explicit delete here: runtime.DisposeAsync runs the ordered cleanup (await the
             // reap, confirm exit, then delete), and deleting again afterwards would bypass exactly
             // the exit-confirmed gate that ordering exists to enforce. DisposeAsync now unconditionally
-            // awaits any claimed reap, so a Verdict checked immediately afterward is final.
-            await runtime.DisposeAsync().ConfigureAwait(false);
+            // awaits any claimed reap, so a Verdict checked immediately afterward is final. Its
+            // teardown fault is contained (finding 3) so it cannot bypass reclassification below.
+            await DisposeRuntimeContainedAsync(runtime).ConfigureAwait(false);
 
             // Design spec §3.2: the deadline catch consults the verdict IDENTICALLY to the general
             // catch below — a reap racing the launch deadline must not bypass reclassification and
@@ -361,8 +362,9 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // The runtime owns both the connection and the process; dispose on a failed handshake
             // so a half-started child process is never leaked.
             // As above: disposal owns the exit-confirmed deletion, and now unconditionally awaits any
-            // claimed reap first, so the Verdict check right after is never racing it.
-            await runtime.DisposeAsync().ConfigureAwait(false);
+            // claimed reap first, so the Verdict check right after is never racing it. Its teardown
+            // fault is contained (finding 3) so it cannot bypass reclassification below.
+            await DisposeRuntimeContainedAsync(runtime).ConfigureAwait(false);
 
             // Design spec §3.2: the single reclassification seam — a published Verdict means this
             // launch was reaped, and its coded reason becomes the exception's headline instead of
@@ -390,6 +392,23 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// </summary>
     internal sealed class AcpReviewerReapedException(string message, Exception inner)
         : InvalidOperationException(message, inner);
+
+    /// <summary>
+    /// Disposes the runtime with its teardown fault CONTAINED (design spec §3.2 / finding 3).
+    /// <see cref="AcpHostedAgentRuntime.DisposeAsync"/> can propagate a connection/process disposal
+    /// fault; letting that escape a launch-failure catch would skip <see cref="ReclassifyIfReaped"/>
+    /// and replace the coded verdict with a teardown exception. The published verdict is already final
+    /// by the time this runs (disposal awaits the reap first), so a disposal fault is pure teardown
+    /// noise — logged at Debug, never rethrown, so reclassification always runs.
+    /// </summary>
+    async Task DisposeRuntimeContainedAsync(AcpHostedAgentRuntime runtime) {
+        try {
+            await runtime.DisposeAsync().ConfigureAwait(false);
+        } catch (Exception disposeEx) {
+            _logger.LogDebug(disposeEx,
+                "ACP: runtime disposal faulted during launch-failure teardown; the coded verdict (if any) still governs reclassification.");
+        }
+    }
 
     /// <summary>
     /// The single reclassification seam (design spec §3.2): after ordered disposal — which now
@@ -428,6 +447,10 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// disposal — releasing handles under a still-alive child just leaves it running).
     /// </summary>
     internal static async Task DisposeUnclaimedSpawnAsync(AcpConnection? connection, IAcpProcess? process) {
+        // Each cleanup step is INDEPENDENTLY guarded (finding 4): a throwing connection disposal must
+        // neither skip the process disposal below it nor escape to mask the construction failure that
+        // brought us here — the "best-effort throughout" contract. The prior shape awaited
+        // connection.DisposeAsync with no guard, so a throwing stream disposal did both.
         if (process is not null) {
             try {
                 await process.TerminateAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -436,11 +459,21 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             }
         }
 
-        if (connection is not null)
-            await connection.DisposeAsync().ConfigureAwait(false);
+        if (connection is not null) {
+            try {
+                await connection.DisposeAsync().ConfigureAwait(false);
+            } catch {
+                // Best-effort — must not skip the process disposal below or mask the launch failure.
+            }
+        }
 
-        if (process is not null)
-            await process.DisposeAsync().ConfigureAwait(false);
+        if (process is not null) {
+            try {
+                await process.DisposeAsync().ConfigureAwait(false);
+            } catch {
+                // Best-effort — the same contract: a cleanup fault never replaces the real error.
+            }
+        }
     }
 
     /// <summary>
@@ -452,7 +485,17 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// duplicated at every call site.
     /// </summary>
     internal static string DescribeLaunchFailure(Exception ex) =>
-        string.IsNullOrWhiteSpace(ex.Message) ? $"launch_failed:{ex.GetType().Name} — see daemon log" : ex.Message;
+        string.IsNullOrWhiteSpace(ex.Message) ? FormatFallbackLaunchReason(ex.GetType().Name) : ex.Message;
+
+    /// <summary>
+    /// The SINGLE owner of the §3.5 fallback reason format (finding 5). Both the exception-backed
+    /// path (<see cref="DescribeLaunchFailure"/>) and the reason-backed path
+    /// (<see cref="AgentOrchestrator.MapLaunchFailureReason"/>) route their fallback through here, so
+    /// the two can never drift to different <c>launch_failed:…</c> shapes. <paramref name="token"/> is
+    /// the identifier for WHAT produced the empty reason — an exception type name, or a caller-supplied
+    /// source string.
+    /// </summary>
+    internal static string FormatFallbackLaunchReason(string token) => $"launch_failed:{token} — see daemon log";
 
     /// <summary>
     /// Fail-closed validation + build of the review-flow MCP list, run as the FIRST thing in

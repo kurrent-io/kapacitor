@@ -3027,4 +3027,123 @@ public class AcpHostedAgentRuntimeFactoryTests {
         await Assert.That(AcpHostedAgentRuntimeFactory.DescribeLaunchFailure(ex))
             .IsEqualTo($"launch_failed:{nameof(InvalidOperationException)} — see daemon log");
     }
+
+    // ── Finding 3: a disposal fault must not bypass verdict reclassification ─────────────────────
+
+    /// <summary>An <see cref="IAcpProcess"/> that terminates instantly (so the reap completes) but
+    /// FAULTS on <see cref="DisposeAsync"/> — the connection/process disposal fault the runtime's own
+    /// DisposeAsync propagates. Pre-fix, that fault escapes the factory's launch-failure catch BEFORE
+    /// <c>ReclassifyIfReaped</c> runs, replacing the coded verdict with a teardown exception.</summary>
+    sealed class ThrowingDisposeAcpProcess : IAcpProcess {
+        readonly TaskCompletionSource _exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int  Pid       { get; init; } = 4545;
+        public bool HasExited { get; private set; }
+        public int? ExitCode  { get; private set; }
+        public Task WaitForExitAsync(TimeSpan? timeout = null) => _exited.Task;
+        public Task TerminateAsync(TimeSpan? timeout = null) { HasExited = true; ExitCode = 0; _exited.TrySetResult(); return Task.CompletedTask; }
+        public ValueTask DisposeAsync() => throw new InvalidOperationException("teardown-fault: process disposal");
+    }
+
+    /// <summary>A reap during <c>initialize</c> whose runtime disposal then FAULTS must still be
+    /// reclassified to the coded verdict — the disposal fault is contained and logged, never allowed
+    /// to become the launch failure's headline. Pre-fix, <c>await runtime.DisposeAsync()</c> throws
+    /// out of the catch before reclassification and the teardown exception surfaces instead.</summary>
+    [Test]
+    public async Task ReapDuringInitialize_ThrowingDisposal_StillReclassifiesToVerdict() {
+        var fake = new FakeAcpAgent();
+        fake.HoldInitializeResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: new DaemonConfig(),
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, new ThrowingDisposeAcpProcess()));
+
+        using var cts = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+
+        var startTask = factory.StartAsync(ReviewContext(), cts.Token);
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (!fake.ReceivedCalls.Any(c => c.Method == "initialize") && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+        await Assert.That(fake.ReceivedCalls.Any(c => c.Method == "initialize")).IsTrue();
+
+        await WriteReapTriggerFrameAsync(fake);
+        fake.SimulateCrash();
+
+        var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
+            () => startTask.WaitAsync(HangGuard));
+
+        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex.Message).DoesNotContain("teardown-fault"); // never the disposal exception
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch { /* torn down by the simulated crash */ }
+        await fake.DisposeAsync();
+    }
+
+    // ── Finding 4: DisposeUnclaimedSpawnAsync must not leak or mask on a cleanup fault ───────────
+
+    /// <summary>A <see cref="Stream"/> whose disposal FAULTS — makes <c>AcpConnection.DisposeAsync</c>
+    /// throw, standing in for a throwing stream disposal.</summary>
+    sealed class ThrowOnDisposeStream : Stream {
+        public override bool CanRead  => false;
+        public override bool CanSeek  => false;
+        public override bool CanWrite => true;
+        public override long Length   => 0;
+        public override long Position { get => 0; set { } }
+        public override void Flush() { }
+        public override int  Read(byte[] buffer, int offset, int count) => 0;
+        public override long Seek(long offset, SeekOrigin origin) => 0;
+        public override void SetLength(long value) { }
+        public override void Write(byte[] buffer, int offset, int count) { }
+        protected override void Dispose(bool disposing) => throw new InvalidOperationException("stream-disposal-fault");
+        public override ValueTask DisposeAsync() => throw new InvalidOperationException("stream-disposal-fault");
+    }
+
+    /// <summary>Tracks Terminate/Dispose so a test can prove the process was disposed even when the
+    /// connection disposal above it faulted.</summary>
+    sealed class DisposeTrackingAcpProcess : IAcpProcess {
+        readonly TaskCompletionSource _exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int  Pid            { get; init; } = 4646;
+        public bool HasExited      { get; private set; }
+        public int? ExitCode       { get; private set; }
+        public int  TerminateCalls { get; private set; }
+        public int  DisposeCalls   { get; private set; }
+        public Task WaitForExitAsync(TimeSpan? timeout = null) => _exited.Task;
+        public Task TerminateAsync(TimeSpan? timeout = null) { TerminateCalls++; HasExited = true; ExitCode = 0; _exited.TrySetResult(); return Task.CompletedTask; }
+        public ValueTask DisposeAsync() { DisposeCalls++; return ValueTask.CompletedTask; }
+    }
+
+    /// <summary>A throwing connection disposal must neither skip the process disposal below it nor
+    /// escape to mask the construction failure that brought us here (the "best-effort throughout"
+    /// contract). Pre-fix, <c>connection.DisposeAsync</c> is awaited with no guard, so its fault
+    /// propagates out — the process is left undisposed and the launch's real error is masked.</summary>
+    [Test]
+    public async Task DisposeUnclaimedSpawn_ConnectionDisposalFault_StillDisposesProcess_AndDoesNotThrow() {
+        var connection = new AcpConnection(new ThrowOnDisposeStream(), new MemoryStream(), NullLogger.Instance);
+        var process    = new DisposeTrackingAcpProcess();
+
+        // Must NOT throw — a cleanup fault cannot replace the launch's real error.
+        await AcpHostedAgentRuntimeFactory.DisposeUnclaimedSpawnAsync(connection, process);
+
+        await Assert.That(process.TerminateCalls).IsGreaterThan(0);
+        await Assert.That(process.DisposeCalls).IsGreaterThan(0); // ran despite the connection fault
+    }
+
+    // ── Finding 5: the §3.5 fallback format string has a single owner ────────────────────────────
+
+    /// <summary>The exception-backed (factory <c>DescribeLaunchFailure</c>) and reason-backed
+    /// (orchestrator <c>MapLaunchFailureReason</c>) fallback paths route through ONE formatter, so
+    /// they cannot drift to different <c>launch_failed:…</c> shapes.</summary>
+    [Test]
+    public async Task Launch_failure_fallback_format_has_a_single_owner() {
+        var fromFactory = AcpHostedAgentRuntimeFactory.DescribeLaunchFailure(new InvalidOperationException("   "));
+        var fromOrch    = AgentOrchestrator.MapLaunchFailureReason(null, nameof(InvalidOperationException));
+
+        await Assert.That(fromFactory).IsEqualTo(fromOrch);
+        await Assert.That(fromFactory).IsEqualTo($"launch_failed:{nameof(InvalidOperationException)} — see daemon log");
+    }
 }
