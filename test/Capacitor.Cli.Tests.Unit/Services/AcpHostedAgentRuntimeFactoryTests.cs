@@ -2643,7 +2643,11 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// matrix cell exists to prove that, not to find a NEW divergent behavior.</summary>
     [Test]
     public async Task ReapDuringInitialize_WithDisposalHook_FactoryReclassifiesToVerdict_NoAuthHint() {
-        var fake = new FakeAcpAgent();
+        // inlineAgentReads: the connection writes `initialize` synchronously in StartAsync, so inline
+        // reads make the fake RECORD it synchronously — the reap below can never preempt it, on any
+        // runner (the windows ordering race). We then gate the reap on the deterministic
+        // InitializeReceived signal rather than a wall-clock poll.
+        var fake = new FakeAcpAgent(inlineAgentReads: true);
         fake.HoldInitializeResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var factory = new AcpHostedAgentRuntimeFactory(
@@ -2661,10 +2665,9 @@ public class AcpHostedAgentRuntimeFactoryTests {
 
         var startTask = factory.StartAsync(ReviewContext(), cts.Token);
 
-        var deadline = DateTime.UtcNow + HangGuard;
-        while (!fake.ReceivedCalls.Any(c => c.Method == "initialize") && DateTime.UtcNow < deadline)
-            await Task.Delay(10);
-        await Assert.That(fake.ReceivedCalls.Any(c => c.Method == "initialize")).IsTrue();
+        // Reap DURING initialize, provably AFTER initialize is received (never a timer). A runtime that
+        // never sends initialize would hang this — the mutation this assertion still catches.
+        await fake.InitializeReceived.WaitAsync(HangGuard);
 
         await WriteReapTriggerFrameAsync(fake);
         fake.SimulateCrash();
@@ -2863,7 +2866,9 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// regress the shape that ALREADY awaited the reap pre-fix.</summary>
     [Test]
     public async Task ReapLandsDuringDisposalAwait_WithDisposalHook_BlocksFactoryUntilReapCompletes() {
-        var fake    = new FakeAcpAgent();
+        // inlineAgentReads: record `initialize` synchronously with the connection's write so the reap
+        // can never preempt it (windows ordering race); the reap is gated on InitializeReceived below.
+        var fake    = new FakeAcpAgent(inlineAgentReads: true);
         var process = new GatedAcpProcess();
         fake.HoldInitializeResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -2885,10 +2890,9 @@ public class AcpHostedAgentRuntimeFactoryTests {
 
         var startTask = factory.StartAsync(ReviewContext(), cts.Token);
 
-        var deadline = DateTime.UtcNow + HangGuard;
-        while (!fake.ReceivedCalls.Any(c => c.Method == "initialize") && DateTime.UtcNow < deadline)
-            await Task.Delay(10);
-        await Assert.That(fake.ReceivedCalls.Any(c => c.Method == "initialize")).IsTrue();
+        // Reap provably AFTER initialize is received (never a timer). A runtime that never sends
+        // initialize would hang this — the mutation this still catches.
+        await fake.InitializeReceived.WaitAsync(HangGuard);
 
         await WriteReapTriggerFrameAsync(fake);
 
@@ -2950,17 +2954,24 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// generic <c>{vendor}_reviewer_launch_timeout</c> text instead.</summary>
     [Test]
     public async Task Deadline_catch_racing_verdict_reclassifies() {
-        var fake = new FakeAcpAgent();
+        // inlineAgentReads: record `initialize` synchronously with the connection's write so the reap
+        // below can never preempt the handshake on any runner (the windows ordering race).
+        //
+        // HONEST NOTE on which catch arm this traverses: the reap's own `_cts.Cancel()` faults the
+        // pending `initialize` request, so StartAsync throws via the GENERAL handshake-failure catch
+        // (sub-second — the ~700ms runtime confirms it), NOT the launch-deadline catch, which the
+        // generous 12s budget is never allowed to reach. Both arms funnel through the SAME
+        // ReclassifyIfReaped, so this still pins the property the deadline arm shares: a published
+        // verdict is surfaced (never the generic `{vendor}_reviewer_launch_timeout`). The deadline arm
+        // cannot be reached deterministically WITH a reap-published verdict without a TimeProvider seam
+        // on the launch deadline (deliberately absent) — because a real verdict only exists once the
+        // reap has already cancelled `_cts` and faulted the handshake. Flagged to the coordinator.
+        var fake = new FakeAcpAgent(inlineAgentReads: true);
         fake.HoldInitializeResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var factory = new AcpHostedAgentRuntimeFactory(
             // OpenCode is a GATED reviewer vendor (like Kiro/Gemini) — see OpenCodeEnabledConfig.
             descriptor: AcpVendorDescriptors.OpenCode,
-            // Real wall-clock budget — ReviewerLaunchDeadline's CancelAfter has no TimeProvider seam.
-            // 12s (was 2s): must comfortably exceed the real handshake's spawn+initialize+reap-trigger
-            // latency on the slower windows CI runner under parallel load (a 2s deadline fired before
-            // "initialize" was even sent there), yet stay below HangGuard so startTask.WaitAsync(HangGuard)
-            // still observes the deadline-driven throw. The deadline catch is still the path under test.
             config: OpenCodeEnabledConfig(launchTimeoutSeconds: 12),
             loggerFactory: NullLoggerFactory.Instance,
             connection: new CaptureServerConnection(),
@@ -2972,10 +2983,8 @@ public class AcpHostedAgentRuntimeFactoryTests {
 
         var startTask = factory.StartAsync(ReviewContext(), cts.Token);
 
-        var deadline = DateTime.UtcNow + HangGuard;
-        while (!fake.ReceivedCalls.Any(c => c.Method == "initialize") && DateTime.UtcNow < deadline)
-            await Task.Delay(10);
-        await Assert.That(fake.ReceivedCalls.Any(c => c.Method == "initialize")).IsTrue();
+        // initialize is provably received (synchronous under inline reads) — well before the deadline.
+        await fake.InitializeReceived.WaitAsync(HangGuard);
 
         // Publish the verdict well before the launch deadline fires below.
         await WriteReapTriggerFrameAsync(fake);
