@@ -2959,11 +2959,17 @@ public class AcpHostedAgentRuntimeFactoryTests {
         await fake.DisposeAsync();
     }
 
-    /// <summary>The launch-DEADLINE catch (~308–333) must consult the verdict identically to the
-    /// general catch-all — a deadline racing a reap must not bypass reclassification and surface the
-    /// generic <c>{vendor}_reviewer_launch_timeout</c> text instead.</summary>
+    /// <summary>Reap-during-handshake reclassification: a reap that lands while the handshake is in
+    /// flight must surface the coded verdict, never the generic <c>{vendor}_reviewer_launch_timeout</c>
+    /// text. It runs through the GENERAL handshake-failure catch — the reap faults the pending
+    /// <c>initialize</c> sub-second, so the launch-deadline catch is never reached (see the in-body
+    /// note) — and BOTH the general and launch-deadline catch arms funnel through the SAME
+    /// <c>ReclassifyIfReaped</c>, so the shared "verdict wins over the generic launch-timeout text"
+    /// property IS pinned here. The deadline-SPECIFIC catch arm cannot be exercised deterministically
+    /// WITH a published verdict without a TimeProvider seam on the launch deadline (deliberately absent)
+    /// — a documented, accepted coverage gap, NOT one disguised by this test's name.</summary>
     [Test]
-    public async Task Deadline_catch_racing_verdict_reclassifies() {
+    public async Task Reap_during_handshake_reclassifies_to_verdict_via_general_catch() {
         // POSIX-only — see ReapDuringInitialize_WithDisposalHook_ for the full reason: this launches the
         // OpenCode unattended reviewer, refused on Windows before a connection exists.
         Skip.When(OperatingSystem.IsWindows(),
@@ -2977,8 +2983,8 @@ public class AcpHostedAgentRuntimeFactoryTests {
         // shares: a published verdict is surfaced (never the generic `{vendor}_reviewer_launch_timeout`).
         // The deadline arm cannot be reached deterministically WITH a reap-published verdict without a
         // TimeProvider seam on the launch deadline (deliberately absent) — because a real verdict only
-        // exists once the reap has already cancelled `_cts` and faulted the handshake. Flagged to the
-        // coordinator.
+        // exists once the reap has already cancelled `_cts` and faulted the handshake. That is the
+        // accepted, documented coverage gap the test name and summary now state honestly.
         var fake = new FakeAcpAgent();
         fake.HoldInitializeResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -2996,7 +3002,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
 
         var startTask = factory.StartAsync(ReviewContext(), cts.Token);
 
-        // initialize is provably received (synchronous under inline reads) — well before the deadline.
+        // initialize is provably received (recorded on the fake's read loop) — well before the deadline.
         await fake.InitializeReceived.WaitAsync(HangGuard);
 
         // Publish the verdict well before the launch deadline fires below.
