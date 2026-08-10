@@ -331,11 +331,13 @@ public class MainWindowSmokeTests {
     // through the code-behind, not just that the ViewModel reacts correctly in isolation
     // (ActivityViewModelTests already covers that). Selecting Agents leaves the read count
     // unchanged; each TRUE transition (select Activity, then re-Show after a Hide) issues exactly
-    // one more immediate read; Hide is a FALSE transition and reads nothing.
+    // one more immediate read; Hide is a FALSE transition and reads nothing. Each TRUE transition
+    // is awaited via PendingRefreshForTesting — the VM's stat+read now hops off the UI thread,
+    // so RunJobs() alone no longer guarantees the read has landed.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Activity_tab_visibility_follows_selection_and_window_IsVisible() {
-        var (afterAgents, afterActivity, afterHide, afterReshow) = await AvaloniaSession.DispatchAsync(() => {
+        var (afterAgents, afterActivity, afterHide, afterReshow) = await AvaloniaSession.DispatchAsync(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
             var reader = new ScriptedReader();
@@ -352,6 +354,7 @@ public class MainWindowSmokeTests {
             var activityTab = window.GetVisualDescendants().OfType<TabItem>().First(t => t.Name == "ActivityTabItem");
             tabs.SelectedItem = activityTab;
             Dispatcher.UIThread.RunJobs();
+            await activity.PendingRefreshForTesting!;
             var readsActivity = reader.ReadCalls;
 
             window.Hide();
@@ -360,6 +363,7 @@ public class MainWindowSmokeTests {
 
             window.Show();
             Dispatcher.UIThread.RunJobs();
+            await activity.PendingRefreshForTesting!;
             var readsReshown = reader.ReadCalls;
 
             window.Close();

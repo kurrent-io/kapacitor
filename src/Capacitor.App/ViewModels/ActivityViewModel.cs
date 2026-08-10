@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using Avalonia.Threading;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core.LocalIpc;
 using DynamicData.Binding;
@@ -47,6 +48,15 @@ public sealed class ActivityViewModel : ReactiveObject, IDisposable {
     bool _visible;
     int _tickCount;
     string? _lastStatKey;
+    bool _refreshInFlight;
+    bool _disposed;
+
+    enum RefreshMode { Gated, PrimeAndRead, ReadOnly }
+
+    /// Test-only seam: the in-flight off-UI-thread stat+read hop this VM is currently awaiting, so
+    /// a test can await the exact completion the single-flight guard below watches instead of a
+    /// fixed delay. Null when idle.
+    internal Task? PendingRefreshForTesting { get; private set; }
 
     public ActivityViewModel(Func<ConsentLogReadResult> read, Func<string> statKey, ITicker ticker) {
         _read = read;
@@ -56,7 +66,10 @@ public sealed class ActivityViewModel : ReactiveObject, IDisposable {
         _tickSub = ticker.Ticks.Subscribe(_ => OnTick());
     }
 
-    public void Dispose() => _tickSub.Dispose();
+    public void Dispose() {
+        _disposed = true;
+        _tickSub.Dispose();
+    }
 
     /// Tab-visibility trigger (spec §7): a true transition (tab selected AND window visible, per
     /// MainWindow.axaml.cs) does an immediate read and primes the poll's stat baseline so the very
@@ -68,32 +81,66 @@ public sealed class ActivityViewModel : ReactiveObject, IDisposable {
         _tickCount = 0;
         if (!visible) return;
 
-        try { _lastStatKey = _statKey(); } catch { _lastStatKey = "absent"; }
-        SafeRefresh();
+        TriggerRefresh(RefreshMode.PrimeAndRead);
     }
 
     /// Own-resolution nudge (spec §7): an immediate read now — the daemon appends the log record
     /// AFTER completing the resolve (RunContinuationsAsynchronously), so this ack-triggered read
     /// can beat the append. Eventual consistency relies on the next stat-poll tick, not on this
-    /// call firing a second time.
-    public void RequestRefresh() => SafeRefresh();
+    /// call firing a second time — including when the single-flight guard drops this call because
+    /// another refresh is already in flight.
+    public void RequestRefresh() => TriggerRefresh(RefreshMode.ReadOnly);
 
     void OnTick() {
         if (!_visible) return;
         if (++_tickCount < 2) return;
         _tickCount = 0;
+        TriggerRefresh(RefreshMode.Gated);
+    }
+
+    /// Single-flight: a trigger arriving while a stat+read is already running is dropped, never
+    /// queued — latest-wins isn't needed because the next tick/refresh re-checks on its own. Both
+    /// the stat call and the log read are blocking file I/O, so they run off the UI thread
+    /// (Task.Run); only the resulting state mutation and Apply (Rows is a bound collection) run
+    /// back on the UI thread, via an explicit Dispatcher hop rather than relying on an ambient
+    /// SynchronizationContext capture.
+    void TriggerRefresh(RefreshMode mode) {
+        if (_refreshInFlight) return;
+        _refreshInFlight = true;
+        PendingRefreshForTesting = RunRefreshAsync(mode);
+    }
+
+    async Task RunRefreshAsync(RefreshMode mode) {
+        try {
+            var previousKey = _lastStatKey;
+            var (nextKey, result) = await Task.Run(() => ComputeOffUiThread(mode, previousKey)).ConfigureAwait(false);
+            await Dispatcher.UIThread.InvokeAsync(() => ApplyOutcome(nextKey, result));
+        } finally {
+            _refreshInFlight = false;
+        }
+    }
+
+    // Gated (OnTick): re-reads only when the stat key changed since the previous check — the key
+    // still advances even if the read that follows throws, same as before this moved off-thread.
+    // PrimeAndRead (OnTabVisibleChanged true) always reads and always primes the baseline.
+    // ReadOnly (RequestRefresh) never touches the stat key at all.
+    (string? key, ConsentLogReadResult? result) ComputeOffUiThread(RefreshMode mode, string? previousKey) {
+        if (mode == RefreshMode.ReadOnly) return (null, SafeRead());
 
         string key;
         try { key = _statKey(); } catch { key = "absent"; }
-        if (key == _lastStatKey) return;
-        _lastStatKey = key;
-        SafeRefresh();
+        if (mode == RefreshMode.Gated && key == previousKey) return (null, null);
+        return (key, SafeRead());
     }
 
-    void SafeRefresh() {
-        ConsentLogReadResult result;
-        try { result = _read(); } catch { return; } // swallowed — last-good rows stay on display
-        Apply(result);
+    ConsentLogReadResult? SafeRead() {
+        try { return _read(); } catch { return null; } // swallowed — last-good rows stay on display
+    }
+
+    void ApplyOutcome(string? key, ConsentLogReadResult? result) {
+        if (_disposed) return;
+        if (key is not null) _lastStatKey = key;
+        if (result is not null) Apply(result);
     }
 
     /// Display rule keyed off Complete (spec §7): a Complete read replaces the rows, including

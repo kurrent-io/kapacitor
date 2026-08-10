@@ -245,22 +245,30 @@ public partial class App : Application {
         return window;
     }
 
-    // Combines both log files' (LastWriteTimeUtc, Length) into one comparison key for
-    // ActivityViewModel's stat poll (spec §7) — a single try/catch, since either file being
-    // absent or transiently unreadable is "no stats" for the pair as a whole, not per file.
-    // FileInfo.Length throws FileNotFoundException on a missing file (unlike
-    // File.GetLastWriteTimeUtc, which returns a sentinel instead) — that throw is what carries a
-    // clean absence into the caught "absent" branch.
     internal static string ActivityStatKey(string daemonName) {
+        var path = ConsentDecisionLogReader.PathFor(daemonName);
+        return ActivityStatKey(path + ".1", path);
+    }
+
+    // Combines both log files' (LastWriteTimeUtc, Length) into one comparison key for
+    // ActivityViewModel's stat poll (spec §7). Each file gets its OWN try/catch: `.1` is absent
+    // on every fresh install until the first 1MB rotation, and a single shared catch around both
+    // files would collapse the WHOLE joined key to the "absent" constant whenever `.1` throws —
+    // appends to the live file would then never change the key, and the Activity tab would go
+    // stale until the tab is reselected. FileInfo.Length throws FileNotFoundException on a
+    // missing file (unlike File.GetLastWriteTimeUtc, which returns a sentinel instead) — that
+    // throw is what carries a clean per-file absence into that file's own "absent" branch. Takes
+    // both paths directly (rather than a daemon name) so a test can point it at a temp directory
+    // without redirecting any real daemon-dir resolution.
+    internal static string ActivityStatKey(string p1Path, string livePath) => $"{StatOf(p1Path)}|{StatOf(livePath)}";
+
+    static string StatOf(string path) {
         try {
-            var path = ConsentDecisionLogReader.PathFor(daemonName);
-            return $"{StatOf(path + ".1")}|{StatOf(path)}";
+            return $"{File.GetLastWriteTimeUtc(path).Ticks}:{new FileInfo(path).Length}";
         } catch {
             return "absent";
         }
     }
-
-    static string StatOf(string path) => $"{File.GetLastWriteTimeUtc(path).Ticks}:{new FileInfo(path).Length}";
 
     // Composed here (not inside AgentActionService, spec decision 5): the service only awaits the
     // seam; every UI concern — the dialog itself, choosing an owner, marshaling onto the UI
