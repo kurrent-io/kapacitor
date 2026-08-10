@@ -29,16 +29,22 @@ namespace Capacitor.Cli.Tests.Unit;
 public class ReportVersionCommandTests : IDisposable {
     const string ProbePath = WhoamiCommand.ProbePath;
 
+    static string TokensDir  => PathHelpers.ConfigPath("tokens");
+    static string LegacyPath => PathHelpers.ConfigPath("tokens.json");
+
     readonly WireMockServer _server = WireMockServer.Start();
 
     [Before(Test)]
     public void Cleanup() {
-        AppConfig.ResetResolvedStateForTesting();
         HttpClientExtensions.ResetProviderCacheForTesting();
         Environment.SetEnvironmentVariable("KCAP_URL", null);
 
-        var cfg = AppConfig.GetConfigPath();
-        if (File.Exists(cfg)) File.Delete(cfg);
+        // Clears the tokens dir, legacy tokens file, config.json and resolved profile state. The
+        // token store is the second leak the not-authenticated case is sensitive to: a VALID token
+        // left under the DEFAULT profile by another test — bound to a localhost port the OS reuses
+        // for this test's WireMock server — resolves Ok and issues the request the test asserts
+        // never happens. (The provider-cache half is cleared globally by AuthProviderCacheGlobalSetup.)
+        SharedConfigDirCleanup.ClearTokenAndProfileState(LegacyPath, TokensDir);
     }
 
     public void Dispose() {
@@ -143,6 +149,24 @@ public class ReportVersionCommandTests : IDisposable {
         await Assert.That(result).IsEqualTo(0);
         await Assert.That(_server.LogEntries.Any(e => e.RequestMessage.Path == ProbePath)).IsFalse();
     }
+
+    // Regression for the token-store half of the leak: Cleanup must clear the tokens directory so a
+    // token another test wrote there cannot survive into the next one. Both tests assert the marker
+    // is absent at start, then write it; whichever runs second fails if Cleanup stops clearing the
+    // store. Order-independent, so it does not depend on the runner's test ordering.
+    static string LeakMarker => Path.Combine(TokensDir, "report-version-leak-guard.json");
+
+    async Task AssertTokenStoreClearedThenSeedAsync() {
+        await Assert.That(File.Exists(LeakMarker)).IsFalse();
+        Directory.CreateDirectory(TokensDir);
+        await File.WriteAllTextAsync(LeakMarker, "{}");
+    }
+
+    [Test]
+    public Task Cleanup_clears_the_token_store_between_tests_A() => AssertTokenStoreClearedThenSeedAsync();
+
+    [Test]
+    public Task Cleanup_clears_the_token_store_between_tests_B() => AssertTokenStoreClearedThenSeedAsync();
 
     // ── Server-side failures: fail-open, never throws ──────────────────────────────────────────
 
