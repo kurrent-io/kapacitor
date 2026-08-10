@@ -378,8 +378,8 @@ public static class ClaudeHookCommand {
             if (command == "session-start") {
                 var notice = new JsonObject {
                     ["systemMessage"] = authStatus == AuthStatus.Expired
-                        ? "[kcap] Authentication expired — session recording is paused. Run 'kcap login' to resume."
-                        : "[kcap] Not authenticated — session recording is off. Run 'kcap login' to start recording."
+                        ? AuthLapseNotice.Expired
+                        : AuthLapseNotice.NotAuthenticated
                 };
                 writer.WriteLine(notice.ToJsonString());
             }
