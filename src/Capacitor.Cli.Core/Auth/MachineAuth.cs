@@ -121,4 +121,20 @@ public static class MachineAuth {
 
         return null;
     }
+
+    /// <summary>
+    /// The one-line <c>kcap status</c> explanation of the auth diversion <see cref="Intended"/>
+    /// causes: with either variable present, this CLI records as the machine rather than as the
+    /// signed-in user, silently bypassing the profile token store. Names exactly the variable(s)
+    /// present — <see cref="Intended"/> is either-var, so a fixed "ID is set" line would be false in
+    /// the secret-only case — and returns null when machine auth is not in play so the caller prints
+    /// nothing. The trailing clause is what turns a status curiosity into an actionable warning: a
+    /// developer who exported these into an interactive shell is unknowingly re-owning every session.
+    /// </summary>
+    public static string? DescribeDiversion(bool idSet, bool secretSet) => (idSet, secretSet) switch {
+        (false, false) => null,
+        (true,  false) => $"machine credential ({ClientIdVar} is set) — kcap records as the machine, not as your login.",
+        (false, true)  => $"machine credential ({ClientSecretVar} is set) — kcap records as the machine, not as your login.",
+        (true,  true)  => $"machine credential ({ClientIdVar} and {ClientSecretVar} are set) — kcap records as the machine, not as your login.",
+    };
 }

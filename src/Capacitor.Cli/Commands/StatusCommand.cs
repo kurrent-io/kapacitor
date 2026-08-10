@@ -38,6 +38,14 @@ public static class StatusCommand {
         }
 
         // Auth
+        // Surface a machine-credential diversion first: with KCAP_CLIENT_ID/KCAP_CLIENT_SECRET in
+        // the environment, this CLI records as the machine and bypasses the token store entirely, so
+        // the token-store line below would otherwise look inexplicably unauthenticated.
+        var machineLine = MachineAuth.DescribeDiversion(
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(MachineAuth.ClientIdVar)),
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(MachineAuth.ClientSecretVar)));
+        if (machineLine is not null) Console.WriteLine($"  Auth:    {machineLine}");
+
         Console.Write("  Auth:    ");
         var tokens = await TokenStore.GetValidTokensAsync();
 
