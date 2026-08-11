@@ -39,6 +39,7 @@ public class ServiceVerifyStartTests {
         }
 
         public void Install(ServiceSpec spec, bool startNow) { }
+        public void WriteAndBootstrap(ServiceSpec spec) { }
 
         public bool Uninstall(string serviceId, out string? error) {
             Calls.Add("uninstall");
@@ -171,7 +172,7 @@ public class ServiceVerifyStartTests {
     }
 
     [Test]
-    public async Task Rollback_restore_verification_failure_keeps_the_marker() {
+    public async Task Rollback_reserve_exhausted_keeps_the_marker() {
         var dir = Directory.CreateTempSubdirectory().FullName;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
@@ -187,7 +188,9 @@ public class ServiceVerifyStartTests {
             var task = sut.StartVerifiedAsync(Id);
             var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
+            // Reserve ran out before the restore was ever confirmed — RollbackBudget, not
+            // RestoreVerification (that's reserved for an affirmatively-observed wrong state).
+            await Assert.That(exit).IsEqualTo(VerifyExit.RollbackBudget);
             await Assert.That(manager.StopCalls).IsEqualTo(1);
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
             await Assert.That(ServiceTxnMarker.Read(Id)!.Phase).IsEqualTo("bootstrapped");

@@ -891,10 +891,21 @@ public static class DaemonCommands {
         var logPath = PathHelpers.ConfigPath($"daemon-{id}.log");
         var spec    = new ServiceSpec(id, daemonPath, logPath, env, extra);
 
-        manager.Install(spec, startNow);
+        if (args.Contains("--verify")) {
+            var engine = new ServiceVerify(manager, DaemonPidProbe.ValidatedPid, HelloProbe.RunAsync, TimeProvider.System);
+            var exit   = await engine.InstallVerifiedAsync(spec, replace: false, CapacitorVersion.Current());
+            if (exit != VerifyExit.Ok) return exit;
 
-        await Console.Out.WriteLineAsync($"Service '{id}' installed ({manager.Describe()}).");
-        await Console.Out.WriteLineAsync("  Auto-restarts on crash/SIGKILL; starts at login.");
+            // Same closed-stdio tolerance as the engine's own Say: a broken pipe on this purely
+            // informational line must not turn an already-successful verified install into a crash.
+            try { await Console.Out.WriteLineAsync($"Service '{id}' installed (verified, {manager.Describe()})."); }
+            catch (IOException) { }
+        } else {
+            manager.Install(spec, startNow);
+
+            await Console.Out.WriteLineAsync($"Service '{id}' installed ({manager.Describe()}).");
+            await Console.Out.WriteLineAsync("  Auto-restarts on crash/SIGKILL; starts at login.");
+        }
 
         // A reviewer switch frozen into a unit is worth saying out loud: the unit outlives the shell it
         // was captured from, so an operator who later changes the variable has no effect until they
@@ -1014,7 +1025,8 @@ public static class DaemonCommands {
     static int ServiceUsage() {
         Console.Error.WriteLine("Usage: kcap daemon service <install|uninstall|start|stop|status> [--name N]");
         Console.Error.WriteLine();
-        Console.Error.WriteLine("  install [--name N] [--profile P] [--max-agents N] [--no-start]");
+        Console.Error.WriteLine("  install [--name N] [--profile P] [--max-agents N] [--no-start] [--verify]");
+        Console.Error.WriteLine("                          --verify polls readiness/version/ownership and rolls back on failure");
         Console.Error.WriteLine("  uninstall [--name N]   Stop and remove the service unit");
         Console.Error.WriteLine("  start [--name N] [--verify]   Start the installed service now");
         Console.Error.WriteLine("                          --verify polls readiness/ownership and rolls back on failure");

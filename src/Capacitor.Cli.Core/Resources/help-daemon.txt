@@ -49,10 +49,15 @@ Options for doctor:
                           --clean, doctor reports state without modifying.
 
 Subcommands for service (per-user; auto-restarts on crash/SIGKILL, starts at login):
-  install [--name N] [--profile P] [--max-agents N] [--no-start]
+  install [--name N] [--profile P] [--max-agents N] [--no-start] [--verify]
                           Register the daemon as an OS service and start it.
                           Pins the profile via KCAP_PROFILE and captures PATH so
-                          claude/codex resolve as they do in your shell.
+                          claude/codex resolve as they do in your shell. --verify
+                          polls readiness (hello), version, and ownership (job
+                          pid) before exiting 0, rolling back (uninstalling the
+                          unit) and exiting with a coded stderr token (e.g.
+                          verify_hello_validation) if that never happens within
+                          the poll budget.
   uninstall [--name N]    Stop and remove the service unit.
   start [--name N] [--verify]
                           Start the installed service now. --verify polls

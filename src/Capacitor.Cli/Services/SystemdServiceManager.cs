@@ -50,6 +50,9 @@ sealed class SystemdServiceManager(UnitFileWriter? writeUnit = null) : IServiceM
         if (startNow) ServiceProcess.Check("systemctl", SystemdUnit.RestartArgs(spec.ServiceId));
     }
 
+    /// <summary>No distinct verify path for systemd yet — delegate mechanically to <see cref="Install"/>.</summary>
+    public void WriteAndBootstrap(ServiceSpec spec) => Install(spec, startNow: true);
+
     public bool Uninstall(string serviceId, out string? error) {
         ServiceProcess.Run("systemctl", SystemdUnit.DisableNowArgs(serviceId));
         var path = SystemdUnit.UnitPath(serviceId);

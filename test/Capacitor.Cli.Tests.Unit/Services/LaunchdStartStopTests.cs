@@ -146,6 +146,29 @@ public partial class LaunchdStartStopTests {
         });
     }
 
+    // ── WriteAndBootstrap (install-verify's fresh-install mutation) ──
+
+    [Test]
+    public async Task WriteAndBootstrap_writes_the_unit_and_bootstraps_without_a_leading_bootout() {
+        Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");
+
+        await WithHome(async path => {
+            List<string[]> calls = [];
+            var mgr = new LaunchdServiceManager(runProcess: (_, args) => {
+                calls.Add(args);
+                return (0, "", "");
+            });
+            var spec = new ServiceSpec("test", "/opt/kcap/kcap-daemon", "/tmp/daemon-test.log",
+                new Dictionary<string, string>(), []);
+
+            mgr.WriteAndBootstrap(spec);
+
+            await Assert.That(File.Exists(path)).IsTrue();
+            await Assert.That(calls.Count).IsEqualTo(1);
+            await Assert.That(calls[0]).IsEquivalentTo(["bootstrap", $"gui/{Uid()}", path]);
+        });
+    }
+
     [Test]
     public async Task Start_probe_unknown_fails_without_issuing_bootstrap_or_kickstart() {
         Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");

@@ -66,6 +66,9 @@ sealed class WindowsScheduledTaskServiceManager(UnitFileWriter? writeUnit = null
         if (startNow) ServiceProcess.Check("schtasks", WindowsTaskUnit.RunArgs(spec.ServiceId));
     }
 
+    /// <summary>No distinct verify path for scheduled tasks yet — delegate mechanically to <see cref="Install"/>.</summary>
+    public void WriteAndBootstrap(ServiceSpec spec) => Install(spec, startNow: true);
+
     public bool Uninstall(string serviceId, out string? error) {
         ServiceProcess.Run("schtasks", WindowsTaskUnit.DeleteArgs(serviceId));
         var wrapper = WindowsTaskUnit.WrapperPath(serviceId);

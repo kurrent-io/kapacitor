@@ -61,6 +61,18 @@ sealed partial class LaunchdServiceManager(
         if (!startNow) ServiceProcess.Run("launchctl", LaunchdUnit.KillArgs(Uid(), spec.ServiceId));
     }
 
+    /// <summary>The install-verify engine's fresh-install mutation: write + bootstrap, no leading
+    /// bootout. The engine already classified the label as Absent via <see cref="Query"/> before
+    /// calling this, so there is nothing to boot out — unlike <see cref="Install"/>. Goes through
+    /// the injectable <see cref="_runProcess"/> (unlike <see cref="Install"/>'s static
+    /// <see cref="ServiceProcess"/> calls) so the verify engine's own tests can exercise it.</summary>
+    public void WriteAndBootstrap(ServiceSpec spec) {
+        WriteUnitFiles(spec);
+        var (code, _, err) = _runProcess("launchctl", LaunchdUnit.BootstrapArgs(Uid(), LaunchdUnit.PlistPath(spec.ServiceId)));
+        if (code != 0)
+            throw new InvalidOperationException($"launchctl bootstrap failed (exit {code}): {err.Trim()}");
+    }
+
     /// <summary>
     /// A non-zero <c>bootout</c> is not automatically a failure: the label may simply already be unloaded
     /// (a prior uninstall, a crash-then-bootout race, launchd having reaped it itself). Re-query with

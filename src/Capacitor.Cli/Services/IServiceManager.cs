@@ -43,6 +43,11 @@ interface IServiceManager {
     ServiceStatus                Status(string serviceId);
     ServiceQuery                 Query(string serviceId);
     void Install(ServiceSpec spec, bool startNow);
+    /// <summary>Write + activate only, no leading bootout — the fresh-install half of <see cref="Install"/>
+    /// for the verify engine, which classifies the label itself via <see cref="Query"/> and only calls
+    /// this on a positive Absent (so there is nothing to boot out). Managers with no distinct verify path
+    /// delegate mechanically to <see cref="Install"/>.</summary>
+    void WriteAndBootstrap(ServiceSpec spec);
     /// <summary>True + no plist on disk is the only success. False retains the plist and names the state
     /// in <paramref name="error"/> so an operator can diagnose before retrying.</summary>
     bool Uninstall(string serviceId, out string? error);

@@ -699,6 +699,7 @@ Daemon 'laptop': running (PID 12345)
 ```bash
 kcap daemon service install                # launchd (macOS) / systemd --user (Linux) / Scheduled Task (Windows)
 kcap daemon service install --name laptop  # a service per daemon name
+kcap daemon service install --verify       # install, then verify version/readiness/ownership before exiting 0
 kcap daemon service status                 # installed / running state
 kcap daemon service stop                   # stop the running service (stays installed)
 kcap daemon service start                  # start it again
@@ -709,6 +710,8 @@ kcap daemon service uninstall              # stop and remove the service
 `install` pins the active profile via `KCAP_PROFILE` and captures your current `PATH` into the unit, so the supervised daemon resolves the same server URL, `claude`/`codex` binaries, and profile settings it would from your shell. Pass `--profile P` to pin a different profile, `--max-agents N` to bake an override, or `--no-start` to register without starting. The service restarts the daemon on crash/`SIGKILL` but **not** on a clean stop.
 
 `start --verify` polls the started service until it answers a well-formed local-socket hello **and** the OS-reported job pid matches the daemon's own validated pid, rolling back (stopping the service again, plist retained) and exiting non-zero with a coded stderr token (e.g. `verify_readiness_timeout`) if that never happens within the poll budget — useful for scripted installs that need to know the daemon is actually up before proceeding.
+
+`install --verify` (fresh installs only — a service that's already installed exits with the coded `verify_contended`, since clearing an existing label is `--replace`'s job) additionally requires the started daemon's reported version to match the installing CLI's own version, and rechecks the unit file on disk against a fingerprint taken at write time — so a foreign writer replacing the file between install and the recheck is detected (`verify_restore_verification`) rather than silently accepted. On any failure it rolls back by uninstalling the unit it just wrote (never a foreign one) and exits with a coded stderr token.
 
 What it carries over from your shell is a fixed allowlist — `PATH`, `KCAP_PROFILE`, `KCAP_URL`, `KCAP_CONFIG_DIR`, `KCAP_CLAUDE_PATH`, `KCAP_CODEX_PATH`, `KCAP_COPILOT_TOKEN_CMD`, plus the Google/Gemini configuration below — and **nothing else from your environment reaches the service**, credentials included, because the unit file lands on disk. (`install` additionally writes a generated `KCAP_DAEMON_SUPERVISED` marker, so the unit holds one key that did not come from your shell.) Unit files are written owner-only (`0600`). `KCAP_COPILOT_TOKEN_CMD` is on the list precisely because it is a *command* rather than a secret — see [borrowed-context Copilot review](#borrowed-context-copilot-reviews).
 
