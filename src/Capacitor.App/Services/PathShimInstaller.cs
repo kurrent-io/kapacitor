@@ -41,7 +41,11 @@ public sealed class PathShimInstaller(IProcessRunner runner, ILoginShellProbe pr
                     null);
         }
 
-        if (result.Stderr.Contains("-128"))
+        // The parenthesized form only — a bare "-128" substring can appear unescaped inside a
+        // genuine failure's shell error text (e.g. a target path like ".../app-128/kcap"), which
+        // would otherwise misclassify a real Failed as Cancelled and silently drop the Detail and
+        // SudoFallback recovery command.
+        if (result.Stderr.Contains("(-128)"))
             return new ShimResult(ShimOutcome.Cancelled, null, null);
 
         var sudoFallback = "sudo mkdir -p /usr/local/bin && sudo ln -s " + PosixQuote(target) + " /usr/local/bin/kcap";

@@ -16,8 +16,22 @@ public class PathShimInstallerTests {
         }
     }
 
-    static string TempDestination(string dirName) =>
-        Path.Combine(Directory.CreateTempSubdirectory("kcap-shim-").FullName, dirName);
+    readonly List<string> _tempDirs = [];
+
+    string NewTempDir() {
+        var dir = Directory.CreateTempSubdirectory("kcap-shim-").FullName;
+        _tempDirs.Add(dir);
+        return dir;
+    }
+
+    string TempDestination(string dirName) => Path.Combine(NewTempDir(), dirName);
+
+    [After(Test)]
+    public void CleanupTempDirs() {
+        foreach (var dir in _tempDirs) {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
+    }
 
     // --- Preflight ---
 
@@ -35,7 +49,7 @@ public class PathShimInstallerTests {
     public async Task Preflight_symlink_to_target_is_already_installed() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
 
-        var dir = Directory.CreateTempSubdirectory("kcap-shim-").FullName;
+        var dir = NewTempDir();
         var target = Path.Combine(dir, "target-cli");
         File.WriteAllText(target, "cli");
         var dest = Path.Combine(dir, "kcap");
@@ -48,7 +62,7 @@ public class PathShimInstallerTests {
     public async Task Preflight_symlink_to_elsewhere_is_conflict() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
 
-        var dir = Directory.CreateTempSubdirectory("kcap-shim-").FullName;
+        var dir = NewTempDir();
         var target = Path.Combine(dir, "target-cli");
         File.WriteAllText(target, "cli");
         var elsewhere = Path.Combine(dir, "elsewhere-cli");
@@ -63,7 +77,7 @@ public class PathShimInstallerTests {
     public async Task Preflight_regular_file_is_conflict() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
 
-        var dir = Directory.CreateTempSubdirectory("kcap-shim-").FullName;
+        var dir = NewTempDir();
         var target = Path.Combine(dir, "target-cli");
         var dest = Path.Combine(dir, "kcap");
         File.WriteAllText(dest, "not a symlink");
@@ -75,7 +89,7 @@ public class PathShimInstallerTests {
     public async Task Preflight_directory_is_conflict() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
 
-        var dir = Directory.CreateTempSubdirectory("kcap-shim-").FullName;
+        var dir = NewTempDir();
         var target = Path.Combine(dir, "target-cli");
         var dest = Path.Combine(dir, "kcap");
         Directory.CreateDirectory(dest);
@@ -87,7 +101,7 @@ public class PathShimInstallerTests {
     public async Task Preflight_broken_symlink_is_conflict() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
 
-        var dir = Directory.CreateTempSubdirectory("kcap-shim-").FullName;
+        var dir = NewTempDir();
         var target = Path.Combine(dir, "target-cli");
         var dest = Path.Combine(dir, "kcap");
         File.CreateSymbolicLink(dest, Path.Combine(dir, "does-not-exist"));
@@ -168,7 +182,7 @@ public class PathShimInstallerTests {
     public async Task InstallAsync_cancel_is_detected_via_negative_128_in_stderr() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
 
-        var dir = Directory.CreateTempSubdirectory("kcap-shim-").FullName;
+        var dir = NewTempDir();
         var dest = Path.Combine(dir, "kcap");
         var target = Path.Combine(dir, "target-cli");
         var runner = new FakeProcessRunner();
@@ -180,11 +194,34 @@ public class PathShimInstallerTests {
         await Assert.That(result.Outcome).IsEqualTo(ShimOutcome.Cancelled);
     }
 
+    // Regression: a genuine failure's shell error text can embed the (unescaped, by the shell's
+    // OWN error reporting — not our argv passing) target path verbatim. A target path that just
+    // happens to contain the bare substring "-128" (e.g. a PR/build-numbered directory) must not
+    // be misread as AppleScript's "(-128)" cancellation marker — that would silently discard the
+    // real failure's Detail and SudoFallback.
+    [Test]
+    public async Task InstallAsync_bare_negative_128_substring_without_parens_is_not_treated_as_cancel() {
+        Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
+
+        var dir = NewTempDir();
+        var dest = Path.Combine(dir, "kcap");
+        var target = Path.Combine(dir, "app-128", "kcap");
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(1, "", $"ln: {target}: Permission denied", false));
+        var installer = new PathShimInstaller(runner, new FakeLoginShellProbe());
+
+        var result = await Install(installer, dest, target, CancellationToken.None);
+
+        await Assert.That(result.Outcome).IsEqualTo(ShimOutcome.Failed);
+        await Assert.That(result.SudoFallback).IsEqualTo(
+            "sudo mkdir -p /usr/local/bin && sudo ln -s " + PathShimInstaller.PosixQuote(target) + " /usr/local/bin/kcap");
+    }
+
     [Test]
     public async Task InstallAsync_other_failure_reports_the_exact_sudo_fallback() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
 
-        var dir = Directory.CreateTempSubdirectory("kcap-shim-").FullName;
+        var dir = NewTempDir();
         var dest = Path.Combine(dir, "kcap");
         var target = Path.Combine(dir, "target-cli");
         var runner = new FakeProcessRunner();
@@ -202,7 +239,7 @@ public class PathShimInstallerTests {
     public async Task InstallAsync_success_then_probe_true_is_installed() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
 
-        var dir = Directory.CreateTempSubdirectory("kcap-shim-").FullName;
+        var dir = NewTempDir();
         var dest = Path.Combine(dir, "kcap");
         var target = Path.Combine(dir, "target-cli");
         var runner = new FakeProcessRunner();
@@ -219,7 +256,7 @@ public class PathShimInstallerTests {
     public async Task InstallAsync_success_then_probe_false_is_installed_but_not_on_path() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
 
-        var dir = Directory.CreateTempSubdirectory("kcap-shim-").FullName;
+        var dir = NewTempDir();
         var dest = Path.Combine(dir, "kcap");
         var target = Path.Combine(dir, "target-cli");
         var runner = new FakeProcessRunner();
@@ -236,7 +273,7 @@ public class PathShimInstallerTests {
     public async Task InstallAsync_success_then_probe_null_is_installed_but_not_on_path() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
 
-        var dir = Directory.CreateTempSubdirectory("kcap-shim-").FullName;
+        var dir = NewTempDir();
         var dest = Path.Combine(dir, "kcap");
         var target = Path.Combine(dir, "target-cli");
         var runner = new FakeProcessRunner();
@@ -264,7 +301,7 @@ public class PathShimInstallerTests {
     public async Task InstallAsync_conflict_preflight_fails_without_calling_the_runner() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
 
-        var dir = Directory.CreateTempSubdirectory("kcap-shim-").FullName;
+        var dir = NewTempDir();
         var dest = Path.Combine(dir, "kcap");
         var target = Path.Combine(dir, "target-cli");
         File.WriteAllText(dest, "pre-existing, not a symlink");
@@ -281,7 +318,7 @@ public class PathShimInstallerTests {
     public async Task InstallAsync_already_installed_preflight_succeeds_without_calling_the_runner() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
 
-        var dir = Directory.CreateTempSubdirectory("kcap-shim-").FullName;
+        var dir = NewTempDir();
         var dest = Path.Combine(dir, "kcap");
         var target = Path.Combine(dir, "target-cli");
         File.WriteAllText(target, "cli");
