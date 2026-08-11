@@ -103,11 +103,12 @@ public class ServiceVerifyProcessTests : IDisposable {
 
         using var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap");
 
-        // Drop our ends of every stdio pipe immediately, before the child has written anything. On
-        // this platform Console writes into a reader-less pipe are silently dropped below the managed
-        // exception layer (verified empirically — .NET's Unix console PAL absorbs the broken-pipe
-        // signal), so this mainly guards against a hang or an uncaught crash from any write path that
-        // does NOT go through Console (i.e. bypasses Say()'s own IOException guard).
+        // Drop our ends of every stdio pipe immediately — nothing the child writes is ever read, on
+        // either side of this call (a race with early output wouldn't change that). On this platform
+        // Console writes into a reader-less pipe are silently dropped below the managed exception
+        // layer (verified empirically — .NET's Unix console PAL absorbs the broken-pipe signal), so
+        // this mainly guards against a hang or an uncaught crash from any write path that does NOT go
+        // through Console (i.e. bypasses Say()'s own IOException guard).
         process.StandardInput.Close();
         process.StandardOutput.Close();
         process.StandardError.Close();
@@ -160,27 +161,34 @@ public class ServiceVerifyProcessTests : IDisposable {
         };
 
         using var shell = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start /bin/sh");
+        int? orphanPid = null;
 
-        await Task.Delay(TimeSpan.FromMilliseconds(200));
-
-        // Confirm the transaction actually took the lock before killing the parent — otherwise an
-        // unheld lock below would be vacuously true rather than evidence of a release.
-        var acquireDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-        while (!LockHeld(daemons, serviceName) && DateTime.UtcNow < acquireDeadline)
-            await Task.Delay(TimeSpan.FromMilliseconds(100));
-        await Assert.That(LockHeld(daemons, serviceName)).IsTrue();
-
-        // Find the orphan before killing its parent, so a failure below (the exact regression this
-        // test exists to catch — a hung orphan) doesn't leak a stray kcap process past this test.
-        var orphanPid = FindChildPid(shell.Id);
-
-        try { shell.Kill(); } catch { /* already gone */ }
+        // Everything from here on can throw (an Assert failure included) without ever reaching the
+        // line that would otherwise have killed the shell or the orphaned kcap grandchild — wrap the
+        // whole post-spawn body so a failed assertion (slow machine, or a real regression) still
+        // can't leak a live process past this test.
         try {
-            using var reapCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await shell.WaitForExitAsync(reapCts.Token);
-        } catch { /* best effort */ }
+            await Task.Delay(TimeSpan.FromMilliseconds(200));
 
-        try {
+            // Confirm the transaction actually took the lock before killing the parent — otherwise an
+            // unheld lock below would be vacuously true rather than evidence of a release.
+            var acquireDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (!LockHeld(daemons, serviceName) && DateTime.UtcNow < acquireDeadline)
+                await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+            // Located as soon as we reasonably can (kcap forks off the shell within milliseconds of
+            // spawn, long before lock acquisition), so the finally below can clean it up even if the
+            // very next assertion is what fails.
+            orphanPid = FindChildPid(shell.Id);
+
+            await Assert.That(LockHeld(daemons, serviceName)).IsTrue();
+
+            try { shell.Kill(); } catch { /* already gone */ }
+            try {
+                using var reapCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await shell.WaitForExitAsync(reapCts.Token);
+            } catch { /* best effort */ }
+
             // Hard guarantee under test: the orphaned kcap grandchild finishes its transaction and
             // releases the lock on its own — no parent left to reap it or notice it hung. Marker state
             // is diagnostic only, not asserted: a fast-fail path may leave no marker at all, while a
@@ -203,6 +211,9 @@ public class ServiceVerifyProcessTests : IDisposable {
                 || stderr.Contains(VerifyExit.RestoreVerificationToken);
             await Assert.That(reachedCodedExit).IsTrue();
         } finally {
+            // Best-effort regardless of which assertion (if any) failed above — the shell may still be
+            // alive (e.g. the lock-acquire wait itself never saw it held), and so may kcap.
+            try { if (!shell.HasExited) shell.Kill(); } catch { /* best effort */ }
             if (orphanPid is { } pid) {
                 try {
                     using var orphan = Process.GetProcessById(pid);
