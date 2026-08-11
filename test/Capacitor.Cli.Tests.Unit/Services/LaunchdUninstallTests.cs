@@ -33,6 +33,8 @@ public class LaunchdUninstallTests {
 
     [Test]
     public async Task Bootout_success_deletes_plist_and_returns_true() {
+        Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");
+
         await WithHome(async path => {
             var mgr = new LaunchdServiceManager(runProcess: (_, _) => (0, "", ""));
 
@@ -46,6 +48,8 @@ public class LaunchdUninstallTests {
 
     [Test]
     public async Task Bootout_failure_with_benign_absence_on_requery_deletes_plist_and_returns_true() {
+        Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");
+
         await WithHome(async path => {
             var mgr = new LaunchdServiceManager(runProcess: (_, args) =>
                 args[0] == "bootout"
@@ -62,6 +66,8 @@ public class LaunchdUninstallTests {
 
     [Test]
     public async Task Bootout_failure_with_still_loaded_on_requery_retains_plist_and_returns_false() {
+        Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");
+
         await WithHome(async path => {
             var mgr = new LaunchdServiceManager(runProcess: (_, args) =>
                 args[0] == "bootout"
@@ -78,6 +84,8 @@ public class LaunchdUninstallTests {
 
     [Test]
     public async Task Bootout_failure_with_unknown_on_requery_retains_plist_and_returns_false() {
+        Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");
+
         await WithHome(async path => {
             var mgr = new LaunchdServiceManager(runProcess: (_, args) =>
                 args[0] == "bootout"
