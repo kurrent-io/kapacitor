@@ -142,9 +142,11 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
         await AppConfig.ResolveActiveProfile([]);
         var name = DaemonNameResolver.Resolve([], AppConfig.ResolvedProfile?.Profile?.Daemon?.Name);
 
-        var cliPath = Environment.GetEnvironmentVariable("KCAP_APP_CLI_PATH") is { Length: > 0 } overridePath
-            ? overridePath
-            : "kcap";
+        // Lenient by design: unlike the lifecycle features (Task 19+), which treat a broken
+        // KCAP_APP_CLI_PATH override as "no CLI" (CliResolver.ResolvePath returning null), this
+        // ad hoc `daemon start -d` path keeps its long-standing fallback so existing behavior is
+        // unchanged here.
+        var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists) ?? "kcap";
 
         return new DaemonClientService(name, ct => new LocalControlClient(name).RunAsync(ct), new ProcessRunner(), cliPath);
     }
