@@ -271,6 +271,35 @@ public class MainWindowViewModelTests {
         });
     }
 
+    // AI-1654 §4.4: StartDaemonCommand is repointed to the service-aware
+    // DaemonLifecycleController.StartActionAsync when the composition root supplies one — the
+    // plain detached StartDaemonAsync is a fallback for callers with no live controller, not the
+    // production path.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task StartDaemonCommand_invokes_the_supplied_startAction_instead_of_StartDaemonAsync() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var (actions, _) = NewActions(service);
+            var calls = 0;
+            CancellationToken? seen = null;
+            Task StartAction(CancellationToken ct) {
+                calls++;
+                seen = ct;
+                return Task.CompletedTask;
+            }
+            using var cts = new CancellationTokenSource();
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), cts.Token, TestActivity.New(), StartAction);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await vm.StartDaemonCommand.Execute().ToTask();
+
+            await Assert.That(calls).IsEqualTo(1);
+            await Assert.That(seen).IsEqualTo(cts.Token);
+            await Assert.That(service.StartDaemonCallCount).IsEqualTo(0);
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Deactivation_disposes_subscriptions() {

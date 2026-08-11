@@ -49,7 +49,7 @@ public sealed class KcapCli : IKcapCli {
     readonly string _profileName;
     readonly string? _terminalPath;
 
-    public KcapCli(IProcessRunner runner, string cliPath, string daemonName, string profileName, string? terminalPath) {
+    public KcapCli(IProcessRunner runner, string? cliPath, string daemonName, string profileName, string? terminalPath) {
         _runner       = runner;
         CliPath       = cliPath;
         _daemonName   = daemonName;

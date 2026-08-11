@@ -255,6 +255,33 @@ public class AppStartupTests {
         await Assert.That(fake.ShutdownCalls).IsEquivalentTo([1], CollectionOrdering.Matching);
     }
 
+    // AI-1654 §3.6: shutdown awaits DaemonLifecycleController.QuiescedAsync (mutations are never
+    // abandoned) but only up to a cap, since an internally-triggered mutation has no shutdown-token
+    // wiring of its own. AwaitQuiescedAsync is the extracted seam DisposeAndShutdownAsync wires it
+    // through — no live controller/App needed to drive it directly.
+    [Test]
+    public async Task AwaitQuiescedAsync_returns_once_the_wait_completes() {
+        var tcs = new TaskCompletionSource();
+        var task = AppUnderTest.AwaitQuiescedAsync(() => tcs.Task, TimeSpan.FromSeconds(30));
+
+        await Task.Delay(20);
+        await Assert.That(task.IsCompleted).IsFalse();
+
+        tcs.SetResult();
+        await task;
+    }
+
+    [Test]
+    public async Task AwaitQuiescedAsync_caps_an_otherwise_unbounded_wait() {
+        var never = new TaskCompletionSource(); // deliberately never resolves
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        await AppUnderTest.AwaitQuiescedAsync(() => never.Task, TimeSpan.FromMilliseconds(50));
+
+        // Generous upper bound — this only needs to prove the cap fired, not measure it precisely.
+        await Assert.That(sw.ElapsedMilliseconds).IsLessThan(5000);
+    }
+
     sealed class RecordingDisposable(Action onDispose) : IDisposable {
         public void Dispose() => onDispose();
     }

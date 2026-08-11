@@ -459,29 +459,26 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
             await PersistDeclineAsync(pairKey).ConfigureAwait(false);
             lock (_lock) _skewDialogShownThisRun = true;
 
-            var gen0     = CurrentGeneration(); // captured immediately before ConfirmAsync (stale-consent check below)
-            var accepted = await _surface.ConfirmAsync(prompt, _lifetime.Token).ConfigureAwait(false);
+            // The retract runs BEFORE the mutation (acceptance itself invalidates the decline
+            // claim), not after: RunVerifiedMutationAsync doesn't catch around the CLI call, so an
+            // install that throws (shutdown mid-spawn, a process/IO fault) would skip a
+            // post-mutation retract entirely and leave an accepted pair mislabeled "declined" on
+            // disk. "Declined" must mean the user declined, full stop.
+            var (outcome, succeeded) = await ConfirmAndTakeoverAsync(
+                prompt, onAcceptedNotStale: () => RetractDeclineAsync(pairKey), _lifetime.Token).ConfigureAwait(false);
 
-            if (!accepted) return; // the claim persisted above IS the decline memory
-
-            if (CurrentGeneration() != gen0) {
-                // Never actually declined — retract the claim and let the next trigger re-offer.
-                await RetractDeclineAsync(pairKey).ConfigureAwait(false);
-                lock (_lock) _skewDialogShownThisRun = false;
-                _surface.Status("The daemon changed while the takeover prompt was open — canceled, nothing changed.");
-                return;
+            switch (outcome) {
+                case ConfirmOutcome.Declined:
+                    return; // the claim persisted above IS the decline memory
+                case ConfirmOutcome.Stale:
+                    // Never actually declined — retract the claim and let the next trigger re-offer.
+                    await RetractDeclineAsync(pairKey).ConfigureAwait(false);
+                    lock (_lock) _skewDialogShownThisRun = false;
+                    return;
+                case ConfirmOutcome.Attempted:
+                    if (!succeeded) lock (_lock) _skewDialogShownThisRun = false; // no resolution — re-offer
+                    return;
             }
-
-            // Acceptance itself is the fact that invalidates the decline claim — retract BEFORE
-            // the mutation runs, not after: RunVerifiedMutationAsync doesn't catch around the CLI
-            // call, so an install that throws (shutdown mid-spawn, a process/IO fault) would skip
-            // a post-mutation retract entirely and leave an accepted pair mislabeled "declined"
-            // on disk. "Declined" must mean the user declined, full stop.
-            await RetractDeclineAsync(pairKey).ConfigureAwait(false);
-
-            var succeeded = await RunVerifiedMutationAsync(c => _cli.ServiceInstallVerifiedAsync(replace: true, c), _lifetime.Token)
-                .ConfigureAwait(false);
-            if (!succeeded) lock (_lock) _skewDialogShownThisRun = false; // no resolution — re-offer
         } catch (OperationCanceledException) {
             // shutdown mid-check
         } catch (Exception ex) {
@@ -489,6 +486,31 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         } finally {
             _gate.Release();
         }
+    }
+
+    enum ConfirmOutcome { Declined, Stale, Attempted }
+
+    /// The ONE accept path every unit rewrite in this controller goes through — skew's takeover
+    /// (§4.3) and Start's repair affordance (§4.4) both funnel here, so a future kind can never
+    /// grow a second `ServiceInstallVerifiedAsync(replace: true)` call site. `onAcceptedNotStale`,
+    /// when given, runs after acceptance is confirmed fresh but BEFORE the mutation itself (skew's
+    /// decline-claim retract — see its own comment above).
+    async Task<(ConfirmOutcome Outcome, bool MutationSucceeded)> ConfirmAndTakeoverAsync(
+            LifecyclePrompt prompt, Func<Task>? onAcceptedNotStale, CancellationToken ct) {
+        var gen0     = CurrentGeneration(); // captured immediately before ConfirmAsync (stale-consent check below)
+        var accepted = await _surface.ConfirmAsync(prompt, ct).ConfigureAwait(false);
+        if (!accepted) return (ConfirmOutcome.Declined, false);
+
+        if (CurrentGeneration() != gen0) {
+            _surface.Status("The daemon changed while the prompt was open — canceled, nothing changed.");
+            return (ConfirmOutcome.Stale, false);
+        }
+
+        if (onAcceptedNotStale is not null) await onAcceptedNotStale().ConfigureAwait(false);
+
+        var succeeded = await RunVerifiedMutationAsync(c => _cli.ServiceInstallVerifiedAsync(replace: true, c), ct)
+            .ConfigureAwait(false);
+        return (ConfirmOutcome.Attempted, succeeded);
     }
 
     Task PersistDeclineAsync(string pairKey) =>
@@ -600,52 +622,79 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         }
     }
 
-    /// §4.4: the tray Start action (Task 21 wires the trigger). Never consent to rewrite a unit —
-    /// every branch either starts an existing unit, kicks a reattach, or falls back to today's
-    /// detached `daemon start -d`; only the startup branch above ever installs.
+    /// §4.4: the Start action (Task 21 wires the trigger). Branches on the loaded-label/job state
+    /// BEFORE plist presence, same precedence as the startup matrix — but unlike that matrix, a
+    /// Start click is NEVER itself consent to rewrite a unit: a mismatched/orphaned/coexisting
+    /// unit always goes through the dialoged repair affordance (OfferRepairAsync) instead of a
+    /// silent Attention. Public + caller-awaited from the UI, so every path here is exception-safe
+    /// — a click must never crash the app.
     public async Task StartActionAsync(CancellationToken ct) {
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
-        var lct = linked.Token;
+        try {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+            var lct = linked.Token;
 
-        if (_cli.CliPath is null) {
-            _surface.Status("kcap CLI not found — can't start the daemon service.");
+            if (_cli.CliPath is null) {
+                _surface.Status("kcap CLI not found — can't start the daemon service.");
+                return;
+            }
+
+            if (!await TryAcquireGateAsync(lct).ConfigureAwait(false)) return;
+            try {
+                // Fresh evidence every call — a Start racing an in-flight mutation blocks on the
+                // gate above and, once it clears, re-queries rather than acting on anything it
+                // might have observed before the wait.
+                var snap = await QueryStatusForActionAsync(lct).ConfigureAwait(false);
+                if (snap is null) return; // unknown — already surfaced, no action (spec §6)
+
+                if (snap.State == StateRunning) {
+                    _ = _client.RestartLoopAsync();
+                    return;
+                }
+
+                if (snap.State == StateInstalled) {
+                    if (snap.UnitPresent && snap.DaemonPid is null)
+                        await RunVerifiedMutationAsync(_cli.ServiceStartVerifiedAsync, lct).ConfigureAwait(false);
+                    else
+                        await OfferRepairAsync(snap, lct).ConfigureAwait(false); // orphan label or coexistence
+                    return;
+                }
+
+                // snap.State == StateNotInstalled: no loaded label.
+                if (snap.UnitPresent) {
+                    if (snap.DaemonPid is null)
+                        await RunVerifiedMutationAsync(_cli.ServiceStartVerifiedAsync, lct).ConfigureAwait(false); // bootstrap the stopped unit
+                    else
+                        await OfferRepairAsync(snap, lct).ConfigureAwait(false); // a manual daemon owns the name
+                    return;
+                }
+
+                await _cli.DetachedStartAsync(lct).ConfigureAwait(false); // nothing at all — today's detached start, no unit to rewrite
+            } finally {
+                _gate.Release();
+            }
+        } catch (OperationCanceledException) {
+            // caller-cancelled or shutting down — nothing to surface
+        } catch (Exception ex) {
+            _surface.Status("Starting the daemon failed unexpectedly.");
+            Console.Error.WriteLine($"kcap: daemon lifecycle start action failed unexpectedly: {ex.Message}");
+        }
+    }
+
+    /// §4.4 repair affordance: the SAME dialoged operation as skew's takeover
+    /// (ConfirmAndTakeoverAsync), entered from Start instead of a version mismatch — a plist/pid
+    /// combination Start refuses to silently mutate into. No daemon/CLI version pair applies here,
+    /// so the prompt carries neither.
+    async Task OfferRepairAsync(ServiceSnapshot snap, CancellationToken ct) {
+        var missing = await FailingSkewPreconditionAsync(snap, ct).ConfigureAwait(false);
+        if (missing is not null) {
+            _surface.Status(missing);
             return;
         }
 
-        if (!await TryAcquireGateAsync(lct).ConfigureAwait(false)) return;
-        try {
-            var snap = await QueryStatusForActionAsync(lct).ConfigureAwait(false);
-            if (snap is null) return;
+        var terminalPath = await _probe.TerminalPathAsync(ct).ConfigureAwait(false);
+        var prompt = new LifecyclePrompt(LifecyclePrompt.KindRepair, null, null, terminalPath is null, TakeoverDisclosure);
 
-            if (snap.State == StateRunning) {
-                _ = _client.RestartLoopAsync();
-                return;
-            }
-
-            if (snap.State == StateInstalled) {
-                if (!snap.UnitPresent || snap.DaemonPid is not null) {
-                    _surface.Attention("Starting now would race an existing daemon service — needs attention first.");
-                    return;
-                }
-                await RunVerifiedMutationAsync(_cli.ServiceStartVerifiedAsync, lct).ConfigureAwait(false);
-                return;
-            }
-
-            if (snap.UnitPresent) {
-                if (snap.DaemonPid is not null) {
-                    _surface.Attention("Starting now would race an existing daemon service — needs attention first.");
-                    return;
-                }
-                await RunVerifiedMutationAsync(_cli.ServiceStartVerifiedAsync, lct).ConfigureAwait(false);
-                return;
-            }
-
-            await _client.StartDaemonAsync(lct).ConfigureAwait(false); // today's detached start — no unit to rewrite
-        } catch (OperationCanceledException) {
-            // caller-cancelled or shutting down — nothing to surface
-        } finally {
-            _gate.Release();
-        }
+        await ConfirmAndTakeoverAsync(prompt, onAcceptedNotStale: null, ct).ConfigureAwait(false);
     }
 
     /// App shutdown awaits this: completes once no mutation child is in flight. Does not itself

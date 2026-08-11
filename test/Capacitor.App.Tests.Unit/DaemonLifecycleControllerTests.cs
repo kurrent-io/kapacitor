@@ -491,8 +491,192 @@ public class DaemonLifecycleControllerTests {
 
         await h.Controller.StartActionAsync(CancellationToken.None);
 
-        await Assert.That(h.Client.StartDaemonCallCount).IsEqualTo(1);
+        await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(1);
         await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task StartAction_loaded_plist_present_pid_null_starts_verified() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        var release = new TaskCompletionSource<ProcessResult>();
+        h.Cli.StartVerifiedBehavior = _ => release.Task;
+        h.Start();
+
+        var startTask = h.Controller.StartActionAsync(CancellationToken.None);
+        await WaitUntilAsync(() => h.Cli.StartVerifiedCallCount == 1, what: "service start --verify");
+        await Assert.That(h.Surface.Prompts).IsEmpty();
+        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+
+        // A coded failure skips the confirm-wait entirely (the UX-confirmation tests above already
+        // cover that phase) so this call — and the test — can complete without a clock advance.
+        release.SetResult(Failed(21, "verify_viability"));
+        await startTask;
+    }
+
+    [Test]
+    public async Task StartAction_loaded_pid_nonNull_offers_repair() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed", daemonPid: 555));
+        h.Start();
+
+        await h.Controller.StartActionAsync(CancellationToken.None);
+
+        await Assert.That(h.Surface.Prompts.Count).IsEqualTo(1);
+        await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindRepair);
+        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task StartAction_orphan_label_offers_repair() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: false, state: "installed"));
+        h.Start();
+
+        await h.Controller.StartActionAsync(CancellationToken.None);
+
+        await Assert.That(h.Surface.Prompts.Count).IsEqualTo(1);
+        await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindRepair);
+        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task StartAction_no_label_plist_present_pid_null_starts_verified_bootstrap() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "not_installed"));
+        var release = new TaskCompletionSource<ProcessResult>();
+        h.Cli.StartVerifiedBehavior = _ => release.Task;
+        h.Start();
+
+        var startTask = h.Controller.StartActionAsync(CancellationToken.None);
+        await WaitUntilAsync(() => h.Cli.StartVerifiedCallCount == 1, what: "service start --verify (bootstrap)");
+        await Assert.That(h.Surface.Prompts).IsEmpty();
+        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+
+        release.SetResult(Failed(21, "verify_viability"));
+        await startTask;
+    }
+
+    [Test]
+    public async Task StartAction_no_label_plist_present_pid_nonNull_offers_repair() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "not_installed", daemonPid: 777));
+        h.Start();
+
+        await h.Controller.StartActionAsync(CancellationToken.None);
+
+        await Assert.That(h.Surface.Prompts.Count).IsEqualTo(1);
+        await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindRepair);
+        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task StartAction_repair_accept_calls_install_verified_replace_true_same_helper_as_takeover() {
+        await using var h = new Harness();
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed", daemonPid: 555));
+        var release = new TaskCompletionSource<ProcessResult>();
+        h.Cli.InstallVerifiedBehavior = (_, _) => release.Task;
+        h.Start();
+
+        var startTask = h.Controller.StartActionAsync(CancellationToken.None);
+        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the repair install");
+        await Assert.That(h.Cli.LastInstallReplace).IsNotNull().And.IsEqualTo(true);
+        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(0);
+
+        release.SetResult(Failed(21, "verify_viability"));
+        await startTask;
+    }
+
+    [Test]
+    public async Task StartAction_repair_decline_does_not_mutate() {
+        await using var h = new Harness();
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(false);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed", daemonPid: 555));
+        h.Start();
+
+        await h.Controller.StartActionAsync(CancellationToken.None);
+
+        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task StartAction_status_unknown_takes_no_action() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(null);
+        h.Start();
+
+        await h.Controller.StartActionAsync(CancellationToken.None);
+
+        await Assert.That(h.Surface.StatusMessages.Count).IsEqualTo(1);
+        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(0);
+        await Assert.That(h.Client.RestartCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task StartAction_generic_exception_is_status_surfaced_not_thrown() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => throw new InvalidOperationException("boom");
+        h.Start();
+
+        await h.Controller.StartActionAsync(CancellationToken.None); // must not throw
+
+        await Assert.That(h.Surface.StatusMessages.Count).IsEqualTo(1);
+    }
+
+    // Holds the gate open with a pending startup-triggered install (TCS-scripted), then invokes
+    // StartActionAsync concurrently: it must block on the gate rather than act on stale evidence,
+    // and once the gate clears it re-queries (a SECOND ServiceStatusAsync call) before acting —
+    // never reusing whatever it might have read before the wait.
+    [Test]
+    public async Task StartAction_racing_auto_install_awaits_the_gate_then_reQueries_fresh_evidence() {
+        await using var h = new Harness();
+        var install = new TaskCompletionSource<ProcessResult>();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap()); // nothing at all — the install row
+        h.Cli.InstallVerifiedBehavior = (_, _) => install.Task;
+        h.Start();
+
+        h.PushUnreachable(); // claims the arm, starts the startup matrix, blocks on the install call
+        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the startup install to begin (holding the gate)");
+        var statusCallsBeforeStart = h.Cli.StatusCallCount;
+
+        var startTask = h.Controller.StartActionAsync(CancellationToken.None);
+        await Task.Delay(50); // give a wrongly-unblocked Start every chance to act early
+        await Assert.That(startTask.IsCompleted).IsFalse();
+        await Assert.That(h.Cli.StatusCallCount).IsEqualTo(statusCallsBeforeStart); // no re-query yet — still blocked
+
+        // A coded failure skips RunVerifiedMutationAsync's confirm-wait entirely (no fake-clock
+        // advance needed — that phase is covered by the UX-confirmation tests), so the gate
+        // releases as soon as this CLI child finishes.
+        install.SetResult(Failed(21, "verify_viability"));
+        await startTask;
+
+        await Assert.That(h.Cli.StatusCallCount).IsGreaterThan(statusCallsBeforeStart); // a fresh query after the gate cleared
+    }
+
+    [Test]
+    public async Task QuiescedAsync_waits_for_a_startAction_mutation() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        var release = new TaskCompletionSource<ProcessResult>();
+        h.Cli.StartVerifiedBehavior = _ => release.Task;
+        h.Start();
+
+        var startTask = h.Controller.StartActionAsync(CancellationToken.None);
+        await WaitUntilAsync(() => h.Cli.StartVerifiedCallCount == 1, what: "the Start-triggered mutation");
+
+        var quiesced = h.Controller.QuiescedAsync();
+        await Task.Delay(50);
+        await Assert.That(quiesced.IsCompleted).IsFalse();
+
+        release.SetResult(Failed(24, "verify_readiness_timeout"));
+        await quiesced;
+        await startTask;
     }
 
     // ---- §4.3 skew → restart/takeover ----
