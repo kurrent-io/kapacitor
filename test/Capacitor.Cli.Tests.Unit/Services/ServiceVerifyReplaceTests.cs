@@ -103,13 +103,17 @@ public class ServiceVerifyReplaceTests {
         try {
             // The Loaded label's own JobPid matches the validated daemon pid — ownership holds, so
             // the matrix proceeds straight to Uninstall (the label's bootout already terminates the
-            // process it owns) with no separate DaemonKill/stop-verification detour.
-            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = 4242 };
+            // process it owns) with no separate DaemonKill/stop-verification detour. Uses the
+            // ManualOwnerPid sentinel (not an arbitrary small pid) as belt-and-braces: if the
+            // owning-branch early return ever regresses, this test must never risk a REAL, unmocked
+            // Process.Kill(entireProcessTree: true) against whatever process a low pid happens to
+            // resolve to on the machine running it.
+            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = ManualOwnerPid, RunningPid = ManualOwnerPid };
 
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
+            var sut = new ServiceVerify(manager, _ => ManualOwnerPid, Hello, TimeProvider.System, readPlist: OwnPlist);
 
             var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
 
@@ -231,6 +235,46 @@ public class ServiceVerifyReplaceTests {
     }
 
     [Test]
+    public async Task Live_owner_is_re_read_after_clearing_the_label_a_stale_pre_clear_pid_is_never_killed() {
+        var (_, daemonPath) = SetUpViableInstall();
+        try {
+            // JobPid comes back null even though the label truly owns a live daemon (a
+            // launchctl-print race) — "owning" is false, so the matrix takes the clear-then-kill
+            // branch. Uninstall (bootout) itself terminates the process it unloads, so by the time
+            // the matrix would reach the kill step, the pid captured BEFORE the clear is stale — a
+            // fresh re-read afterward must see no live owner and skip the kill/stop-confirm poll
+            // entirely, never signal whatever the stale pid might now belong to.
+            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = null };
+
+            var helloCalls = 0;
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) {
+                helloCalls++;
+                return Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+            }
+
+            // Live (ManualOwnerPid) BEFORE Uninstall runs, gone the moment it does — models bootout
+            // terminating the true owner as a side effect of unloading its label.
+            int? ValidatedPid(string _) =>
+                manager.Bootstrapped ? manager.RunningPid
+                : manager.Uninstalled ? null
+                : ManualOwnerPid;
+
+            var sut = new ServiceVerify(manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+            // Exactly the readiness poll's two hello calls (primary + confirm) — if the re-read fix
+            // regressed to the stale pre-clear pid, the stop-confirmation poll would engage first
+            // (hello is well-formed, so IsStoppedAsync never confirms) and either hang or add extra
+            // hello calls before this assertion could ever see exactly 2.
+            await Assert.That(helloCalls).IsEqualTo(2);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
     public async Task Stop_never_confirmed_reports_stop_unconfirmed_and_writes_nothing() {
         var (_, daemonPath) = SetUpViableInstall();
         try {
@@ -291,7 +335,7 @@ public class ServiceVerifyReplaceTests {
         var (_, daemonPath) = SetUpViableInstall();
         try {
             var manager = new FakeServiceManager { InitialProbe = LabelProbe.Unknown };
-            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
+            var sut = new ServiceVerify(manager, _ => ManualOwnerPid, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
 
             var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
 

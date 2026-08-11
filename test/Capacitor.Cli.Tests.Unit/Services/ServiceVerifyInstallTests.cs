@@ -256,6 +256,58 @@ public class ServiceVerifyInstallTests {
     }
 
     [Test]
+    public async Task Leftover_marker_with_unreadable_but_present_plist_surfaces_restore_verification_untouched() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            // A read failure (permission error, transient I/O error, ...) is NOT the same as
+            // absence: _readPlist returns null for both, but the file demonstrably exists here, so
+            // recovery must never guess it's gone and clean up regardless — that would pave over
+            // something it never actually examined.
+            var matchingFingerprint = ServiceTxnMarker.Fingerprint(OwnPlistContent);
+            ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "written", "stale", "no-unit", matchingFingerprint));
+
+            var manager = new FakeServiceManager();
+            var sut = new ServiceVerify(manager, _ => 4242,
+                (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
+                TimeProvider.System,
+                readPlist: _ => null,     // simulates a read failure, not absence
+                plistExists: _ => true);  // ...but the file IS there
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
+            await Assert.That(manager.Calls).IsEmpty();
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Leftover_marker_whose_clear_never_confirms_absent_aborts_without_deleting_the_marker() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            // Uninstall "succeeds" (bootout exit 0) but the label never actually settles to
+            // Absent — the exact race ClearLabelAsync (now shared with entry recovery, not a bare
+            // trust-the-bool call) exists to catch.
+            var matchingFingerprint = ServiceTxnMarker.Fingerprint(OwnPlistContent);
+            ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "written", "stale", "no-unit", matchingFingerprint));
+
+            var manager = new FakeServiceManager { StayUnknownAfterUninstall = true };
+            var time = new FakeTimeProvider();
+
+            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), time,
+                rollbackReserve: TimeSpan.FromSeconds(1), readPlist: OwnPlist);
+
+            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.RollbackBudget);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
     public async Task Leftover_written_phase_marker_at_entry_surfaces_restore_verification_untouched() {
         var (dir, daemonPath) = SetUpViableInstall();
         try {

@@ -69,7 +69,8 @@ sealed class ServiceVerify(
     TimeProvider time,
     TimeSpan? forwardBudget = null,
     TimeSpan? rollbackReserve = null,
-    Func<string, string?>? readPlist = null) {
+    Func<string, string?>? readPlist = null,
+    Func<string, bool>? plistExists = null) {
     static readonly TimeSpan LockWait      = TimeSpan.FromSeconds(10);
     static readonly TimeSpan PollInterval  = TimeSpan.FromMilliseconds(500);
     static readonly TimeSpan KillWait      = TimeSpan.FromSeconds(5);
@@ -83,6 +84,12 @@ sealed class ServiceVerify(
     readonly Func<string, string?> _readPlist = readPlist ?? (path => {
         try { return File.Exists(path) ? File.ReadAllText(path) : null; } catch { return null; }
     });
+
+    /// <summary>Entry-recovery-only seam: distinguishes "absent" from "present but unreadable" when
+    /// <see cref="_readPlist"/> returns null for both — a permission error or transient I/O failure
+    /// on a file that demonstrably exists must never be treated the same as the file simply not being
+    /// there (see <see cref="RecoverLeftoverMarker"/>).</summary>
+    readonly Func<string, bool> _plistExists = plistExists ?? File.Exists;
 
     /// <summary>Closed-stdio tolerance: the npm grandchild shares the GUI's pipes, so a broken
     /// pipe must never abort the transaction.</summary>
@@ -216,7 +223,7 @@ sealed class ServiceVerify(
         if (ServiceTxnMarker.Read(serviceId) is { } leftover) {
             if (leftover.Phase == "committed") {
                 ServiceTxnMarker.Delete(serviceId);
-            } else if (RecoverLeftoverMarker(spec, serviceId, leftover) is { } recoveryExit) {
+            } else if (await RecoverLeftoverMarker(spec, serviceId, leftover) is { } recoveryExit) {
                 return recoveryExit;
             }
         }
@@ -335,7 +342,7 @@ sealed class ServiceVerify(
     /// guessed at. Returns null when it's safe to proceed (the marker has already been deleted);
     /// otherwise the exit code to return immediately (the marker is left untouched).
     /// </summary>
-    int? RecoverLeftoverMarker(ServiceSpec spec, string serviceId, TxnMarker leftover) {
+    async Task<int?> RecoverLeftoverMarker(ServiceSpec spec, string serviceId, TxnMarker leftover) {
         if (leftover.PlistFingerprint is null) {
             // Died before ever writing a plist (captured, or one of --replace's pre-write phases) —
             // nothing on disk to clean up.
@@ -355,7 +362,15 @@ sealed class ServiceVerify(
 
         var onDisk = _readPlist(onDiskPath);
         if (onDisk is null) {
-            // Residue already gone.
+            if (_plistExists(onDiskPath)) {
+                // Present but unreadable (permission error, transient I/O failure, ...) is NOT the
+                // same as absent — the file demonstrably exists and was never fingerprint-compared,
+                // so never guess it's our own gone residue.
+                Say(VerifyExit.RestoreVerificationToken);
+                return VerifyExit.RestoreVerification;
+            }
+
+            // Confirmed absent — residue already gone.
             ServiceTxnMarker.Delete(serviceId);
             return null;
         }
@@ -367,14 +382,11 @@ sealed class ServiceVerify(
         }
 
         // The dead transaction's own residue (benign-absence semantics — a label that's already
-        // gone costs nothing to "clear" again): clean it up. A failed Uninstall here (label still
-        // Loaded/Unknown) means we can't actually prove the residue is gone — never delete the
-        // marker on an unconfirmed clear; surface instead of guessing the cleanup worked.
-        if (!manager.Uninstall(serviceId, out var uninstallError)) {
-            if (uninstallError is not null) Say($"uninstall: {uninstallError}");
-            Say(VerifyExit.RestoreVerificationToken);
-            return VerifyExit.RestoreVerification;
-        }
+        // gone costs nothing to "clear" again): clean it up via the SAME confirmed-Absent clear the
+        // --replace matrix uses — Uninstall returning true on a bare bootout exit 0 does not by
+        // itself prove the label is gone (the exact race ClearLabelAsync polls past), so trusting
+        // the raw bool here would risk deleting the marker on an unconfirmed clear.
+        if (await ClearLabelAsync(serviceId) is { } clearExit) return clearExit;
 
         ServiceTxnMarker.Delete(serviceId);
         return null;
@@ -386,7 +398,10 @@ sealed class ServiceVerify(
     /// reasoning: <c>launchctl bootout</c> can return before the label is actually gone, and a
     /// failed/incomplete Uninstall (still Loaded/Unknown) must never be treated as cleared before
     /// writing a NEW unit over it. Returns the terminal exit code on failure (nothing further is
-    /// written), or null once Absent is confirmed and it's safe to proceed.
+    /// written), or null once Absent is confirmed and it's safe to proceed. The pinned split is
+    /// deliberate: <see cref="VerifyExit.BootoutUnknown"/>(22) is the PRE-mutation abort (nothing
+    /// touched yet), while this poll's own Unknown-at-reserve-expiry is POST-mutation and genuinely
+    /// undetermined — that's <see cref="VerifyExit.RollbackBudget"/>(26), never 22.
     /// </summary>
     async Task<int?> ClearLabelAsync(string serviceId) {
         manager.Uninstall(serviceId, out var error);
@@ -439,10 +454,18 @@ sealed class ServiceVerify(
             ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "label-cleared", preState, "no-unit", null));
         }
 
-        if (validatedPid is null) return null; // no live owner left to stop
+        // Re-read AFTER any clearing above, not the pre-clear snapshot: the clear itself (bootout)
+        // can terminate the true owner as a side effect of unloading its label — e.g. `pre.JobPid`
+        // came back null from a launchctl-print race even though the label truly did own the live
+        // daemon, so `owning` was false and we went through the clear above anyway. Killing the
+        // ORIGINAL captured pid after a clear that can take up to _rollbackReserve risks signaling
+        // a since-recycled pid instead. "Kill the validated owner IF ONE REMAINS" only holds if the
+        // owner check happens after the clear, not before it.
+        var liveOwner = validatedDaemonPid(serviceId);
+        if (liveOwner is null) return null; // no live owner left to stop
 
-        if (!DaemonKill.KillValidatedOwner(serviceId, validatedPid.Value, KillWait))
-            Say($"replace: kill of validated owner (PID {validatedPid}) did not confirm gone immediately");
+        if (!DaemonKill.KillValidatedOwner(serviceId, liveOwner.Value, KillWait))
+            Say($"replace: kill of validated owner (PID {liveOwner}) did not confirm gone immediately");
 
         if (!await WaitForStopConfirmedAsync(serviceId, _forwardBudget)) {
             Say(VerifyExit.StopUnconfirmedToken);
