@@ -23,9 +23,12 @@ sealed class FakeDaemonClientService : IDaemonClientService {
         return Task.CompletedTask;
     }
 
+    public int StartDaemonCallCount;
     public Func<CancellationToken, Task<StartDaemonResult>>? StartBehavior;
-    public Task<StartDaemonResult> StartDaemonAsync(CancellationToken ct) =>
-        (StartBehavior ?? (_ => Task.FromResult(new StartDaemonResult(true, null))))(ct);
+    public Task<StartDaemonResult> StartDaemonAsync(CancellationToken ct) {
+        StartDaemonCallCount++;
+        return (StartBehavior ?? (_ => Task.FromResult(new StartDaemonResult(true, null))))(ct);
+    }
 
     public static DaemonStatusDto Snap(
             string daemon = "daemon-a", string version = "1.2.3", string serverUrl = "http://localhost:9999",
