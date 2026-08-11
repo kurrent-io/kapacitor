@@ -319,7 +319,7 @@ public static class DaemonCommands {
             return 0;
         }
 
-        if (DaemonPidProbe.ReadPidFile(name) is null) {
+        if (DaemonPidProbe.ReadPidFile(name) is not { } entry) {
             // ReadPidFile returns null for BOTH an absent file and a present-but-
             // unparseable one (empty/partial — e.g. a mid-write SIGKILL; it no
             // longer unlinks the latter).
@@ -347,7 +347,12 @@ public static class DaemonCommands {
         }
 
         try {
-            if (DaemonPidProbe.ValidatedPid(name) is not { } pid) {
+            // entry is bound ONCE above and reused for both the ownership classification and (on
+            // the live branch) the actual kill target. Re-reading the PID file here — e.g. via a
+            // second DaemonPidProbe.ValidatedPid(name) call — would let a concurrent `daemon start`
+            // that wins the race between the two reads hand us a freshly-written, genuinely-live PID
+            // to kill that this call never validated from the same snapshot.
+            if (!DaemonPidProbe.IsOurDaemon(entry.Pid, entry.StartToken)) {
                 // A dead/foreign PID. Clean up under the flock so we don't unlink a
                 // PID a concurrent start wrote after our read (TOCTOU).
                 if (TryCleanupMarkersUnderLock(name))
@@ -358,26 +363,26 @@ public static class DaemonCommands {
                 return 0;
             }
 
-            // Refuse to kill ourselves. DaemonPidProbe.ValidatedPid has already said this PID is a
-            // live process whose start token matches, so every identity check upstream has PASSED —
-            // the PID is simply not a daemon. A real daemon is never the process running `daemon
-            // stop`, so reaching here means the PID file is describing something it should not, and
-            // killing its tree would take down this process and everything above it.
+            // Refuse to kill ourselves. IsOurDaemon has already said this PID is a live process
+            // whose start token matches, so every identity check upstream has PASSED — the PID is
+            // simply not a daemon. A real daemon is never the process running `daemon stop`, so
+            // reaching here means the PID file is describing something it should not, and killing
+            // its tree would take down this process and everything above it.
             //
             // Without this, Process.Kill(entireProcessTree: true) throws
             // "Cannot be used to terminate a process tree containing the calling process" — an
             // opaque InvalidOperationException that says nothing about WHICH pid file caused it.
             // That is exactly how this surfaced: a random, always-different CI test failing
             // with an identical stack, because the pid file named the test runner itself.
-            if (pid == Environment.ProcessId) {
+            if (entry.Pid == Environment.ProcessId) {
                 Console.Error.WriteLine(
-                    $"Daemon '{name}' resolves to the current process (PID {pid}); refusing to stop it. "
+                    $"Daemon '{name}' resolves to the current process (PID {entry.Pid}); refusing to stop it. "
                   + $"Its PID file at {DaemonLockPaths.PidPath(name)} does not describe a daemon.");
 
                 return 1;
             }
 
-            var process = Process.GetProcessById(pid);
+            var process = Process.GetProcessById(entry.Pid);
             var killed  = false;
 
             try {
@@ -400,7 +405,7 @@ public static class DaemonCommands {
                 // advance; this covers the ANCESTOR case, which cannot be detected portably. Report
                 // which daemon and which PID rather than letting an unattributed exception escape.
                 Console.Error.WriteLine(
-                    $"Daemon '{name}' (PID {pid}) could not be stopped: {ex.Message} "
+                    $"Daemon '{name}' (PID {entry.Pid}) could not be stopped: {ex.Message} "
                   + $"Its PID file at {DaemonLockPaths.PidPath(name)} appears not to describe a daemon.");
 
                 return 1;
@@ -410,7 +415,7 @@ public static class DaemonCommands {
                 // Wait for it to actually exit so the kernel releases its flock before
                 // we try to reclaim it for cleanup below.
                 try { process.WaitForExit(5000); } catch { /* best-effort */ }
-                Console.Out.WriteLine($"Daemon '{name}' stopped (PID {pid}).");
+                Console.Out.WriteLine($"Daemon '{name}' stopped (PID {entry.Pid}).");
             }
         } catch (ArgumentException) {
             Console.Out.WriteLine($"Daemon '{name}' was not running.");
