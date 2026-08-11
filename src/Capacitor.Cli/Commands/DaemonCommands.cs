@@ -847,7 +847,7 @@ public static class DaemonCommands {
             case "uninstall": manager.Uninstall(id); await Console.Out.WriteLineAsync($"Service '{id}' uninstalled ({manager.Describe()})."); return 0;
             case "start":     manager.Start(id);     await Console.Out.WriteLineAsync($"Service '{id}' started.");   return 0;
             case "stop":      manager.Stop(id);      await Console.Out.WriteLineAsync($"Service '{id}' stopped (still installed)."); return 0;
-            case "status":    return await ServiceStatus(manager, id);
+            case "status":    return rest.Contains("--json") ? await ServiceStatusJson(manager, id) : await ServiceStatus(manager, id);
             default:          return ServiceUsage();
         }
     }
@@ -922,6 +922,24 @@ public static class DaemonCommands {
         await Console.Out.WriteLineAsync($"Service '{id}': {status.State} ({manager.Describe()})");
         if (status.BinaryPath is { } bin) await Console.Out.WriteLineAsync($"  binary: {bin}");
         return 0;
+    }
+
+    static async Task<int> ServiceStatusJson(IServiceManager manager, string id) {
+        var query           = manager.Query(id);
+        var installBinary   = ResolveDaemonBinary();
+        var daemonPid       = DaemonPidProbe.ValidatedPid(id);
+        var txnActive       = ServiceTxnLock.IsHeld(id);
+        var txnMarker       = File.Exists(Path.Combine(DaemonLockPaths.Directory, id + ".service-txn"));
+
+        var (json, exitCode) = ServiceStatusRender.Render(query, id, installBinary, daemonPid, txnMarker, txnActive);
+
+        if (json is null) {
+            await Console.Error.WriteLineAsync($"Could not determine service status for '{id}' ({manager.Describe()}).");
+            return exitCode;
+        }
+
+        await Console.Out.WriteLineAsync(json);
+        return exitCode;
     }
 
     static int ServiceUsage() {
