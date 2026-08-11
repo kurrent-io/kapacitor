@@ -97,8 +97,12 @@ public static class UninstallCommand {
         try {
             var services = ServiceManagerFactory.ForCurrentOs();
             foreach (var id in services.ListInstalled()) {
-                services.Uninstall(id);
-                await Console.Out.WriteLineAsync($"  • Removed daemon service '{id}' ({services.Describe()})");
+                if (services.Uninstall(id, out var error)) {
+                    await Console.Out.WriteLineAsync($"  • Removed daemon service '{id}' ({services.Describe()})");
+                } else {
+                    await Console.Error.WriteLineAsync($"  • Could not remove daemon service '{id}': {error}");
+                    hadFailures = true;
+                }
             }
         } catch (PlatformNotSupportedException) {
             // No service backend on this OS — nothing to deregister.

@@ -844,7 +844,7 @@ public static class DaemonCommands {
 
         switch (action) {
             case "install":   return await ServiceInstall(manager, rest, id, startNow: !noStart);
-            case "uninstall": manager.Uninstall(id); await Console.Out.WriteLineAsync($"Service '{id}' uninstalled ({manager.Describe()})."); return 0;
+            case "uninstall": return await ServiceUninstall(manager, id);
             case "start":     manager.Start(id);     await Console.Out.WriteLineAsync($"Service '{id}' started.");   return 0;
             case "stop":      manager.Stop(id);      await Console.Out.WriteLineAsync($"Service '{id}' stopped (still installed)."); return 0;
             case "status":    return rest.Contains("--json") ? await ServiceStatusJson(manager, id) : await ServiceStatus(manager, id);
@@ -914,6 +914,23 @@ public static class DaemonCommands {
         await Console.Out.WriteLineAsync($"  Log:       {logPath}");
         await Console.Out.WriteLineAsync($"  Stop:      kcap daemon service stop --name {id}");
         await Console.Out.WriteLineAsync($"  Remove:    kcap daemon service uninstall --name {id}");
+        return 0;
+    }
+
+    static async Task<int> ServiceUninstall(IServiceManager manager, string id) {
+        using var txn = ServiceTxnLock.TryAcquire(id, TimeSpan.FromSeconds(10));
+
+        if (txn is null) {
+            await Console.Error.WriteLineAsync($"Another service operation is in progress for '{id}'. Try again shortly.");
+            return 1;
+        }
+
+        if (!manager.Uninstall(id, out var error)) {
+            await Console.Error.WriteLineAsync($"Could not uninstall service '{id}': {error}");
+            return 1;
+        }
+
+        await Console.Out.WriteLineAsync($"Service '{id}' uninstalled ({manager.Describe()}).");
         return 0;
     }
 

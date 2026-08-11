@@ -43,7 +43,9 @@ interface IServiceManager {
     ServiceStatus                Status(string serviceId);
     ServiceQuery                 Query(string serviceId);
     void Install(ServiceSpec spec, bool startNow);
-    void Uninstall(string serviceId);
+    /// <summary>True + no plist on disk is the only success. False retains the plist and names the state
+    /// in <paramref name="error"/> so an operator can diagnose before retrying.</summary>
+    bool Uninstall(string serviceId, out string? error);
     void Start(string serviceId);
     void Stop(string serviceId);
 }

@@ -66,10 +66,12 @@ sealed class WindowsScheduledTaskServiceManager(UnitFileWriter? writeUnit = null
         if (startNow) ServiceProcess.Check("schtasks", WindowsTaskUnit.RunArgs(spec.ServiceId));
     }
 
-    public void Uninstall(string serviceId) {
+    public bool Uninstall(string serviceId, out string? error) {
         ServiceProcess.Run("schtasks", WindowsTaskUnit.DeleteArgs(serviceId));
         var wrapper = WindowsTaskUnit.WrapperPath(serviceId);
         if (File.Exists(wrapper)) File.Delete(wrapper);
+        error = null;
+        return true;
     }
 
     public void Start(string serviceId) => ServiceProcess.Check("schtasks", WindowsTaskUnit.RunArgs(serviceId));

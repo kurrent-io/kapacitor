@@ -50,11 +50,13 @@ sealed class SystemdServiceManager(UnitFileWriter? writeUnit = null) : IServiceM
         if (startNow) ServiceProcess.Check("systemctl", SystemdUnit.RestartArgs(spec.ServiceId));
     }
 
-    public void Uninstall(string serviceId) {
+    public bool Uninstall(string serviceId, out string? error) {
         ServiceProcess.Run("systemctl", SystemdUnit.DisableNowArgs(serviceId));
         var path = SystemdUnit.UnitPath(serviceId);
         if (File.Exists(path)) File.Delete(path);
         ServiceProcess.Run("systemctl", SystemdUnit.DaemonReloadArgs());
+        error = null;
+        return true;
     }
 
     public void Start(string serviceId) => ServiceProcess.Check("systemctl", SystemdUnit.StartArgs(serviceId));
