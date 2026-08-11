@@ -87,6 +87,62 @@ sealed partial class LaunchdServiceManager(
         return true;
     }
 
-    public void Start(string serviceId) => ServiceProcess.Check("launchctl", LaunchdUnit.KickstartArgs(Uid(), serviceId));
-    public void Stop(string serviceId)  => ServiceProcess.Check("launchctl", LaunchdUnit.KillArgs(Uid(), serviceId));
+    /// <summary>
+    /// A LaunchAgent that is between short-lived <c>KeepAlive</c> incarnations can lose its job (and thus
+    /// the ability to catch a SIGTERM) at any moment, so <c>kickstart</c>/<c>kill</c> raced that gap.
+    /// Probing first tells "not currently loaded" from "loaded" apart, so we issue the launchctl verb that
+    /// actually applies to the state on the wire: <c>bootstrap</c> to load an unloaded label,
+    /// <c>kickstart</c> to restart a loaded one. An <see cref="LabelProbe.Unknown"/> probe means the print
+    /// failed for a reason other than absence, so neither verb is safe to guess — fail without mutating.
+    /// </summary>
+    public bool Start(string serviceId, out string? error) {
+        var (probeExit, probeOut, probeErr) = _runProcess("launchctl", LaunchdUnit.PrintArgs(Uid(), serviceId));
+        var probe = LaunchdUnit.ClassifyPrint(probeExit, probeOut, probeErr);
+
+        switch (probe) {
+            case LabelProbe.Absent:
+                var (bootstrapExit, _, bootstrapErr) = _runProcess("launchctl", LaunchdUnit.BootstrapArgs(Uid(), LaunchdUnit.PlistPath(serviceId)));
+                if (bootstrapExit != 0) {
+                    error = $"launchctl bootstrap failed (exit {bootstrapExit}): {bootstrapErr.Trim()}";
+                    return false;
+                }
+                break;
+            case LabelProbe.Loaded:
+                var (kickstartExit, _, kickstartErr) = _runProcess("launchctl", LaunchdUnit.KickstartArgs(Uid(), serviceId));
+                if (kickstartExit != 0) {
+                    error = $"launchctl kickstart failed (exit {kickstartExit}): {kickstartErr.Trim()}";
+                    return false;
+                }
+                break;
+            default:
+                error = $"cannot start '{serviceId}': launchctl print left the label state {probe} — no action taken";
+                return false;
+        }
+
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// See <see cref="Uninstall"/> for the same benign-absence re-query rule: a non-zero <c>bootout</c>
+    /// is only a real failure if the label is still <see cref="LabelProbe.Loaded"/> or
+    /// <see cref="LabelProbe.Unknown"/> afterward. Unlike <see cref="Uninstall"/>, the plist is never
+    /// deleted here — stopping unloads the label, it does not remove the service.
+    /// </summary>
+    public bool Stop(string serviceId, out string? error) {
+        var (bootoutExit, _, _) = _runProcess("launchctl", LaunchdUnit.BootoutArgs(Uid(), serviceId));
+
+        if (bootoutExit != 0) {
+            var (queryExit, stdout, stderr) = _runProcess("launchctl", LaunchdUnit.PrintArgs(Uid(), serviceId));
+            var probe = LaunchdUnit.ClassifyPrint(queryExit, stdout, stderr);
+
+            if (probe != LabelProbe.Absent) {
+                error = $"launchctl bootout failed (exit {bootoutExit}) and the label is still {probe}";
+                return false;
+            }
+        }
+
+        error = null;
+        return true;
+    }
 }

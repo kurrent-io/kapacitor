@@ -59,6 +59,15 @@ sealed class SystemdServiceManager(UnitFileWriter? writeUnit = null) : IServiceM
         return true;
     }
 
-    public void Start(string serviceId) => ServiceProcess.Check("systemctl", SystemdUnit.StartArgs(serviceId));
-    public void Stop(string serviceId)  => ServiceProcess.Check("systemctl", SystemdUnit.StopArgs(serviceId));
+    public bool Start(string serviceId, out string? error) {
+        ServiceProcess.Check("systemctl", SystemdUnit.StartArgs(serviceId));
+        error = null;
+        return true;
+    }
+
+    public bool Stop(string serviceId, out string? error) {
+        ServiceProcess.Check("systemctl", SystemdUnit.StopArgs(serviceId));
+        error = null;
+        return true;
+    }
 }

@@ -74,6 +74,15 @@ sealed class WindowsScheduledTaskServiceManager(UnitFileWriter? writeUnit = null
         return true;
     }
 
-    public void Start(string serviceId) => ServiceProcess.Check("schtasks", WindowsTaskUnit.RunArgs(serviceId));
-    public void Stop(string serviceId)  => ServiceProcess.Check("schtasks", WindowsTaskUnit.EndArgs(serviceId));
+    public bool Start(string serviceId, out string? error) {
+        ServiceProcess.Check("schtasks", WindowsTaskUnit.RunArgs(serviceId));
+        error = null;
+        return true;
+    }
+
+    public bool Stop(string serviceId, out string? error) {
+        ServiceProcess.Check("schtasks", WindowsTaskUnit.EndArgs(serviceId));
+        error = null;
+        return true;
+    }
 }

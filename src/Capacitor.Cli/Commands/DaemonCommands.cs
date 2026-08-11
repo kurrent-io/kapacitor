@@ -845,8 +845,8 @@ public static class DaemonCommands {
         switch (action) {
             case "install":   return await ServiceInstall(manager, rest, id, startNow: !noStart);
             case "uninstall": return await ServiceUninstall(manager, id);
-            case "start":     manager.Start(id);     await Console.Out.WriteLineAsync($"Service '{id}' started.");   return 0;
-            case "stop":      manager.Stop(id);      await Console.Out.WriteLineAsync($"Service '{id}' stopped (still installed)."); return 0;
+            case "start":     return await ServiceStart(manager, id);
+            case "stop":      return await ServiceStop(manager, id);
             case "status":    return rest.Contains("--json") ? await ServiceStatusJson(manager, id) : await ServiceStatus(manager, id);
             default:          return ServiceUsage();
         }
@@ -931,6 +931,40 @@ public static class DaemonCommands {
         }
 
         await Console.Out.WriteLineAsync($"Service '{id}' uninstalled ({manager.Describe()}).");
+        return 0;
+    }
+
+    static async Task<int> ServiceStart(IServiceManager manager, string id) {
+        using var txn = ServiceTxnLock.TryAcquire(id, TimeSpan.FromSeconds(10));
+
+        if (txn is null) {
+            await Console.Error.WriteLineAsync($"Another service operation is in progress for '{id}'. Try again shortly.");
+            return 1;
+        }
+
+        if (!manager.Start(id, out var error)) {
+            await Console.Error.WriteLineAsync($"Could not start service '{id}': {error}");
+            return 1;
+        }
+
+        await Console.Out.WriteLineAsync($"Service '{id}' started.");
+        return 0;
+    }
+
+    static async Task<int> ServiceStop(IServiceManager manager, string id) {
+        using var txn = ServiceTxnLock.TryAcquire(id, TimeSpan.FromSeconds(10));
+
+        if (txn is null) {
+            await Console.Error.WriteLineAsync($"Another service operation is in progress for '{id}'. Try again shortly.");
+            return 1;
+        }
+
+        if (!manager.Stop(id, out var error)) {
+            await Console.Error.WriteLineAsync($"Could not stop service '{id}': {error}");
+            return 1;
+        }
+
+        await Console.Out.WriteLineAsync($"Service '{id}' stopped (still installed).");
         return 0;
     }
 
