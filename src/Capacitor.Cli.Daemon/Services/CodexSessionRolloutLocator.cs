@@ -24,8 +24,8 @@ namespace Capacitor.Cli.Daemon.Services;
 /// birth time (<c>SetCreationTime</c> is a no-op) and does not reliably expose it, so the
 /// filesystem creation time is unusable there for distinguishing rollouts — the filename stamp is
 /// Codex's own session-start time, stable and cross-platform. The decision logic is pure and
-/// unit-tested without a filesystem; only the <see cref="TryLocate"/>/<see cref="TryLocatePath"/>
-/// scan touches disk.
+/// unit-tested without a filesystem; only the <see cref="TryLocateWinner"/> scan (behind
+/// <see cref="TryLocate"/>) touches disk.
 /// </summary>
 internal static class CodexSessionRolloutLocator {
     /// <summary>How many non-blank rollout lines to inspect for a <c>payload.cwd</c> before
@@ -65,19 +65,12 @@ internal static class CodexSessionRolloutLocator {
     public static string? TryLocate(string sessionsRoot, string cwd, DateTime spawnedAtUtc, ISet<string>? ruledOut = null) =>
         TryLocateWinner(sessionsRoot, cwd, spawnedAtUtc, ruledOut)?.SessionId;
 
-    /// <summary>
-    /// Like <see cref="TryLocate"/> but returns the matching rollout's <b>file path</b> rather than
-    /// its session id — for a caller that must read the rollout itself (watching it for
-    /// post-input growth as a Codex turn-start signal). Same disambiguation, same best-effort
-    /// contract: null when no candidate matches yet.
-    /// </summary>
-    public static string? TryLocatePath(string sessionsRoot, string cwd, DateTime spawnedAtUtc, ISet<string>? ruledOut = null) =>
-        TryLocateWinner(sessionsRoot, cwd, spawnedAtUtc, ruledOut)?.Path;
-
-    /// <summary>Shared scan for <see cref="TryLocate"/>/<see cref="TryLocatePath"/>: returns the
-    /// winning rollout's normalized session id AND its file path together, so the two public
-    /// entry points can never disagree on which file won.</summary>
-    static (string SessionId, string Path)? TryLocateWinner(string sessionsRoot, string cwd, DateTime spawnedAtUtc, ISet<string>? ruledOut = null) {
+    /// <summary>Like <see cref="TryLocate"/> but returns the winning rollout's normalized session id
+    /// AND its file path together — for a caller that must also read the rollout itself (the daemon
+    /// caches the path to watch it for post-input growth as a Codex turn-start signal). Returning
+    /// both from one scan means the id and the path can never disagree on which file won. Same
+    /// disambiguation, same best-effort contract: null when no candidate matches yet.</summary>
+    internal static (string SessionId, string Path)? TryLocateWinner(string sessionsRoot, string cwd, DateTime spawnedAtUtc, ISet<string>? ruledOut = null) {
         if (!Directory.Exists(sessionsRoot)) return null;
 
         string?   bestId       = null;

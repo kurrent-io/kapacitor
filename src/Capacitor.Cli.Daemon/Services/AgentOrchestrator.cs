@@ -37,6 +37,17 @@ internal record AgentInstance(
     public bool                 HasReceivedOutput { get; set; }
     public TerminalOutputBuffer OutputBuffer      { get; } = new();
 
+    /// <summary>Codex turn diagnostic: the reviewer's own rollout JSONL path, resolved ONCE by the
+    /// session-id detector and cached so the send path can sample its length with a single stat
+    /// (never a directory scan). Null until detection resolves it, and for non-Codex agents.</summary>
+    public string? CodexRolloutPath { get; set; }
+
+    /// <summary>Codex turn diagnostic: single-flight guard for the post-send rollout-growth probe.
+    /// Each follow-up round cancels the prior round's probe and installs its own, so a later round's
+    /// growth is never attributed to an earlier round's input. A plain field so
+    /// <see cref="System.Threading.Interlocked.Exchange{T}(ref T, T)"/> can swap it atomically.</summary>
+    public CancellationTokenSource? CodexTurnProbeCts;
+
     /// <summary>This agent's monotonic activity clock. One instance per launch — a relaunch gets a
     /// fresh one, never inheriting the predecessor's idle window. Defaults to a real-time instance so
     /// existing test constructions keep compiling; a production launch builds it explicitly, before
@@ -2717,6 +2728,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         LogSendInputReceived(agentId, agent.Runtime.Vendor, text.Length, attachmentIds?.Length ?? 0);
 
+        // Codex turn diagnostic: whether to run the post-send rollout probe, and the rollout's
+        // length sampled just BEFORE delivery. Declared out here so the baseline survives the
+        // try/finally to reach ArmCodexTurnProbe below.
+        var   isCodex       = string.Equals(agent.Runtime.Vendor, "codex", StringComparison.OrdinalIgnoreCase);
+        long? codexBaseline = null;
+
         await agent.BorrowedSnapshotGate.WaitAsync(_shutdownCts.Token);
         try {
             if (!await TryRefreshBorrowedSnapshotAsync(agent)) return;
@@ -2731,6 +2748,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 }
             }
 
+            // Codex turn diagnostic: sample the rollout length BEFORE delivery, from the path the
+            // session detector already cached (a single stat, never a scan). Capturing it AFTER the
+            // send would fold a fast Codex append into the baseline and mis-report "no turn". A null
+            // here (path not resolved yet, or the stat failed) is handled in ArmCodexTurnProbe.
+            if (isCodex && agent.CodexRolloutPath is { } rolloutPath) codexBaseline = TryFileLength(rolloutPath);
+
             // PTY runtimes use bracketed paste; ACP runtimes send a structured prompt.
             if (agent.BorrowedSnapshotSource is not null)
                 await agent.Runtime.SendUserInputAndWaitForWriteAsync(message);
@@ -2742,44 +2765,46 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             agent.BorrowedSnapshotGate.Release();
         }
 
-        // Codex turn-start diagnostic: a PTY Codex runtime exposes no turn-start signal to the daemon, so on a
-        // follow-up round the log otherwise stops at "delivered" and cannot tell a slow-but-working
-        // reviewer from one that received the input and never began a turn. Watch Codex's rollout
-        // for growth after delivery and log the verdict. Fire-and-forget, bounded, best-effort —
-        // never affects delivery. Only reached on the successful-delivery path (the guards and the
-        // borrowed-snapshot failure above all return before here).
-        if (string.Equals(agent.Runtime.Vendor, "codex", StringComparison.OrdinalIgnoreCase))
-            _ = ObserveCodexTurnAfterSendAsync(agent);
+        // Codex turn diagnostic: arm the post-send rollout-growth probe. Only reached on the
+        // successful-delivery path (the guards and the borrowed-snapshot failure above all return
+        // before here).
+        if (isCodex) ArmCodexTurnProbe(agent, codexBaseline);
     }
 
     /// <summary>
-    /// Codex turn-start diagnostic: after input is delivered to a hosted Codex reviewer, watch its rollout
-    /// JSONL for growth (the only clean turn-start signal a PTY runtime gives the daemon — see
-    /// <see cref="CodexTurnObserver"/>) and log whether a turn began. Fully best-effort: an
-    /// unresolvable rollout, a read fault, or the agent stopping is logged (or silently dropped for
-    /// cancellation) and never disturbs the send path.
+    /// Codex turn diagnostic: start a bounded, single-flight, off-handler probe that watches the
+    /// reviewer's rollout for growth past <paramref name="baseline"/> (the length captured just
+    /// before this round's input was delivered) and logs whether a turn began — the only clean
+    /// turn-start signal a PTY runtime gives the daemon (see <see cref="CodexTurnObserver"/>).
+    ///
+    /// <para>A null <paramref name="baseline"/> means the rollout path was not cached yet, or its
+    /// pre-delivery stat failed — logged and skipped (never a false "no turn"). The probe is
+    /// single-flight per agent: arming cancels the prior round's probe, so a later round's growth is
+    /// never attributed to an earlier round's input. It runs on a pooled thread (never the command
+    /// loop) and is bounded by the agent's stop, daemon shutdown, and the observe timeout.</para>
     /// </summary>
-    async Task ObserveCodexTurnAfterSendAsync(AgentInstance agent) {
+    void ArmCodexTurnProbe(AgentInstance agent, long? baseline) {
+        if (agent.CodexRolloutPath is not { } rolloutPath || baseline is not { } b) {
+            LogCodexTurnRolloutUnresolved(agent.Id);
+            return;
+        }
+
+        var cts  = CancellationTokenSource.CreateLinkedTokenSource(agent.ReadCts.Token, _shutdownCts.Token);
+        var prev = Interlocked.Exchange(ref agent.CodexTurnProbeCts, cts);
+        if (prev is not null) {
+            try { prev.Cancel(); } catch (ObjectDisposedException) { /* the prior probe already finished + disposed it */ }
+        }
+
+        _ = Task.Run(() => ObserveCodexTurnAsync(agent, rolloutPath, b, cts));
+    }
+
+    async Task ObserveCodexTurnAsync(AgentInstance agent, string rolloutPath, long baseline, CancellationTokenSource cts) {
         try {
-            // Same cwd + spawn-time disambiguation the session-id detector uses, so we watch the
-            // reviewer's OWN rollout, not a concurrent Codex session under the shared tree.
-            if (CodexSessionRolloutLocator.TryLocatePath(CodexPaths.Sessions, agent.Worktree.Path, agent.CreatedAt) is not { } rolloutPath) {
-                LogCodexTurnRolloutUnresolved(agent.Id);
-                return;
-            }
-
             long CurrentLength() {
-                try { return new FileInfo(rolloutPath).Length; } catch { return -1; }
+                try { return new FileInfo(rolloutPath).Length; } catch { return -1; } // <0 ⇒ momentarily unreadable
             }
 
-            var baseline = CurrentLength();
-            if (baseline < 0) {
-                LogCodexTurnRolloutUnresolved(agent.Id);
-                return;
-            }
-
-            using var cts   = CancellationTokenSource.CreateLinkedTokenSource(agent.ReadCts.Token, _shutdownCts.Token);
-            var       start = DateTime.UtcNow;
+            var start = DateTime.UtcNow;
 
             var outcome = await CodexTurnObserver.ObserveGrowthAsync(
                 CurrentLength, baseline, CodexTurnObserveTimeout, CodexTurnObserveInterval, TimeProvider.System, cts.Token);
@@ -2791,11 +2816,25 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 case CodexTurnObserver.Outcome.NotObserved:
                     LogCodexTurnNotObserved(agent.Id, CodexTurnObserveTimeout.TotalSeconds);
                     break;
-                // Cancelled: the agent stopped or the daemon is shutting down — no verdict to report.
+                case CodexTurnObserver.Outcome.Unavailable:
+                    // The rollout became unreadable and never showed growth — a measurement gap, NOT
+                    // evidence the reviewer ignored the input. Do not emit the strong "no turn" line.
+                    LogCodexTurnRolloutUnavailable(agent.Id);
+                    break;
+                // Cancelled: superseded by a newer round, the agent stopped, or daemon shutdown — no verdict.
             }
         } catch (Exception ex) {
             LogCodexTurnObserveFailed(ex, agent.Id);
+        } finally {
+            // Release our slot only if it is still ours (a newer round may already have replaced it),
+            // then dispose the CTS we own.
+            Interlocked.CompareExchange(ref agent.CodexTurnProbeCts, null, cts);
+            cts.Dispose();
         }
+    }
+
+    static long? TryFileLength(string path) {
+        try { return new FileInfo(path).Length; } catch { return null; }
     }
 
     static readonly TimeSpan BorrowedSnapshotRefreshTimeout = TimeSpan.FromSeconds(30);
@@ -3426,8 +3465,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         Func<ISet<string>, string?>? locate = vendor.ToLowerInvariant() switch {
             "claude" => ruledOut => SessionTranscriptLocator.TryLocate(
                 ClaudePaths.ProjectDir(agent.Worktree.Path), agent.Worktree.Path, spawnedAtUtc, ruledOut),
-            "codex" => ruledOut => CodexSessionRolloutLocator.TryLocate(
-                CodexPaths.Sessions, agent.Worktree.Path, spawnedAtUtc, ruledOut),
+            // Codex turn diagnostic: resolve id AND path together and cache the path on the agent,
+            // so the send-path probe needs only a single stat later — no directory scan on the
+            // daemon command loop. The path is stable for a session's lifetime.
+            "codex" => ruledOut => {
+                if (CodexSessionRolloutLocator.TryLocateWinner(
+                        CodexPaths.Sessions, agent.Worktree.Path, spawnedAtUtc, ruledOut) is not { } winner)
+                    return null;
+                agent.CodexRolloutPath = winner.Path;
+                return winner.SessionId;
+            },
             _ => null,
         };
 
@@ -3853,6 +3900,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Codex turn observer: could not resolve a rollout for agent {AgentId} — skipping turn-start diagnostic for this round")]
     partial void LogCodexTurnRolloutUnresolved(string agentId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Codex turn observer: rollout for agent {AgentId} became unreadable during observation — no turn verdict for this round (measurement gap, not evidence of no turn)")]
+    partial void LogCodexTurnRolloutUnavailable(string agentId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Codex turn observer faulted for agent {AgentId} (diagnostic only — delivery unaffected)")]
     partial void LogCodexTurnObserveFailed(Exception ex, string agentId);

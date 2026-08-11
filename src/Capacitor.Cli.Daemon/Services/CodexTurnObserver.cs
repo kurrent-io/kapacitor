@@ -23,6 +23,10 @@ internal static class CodexTurnObserver {
         /// <summary>The timeout elapsed with no growth — Codex received the input but produced no
         /// turn (the "input delivered, no turn" failure signature).</summary>
         NotObserved,
+        /// <summary>The length was still unreadable at the deadline (a deleted/moved rollout or a
+        /// sustained stat failure) and no growth was ever seen — a measurement gap, NOT evidence
+        /// that the reviewer ignored the input. The caller must not report this as "no turn".</summary>
+        Unavailable,
         /// <summary>The agent stopped or the daemon began shutting down before a verdict.</summary>
         Cancelled,
     }
@@ -30,10 +34,18 @@ internal static class CodexTurnObserver {
     /// <summary>
     /// Polls <paramref name="currentLength"/> until it exceeds <paramref name="baseline"/> (⇒
     /// <see cref="Outcome.TurnObserved"/>), <paramref name="timeout"/> elapses (⇒
-    /// <see cref="Outcome.NotObserved"/>), or <paramref name="ct"/> fires (⇒
-    /// <see cref="Outcome.Cancelled"/>). The length is checked once up front (a fast turn may land
-    /// before the first poll) and once more after the loop exits on the deadline, so a turn landing
-    /// in the final interval is still credited rather than lost to an off-by-one.
+    /// <see cref="Outcome.NotObserved"/>, or <see cref="Outcome.Unavailable"/> when the final read
+    /// signalled unavailability), or <paramref name="ct"/> fires (⇒ <see cref="Outcome.Cancelled"/>).
+    /// The length is checked once up front (a fast turn may land before the first poll) and once more
+    /// after the loop exits on the deadline, so a turn landing in the final interval is still credited
+    /// rather than lost to an off-by-one.
+    ///
+    /// <para><paramref name="currentLength"/> returns a <b>negative</b> value to signal the length is
+    /// momentarily unreadable. During polling that is simply "not grown yet" (a real growth always
+    /// resolves to a value &gt; baseline first, so a transient read failure can never mask a turn we
+    /// already saw); only a negative value at the final deadline check yields
+    /// <see cref="Outcome.Unavailable"/> — distinguishing a genuine measurement failure from a real
+    /// "no turn".</para>
     /// </summary>
     public static async Task<Outcome> ObserveGrowthAsync(
         Func<long>        currentLength,
@@ -50,9 +62,12 @@ internal static class CodexTurnObserver {
                 await Task.Delay(pollInterval, time, ct);
             }
 
-            // Final check: a turn that landed during the last delay must not be missed just
-            // because the loop condition fired first.
-            return currentLength() > baseline ? Outcome.TurnObserved : Outcome.NotObserved;
+            // Final check: a turn that landed during the last delay must not be missed just because
+            // the loop condition fired first. A negative reading here is a genuine measurement gap,
+            // not a "no turn" verdict.
+            var finalLength = currentLength();
+            if (finalLength < 0)        return Outcome.Unavailable;
+            return finalLength > baseline ? Outcome.TurnObserved : Outcome.NotObserved;
         } catch (OperationCanceledException) {
             return Outcome.Cancelled;
         }

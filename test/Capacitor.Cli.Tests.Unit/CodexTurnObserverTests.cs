@@ -49,6 +49,32 @@ public class CodexTurnObserverTests {
     }
 
     [Test]
+    public async Task Unreadable_length_at_deadline_is_unavailable_not_no_turn() {
+        var time = new FakeTimeProvider();
+
+        // The length source signals "unreadable" (negative) the whole time — a deleted/moved
+        // rollout or sustained stat failure. This must NOT be reported as "no turn".
+        var task = CodexTurnObserver.ObserveGrowthAsync(() => -1, baseline: 10, Timeout, Poll, time, CancellationToken.None);
+
+        time.Advance(Timeout + Poll);
+
+        await Assert.That(await task).IsEqualTo(CodexTurnObserver.Outcome.Unavailable);
+    }
+
+    [Test]
+    public async Task Transient_unreadable_then_growth_is_still_observed() {
+        var  time = new FakeTimeProvider();
+        long len  = -1; // momentarily unreadable at the first check — must not terminate the probe
+
+        var task = CodexTurnObserver.ObserveGrowthAsync(() => len, baseline: 10, Timeout, Poll, time, CancellationToken.None);
+
+        len = 42; // the file becomes readable and has grown
+        time.Advance(Poll);
+
+        await Assert.That(await task).IsEqualTo(CodexTurnObserver.Outcome.TurnObserved);
+    }
+
+    [Test]
     public async Task Cancellation_is_reported() {
         var       time = new FakeTimeProvider();
         using var cts  = new CancellationTokenSource();
