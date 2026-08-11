@@ -3,12 +3,9 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.Cli.Tests.Unit;
 
-/// <summary>
-/// Codex turn-start diagnostic: tests the pure growth-observation core that turns a hosted Codex reviewer's rollout
-/// into a turn-start signal. Growth ⇒ the reviewer began a turn; silence to the deadline ⇒ it
-/// received the input but produced no turn; cancellation ⇒ the agent stopped. The length source
-/// and clock are injected, so no filesystem or wall-clock is involved.
-/// </summary>
+/// <summary>Tests the pure growth-observation core (<see cref="CodexTurnObserver"/>): growth ⇒ turn
+/// started; silence to the deadline ⇒ no turn; unreadable ⇒ measurement gap; superseded/cancelled ⇒
+/// no verdict. Length source and clock are injected — no filesystem or wall-clock.</summary>
 public class CodexTurnObserverTests {
     static readonly TimeSpan Timeout = TimeSpan.FromMinutes(2);
     static readonly TimeSpan Poll    = TimeSpan.FromSeconds(2);

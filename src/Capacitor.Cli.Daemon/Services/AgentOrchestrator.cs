@@ -2817,13 +2817,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 try { return new FileInfo(rolloutPath).Length; } catch { return -1; } // <0 ⇒ momentarily unreadable
             }
 
-            var start = DateTime.UtcNow;
+            // Monotonic elapsed measurement (same clock domain the observer uses) — DateTime.UtcNow
+            // could skew or go negative if the wall clock shifts mid-observation.
+            var startTs = TimeProvider.System.GetTimestamp();
 
-            // Single-flight: this round's generation was bumped (under the send gate) BEFORE its
-            // input was delivered, so a newer round instantly makes this one stale. The predicate
-            // is checked inside the poll loop, so a superseded probe STOPS within one interval
-            // (returns Superseded) rather than polling to the timeout — bounding how many probes a
-            // rapid retry burst can keep alive. The generation stays the sole verdict authority.
+            // Single-flight: this round's generation was bumped (under the send gate) before its
+            // input was delivered, so a newer round instantly makes this one stale. The predicate is
+            // checked inside the poll loop, so a superseded probe stops within one interval instead
+            // of polling to the timeout; the generation stays the sole verdict authority.
             var outcome = await CodexTurnObserver.ObserveGrowthAsync(
                 CurrentLength, baseline, CodexTurnObserveTimeout, CodexTurnObserveInterval, TimeProvider.System, cts.Token,
                 isCurrent: () => Volatile.Read(ref agent.CodexTurnProbeGen) == gen);
@@ -2837,7 +2838,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             switch (outcome) {
                 case CodexTurnObserver.Outcome.TurnObserved:
-                    LogCodexTurnStarted(agent.Id, (long)(DateTime.UtcNow - start).TotalMilliseconds);
+                    LogCodexTurnStarted(agent.Id, (long)TimeProvider.System.GetElapsedTime(startTs).TotalMilliseconds);
                     break;
                 case CodexTurnObserver.Outcome.NotObserved:
                     LogCodexTurnNotObserved(agent.Id, CodexTurnObserveTimeout.TotalSeconds);

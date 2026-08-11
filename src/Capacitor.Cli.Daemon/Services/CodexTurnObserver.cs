@@ -1,20 +1,12 @@
 namespace Capacitor.Cli.Daemon.Services;
 
 /// <summary>
-/// Codex turn-start diagnostic. After a follow-up round's input is delivered to a hosted <b>Codex</b> reviewer, the
-/// daemon log stops at <c>"SendInput delivered"</c> — it cannot say whether Codex then began a turn
-/// or silently ignored the input, which is the entire open question when a round-2 review times out.
-///
-/// <para>Unlike an ACP runtime (explicit turn boundaries, logged by <c>LogTurnStarted</c>/
-/// <c>LogTurnEnded</c> in <c>AcpHostedAgentRuntime</c>), a PTY Codex runtime exposes no turn signal
-/// to the daemon: the read loop advances the activity clock on <em>every</em> PTY output chunk,
-/// including TUI redraws, so "there was output" is not a turn gate. Codex's own rollout JSONL
-/// (<c>~/.codex/sessions/**.jsonl</c>) is the one clean signal — it grows only when Codex commits
-/// response items. This observer watches that file's length for growth after input, turning a
-/// round-2 timeout into a one-log-line diagnosis instead of a forensic session.</para>
-///
-/// <para>Pure and unit-testable: the growth source and the clock are injected; only the caller
-/// (<c>AgentOrchestrator</c>) touches the filesystem.</para>
+/// Codex turn-start diagnostic: after a follow-up round's input is delivered, did Codex begin a turn
+/// or ignore it? A PTY Codex runtime gives the daemon no turn signal (PTY output advances the
+/// activity clock on every TUI redraw, so "there was output" is not a turn gate), but its rollout
+/// JSONL grows only when Codex commits response items. This observer watches that file's length for
+/// growth after input. Pure/testable: the growth source and clock are injected; only the caller
+/// touches the filesystem.
 /// </summary>
 internal static class CodexTurnObserver {
     internal enum Outcome {
