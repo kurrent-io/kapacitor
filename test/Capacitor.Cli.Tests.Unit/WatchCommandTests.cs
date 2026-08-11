@@ -847,6 +847,100 @@ public class UpdateClaudePendingToolCallsTests {
     }
 }
 
+public class ClaudeToolTrackingSourceTests {
+    const string ToolUse =
+        """{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_big","name":"Bash","input":{"command":"build"}}]}}""";
+
+    // Comfortably past SecretRedactor.MaxRedactableLineChars — the everyday size of a big file read
+    // or a build log, not an exotic edge case.
+    static string OversizedToolResult() =>
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_big\",\"type\":\"tool_result\",\"content\":\""
+      + new string('x', 70 * 1024)
+      + "\"}]}}";
+
+    /// <summary>
+    /// Why the tracker is fed the drain's RAW lines and not the redacted ones it sends: RedactLine
+    /// swaps any line over 64 KiB for a placeholder carrying no tool ids at all. Feed it the
+    /// redacted list and an oversized tool_result never clears its id, toolInFlight stays true
+    /// forever, and the idle ceiling never fires — the leak this whole feature exists to fix,
+    /// silently reinstated on exactly the busiest sessions.
+    /// </summary>
+    [Test]
+    public async Task RedactedLines_StrandThePendingId_ButRawLinesClearIt() {
+        var viaRedacted = new HashSet<string>(StringComparer.Ordinal);
+        WatchCommand.UpdateClaudePendingToolCalls(viaRedacted, SecretRedactor.RedactLine(ToolUse));
+        WatchCommand.UpdateClaudePendingToolCalls(viaRedacted, SecretRedactor.RedactLine(OversizedToolResult()));
+
+        await Assert.That(viaRedacted.Contains("toolu_big")).IsTrue();
+
+        var viaRaw = new HashSet<string>(StringComparer.Ordinal);
+        WatchCommand.UpdateClaudePendingToolCalls(viaRaw, ToolUse);
+        WatchCommand.UpdateClaudePendingToolCalls(viaRaw, OversizedToolResult());
+
+        await Assert.That(viaRaw.Count).IsEqualTo(0);
+    }
+
+    // A watcher that reconnects mid-tool resumes at a server cursor and never re-reads the
+    // tool_use that started before it, so without a backfill the pending set comes up empty and a
+    // live subagent is eligible for reaping.
+    [Test]
+    public async Task Backfill_recovers_a_tool_use_left_open_before_the_resume_cursor() {
+        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+        await File.WriteAllLinesAsync(path, [ToolUse, """{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"still working"}]}}"""]);
+
+        try {
+            var pending = new HashSet<string>(StringComparer.Ordinal);
+            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 2, CancellationToken.None);
+
+            await Assert.That(pending.Contains("toolu_big")).IsTrue();
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    [Test]
+    public async Task Backfill_leaves_nothing_pending_when_the_tool_already_completed() {
+        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+        await File.WriteAllLinesAsync(path, [ToolUse, OversizedToolResult()]);
+
+        try {
+            var pending = new HashSet<string>(StringComparer.Ordinal);
+            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 2, CancellationToken.None);
+
+            await Assert.That(pending.Count).IsEqualTo(0);
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    // Only the lines before the cursor are the watcher's blind spot; everything from the cursor on
+    // arrives through the normal drain, and scanning it here would double-apply it.
+    [Test]
+    public async Task Backfill_stops_at_the_cursor() {
+        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+        await File.WriteAllLinesAsync(path, [ToolUse, OversizedToolResult()]);
+
+        try {
+            var pending = new HashSet<string>(StringComparer.Ordinal);
+            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 1, CancellationToken.None);
+
+            await Assert.That(pending.Contains("toolu_big")).IsTrue();
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    [Test]
+    public async Task Backfill_on_a_missing_file_is_a_silent_no_op() {
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+
+        await WatchCommand.BackfillClaudePendingToolCallsAsync(
+            pending, Path.Combine(Path.GetTempPath(), $"kcap-missing-{Guid.NewGuid():N}.jsonl"), upToLine: 5, CancellationToken.None);
+
+        await Assert.That(pending.Count).IsEqualTo(0);
+    }
+}
+
 public class CodexTranscriptExtractionTests {
     // Codex wraps every event in a response_item envelope; user prompts are
     // role:"user" message payloads with input_text blocks. See TitleGenerator
