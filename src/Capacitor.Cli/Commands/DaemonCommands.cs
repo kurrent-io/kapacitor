@@ -845,7 +845,7 @@ public static class DaemonCommands {
         switch (action) {
             case "install":   return await ServiceInstall(manager, rest, id, startNow: !noStart);
             case "uninstall": return await ServiceUninstall(manager, id);
-            case "start":     return await ServiceStart(manager, id);
+            case "start":     return rest.Contains("--verify") ? await ServiceStartVerified(manager, id) : await ServiceStart(manager, id);
             case "stop":      return await ServiceStop(manager, id);
             case "status":    return rest.Contains("--json") ? await ServiceStatusJson(manager, id) : await ServiceStatus(manager, id);
             default:          return ServiceUsage();
@@ -951,6 +951,19 @@ public static class DaemonCommands {
         return 0;
     }
 
+    /// <summary>
+    /// <c>--verify</c>: hands off to the <see cref="ServiceVerify"/> transaction engine, which
+    /// acquires the <see cref="ServiceTxnLock"/> itself — no double-acquire here.
+    /// </summary>
+    static async Task<int> ServiceStartVerified(IServiceManager manager, string id) {
+        var engine = new ServiceVerify(manager, DaemonPidProbe.ValidatedPid, HelloProbe.RunAsync, TimeProvider.System);
+        var exit = await engine.StartVerifiedAsync(id);
+
+        if (exit == VerifyExit.Ok) await Console.Out.WriteLineAsync($"Service '{id}' started (verified).");
+
+        return exit;
+    }
+
     static async Task<int> ServiceStop(IServiceManager manager, string id) {
         using var txn = ServiceTxnLock.TryAcquire(id, TimeSpan.FromSeconds(10));
 
@@ -998,7 +1011,8 @@ public static class DaemonCommands {
         Console.Error.WriteLine();
         Console.Error.WriteLine("  install [--name N] [--profile P] [--max-agents N] [--no-start]");
         Console.Error.WriteLine("  uninstall [--name N]   Stop and remove the service unit");
-        Console.Error.WriteLine("  start [--name N]       Start the installed service now");
+        Console.Error.WriteLine("  start [--name N] [--verify]   Start the installed service now");
+        Console.Error.WriteLine("                          --verify polls readiness/ownership and rolls back on failure");
         Console.Error.WriteLine("  stop [--name N]        Stop the running service (stays installed)");
         Console.Error.WriteLine("  status [--name N]      Show installed/running state");
         return 1;
