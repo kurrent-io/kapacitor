@@ -871,7 +871,16 @@ public static class DaemonCommands {
     }
 
     internal static async Task<int> ServiceInstall(IServiceManager manager, string[] args, string id, bool startNow) {
-        var verify = args.Contains("--verify");
+        var verify  = args.Contains("--verify");
+        var replace = args.Contains("--replace");
+
+        // --replace only has meaning inside the verify transaction engine (it selects the
+        // ownership matrix in ServiceVerify.InstallVerifiedAsync) — a plain (non-verified) install
+        // has no transaction to hand it to.
+        if (replace && !verify) {
+            await Console.Error.WriteLineAsync("install --replace requires --verify.");
+            return 1;
+        }
 
         // --verify is a launchd-only slice for now: the engine's readiness/version check needs a
         // manager that actually implements a verify-aware WriteAndBootstrap, and the on-disk
@@ -904,7 +913,7 @@ public static class DaemonCommands {
 
         if (verify) {
             var engine = new ServiceVerify(manager, DaemonPidProbe.ValidatedPid, HelloProbe.RunAsync, TimeProvider.System);
-            var exit   = await engine.InstallVerifiedAsync(spec, replace: false, CapacitorVersion.Current());
+            var exit   = await engine.InstallVerifiedAsync(spec, replace: replace, CapacitorVersion.Current());
             if (exit != VerifyExit.Ok) return exit;
         } else {
             manager.Install(spec, startNow);
@@ -1042,8 +1051,9 @@ public static class DaemonCommands {
     static int ServiceUsage() {
         Console.Error.WriteLine("Usage: kcap daemon service <install|uninstall|start|stop|status> [--name N]");
         Console.Error.WriteLine();
-        Console.Error.WriteLine("  install [--name N] [--profile P] [--max-agents N] [--no-start] [--verify]");
+        Console.Error.WriteLine("  install [--name N] [--profile P] [--max-agents N] [--no-start] [--replace] [--verify]");
         Console.Error.WriteLine("                          --verify polls readiness/version/ownership and rolls back on failure");
+        Console.Error.WriteLine("                          --replace (requires --verify) takes over an existing label/unit/live owner");
         Console.Error.WriteLine("  uninstall [--name N]   Stop and remove the service unit");
         Console.Error.WriteLine("  start [--name N] [--verify]   Start the installed service now");
         Console.Error.WriteLine("                          --verify polls readiness/ownership and rolls back on failure");

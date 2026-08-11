@@ -1,0 +1,234 @@
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Services;
+using Microsoft.Extensions.Time.Testing;
+
+namespace Capacitor.Cli.Tests.Unit.Services;
+
+/// <summary><c>install --replace --verify</c>'s ownership matrix (spec §3.4): unlike a fresh
+/// install (which refuses to touch an existing label/unit), --replace clears/takes over whatever it
+/// finds first. See <see cref="ServiceVerifyInstallTests"/> for the fresh-path/entry-recovery
+/// coverage this builds on.</summary>
+[NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+public class ServiceVerifyReplaceTests {
+    const string Id             = "svc-verify-replace";
+    const string ExpectedVersion = "1.2.3";
+    const string OwnPlistContent = "<plist>own-unit</plist>";
+
+    /// <summary>Sentinel PID far above any real pid_max (same convention as
+    /// <c>DaemonPidProbeTests.Null_for_dead_pid</c>): DaemonKill.KillValidatedOwner makes a REAL,
+    /// unmocked <c>Process.GetProcessById</c> call on whatever pid a test's "manual owner" seam
+    /// returns, so it must never coincide with an actual process on the machine running the test.</summary>
+    const int ManualOwnerPid = 999_999_111;
+
+    /// <summary>Purpose-built fake for the ownership matrix: unlike ServiceVerifyInstallTests'
+    /// fake, Query needs to report a pre-existing job pid independent of the post-bootstrap
+    /// RunningPid, and Bootstrapped must win over an EARLIER Uninstalled (--replace clears the old
+    /// label/unit BEFORE the same transaction's own later WriteAndBootstrap runs — the reverse
+    /// order of every fresh-install rollback scenario).</summary>
+    sealed class FakeServiceManager : IServiceManager {
+        public readonly List<string> Calls = [];
+        public LabelProbe InitialProbe = LabelProbe.Absent;
+        public bool InitialUnitPresent;
+        public int? InitialJobPid;
+        public bool Bootstrapped, Uninstalled;
+        public int? RunningPid = 4242;
+        public string PlistPath = "/fake/agents/io.kurrent.kcap.daemon.svc-verify-replace.plist";
+        public string PlistContent = OwnPlistContent;
+
+        public int QueryCalls             => Calls.Count(c => c == "query");
+        public int WriteAndBootstrapCalls => Calls.Count(c => c == "writeAndBootstrap");
+        public int UninstallCalls         => Calls.Count(c => c == "uninstall");
+
+        public string Describe() => "fake";
+        public IReadOnlyList<string> ListInstalled() => [];
+        public ServiceStatus Status(string serviceId) => new(ServiceState.NotInstalled, null);
+        public IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec) => [new GeneratedFile(PlistPath, PlistContent)];
+
+        public ServiceQuery Query(string serviceId) {
+            Calls.Add("query");
+            if (Bootstrapped) return new ServiceQuery(LabelProbe.Loaded, true, ServiceState.Running, "/bin/kcap-daemon", RunningPid);
+            if (Uninstalled) return new ServiceQuery(LabelProbe.Absent, false, ServiceState.NotInstalled, null, null);
+            return new ServiceQuery(InitialProbe, InitialProbe != LabelProbe.Absent || InitialUnitPresent, ServiceState.NotInstalled, null, InitialJobPid);
+        }
+
+        public void Install(ServiceSpec spec, bool startNow) { }
+
+        public void WriteAndBootstrap(ServiceSpec spec) {
+            Calls.Add("writeAndBootstrap");
+            Bootstrapped = true;
+        }
+
+        public bool Uninstall(string serviceId, out string? error) {
+            Calls.Add("uninstall");
+            Uninstalled  = true;
+            Bootstrapped = false;
+            error = null;
+            return true;
+        }
+
+        public bool Start(string serviceId, out string? error) { error = null; return true; }
+        public bool Stop(string serviceId, out string? error) { error = null; return true; }
+    }
+
+    static async Task<int> Drive(Task<int> task, FakeTimeProvider time, TimeSpan step) {
+        var guard = 0;
+        while (!task.IsCompleted && guard++ < 500) time.Advance(step);
+        return await task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    static (string Dir, string DaemonPath) SetUpViableInstall() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        var daemonPath = Path.Combine(dir, "kcap-daemon");
+        File.WriteAllText(daemonPath, "");
+        return (dir, daemonPath);
+    }
+
+    static ServiceSpec Spec(string daemonPath) =>
+        new(Id, daemonPath, Path.Combine(Path.GetTempPath(), "daemon.log"), new Dictionary<string, string>(), []);
+
+    static string? OwnPlist(string _) => OwnPlistContent;
+
+    [Test]
+    public async Task Owning_label_clears_via_uninstall_before_write_and_bootstrap_with_no_kill() {
+        var (_, daemonPath) = SetUpViableInstall();
+        try {
+            // The Loaded label's own JobPid matches the validated daemon pid — ownership holds, so
+            // the matrix proceeds straight to Uninstall (the label's bootout already terminates the
+            // process it owns) with no separate DaemonKill/stop-verification detour.
+            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = 4242 };
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+            await Assert.That(manager.Calls.IndexOf("uninstall")).IsLessThan(manager.Calls.IndexOf("writeAndBootstrap"));
+            // No seam exists to directly observe "DaemonKill was never called" (it's a raw static
+            // call with no injectable delegate) — but the owning branch structurally returns before
+            // ever reaching that code, so a single Uninstall reaching Ok here is exactly what an
+            // extra (harmless-but-unwanted) kill attempt would NOT change; what a missing early
+            // return WOULD change is the call order asserted above.
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Non_owning_label_with_a_manual_owner_clears_kills_then_installs() {
+        var (_, daemonPath) = SetUpViableInstall();
+        try {
+            // Loaded label whose JobPid does NOT match the validated daemon pid (FakeServiceManager
+            // reports JobPid=null pre-bootstrap either way) — a manual (non-service) daemon holds
+            // the name instead. helloCalls staging: call #1 is the stop-confirmation dial (old owner
+            // already dark); every call after is the freshly bootstrapped daemon answering.
+            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = null };
+
+            var helloCalls = 0;
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) {
+                helloCalls++;
+                return Task.FromResult(helloCalls == 1
+                    ? new HelloProbeResult(false, null, null, null)
+                    : new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+            }
+
+            // Call #1 (matrix entry, before any hello): the manual owner's pid. Call #2 (the
+            // stop-confirmation check, right after the dark hello): gone. Every call after bootstrap
+            // succeeds: the freshly bootstrapped daemon's own pid — required for the readiness poll
+            // to ever match manager.Query(...).JobPid.
+            //
+            // ManualOwnerPid is a sentinel far above any real pid_max (same convention as
+            // DaemonPidProbeTests) — DaemonKill.KillValidatedOwner makes a REAL, unmocked
+            // Process.GetProcessById call on this value, so it must be guaranteed not to resolve to
+            // an actual process on the test machine.
+            int? ValidatedPid(string _) =>
+                manager.Bootstrapped ? manager.RunningPid
+                : helloCalls == 0 ? ManualOwnerPid
+                : null;
+
+            var sut = new ServiceVerify(manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
+            // argv-order: uninstall (label-clear) precedes writeAndBootstrap — the kill+stop-verify
+            // detour happens strictly between the two, driven entirely by the hello/pid seams above.
+            await Assert.That(manager.Calls.IndexOf("uninstall")).IsLessThan(manager.Calls.IndexOf("writeAndBootstrap"));
+            await Assert.That(helloCalls).IsGreaterThanOrEqualTo(2);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task No_live_owner_with_a_stopped_unit_clears_without_a_kill_then_installs() {
+        var (_, daemonPath) = SetUpViableInstall();
+        try {
+            // Absent label, plist still present (`service stop` retains it) — replace: true allows
+            // clearing this (a fresh install would reject it as Contended). No validated live
+            // owner at all, so the kill/stop-verification step must never engage.
+            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Absent, InitialUnitPresent = true, InitialJobPid = null };
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+
+            int? ValidatedPid(string _) => manager.Bootstrapped ? manager.RunningPid : null;
+
+            var sut = new ServiceVerify(manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+            await Assert.That(manager.Calls.IndexOf("uninstall")).IsLessThan(manager.Calls.IndexOf("writeAndBootstrap"));
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Stop_never_confirmed_reports_stop_unconfirmed_and_writes_nothing() {
+        var (_, daemonPath) = SetUpViableInstall();
+        try {
+            // A live owner whose pid never goes away and whose hello never stops answering — the
+            // stop-confirmation poll can never succeed, so it must time out against the forward
+            // budget rather than hang forever.
+            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = null };
+            var time    = new FakeTimeProvider();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(false, null, null, null)); // never well-formed
+
+            var sut = new ServiceVerify(manager, _ => ManualOwnerPid, Hello, time, forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
+
+            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.StopUnconfirmed);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1); // the label was still cleared
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
+            await Assert.That(ServiceTxnMarker.Read(Id)!.Phase).IsEqualTo("label-cleared");
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Unknown_probe_aborts_before_the_matrix_runs_anything_destructive() {
+        var (_, daemonPath) = SetUpViableInstall();
+        try {
+            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Unknown };
+            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.BootoutUnknown);
+            await Assert.That(manager.QueryCalls).IsEqualTo(1);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(0);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+}

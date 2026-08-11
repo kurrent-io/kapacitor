@@ -20,4 +20,15 @@ public class DaemonCommandsServiceInstallTests {
         var exit = await DaemonCommands.ServiceInstall(new WindowsScheduledTaskServiceManager(), ["--verify"], "test-id", true);
         await Assert.That(exit).IsEqualTo(1);
     }
+
+    /// <summary>--replace only has meaning inside the verify transaction engine (it selects
+    /// ServiceVerify.InstallVerifiedAsync's ownership matrix) — a plain install has no transaction
+    /// to hand it to, so the combination is rejected before even reaching the launchd-only gate
+    /// (asserted here on a non-launchd manager, which would otherwise reject for a different
+    /// reason).</summary>
+    [Test]
+    public async Task Replace_without_verify_is_rejected() {
+        var exit = await DaemonCommands.ServiceInstall(new SystemdServiceManager(), ["--replace"], "test-id", true);
+        await Assert.That(exit).IsEqualTo(1);
+    }
 }

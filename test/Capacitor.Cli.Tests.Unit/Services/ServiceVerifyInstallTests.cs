@@ -45,11 +45,17 @@ public class ServiceVerifyInstallTests {
 
         public ServiceQuery Query(string serviceId) {
             Calls.Add("query");
+            // Bootstrapped wins over a PRIOR Uninstalled: entry-time marker recovery and the
+            // --replace matrix both call Uninstall() before this same transaction's own later
+            // WriteAndBootstrap succeeds, and Uninstall never gets a second chance to reset the
+            // flag once that happens. Every other test path only ever sets Uninstalled AFTER
+            // Bootstrapped (rollback undoing a bootstrap that already ran) — Uninstall() itself
+            // resets Bootstrapped=false in that case, so this ordering is a no-op for them.
+            if (Bootstrapped) return new ServiceQuery(LabelProbe.Loaded, true, ServiceState.Running, "/bin/kcap-daemon", RunningPid);
             if (Uninstalled)
                 return StayUnknownAfterUninstall
                     ? new ServiceQuery(LabelProbe.Unknown, true, ServiceState.NotInstalled, null, null)
                     : new ServiceQuery(LabelProbe.Absent, false, ServiceState.NotInstalled, null, null);
-            if (Bootstrapped) return new ServiceQuery(LabelProbe.Loaded, true, ServiceState.Running, "/bin/kcap-daemon", RunningPid);
             return new ServiceQuery(InitialProbe, InitialProbe != LabelProbe.Absent || InitialUnitPresent, ServiceState.NotInstalled, null, null);
         }
 
@@ -197,6 +203,55 @@ public class ServiceVerifyInstallTests {
             await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
             await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Leftover_written_phase_marker_with_matching_plist_is_cleaned_up_and_proceeds() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            // Unlike the mismatch case below, the on-disk plist's fingerprint matches exactly what
+            // the dead transaction itself recorded — provably its own residue, so recovery cleans
+            // it up (Uninstall, benign-absence semantics) rather than surfacing.
+            var matchingFingerprint = ServiceTxnMarker.Fingerprint(OwnPlistContent);
+            ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "written", "stale", "no-unit", matchingFingerprint));
+
+            var manager = new FakeServiceManager();
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+            await Assert.That(manager.Calls.IndexOf("uninstall")).IsLessThan(manager.Calls.IndexOf("writeAndBootstrap"));
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Leftover_marker_with_null_fingerprint_is_cleared_without_touching_the_manager() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            // Died before ever writing a plist (e.g. a crash right after "captured") — there is
+            // nothing on disk that could be the dead transaction's residue, so recovery just clears
+            // the marker; it must not call Uninstall on a label it never touched.
+            ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "captured", "stale", "no-unit", null));
+
+            var manager = new FakeServiceManager();
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(0);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 

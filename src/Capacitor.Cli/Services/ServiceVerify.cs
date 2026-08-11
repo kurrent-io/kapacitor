@@ -20,7 +20,10 @@ public static class VerifyExit {
     public const int BootoutUnknown = 22;
     public const string BootoutUnknownToken = "verify_bootout_unknown";
 
-    /// <summary>Reserved for install-verify's <c>--replace</c> rollback (Task 11).</summary>
+    /// <summary>Install-verify's <c>--replace</c> ownership matrix killed a validated live owner but
+    /// couldn't confirm it gone (validated pid null AND a fresh hello dial failing) within the
+    /// forward budget. Nothing is written yet at this point — the marker is retained at whatever
+    /// phase the matrix last reached (<c>label-cleared</c> or <c>captured</c>).</summary>
     public const int StopUnconfirmed = 23;
     public const string StopUnconfirmedToken = "verify_stop_unconfirmed";
 
@@ -31,7 +34,8 @@ public static class VerifyExit {
 
     /// <summary>Install-verify's hello was well-formed but reported a <c>DaemonVersion</c> other than
     /// the expected one — a deterministic mismatch, so rollback fires without waiting out the forward
-    /// budget. Also reserved for install-verify's <c>--replace</c> path (Task 11).</summary>
+    /// budget. Applies equally to a fresh install and <c>--replace</c> — both share the same
+    /// write+bootstrap+verify tail.</summary>
     public const int HelloValidation = 25;
     public const string HelloValidationToken = "verify_hello_validation";
 
@@ -68,6 +72,7 @@ sealed class ServiceVerify(
     Func<string, string?>? readPlist = null) {
     static readonly TimeSpan LockWait      = TimeSpan.FromSeconds(10);
     static readonly TimeSpan PollInterval  = TimeSpan.FromMilliseconds(500);
+    static readonly TimeSpan KillWait      = TimeSpan.FromSeconds(5);
 
     readonly TimeSpan _forwardBudget    = forwardBudget ?? TimeSpan.FromSeconds(20);
     readonly TimeSpan _rollbackReserve  = rollbackReserve ?? TimeSpan.FromSeconds(10);
@@ -184,11 +189,10 @@ sealed class ServiceVerify(
 
     enum InstallReady { NotReady, Ready, VersionMismatch }
 
-    /// <summary>install [--replace] --verify. This overload implements only the fresh path
-    /// (<paramref name="replace"/> == false); <c>--replace</c> is Task 11.</summary>
+    /// <summary>install [--replace] --verify. <paramref name="replace"/> selects the ownership
+    /// matrix (spec §3.4): a fresh install refuses to touch an existing label/unit (<see
+    /// cref="VerifyExit.Contended"/>), while <c>--replace</c> clears/takes it over first.</summary>
     public async Task<int> InstallVerifiedAsync(ServiceSpec spec, bool replace, string? expectedVersion) {
-        if (replace) throw new NotImplementedException("install --replace --verify is Task 11.");
-
         var serviceId = spec.ServiceId;
         using var txn = ServiceTxnLock.TryAcquire(serviceId, LockWait);
         if (txn is null) {
@@ -196,17 +200,16 @@ sealed class ServiceVerify(
             return VerifyExit.Contended;
         }
 
-        // A leftover marker means a prior attempt never reached a terminal state. Full resumption
-        // is Task 11's job; here we only self-heal the one trivial case — a crash between writing
-        // the "committed" phase and deleting the marker — and otherwise surface rather than pave
-        // over an unfinished transaction.
+        // A leftover marker means a prior attempt never reached a terminal state. "committed" is
+        // just a crash between writing that phase and deleting the marker — self-heal
+        // unconditionally. Any other phase may have left real residue on disk; recovery authority
+        // there is scoped by CONTENT (see RecoverLeftoverMarker), never by presence alone.
         if (ServiceTxnMarker.Read(serviceId) is { } leftover) {
-            if (leftover.Phase != "committed") {
-                Say(VerifyExit.RestoreVerificationToken);
-                return VerifyExit.RestoreVerification;
+            if (leftover.Phase == "committed") {
+                ServiceTxnMarker.Delete(serviceId);
+            } else if (RecoverLeftoverMarker(spec, serviceId, leftover) is { } recoveryExit) {
+                return recoveryExit;
             }
-
-            ServiceTxnMarker.Delete(serviceId);
         }
 
         if (!File.Exists(spec.DaemonBinaryPath)) {
@@ -215,20 +218,35 @@ sealed class ServiceVerify(
         }
 
         var pre = manager.Query(serviceId);
-        if (pre.Probe == LabelProbe.Loaded || (pre.Probe == LabelProbe.Absent && pre.UnitPresent)) {
-            // Already installed — loaded, or stopped-but-installed (`service stop` retains the
-            // plist by design). A fresh install must not overwrite or clear an existing unit;
-            // that's --replace's job (Task 11).
-            Say(VerifyExit.ContendedToken);
-            return VerifyExit.Contended;
-        }
         if (pre.Probe == LabelProbe.Unknown) {
+            // Neither clearly loaded nor clearly absent — nothing destructive after an unknown,
+            // for a fresh install OR a replace.
             Say(VerifyExit.BootoutUnknownToken);
             return VerifyExit.BootoutUnknown;
         }
 
         var preState = DescribeQuery(pre);
-        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, "install", "captured", preState, "no-unit", null));
+        var op       = replace ? "replace" : "install";
+
+        if (!replace) {
+            if (pre.Probe == LabelProbe.Loaded || (pre.Probe == LabelProbe.Absent && pre.UnitPresent)) {
+                // Already installed — loaded, or stopped-but-installed (`service stop` retains the
+                // plist by design). A fresh install must not overwrite or clear an existing unit;
+                // that's --replace's job.
+                Say(VerifyExit.ContendedToken);
+                return VerifyExit.Contended;
+            }
+        } else {
+            // Marker discipline extends to the matrix's own destructive steps (Uninstall / kill):
+            // write "captured" before touching anything, same as the fresh path does below.
+            ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "captured", preState, "no-unit", null));
+
+            if (await ApplyReplaceMatrixAsync(serviceId, pre, preState, op) is { } stopExit) {
+                return stopExit;
+            }
+        }
+
+        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "captured", preState, "no-unit", null));
 
         // GenerateFiles is a pure computation (no I/O for any current manager) — a throw here (e.g.
         // an invalid captured env value) never touched disk, so there's nothing for a rollback to
@@ -237,14 +255,14 @@ sealed class ServiceVerify(
         try {
             generated = manager.GenerateFiles(spec).Single();
         } catch (Exception ex) {
-            Say($"install: {ex.Message}");
+            Say($"{op}: {ex.Message}");
             ServiceTxnMarker.Delete(serviceId);
             Say(VerifyExit.ReadinessTimeoutToken);
             return VerifyExit.ReadinessTimeout;
         }
 
         var fingerprint = ServiceTxnMarker.Fingerprint(generated.Content);
-        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, "install", "written", preState, "no-unit", fingerprint));
+        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "written", preState, "no-unit", fingerprint));
 
         try {
             manager.WriteAndBootstrap(spec);
@@ -252,11 +270,11 @@ sealed class ServiceVerify(
             // Unlike GenerateFiles, WriteAndBootstrap writes the unit file before it bootstraps —
             // a throw here (EPERM under MDM, launchctl I/O error, ...) can still leave the plist on
             // disk, so route through the same fingerprint-gated rollback as every other failure.
-            Say($"install: {ex.Message}");
+            Say($"{op}: {ex.Message}");
             return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.ReadinessTimeout, VerifyExit.ReadinessTimeoutToken);
         }
 
-        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, "install", "bootstrapped", preState, "no-unit", fingerprint));
+        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "bootstrapped", preState, "no-unit", fingerprint));
 
         var deadline = time.GetUtcNow() + _forwardBudget;
 
@@ -283,7 +301,7 @@ sealed class ServiceVerify(
                     // meaningful on every platform.
                     var onDisk = _readPlist(generated.Path);
                     if (onDisk is not null && ServiceTxnMarker.Fingerprint(onDisk) == fingerprint) {
-                        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, "install", "committed", preState, "no-unit", fingerprint));
+                        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "committed", preState, "no-unit", fingerprint));
                         ServiceTxnMarker.Delete(serviceId);
                         return VerifyExit.Ok;
                     }
@@ -298,6 +316,122 @@ sealed class ServiceVerify(
         }
 
         return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.ReadinessTimeout, VerifyExit.ReadinessTimeoutToken);
+    }
+
+    /// <summary>
+    /// Entry-time recovery for a leftover marker whose phase is anything other than "committed".
+    /// Recovery authority is scoped by CONTENT, not presence: only a plist whose fingerprint
+    /// matches what the dead transaction itself recorded is provably its own residue and safe to
+    /// clean; everything else is surfaced (<see cref="VerifyExit.RestoreVerification"/>) rather than
+    /// guessed at. Returns null when it's safe to proceed (the marker has already been deleted);
+    /// otherwise the exit code to return immediately (the marker is left untouched).
+    /// </summary>
+    int? RecoverLeftoverMarker(ServiceSpec spec, string serviceId, TxnMarker leftover) {
+        if (leftover.PlistFingerprint is null) {
+            // Died before ever writing a plist (captured, or one of --replace's pre-write phases) —
+            // nothing on disk to clean up.
+            ServiceTxnMarker.Delete(serviceId);
+            return null;
+        }
+
+        string onDiskPath;
+        try {
+            onDiskPath = manager.GenerateFiles(spec).Single().Path;
+        } catch {
+            // Can't even compute where our own residue would live — never pave over something we
+            // can't examine.
+            Say(VerifyExit.RestoreVerificationToken);
+            return VerifyExit.RestoreVerification;
+        }
+
+        var onDisk = _readPlist(onDiskPath);
+        if (onDisk is null) {
+            // Residue already gone.
+            ServiceTxnMarker.Delete(serviceId);
+            return null;
+        }
+
+        if (ServiceTxnMarker.Fingerprint(onDisk) != leftover.PlistFingerprint) {
+            // A foreign writer touched the file after the dead transaction — surface, never pave.
+            Say(VerifyExit.RestoreVerificationToken);
+            return VerifyExit.RestoreVerification;
+        }
+
+        // The dead transaction's own residue (benign-absence semantics — a label that's already
+        // gone costs nothing to "clear" again): clean it up and proceed.
+        manager.Uninstall(serviceId, out var uninstallError);
+        if (uninstallError is not null) Say($"uninstall: {uninstallError}");
+        ServiceTxnMarker.Delete(serviceId);
+        return null;
+    }
+
+    /// <summary>
+    /// install --replace's ownership matrix (spec §3.4 table). Called only after the pre-mutation
+    /// probe has already been rejected as <see cref="LabelProbe.Unknown"/> by the caller, with the
+    /// "captured" marker already on disk. Returns a non-null exit code only for <see
+    /// cref="VerifyExit.StopUnconfirmed"/> (marker retained at its last-recorded phase); every other
+    /// outcome falls through to the shared write+bootstrap+verify tail.
+    /// </summary>
+    async Task<int?> ApplyReplaceMatrixAsync(string serviceId, ServiceQuery pre, string preState, string op) {
+        var validatedPid = validatedDaemonPid(serviceId);
+        var owning       = pre.Probe == LabelProbe.Loaded && pre.JobPid is not null && pre.JobPid == validatedPid;
+
+        if (owning) {
+            // The label's own bootout already terminates the process it owns (launchd/systemd tear
+            // down the job as part of unloading it) — no separate kill needed or wanted.
+            manager.Uninstall(serviceId, out var ownError);
+            if (ownError is not null) Say($"uninstall: {ownError}");
+            ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "label-cleared", preState, "no-unit", null));
+            return null;
+        }
+
+        if (pre.Probe == LabelProbe.Loaded || pre.UnitPresent) {
+            // A non-owning or orphan label, or a stopped-but-installed unit — --replace (unlike a
+            // fresh install) is allowed to clear this. Benign-absence semantics: an already-absent
+            // label costs nothing to "clear" again.
+            manager.Uninstall(serviceId, out var clearError);
+            if (clearError is not null) Say($"uninstall: {clearError}");
+            ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "label-cleared", preState, "no-unit", null));
+        }
+
+        if (validatedPid is null) return null; // no live owner left to stop
+
+        if (!DaemonKill.KillValidatedOwner(serviceId, validatedPid.Value, KillWait))
+            Say($"replace: kill of validated owner (PID {validatedPid}) did not confirm gone immediately");
+
+        if (!await WaitForStopConfirmedAsync(serviceId, _forwardBudget)) {
+            Say(VerifyExit.StopUnconfirmedToken);
+            return VerifyExit.StopUnconfirmed;
+        }
+
+        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "owner-stopped", preState, "no-unit", null));
+        return null;
+    }
+
+    /// <summary>Stop-confirmation predicate for --replace's takeover kill: gone means the validated
+    /// pid is null AND a fresh hello dial is not well-formed — a stronger bar than <see
+    /// cref="DaemonKill"/>'s own pid-only gone-check, since a hung-but-still-answering process is not
+    /// actually stopped.</summary>
+    async Task<bool> IsStoppedAsync(string serviceId, TimeSpan budget) {
+        if (budget <= TimeSpan.Zero) return false;
+
+        var h = await hello(serviceId, budget);
+        if (h.WellFormed) return false;
+
+        return validatedDaemonPid(serviceId) is null;
+    }
+
+    async Task<bool> WaitForStopConfirmedAsync(string serviceId, TimeSpan budget) {
+        var deadline = time.GetUtcNow() + budget;
+
+        while (time.GetUtcNow() < deadline) {
+            if (await IsStoppedAsync(serviceId, deadline - time.GetUtcNow())) return true;
+
+            if (time.GetUtcNow() >= deadline) break;
+            await Task.Delay(PollInterval, time, CancellationToken.None);
+        }
+
+        return false;
     }
 
     /// <summary>Install's ownership + readiness + version predicate. Version mismatch is reported
