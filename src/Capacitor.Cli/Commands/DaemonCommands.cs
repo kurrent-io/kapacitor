@@ -1052,13 +1052,13 @@ public static class DaemonCommands {
         Console.Error.WriteLine("Usage: kcap daemon service <install|uninstall|start|stop|status> [--name N]");
         Console.Error.WriteLine();
         Console.Error.WriteLine("  install [--name N] [--profile P] [--max-agents N] [--no-start] [--replace] [--verify]");
-        Console.Error.WriteLine("                          --verify polls readiness/version/ownership and rolls back on failure");
+        Console.Error.WriteLine("                          --verify (macOS/launchd only) polls readiness/version/ownership and rolls back on failure");
         Console.Error.WriteLine("                          --replace (requires --verify) takes over an existing label/unit/live owner");
         Console.Error.WriteLine("  uninstall [--name N]   Stop and remove the service unit");
         Console.Error.WriteLine("  start [--name N] [--verify]   Start the installed service now");
         Console.Error.WriteLine("                          --verify polls readiness/ownership and rolls back on failure");
         Console.Error.WriteLine("  stop [--name N]        Stop the running service (stays installed)");
-        Console.Error.WriteLine("  status [--name N]      Show installed/running state");
+        Console.Error.WriteLine("  status [--name N] [--json]   Show installed/running state (--json for machine-readable output)");
         return 1;
     }
 
