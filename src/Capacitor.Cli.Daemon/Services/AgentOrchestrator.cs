@@ -177,20 +177,45 @@ internal record AgentInstance(
     /// decision — <see cref="AgentOrchestrator.FindReviewersToReap"/> reads a snapshot, and any recheck
     /// outside this section leaves a recheck-to-stop window.</para>
     ///
+    /// <para><b>Waiting on this gate must always be BOUNDED.</b> It is held across a delivery, and a
+    /// delivery can block for an unbounded time on a healthy-looking transport — the PTY path ends in
+    /// <c>UnixPtyProcess.WriteAsync</c>, a raw <c>write(2)</c> on the pty master with no timeout and no
+    /// cancellation, which parks forever if the child stops draining its stdin. An unbounded waiter
+    /// here would therefore be waiting on the very process that only the waiter's own action (terminate)
+    /// can unblock. See <see cref="AgentOrchestrator.TryClaimReapAsync"/>.</para>
+    ///
+    /// <para><b>Lock ordering.</b> This gate is OUTERMOST relative to
+    /// <see cref="AgentActivityClock"/>'s internal lock (holders read the clock while holding it) and
+    /// must NEVER be held across an acquisition of
+    /// <c>AgentOrchestrator._statusReportOrderingGate</c> — that gate is held across a whole hub send
+    /// and takes the clock itself, so a per-agent → ordering edge would put an unbounded network wait
+    /// underneath a per-agent lock, on top of the write(2) hazard above. The permitted edges are
+    /// per-agent → clock and ordering → clock, never per-agent → ordering.</para>
+    ///
     /// <para>Deliberately never disposed: a reap claim and a delivery can both be parked here while
     /// teardown runs, and an <see cref="ObjectDisposedException"/> on either would surface on a task
     /// nobody observes.</para></summary>
     public SemaphoreSlim BorrowedSnapshotGate { get; } = new(1, 1);
 
-    /// <summary>Set (once, inside <see cref="BorrowedSnapshotGate"/>) by the reaper that WON the claim
-    /// for this agent; read there by <see cref="AgentOrchestrator.HandleSendInput"/>, which refuses to
-    /// deliver to a condemned agent. Never reset: a claimed agent is on its way down, and
-    /// <see cref="AgentOrchestrator.StopAgentCoreAsync"/> flipping the status to "Completed" already
-    /// takes it out of the reap candidate set permanently, so the latch adds no new terminality — it
-    /// only makes the losing side of the race observable to the delivery path BEFORE the teardown has
-    /// physically closed the transport. The gate is the whole synchronization: no interlocked access
-    /// (or any access at all) outside it.</summary>
-    public bool ReapClaimed;
+    /// <summary>0/1 single-flight latch claimed by the reaper that WON this agent, via
+    /// <see cref="System.Threading.Interlocked.CompareExchange(ref int,int,int)"/> — the same shape as
+    /// <see cref="CleanupStarted"/>, and interlocked rather than gate-guarded ON PURPOSE: the absolute-
+    /// lifetime reap must be able to claim WITHOUT <see cref="BorrowedSnapshotGate"/> when a parked
+    /// delivery is holding it (see <see cref="AgentOrchestrator.TryClaimReapAsync"/>), so the two claim
+    /// paths cannot share a lock and must share a CAS instead.
+    ///
+    /// <para>Read via <see cref="IsReapClaimed"/> by <see cref="AgentOrchestrator.HandleSendInput"/>,
+    /// which refuses to deliver to a condemned agent. Never reset: a claimed agent is on its way down,
+    /// and <see cref="AgentOrchestrator.StopAgentCoreAsync"/> flipping the status to "Completed"
+    /// already takes it out of the reap candidate set permanently, so the latch adds no new
+    /// terminality — it only makes the losing side of the race observable to the delivery path BEFORE
+    /// teardown has physically closed the transport.</para></summary>
+    public int ReapClaimed;
+
+    /// <summary><see cref="ReapClaimed"/> as a bool, through a
+    /// <see cref="System.Threading.Volatile.Read(ref int)"/> — the un-gated absolute-lifetime claim
+    /// path writes it outside any lock, so a plain field read is not guaranteed to observe it.</summary>
+    public bool IsReapClaimed => Volatile.Read(ref ReapClaimed) != 0;
 
     /// <summary>Current PTY dimensions — the single source of truth for every dims send
     /// (registration, reconnect). Updated by every resize path (local clamp + web resize).
@@ -749,41 +774,36 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     internal IReadOnlyList<ReapCandidate> FindReviewersToReap() {
         var result = new List<ReapCandidate>();
 
+        // IsPrivate is excluded explicitly, matching the stuck-Starting sweep below rather than resting
+        // on the (true today, but unenforced) fact that a local `kcap agent start --private` can never
+        // carry LaunchKind.ReviewFlow. A private agent has no server-side row and no flow to heal, so
+        // a daemon-internal backstop must not act on one.
         foreach (var a in _agents.Values) {
-            if (a.Kind != LaunchKind.ReviewFlow || a.Status != "Running") continue;
+            if (a.Kind != LaunchKind.ReviewFlow || a.Status != "Running" || a.IsPrivate) continue;
 
-            var clock = a.ActivityClock;
-
-            // Captured BEFORE the threshold reads below, and that order is load-bearing rather than
-            // stylistic. The clock's properties are four independent lock acquisitions, so a delivery
-            // can land between any two of them; taking the generation FIRST makes every interleaving
-            // safe. A delivery landing after this read leaves seq > generation, so the claim aborts; a
-            // delivery landing before it is necessarily reflected in the idle/wedge reads that follow
-            // (Advance() resets the idle window under the same lock), so the candidate is not selected
-            // at all. Reading the generation LAST would leave the one unsafe window: an agent selected
-            // on a stale idle read whose post-read delivery is then baked into the "unchanged"
-            // generation the claim compares against.
-            var generation = clock.ActivitySeq;
+            // One snapshot, one lock acquisition: the seq the claim is later fenced on belongs to the
+            // same instant as the idle/age/turn fields the rule below decides from.
+            var clock = a.ActivityClock.Snapshot();
 
             if (_config.ReviewerMaxLifetime > TimeSpan.Zero && clock.AgeMs > (ulong) _config.ReviewerMaxLifetime.TotalMilliseconds) {
                 // The absolute cap is deliberately NOT activity-fenced: it fires regardless of how
                 // active the reviewer is (that is what "absolute" means here), so a delivery racing it
                 // must not abort it.
-                result.Add(new ReapCandidate(a, "reviewer_ttl_expired", generation, FencedOnActivity: false));
+                result.Add(new ReapCandidate(a, "reviewer_ttl_expired", clock.ActivitySeq, FencedOnActivity: false));
                 continue;
             }
 
             if (clock.TurnInFlight) {
                 if (_config.ReviewerTurnWedgeCeiling > TimeSpan.Zero
                  && clock.IdleForMs > (ulong) _config.ReviewerTurnWedgeCeiling.TotalMilliseconds) {
-                    result.Add(new ReapCandidate(a, "turn_wedged", generation, FencedOnActivity: true));
+                    result.Add(new ReapCandidate(a, "turn_wedged", clock.ActivitySeq, FencedOnActivity: true));
                 }
 
                 continue; // a held turn suppresses the plain idle rule outright
             }
 
             if (_config.ReviewerIdleTimeout > TimeSpan.Zero && clock.IdleForMs > (ulong) _config.ReviewerIdleTimeout.TotalMilliseconds)
-                result.Add(new ReapCandidate(a, "reviewer_idle_expired", generation, FencedOnActivity: true));
+                result.Add(new ReapCandidate(a, "reviewer_idle_expired", clock.ActivitySeq, FencedOnActivity: true));
         }
 
         return result;
@@ -1158,6 +1178,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// since a correlated reply is the exact variant whose content is captured under contention).
     /// A site that calls <c>_server.DaemonStatusReportAsync</c> directly bypasses the ordering and
     /// reintroduces the latch.</para>
+    ///
+    /// <para><b>Lock ordering.</b> This gate is held across a whole hub send and takes
+    /// <see cref="AgentActivityClock"/>'s lock underneath it (via <see cref="BuildStatusReport"/>), so
+    /// the permitted edge is ordering → clock. It must NEVER be acquired while a per-agent
+    /// <see cref="AgentInstance.BorrowedSnapshotGate"/> is held: that would put an unbounded network
+    /// wait under a per-agent lock whose other holder can be parked in an uncancellable pty write.
+    /// The delivery-triggered emission therefore offloads (see <see cref="HandleSendInput"/>) rather
+    /// than awaiting this gate inside the section.</para>
     ///
     /// <para>Deliberately never disposed: emissions are fire-and-forget, so a waiter parked here
     /// during teardown would surface an <see cref="ObjectDisposedException"/> on a task nobody
@@ -2604,6 +2632,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         if (outcome is SubmitOutcome.Refused) LogUnsequencedStopRefused(agentId);
     }
 
+    /// <summary>How long a reap claim waits for the per-agent delivery section before giving up on it.
+    /// Sized UNDER the 30s heartbeat period on purpose: a delivery parked longer than this leaves at
+    /// most one claim waiter alive per agent, instead of accumulating one per tick for as long as the
+    /// parked write lasts. Settable only so a test need not spend a real heartbeat proving the timeout
+    /// arms behave; production never changes it.</summary>
+    internal TimeSpan ReapClaimGateWait { get; set; } = TimeSpan.FromSeconds(20);
+
     /// <summary>Execute one selected reap: claim it under the per-agent fence, and stop the agent only
     /// if the claim was WON. Fire-and-forget from the heartbeat, so it contains its own faults —
     /// <see cref="StopAgentCoreAsync"/> already swallows the stop's, leaving only the gate wait.</summary>
@@ -2634,15 +2669,44 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// <para>Scope, stated honestly: this fences the IDLE and WEDGE rules only. The absolute
     /// <see cref="DaemonConfig.ReviewerMaxLifetime"/> cap carries
     /// <see cref="ReapCandidate.FencedOnActivity"/> false and reaps regardless of activity, unchanged —
-    /// it still takes the section (so membership/incarnation are revalidated and a claim is never
-    /// double-counted), it just never aborts on a generation advance.</para></summary>
+    /// it takes the section when it can (so incarnation is revalidated the same way), but it is never
+    /// DEFERRABLE by it; see the timeout arm below.</para>
+    ///
+    /// <para><b>The gate wait is bounded, and that is a correctness requirement, not hygiene.</b> A
+    /// delivery holds the section across a raw <c>write(2)</c> to the pty master
+    /// (<c>UnixPtyProcess.WriteAsync</c>, no timeout, not cancellable), which parks indefinitely if the
+    /// child has stopped draining its stdin. An unbounded wait here is therefore a circular wait: the
+    /// reap that would SIGTERM/SIGKILL the child — the only thing that unblocks that write — would be
+    /// queued behind the write itself. Before this fence existed the reap was unconditional and broke
+    /// the cycle by construction; the two arms below restore that property deliberately.</para></summary>
     async Task<bool> TryClaimReapAsync(ReapCandidate candidate) {
         var agent = candidate.Agent;
+        bool entered;
 
         try {
-            await agent.BorrowedSnapshotGate.WaitAsync(_shutdownCts.Token);
+            entered = await agent.BorrowedSnapshotGate.WaitAsync(ReapClaimGateWait, _shutdownCts.Token);
         } catch (OperationCanceledException) {
             return false; // daemon teardown supersedes the reap — it kills the registered children itself
+        }
+
+        if (!entered) {
+            // The section is held by a delivery that is not finishing. The two rules answer this
+            // OPPOSITELY, and the asymmetry is the whole point:
+            //
+            //   FENCED (idle/wedge) — an in-progress delivery IS activity, so "nothing has happened"
+            //   is already false and there is nothing to reclaim. Give up; the next heartbeat re-selects
+            //   from a fresh snapshot. (The wait is sized under the heartbeat period so at most one
+            //   claim waiter per agent is alive at a time, rather than one accumulating per tick.)
+            //
+            //   UNFENCED (absolute lifetime) — must not be deferrable by ANY amount of traffic, least
+            //   of all by a delivery that may never complete. It claims lock-free and proceeds: the
+            //   terminate it is about to run is precisely what releases the parked write.
+            if (candidate.FencedOnActivity) {
+                LogReapAborted(candidate.Id, candidate.Reason, "delivery_in_progress");
+                return false;
+            }
+
+            return TryClaimUnfencedReapWithoutSection(candidate);
         }
 
         try {
@@ -2654,8 +2718,6 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 return false;
             }
 
-            if (agent.ReapClaimed) return false; // an earlier sweep already claimed it; single-flight
-
             // A stop from any other source (server, local socket) flips the status first; the reviewer
             // is already on its way down and must not be stopped twice.
             if (agent.Status != "Running") {
@@ -2663,33 +2725,85 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 return false;
             }
 
+            // One read for both the fence and the log below, so the age/idle an operator sees is the
+            // state the decision was actually made on rather than a re-sample taken after it.
+            var clock = agent.ActivityClock.Snapshot();
+
             // THE fence. The clock is monotonic, so any difference is an advance: something happened
             // to this agent after it was selected, which falsifies the idle/wedge claim outright. The
             // comparison is against the generation captured at selection — never a freshly re-derived
             // idle/threshold check, which would just re-run the same snapshot decision one moment later
             // and answer the same way.
-            var generation = agent.ActivityClock.ActivitySeq;
-
-            if (candidate.FencedOnActivity && generation != candidate.ActivityGeneration) {
-                LogReapAbortedOnActivity(candidate.Id, candidate.Reason, candidate.ActivityGeneration, generation);
+            if (candidate.FencedOnActivity && clock.ActivitySeq != candidate.ActivityGeneration) {
+                LogReapAbortedOnActivity(candidate.Id, candidate.Reason, candidate.ActivityGeneration, clock.ActivitySeq);
                 return false;
             }
 
-            agent.ReapClaimed      = true;
-            agent.PendingEndReason = candidate.Reason;
+            // Claimed LAST, after every validation: an aborted reap must leave the latch clear. The CAS
+            // (not a plain assignment) is what makes this single claim shared with the un-sectioned path
+            // above, which by definition cannot be holding this gate.
+            if (!TryLatchClaim(candidate)) return false;
 
             // Logged off the SAME clock the decision was made from — CreatedAt/LastOutputAt would
             // misreport an ACP reviewer's idle time as frozen since launch.
             _logger.LogInformation(
                 "Reaping review-flow reviewer {AgentId} ({Reason}); age {AgeHours:F1}h, idle {IdleHours:F1}h",
                 candidate.Id, candidate.Reason,
-                TimeSpan.FromMilliseconds(agent.ActivityClock.AgeMs).TotalHours,
-                TimeSpan.FromMilliseconds(agent.ActivityClock.IdleForMs).TotalHours);
+                TimeSpan.FromMilliseconds(clock.AgeMs).TotalHours,
+                TimeSpan.FromMilliseconds(clock.IdleForMs).TotalHours);
 
             return true;
         } finally {
             agent.BorrowedSnapshotGate.Release();
         }
+    }
+
+    /// <summary>The absolute-lifetime claim when <see cref="AgentInstance.BorrowedSnapshotGate"/> could
+    /// not be taken in time. Deliberately does everything the sectioned path does EXCEPT hold the
+    /// section and re-read the activity generation — this rule never aborts on activity, so the seq is
+    /// not evidence it needs, and the section is exactly what is unavailable. Incarnation is still
+    /// proven (a relaunch under the same id must not be killed on its predecessor's age) and the claim
+    /// is still single-flight, because both paths CAS the same latch.
+    ///
+    /// <para>It races a delivery by construction. That is the intended outcome, not a tolerated one:
+    /// the delivery is parked in an uncancellable write to a child that is not reading, and terminating
+    /// that child is what ends it. The write then fails, so nothing advances the clock and nothing is
+    /// reported — the round fails and the server heals it, exactly as for a delivery that loses the
+    /// ordinary sectioned race.</para></summary>
+    bool TryClaimUnfencedReapWithoutSection(ReapCandidate candidate) {
+        var agent = candidate.Agent;
+
+        if (!_agents.TryGetValue(candidate.Id, out var current) || !ReferenceEquals(current, agent)) {
+            LogReapAborted(candidate.Id, candidate.Reason, "agent_gone");
+            return false;
+        }
+
+        if (agent.Status != "Running") {
+            LogReapAborted(candidate.Id, candidate.Reason, "not_running");
+            return false;
+        }
+
+        if (!TryLatchClaim(candidate)) return false;
+
+        LogUnsectionedReapClaim(candidate.Id, candidate.Reason, ReapClaimGateWait.TotalSeconds);
+
+        return true;
+    }
+
+    /// <summary>The single-flight claim both paths share. 0→1 or nothing.</summary>
+    bool TryLatchClaim(ReapCandidate candidate) {
+        if (Interlocked.CompareExchange(ref candidate.Agent.ReapClaimed, 1, 0) != 0) {
+            // Debug, unlike its sibling aborts: losing this CAS is a benign internal collision (another
+            // sweep or the other claim path got there first and the agent IS being reaped), not an
+            // operational event — but it must not be silent either, or the one abort an operator cannot
+            // see is the one that fires when two paths disagree.
+            LogReapAlreadyClaimed(candidate.Id, candidate.Reason);
+            return false;
+        }
+
+        candidate.Agent.PendingEndReason = candidate.Reason;
+
+        return true;
     }
 
     /// <summary>The shared stop executor: graceful <c>/exit</c> then terminate (via
@@ -2920,7 +3034,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // terminated is what makes the round's dispatch fail promptly — the server heals it on
             // resubmit, whereas a write accepted by a dying PTY would leave the round waiting out its
             // whole bound on a corpse.
-            if (agent.ReapClaimed) {
+            if (agent.IsReapClaimed) {
                 LogSendInputReapClaimed(agentId);
                 return;
             }
@@ -2969,6 +3083,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // failure can never fail the delivery. The report snapshot is captured inside the
             // ordering section, i.e. strictly after the Advance() above, so this report can never
             // carry a pre-delivery seq.
+            //
+            // The offload is ALSO the lock-ordering invariant, not only a latency choice: awaiting the
+            // emission here would acquire _statusReportOrderingGate while this agent's
+            // BorrowedSnapshotGate is held, creating the one edge (per-agent → ordering) both gates'
+            // docs forbid — an unbounded hub send underneath a per-agent lock whose other holder can be
+            // parked in an uncancellable pty write. Reverting this to an awaited call reintroduces it.
             //
             // Task.Run, not a bare discard, because a discard is only asynchronous when it BLOCKS:
             // SemaphoreSlim.WaitAsync completes synchronously on an uncontended gate — the common
@@ -4028,6 +4148,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Reap of review-flow reviewer {AgentId} ({Reason}) aborted at the claim: activity advanced from generation {SelectedGeneration} to {CurrentGeneration} since it was selected")]
     partial void LogReapAbortedOnActivity(string agentId, string reason, ulong selectedGeneration, ulong currentGeneration);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Reap of review-flow reviewer {AgentId} ({Reason}) aborted at the claim: another claim got there first")]
+    partial void LogReapAlreadyClaimed(string agentId, string reason);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Reaping review-flow reviewer {AgentId} ({Reason}) without the per-agent delivery section: a delivery held it for more than {WaitSeconds:F0}s, and the absolute lifetime cap is not deferrable by an in-flight (possibly permanently parked) write")]
+    partial void LogUnsectionedReapClaim(string agentId, string reason, double waitSeconds);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Reaping review-flow reviewer {AgentId} ({Reason}) failed")]
     partial void LogReapFailed(Exception ex, string agentId, string reason);

@@ -80,6 +80,28 @@ internal sealed class AgentActivityClock(TimeProvider time) {
         }
     }
 
+    /// <summary>All four observables read under ONE lock acquisition, so they describe the same
+    /// instant. The individual properties above cannot give that: each takes and releases
+    /// <see cref="_gate"/> on its own, so a reader sampling several of them can interleave with an
+    /// <see cref="Advance"/> between any two and act on a mixture of before- and after-states. The
+    /// reviewer reaper depends on exactly that atomicity — it decides from the idle/age/turn fields and
+    /// fences its later claim on <see cref="ActivitySeq"/>, and a seq belonging to a different instant
+    /// than the idle it was selected on is precisely the stale evidence the fence exists to reject.
+    /// </summary>
+    public ActivitySnapshot Snapshot() {
+        lock (_gate) {
+            return new ActivitySnapshot(
+                _activitySeq, Elapsed(_lastAdvanceTimestamp), Elapsed(_spawnTimestamp), _turnInFlight);
+        }
+    }
+
+    // Caller must hold _gate. Same clamp the IdleForMs/AgeMs properties apply.
+    ulong Elapsed(long since) {
+        var elapsed = time.GetElapsedTime(since);
+
+        return elapsed <= TimeSpan.Zero ? 0UL : (ulong) elapsed.TotalMilliseconds;
+    }
+
     /// <summary>Records one unit of activity: bumps <see cref="ActivitySeq"/> and resets the idle
     /// window to zero from this instant. Called from all five sources (see the class doc).</summary>
     public void Advance() {
@@ -125,3 +147,9 @@ internal sealed class AgentActivityClock(TimeProvider time) {
         _lastAdvanceTimestamp = time.GetTimestamp();
     }
 }
+
+/// <summary>One <see cref="AgentActivityClock"/> reading — all four fields from the same instant.
+/// See <see cref="AgentActivityClock.Snapshot"/> for why sampling the properties separately is not
+/// equivalent.</summary>
+internal readonly record struct ActivitySnapshot(
+    ulong ActivitySeq, ulong IdleForMs, ulong AgeMs, bool TurnInFlight);

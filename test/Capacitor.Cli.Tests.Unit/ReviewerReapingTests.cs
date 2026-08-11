@@ -346,7 +346,7 @@ public partial class AgentOrchestratorVendorTests {
 
         await orch.ReapReviewerForTest(candidate);
 
-        await Assert.That(agent.ReapClaimed).IsFalse();
+        await Assert.That(agent.IsReapClaimed).IsFalse();
         await Assert.That(agent.Status).IsEqualTo("Running");
         // The end-reason stamp belongs to a WON claim: an aborted reap must not leave a reap reason on
         // a live agent for whatever ends it later to report.
@@ -405,7 +405,7 @@ public partial class AgentOrchestratorVendorTests {
 
         await Assert.That(delivered.ActivityClock.ActivitySeq)
             .IsEqualTo(deliveryCandidate.ActivityGeneration + 1); // the delivery landed
-        await Assert.That(delivered.ReapClaimed).IsFalse();       // ...so the reap lost
+        await Assert.That(delivered.IsReapClaimed).IsFalse();     // ...so the reap lost
         await Assert.That(delivered.Status).IsEqualTo("Running");
         await Assert.That(server.StatusChangedCalls).DoesNotContain(("race-delivery-wins", "Completed"));
 
@@ -428,7 +428,7 @@ public partial class AgentOrchestratorVendorTests {
 
         // The claim alone — the teardown it gates is not what this arm is about.
         await Assert.That(await orch.TryClaimReapForTest(reapCandidate)).IsTrue();
-        await Assert.That(condemned.ReapClaimed).IsTrue();
+        await Assert.That(condemned.IsReapClaimed).IsTrue();
 
         var seqAtClaim   = condemned.ActivityClock.ActivitySeq;
         var reportsAtClaim = server.StatusReportCount;
@@ -470,9 +470,92 @@ public partial class AgentOrchestratorVendorTests {
 
         await orch.ReapReviewerForTest(candidate);
 
-        await Assert.That(agent.ReapClaimed).IsTrue();
+        await Assert.That(agent.IsReapClaimed).IsTrue();
         await Assert.That(agent.PendingEndReason).IsEqualTo("reviewer_ttl_expired");
         await Assert.That(server.StatusChangedCalls).Contains(("ttl-reap", "Completed"));
+    }
+
+    /// <summary>The circular wait the fence would otherwise introduce, and the asymmetry that breaks it.
+    ///
+    /// <para>A delivery holds the per-agent section across <c>UnixPtyProcess.WriteAsync</c> — a raw
+    /// <c>write(2)</c> to the pty master with no timeout and no cancellation, which parks indefinitely
+    /// if the child stops draining its stdin. The reap that would terminate that child, releasing the
+    /// write, must therefore never queue behind it without a bound: before the fence existed the reap
+    /// was unconditional and broke the cycle by construction.</para>
+    ///
+    /// <para>Both agents below have a delivery parked in exactly that state, and answer OPPOSITELY.
+    /// The absolute lifetime cap claims without the section and completes the stop (a rule that a
+    /// permanently parked write could defer is not absolute). The idle rule gives up and waits for the
+    /// next heartbeat — an in-progress delivery IS activity, so there is nothing for it to reclaim.</para>
+    ///
+    /// <para>Mutation anchor: an unbounded <c>WaitAsync</c> in <c>TryClaimReapAsync</c> hangs the TTL
+    /// arm forever (the bound below fails it), while every other claim test still passes.</para></summary>
+    [Test]
+    public async Task Parked_delivery_does_not_defer_the_absolute_lifetime_reap() {
+        var server = new CaptureServerConnection();
+
+        await using var orch = BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        // Shortened only so the test need not spend a real 20s proving the timeout arms; production
+        // sizes this under the 30s heartbeat.
+        orch.ReapClaimGateWait = TimeSpan.FromMilliseconds(200);
+
+        // ── the absolute cap: claims anyway ─────────────────────────────────────────────────
+        var ttlTime  = new FakeTimeProvider();
+        var ttlClock = new AgentActivityClock(ttlTime);
+        var ttlPty   = new ParkingPtyProcess();
+
+        var expired = orch.SeedAgentForTest("parked-ttl", LaunchKind.ReviewFlow, status: "Running",
+            pty: ttlPty, activityClock: ttlClock);
+
+        ttlTime.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1));
+
+        var ttlCandidate = orch.FindReviewersToReap().Single(c => c.Id == "parked-ttl");
+        await Assert.That(ttlCandidate.Reason).IsEqualTo("reviewer_ttl_expired");
+        await Assert.That(ttlCandidate.FencedOnActivity).IsFalse();
+
+        var ttlDelivery = orch.HandleSendInputForTest(new SendInputCommand(expired.Id, "round 7", null));
+        await ttlPty.FirstWriteEntered.WaitAsync(TimeSpan.FromSeconds(5)); // parked, holding the section
+
+        // THE regression bound. With an unbounded gate wait this never returns: the write is only
+        // released by the terminate this very call is trying to reach.
+        await orch.ReapReviewerForTest(ttlCandidate).WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(expired.IsReapClaimed).IsTrue();
+        await Assert.That(expired.PendingEndReason).IsEqualTo("reviewer_ttl_expired");
+        await Assert.That(server.StatusChangedCalls).Contains(("parked-ttl", "Completed"));
+
+        // ── the idle rule under an IDENTICALLY parked delivery: defers ──────────────────────
+        var idleTime  = new FakeTimeProvider();
+        var idleClock = new AgentActivityClock(idleTime);
+        var idlePty   = new ParkingPtyProcess();
+
+        var idle = orch.SeedAgentForTest("parked-idle", LaunchKind.ReviewFlow, status: "Running",
+            pty: idlePty, activityClock: idleClock);
+
+        idleTime.Advance(TimeSpan.FromHours(2) + TimeSpan.FromMinutes(1)); // past 2h idle, under the 6h cap
+
+        var idleCandidate = orch.FindReviewersToReap().Single(c => c.Id == "parked-idle");
+        await Assert.That(idleCandidate.Reason).IsEqualTo("reviewer_idle_expired");
+        await Assert.That(idleCandidate.FencedOnActivity).IsTrue();
+
+        var idleDelivery = orch.HandleSendInputForTest(new SendInputCommand(idle.Id, "round 2", null));
+        await idlePty.FirstWriteEntered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Bounded the same way — it gives up on the section rather than waiting on the parked write.
+        await orch.ReapReviewerForTest(idleCandidate).WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(idle.IsReapClaimed).IsFalse();
+        await Assert.That(idle.Status).IsEqualTo("Running");
+        await Assert.That(idle.PendingEndReason).IsEqualTo("agent_exited");
+        await Assert.That(server.StatusChangedCalls).DoesNotContain(("parked-idle", "Completed"));
+
+        // Release both so the abandoned deliveries do not outlive the test.
+        ttlPty.ReleaseFirstWrite();
+        idlePty.ReleaseFirstWrite();
+        await ttlDelivery.WaitAsync(TimeSpan.FromSeconds(5));
+        await idleDelivery.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     /// <summary>PTY double that PARKS inside its first write, holding whatever section its caller is in
