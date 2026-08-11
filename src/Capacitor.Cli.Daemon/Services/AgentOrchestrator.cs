@@ -430,7 +430,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     const ushort HostedPtyCols = PtyDefaults.Cols;
     const ushort HostedPtyRows = PtyDefaults.Rows;
 
-    readonly PeriodicTimer _heartbeatTimer = new(TimeSpan.FromSeconds(30));
+    /// <summary>The per-agent heartbeat/reap sweep period. Named rather than inlined because
+    /// <see cref="ReapClaimGateWait"/> is sized against it — that relation is asserted by a test, so a
+    /// change here cannot silently weaken the one-claim-waiter-per-agent property.</summary>
+    internal static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
+
+    readonly PeriodicTimer _heartbeatTimer = new(HeartbeatInterval);
 
     // heartbeat tightened from 60 s SendAsync to round-trip Ping.
     // tick halved (15 → 7 s) and deadline halved (10 → 5 s) so a
@@ -2582,7 +2587,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// hook (which writes SessionEnded plus the what's-done summary). 15s covers a typical
     /// session-end POST + watcher drain on a healthy connection.
     /// </summary>
-    static readonly TimeSpan GracefulExitWait = TimeSpan.FromSeconds(15);
+    /// <summary>Budget for the graceful phase of a stop — applied SEPARATELY to sending the stop and
+    /// to waiting for the exit it asks for, because sending it is itself unbounded work on some
+    /// runtimes (see <see cref="StopAgentCoreAsync"/>). Settable only so a test need not spend it for
+    /// real; production never changes it.</summary>
+    internal TimeSpan GracefulExitWait { get; set; } = TimeSpan.FromSeconds(15);
 
     /// <summary>Phase B2-b (sequenced-settlement design §4.2.2): the sequenced stop. Routes through the
     /// processor's serial lane (accepted exactly-in-order, executed once, terminal StopExecuted outcome →
@@ -2633,10 +2642,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     }
 
     /// <summary>How long a reap claim waits for the per-agent delivery section before giving up on it.
-    /// Sized UNDER the 30s heartbeat period on purpose: a delivery parked longer than this leaves at
-    /// most one claim waiter alive per agent, instead of accumulating one per tick for as long as the
+    /// Sized UNDER <see cref="HeartbeatInterval"/> on purpose: a delivery parked longer than this leaves
+    /// at most one claim waiter alive per agent, instead of accumulating one per tick for as long as the
     /// parked write lasts. Settable only so a test need not spend a real heartbeat proving the timeout
-    /// arms behave; production never changes it.</summary>
+    /// arms behave; production never changes it.
+    ///
+    /// <para>Note it is SHORTER than a delivery's own worst-case in-section time (the borrowed-snapshot
+    /// refresh is budgeted 30s), so the unfenced timeout arm fires against healthy deliveries too — by
+    /// design, and handled by <see cref="HandleSendInput"/>'s pre-write re-read of the claim latch
+    /// rather than by inflating this wait, which would only restore the deadlock it exists to
+    /// prevent.</para></summary>
     internal TimeSpan ReapClaimGateWait { get; set; } = TimeSpan.FromSeconds(20);
 
     /// <summary>Execute one selected reap: claim it under the per-agent fence, and stop the agent only
@@ -2699,8 +2714,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             //   claim waiter per agent is alive at a time, rather than one accumulating per tick.)
             //
             //   UNFENCED (absolute lifetime) — must not be deferrable by ANY amount of traffic, least
-            //   of all by a delivery that may never complete. It claims lock-free and proceeds: the
-            //   terminate it is about to run is precisely what releases the parked write.
+            //   of all by a delivery that may never complete. It claims lock-free and proceeds to the
+            //   terminate, which is what releases a parked write (SIGKILL closes the slave and the
+            //   write returns EIO). That reachability is NOT free: StopAgentCoreAsync's graceful "/exit"
+            //   send goes to the same fd and had to be bounded before terminate could be relied on —
+            //   see the bound there, which this arm depends on.
             if (candidate.FencedOnActivity) {
                 LogReapAborted(candidate.Id, candidate.Reason, "delivery_in_progress");
                 return false;
@@ -2765,11 +2783,17 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// proven (a relaunch under the same id must not be killed on its predecessor's age) and the claim
     /// is still single-flight, because both paths CAS the same latch.
     ///
-    /// <para>It races a delivery by construction. That is the intended outcome, not a tolerated one:
-    /// the delivery is parked in an uncancellable write to a child that is not reading, and terminating
-    /// that child is what ends it. The write then fails, so nothing advances the clock and nothing is
-    /// reported — the round fails and the server heals it, exactly as for a delivery that loses the
-    /// ordinary sectioned race.</para></summary>
+    /// <para>It races a delivery by construction, and the delivery it races is NOT necessarily a
+    /// wedged one. The section is legitimately held past this wait by healthy work — the borrowed-
+    /// snapshot refresh alone is budgeted 30s — so this claim can fire against an in-flight, entirely
+    /// well-behaved delivery. That is why <see cref="HandleSendInput"/> re-reads the latch immediately
+    /// before its write instead of only on entry: a healthy delivery must ABORT there rather than
+    /// complete into a condemned agent. The genuinely parked case resolves differently — the write is
+    /// released by the terminate this claim leads to (which is reachable only because
+    /// <see cref="StopAgentCoreAsync"/>'s graceful send is bounded), and fails.</para>
+    ///
+    /// <para>Either way nothing advances the clock and nothing is reported, so the round fails and the
+    /// server heals it on resubmit.</para></summary>
     bool TryClaimUnfencedReapWithoutSection(ReapCandidate candidate) {
         var agent = candidate.Agent;
 
@@ -2831,6 +2855,17 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         await StopAgentCoreAsync(agent);
     }
+
+    /// <summary>Test-only: awaited inside <see cref="HandleSendInput"/>'s section in the window between
+    /// its slow pre-write steps (the borrowed-snapshot refresh, attachment downloads) and its
+    /// pre-write re-read of the reap-claim latch — i.e. exactly where a reaper's un-sectioned claim
+    /// lands in production, since that refresh is budgeted LONGER than the claim's gate wait. A test
+    /// occupies that window to prove the delivery aborts there; null in production (one null check).
+    ///
+    /// <para>The seam exists because the window cannot otherwise be entered deterministically: parking
+    /// the refresh itself only proves the refresh's own failure path, which returns before this point.
+    /// Same shape and rationale as <see cref="StopGateAfterSnapshotHookForTest"/> below.</para></summary>
+    internal Func<Task>? SendInputBeforeWriteHookForTest;
 
     /// <summary>Test-only: invoked ONCE inside <see cref="StopAgentCoreAsync"/> immediately AFTER the
     /// suppress-Completed snapshot and BEFORE the Completed send, so a test can publish a verdict in
@@ -2914,9 +2949,30 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // in a single write makes Claude treat the carriage return as part of the
             // command buffer instead of a submit. HandleSendInput uses the same split
             // pattern; matching it here makes the graceful path actually fire.
+            // BOTH steps are bounded, and bounding the SEND is the load-bearing half. Asking for the
+            // graceful stop is not free work: for a PTY runtime it writes "/exit" to the same master fd
+            // a delivery writes to (an uncancellable write(2)), so against a child that has stopped
+            // draining its stdin it parks forever — and an unbounded await here would mean TerminateAsync
+            // below is never reached, i.e. the one action that ends the wedge (SIGKILL closes the slave,
+            // every parked write returns EIO) is unreachable precisely when it is needed. This is
+            // pre-existing — every stop, including a user's, could hang here — but the reviewer reaper
+            // now DEPENDS on reaching terminate, so the bound is no longer optional.
+            //
+            // No legitimate graceful path is truncated: PTY writes + a submit, ACP sends one
+            // session/cancel notify, Antigravity returns Task.CompletedTask, and Pi's own grace is 3s.
+            // A timeout here just falls through to the same terminate a graceful-exit timeout already
+            // falls through to.
+            var graceful = agent.Runtime.RequestGracefulStopAsync();
+
             try {
-                await agent.Runtime.RequestGracefulStopAsync();
+                await graceful.WaitAsync(GracefulExitWait);
                 await agent.Runtime.WaitForExitAsync(GracefulExitWait);
+            } catch (TimeoutException ex) {
+                // WaitAsync abandons the send rather than cancelling it (nothing CAN cancel it), so the
+                // abandoned task is observed separately — it completes on its own once the terminate
+                // below releases the write.
+                ObserveAbandonedGracefulStop(graceful, agentId);
+                LogGracefulExitFailed(ex, agentId);
             } catch (Exception ex) {
                 LogGracefulExitFailed(ex, agentId);
             }
@@ -2953,6 +3009,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return false;
         }
     }
+
+    /// <summary>Observes an abandoned graceful-stop send (see <see cref="StopAgentCoreAsync"/>) so its
+    /// eventual completion — or fault, once the terminate releases whatever it was parked on — is not
+    /// an unobserved task exception.</summary>
+    void ObserveAbandonedGracefulStop(Task graceful, string agentId) =>
+        _ = graceful.ContinueWith(
+            t => LogGracefulExitFailed(t.Exception!.GetBaseException(), agentId),
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
     /// <summary>
     /// Observes a background EndAgentSession retry that outlived the finalize budget so a
@@ -3049,6 +3115,24 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 if (paths.Count > 0) {
                     message = $"{text}\n\n[Attached files: {string.Join(", ", paths)}]";
                 }
+            }
+
+            // Re-checked HERE, immediately before the write, and NOT only at the top of the section.
+            // The steps between the two checks are slow by design — the borrowed-snapshot refresh alone
+            // is budgeted 30s (BorrowedSnapshotRefreshTimeout), plus any attachment downloads — which is
+            // LONGER than the reap claim's own gate wait, so a perfectly healthy borrowed delivery
+            // routinely leaves the section held past it. The absolute-lifetime claim then legitimately
+            // fires without the section (see TryClaimUnfencedReapWithoutSection) against an agent whose
+            // in-flight delivery is not parked at all, and without this second read that delivery would
+            // sail on to write the round, advance the clock and emit a delivered-input report for an
+            // agent already condemned — exactly the outcome the top-of-section refusal exists to
+            // prevent. The re-read is free and sound: the latch is monotonic 0→1 and read through
+            // Volatile.Read, so observing it true is never a false positive.
+            if (SendInputBeforeWriteHookForTest is { } beforeWrite) await beforeWrite();
+
+            if (agent.IsReapClaimed) {
+                LogSendInputReapClaimed(agentId);
+                return;
             }
 
             // PTY runtimes use bracketed paste; ACP runtimes send a structured prompt.

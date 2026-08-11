@@ -483,6 +483,11 @@ public partial class AgentOrchestratorVendorTests {
     /// write, must therefore never queue behind it without a bound: before the fence existed the reap
     /// was unconditional and broke the cycle by construction.</para>
     ///
+    /// <para>This test controls only the CLAIM's half of that: its double lets the stop path's own
+    /// "/exit" write through, so it says nothing about whether the reap's terminate is reachable once
+    /// claimed. That second half is
+    /// <see cref="Parked_exit_write_does_not_stall_the_reaps_terminate"/>.</para>
+    ///
     /// <para>Both agents below have a delivery parked in exactly that state, and answer OPPOSITELY.
     /// The absolute lifetime cap claims without the section and completes the stop (a rule that a
     /// permanently parked write could defer is not absolute). The idle rule gives up and waits for the
@@ -558,13 +563,150 @@ public partial class AgentOrchestratorVendorTests {
         await idleDelivery.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    /// <summary>The other half of the deadlock, one step further down: reaching the claim is not enough
+    /// if the STOP then parks. <c>StopAgentCoreAsync</c> asks for a graceful "/exit" first, and for a
+    /// PTY that is a write to the SAME master fd the round was written to — so against a child that has
+    /// stopped draining stdin it parks exactly like the delivery did, and an unbounded await there means
+    /// <c>TerminateAsync</c> is never reached and the wedge is never broken.
+    ///
+    /// <para>Here EVERY write parks (<see cref="ParkingPtyProcess.ParkEveryWrite"/>), which is what a
+    /// non-draining child actually does — the earlier arms let "/exit" through and so could not see
+    /// this. The reap must still run to completion: claim without the section, time out the graceful
+    /// send, terminate.</para>
+    ///
+    /// <para>Mutation anchor: dropping the <c>WaitAsync(GracefulExitWait)</c> around
+    /// <c>RequestGracefulStopAsync()</c> hangs this test at the stop, while the other claim tests —
+    /// whose stop-path writes pass straight through — all still pass.</para></summary>
+    [Test]
+    public async Task Parked_exit_write_does_not_stall_the_reaps_terminate() {
+        var server = new CaptureServerConnection();
+        var time   = new FakeTimeProvider();
+        var clock  = new AgentActivityClock(time);
+
+        await using var orch = BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        orch.ReapClaimGateWait = TimeSpan.FromMilliseconds(200);
+        orch.GracefulExitWait  = TimeSpan.FromMilliseconds(200); // the real 15s, shortened for the test
+
+        var pty = new ParkingPtyProcess { ParkEveryWrite = true };
+        var agent = orch.SeedAgentForTest("parked-exit", LaunchKind.ReviewFlow, status: "Running",
+            pty: pty, activityClock: clock);
+
+        time.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1));
+
+        var candidate = orch.FindReviewersToReap().Single(c => c.Id == "parked-exit");
+        await Assert.That(candidate.Reason).IsEqualTo("reviewer_ttl_expired");
+
+        var delivery = orch.HandleSendInputForTest(new SendInputCommand(agent.Id, "round 7", null));
+        await pty.FirstWriteEntered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Claim (no section) → graceful "/exit" (parks, bounded) → terminate. Unbounded anywhere on
+        // that path and this never returns.
+        await orch.ReapReviewerForTest(candidate).WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(agent.IsReapClaimed).IsTrue();
+        await Assert.That(pty.TerminateCount).IsGreaterThanOrEqualTo(1); // the wedge-breaking step ran
+        await Assert.That(server.StatusChangedCalls).Contains(("parked-exit", "Completed"));
+
+        pty.ReleaseFirstWrite();
+        await delivery.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    /// <summary>The un-sectioned claim does not only race WEDGED deliveries — and this is the case that
+    /// makes the pre-write re-read of the claim latch load-bearing rather than defensive.
+    ///
+    /// <para>A borrowed delivery legitimately spends up to <c>BorrowedSnapshotRefreshTimeout</c> (30s)
+    /// inside the section refreshing its snapshot, which is LONGER than the claim's gate wait. So the
+    /// absolute-lifetime claim fires against a perfectly healthy in-flight delivery with nothing parked
+    /// anywhere. Checking the latch only on entry to the section would let that delivery finish into an
+    /// agent already condemned: write the round, advance the activity clock, emit a delivered-input
+    /// report — precisely what the refusal exists to prevent, and worse than the wedged case because
+    /// nothing fails to make it visible.</para>
+    ///
+    /// <para>The window is entered through <c>SendInputBeforeWriteHookForTest</c> rather than by
+    /// parking the refresh itself. That is not a shortcut — an earlier revision of this test DID park
+    /// a borrowed refresh, and it passed with the re-read deleted: without a real borrowed checkout the
+    /// refresh's own authorisation fails on release, so <c>HandleSendInput</c> returned at the
+    /// refresh's error path and never reached the write it was supposed to be proving something about.
+    /// The seam enters the genuine window instead of a vacuous one.</para>
+    ///
+    /// <para>Mutation anchor: removing the pre-write re-read (keeping only the entry check) fails on
+    /// all three of the write, the seq and the report below.</para></summary>
+    [Test]
+    public async Task Healthy_in_section_delivery_refuses_after_a_claim_lands_mid_flight() {
+        var server = new CaptureServerConnection();
+        var time   = new FakeTimeProvider();
+        var clock  = new AgentActivityClock(time);
+
+        await using var orch = BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        orch.ReapClaimGateWait = TimeSpan.FromMilliseconds(200);
+
+        var pty   = new RecordingPtyProcess();
+        var agent = orch.SeedAgentForTest("healthy-in-flight", LaunchKind.ReviewFlow, status: "Running",
+            pty: pty, activityClock: clock);
+
+        time.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1));
+
+        var candidate = orch.FindReviewersToReap().Single(c => c.Id == "healthy-in-flight");
+        await Assert.That(candidate.Reason).IsEqualTo("reviewer_ttl_expired");
+        await Assert.That(candidate.FencedOnActivity).IsFalse();
+
+        var seqBeforeDelivery = agent.ActivityClock.ActivitySeq;
+        var reportsBefore     = server.StatusReportCount;
+        var claimed           = false;
+
+        // Stand in for the slow pre-write work (a 30s-budgeted borrowed refresh): while the delivery
+        // holds the section here, the reaper's claim times out on the gate and — being unfenced —
+        // claims anyway. The delivery then resumes, inside a section the claim never took.
+        orch.SendInputBeforeWriteHookForTest = async () => {
+            orch.SendInputBeforeWriteHookForTest = null; // once
+            claimed = await orch.TryClaimReapForTest(candidate);
+        };
+
+        await orch.HandleSendInputForTest(new SendInputCommand(agent.Id, "round 7", null))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(claimed).IsTrue();          // the claim really did land mid-delivery
+        await Assert.That(agent.IsReapClaimed).IsTrue();
+
+        await Assert.That(pty.Writes).IsEmpty();      // nothing written to the condemned agent
+        await Assert.That(agent.ActivityClock.ActivitySeq).IsEqualTo(seqBeforeDelivery); // nothing advanced
+        await Task.Delay(100);                        // a wrongly-emitted report would land late
+        await Assert.That(server.StatusReportCount).IsEqualTo(reportsBefore);            // nothing announced
+    }
+
+    /// <summary>The sizing relation the claim wait's "at most one waiter per agent" property rests on,
+    /// asserted rather than left to a comment: a later change to either constant that inverts them
+    /// would silently let a parked delivery accumulate one abandoned claim waiter per heartbeat tick.
+    /// </summary>
+    [Test]
+    public async Task Reap_claim_gate_wait_stays_under_the_heartbeat_interval() {
+        await using var orch = BuildOrchestrator(
+            new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        await Assert.That(orch.ReapClaimGateWait).IsLessThan(AgentOrchestrator.HeartbeatInterval);
+    }
+
     /// <summary>PTY double that PARKS inside its first write, holding whatever section its caller is in
     /// until the test releases it. Later writes (the submit CR, and anything the stop path sends) pass
-    /// straight through, so only the one window under test is controlled.</summary>
+    /// straight through by default, so only the one window under test is controlled.
+    ///
+    /// <para><see cref="ParkEveryWrite"/> models the harsher and more realistic wedge: a child that has
+    /// stopped draining its stdin parks EVERY write to the master fd, including the stop path's
+    /// "/exit". That is the state in which the graceful-stop send has to be bounded for the terminate
+    /// to be reachable at all.</para></summary>
     sealed class ParkingPtyProcess : IPtyProcess {
         readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         int                           _writes;
+
+        /// <summary>When set, every write parks on the same release — not just the first. Models a
+        /// child that stopped reading its stdin entirely, so "/exit" parks exactly like the round did.
+        /// </summary>
+        public bool ParkEveryWrite { get; init; }
 
         /// <summary>Completes the instant the first write is entered — the test drives the racing reap
         /// from exactly that window rather than from a timing guess.</summary>
@@ -576,9 +718,20 @@ public partial class AgentOrchestratorVendorTests {
         public bool HasExited => false;
         public int? ExitCode  => null;
 
+        int _terminates;
+
+        /// <summary>How many times the stop path reached terminate — the step that, on a real pty,
+        /// SIGKILLs the child and so releases every parked write.</summary>
+        public int TerminateCount => Volatile.Read(ref _terminates);
+
         public ValueTask DisposeAsync() => default;
         public Task WaitForExitAsync(TimeSpan? _) => Task.CompletedTask;
-        public Task TerminateAsync(TimeSpan?   _) => Task.CompletedTask;
+
+        public Task TerminateAsync(TimeSpan? _) {
+            Interlocked.Increment(ref _terminates);
+
+            return Task.CompletedTask;
+        }
 
 #pragma warning disable CS1998
         public async IAsyncEnumerable<byte[]> ReadOutputAsync([EnumeratorCancellation] CancellationToken _ = default) {
@@ -587,7 +740,7 @@ public partial class AgentOrchestratorVendorTests {
 #pragma warning restore CS1998
 
         public async Task WriteAsync(string _) {
-            if (Interlocked.Increment(ref _writes) != 1) return;
+            if (Interlocked.Increment(ref _writes) != 1 && !ParkEveryWrite) return;
 
             _entered.TrySetResult();
             await _release.Task;
