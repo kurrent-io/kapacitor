@@ -89,25 +89,34 @@ sealed class ServiceVerify(
         var deadline = time.GetUtcNow() + _forwardBudget;
 
         while (time.GetUtcNow() < deadline) {
-            if (await IsReadyAsync(serviceId, deadline) && await IsReadyAsync(serviceId, deadline)) {
-                ServiceTxnMarker.Delete(serviceId);
-                return VerifyExit.Ok;
+            if (await IsReadyAsync(serviceId, deadline - time.GetUtcNow())) {
+                // Confirming what the primary check JUST observed, not a fresh independent
+                // check — must not be budget-starved by the same forward deadline that gated
+                // the primary check (a slow primary hello can legitimately resolve with almost
+                // nothing left), or a genuinely healthy daemon gets rolled back on a clock
+                // technicality. Floor it at one poll interval.
+                var confirmBudget = deadline - time.GetUtcNow();
+                if (confirmBudget < PollInterval) confirmBudget = PollInterval;
+
+                if (await IsReadyAsync(serviceId, confirmBudget)) {
+                    ServiceTxnMarker.Delete(serviceId);
+                    return VerifyExit.Ok;
+                }
             }
 
             if (time.GetUtcNow() >= deadline) break;
             await Task.Delay(PollInterval, time, CancellationToken.None);
         }
 
-        return Rollback(serviceId);
+        return await Rollback(serviceId);
     }
 
     /// <summary>Ownership + readiness predicate: hello well-formed AND the freshly-queried job
     /// pid matches the validated daemon pid (both non-null).</summary>
-    async Task<bool> IsReadyAsync(string serviceId, DateTimeOffset deadline) {
-        var remaining = deadline - time.GetUtcNow();
-        if (remaining <= TimeSpan.Zero) return false;
+    async Task<bool> IsReadyAsync(string serviceId, TimeSpan budget) {
+        if (budget <= TimeSpan.Zero) return false;
 
-        var h = await hello(serviceId, remaining);
+        var h = await hello(serviceId, budget);
         if (!h.WellFormed) return false;
 
         var jobPid    = manager.Query(serviceId).JobPid;
@@ -115,17 +124,26 @@ sealed class ServiceVerify(
         return jobPid is not null && daemonPid is not null && jobPid == daemonPid;
     }
 
-    /// <summary>Bootout (plist retained) then verify the restore: Absent → the rollback itself is
-    /// the verified-safe state, marker deleted. Still loaded → the marker is kept so a resumer can
-    /// see the transaction never settled.</summary>
-    int Rollback(string serviceId) {
-        _ = _rollbackReserve; // reserved for a bounded rollback poll once install-verify needs one
-        manager.Stop(serviceId, out _);
+    /// <summary>Bootout (plist retained) then verify the restore, polled (bounded by
+    /// <see cref="_rollbackReserve"/>) rather than single-shot — <c>launchctl bootout</c> can
+    /// return before the label is actually gone. Absent → the rollback itself is the
+    /// verified-safe state, marker deleted. Still loaded when the reserve runs out → the marker
+    /// is kept so a resumer can see the transaction never settled.</summary>
+    async Task<int> Rollback(string serviceId) {
+        manager.Stop(serviceId, out var stopError);
+        if (stopError is not null) Say($"stop: {stopError}");
 
-        if (manager.Query(serviceId).Probe == LabelProbe.Absent) {
-            ServiceTxnMarker.Delete(serviceId);
-            Say(VerifyExit.ReadinessTimeoutToken);
-            return VerifyExit.ReadinessTimeout;
+        var rollbackDeadline = time.GetUtcNow() + _rollbackReserve;
+
+        while (true) {
+            if (manager.Query(serviceId).Probe == LabelProbe.Absent) {
+                ServiceTxnMarker.Delete(serviceId);
+                Say(VerifyExit.ReadinessTimeoutToken);
+                return VerifyExit.ReadinessTimeout;
+            }
+
+            if (time.GetUtcNow() >= rollbackDeadline) break;
+            await Task.Delay(PollInterval, time, CancellationToken.None);
         }
 
         Say(VerifyExit.RestoreVerificationToken);
