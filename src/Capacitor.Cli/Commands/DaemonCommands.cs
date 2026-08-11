@@ -929,7 +929,7 @@ public static class DaemonCommands {
         var installBinary   = ResolveDaemonBinary();
         var daemonPid       = DaemonPidProbe.ValidatedPid(id);
         var txnActive       = ServiceTxnLock.IsHeld(id);
-        var txnMarker       = File.Exists(Path.Combine(DaemonLockPaths.Directory, id + ".service-txn"));
+        var txnMarker       = ServiceTxnMarker.Exists(id);
 
         var (json, exitCode) = ServiceStatusRender.Render(query, id, installBinary, daemonPid, txnMarker, txnActive);
 
