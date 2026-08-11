@@ -4,7 +4,8 @@ namespace Capacitor.Cli.Daemon.Services;
 /// <summary>
 /// Monotonic per-agent activity clock (liveness-supervision spec §0/§1). One instance per launch — a
 /// relaunch gets a fresh one — fed by PTY output chunks, ACP transcript envelopes, ACP turn
-/// start/end, <c>LocalPermissionBridge</c> reviewer tool-call hits, and (round-dispatch grace) a
+/// start/end, Antigravity's and Pi's own <c>agentActivity</c>-flagged advances, two independent
+/// <c>LocalPermissionBridge</c> reviewer tool-call-hit sites, and (round-dispatch grace) a
 /// successfully delivered <c>SendInput</c> — see <see cref="AgentOrchestrator.HandleSendInput"/>.
 ///
 /// <para>READS are lock-guarded, not just writes: the sources above run on independent threads (a PTY
@@ -103,7 +104,7 @@ internal sealed class AgentActivityClock(TimeProvider time) {
     }
 
     /// <summary>Records one unit of activity: bumps <see cref="ActivitySeq"/> and resets the idle
-    /// window to zero from this instant. Called from all five sources (see the class doc).</summary>
+    /// window to zero from this instant. Called from all six sources (see the class doc).</summary>
     public void Advance() {
         lock (_gate) AdvanceLocked();
     }

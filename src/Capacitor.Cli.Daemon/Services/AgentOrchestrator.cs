@@ -177,12 +177,17 @@ internal record AgentInstance(
     /// decision — <see cref="AgentOrchestrator.FindReviewersToReap"/> reads a snapshot, and any recheck
     /// outside this section leaves a recheck-to-stop window.</para>
     ///
-    /// <para><b>Waiting on this gate must always be BOUNDED.</b> It is held across a delivery, and a
-    /// delivery can block for an unbounded time on a healthy-looking transport — the PTY path ends in
-    /// <c>UnixPtyProcess.WriteAsync</c>, a raw <c>write(2)</c> on the pty master with no timeout and no
-    /// cancellation, which parks forever if the child stops draining its stdin. An unbounded waiter
-    /// here would therefore be waiting on the very process that only the waiter's own action (terminate)
-    /// can unblock. See <see cref="AgentOrchestrator.TryClaimReapAsync"/>.</para>
+    /// <para><b>A waiter whose own action is needed to unblock the holder must bound its wait.</b> It
+    /// is held across a delivery, and a delivery can block for an unbounded time on a healthy-looking
+    /// transport — the PTY path ends in <c>UnixPtyProcess.WriteAsync</c>, a raw <c>write(2)</c> on the
+    /// pty master with no timeout and no cancellation, which parks forever if the child stops draining
+    /// its stdin. The graceful-stop wait in <see cref="StopAgentCoreAsync"/> is exactly this case: it
+    /// is waiting on the very process that only its OWN next action (terminate) can unblock, so that
+    /// wait is bounded. The delivery's own ENTRY wait onto this gate (<see
+    /// cref="AgentOrchestrator.HandleSendInput"/>) is exempt from this rule — it is the holder class,
+    /// not the bounded class: it is unblocked by whatever the current holder is itself waiting on (the
+    /// child exiting, or a stop completing), never by an action the entry waiter must take. See <see
+    /// cref="AgentOrchestrator.TryClaimReapAsync"/>.</para>
     ///
     /// <para><b>Lock ordering.</b> This gate is OUTERMOST relative to
     /// <see cref="AgentActivityClock"/>'s internal lock (holders read the clock while holding it) and
@@ -2582,11 +2587,6 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
-    /// <summary>
-    /// Initial wait after sending /exit to give claude a chance to flush its session-end
-    /// hook (which writes SessionEnded plus the what's-done summary). 15s covers a typical
-    /// session-end POST + watcher drain on a healthy connection.
-    /// </summary>
     /// <summary>Budget for the graceful phase of a stop — applied SEPARATELY to sending the stop and
     /// to waiting for the exit it asks for, because sending it is itself unbounded work on some
     /// runtimes (see <see cref="StopAgentCoreAsync"/>). Settable only so a test need not spend it for
@@ -2962,9 +2962,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // session/cancel notify, Antigravity returns Task.CompletedTask, and Pi's own grace is 3s.
             // A timeout here just falls through to the same terminate a graceful-exit timeout already
             // falls through to.
-            var graceful = agent.Runtime.RequestGracefulStopAsync();
+            //
+            // Inside the try, not before it: RequestGracefulStopAsync() itself (not just the await) can
+            // throw synchronously, and that throw must land in the catch below and fall through to
+            // terminate — not escape via the OUTER catch and skip terminate, which on the reap path
+            // leaves a permanent zombie (ReapClaimed latched, agent still Running, every future reap
+            // CAS-refused).
+            Task graceful = Task.CompletedTask;
 
             try {
+                graceful = agent.Runtime.RequestGracefulStopAsync();
                 await graceful.WaitAsync(GracefulExitWait);
                 await agent.Runtime.WaitForExitAsync(GracefulExitWait);
             } catch (TimeoutException ex) {
@@ -3131,7 +3138,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             if (SendInputBeforeWriteHookForTest is { } beforeWrite) await beforeWrite();
 
             if (agent.IsReapClaimed) {
-                LogSendInputReapClaimed(agentId);
+                LogSendInputReapClaimedLate(agentId);
                 return;
             }
 
@@ -4226,6 +4233,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "SendInput dropped: agent {AgentId} was already claimed by the reviewer reaper and is being stopped — the round's dispatch fails here and the server heals it on resubmit")]
     partial void LogSendInputReapClaimed(string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "SendInput dropped: agent {AgentId} was claimed by the reviewer reaper's unfenced absolute-lifetime path AFTER this delivery had already entered the section — the late re-read caught a healthy in-flight delivery racing a claim that landed mid-flight; the round's dispatch fails here and the server heals it on resubmit")]
+    partial void LogSendInputReapClaimedLate(string agentId);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Reap of review-flow reviewer {AgentId} ({Reason}) aborted at the claim: {Cause}")]
     partial void LogReapAborted(string agentId, string reason, string cause);
