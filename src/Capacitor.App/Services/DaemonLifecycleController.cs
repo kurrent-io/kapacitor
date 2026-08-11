@@ -472,9 +472,15 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
                 return;
             }
 
+            // Acceptance itself is the fact that invalidates the decline claim — retract BEFORE
+            // the mutation runs, not after: RunVerifiedMutationAsync doesn't catch around the CLI
+            // call, so an install that throws (shutdown mid-spawn, a process/IO fault) would skip
+            // a post-mutation retract entirely and leave an accepted pair mislabeled "declined"
+            // on disk. "Declined" must mean the user declined, full stop.
+            await RetractDeclineAsync(pairKey).ConfigureAwait(false);
+
             var succeeded = await RunVerifiedMutationAsync(c => _cli.ServiceInstallVerifiedAsync(replace: true, c), _lifetime.Token)
                 .ConfigureAwait(false);
-            await RetractDeclineAsync(pairKey).ConfigureAwait(false); // accepted — never a decline
             if (!succeeded) lock (_lock) _skewDialogShownThisRun = false; // no resolution — re-offer
         } catch (OperationCanceledException) {
             // shutdown mid-check

@@ -754,13 +754,46 @@ public class DaemonLifecycleControllerTests {
         h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
         await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the takeover install");
 
-        // A successful mutation waits on a fresh Connected (or the fake-clock confirm window,
-        // never advanced here) before RunSkewCheckAsync resumes to retract the claim — satisfy
-        // the waiter so the retraction actually runs within this test.
-        h.PushConnected();
         await WaitUntilAsync(
             () => !(h.Store.LoadAsync().GetAwaiter().GetResult().DeclinedTakeoverPairs ?? []).Contains("0.9|1.0.0"),
-            what: "the claim retracted after a successful takeover");
+            what: "the claim retracted on acceptance");
+
+        // Let the mutation actually resolve (it awaits a fresh Connected or the never-advanced
+        // fake-clock confirm window otherwise) so disposal doesn't wait on it.
+        h.PushConnected();
+    }
+
+    [Test]
+    public async Task Skew_accept_retracts_the_claim_even_when_the_mutation_throws() {
+        await using var h = new Harness();
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        // Simulates a shutdown mid-spawn or a process/IO fault — RunVerifiedMutationAsync does
+        // not catch around the CLI call, so this propagates out of RunSkewCheckAsync's mutation
+        // step entirely.
+        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromException<ProcessResult>(new OperationCanceledException("shutdown mid-install"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the takeover install attempt");
+
+        await WaitUntilAsync(
+            () => !(h.Store.LoadAsync().GetAwaiter().GetResult().DeclinedTakeoverPairs ?? []).Contains("0.9|1.0.0"),
+            what: "the claim retracted despite the mutation throwing");
+
+        // A fresh controller sharing the same store re-offers the same pair — accepted-but-failed
+        // must never read back as "the user declined".
+        var surface2 = new FakeLifecycleSurface();
+        var client2  = new FakeDaemonClientService();
+        var cli2     = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed")) };
+        await using var controller2 = new DaemonLifecycleController(
+            client2, cli2, new FakeLoginShellProbe(), h.Store, surface2, () => Task.FromResult<string?>("default"), h.Time);
+        controller2.Start();
+        await WaitUntilAsync(() => cli2.VersionCallCount == 1, what: "controller2's version cache");
+
+        client2.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_incompatible", null, "0.9"));
+        await WaitUntilAsync(() => surface2.Prompts.Count == 1, what: "the re-offered prompt");
     }
 
     [Test]
