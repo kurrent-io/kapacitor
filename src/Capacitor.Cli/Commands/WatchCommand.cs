@@ -471,6 +471,12 @@ static partial class WatchCommand {
         };
         var idleExit = false;
 
+        // AI-1861: idle grace between a Codex collab child's task_complete and its live
+        // subagent-stop POST (codex child watchers only — see the loop's stop check). The
+        // agent type is read lazily from the child rollout's own header, once.
+        var     codexSubagentStopGrace = CodexSubagentTurnTracker.ResolveStopGrace(Environment.GetEnvironmentVariable("KCAP_CODEX_SUBAGENT_IDLE_MINUTES"));
+        string? codexChildAgentType    = null;
+
         if (skipTitle) {
             state.TitleGenerated = true;
         }
@@ -708,6 +714,28 @@ static partial class WatchCommand {
                     await ScanCodexSubagents(baseUrl, sessionId, transcriptPath, seenSubagents, codexRuledOutRollouts, cts.Token);
                 } else if (agentId is null && vendor == "antigravity") {
                     await ScanAntigravitySubagentLinks(baseUrl, sessionId, drained, state.PostedSubagentLinks, cts.Token);
+                }
+
+                // AI-1861: a Codex collab CHILD posts its own subagent-stop once its rollout's
+                // last turn completed (task_complete, no tool call in flight) and the grace
+                // window elapsed — without this, the parent's session-end teardown is the only
+                // stop, so a finished child's chat card spins for the parent's whole lifetime.
+                // One-shot: the server dedupes lifecycle events per (session, agent), so the
+                // tracker latches after the first successful POST; a failed POST retries next
+                // tick, and the parent-end teardown remains the backstop either way. The child
+                // keeps streaming after the stop — appends are not lifecycle-gated, so a
+                // re-engaged child's content still lands in its subsession.
+                if (agentId is not null && vendor == "codex"
+                 && state.CodexSubagentTurn.ShouldPostStop(
+                        state.PendingCodexToolCalls.Count, state.LastActivityAt,
+                        DateTimeOffset.UtcNow, codexSubagentStopGrace)) {
+                    codexChildAgentType ??= ResolveCodexChildAgentType(transcriptPath);
+
+                    if (await PostCodexSubagentStopAsync(baseUrl, sessionId, agentId, codexChildAgentType, transcriptPath, cts.Token)) {
+                        state.CodexSubagentTurn.StopPosted = true;
+                        Log($"Codex subagent {agentId} ({codexChildAgentType}) turn complete + idle "
+                          + $"{codexSubagentStopGrace.TotalMinutes:F0}m; posted subagent-stop");
+                    }
                 }
 
                 // the Cursor idle clock must be the LATER of transcript
@@ -1049,6 +1077,39 @@ static partial class WatchCommand {
         } catch {
             return false;
         }
+    }
+
+    /// <summary>
+    /// The live per-child stop (AI-1861), posted by the CHILD watcher itself once its turn
+    /// completed and idled — the same wire shape <see cref="CodexSubagentTeardown"/> posts at
+    /// parent end (which stays the backstop; the server dedupes the duplicate stop via its
+    /// deterministic lifecycle event ids).
+    /// </summary>
+    static async Task<bool> PostCodexSubagentStopAsync(
+        string baseUrl, string sessionId, string agentId, string agentType, string subFile, CancellationToken ct
+    ) {
+        try {
+            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, ct);
+            var       payload = CodexSubagentDiscovery.BuildStopPayload(sessionId, agentId, agentType, subFile);
+            using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+            using var resp    = await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-stop", content, ct: ct);
+
+            return resp.IsSuccessStatusCode;
+        } catch {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Agent type for a child watcher's own stop payload, read from the child rollout's
+    /// <c>session_meta</c> header — the child watcher isn't handed the type at spawn (only the
+    /// parent's scan derives it), and <see cref="CodexSubagentDiscovery.ReadHeader"/> never
+    /// throws, so a still-unreadable header just yields the generic fallback.
+    /// </summary>
+    static string ResolveCodexChildAgentType(string transcriptPath) {
+        var (_, meta) = CodexSubagentDiscovery.ReadHeader(transcriptPath);
+
+        return CodexSubagentDiscovery.AgentTypeFrom(meta.AgentPath, meta.AgentNickname);
     }
 
     /// <summary>
@@ -1630,6 +1691,16 @@ static partial class WatchCommand {
             // response_item), so this is a cheap no-op for them.
             foreach (var line in newLines) {
                 UpdateCodexPendingToolCalls(state.PendingCodexToolCalls, line);
+            }
+
+            // A Codex collab CHILD watcher additionally folds its own rollout's turn state
+            // (task_complete vs renewed activity) so the polling loop can post a live
+            // subagent-stop once the child is done + idle (AI-1861). Gated, unlike the
+            // pending-call tracking above, because only codex child watchers ever consult it.
+            if (vendor == "codex" && agentId is not null) {
+                foreach (var line in newLines) {
+                    state.CodexSubagentTurn.Observe(line);
+                }
             }
 
             // Capture first user text (needed for title generation)

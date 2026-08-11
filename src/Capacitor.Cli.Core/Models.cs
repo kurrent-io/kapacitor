@@ -168,6 +168,13 @@ class WatchState {
     // eventually fire and end the session — adding a ceiling here would be YAGNI.
     public HashSet<string> PendingCodexToolCalls { get; } = new(StringComparer.Ordinal);
 
+    // Codex collab CHILD watcher only (vendor == "codex" && agentId != null): folds the child
+    // rollout's own task_complete/turn-activity lines so the polling loop can post a LIVE
+    // subagent-stop once the turn is done and a grace window elapsed (AI-1861) — before this,
+    // the parent's session-end teardown was the only stop, so a finished child's chat card
+    // spun for the parent's whole lifetime. Never observed on any other watcher.
+    public CodexSubagentTurnTracker CodexSubagentTurn { get; } = new();
+
     // Highwater mark of the last Antigravity gen_metadata row already streamed as a
     // synthetic USAGE line, so the watcher only sends newly-appended cost rows on each
     // poll (server dedup by deterministic id is the backstop). -1 = none seen yet.

@@ -6,7 +6,10 @@ namespace Capacitor.Cli.Commands;
 /// <summary>
 /// Shared session-end teardown for live Codex collab subagents. Codex fires no
 /// subagent-stop hook, and the child watchers the parent spawns carry no parent-pid
-/// watchdog, so the parent session-end is the ONLY thing that finalizes them: for each
+/// watchdog, so the parent session-end is the BACKSTOP that finalizes them (the common
+/// path is the child watcher's own live stop on turn-complete + idle —
+/// <see cref="Capacitor.Cli.Core.CodexSubagentTurnTracker"/>, AI-1861 — whose duplicate
+/// stop this teardown's POST dedupes against server-side): for each
 /// child rollout still linked to this parent on disk, kill its child watcher (no-op if
 /// already gone), drain its tail (resumes from the server watermark), and POST
 /// <c>/hooks/subagent-stop</c> so the server writes <c>SubagentCompleted</c> + the agent
