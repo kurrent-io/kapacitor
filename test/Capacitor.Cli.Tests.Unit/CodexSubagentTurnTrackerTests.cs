@@ -1,3 +1,4 @@
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -117,6 +118,61 @@ public class CodexSubagentTurnTrackerTests {
         tracker.Observe("""{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}""");
 
         await Assert.That(Eligible(tracker)).IsTrue();
+    }
+
+    // ── SeedCodexSubagentTurnState (restart recovery) ─────────────────────
+    // A restarted child watcher resumes from the server watermark, so the drain never
+    // re-delivers already-acknowledged lines — including the task_complete that should
+    // drive the live stop. The seed rebuilds tracker + pending-call state from the
+    // rollout's full on-disk prefix at startup.
+
+    const string FunctionCall =
+        """{"timestamp":"2026-08-11T08:55:00.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call_seed1","arguments":"{}"}}""";
+
+    const string FunctionCallOutput =
+        """{"timestamp":"2026-08-11T08:55:05.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_seed1","output":"ok"}}""";
+
+    static WatchState SeededFrom(params string[] lines) {
+        var tmp = Directory.CreateTempSubdirectory("kcap-cstt").FullName;
+        try {
+            var path = Path.Combine(tmp, "rollout-2026-08-11T10-54-19-child.jsonl");
+            File.WriteAllLines(path, lines);
+
+            var state = new WatchState();
+            WatchCommand.SeedCodexSubagentTurnState(state, path);
+
+            return state;
+        } finally {
+            Directory.Delete(tmp, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task Seed_FileEndingWithTaskComplete_RearmsTheStop() {
+        var state = SeededFrom(FunctionCall, FunctionCallOutput, TaskComplete);
+
+        await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsTrue();
+        await Assert.That(state.PendingCodexToolCalls).IsEmpty();
+        await Assert.That(Eligible(state.CodexSubagentTurn)).IsTrue();
+    }
+
+    [Test]
+    public async Task Seed_FileEndingMidTurn_StaysDisarmed() {
+        // A completed earlier turn followed by a live tool call: not completed, call pending.
+        var state = SeededFrom(TaskComplete, UserMessage, FunctionCall);
+
+        await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsFalse();
+        await Assert.That(state.PendingCodexToolCalls).Contains("call_seed1");
+        await Assert.That(Eligible(state.CodexSubagentTurn, pending: state.PendingCodexToolCalls.Count)).IsFalse();
+    }
+
+    [Test]
+    public async Task Seed_MissingFile_IsANoOp() {
+        var state = new WatchState();
+        WatchCommand.SeedCodexSubagentTurnState(state, "/nonexistent/rollout.jsonl");
+
+        await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsFalse();
+        await Assert.That(state.PendingCodexToolCalls).IsEmpty();
     }
 
     // ── ResolveStopGrace ──────────────────────────────────────────────────

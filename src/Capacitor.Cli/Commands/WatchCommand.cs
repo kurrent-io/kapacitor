@@ -473,9 +473,15 @@ static partial class WatchCommand {
 
         // AI-1861: idle grace between a Codex collab child's task_complete and its live
         // subagent-stop POST (codex child watchers only — see the loop's stop check). The
-        // agent type is read lazily from the child rollout's own header, once.
+        // agent type is read lazily from the child rollout's own header, once. The seed
+        // rebuilds turn/pending state from the acknowledged prefix, which a restarted
+        // watcher's watermark-resumed drain would otherwise never re-deliver.
         var     codexSubagentStopGrace = CodexSubagentTurnTracker.ResolveStopGrace(Environment.GetEnvironmentVariable("KCAP_CODEX_SUBAGENT_IDLE_MINUTES"));
         string? codexChildAgentType    = null;
+
+        if (vendor == "codex" && agentId is not null) {
+            SeedCodexSubagentTurnState(state, transcriptPath);
+        }
 
         if (skipTitle) {
             state.TitleGenerated = true;
@@ -1110,6 +1116,34 @@ static partial class WatchCommand {
         var (_, meta) = CodexSubagentDiscovery.ReadHeader(transcriptPath);
 
         return CodexSubagentDiscovery.AgentTypeFrom(meta.AgentPath, meta.AgentNickname);
+    }
+
+    /// <summary>
+    /// Startup restart-recovery for a Codex collab CHILD watcher's live-stop state
+    /// (AI-1861): a restarted watcher resumes from the server watermark
+    /// (<c>WatcherConnect</c>), so the drain never re-delivers already-acknowledged lines —
+    /// including the <c>task_complete</c> that should drive the live stop. Without this
+    /// seed, a child watcher dying between that ack and the grace-delayed stop POST left
+    /// the card spinning until the parent-end teardown. Folds the rollout's full on-disk
+    /// prefix through both the turn tracker and the pending-call set; the first drain
+    /// re-observing the unacknowledged suffix is harmless — both folds converge on the
+    /// same last-state. Best-effort: an unreadable rollout just leaves fresh-start state
+    /// (the pre-seed behavior), with the parent-end teardown as backstop.
+    /// </summary>
+    internal static void SeedCodexSubagentTurnState(WatchState state, string transcriptPath) {
+        try {
+            using var fs     = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(fs);
+
+            while (reader.ReadLine() is { } line) {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                UpdateCodexPendingToolCalls(state.PendingCodexToolCalls, line);
+                state.CodexSubagentTurn.Observe(line);
+            }
+        } catch {
+            // Missing/locked rollout — seed is best-effort, see doc comment.
+        }
     }
 
     /// <summary>
