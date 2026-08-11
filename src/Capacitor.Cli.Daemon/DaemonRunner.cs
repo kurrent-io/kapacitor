@@ -244,7 +244,7 @@ public static partial class DaemonRunner {
                 + $"Either stop it (`kcap daemon stop --name {config.Name}`) or start this one with a different `--name`."
             );
 
-            return 2;
+            return LockRefusalExit(IsSupervised(config.Name));
         }
 
         config.InstanceId = daemonLock.InstanceId;
@@ -627,12 +627,13 @@ public static partial class DaemonRunner {
                     await connection.ConnectAsync(lifetime.ApplicationStopping);
                 } catch (Exception ex) when (nameInUse) {
                     // ConnectAsync's initial-connect path threw because of NameInUse. OnNameInUse
-                    // already fired and set our flag; the host hasn't started its main loop yet,
-                    // so just exit with code 3 — the unified teardown below disposes daemonLock,
-                    // orchestrator, connection, and the host (retiring the spawner thread).
+                    // already fired and set our flag; the host hasn't started its main loop yet, so
+                    // just exit — the unified teardown below disposes daemonLock, orchestrator,
+                    // connection, and the host (retiring the spawner thread). Supervised → 0: same
+                    // launchd-respin rationale as the lock-refusal exit above (a manual daemon keeps 3).
                     _ = ex;
 
-                    return 3;
+                    return NameInUseExit(IsSupervised(config.Name));
                 }
 
                 var worktreeManager = host.Services.GetRequiredService<WorktreeManager>();
@@ -864,6 +865,31 @@ public static partial class DaemonRunner {
     /// </summary>
     internal static bool ParseAcpReconnectFlag(string? value) =>
         value?.Trim() is not { } v || !(v == "0" || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Whether this process is <see cref="SupervisionMode.Supervised"/> for <paramref name="resolvedName"/>
+    /// — delegates to <see cref="SupervisionDetector.DetectCurrent"/> rather than re-comparing
+    /// <c>KCAP_DAEMON_SUPERVISED</c> itself, so systemd/launchd detection stays in lockstep with the one
+    /// place that owns it. <c>hasLogFile</c> only distinguishes Detached from Foreground in the
+    /// NOT-supervised fallback, so its value here is irrelevant. Reads the environment directly (no DI),
+    /// so it's callable before the host builds — needed at the lock-acquire exit below, which returns
+    /// long before <c>Host.CreateApplicationBuilder</c> finishes.
+    /// </summary>
+    internal static bool IsSupervised(string resolvedName) =>
+        SupervisionDetector.DetectCurrent(DaemonLockPaths.Sanitize(resolvedName), hasLogFile: false)
+            == SupervisionMode.Supervised;
+
+    /// <summary>
+    /// Exit code for the local name-lock refusal (another kcap-daemon already holds
+    /// <paramref name="supervised"/>'s name). Supervised → 0: under launchd <c>KeepAlive
+    /// SuccessfulExit=false</c> a non-zero exit respins the unit forever against a name it can never
+    /// win, and a deliberate refusal isn't a crash. A manual daemon keeps 2 for scripts.
+    /// </summary>
+    internal static int LockRefusalExit(bool supervised) => supervised ? 0 : 2;
+
+    /// <summary>Same rationale as <see cref="LockRefusalExit"/>, for the server's <c>NameInUse</c>
+    /// rejection (manual daemons keep 3).</summary>
+    internal static int NameInUseExit(bool supervised) => supervised ? 0 : 3;
 
     /// <summary>
     /// Whether a reviewer vendor is permitted on this daemon. **Absent means ENABLED** — this is an
