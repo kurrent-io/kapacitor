@@ -6,7 +6,7 @@ namespace Capacitor.Cli.Tests.Unit;
 /// <summary>
 /// Unit tests for <see cref="CodexSubagentTurnTracker"/> — the per-child turn-completion
 /// state a Codex collab child watcher folds from its own rollout lines to decide when to
-/// post the LIVE <c>/hooks/subagent-stop</c> (AI-1861). Before this, the only stop was the
+/// post the LIVE <c>/hooks/subagent-stop</c>. Before this, the only stop was the
 /// parent's session-end teardown, so every finished child card spun for the parent's whole
 /// lifetime. The lifecycle is one-shot server-side (deterministic event ids), so the
 /// tracker latches after one successful post and never re-arms.

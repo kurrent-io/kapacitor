@@ -471,13 +471,14 @@ static partial class WatchCommand {
         };
         var idleExit = false;
 
-        // AI-1861: idle grace between a Codex collab child's task_complete and its live
+        // Idle grace between a Codex collab child's task_complete and its live
         // subagent-stop POST (codex child watchers only — see the loop's stop check). The
         // agent type is read lazily from the child rollout's own header, once. The seed
         // rebuilds turn/pending state from the acknowledged prefix, which a restarted
         // watcher's watermark-resumed drain would otherwise never re-deliver.
-        var     codexSubagentStopGrace = CodexSubagentTurnTracker.ResolveStopGrace(Environment.GetEnvironmentVariable("KCAP_CODEX_SUBAGENT_IDLE_MINUTES"));
-        string? codexChildAgentType    = null;
+        var     codexSubagentStopGrace   = CodexSubagentTurnTracker.ResolveStopGrace(Environment.GetEnvironmentVariable("KCAP_CODEX_SUBAGENT_IDLE_MINUTES"));
+        string? codexChildAgentType      = null;
+        var     codexStopNextAttemptAt   = DateTimeOffset.MinValue;
 
         if (vendor == "codex" && agentId is not null) {
             SeedCodexSubagentTurnState(state, transcriptPath);
@@ -722,16 +723,18 @@ static partial class WatchCommand {
                     await ScanAntigravitySubagentLinks(baseUrl, sessionId, drained, state.PostedSubagentLinks, cts.Token);
                 }
 
-                // AI-1861: a Codex collab CHILD posts its own subagent-stop once its rollout's
+                // A Codex collab CHILD posts its own subagent-stop once its rollout's
                 // last turn completed (task_complete, no tool call in flight) and the grace
                 // window elapsed — without this, the parent's session-end teardown is the only
                 // stop, so a finished child's chat card spins for the parent's whole lifetime.
                 // One-shot: the server dedupes lifecycle events per (session, agent), so the
-                // tracker latches after the first successful POST; a failed POST retries next
-                // tick, and the parent-end teardown remains the backstop either way. The child
-                // keeps streaming after the stop — appends are not lifecycle-gated, so a
-                // re-engaged child's content still lands in its subsession.
+                // tracker latches after the first successful POST; a failed POST retries on the
+                // CodexSubagentStopRetryInterval cadence (never every 1s tick), and the
+                // parent-end teardown remains the backstop either way. The child keeps
+                // streaming after the stop — appends are not lifecycle-gated, so a re-engaged
+                // child's content still lands in its subsession.
                 if (agentId is not null && vendor == "codex"
+                 && DateTimeOffset.UtcNow >= codexStopNextAttemptAt
                  && state.CodexSubagentTurn.ShouldPostStop(
                         state.PendingCodexToolCalls.Count, state.LastActivityAt,
                         DateTimeOffset.UtcNow, codexSubagentStopGrace)) {
@@ -741,6 +744,8 @@ static partial class WatchCommand {
                         state.CodexSubagentTurn.StopPosted = true;
                         Log($"Codex subagent {agentId} ({codexChildAgentType}) turn complete + idle "
                           + $"{codexSubagentStopGrace.TotalMinutes:F0}m; posted subagent-stop");
+                    } else {
+                        codexStopNextAttemptAt = DateTimeOffset.UtcNow + CodexSubagentStopRetryInterval;
                     }
                 }
 
@@ -1086,22 +1091,53 @@ static partial class WatchCommand {
     }
 
     /// <summary>
-    /// The live per-child stop (AI-1861), posted by the CHILD watcher itself once its turn
+    /// Overall budget for one live child-stop POST attempt (auth client creation + the POST
+    /// itself). Must stay well inside <see cref="WatcherHeartbeat.Threshold"/> (20s): the
+    /// main loop touches the heartbeat once per iteration and awaits this call inline, so a
+    /// slow attempt on the default 30s retry budget could mark the watcher stale and churn
+    /// it exactly at turn completion. Retries ride later loop iterations instead, on the
+    /// <see cref="CodexSubagentStopRetryInterval"/> cadence.
+    /// </summary>
+    static readonly TimeSpan CodexSubagentStopPostBudget = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Minimum spacing between live child-stop POST attempts, so a persistent failure
+    /// (outage, auth trouble) never hammers <c>/hooks/subagent-stop</c> at the loop's 1s
+    /// cadence. Deliberately no terminal give-up: an auth refresh can heal a 401 and the
+    /// parent-end teardown dedupes whatever this never manages to post.
+    /// </summary>
+    static readonly TimeSpan CodexSubagentStopRetryInterval = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// The live per-child stop, posted by the CHILD watcher itself once its turn
     /// completed and idled — the same wire shape <see cref="CodexSubagentTeardown"/> posts at
     /// parent end (which stays the backstop; the server dedupes the duplicate stop via its
-    /// deterministic lifecycle event ids).
+    /// deterministic lifecycle event ids). Bounded by
+    /// <see cref="CodexSubagentStopPostBudget"/>; failures are logged and reported to the
+    /// caller, never thrown.
     /// </summary>
     static async Task<bool> PostCodexSubagentStopAsync(
         string baseUrl, string sessionId, string agentId, string agentType, string subFile, CancellationToken ct
     ) {
         try {
-            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, ct);
+            using var budgetCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budgetCts.CancelAfter(CodexSubagentStopPostBudget);
+
+            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, budgetCts.Token);
             var       payload = CodexSubagentDiscovery.BuildStopPayload(sessionId, agentId, agentType, subFile);
             using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
-            using var resp    = await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-stop", content, ct: ct);
+            using var resp    = await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-stop", content, timeout: CodexSubagentStopPostBudget, ct: budgetCts.Token);
+
+            if (!resp.IsSuccessStatusCode) {
+                Log($"Codex subagent {agentId} stop POST returned {(int)resp.StatusCode}; "
+                  + $"retrying in {CodexSubagentStopRetryInterval.TotalSeconds:F0}s");
+            }
 
             return resp.IsSuccessStatusCode;
-        } catch {
+        } catch (Exception ex) {
+            Log($"Codex subagent {agentId} stop POST failed: {ex.Message}; "
+              + $"retrying in {CodexSubagentStopRetryInterval.TotalSeconds:F0}s");
+
             return false;
         }
     }
@@ -1119,8 +1155,8 @@ static partial class WatchCommand {
     }
 
     /// <summary>
-    /// Startup restart-recovery for a Codex collab CHILD watcher's live-stop state
-    /// (AI-1861): a restarted watcher resumes from the server watermark
+    /// Startup restart-recovery for a Codex collab CHILD watcher's live-stop state:
+    /// a restarted watcher resumes from the server watermark
     /// (<c>WatcherConnect</c>), so the drain never re-delivers already-acknowledged lines —
     /// including the <c>task_complete</c> that should drive the live stop. Without this
     /// seed, a child watcher dying between that ack and the grace-delayed stop POST left
@@ -1729,7 +1765,7 @@ static partial class WatchCommand {
 
             // A Codex collab CHILD watcher additionally folds its own rollout's turn state
             // (task_complete vs renewed activity) so the polling loop can post a live
-            // subagent-stop once the child is done + idle (AI-1861). Gated, unlike the
+            // subagent-stop once the child is done + idle. Gated, unlike the
             // pending-call tracking above, because only codex child watchers ever consult it.
             if (vendor == "codex" && agentId is not null) {
                 foreach (var line in newLines) {

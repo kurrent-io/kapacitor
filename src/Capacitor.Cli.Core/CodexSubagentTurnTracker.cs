@@ -4,7 +4,7 @@ namespace Capacitor.Cli.Core;
 
 /// <summary>
 /// Turn-completion state a Codex collab CHILD watcher folds from its own rollout lines to
-/// decide when to post the LIVE <c>/hooks/subagent-stop</c> (AI-1861). Codex fires no
+/// decide when to post the LIVE <c>/hooks/subagent-stop</c>. Codex fires no
 /// per-child stop hook and <c>sub_agent_activity</c> carries no completed kind, so before
 /// this the only stop was the parent's session-end teardown
 /// (<c>CodexSubagentTeardown</c>) — every finished child card stayed "in progress" for the

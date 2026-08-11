@@ -170,7 +170,7 @@ class WatchState {
 
     // Codex collab CHILD watcher only (vendor == "codex" && agentId != null): folds the child
     // rollout's own task_complete/turn-activity lines so the polling loop can post a LIVE
-    // subagent-stop once the turn is done and a grace window elapsed (AI-1861) — before this,
+    // subagent-stop once the turn is done and a grace window elapsed — before this,
     // the parent's session-end teardown was the only stop, so a finished child's chat card
     // spun for the parent's whole lifetime. Never observed on any other watcher.
     public CodexSubagentTurnTracker CodexSubagentTurn { get; } = new();
