@@ -2784,18 +2784,33 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// loop) and is bounded by the agent's stop, daemon shutdown, and the observe timeout.</para>
     /// </summary>
     void ArmCodexTurnProbe(AgentInstance agent, long? baseline) {
-        if (agent.CodexRolloutPath is not { } rolloutPath || baseline is not { } b) {
-            LogCodexTurnRolloutUnresolved(agent.Id);
-            return;
-        }
+        try {
+            var rolloutPath = agent.CodexRolloutPath;
+            var canObserve  = rolloutPath is not null && baseline is not null;
 
-        var cts  = CancellationTokenSource.CreateLinkedTokenSource(agent.ReadCts.Token, _shutdownCts.Token);
-        var prev = Interlocked.Exchange(ref agent.CodexTurnProbeCts, cts);
-        if (prev is not null) {
-            try { prev.Cancel(); } catch (ObjectDisposedException) { /* the prior probe already finished + disposed it */ }
-        }
+            // Supersede any prior round's probe FIRST — always, even when this round cannot be
+            // observed — so a predecessor can neither keep running nor log a verdict for this round's
+            // growth. Installing null when we cannot observe still cancels the predecessor and makes
+            // its ownership check fail.
+            var newCts = canObserve
+                ? CancellationTokenSource.CreateLinkedTokenSource(agent.ReadCts.Token, _shutdownCts.Token)
+                : null;
+            var prev = Interlocked.Exchange(ref agent.CodexTurnProbeCts, newCts);
+            if (prev is not null) {
+                try { prev.Cancel(); } catch (ObjectDisposedException) { /* the prior probe already finished + disposed it */ }
+            }
 
-        _ = Task.Run(() => ObserveCodexTurnAsync(agent, rolloutPath, b, cts));
+            if (!canObserve) {
+                LogCodexTurnRolloutUnresolved(agent.Id);
+                return;
+            }
+
+            _ = Task.Run(() => ObserveCodexTurnAsync(agent, rolloutPath!, baseline!.Value, newCts!));
+        } catch (Exception ex) {
+            // Arming is best-effort and runs AFTER the input was already delivered — a fault here
+            // (e.g. ReadCts disposed by concurrent teardown) must NEVER surface as a send failure.
+            LogCodexTurnObserveFailed(ex, agent.Id);
+        }
     }
 
     async Task ObserveCodexTurnAsync(AgentInstance agent, string rolloutPath, long baseline, CancellationTokenSource cts) {
@@ -2808,6 +2823,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             var outcome = await CodexTurnObserver.ObserveGrowthAsync(
                 CurrentLength, baseline, CodexTurnObserveTimeout, CodexTurnObserveInterval, TimeProvider.System, cts.Token);
+
+            // Single-flight: only the CURRENT probe may emit a verdict. If a newer round installed
+            // its own CTS while we were observing, our growth may belong to THAT round — drop
+            // silently (the newer probe reports). Cancellation alone can't guarantee this: we may
+            // have already computed `outcome` before the new round cancelled us.
+            if (!ReferenceEquals(Volatile.Read(ref agent.CodexTurnProbeCts), cts)) return;
 
             switch (outcome) {
                 case CodexTurnObserver.Outcome.TurnObserved:
