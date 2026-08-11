@@ -68,4 +68,18 @@ public class ServiceTxnMarkerTests {
             await Assert.That(ServiceTxnMarker.Exists("never-written")).IsFalse();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
+
+    // File.Delete on a path that is actually a directory throws (UnauthorizedAccessException on
+    // every platform .NET runs Delete on) — this is what the try/catch in Delete swallows.
+    [Test]
+    public async Task Delete_swallows_the_exception_when_the_path_cannot_be_deleted_as_a_file() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            var path = ServiceTxnMarker.MarkerPath("a");
+            Directory.CreateDirectory(path);
+            ServiceTxnMarker.Delete("a");
+            await Assert.That(Directory.Exists(path)).IsTrue();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
 }

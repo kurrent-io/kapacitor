@@ -10,7 +10,8 @@ namespace Capacitor.Cli.Services;
 /// Durable, phase-recording record of an in-flight <c>kcap daemon service</c> mutation
 /// (install/replace/start). Lives at <c>{DaemonLockPaths.Directory}/{id}.service-txn</c>,
 /// distinct from <see cref="ServiceTxnLock"/>. A resumer reads the last recorded
-/// <see cref="TxnMarker.Phase"/> to decide how far a prior attempt got.
+/// <see cref="TxnMarker.Phase"/> to decide how far a prior attempt got. Does no locking
+/// itself — callers must serialize writes per <c>serviceId</c> via <see cref="ServiceTxnLock"/>.
 /// </summary>
 public sealed record TxnMarker(
     int Version,
@@ -32,8 +33,8 @@ public static partial class ServiceTxnMarker {
         try {
             if (!File.Exists(path)) return null;
             return JsonSerializer.Deserialize(File.ReadAllText(path), MarkerJsonContext.Default.TxnMarker);
-        } catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) {
-            return null;
+        } catch {
+            return null; // corrupt/unreadable marker — treat as absent
         }
     }
 
@@ -61,7 +62,7 @@ public static partial class ServiceTxnMarker {
     }
 
     public static void Delete(string serviceId) {
-        try { File.Delete(MarkerPath(serviceId)); } catch (IOException) { /* best-effort */ }
+        try { File.Delete(MarkerPath(serviceId)); } catch { /* best-effort */ }
     }
 
     public static string Fingerprint(string plistText) =>
