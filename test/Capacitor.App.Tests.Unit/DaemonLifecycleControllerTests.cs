@@ -524,7 +524,7 @@ public class DaemonLifecycleControllerTests {
         h.PushConnected();
 
         await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the skew prompt");
-        await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo("restart-update");
+        await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindRestartUpdate);
         await Assert.That(h.Surface.Prompts[0].DaemonVersion).IsEqualTo("2.0.0");
         await Assert.That(h.Surface.Prompts[0].CliVersion).IsEqualTo("1.0.0");
         await Assert.That(h.Surface.Prompts[0].Disclosure).IsEqualTo(DaemonLifecycleController.TakeoverDisclosure);
@@ -542,7 +542,7 @@ public class DaemonLifecycleControllerTests {
         h.PushConnected();
 
         await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the skew prompt");
-        await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo("takeover");
+        await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindTakeover);
         await Assert.That(h.Surface.Prompts[0].Disclosure).IsEqualTo(DaemonLifecycleController.TakeoverDisclosure);
     }
 
@@ -688,6 +688,164 @@ public class DaemonLifecycleControllerTests {
 
         await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the stale-consent abort status");
         await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+
+        // A stale accept was never a real decline — the claim-before-show pair is retracted...
+        var afterAbort = await h.Store.LoadAsync();
+        await Assert.That((afterAbort.DeclinedTakeoverPairs ?? []).Contains("0.9|1.0.0")).IsFalse();
+
+        // ...and the once-per-run flag is cleared so a fresh trigger re-offers (spec §6).
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(false);
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 2, what: "the re-offered prompt");
+    }
+
+    [Test]
+    public async Task Skew_accept_coded_failure_retracts_claim_and_clears_run_flag() {
+        await using var h = new Harness();
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromResult(Failed(21, "verify_viability: nope"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the takeover install attempt");
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the coded-failure status line");
+
+        var afterFailure = await h.Store.LoadAsync();
+        await Assert.That((afterFailure.DeclinedTakeoverPairs ?? []).Contains("0.9|1.0.0")).IsFalse();
+
+        // The run flag cleared too — a fresh trigger (a different pair, since this run's CLI
+        // version hasn't changed) still gets an offer.
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.95");
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 2, what: "the re-offered prompt after the coded failure");
+    }
+
+    [Test]
+    public async Task Skew_claim_persisted_before_confirm_resolves_survives_a_crash_at_dialog() {
+        await using var h = new Harness();
+        var confirmTcs = new TaskCompletionSource<bool>();
+        h.Surface.ConfirmBehavior = (_, _) => confirmTcs.Task;
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the dialog shown");
+
+        // The dialog is "open" (ConfirmAsync hasn't resolved) — simulate a crash right here: the
+        // claim must already be on disk, not waiting on the user's answer.
+        var midDialog = await h.Store.LoadAsync();
+        await Assert.That(midDialog.DeclinedTakeoverPairs).IsNotNull();
+        await Assert.That(midDialog.DeclinedTakeoverPairs!).Contains("0.9|1.0.0");
+
+        confirmTcs.SetResult(false); // let it resolve so disposal doesn't wait on it
+    }
+
+    [Test]
+    public async Task Skew_accept_retracts_the_claim_after_a_successful_takeover() {
+        await using var h = new Harness();
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromResult(Ok());
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the takeover install");
+
+        // A successful mutation waits on a fresh Connected (or the fake-clock confirm window,
+        // never advanced here) before RunSkewCheckAsync resumes to retract the claim — satisfy
+        // the waiter so the retraction actually runs within this test.
+        h.PushConnected();
+        await WaitUntilAsync(
+            () => !(h.Store.LoadAsync().GetAwaiter().GetResult().DeclinedTakeoverPairs ?? []).Contains("0.9|1.0.0"),
+            what: "the claim retracted after a successful takeover");
+    }
+
+    [Test]
+    public async Task Skew_connected_before_version_probe_resolves_still_prompts_once_it_does() {
+        await using var h = new Harness();
+        var versionTcs = new TaskCompletionSource<string?>();
+        h.Cli.VersionBehavior = _ => versionTcs.Task;
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(
+            unitPresent: true, state: "installed", installBinaryPath: "/opt/kcap/kcapd", binaryPath: "/opt/kcap/kcapd"));
+        h.Start();
+
+        h.PushSnapshot("2.0.0");
+        h.PushConnected(); // the attach cycle wins the race — arrives before the version probe resolves
+
+        await Task.Delay(50); // give a wrongly-early (or wrongly-dropped) prompt every chance to appear
+        await Assert.That(h.Surface.Prompts).IsEmpty();
+
+        versionTcs.SetResult("1.0.0"); // the probe finally lands
+
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the skew prompt once the version probe resolves");
+    }
+
+    [Test]
+    public async Task Skew_classification_treats_empty_binary_path_as_takeover_without_throwing() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(
+            unitPresent: true, state: "installed", installBinaryPath: "/opt/kcap/kcapd", binaryPath: ""));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the skew prompt (no throw on empty path)");
+        await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindTakeover);
+    }
+
+    [Test]
+    public async Task Skew_classification_resolves_symlinks_to_the_same_canonical_target() {
+        await using var h = new Harness();
+        var dir  = Directory.CreateTempSubdirectory("kcap-skew-symlink-").FullName;
+        var real = Path.Combine(dir, "kcapd-real");
+        File.WriteAllText(real, "binary");
+        var link = Path.Combine(dir, "kcapd-link");
+        File.CreateSymbolicLink(link, real);
+
+        try {
+            h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(
+                unitPresent: true, state: "installed", installBinaryPath: real, binaryPath: link));
+            h.Start();
+            await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+            h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+
+            await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the skew prompt");
+            await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindRestartUpdate);
+        } finally {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort test cleanup */ }
+        }
+    }
+
+    [Test]
+    public async Task Skew_missing_install_binary_path_precondition_fails_status_only_no_prompt() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed", installBinaryPath: null));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the missing-binary status line");
+        await Assert.That(h.Surface.Prompts).IsEmpty();
+    }
+
+    [Test]
+    public async Task Skew_missing_profile_precondition_fails_status_only_no_prompt() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.ProfileName = null;
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the missing-profile status line");
+        await Assert.That(h.Surface.Prompts).IsEmpty();
     }
 
     // ---- harness ----
