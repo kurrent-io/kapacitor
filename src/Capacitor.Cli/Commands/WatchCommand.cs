@@ -1441,16 +1441,29 @@ static partial class WatchCommand {
         vendor == "claude" && !isSessionWatcher;
 
     /// <summary>
-    /// Rebuilds the in-flight set from the transcript lines BEFORE a resume cursor. A watcher that
+    /// How far back from the resume cursor <see cref="BackfillClaudePendingToolCallsAsync"/> parses.
+    /// An unfinished tool sits at the tail by construction — nothing is appended between its
+    /// <c>tool_use</c> and the matching <c>tool_result</c> — so older lines are settled and parsing
+    /// them only costs startup latency. Bounding also stops a stale unmatched <c>tool_use</c> from
+    /// an interrupted turn stranding an id and suppressing the ceiling forever.
+    /// </summary>
+    internal const int ClaudeToolBackfillWindowLines = 512;
+
+    /// <summary>
+    /// Rebuilds the in-flight set from the transcript lines before a resume cursor. A watcher that
     /// reconnects mid-tool starts draining at the server's line position and never sees the
     /// <c>tool_use</c> that opened before it, so the set would come up empty and the ceiling would
-    /// treat a live subagent as idle. Scans <c>[0, upToLine)</c> only — everything from the cursor
-    /// on arrives through the normal drain. Opened <c>FileShare.ReadWrite</c>: the agent is still
-    /// writing this file. Failure is a no-op, never fatal — the ceiling is a backstop, and losing
-    /// it is strictly better than failing a watcher's startup over it.
+    /// treat a live subagent as idle. Parses only the last <see cref="ClaudeToolBackfillWindowLines"/>
+    /// lines before <paramref name="upToLine"/>; everything from the cursor on arrives through the
+    /// normal drain. Opened <c>FileShare.ReadWrite</c>: the agent is still writing this file.
+    /// Failure is a no-op, never fatal — losing the backstop beats failing a watcher's startup.
     /// </summary>
     internal static async Task BackfillClaudePendingToolCallsAsync(
             HashSet<string> pending, string transcriptPath, int upToLine, CancellationToken ct) {
+        if (ct.IsCancellationRequested) return;
+
+        var firstParsedLine = Math.Max(0, upToLine - ClaudeToolBackfillWindowLines);
+
         try {
             await using var stream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var       reader = new StreamReader(stream);
@@ -1458,8 +1471,12 @@ static partial class WatchCommand {
             for (var lineNumber = 0; lineNumber < upToLine; lineNumber++) {
                 if (await reader.ReadLineAsync(ct) is not { } line) break;
 
-                UpdateClaudePendingToolCalls(pending, line);
+                // Lines before the window are still read (there is no cheap seek to line N) but
+                // never parsed — the JSON parse is what actually costs.
+                if (lineNumber >= firstParsedLine) UpdateClaudePendingToolCalls(pending, line);
             }
+        } catch (OperationCanceledException) {
+            // Shutdown racing startup — expected, and not worth a log line.
         } catch (Exception ex) {
             Log($"Claude tool-call backfill skipped: {ex.Message}");
         }

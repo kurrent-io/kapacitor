@@ -851,11 +851,11 @@ public class ClaudeToolTrackingSourceTests {
     const string ToolUse =
         """{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_big","name":"Bash","input":{"command":"build"}}]}}""";
 
-    // Comfortably past SecretRedactor.MaxRedactableLineChars — the everyday size of a big file read
-    // or a build log, not an exotic edge case.
+    // Sized off the real threshold so a legitimate change to it can't quietly turn these into
+    // tests of the small-line path. The everyday size of a big file read or a build log.
     static string OversizedToolResult() =>
         "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_big\",\"type\":\"tool_result\",\"content\":\""
-      + new string('x', 70 * 1024)
+      + new string('x', SecretRedactor.MaxRedactableLineChars + 1024)
       + "\"}]}}";
 
     /// <summary>
@@ -925,6 +925,52 @@ public class ClaudeToolTrackingSourceTests {
             await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 1, CancellationToken.None);
 
             await Assert.That(pending.Contains("toolu_big")).IsTrue();
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// The scan is bounded to a window ending at the cursor rather than parsing the whole history:
+    /// an unfinished tool is by definition at the tail (nothing is written after its tool_use until
+    /// the result arrives), so anything further back is settled and only costs startup latency. It
+    /// also means a stale unmatched tool_use from far earlier — an interrupted turn — can't strand
+    /// an id and suppress the ceiling forever.
+    /// </summary>
+    [Test]
+    public async Task Backfill_ignores_an_unmatched_tool_use_older_than_the_scan_window() {
+        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+
+        var lines = new List<string> { ToolUse };  // never resolved, then buried by later activity
+        lines.AddRange(Enumerable.Repeat(
+            """{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"later"}]}}""",
+            WatchCommand.ClaudeToolBackfillWindowLines + 10));
+
+        await File.WriteAllLinesAsync(path, lines);
+
+        try {
+            var pending = new HashSet<string>(StringComparer.Ordinal);
+            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, lines.Count, CancellationToken.None);
+
+            await Assert.That(pending.Count).IsEqualTo(0);
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    [Test]
+    public async Task Backfill_returns_silently_when_already_cancelled() {
+        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+        await File.WriteAllLinesAsync(path, [ToolUse]);
+
+        try {
+            var pending = new HashSet<string>(StringComparer.Ordinal);
+            using var cancelled = new CancellationTokenSource();
+            await cancelled.CancelAsync();
+
+            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 1, cancelled.Token);
+
+            await Assert.That(pending.Count).IsEqualTo(0);
         } finally {
             File.Delete(path);
         }
