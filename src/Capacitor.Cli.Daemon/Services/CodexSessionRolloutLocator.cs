@@ -136,6 +136,12 @@ internal static class CodexSessionRolloutLocator {
     /// matched, or <see cref="CwdMatch.Unknown"/> if none was seen. Partial/invalid JSON lines are
     /// tolerated (skipped) and both paths are normalized (separators, trailing separators) before
     /// comparing.
+    ///
+    /// A collab subagent rollout (Codex 0.146+: <c>payload.thread_source == "subagent"</c> /
+    /// <c>payload.parent_thread_id</c>) is a definitive <see cref="CwdMatch.No"/> even when its
+    /// cwd matches — children inherit the parent's cwd and are typically created moments after
+    /// the parent, so without this guard a reviewer that spawned collab subagents could be
+    /// correlated to one of its own children instead of its top-level rollout.
     /// </summary>
     internal static CwdMatch MatchRollout(IEnumerable<string> lines, string cwd, StringComparison comparison) {
         var target = NormalizePath(cwd);
@@ -152,7 +158,14 @@ internal static class CodexSessionRolloutLocator {
             string? cwdValue;
 
             try {
-                cwdValue = JsonNode.Parse(line)?["payload"]?["cwd"]?.GetValue<string>();
+                var payload = JsonNode.Parse(line)?["payload"];
+
+                if (payload?["thread_source"]?.GetValue<string>() == "subagent"
+                 || payload?["parent_thread_id"]?.GetValue<string>() is not null) {
+                    return CwdMatch.No; // a subagent rollout is never the hosted session's own
+                }
+
+                cwdValue = payload?["cwd"]?.GetValue<string>();
             } catch {
                 continue; // partial/invalid JSONL line, non-object payload, or non-string cwd
             }

@@ -29,9 +29,13 @@ THE SECRET IS SHOWN ONCE
 Flags for create:
 
   --visibility <v>   What the machine's sessions are visible to. One of:
-                     private, org_public, public. Default: private.
-                     Printed in the setup instructions — see below for why it
-                     is set on the machine rather than here.
+                     private, org_public, public. Defaults to your own
+                     profile's default_visibility — or org_public if you have no
+                     profile, or if your profile's value is one a machine can't
+                     record with (e.g. project, which is member-only and a
+                     machine is never a project member). A machine is not steered
+                     to private. Printed in the setup instructions — see below
+                     for why it is set on the machine rather than here.
   --role <role>      The machine's role in Capacitor. Default: member.
                      A machine is never an administrator whatever you pass.
 

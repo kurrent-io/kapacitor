@@ -24,6 +24,18 @@ internal sealed class CodexImportSource(string? rootOverride = null) : IImportSo
     public Task<IReadOnlyList<DiscoveredSession>> DiscoverAsync(DiscoveryFilters filters, CancellationToken ct) {
         var transcripts = CodexPaths.Discover(sessionsDir: _sessionsDir, since: filters.Since);
 
+        // Collab subagent rollouts (Codex 0.146+, session_meta thread_source == "subagent")
+        // are NOT top-level sessions: they are imported nested under their parent by
+        // SessionImporter.ImportSessionAsync's codex descendant walk. Leaving them here would
+        // import each child as an unrelated top-level session — and the child's session_meta
+        // `session_id` field even holds the PARENT's id (its own id is in `id`), so nothing
+        // downstream may ever key a child by `session_id`. Only a DEFINITIVE NotSubagent
+        // verdict passes: an Indeterminate header (empty/truncated — a session actively
+        // starting while this import runs) is skipped for THIS pass rather than risking a
+        // child imported top-level now and nested under its parent on the next run; the next
+        // import picks it up once the header is flushed.
+        transcripts = [.. transcripts.Where(t => CodexSubagentDiscovery.ReadHeader(t.FilePath).Outcome == CodexSubagentDiscovery.RolloutHeader.NotSubagent)];
+
         // --session filter — normalize to dashless GUID then exact-match the discovered id.
         if (filters.FilterSession is { } sessionFilter) {
             var normalized = ImportCommand.NormalizeGuid(sessionFilter);

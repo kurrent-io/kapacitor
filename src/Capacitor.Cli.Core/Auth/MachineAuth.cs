@@ -121,4 +121,24 @@ public static class MachineAuth {
 
         return null;
     }
+
+    /// <summary>
+    /// The one-line <c>kcap status</c> explanation of the auth diversion <see cref="Intended"/>
+    /// causes. Returns null when machine auth is not in play (caller prints nothing).
+    ///
+    /// <para>Distinguishes the two states <see cref="Intended"/> (either-var) collapses, because they
+    /// are not the same to a reader: with BOTH variables present the CLI genuinely records as the
+    /// machine instead of the signed-in user; with only ONE the credential is incomplete, so
+    /// <see cref="TryRead"/> refuses it and NOTHING records — the diversion still happens (the token
+    /// store is bypassed), so <c>kcap login</c> is not the fix. Saying "records as the machine" in
+    /// the one-variable case, or letting the profile token-store line then advise <c>kcap login</c>,
+    /// would both be false. Names exactly which variable(s) are present so the message is truthful in
+    /// every case.</para>
+    /// </summary>
+    public static string? DescribeDiversion(bool idSet, bool secretSet) => (idSet, secretSet) switch {
+        (false, false) => null,
+        (true,  true)  => $"machine credential ({ClientIdVar} and {ClientSecretVar} set) — kcap records as the machine, not as your login.",
+        (true,  false) => $"machine credential incomplete — {ClientIdVar} is set but {ClientSecretVar} is not. Auth is diverted off your login and will fail until both are set.",
+        (false, true)  => $"machine credential incomplete — {ClientSecretVar} is set but {ClientIdVar} is not. Auth is diverted off your login and will fail until both are set.",
+    };
 }

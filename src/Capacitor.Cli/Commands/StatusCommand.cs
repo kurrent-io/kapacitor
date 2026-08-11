@@ -38,24 +38,37 @@ public static class StatusCommand {
         }
 
         // Auth
-        Console.Write("  Auth:    ");
-        var tokens = await TokenStore.GetValidTokensAsync();
+        // A machine-credential diversion REPLACES the token-store line rather than appending to it:
+        // with KCAP_CLIENT_ID/KCAP_CLIENT_SECRET in the environment, MachineAuth.Intended bypasses
+        // the token store entirely, so its state is not what this CLI authenticates with — printing
+        // both would show a headless runner as "records as the machine" AND "not authenticated (run:
+        // kcap login)", contradictory and with irrelevant remediation.
+        var machineLine = MachineAuth.DescribeDiversion(
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(MachineAuth.ClientIdVar)),
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(MachineAuth.ClientSecretVar)));
 
-        if (tokens is not null) {
-            var remaining = tokens.ExpiresAt - DateTimeOffset.UtcNow;
-
-            var expiryText = remaining.TotalHours > 1
-                ? $"expires in {remaining.TotalHours:F0}h"
-                : $"expires in {remaining.TotalMinutes:F0}m";
-            await Console.Out.WriteLineAsync($"{tokens.GitHubUsername} ({tokens.Provider}) ✓ token valid ({expiryText})");
+        if (machineLine is not null) {
+            Console.WriteLine($"  Auth:    {machineLine}");
         } else {
-            var rawTokens = await TokenStore.LoadAsync();
+            Console.Write("  Auth:    ");
+            var tokens = await TokenStore.GetValidTokensAsync();
 
-            await Console.Out.WriteLineAsync(
-                rawTokens is not null
-                    ? $"{rawTokens.GitHubUsername} ({rawTokens.Provider}) ✗ token expired (run: kcap login)"
-                    : "not authenticated (run: kcap login)"
-            );
+            if (tokens is not null) {
+                var remaining = tokens.ExpiresAt - DateTimeOffset.UtcNow;
+
+                var expiryText = remaining.TotalHours > 1
+                    ? $"expires in {remaining.TotalHours:F0}h"
+                    : $"expires in {remaining.TotalMinutes:F0}m";
+                await Console.Out.WriteLineAsync($"{tokens.GitHubUsername} ({tokens.Provider}) ✓ token valid ({expiryText})");
+            } else {
+                var rawTokens = await TokenStore.LoadAsync();
+
+                await Console.Out.WriteLineAsync(
+                    rawTokens is not null
+                        ? $"{rawTokens.GitHubUsername} ({rawTokens.Provider}) ✗ token expired (run: kcap login)"
+                        : "not authenticated (run: kcap login)"
+                );
+            }
         }
 
         // Hooks

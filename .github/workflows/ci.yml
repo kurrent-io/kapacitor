@@ -53,20 +53,22 @@ jobs:
           node npm/kcap/bin/refresh.test.js
 
       - name: Run unit tests
-        # --maximum-parallel-tests 1 serializes the entire unit suite.
-        # The codebase has many tests that mutate process-global state
-        # (Environment.SetEnvironmentVariable on HOME/PATH/KCAP_*,
-        # Console.SetOut/SetError) and rely on [NotInParallel(group)] to
-        # serialize among themselves. Cross-group parallel execution still
-        # races the shared process state intermittently on the slower
-        # Linux CI runner, producing a different flake every run. Until
-        # the affected tests are refactored to inject paths/streams
-        # rather than mutate Environment/Console, run serially. Local dev
+        # --maximum-parallel-tests 1 does NOT serialize the entire suite.
+        # It caps TUnit's parallel bucket (unattributed tests) at one, but
+        # keyed [NotInParallel("key")] tests are scheduled by the
+        # constraint-key scheduler, which starts every test whose keys are
+        # free WITHOUT consulting this cap — classes with disjoint key
+        # sets still run concurrently under this flag (verified against
+        # TUnit 1.18.37's TestScheduler/ConstraintKeyScheduler). So any
+        # test touching process-global state (Environment/Console,
+        # CliTelemetry/TelemetryState statics, the shared KCAP_CONFIG_DIR)
+        # must hold the SAME NotInParallel key as every other toucher of
+        # that state; this flag only quiets the unkeyed bucket. Local dev
         # runs stay parallel (the flag lives only in CI).
         run: dotnet run --project test/Capacitor.Cli.Tests.Unit/Capacitor.Cli.Tests.Unit.csproj -- --maximum-parallel-tests 1
 
       - name: Run app tests
-        # Same serial discipline as the unit suite: the app tests share process-global
+        # Same flag, same caveat as the unit suite: the app tests share process-global
         # Avalonia/Rx state behind [NotInParallel("AvaloniaSession")].
         run: dotnet run --project test/Capacitor.App.Tests.Unit/Capacitor.App.Tests.Unit.csproj -- --maximum-parallel-tests 1
 

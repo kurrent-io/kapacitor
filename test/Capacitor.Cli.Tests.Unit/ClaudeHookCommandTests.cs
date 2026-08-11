@@ -1,7 +1,7 @@
 using System.Net;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
+using Capacitor.Cli.Core; using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.SessionStartMemory;
 
@@ -443,6 +443,25 @@ public class ClaudeHookCommandTests {
             .IsEqualTo(Sid);
     }
 
+    [Test, NotInParallel]
+    public async Task session_start_on_401_exits_zero_and_nudges_the_user_to_log_in() {
+        using var fx = new Fixture(HttpStatusCode.Unauthorized);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await ClaudeHookCommand.HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+            "http://localhost", new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            memoryStoreFactory: () => new SessionStartMemoryLeaseStore(
+                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+
+        var notice = JsonNode.Parse(stdout.ToString().Trim());
+        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid));
+    }
+
     [Test]
     public async Task pending_backlog_is_drained_on_next_hook_when_server_up() {
         using var fx = new Fixture(); // 200 OK
@@ -641,6 +660,119 @@ public class ClaudeHookCommandTests {
         await Assert.That(fx.RouteOrder).DoesNotContain("subagent-stop");
         var all = string.Concat(fx.SpoolFiles.Select(File.ReadAllText));
         await Assert.That(all).Contains("\"route\":\"subagent-stop\"");
+    }
+
+    // ── Pre-flight auth lapse (token store already knows the credential is dead) ───────────
+    // Distinct from the server-rejected (HTTP 401) arm below: HandleCore short-circuits at
+    // AuthStatus.Expired/NotAuthenticated/WrongServer BEFORE any POST, so no HTTP status is
+    // involved. Only session-start nudges (once per session), and WrongServer maps to the
+    // NotAuthenticated wording, same as any other non-Expired lapse status.
+
+    [Test]
+    public async Task session_start_with_expired_auth_exits_zero_and_emits_the_expired_notice() {
+        using var fx = new Fixture();
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await ClaudeHookCommand.HandleCore(
+            fx.Client, AuthStatus.Expired, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+            "http://localhost", new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            memoryStoreFactory: () => new SessionStartMemoryLeaseStore(
+                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        var notice = JsonNode.Parse(stdout.ToString().Trim());
+        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthRejectionNotice.RecordingNotice(StoredCredentialState.Expired));
+    }
+
+    [Test]
+    public async Task session_start_with_wrong_server_auth_exits_zero_and_emits_the_not_authenticated_notice() {
+        using var fx = new Fixture();
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await ClaudeHookCommand.HandleCore(
+            fx.Client, AuthStatus.WrongServer, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+            "http://localhost", new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            memoryStoreFactory: () => new SessionStartMemoryLeaseStore(
+                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        var notice = JsonNode.Parse(stdout.ToString().Trim());
+        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthRejectionNotice.RecordingNotice(StoredCredentialState.Missing));
+    }
+
+    [Test]
+    public async Task stop_with_expired_auth_exits_zero_without_a_notice() {
+        using var fx = new Fixture();
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await ClaudeHookCommand.HandleCore(
+            fx.Client, AuthStatus.Expired, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+            "http://localhost", new StringReader(
+                $$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(stdout.ToString()).IsEmpty();
+    }
+
+    // ── Server-rejected credential (HTTP 401) ───────────────────────────────────────────────
+    // A 401 is not a transient failure the user can wait out. Exiting non-zero makes Claude
+    // render its opaque "non-blocking status code" banner, which says nothing about recording
+    // being paused; exit 0 plus a systemMessage says exactly what to do. Only `stop` nudges on
+    // this path — `notification` fires on every permission prompt, so nudging there would stack
+    // duplicate notices within one turn.
+
+    [Test]
+    public async Task stop_on_401_exits_zero_and_nudges_the_user_to_log_in() {
+        using var fx = new Fixture(HttpStatusCode.Unauthorized);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await ClaudeHookCommand.HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+            "http://localhost", new StringReader(
+                $$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+
+        var notice = JsonNode.Parse(stdout.ToString().Trim());
+        await Assert.That(notice!["systemMessage"]!.GetValue<string>()).IsEqualTo(AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid));
+    }
+
+    [Test]
+    public async Task notification_on_401_exits_zero_without_a_notice() {
+        using var fx = new Fixture(HttpStatusCode.Unauthorized);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await ClaudeHookCommand.HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+            "http://localhost", new StringReader(
+                $$"""{"hook_event_name":"Notification","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(stdout.ToString()).IsEmpty();
+    }
+
+    /// <summary>Regression guard on the arm this change must NOT touch: a real server fault keeps
+    /// its bare-status stderr line and its non-zero exit, so a 500 still reads as a failure.</summary>
+    [Test]
+    public async Task stop_on_500_still_exits_non_zero_without_a_notice() {
+        using var fx = new Fixture(HttpStatusCode.InternalServerError);
+        var stdout = new StringWriter { NewLine = "\n" };
+
+        var exit = await ClaudeHookCommand.HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+            "http://localhost", new StringReader(
+                $$"""{"hook_event_name":"Stop","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            stdout: stdout);
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(stdout.ToString()).IsEmpty();
     }
 
     sealed class Fixture : IDisposable {

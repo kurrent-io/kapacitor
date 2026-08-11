@@ -181,17 +181,21 @@ public static class SetupCommand {
 
             await Console.Out.WriteLineAsync($"  Default visibility: {defaultVisibility}");
         } else {
-            defaultVisibility = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("Which of your sessions should be readable by other users in the same Kurrent Capacitor account by default?")
-                    .AddChoices(AppConfig.ValidVisibilities)
-                    .UseConverter(v => v switch {
-                        "private"    => "All private — only you can see your sessions",
-                        "project"    => "Project repos public to fellow project members, others private",
-                        "org_public" => "Org repos public, others private (default)",
-                        "public"     => "All public — others can see all your sessions",
-                        _            => v
-                    }));
+            var visibilityPrompt = new SelectionPrompt<string>()
+                .Title("Which of your sessions should be readable by other users in the same Kurrent Capacitor account by default?")
+                .AddChoices(AppConfig.ValidVisibilities)
+                .UseConverter(v => v switch {
+                    "private"    => "All private — only you can see your sessions",
+                    "project"    => "Project repos public to fellow project members, others private",
+                    "org_public" => "Org repos public, others private (default)",
+                    "public"     => "All public — others can see all your sessions",
+                    _            => v
+                });
+
+            // Start the cursor on the option we label "(default)" rather than the first choice.
+            visibilityPrompt.DefaultValue = "org_public";
+
+            defaultVisibility = AnsiConsole.Prompt(visibilityPrompt);
 
             await Console.Out.WriteLineAsync($"  Default visibility: {defaultVisibility}");
         }

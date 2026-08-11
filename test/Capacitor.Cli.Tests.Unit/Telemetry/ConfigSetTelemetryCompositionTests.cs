@@ -31,22 +31,26 @@ namespace Capacitor.Cli.Tests.Unit.Telemetry;
 /// rewrites <c>config.json</c> underneath this test.
 ///
 /// Deliberately does NOT set <see cref="TelemetryState.PathOverride"/> or
-/// <see cref="TelemetryDeviceId.PathOverride"/>. Those statics have their own dedicated lock keys
-/// (<c>nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride)</c> and the
-/// <c>TelemetryDeviceId</c> equivalent, see <c>TelemetryStateTests</c>/<c>TelemetryDeviceIdTests</c>),
-/// shared by every class that mutates them (<c>TelemetryStateTests</c>, <c>TelemetryDeviceIdTests</c>,
-/// <c>SetupFunnelTests</c>, <c>CliTelemetryTests</c>, <c>McpTelemetryTests</c>,
-/// <c>ConfigTelemetryKeyTests</c>). This class locks under <c>TokenStoreProfileTests</c> instead,
-/// for the config dir it genuinely shares — setting either override too would race those telemetry
-/// classes under local (non-CI) parallelism, a gap CI's <c>--maximum-parallel-tests 1</c> would
-/// never expose. It doesn't need to: left unset, telemetry state and the device id both fall back
-/// to their own defaults (<c>PathHelpers.ConfigPath("telemetry.json")</c> and
-/// <c>PathHelpers.ConfigPath("telemetry-device.json")</c>), which already resolve inside the same
-/// <c>KCAP_CONFIG_DIR</c> the module initializer pinned. Both files are cleaned up in
-/// <c>[After(Test)]</c> so neither can leak into a later test that reads persisted telemetry state
-/// without an override.
+/// <see cref="TelemetryDeviceId.PathOverride"/> — the point of this class is the DEFAULT path
+/// resolution under the pinned <c>KCAP_CONFIG_DIR</c>. It must still HOLD both telemetry lock keys
+/// (alongside <c>TokenStoreProfileTests</c> for the config dir it shares), because the production
+/// path it drives — <c>TryApplyTelemetry("telemetry", "off")</c> →
+/// <see cref="TelemetryState.SetEnabled"/> → <see cref="TelemetryDeviceId.Delete"/> plus
+/// <see cref="CliTelemetry.DiscardAndDisable"/> — dereferences whatever those statics point at the
+/// instant it runs. TUnit schedules [NotInParallel] tests with disjoint key sets CONCURRENTLY, and
+/// its constraint-key scheduler does not consult <c>--maximum-parallel-tests</c>, so CI's serial
+/// flag never prevented the overlap: without these keys, this class's side effects landed inside
+/// concurrently-running telemetry tests — deleting the device-id file a test had just created
+/// under its own <c>PathOverride</c> (the #524 timestamp flake) and clearing the live
+/// <c>CliTelemetry.TestSink</c> mid-test (the empty-sink funnel flakes). Both files are cleaned up
+/// in <c>[After(Test)]</c> so neither can leak into a later test that reads persisted telemetry
+/// state without an override.
 /// </summary>
-[NotInParallel(nameof(TokenStoreProfileTests))]
+[NotInParallel([
+    nameof(TokenStoreProfileTests),
+    nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
+    nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
+])]
 public class ConfigSetTelemetryCompositionTests {
     static string ConfigPath    => AppConfig.GetConfigPath();
     static string TelemetryPath => PathHelpers.ConfigPath("telemetry.json");

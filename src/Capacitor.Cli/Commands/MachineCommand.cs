@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Commands;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Commands;
 
@@ -54,9 +55,15 @@ public static class MachineCommand {
     static async Task<int> CreateAsync(string baseUrl, string[] args) {
         if (args.Length < 3 || IsHelp(args[2])) return await PrintCreateUsage();
 
-        var name       = args[2].Trim();
-        var visibility = GetArg(args, "--visibility") ?? "private";
-        var role       = GetArg(args, "--role");
+        var name = args[2].Trim();
+        // The visibility PRINTED in the setup instructions is resolved from the operator's own
+        // configuration, not steered to private: an explicit flag wins, else this machine records
+        // with whatever default_visibility the active profile carries (what `kcap setup` wrote),
+        // else the product default a profile-less runner would use anyway.
+        var profile = await AppConfig.GetActiveProfileAsync();
+        var (visibility, visibilityProvenance) =
+            ResolveCreateVisibility(GetArg(args, "--visibility"), profile?.DefaultVisibility);
+        var role = GetArg(args, "--role");
 
         if (string.IsNullOrWhiteSpace(name)) {
             await Console.Error.WriteLineAsync("A machine name is required.");
@@ -198,7 +205,7 @@ public static class MachineCommand {
             return 1;
         }
 
-        await PrintSetupAsync(registered, provisioned, visibility);
+        await PrintSetupAsync(registered, provisioned, visibility, visibilityProvenance);
 
         return 0;
     }
@@ -313,7 +320,8 @@ public static class MachineCommand {
     /// after — and a failure here costs instructions the help can repeat, not a secret.
     /// </summary>
     static async Task PrintSetupAsync(
-            RegisterMachineResponse registered, CreateMachineApplicationResponse provisioned, string visibility) {
+            RegisterMachineResponse registered, CreateMachineApplicationResponse provisioned,
+            string visibility, string visibilityProvenance) {
         await Console.Error.WriteLineAsync();
         await Console.Error.WriteLineAsync($"Machine registered as {registered.UserId}. It can now record.");
         await Console.Error.WriteLineAsync();
@@ -322,7 +330,13 @@ public static class MachineCommand {
         await Console.Error.WriteLineAsync($"    KCAP_CLIENT_ID={provisioned.ClientId}");
         await Console.Error.WriteLineAsync("    KCAP_CLIENT_SECRET=<the secret above>");
         await Console.Error.WriteLineAsync();
-        await Console.Error.WriteLineAsync($"  And set what its sessions are visible to (default '{visibility}'):");
+        // Describe, don't prescribe: the machine records with the default_visibility of the profile
+        // on the machine it runs on (a machine with no profile records org_public). The value below
+        // is labeled with where it came from — the flag, the operator's profile, or the product
+        // default — and never introduces 'private' on this command's own authority.
+        await Console.Error.WriteLineAsync(
+            $"  Its sessions are visible per the profile it records with ({visibility} — {visibilityProvenance}).");
+        await Console.Error.WriteLineAsync("  To confirm or change that on the machine itself:");
         await Console.Error.WriteLineAsync();
         await Console.Error.WriteLineAsync($"    kcap config set default_visibility {visibility}");
         await Console.Error.WriteLineAsync();
@@ -330,6 +344,38 @@ public static class MachineCommand {
             "  Run that on the machine itself, in the profile it records with — visibility is the");
         await Console.Error.WriteLineAsync(
             "  machine's own setting, exactly as it is for a person.");
+    }
+
+    /// <summary>
+    /// The visibility PRINTED in the setup instructions, with a label for where it came from. An
+    /// explicit <c>--visibility</c> flag wins (validated by the caller — only the flag can be an
+    /// invalid value); otherwise the active profile's <c>default_visibility</c> when a machine can
+    /// actually record with it; otherwise the product default <c>org_public</c>, which is what a
+    /// profile-less runner records with anyway (the server treats an absent
+    /// <c>default_visibility</c> as <c>org_public</c>).
+    ///
+    /// <para>A profile may legitimately carry <c>project</c> (a per-viewer, member-only audience) —
+    /// but a machine is never a project member, so that value is not one it can record with. Rather
+    /// than inherit it and then reject the whole <c>create</c> with a message that falsely blames a
+    /// <c>--visibility</c> flag the operator never passed, it falls back to the product default and
+    /// the provenance says why. So after this resolver the value is always in the machine-valid set
+    /// UNLESS it came from an explicit flag, which is the only case the caller's validation rejects.</para>
+    ///
+    /// <para>Deliberately never invents <c>private</c>: it appears only because the flag or the
+    /// operator's own profile chose it, and the provenance label then says which. Pure so it is
+    /// unit-tested directly, without the profile/HTTP machinery around it.</para>
+    /// </summary>
+    internal static (string Value, string Provenance) ResolveCreateVisibility(
+            string? flagValue, string? profileDefault) {
+        if (flagValue is not null) return (flagValue, "from --visibility");
+
+        if (profileDefault is not null && Visibilities.Contains(profileDefault, StringComparer.Ordinal))
+            return (profileDefault, "your profile default");
+
+        if (!string.IsNullOrEmpty(profileDefault))
+            return ("org_public", $"product default; a machine cannot record with your profile's '{profileDefault}' visibility");
+
+        return ("org_public", "product default");
     }
 
     // ── list ────────────────────────────────────────────────────────────────────────────────────

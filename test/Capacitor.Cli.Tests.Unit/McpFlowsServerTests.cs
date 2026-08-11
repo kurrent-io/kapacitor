@@ -810,9 +810,15 @@ public class McpFlowsServerTests {
     }
 
     static void CleanupDefaultToken() {
-        try { TokenStore.Delete("default"); } catch { /* best effort */ }
-        var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
-        try { if (File.Exists(cfg)) File.Delete(cfg); } catch { /* best effort */ }
+        // Loud, not best-effort: a silently-leaked "default" token makes any later test that
+        // resolves the default profile authenticate for real. ClearWithRetry throws a named
+        // cause after its bounded retry; the config cleanup still runs either way.
+        try {
+            SharedConfigDirCleanup.ClearWithRetry("the seeded default-profile token", () => TokenStore.Delete("default"));
+        } finally {
+            var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
+            try { if (File.Exists(cfg)) File.Delete(cfg); } catch { /* best effort */ }
+        }
     }
 
     [Test]

@@ -8,10 +8,12 @@ namespace Capacitor.Cli.Tests.Unit;
 /// <c>tokens/</c>, and any of them can be the one whose hook runs while a handle is still open —
 /// which is why the retry belongs here rather than in whichever class is currently failing.
 ///
-/// <para>Two facts worth knowing before changing this. A <c>NotInParallel</c> key cannot help: CI
-/// runs this suite with <c>--maximum-parallel-tests 1</c>, so there is no concurrency to serialise,
-/// and a lock at hook time therefore means a handle OUTLIVED its owning test (an undisposed stream,
-/// or an unreaped child process). And it is Windows-only because Windows refuses to delete a file
+/// <para>Two facts worth knowing before changing this. The config-dir classes all share one
+/// <c>NotInParallel</c> key, so they never run concurrently — the key, not CI's
+/// <c>--maximum-parallel-tests 1</c>, is what guarantees that (keyed tests with disjoint keys
+/// still overlap under the flag; see ci.yml) — and a lock at hook time therefore means a handle
+/// OUTLIVED its owning test (an undisposed stream, or an unreaped child process). And it is
+/// Windows-only because Windows refuses to delete a file
 /// with an open handle while Unix unlinks regardless — hence also intermittent, since whether the
 /// holder has released is timing rather than ordering.</para>
 /// </summary>

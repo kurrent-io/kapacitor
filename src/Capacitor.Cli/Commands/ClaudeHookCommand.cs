@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json.Nodes;
-using Capacitor.Cli.Core;
+using Capacitor.Cli.Core; using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.SessionStartMemory;
 
@@ -377,9 +377,8 @@ public static class ClaudeHookCommand {
         if (authStatus is AuthStatus.Expired or AuthStatus.NotAuthenticated or AuthStatus.WrongServer) {
             if (command == "session-start") {
                 var notice = new JsonObject {
-                    ["systemMessage"] = authStatus == AuthStatus.Expired
-                        ? "[kcap] Authentication expired — session recording is paused. Run 'kcap login' to resume."
-                        : "[kcap] Not authenticated — session recording is off. Run 'kcap login' to start recording."
+                    ["systemMessage"] = AuthRejectionNotice.RecordingNotice(
+                        AuthRejectionNotice.FromAuthStatus(authStatus))
                 };
                 writer.WriteLine(notice.ToJsonString());
             }
@@ -607,9 +606,17 @@ public static class ClaudeHookCommand {
             } catch { resp = null; }
 
             if (resp is null || !resp.IsSuccessStatusCode) {
-                var permanent = resp is not null && (int)resp.StatusCode is < 500 and not 408 and not 429;
+                var code      = resp is null ? 0 : (int)resp.StatusCode;
+                var permanent = resp is not null && code is < 500 and not 408 and not 429;
                 resp?.Dispose();
                 if (!permanent && sessionId is not null) spool.Append(sessionId, "session-start", body);
+
+                // The envelope below is built only from a 2xx body, so this is the arm's only
+                // stdout write — without it the start event is dropped in silence.
+                if (code == 401) {
+                    writer.WriteLine(new JsonObject { ["systemMessage"] = AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid) }.ToJsonString());
+                }
+
                 return 0;
             }
 
@@ -784,7 +791,21 @@ public static class ClaudeHookCommand {
         }
 
         if (!response.IsSuccessStatusCode) {
-            Console.Error.WriteLine($"HTTP {(int)response.StatusCode}");
+            var code = (int)response.StatusCode;
+            response.Dispose();
+
+            // Exit 0 is deliberate: any non-zero exit renders as Claude's opaque hook-error banner
+            // instead of the notice. `stop` only — `notification` fires per permission prompt and
+            // would stack duplicates within one turn.
+            if (code == 401) {
+                if (command == "stop") {
+                    writer.WriteLine(new JsonObject { ["systemMessage"] = AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid) }.ToJsonString());
+                }
+
+                return 0;
+            }
+
+            Console.Error.WriteLine($"HTTP {code}");
 
             return 1;
         }

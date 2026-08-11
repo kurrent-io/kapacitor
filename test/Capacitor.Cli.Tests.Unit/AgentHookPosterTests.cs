@@ -1,5 +1,5 @@
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
+using Capacitor.Cli.Core; using Capacitor.Cli.Core.Auth;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -92,6 +92,40 @@ public class AgentHookPosterTests : IDisposable {
             Factory(AuthStatus.Ok), _server.Url!, "session-start/kiro", "{}", "kiro-hook");
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Failed);
+    }
+
+    /// <summary>
+    /// A 401 must stay <see cref="HookPostOutcome.Failed"/> — the outcome drives the caller's exit
+    /// code and is not part of this change — while the line the user actually reads names the fix.
+    /// These vendors have no user-facing stdout channel (their stdout is a handshake contract the
+    /// vendor parses), so stderr is the only place a nudge can go.
+    /// </summary>
+    // Globally sequential rather than keyed. "ConsoleErrorRedirect" has no other member, so it
+    // serialized this Console.Error capture against nothing: Server_error_reports_Failed below
+    // writes to Console.Error with no serialization at all and could land inside this window, and
+    // the classic save/restore interleave with this suite's other Console.SetError sites could
+    // leave Console.Error pointing at an abandoned StringWriter. Bare NotInParallel serializes
+    // against every other bare-NotInParallel test in the assembly, which is what this needs.
+    [Test, NotInParallel]
+    public async Task Unauthorized_reports_Failed_and_names_kcap_login_on_stderr() {
+        _server.Given(Request.Create().WithPath("/hooks/stop/codex").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(401));
+
+        var originalError = Console.Error;
+        var captured = new StringWriter { NewLine = "\n" };
+        HookPostOutcome outcome;
+
+        try {
+            Console.SetError(captured);
+            outcome = await AgentHookPoster.PostAsync(
+                Factory(AuthStatus.Ok), _server.Url!, "stop/codex", "{}", "codex-hook");
+        } finally {
+            Console.SetError(originalError);
+        }
+
+        await Assert.That(outcome).IsEqualTo(HookPostOutcome.Failed);
+        await Assert.That(captured.ToString().Trim()).IsEqualTo(
+            AuthRejectionNotice.VendorStderrLine("codex-hook", "stop/codex", 401));
     }
 
     [Test]

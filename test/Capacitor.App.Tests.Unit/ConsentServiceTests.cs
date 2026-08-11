@@ -498,8 +498,12 @@ sealed class TimerCountingTimeProvider(FakeTimeProvider inner) : TimeProvider {
     public override long TimestampFrequency      => inner.TimestampFrequency;
 
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) {
+        // Register with the fake FIRST: the count is the harness's "armed" signal, and if it
+        // rose before the inner registration completed, RetryAsync could advance the clock
+        // while the timer did not exist yet — scheduling it into a future nothing advances to.
+        var timer = inner.CreateTimer(callback, state, dueTime, period);
         Interlocked.Increment(ref _timersCreated);
-        return inner.CreateTimer(callback, state, dueTime, period);
+        return timer;
     }
 }
 

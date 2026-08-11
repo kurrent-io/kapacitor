@@ -642,6 +642,12 @@ static partial class WatchCommand {
         // files already registered + spawned so each is handled exactly once across ticks.
         var seenSubagents = new HashSet<string>(StringComparer.Ordinal);
 
+        // Codex-only sibling cache: rollouts in the shared sessions tree whose header proved
+        // they are NOT this session's subagents (top-level sessions, other parents' children).
+        // Keeps the per-tick scan to one header read per NEW file; a mid-write header is
+        // deliberately never cached so it is retried (see CodexSubagentDiscovery).
+        var codexRuledOutRollouts = new HashSet<string>(StringComparer.Ordinal);
+
         try {
             while (!cts.Token.IsCancellationRequested) {
                 // Task 9: touch every iteration — including no-content drains and
@@ -686,7 +692,9 @@ static partial class WatchCommand {
                 // Live subagent discovery: only the parent (agentId == null) watcher scans;
                 // child subagent watchers (agentId != null) just stream their file. Gemini
                 // scans its native nested chat files; OpenCode scans the nested dir the
-                // kcap plugin writes child {info,parts} into; Antigravity
+                // kcap plugin writes child {info,parts} into; Codex scans the shared
+                // sessions tree for collab subagent rollouts whose session_meta names this
+                // session as parent_thread_id (Codex 0.146+ multi-agent v2); Antigravity
                 // links subagents from the parent transcript's INVOKE_SUBAGENT steps — the
                 // spawn-time signal — drained this tick (nesting only, subagents are
                 // captured standalone already).
@@ -694,6 +702,8 @@ static partial class WatchCommand {
                     await ScanGeminiSubagents(baseUrl, sessionId, transcriptPath, seenSubagents, cts.Token);
                 } else if (agentId is null && vendor == "opencode") {
                     await ScanOpenCodeSubagents(baseUrl, sessionId, transcriptPath, seenSubagents, cts.Token);
+                } else if (agentId is null && vendor == "codex") {
+                    await ScanCodexSubagents(baseUrl, sessionId, transcriptPath, seenSubagents, codexRuledOutRollouts, cts.Token);
                 } else if (agentId is null && vendor == "antigravity") {
                     await ScanAntigravitySubagentLinks(baseUrl, sessionId, drained, state.PostedSubagentLinks, cts.Token);
                 }
@@ -978,6 +988,71 @@ static partial class WatchCommand {
     }
 
     /// <summary>
+    /// Codex fires no subagent hooks; its collab subagents (Codex 0.146+, multi-agent v2) each
+    /// fork into their OWN rollout in the shared <c>~/.codex/sessions</c> tree, linked back via
+    /// the child <c>session_meta</c>'s <c>parent_thread_id</c> / <c>thread_source: "subagent"</c>.
+    /// The parent watcher scans that tree (day dirs from the parent's date forward, one header
+    /// read per new file — see <see cref="CodexSubagentDiscovery.EnumerateSubagentRollouts"/>):
+    /// on first sight it registers the subagent (<c>subagent-start</c>, fail-closed) then spawns
+    /// a detached child watcher streaming the child rollout under the child's canonical agentId
+    /// (→ <c>AgentSubsession-*</c>). Idempotent across ticks via <paramref name="seen"/>;
+    /// deterministic server-side lifecycle ids make re-registration safe. Disk enumeration (not
+    /// the parent's in-band <c>sub_agent_activity</c> events) so a restarted parent watcher
+    /// still recovers already-spawned children.
+    /// </summary>
+    static async Task ScanCodexSubagents(
+            string            baseUrl,
+            string            sessionId,
+            string            transcriptPath,
+            HashSet<string>   seen,
+            HashSet<string>   ruledOut,
+            CancellationToken ct
+        ) {
+        List<CodexSubagentDiscovery.SubagentRollout> subs;
+        try {
+            subs = CodexSubagentDiscovery.EnumerateSubagentRollouts(transcriptPath, sessionId, ruledOut);
+        } catch {
+            return; // discovery is best-effort — never break the main drain loop
+        }
+
+        foreach (var sub in subs) {
+            if (ct.IsCancellationRequested) return;
+            if (!seen.Add(sub.FilePath)) continue; // already registered + spawned
+
+            var childAgentId = sub.ChildDashlessId;
+            var agentType    = CodexSubagentDiscovery.AgentTypeFrom(sub.AgentPath, sub.AgentNickname);
+
+            // Fail-closed: register the subagent (→ SubagentStarted) before its child watcher
+            // streams content. On POST failure, drop from `seen` so the next tick retries.
+            if (!await PostCodexSubagentStartAsync(baseUrl, sessionId, childAgentId, agentType, sub.FilePath, ct)) {
+                seen.Remove(sub.FilePath);
+                continue;
+            }
+
+            await WatcherManager.EnsureWatcherRunning(
+                baseUrl, key: $"{sessionId}-{childAgentId}", transcriptPath: sub.FilePath,
+                agentId: childAgentId, sessionIdOverride: sessionId, vendor: "codex");
+
+            Log($"Codex subagent {childAgentId} ({agentType}) registered + child watcher spawned");
+        }
+    }
+
+    static async Task<bool> PostCodexSubagentStartAsync(
+        string baseUrl, string sessionId, string agentId, string agentType, string subFile, CancellationToken ct
+    ) {
+        try {
+            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, ct);
+            var       payload = CodexSubagentDiscovery.BuildStartPayload(sessionId, agentId, agentType, subFile);
+            using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+            using var resp    = await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-start", content, ct: ct);
+
+            return resp.IsSuccessStatusCode;
+        } catch {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Whitelist of vendor values accepted by the server's session-end route.
     /// Used to reject unexpected --vendor input before interpolating into the URL
     /// path (defence-in-depth against path traversal even though the CLI runs locally).
@@ -1100,11 +1175,16 @@ static partial class WatchCommand {
             TimeSpan       disconnectedSinceActivity = default
         ) {
         // Which vendors may idle-exit, and in which role:
-        //   codex/antigravity — session only; their shared GUI process never exits per-conversation.
+        //   codex/antigravity — session only. Codex collab CHILD watchers (ScanCodexSubagents) are
+        //                       deliberately excluded: the parent's session-end teardown finalizes
+        //                       them with subagent-stop, so an idle self-exit would end nothing
+        //                       server-side. Antigravity spawns no child watchers at all.
         //   cursor            — both; no shell hook fires a reliable parent-exit signal either.
-        //   claude            — CHILD only. Its session watcher has a working watchdog AND a
+        //   claude            — CHILD only, and for the opposite reason to Codex: nothing else
+        //                       finalizes it (a missed SubagentStop leaks it for the life of the
+        //                       parent). Its SESSION watcher has a working watchdog AND a
         //                       sessionEnd hook, so a ceiling there could end a live session out
-        //                       from under a thinking user; a child watcher has neither.
+        //                       from under a thinking user.
         var eligible = vendor switch {
             "codex" or "antigravity" => isSessionWatcher,
             "cursor"                 => true,
@@ -1308,6 +1388,27 @@ static partial class WatchCommand {
                 }
             } catch (Exception ex) {
                 Log($"Parent-exit Gemini subagent teardown failed: {ex.Message}");
+            }
+        }
+
+        // Codex likewise fires no subagent-stop hook and its child watchers (spawned in
+        // ScanCodexSubagents) carry no parent-pid watchdog, so this session-end synthesis —
+        // which for Codex covers idle_timeout AND parent-exit, there being no session-end
+        // hook — is the only place that finalizes them. Same shape as the Gemini teardown;
+        // runs BEFORE the session-end POST so SubagentCompleted lands ahead of SessionEnded.
+        // No-op when none were spawned.
+        if (vendor == "codex") {
+            try {
+                var finalized = await TimeBudget.RunCappedAsync(
+                    () => CodexSubagentTeardown.DrainAsync(baseUrl, sessionId, transcriptPath),
+                    CodexSubagentTeardown.DrainCap);
+
+                if (!finalized) {
+                    Log("Parent-exit Codex subagent teardown cap elapsed; "
+                      + "unfinalized subagents recover via: kcap import --codex");
+                }
+            } catch (Exception ex) {
+                Log($"Parent-exit Codex subagent teardown failed: {ex.Message}");
             }
         }
 

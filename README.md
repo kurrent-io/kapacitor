@@ -111,9 +111,14 @@ Verify with `kcap whoami` and `kcap status`. `kcap whoami` prints your identity 
 resolved, then asks the server whether it actually accepts your token — it exits non-zero if the
 server rejects it, or if the token was issued by a different server than the profile now targets
 (re-run `kcap login`). If the server can't be reached it says so and still exits 0, so it stays
-usable offline. `kcap status` prints its own **Version** line — the installed CLI version, with an
-inline `(update available: …)` annotation when a newer one is out — see
-[`kcap update`](#other-commands) for the full opt-out story.
+usable offline. If the server rejects your token while a session is running, Claude Code's hook
+says so as an in-session notice — `[kcap] The server rejected your credentials (HTTP 401) —
+session recording is paused. Run 'kcap login' to resume.` — instead of surfacing an opaque hook
+error, so you no longer have to run `kcap whoami` to work out why recording stopped. Other agents'
+hooks print the same advice to stderr instead of an in-session notice, since not every agent
+surfaces hook output in its UI. `kcap status` prints its own
+**Version** line — the installed CLI version, with an inline `(update available: …)` annotation
+when a newer one is out — see [`kcap update`](#other-commands) for the full opt-out story.
 
 Setup closes with a **Next steps** box. Each item opens with a question, because neither step is for
 everyone:
@@ -167,6 +172,8 @@ kcap import --antigravity       # only Antigravity
 > **Pi** has no shell hooks, so live capture uses a shipped Pi extension rather than a hooks file: run `kcap plugin install --pi` (or accept the `kcap setup` prompt) to write `~/.pi/agent/extensions/kcap.ts`, which `pi` auto-loads and streams each session live. Because Pi also ships no built-in MCP, the same command installs an MCP-bridge extension (`~/.pi/agent/extensions/kcap-mcp.ts`, opt out `--skip-pi-mcp`) that exposes the kcap MCP servers as native Pi tools, plus a steering block in `~/.pi/agent/AGENTS.md` (opt out `--skip-pi-instructions`). Historical `kcap import --pi` works with or without any of it.
 
 > **OpenCode** likewise has no shell hooks: live capture uses a shipped OpenCode plugin. Run `kcap plugin install --opencode` (or accept the `kcap setup` prompt) to write `~/.config/opencode/plugins/kcap.ts`, which `opencode` auto-loads and streams each session live (`vendor=opencode`). Subagents (the `task` tool / `@agent`) are captured too — the plugin fetches each child session via the SDK and streams it, so it nests under the parent in the trace. Historical `kcap import --opencode` reads OpenCode's SQLite database (`~/.local/share/opencode/opencode.db`) and imports every transitive descendant session (children, grandchildren, and so on — see [Loading historical sessions](#loading-historical-sessions)), so it backfills sessions from before the plugin was installed.
+
+> **Codex** collab subagents (Codex CLI 0.146+, the `spawn_agent` collaboration tools) are captured too. Each subagent thread writes its own rollout under `~/.codex/sessions/`; the live watcher discovers children by the parent linkage in their rollout header and streams each one nested under the parent session, and `kcap import --codex` does the same for history — a subagent rollout never imports as a separate top-level session (see [Loading historical sessions](#loading-historical-sessions)).
 
 This backfills your past sessions from `~/.claude/projects/` (Claude), `~/.codex/sessions/` (Codex), `~/.cursor/projects/.../agent-transcripts/` (Cursor), `~/.copilot/session-state/` (Copilot), `~/.gemini/tmp/<project>/chats/` (Gemini), `~/.kiro/sessions/cli/` (Kiro), `~/.pi/agent/sessions/` (Pi), `~/.local/share/opencode/opencode.db` (OpenCode), and both `~/.gemini/antigravity/brain/` (GUI) and `~/.gemini/antigravity-cli/brain/` (the `agy` CLI) (Antigravity) so they appear in the dashboard. All agents are discovered automatically — pass `--claude`, `--codex`, `--cursor`, `--copilot`, `--gemini`, `--kiro`, `--pi`, `--opencode`, or `--antigravity` (one or more) to narrow the run. All forms are idempotent — safe to run multiple times.
 
@@ -623,6 +630,8 @@ kcap import --opencode --all                 # only OpenCode — every session i
 Cursor historical import walks every JSONL transcript under `~/.cursor/projects/*/agent-transcripts/*/*.jsonl` and posts each line through the same `POST /hooks/transcript` route the live hook path uses, so live and historical ingest converge on one canonical event stream. The walker resolves each session's working directory by matching its sanitized workspace name against `~/Library/Application Support/Cursor/User/workspaceStorage/*/workspace.json` (on Linux: `~/.config/Cursor/User/...`); sessions whose workspace can't be resolved are still imported, just without `cwd` and git owner/repo enrichment.
 
 Kiro historical import reads each session's append-only log at `~/.kiro/sessions/cli/{id}.jsonl` (plus the sibling `{id}.json` for cwd / model / title) and posts the lines through `POST /hooks/transcript` — the same lines the live watcher tails, so live and historical ingest converge. Set `KIRO_HOME` to point at a non-default location. Kiro persists no token counts, so imported Kiro sessions show no token usage (by design). Re-imports are idempotent — event ids are deterministic over `(session id, message/tool id, kind)`.
+
+Codex historical import walks `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`. Collab subagent rollouts (Codex CLI 0.146+ — the rollout header names the parent thread) are excluded from top-level discovery and imported nested under their parent instead: every transitive descendant (children, grandchildren, and so on, up to a depth of 8) lands as a direct subagent of the top-level root, mirroring the OpenCode import. A rollout whose header can't be read yet (a session actively starting while the import runs) is skipped for that run and picked up by the next one.
 
 OpenCode historical import reads its SQLite database (`~/.local/share/opencode/opencode.db`, honouring `XDG_DATA_HOME`) and reconstructs the same `{info,parts}` lines the live plugin streams — so live and historical ingest converge on one canonical event stream (`vendor=opencode`). Unlike live capture, which only nests direct children, historical import walks every transitive descendant session (children, grandchildren, and so on, up to a depth of 8) and imports each one as a direct subagent of the top-level root (`/hooks/subagent-*`) — flattened because a session's stream key can't express deeper nesting. A descendant beyond the depth cap is never silently dropped: import prints a `[kcap] opencode: root <id> descendants_omitted=N (depth cap 8 exceeded)` diagnostic to stderr, appending `(lower bound — counting ceiling hit)` in the rare case where counting the omitted subtree itself hit an internal safety cap before finishing — the count is then a lower bound, not exact. Because the server exposes no completeness signal, kcap records each fully-imported session in a local ledger (`~/.cache/kcap/opencode-imported.json`, keyed by server) to skip it on re-run — the ledger key is a content fingerprint over the whole descendant tree (including omitted ids), so a newly-reachable descendant invalidates a stale entry; a session interrupted mid-import is repaired on the next run. The ledger trusts local state, so a session deleted server-side after import is wrongly skipped on re-run — pass `--reimport` (see Additional flags below) to bypass the ledger for the selected sessions. Re-imports are idempotent — canonical event ids derive from OpenCode's stable `prt_` part ids.
 
@@ -1702,9 +1711,17 @@ Finally, choose what its sessions are visible to, **on the machine itself**:
 kcap config set default_visibility org_public
 ```
 
-Visibility is the machine's own setting, exactly as it is for a person. The
-`--visibility` flag on `create` only selects the value printed in the instructions —
-it does not configure the runner for you.
+Visibility is the machine's own setting, exactly as it is for a person — a machine
+records with the `default_visibility` of the profile it runs under, and with no
+profile it records `org_public`. It is **not** steered to private. The `--visibility`
+flag on `create` only selects the value printed in the setup instructions (defaulting
+to your own profile's default, so `create` shows you the value your machine will
+actually use) — it does not configure the runner for you.
+
+> **Heads up:** `KCAP_CLIENT_ID`/`KCAP_CLIENT_SECRET` in your environment divert **all**
+> of this CLI's auth onto the machine credential, so those variables belong on a runner,
+> not in an interactive shell. `kcap status` prints a line naming them when it detects
+> them, so a shell that has accidentally inherited them is easy to spot.
 
 Revoking stops a machine authenticating from its next request. A token it already
 holds stays valid until it expires (up to an hour) but is no longer honoured. To cut

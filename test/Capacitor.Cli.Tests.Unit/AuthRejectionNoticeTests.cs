@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -112,5 +113,55 @@ public class AuthRejectionNoticeTests {
 
             await Assert.That(text).Contains("kcap login");
         }
+    }
+
+    // ── Recording-hook rendering of the same states ─────────────────────────────────────────
+    // The hooks need one line, not a paragraph: a Claude systemMessage is a single transcript
+    // warning and the other vendors get a single stderr line. These lock that wording, which the
+    // Claude-hook, poster and Cursor-hook tests assert against.
+
+    [Test]
+    public async Task Recording_notice_renders_one_line_per_state() {
+        await Assert.That(AuthRejectionNotice.RecordingNotice(StoredCredentialState.Expired)).IsEqualTo(
+            "[kcap] Authentication expired — session recording is paused. Run 'kcap login' to resume.");
+        await Assert.That(AuthRejectionNotice.RecordingNotice(StoredCredentialState.Missing)).IsEqualTo(
+            "[kcap] Not authenticated — session recording is off. Run 'kcap login' to start recording.");
+        await Assert.That(AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid)).IsEqualTo(
+            "[kcap] The server rejected your credentials (HTTP 401) — session recording is paused. Run 'kcap login' to resume.");
+    }
+
+    /// <summary>Pre-existing hook behaviour, preserved by the fold: the short form does not name
+    /// both servers the way <see cref="AuthRejectionNotice.Render"/> does.</summary>
+    [Test]
+    public async Task Recording_notice_renders_wrong_server_as_the_not_authenticated_line() {
+        await Assert.That(AuthRejectionNotice.RecordingNotice(StoredCredentialState.WrongServer)).IsEqualTo(
+            AuthRejectionNotice.RecordingNotice(StoredCredentialState.Missing));
+    }
+
+    [Test]
+    public async Task Every_recording_notice_names_the_recovery_command() {
+        foreach (var state in Enum.GetValues<StoredCredentialState>()) {
+            await Assert.That(AuthRejectionNotice.RecordingNotice(state)).Contains("kcap login");
+        }
+    }
+
+    /// <summary>The hook path holds an <see cref="AuthStatus"/> and must not read the store just
+    /// to name a state it already knows.</summary>
+    [Test]
+    public async Task Auth_status_maps_onto_the_stored_credential_states() {
+        await Assert.That(AuthRejectionNotice.FromAuthStatus(AuthStatus.Expired)).IsEqualTo(StoredCredentialState.Expired);
+        await Assert.That(AuthRejectionNotice.FromAuthStatus(AuthStatus.NotAuthenticated)).IsEqualTo(StoredCredentialState.Missing);
+        await Assert.That(AuthRejectionNotice.FromAuthStatus(AuthStatus.WrongServer)).IsEqualTo(StoredCredentialState.WrongServer);
+        // A 401 answering a usable client is exactly the "looks valid locally" case.
+        await Assert.That(AuthRejectionNotice.FromAuthStatus(AuthStatus.Ok)).IsEqualTo(StoredCredentialState.LooksValid);
+        await Assert.That(AuthRejectionNotice.FromAuthStatus(AuthStatus.NoAuthRequired)).IsEqualTo(StoredCredentialState.LooksValid);
+    }
+
+    [Test]
+    public async Task Vendor_stderr_line_names_the_remedy_on_401_and_stays_bare_otherwise() {
+        await Assert.That(AuthRejectionNotice.VendorStderrLine("codex-hook", "stop", 401)).IsEqualTo(
+            "[kcap] codex-hook stop: HTTP 401 — the server rejected your credentials; run 'kcap login' to resume recording");
+        await Assert.That(AuthRejectionNotice.VendorStderrLine("codex-hook", "stop", 500)).IsEqualTo(
+            "[kcap] codex-hook stop: HTTP 500");
     }
 }
