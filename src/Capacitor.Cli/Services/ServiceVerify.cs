@@ -79,7 +79,9 @@ sealed class ServiceVerify(
         ServiceTxnMarker.Write(serviceId,
             new TxnMarker(1, "start", "captured", DescribeQuery(pre), "unloaded-plist-retained", null));
 
-        manager.Start(serviceId, out _); // bootstrap-or-kickstart (Task 7); readiness poll is the source of truth
+        // bootstrap-or-kickstart (Task 7); a false return doesn't short-circuit — the readiness
+        // poll below is the source of truth — but the reason is worth surfacing if it never recovers.
+        if (!manager.Start(serviceId, out var startError) && startError is not null) Say($"start: {startError}");
 
         ServiceTxnMarker.Write(serviceId,
             new TxnMarker(1, "start", "bootstrapped", DescribeQuery(pre), "unloaded-plist-retained", null));

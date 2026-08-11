@@ -959,7 +959,12 @@ public static class DaemonCommands {
         var engine = new ServiceVerify(manager, DaemonPidProbe.ValidatedPid, HelloProbe.RunAsync, TimeProvider.System);
         var exit = await engine.StartVerifiedAsync(id);
 
-        if (exit == VerifyExit.Ok) await Console.Out.WriteLineAsync($"Service '{id}' started (verified).");
+        // Same closed-stdio tolerance as the engine's own Say: a broken pipe on this purely
+        // informational line must not turn an already-successful verified start into a crash.
+        if (exit == VerifyExit.Ok) {
+            try { await Console.Out.WriteLineAsync($"Service '{id}' started (verified)."); }
+            catch (IOException) { }
+        }
 
         return exit;
     }
