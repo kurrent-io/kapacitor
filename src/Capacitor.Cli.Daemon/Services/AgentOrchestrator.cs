@@ -2828,6 +2828,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 CurrentLength, baseline, CodexTurnObserveTimeout, CodexTurnObserveInterval, TimeProvider.System, cts.Token,
                 isCurrent: () => Volatile.Read(ref agent.CodexTurnProbeGen) == gen);
 
+            // Verdict authority: the in-loop predicate stops a superseded probe promptly, but it is
+            // checked BEFORE each length stat — so a newer round could bump the generation AND grow
+            // the rollout between that check and the read, yielding a TurnObserved that belongs to
+            // the newer round. Re-check the generation HERE, immediately before logging, so a stale
+            // round never emits a verdict (leaving only the sub-microsecond check-to-log window).
+            if (Volatile.Read(ref agent.CodexTurnProbeGen) != gen) return;
+
             switch (outcome) {
                 case CodexTurnObserver.Outcome.TurnObserved:
                     LogCodexTurnStarted(agent.Id, (long)(DateTime.UtcNow - start).TotalMilliseconds);
