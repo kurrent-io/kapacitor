@@ -120,11 +120,11 @@ public class CodexSubagentTurnTrackerTests {
         await Assert.That(Eligible(tracker)).IsTrue();
     }
 
-    // ── SeedCodexSubagentTurnState (restart recovery) ─────────────────────
-    // A restarted child watcher resumes from the server watermark, so the drain never
-    // re-delivers already-acknowledged lines — including the task_complete that should
-    // drive the live stop. The seed rebuilds tracker + pending-call state from the
-    // rollout's full on-disk prefix at startup.
+    // ── BackfillCodexWatcherStateAsync (resume recovery) ──────────────────
+    // Every Codex watcher resumes from the server watermark, so the drain never re-delivers
+    // already-acknowledged lines — for a child, the task_complete that should drive the live
+    // stop; for either role, a function_call whose output has not landed yet. The backfill
+    // rebuilds both from the window of rollout lines just before that cursor.
 
     const string FunctionCall =
         """{"timestamp":"2026-08-11T08:55:00.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call_seed1","arguments":"{}"}}""";
@@ -132,14 +132,15 @@ public class CodexSubagentTurnTrackerTests {
     const string FunctionCallOutput =
         """{"timestamp":"2026-08-11T08:55:05.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_seed1","output":"ok"}}""";
 
-    static WatchState SeededFrom(params string[] lines) {
+    static async Task<WatchState> BackfilledFrom(bool isChildWatcher, int? upToLine, params string[] lines) {
         var tmp = Directory.CreateTempSubdirectory("kcap-cstt").FullName;
         try {
             var path = Path.Combine(tmp, "rollout-2026-08-11T10-54-19-child.jsonl");
-            File.WriteAllLines(path, lines);
+            await File.WriteAllLinesAsync(path, lines);
 
             var state = new WatchState();
-            WatchCommand.SeedCodexSubagentTurnState(state, path);
+            await WatchCommand.BackfillCodexWatcherStateAsync(
+                state, path, isChildWatcher, upToLine ?? lines.Length, CancellationToken.None);
 
             return state;
         } finally {
@@ -148,8 +149,8 @@ public class CodexSubagentTurnTrackerTests {
     }
 
     [Test]
-    public async Task Seed_FileEndingWithTaskComplete_RearmsTheStop() {
-        var state = SeededFrom(FunctionCall, FunctionCallOutput, TaskComplete);
+    public async Task Backfill_FileEndingWithTaskComplete_RearmsTheChildStop() {
+        var state = await BackfilledFrom(isChildWatcher: true, upToLine: null, FunctionCall, FunctionCallOutput, TaskComplete);
 
         await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsTrue();
         await Assert.That(state.PendingCodexToolCalls).IsEmpty();
@@ -157,22 +158,102 @@ public class CodexSubagentTurnTrackerTests {
     }
 
     [Test]
-    public async Task Seed_FileEndingMidTurn_StaysDisarmed() {
+    public async Task Backfill_FileEndingMidTurn_StaysDisarmed() {
         // A completed earlier turn followed by a live tool call: not completed, call pending.
-        var state = SeededFrom(TaskComplete, UserMessage, FunctionCall);
+        var state = await BackfilledFrom(isChildWatcher: true, upToLine: null, TaskComplete, UserMessage, FunctionCall);
 
         await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsFalse();
         await Assert.That(state.PendingCodexToolCalls).Contains("call_seed1");
         await Assert.That(Eligible(state.CodexSubagentTurn, pending: state.PendingCodexToolCalls.Count)).IsFalse();
     }
 
+    // The gap this fixes: a session watcher (no agent id) that reconnects while a tool is
+    // still running came up with an empty pending set, so ShouldEndOnIdle read toolInFlight
+    // false and could end a live session with reason idle_timeout.
     [Test]
-    public async Task Seed_MissingFile_IsANoOp() {
+    public async Task Backfill_RecoversACallLeftOpenBeforeTheCursor_ForASessionWatcher() {
+        var state = await BackfilledFrom(isChildWatcher: false, upToLine: null, FunctionCall, TokenCount);
+
+        await Assert.That(state.PendingCodexToolCalls).Contains("call_seed1");
+    }
+
+    // The decision the backfill exists to protect, wired the way RunWatch wires it: without the
+    // recovered call_id the set is empty, toolInFlight reads false, and a session whose tool is
+    // still running is ended with reason idle_timeout.
+    [Test]
+    public async Task Backfill_KeepsASessionWithARunningTool_OffTheIdleEnd() {
+        var state = await BackfilledFrom(isChildWatcher: false, upToLine: null, FunctionCall, TokenCount);
+
+        var idle = WatchCommand.ShouldEndOnIdle(
+            "codex", isSessionWatcher: true, thresholdReached: true,
+            lastActivityAt: T0, now: T0 + TimeSpan.FromHours(3),
+            idleTimeout: WatchCommand.DefaultCodexIdleTimeout,
+            toolInFlight: state.PendingCodexToolCalls.Count > 0);
+
+        await Assert.That(idle).IsFalse();
+    }
+
+    // Turn state only drives the child's live subagent-stop; a session watcher never reads it,
+    // so folding it there would be state kept for nobody.
+    [Test]
+    public async Task Backfill_DoesNotFoldTurnState_ForASessionWatcher() {
+        var state = await BackfilledFrom(isChildWatcher: false, upToLine: null, TaskComplete);
+
+        await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsFalse();
+    }
+
+    // Only the prefix is the watcher's blind spot; the cursor onwards arrives through the
+    // normal drain, which folds it there.
+    [Test]
+    public async Task Backfill_StopsAtTheCursor() {
+        var state = await BackfilledFrom(isChildWatcher: true, upToLine: 1, FunctionCall, FunctionCallOutput, TaskComplete);
+
+        await Assert.That(state.PendingCodexToolCalls).Contains("call_seed1");
+        await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsFalse();
+    }
+
+    // Bounded like the Claude backfill: an in-flight call sits at the tail by construction —
+    // nothing is written between a function_call and its output — so anything further back is
+    // settled, and a window keeps startup work off the length of the rollout.
+    [Test]
+    public async Task Backfill_IgnoresACallOlderThanTheScanWindow() {
+        var lines = new List<string> { FunctionCall };  // never resolved, then buried
+        lines.AddRange(Enumerable.Repeat(TokenCount, WatchCommand.ToolBackfillWindowLines + 10));
+
+        var state = await BackfilledFrom(isChildWatcher: true, upToLine: null, [.. lines]);
+
+        await Assert.That(state.PendingCodexToolCalls).IsEmpty();
+    }
+
+    [Test]
+    public async Task Backfill_MissingFile_IsANoOp() {
         var state = new WatchState();
-        WatchCommand.SeedCodexSubagentTurnState(state, "/nonexistent/rollout.jsonl");
+
+        await WatchCommand.BackfillCodexWatcherStateAsync(
+            state, "/nonexistent/rollout.jsonl", isChildWatcher: true, upToLine: 5, CancellationToken.None);
 
         await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsFalse();
         await Assert.That(state.PendingCodexToolCalls).IsEmpty();
+    }
+
+    [Test]
+    public async Task Backfill_ReturnsSilentlyWhenAlreadyCancelled() {
+        var tmp = Directory.CreateTempSubdirectory("kcap-cstt").FullName;
+        try {
+            var path = Path.Combine(tmp, "rollout.jsonl");
+            await File.WriteAllLinesAsync(path, [FunctionCall]);
+
+            var       state     = new WatchState();
+            using var cancelled = new CancellationTokenSource();
+            await cancelled.CancelAsync();
+
+            await WatchCommand.BackfillCodexWatcherStateAsync(
+                state, path, isChildWatcher: true, upToLine: 1, cancelled.Token);
+
+            await Assert.That(state.PendingCodexToolCalls).IsEmpty();
+        } finally {
+            Directory.Delete(tmp, recursive: true);
+        }
     }
 
     // ── ResolveStopGrace ──────────────────────────────────────────────────

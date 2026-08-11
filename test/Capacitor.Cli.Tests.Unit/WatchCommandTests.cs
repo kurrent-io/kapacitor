@@ -1001,7 +1001,7 @@ public class ClaudeToolTrackingSourceTests {
         var lines = new List<string> { ToolUse };  // never resolved, then buried by later activity
         lines.AddRange(Enumerable.Repeat(
             """{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"later"}]}}""",
-            WatchCommand.ClaudeToolBackfillWindowLines + 10));
+            WatchCommand.ToolBackfillWindowLines + 10));
 
         await File.WriteAllLinesAsync(path, lines);
 
