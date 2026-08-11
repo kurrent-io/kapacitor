@@ -269,6 +269,16 @@ public static class AppConfig {
         ResolvedProfile   = null;
     }
 
+    /// <summary>
+    /// Whether any profile has actually been configured — NOT whether <see cref="LoadProfileConfig"/>
+    /// returned one. That method synthesizes a `default` entry whenever config.json is missing or
+    /// unreadable, so `Profiles.Count > 0` is true on a machine that has never run kcap and cannot
+    /// distinguish a first-time setup from a re-run. A server URL is what setup actually persists,
+    /// so it is what "configured" means here.
+    /// </summary>
+    public static bool HasConfiguredProfile(ProfileConfig config) =>
+        config.Profiles.Values.Any(p => !string.IsNullOrWhiteSpace(p.ServerUrl));
+
     public static async Task<ProfileConfig> LoadProfileConfig(CancellationToken ct = default) {
         if (!File.Exists(ConfigPath))
             return new() { Profiles = new() { ["default"] = new() } };

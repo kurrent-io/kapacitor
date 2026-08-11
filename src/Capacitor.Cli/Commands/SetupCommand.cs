@@ -60,7 +60,7 @@ public static class SetupCommand {
         var legacyProjectScope = legacyPluginScope == "project";
 
         SetupFunnel.Started(
-            hasExistingProfile: (await AppConfig.LoadProfileConfig()).Profiles.Count > 0,
+            hasExistingProfile: AppConfig.HasConfiguredProfile(await AppConfig.LoadProfileConfig()),
             serverUrlProvided:  serverUrlArg is not null,
             noPrompt:           noPrompt);
 

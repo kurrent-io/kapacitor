@@ -74,7 +74,8 @@ public class McpTelemetryTests {
         // merges in (see CliTelemetry.Initialize's `_shared` object) — nothing else may appear.
         var allowed = new HashSet<string> {
             "server", "tool", "ok", "duration_ms",
-            "source", "cli_version", "os", "arch", "is_ci", "is_headless", "has_server", "logged_in"
+            "source", "cli_version", "build_channel", "os", "arch", "is_ci", "is_headless",
+            "has_server", "logged_in"
         };
 
         var keys = sink.Single().Properties.Select(p => p.Key).ToArray();
