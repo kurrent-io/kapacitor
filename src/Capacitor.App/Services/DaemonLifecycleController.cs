@@ -1,4 +1,5 @@
 using System.Reactive.Linq;
+using Capacitor.Cli.Core.LocalIpc;
 
 namespace Capacitor.App.Services;
 
@@ -38,6 +39,11 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     const string StateInstalled     = "installed";
     const string StateNotInstalled  = "not_installed";
 
+    /// Decision 3: every unit rewrite this controller offers — same-binary or not — carries this
+    /// disclosure. Path equality is not installer provenance.
+    internal const string TakeoverDisclosure =
+        "This replaces the existing daemon service and re-captures its settings; a failed replacement leaves it uninstalled rather than restored.";
+
     internal static readonly TimeSpan ConfirmWindow         = TimeSpan.FromSeconds(15);
     internal static readonly TimeSpan TxnActiveRequeryDelay = TimeSpan.FromSeconds(2);
 
@@ -55,12 +61,15 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     readonly Lock _lock = new();
 
     IDisposable? _subscription;
+    IDisposable? _snapshotSubscription;
     bool _armClaimed;
     bool _disposed;
     int _generation;
     (AttachState State, string? Reason) _lastObserved = (AttachState.Connecting, null);
     TaskCompletionSource<bool>? _confirmWaiter;
     int _confirmSinceGen;
+    string? _latestSnapshotVersion;
+    bool _skewDialogShownThisRun;
 
     public DaemonLifecycleController(
             IDaemonClientService client, IKcapCli cli, ILoginShellProbe probe, IAppStateStore store,
@@ -88,8 +97,16 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     /// starts after the pump has begun could miss the first terminal outcome the startup phase
     /// hinges on.
     public void Start() {
-        _subscription = _client.Status.Subscribe(OnAttachStatus);
+        // DaemonClientService publishes a Connected snapshot to Snapshots BEFORE the matching
+        // Connected AttachStatus (no-stale-pin) — subscribing here first means OnAttachStatus's
+        // Connected case always reads an already-current _latestSnapshotVersion (spec §4.3).
+        _snapshotSubscription = _client.Snapshots.Subscribe(OnSnapshot);
+        _subscription         = _client.Status.Subscribe(OnAttachStatus);
         _ = CacheVersionAsync();
+    }
+
+    void OnSnapshot(DaemonStatusDto snapshot) {
+        lock (_lock) _latestSnapshotVersion = snapshot.Daemon.Version;
     }
 
     async Task CacheVersionAsync() {
@@ -136,12 +153,16 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
                     ClosePhase();
                     _ = RunReconciliationAsync(attached: true);
                 }
+                // §4.3: every Connected, not just the first — the once-per-run dialog flag (not
+                // this arm) is what keeps a later Connected from stacking a second offer.
+                _ = RunSkewCheckAsync(LatestSnapshotVersion());
                 break;
             case AttachState.Unreachable when status.Reason == IncompatibleReason:
                 if (isFirstTerminalOutcome) {
                     ClosePhase();
-                    _ = RunReconciliationAsync(attached: false); // Task 20 adds the skew/takeover offer here too
+                    _ = RunReconciliationAsync(attached: false);
                 }
+                _ = RunSkewCheckAsync(status.DaemonVersion); // every incompatible event, same reason as above
                 break;
             case AttachState.Unreachable:
                 if (isFirstTerminalOutcome) _ = RunStartupBranchAsync((status.State, status.Reason));
@@ -162,6 +183,8 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     /// a racing Connected arriving mid-query) and silently disable the attached-only checks for
     /// the run's only reconciliation pass.
     bool IsCurrentlyAttached() { lock (_lock) return _lastObserved.State == AttachState.Connected; }
+
+    string? LatestSnapshotVersion() { lock (_lock) return _latestSnapshotVersion; }
 
     TaskCompletionSource<bool> ArmConfirmWaiter() {
         lock (_lock) {
@@ -380,6 +403,82 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         }
     }
 
+    /// §4.3: runs on every Connected (paired with the latest known snapshot version) and every
+    /// daemon_incompatible (paired with the hello DaemonVersion, spec decision 6) — never on a
+    /// plain daemon_unreachable, which doesn't call this at all. Equal/null versions, a null
+    /// cached CliVersion (§6: the version probe failed), an already-declined pair, and the
+    /// once-per-run dialog flag are all silent no-ops.
+    async Task RunSkewCheckAsync(string? daemonVersion) {
+        if (CliVersion is null || daemonVersion is null || daemonVersion == CliVersion) return;
+        if (_cli.CliPath is null) return;
+
+        lock (_lock) {
+            if (_skewDialogShownThisRun) return;
+        }
+
+        var pairKey = $"{daemonVersion}|{CliVersion}";
+        var state   = await _store.LoadAsync().ConfigureAwait(false);
+        if (state.DeclinedTakeoverPairs?.Contains(pairKey) == true) return;
+
+        if (!await TryAcquireGateAsync(_lifetime.Token).ConfigureAwait(false)) return;
+        try {
+            lock (_lock) {
+                if (_skewDialogShownThisRun) return; // a concurrent trigger already claimed this run's one dialog
+            }
+
+            var snap = await QueryStatusForActionAsync(_lifetime.Token).ConfigureAwait(false);
+            if (snap is null) return; // already surfaced by QueryStatusForActionAsync
+
+            var kind         = ClassifyTakeover(snap);
+            var terminalPath = await _probe.TerminalPathAsync(_lifetime.Token).ConfigureAwait(false);
+            var prompt       = new LifecyclePrompt(kind, daemonVersion, CliVersion, terminalPath is null, TakeoverDisclosure);
+
+            lock (_lock) _skewDialogShownThisRun = true;
+
+            var gen0     = CurrentGeneration(); // captured immediately before ConfirmAsync (stale-consent check below)
+            var accepted = await _surface.ConfirmAsync(prompt, _lifetime.Token).ConfigureAwait(false);
+
+            if (!accepted) {
+                await _store.UpdateAsync(s => s with {
+                    DeclinedTakeoverPairs = [.. s.DeclinedTakeoverPairs ?? [], pairKey],
+                }).ConfigureAwait(false);
+                return;
+            }
+
+            if (CurrentGeneration() != gen0) {
+                _surface.Status("The daemon changed while the takeover prompt was open — canceled, nothing changed.");
+                return;
+            }
+
+            await RunVerifiedMutationAsync(c => _cli.ServiceInstallVerifiedAsync(replace: true, c), _lifetime.Token)
+                .ConfigureAwait(false);
+        } catch (OperationCanceledException) {
+            // shutdown mid-check
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: daemon lifecycle skew check failed unexpectedly: {ex.Message}");
+        } finally {
+            _gate.Release();
+        }
+    }
+
+    /// Classification (spec §4.3): unit_present && canonical binary_path == canonical
+    /// install_binary_path is the ONLY same-binary case — path equality is not installer
+    /// provenance, so both kinds carry TakeoverDisclosure.
+    static string ClassifyTakeover(ServiceSnapshot snap) =>
+        snap.UnitPresent && snap.BinaryPath is not null && snap.InstallBinaryPath is not null
+            && CanonicalPath(snap.BinaryPath) == CanonicalPath(snap.InstallBinaryPath)
+            ? "restart-update"
+            : "takeover";
+
+    static string CanonicalPath(string path) {
+        var fullPath = Path.GetFullPath(path);
+        try {
+            return new FileInfo(fullPath).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? fullPath;
+        } catch {
+            return fullPath; // missing file, permission error, etc. — fall back to the plain full path
+        }
+    }
+
     /// Reconciliation (spec §3.2): surfaces every inconsistent combination found in one
     /// ServiceStatusAsync snapshot — never mutates. The attached-only checks only make sense (or
     /// would otherwise double-report a startup-matrix row's own Attention for the exact same
@@ -505,6 +604,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         _disposed = true;
 
         _subscription?.Dispose();
+        _snapshotSubscription?.Dispose();
         _lifetime.Cancel();
         await QuiescedAsync().ConfigureAwait(false);
         _lifetime.Dispose();

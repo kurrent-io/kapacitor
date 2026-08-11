@@ -21,8 +21,9 @@ public class DaemonLifecycleControllerTests {
 
     static ServiceSnapshot Snap(
             bool unitPresent = false, string state = "not_installed", string? installBinaryPath = "/opt/kcap/kcapd",
-            int? jobPid = null, int? daemonPid = null, bool txnMarker = false, bool txnActive = false) =>
-        new("default", unitPresent, state, null, installBinaryPath, jobPid, daemonPid, txnMarker, txnActive);
+            string? binaryPath = null, int? jobPid = null, int? daemonPid = null, bool txnMarker = false,
+            bool txnActive = false) =>
+        new("default", unitPresent, state, binaryPath, installBinaryPath, jobPid, daemonPid, txnMarker, txnActive);
 
     static ProcessResult Ok(string stdout = "") => new(0, stdout, "", false);
     static ProcessResult Failed(int exitCode, string stderr) => new(exitCode, "", stderr, false);
@@ -494,6 +495,201 @@ public class DaemonLifecycleControllerTests {
         await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
     }
 
+    // ---- §4.3 skew → restart/takeover ----
+
+    [Test]
+    public async Task Skew_connected_version_match_is_noop() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushSnapshot("1.0.0"); // matches FakeKcapCli's default VersionBehavior
+        h.PushConnected();
+
+        await h.Controller.PhaseClosed;
+        await Task.Delay(50); // give a wrongly-firing prompt every chance to appear
+        await Assert.That(h.Surface.Prompts).IsEmpty();
+    }
+
+    [Test]
+    public async Task Skew_connected_mismatch_same_canonical_binary_prompts_restart_update() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(
+            unitPresent: true, state: "installed", installBinaryPath: "/opt/kcap/kcapd", binaryPath: "/opt/kcap/kcapd"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushSnapshot("2.0.0");
+        h.PushConnected();
+
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the skew prompt");
+        await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo("restart-update");
+        await Assert.That(h.Surface.Prompts[0].DaemonVersion).IsEqualTo("2.0.0");
+        await Assert.That(h.Surface.Prompts[0].CliVersion).IsEqualTo("1.0.0");
+        await Assert.That(h.Surface.Prompts[0].Disclosure).IsEqualTo(DaemonLifecycleController.TakeoverDisclosure);
+    }
+
+    [Test]
+    public async Task Skew_connected_mismatch_different_binary_prompts_takeover() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(
+            unitPresent: true, state: "installed", installBinaryPath: "/opt/kcap/kcapd", binaryPath: "/usr/local/bin/kcapd-old"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushSnapshot("2.0.0");
+        h.PushConnected();
+
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the skew prompt");
+        await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo("takeover");
+        await Assert.That(h.Surface.Prompts[0].Disclosure).IsEqualTo(DaemonLifecycleController.TakeoverDisclosure);
+    }
+
+    [Test]
+    public async Task Skew_incompatible_version_mismatch_prompts() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the incompatible skew prompt");
+        await Assert.That(h.Surface.Prompts[0].DaemonVersion).IsEqualTo("0.9");
+    }
+
+    [Test]
+    public async Task Skew_version_flip_same_run_prompts_only_once() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the first skew prompt");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.95"); // a genuinely new pair
+        await Task.Delay(50); // give a second (wrongly-stacked) prompt every chance to appear
+
+        await Assert.That(h.Surface.Prompts.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Skew_daemon_unreachable_never_prompts() {
+        await using var h = new Harness();
+        // state:"running" is a no-mutation matrix row (Row1) — a mutating row would block this
+        // test's PhaseClosed wait on the fake-clock confirm window, which nothing here advances.
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(state: "running", jobPid: 1, daemonPid: 1));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(daemonVersion: "9.9.9"); // reason defaults to daemon_unreachable
+
+        await h.Controller.PhaseClosed;
+        await Task.Delay(50);
+        await Assert.That(h.Surface.Prompts).IsEmpty();
+    }
+
+    [Test]
+    public async Task Skew_cli_version_null_disables_detection() {
+        await using var h = new Harness();
+        h.Cli.VersionBehavior = _ => Task.FromResult<string?>(null);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version probe attempt");
+        await Assert.That(h.Controller.CliVersion).IsNull();
+
+        h.PushSnapshot("2.0.0");
+        h.PushConnected();
+
+        await h.Controller.PhaseClosed;
+        await Task.Delay(50);
+        await Assert.That(h.Surface.Prompts).IsEmpty();
+    }
+
+    [Test]
+    public async Task Skew_prompt_discloses_degraded_path_when_terminal_path_unknown() {
+        await using var h = new Harness();
+        h.Probe.TerminalPathBehavior = _ => Task.FromResult<string?>(null);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the skew prompt");
+        await Assert.That(h.Surface.Prompts[0].PathDegraded).IsTrue();
+    }
+
+    [Test]
+    public async Task Skew_accept_calls_install_verified_replace_true_and_nothing_else() {
+        await using var h = new Harness();
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromResult(Ok());
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+
+        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the takeover install");
+        await Assert.That(h.Cli.LastInstallReplace).IsNotNull().And.IsEqualTo(true);
+        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Skew_decline_persists_pair_same_pair_no_prompt_new_pair_prompts() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the first skew prompt");
+
+        var afterDecline = await h.Store.LoadAsync();
+        await Assert.That(afterDecline.DeclinedTakeoverPairs).IsNotNull();
+        await Assert.That(afterDecline.DeclinedTakeoverPairs!).Contains("0.9|1.0.0");
+
+        // A fresh controller sharing the same store, offered the SAME pair, must not prompt.
+        var surface2 = new FakeLifecycleSurface();
+        var client2  = new FakeDaemonClientService();
+        var cli2     = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed")) };
+        await using var controller2 = new DaemonLifecycleController(
+            client2, cli2, new FakeLoginShellProbe(), h.Store, surface2, () => Task.FromResult<string?>("default"), h.Time);
+        controller2.Start();
+        await WaitUntilAsync(() => cli2.VersionCallCount == 1, what: "controller2's version cache");
+
+        client2.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_incompatible", null, "0.9"));
+        await Task.Delay(50);
+        await Assert.That(surface2.Prompts).IsEmpty();
+
+        // A genuinely new pair (either version changed) offers again.
+        client2.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_incompatible", null, "0.95"));
+        await WaitUntilAsync(() => surface2.Prompts.Count == 1, what: "the new-pair prompt");
+    }
+
+    [Test]
+    public async Task Skew_stale_consent_between_show_and_accept_aborts_no_mutation() {
+        await using var h = new Harness();
+        var confirmTcs = new TaskCompletionSource<bool>();
+        h.Surface.ConfirmBehavior = (_, _) => confirmTcs.Task;
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the skew prompt shown");
+
+        h.PushUnreachable(); // a later, unrelated attach transition — moves the generation
+        confirmTcs.SetResult(true); // the user accepts what is now a stale offer
+
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the stale-consent abort status");
+        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+    }
+
     // ---- harness ----
 
     sealed class Harness : IAsyncDisposable {
@@ -521,8 +717,11 @@ public class DaemonLifecycleControllerTests {
         public void PushConnected() =>
             Client.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
 
-        public void PushUnreachable(string reason = "daemon_unreachable") =>
-            Client.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, reason, null));
+        public void PushUnreachable(string reason = "daemon_unreachable", string? daemonVersion = null) =>
+            Client.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, reason, null, daemonVersion));
+
+        public void PushSnapshot(string version) =>
+            Client.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(version: version));
 
         public async ValueTask DisposeAsync() {
             await Controller.DisposeAsync();
