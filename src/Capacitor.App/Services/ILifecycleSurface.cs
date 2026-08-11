@@ -20,4 +20,5 @@ public sealed record LifecyclePrompt(
     public const string KindRestartUpdate = "restart-update";
     public const string KindTakeover      = "takeover";
     public const string KindRepair        = "repair"; // Task 21
+    public const string KindShim          = "shim";   // Task 24
 }

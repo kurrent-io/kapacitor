@@ -996,4 +996,44 @@ public class TrayViewModelTests {
             await Assert.That(calls).IsEqualTo(1);
         });
     }
+
+    // ---- AI-1654 Task 24: the shim tray item ----
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ShimOfferable_drives_MenuModel_ShimInstallVisible() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            var shimOfferable = new BehaviorSubject<bool>(false);
+            using var vm = new TrayViewModel(service, pause, actions, consent, shimOfferable: shimOfferable);
+
+            await Assert.That(vm.MenuModel.ShimInstallVisible).IsFalse();
+
+            shimOfferable.OnNext(true);
+
+            await Assert.That(vm.MenuModel.ShimInstallVisible).IsTrue();
+            // Orthogonal to the rest of the model — the state-matrix projection is untouched.
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Connecting);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task InstallShimCommand_invokes_the_injected_delegate() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            var calls = 0;
+            using var vm = new TrayViewModel(service, pause, actions, consent, installShim: () => { calls++; return Task.CompletedTask; });
+
+            await vm.InstallShimCommand.Execute().ToTask();
+
+            await Assert.That(calls).IsEqualTo(1);
+        });
+    }
 }

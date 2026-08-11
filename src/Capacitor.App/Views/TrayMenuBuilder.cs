@@ -27,6 +27,12 @@ public sealed class TrayMenuBuilder(TrayViewModel vm) {
 
         menu.Items.Add(BuildPauseItem(model.Pause));
         menu.Items.Add(new NativeMenuItem("Open Kurrent Capacitor") { Command = vm.OpenMainWindowCommand });
+
+        // AI-1654 §5: visible only while applicable-but-absent (ShimOfferCoordinator.Offerable) —
+        // a manual click always re-runs the install path, regardless of the once-ever auto-offer.
+        if (model.ShimInstallVisible)
+            menu.Items.Add(new NativeMenuItem("Install command-line tool…") { Command = vm.InstallShimCommand });
+
         menu.Items.Add(new NativeMenuItemSeparator());
         menu.Items.Add(new NativeMenuItem("Quit") { Command = vm.QuitCommand });
     }

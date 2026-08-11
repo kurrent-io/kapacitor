@@ -19,8 +19,10 @@ public class TrayAdapterTests {
 
     static TrayMenuModel Model(
             TrayState state = TrayState.Idle, int count = 0, string header = "hdr",
-            IReadOnlyList<TrayAgentEntry>? agents = null, TrayPauseItem? pause = null, int pendingConsent = 0) =>
-        new(state, count, header, agents ?? [], pause ?? new TrayPauseItem(Enabled: true, Checked: false), pendingConsent);
+            IReadOnlyList<TrayAgentEntry>? agents = null, TrayPauseItem? pause = null, int pendingConsent = 0,
+            bool shimInstallVisible = false) =>
+        new(state, count, header, agents ?? [], pause ?? new TrayPauseItem(Enabled: true, Checked: false), pendingConsent,
+            shimInstallVisible);
 
     // ---- CountBadge (pure) ----
 
@@ -344,6 +346,59 @@ public class TrayAdapterTests {
             await Assert.That(openMatches).IsTrue();
             await Assert.That(quitHeader).IsEqualTo("Quit");
             await Assert.That(quitMatches).IsTrue();
+        });
+    }
+
+    // ---- "Install command-line tool…" item (AI-1654 §5, Task 24) ----
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Rebuild_omits_the_shim_item_when_not_offerable() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var hasShimItem = await AvaloniaSession.DispatchAsync(() => {
+                var service = new FakeDaemonClientService();
+                var pause = new FakePauseController();
+                var consent = new FakeConsentService();
+                using var vm = new TrayViewModel(service, pause, NewActions(service), consent);
+                var builder = new TrayMenuBuilder(vm);
+                var menu = new NativeMenu();
+
+                builder.Rebuild(menu, Model(agents: [], shimInstallVisible: false));
+
+                return menu.Items.OfType<NativeMenuItem>().Any(i => i.Header == "Install command-line tool…");
+            });
+
+            await Assert.That(hasShimItem).IsFalse();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Rebuild_includes_the_shim_item_between_open_and_quit_when_offerable() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var (header, shimIndex, openIndex, quitIndex, commandMatches) = await AvaloniaSession.DispatchAsync(() => {
+                var service = new FakeDaemonClientService();
+                var pause = new FakePauseController();
+                var consent = new FakeConsentService();
+                using var vm = new TrayViewModel(service, pause, NewActions(service), consent);
+                var builder = new TrayMenuBuilder(vm);
+                var menu = new NativeMenu();
+
+                builder.Rebuild(menu, Model(agents: [], shimInstallVisible: true));
+
+                var items = menu.Items.OfType<NativeMenuItem>().ToList();
+                var shim = items.First(i => i.Header == "Install command-line tool…");
+                var open = items.First(i => i.Header == "Open Kurrent Capacitor");
+                var quit = items.First(i => i.Header == "Quit");
+
+                return (shim.Header, menu.Items.IndexOf(shim), menu.Items.IndexOf(open), menu.Items.IndexOf(quit),
+                    ReferenceEquals(shim.Command, vm.InstallShimCommand));
+            });
+
+            await Assert.That(header).IsEqualTo("Install command-line tool…");
+            await Assert.That(shimIndex).IsEqualTo(openIndex + 1); // immediately after "Open Kurrent Capacitor"
+            await Assert.That(shimIndex).IsLessThan(quitIndex); // still before the trailing separator + Quit
+            await Assert.That(commandMatches).IsTrue();
         });
     }
 

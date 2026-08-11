@@ -30,6 +30,10 @@ public partial class App : Application {
     // pump — DaemonLifecycleController.Start's own doc comment). Disposed before _service in every
     // teardown path below: it's the dependent (subscribes to _service's streams), so it goes first.
     DaemonLifecycleController? _lifecycle;
+    // AI-1654 Task 24: no disposal needed — it holds no subscription of its own, only a one-shot
+    // await chain against BuildLifecycleController's cliPath/probe/store/surface and _shutdown.Token,
+    // so cancelling _shutdown (every teardown path below already does) is what stops it.
+    ShimOfferCoordinator? _shimOffer;
     // Assigned by StartAsync's success path only; every one is still null on a startup failure
     // (and cleared again by the catch, which disposes whatever had been built). Teardown —
     // shutdown and startup-failure alike — disposes them in reverse creation order, tray icon
@@ -101,9 +105,14 @@ public partial class App : Application {
             // AI-1654 subscribe-before-pump: the controller's attach subscription must be live
             // BEFORE service.Start() begins pumping, or the startup phase could miss the very
             // first terminal outcome it hinges on (DaemonLifecycleController.Start's own comment).
-            var lifecycle = BuildLifecycleController(service, lifecycleStatus.OnNext, lifecycleAttention.OnNext);
+            var (lifecycle, shimOffer) = BuildLifecycleController(service, lifecycleStatus.OnNext, lifecycleAttention.OnNext);
             lifecycle.Start();
             _lifecycle = lifecycle;
+            // Task 24: unlike lifecycle's Start(), subscribe-before-run doesn't matter here —
+            // Offerable is a BehaviorSubject, so TrayViewModel (built further below) still sees
+            // the current value the moment it subscribes.
+            shimOffer.Start();
+            _shimOffer = shimOffer;
 
             service.Start();
             _service = service;
@@ -151,7 +160,8 @@ public partial class App : Application {
             _trayVm = new TrayViewModel(
                 service, _pause, actions, consent, openMainWindow: _coordinator.ShowMainWindow,
                 quit: () => desktop.TryShutdown(), openReviewPrompts: _promptCoordinator.ShowPromptWindow,
-                lifecycleAttention: lifecycleAttention);
+                lifecycleAttention: lifecycleAttention, shimOfferable: shimOffer.Offerable,
+                installShim: shimOffer.RunManualInstallAsync);
             _tray = new TrayIconManager(this, _trayVm);
         } catch (Exception ex) {
             // BEFORE any await: a shutdown request can arrive while cleanup below is still
@@ -168,6 +178,7 @@ public partial class App : Application {
             // while the error window is up) dispose any of them a second time
             _service = null;
             _lifecycle = null;
+            _shimOffer = null; // no disposal of its own (see field comment) — just drop the reference
             _tray = null;
             _trayVm = null;
             _promptCoordinator = null;
@@ -298,7 +309,10 @@ public partial class App : Application {
     // KCAP_APP_CLI_PATH override (CliResolver.ResolvePath returning null) is treated as "no CLI"
     // here — unlike CreateDefaultAsync's own lenient `daemon start -d` fallback above, the
     // lifecycle features must never silently point at the wrong binary.
-    DaemonLifecycleController BuildLifecycleController(
+    //
+    // Task 24: also builds ShimOfferCoordinator here (not a separate method) — it shares
+    // cliPath/probe/store/surface with the lifecycle controller rather than re-resolving them.
+    (DaemonLifecycleController Lifecycle, ShimOfferCoordinator ShimOffer) BuildLifecycleController(
             DaemonClientService service, Action<string> setLifecycleStatus, Action<string> setLifecycleAttention) {
         var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists);
         var runner  = new DaemonClientService.ProcessRunner();
@@ -308,8 +322,17 @@ public partial class App : Application {
         var store   = new AppStateStore(PathHelpers.ConfigPath("app-state.json"));
         var surface = new LifecycleSurface(setLifecycleStatus, setLifecycleAttention, ConfirmLifecyclePromptAsync);
 
-        return new DaemonLifecycleController(
+        var lifecycle = new DaemonLifecycleController(
             service, cli, probe, store, surface, () => Task.FromResult(ValidProfileName(profile)), TimeProvider.System);
+
+        // The shim links to the RESOLVED ABSOLUTE path only — CliResolver's bare "kcap" fallback
+        // (no override set, or AI-1653's not-yet-landed bundle-relative arm) means there is
+        // nothing to link, so the offer and the menu item both stay off for the whole run.
+        var shimTarget = cliPath is not null && Path.IsPathRooted(cliPath) ? cliPath : null;
+        var shimOffer = new ShimOfferCoordinator(
+            lifecycle.PhaseClosed, probe, new PathShimInstaller(runner, probe), store, surface, shimTarget, _shutdown.Token);
+
+        return (lifecycle, shimOffer);
     }
 
     static string? ValidProfileName(ResolvedProfile? profile) =>
