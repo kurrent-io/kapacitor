@@ -42,11 +42,13 @@ internal record AgentInstance(
     /// (never a directory scan). Null until detection resolves it, and for non-Codex agents.</summary>
     public string? CodexRolloutPath { get; set; }
 
-    /// <summary>Codex turn diagnostic: single-flight guard for the post-send rollout-growth probe.
-    /// Each follow-up round cancels the prior round's probe and installs its own, so a later round's
-    /// growth is never attributed to an earlier round's input. A plain field so
-    /// <see cref="System.Threading.Interlocked.Exchange{T}(ref T, T)"/> can swap it atomically.</summary>
-    public CancellationTokenSource? CodexTurnProbeCts;
+    /// <summary>Codex turn diagnostic: monotonic per-agent round generation for the post-send
+    /// rollout-growth probe. Bumped (under the send gate, BEFORE each round's input is delivered) so
+    /// a later round instantly invalidates any earlier round's probe — a probe emits a verdict only
+    /// while its captured generation is still the latest, so a later round's growth can never be
+    /// attributed to an earlier round even during the earlier probe's own poll. A plain field for
+    /// <see cref="System.Threading.Interlocked.Increment(ref long)"/>.</summary>
+    public long CodexTurnProbeGen;
 
     /// <summary>This agent's monotonic activity clock. One instance per launch — a relaunch gets a
     /// fresh one, never inheriting the predecessor's idle window. Defaults to a real-time instance so
@@ -2728,11 +2730,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         LogSendInputReceived(agentId, agent.Runtime.Vendor, text.Length, attachmentIds?.Length ?? 0);
 
-        // Codex turn diagnostic: whether to run the post-send rollout probe, and the rollout's
-        // length sampled just BEFORE delivery. Declared out here so the baseline survives the
-        // try/finally to reach ArmCodexTurnProbe below.
+        // Codex turn diagnostic: whether to run the post-send rollout probe, plus this round's
+        // generation and the rollout length sampled just BEFORE delivery. Declared out here so both
+        // survive the try/finally to reach ArmCodexTurnProbe below.
         var   isCodex       = string.Equals(agent.Runtime.Vendor, "codex", StringComparison.OrdinalIgnoreCase);
         long? codexBaseline = null;
+        long  codexGen      = 0;
 
         await agent.BorrowedSnapshotGate.WaitAsync(_shutdownCts.Token);
         try {
@@ -2748,11 +2751,18 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 }
             }
 
-            // Codex turn diagnostic: sample the rollout length BEFORE delivery, from the path the
-            // session detector already cached (a single stat, never a scan). Capturing it AFTER the
-            // send would fold a fast Codex append into the baseline and mis-report "no turn". A null
-            // here (path not resolved yet, or the stat failed) is handled in ArmCodexTurnProbe.
-            if (isCodex && agent.CodexRolloutPath is { } rolloutPath) codexBaseline = TryFileLength(rolloutPath);
+            // Codex turn diagnostic: BEFORE delivering this round's input — and while the send gate
+            // is held, so it is ordered per agent — bump the round generation and sample the rollout
+            // length from the cached path. Bumping first instantly invalidates any prior round's
+            // still-running probe (it emits a verdict only while its generation is the latest), so a
+            // fast Codex append caused by THIS input can never be credited to the previous round.
+            // Sampling the length after the bump but before the send keeps the baseline honest (the
+            // append lands strictly after it). A null here (path not cached yet, or the stat failed)
+            // is handled in ArmCodexTurnProbe.
+            if (isCodex) {
+                codexGen = Interlocked.Increment(ref agent.CodexTurnProbeGen);
+                if (agent.CodexRolloutPath is { } rolloutPath) codexBaseline = TryFileLength(rolloutPath);
+            }
 
             // PTY runtimes use bracketed paste; ACP runtimes send a structured prompt.
             if (agent.BorrowedSnapshotSource is not null)
@@ -2768,53 +2778,41 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // Codex turn diagnostic: arm the post-send rollout-growth probe. Only reached on the
         // successful-delivery path (the guards and the borrowed-snapshot failure above all return
         // before here).
-        if (isCodex) ArmCodexTurnProbe(agent, codexBaseline);
+        if (isCodex) ArmCodexTurnProbe(agent, codexBaseline, codexGen);
     }
 
     /// <summary>
-    /// Codex turn diagnostic: start a bounded, single-flight, off-handler probe that watches the
-    /// reviewer's rollout for growth past <paramref name="baseline"/> (the length captured just
-    /// before this round's input was delivered) and logs whether a turn began — the only clean
-    /// turn-start signal a PTY runtime gives the daemon (see <see cref="CodexTurnObserver"/>).
+    /// Codex turn diagnostic: schedule a bounded, off-handler probe that watches the reviewer's
+    /// rollout for growth past <paramref name="baseline"/> (the length captured just before this
+    /// round's input was delivered) and logs whether a turn began — the only clean turn-start signal
+    /// a PTY runtime gives the daemon (see <see cref="CodexTurnObserver"/>).
     ///
-    /// <para>A null <paramref name="baseline"/> means the rollout path was not cached yet, or its
-    /// pre-delivery stat failed — logged and skipped (never a false "no turn"). The probe is
-    /// single-flight per agent: arming cancels the prior round's probe, so a later round's growth is
-    /// never attributed to an earlier round's input. It runs on a pooled thread (never the command
-    /// loop) and is bounded by the agent's stop, daemon shutdown, and the observe timeout.</para>
+    /// <para>Single-flight is by GENERATION, established in <see cref="HandleSendInput"/> before
+    /// delivery: <paramref name="gen"/> is this round's generation, and the probe emits a verdict
+    /// only while it is still the agent's latest — so a later round's growth is never credited to an
+    /// earlier round even during that earlier probe's own poll. This method itself does no I/O and
+    /// touches no disposable of the (already torn-down?) agent: it only schedules onto the pool, so
+    /// it cannot throw a teardown fault back onto the just-completed send. A null
+    /// <paramref name="baseline"/> (path not cached yet, or the pre-delivery stat failed) is logged
+    /// and skipped — never a false "no turn"; the generation was still bumped, so any prior probe is
+    /// already invalidated.</para>
     /// </summary>
-    void ArmCodexTurnProbe(AgentInstance agent, long? baseline) {
-        try {
-            var rolloutPath = agent.CodexRolloutPath;
-            var canObserve  = rolloutPath is not null && baseline is not null;
-
-            // Supersede any prior round's probe FIRST — always, even when this round cannot be
-            // observed — so a predecessor can neither keep running nor log a verdict for this round's
-            // growth. Installing null when we cannot observe still cancels the predecessor and makes
-            // its ownership check fail.
-            var newCts = canObserve
-                ? CancellationTokenSource.CreateLinkedTokenSource(agent.ReadCts.Token, _shutdownCts.Token)
-                : null;
-            var prev = Interlocked.Exchange(ref agent.CodexTurnProbeCts, newCts);
-            if (prev is not null) {
-                try { prev.Cancel(); } catch (ObjectDisposedException) { /* the prior probe already finished + disposed it */ }
-            }
-
-            if (!canObserve) {
-                LogCodexTurnRolloutUnresolved(agent.Id);
-                return;
-            }
-
-            _ = Task.Run(() => ObserveCodexTurnAsync(agent, rolloutPath!, baseline!.Value, newCts!));
-        } catch (Exception ex) {
-            // Arming is best-effort and runs AFTER the input was already delivered — a fault here
-            // (e.g. ReadCts disposed by concurrent teardown) must NEVER surface as a send failure.
-            LogCodexTurnObserveFailed(ex, agent.Id);
+    void ArmCodexTurnProbe(AgentInstance agent, long? baseline, long gen) {
+        if (agent.CodexRolloutPath is not { } rolloutPath || baseline is not { } b) {
+            LogCodexTurnRolloutUnresolved(agent.Id);
+            return;
         }
+
+        _ = Task.Run(() => ObserveCodexTurnAsync(agent, rolloutPath, b, gen));
     }
 
-    async Task ObserveCodexTurnAsync(AgentInstance agent, string rolloutPath, long baseline, CancellationTokenSource cts) {
+    async Task ObserveCodexTurnAsync(AgentInstance agent, string rolloutPath, long baseline, long gen) {
         try {
+            // The linked token is created HERE (on the pool), not on the send handler, so a
+            // concurrent teardown that has disposed ReadCts faults this best-effort probe rather
+            // than the send. Bounded by the agent's stop, daemon shutdown, and the observe timeout.
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(agent.ReadCts.Token, _shutdownCts.Token);
+
             long CurrentLength() {
                 try { return new FileInfo(rolloutPath).Length; } catch { return -1; } // <0 ⇒ momentarily unreadable
             }
@@ -2824,11 +2822,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             var outcome = await CodexTurnObserver.ObserveGrowthAsync(
                 CurrentLength, baseline, CodexTurnObserveTimeout, CodexTurnObserveInterval, TimeProvider.System, cts.Token);
 
-            // Single-flight: only the CURRENT probe may emit a verdict. If a newer round installed
-            // its own CTS while we were observing, our growth may belong to THAT round — drop
-            // silently (the newer probe reports). Cancellation alone can't guarantee this: we may
-            // have already computed `outcome` before the new round cancelled us.
-            if (!ReferenceEquals(Volatile.Read(ref agent.CodexTurnProbeCts), cts)) return;
+            // Single-flight: only the LATEST round's probe may emit a verdict. The generation was
+            // bumped (under the send gate) before this round's input was delivered, so if a newer
+            // round has since bumped it, the growth we saw belongs to THAT round — drop silently and
+            // let the newer probe report. A superseded probe is not actively cancelled; it simply
+            // stops here (and its ~2-minute timer self-expires), which costs nothing but a timer.
+            if (Volatile.Read(ref agent.CodexTurnProbeGen) != gen) return;
 
             switch (outcome) {
                 case CodexTurnObserver.Outcome.TurnObserved:
@@ -2842,15 +2841,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                     // evidence the reviewer ignored the input. Do not emit the strong "no turn" line.
                     LogCodexTurnRolloutUnavailable(agent.Id);
                     break;
-                // Cancelled: superseded by a newer round, the agent stopped, or daemon shutdown — no verdict.
+                // Cancelled: the agent stopped or the daemon is shutting down — no verdict to report.
             }
         } catch (Exception ex) {
             LogCodexTurnObserveFailed(ex, agent.Id);
-        } finally {
-            // Release our slot only if it is still ours (a newer round may already have replaced it),
-            // then dispose the CTS we own.
-            Interlocked.CompareExchange(ref agent.CodexTurnProbeCts, null, cts);
-            cts.Dispose();
         }
     }
 
