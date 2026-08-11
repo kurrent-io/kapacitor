@@ -75,6 +75,24 @@ public class CodexTurnObserverTests {
     }
 
     [Test]
+    public async Task Superseded_probe_stops_promptly_without_a_verdict() {
+        var  time    = new FakeTimeProvider();
+        long len     = 10;   // never grows on its own
+        var  current = true; // becomes false to simulate a newer round superseding this probe
+
+        var task = CodexTurnObserver.ObserveGrowthAsync(
+            () => len, baseline: 10, Timeout, Poll, time, CancellationToken.None, isCurrent: () => current);
+
+        // A newer round supersedes us AND its growth lands on the shared file — but this stale probe
+        // must NOT claim it; it must stop with Superseded at its next poll.
+        current = false;
+        len     = 999;
+        time.Advance(Poll);
+
+        await Assert.That(await task).IsEqualTo(CodexTurnObserver.Outcome.Superseded);
+    }
+
+    [Test]
     public async Task Cancellation_is_reported() {
         var       time = new FakeTimeProvider();
         using var cts  = new CancellationTokenSource();

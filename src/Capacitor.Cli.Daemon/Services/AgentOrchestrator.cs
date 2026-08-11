@@ -2819,15 +2819,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             var start = DateTime.UtcNow;
 
+            // Single-flight: this round's generation was bumped (under the send gate) BEFORE its
+            // input was delivered, so a newer round instantly makes this one stale. The predicate
+            // is checked inside the poll loop, so a superseded probe STOPS within one interval
+            // (returns Superseded) rather than polling to the timeout — bounding how many probes a
+            // rapid retry burst can keep alive. The generation stays the sole verdict authority.
             var outcome = await CodexTurnObserver.ObserveGrowthAsync(
-                CurrentLength, baseline, CodexTurnObserveTimeout, CodexTurnObserveInterval, TimeProvider.System, cts.Token);
-
-            // Single-flight: only the LATEST round's probe may emit a verdict. The generation was
-            // bumped (under the send gate) before this round's input was delivered, so if a newer
-            // round has since bumped it, the growth we saw belongs to THAT round — drop silently and
-            // let the newer probe report. A superseded probe is not actively cancelled; it simply
-            // stops here (and its ~2-minute timer self-expires), which costs nothing but a timer.
-            if (Volatile.Read(ref agent.CodexTurnProbeGen) != gen) return;
+                CurrentLength, baseline, CodexTurnObserveTimeout, CodexTurnObserveInterval, TimeProvider.System, cts.Token,
+                isCurrent: () => Volatile.Read(ref agent.CodexTurnProbeGen) == gen);
 
             switch (outcome) {
                 case CodexTurnObserver.Outcome.TurnObserved:
@@ -2841,6 +2840,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                     // evidence the reviewer ignored the input. Do not emit the strong "no turn" line.
                     LogCodexTurnRolloutUnavailable(agent.Id);
                     break;
+                // Superseded: a newer round took over — it reports; no verdict here.
                 // Cancelled: the agent stopped or the daemon is shutting down — no verdict to report.
             }
         } catch (Exception ex) {

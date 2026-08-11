@@ -27,6 +27,10 @@ internal static class CodexTurnObserver {
         /// sustained stat failure) and no growth was ever seen — a measurement gap, NOT evidence
         /// that the reviewer ignored the input. The caller must not report this as "no turn".</summary>
         Unavailable,
+        /// <summary>A newer round superseded this probe (the injected <c>isCurrent</c> predicate went
+        /// false) before a verdict — the newer probe reports. Returned promptly so a superseded probe
+        /// stops polling within one interval instead of running to the timeout.</summary>
+        Superseded,
         /// <summary>The agent stopped or the daemon began shutting down before a verdict.</summary>
         Cancelled,
     }
@@ -47,24 +51,33 @@ internal static class CodexTurnObserver {
     /// <see cref="Outcome.Unavailable"/> — distinguishing a genuine measurement failure from a real
     /// "no turn".</para>
     /// </summary>
+    /// <param name="isCurrent">Optional single-flight predicate. Checked at the top of every poll
+    /// (and once more at the deadline) BEFORE the length stat; the first time it returns false the
+    /// probe stops with <see cref="Outcome.Superseded"/>. This is what makes a superseded probe stop
+    /// polling within one interval rather than running to <paramref name="timeout"/> — the caller
+    /// keeps the actual verdict authority (a generation), so this only manages the probe's lifetime.
+    /// Null (the default) disables it.</param>
     public static async Task<Outcome> ObserveGrowthAsync(
         Func<long>        currentLength,
         long              baseline,
         TimeSpan          timeout,
         TimeSpan          pollInterval,
         TimeProvider      time,
-        CancellationToken ct) {
+        CancellationToken ct,
+        Func<bool>?       isCurrent = null) {
         var start = time.GetTimestamp();
 
         try {
             while (time.GetElapsedTime(start) < timeout) {
-                if (currentLength() > baseline) return Outcome.TurnObserved;
+                if (isCurrent is not null && !isCurrent()) return Outcome.Superseded;
+                if (currentLength() > baseline)            return Outcome.TurnObserved;
                 await Task.Delay(pollInterval, time, ct);
             }
 
             // Final check: a turn that landed during the last delay must not be missed just because
             // the loop condition fired first. A negative reading here is a genuine measurement gap,
             // not a "no turn" verdict.
+            if (isCurrent is not null && !isCurrent()) return Outcome.Superseded;
             var finalLength = currentLength();
             if (finalLength < 0)        return Outcome.Unavailable;
             return finalLength > baseline ? Outcome.TurnObserved : Outcome.NotObserved;
