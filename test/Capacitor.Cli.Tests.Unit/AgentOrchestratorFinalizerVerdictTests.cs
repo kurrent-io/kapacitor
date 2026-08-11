@@ -91,15 +91,20 @@ public partial class AgentOrchestratorVendorTests {
 
     /// <summary>Constructs an <see cref="AgentInstance"/> directly — <c>SeedAgentForTest</c> only
     /// builds PTY runtimes — wrapping the given ACP runtime, and registers it via
-    /// <c>RegisterAgentForTest</c> so it is reachable exactly like a real launch's registration.</summary>
+    /// <c>RegisterAgentForTest</c> so it is reachable exactly like a real launch's registration.
+    /// <paramref name="activityClock"/> mirrors <c>SeedAgentForTest</c>'s own optional clock override
+    /// — a test that needs a controllable (<see cref="Microsoft.Extensions.Time.Testing.FakeTimeProvider"/>-backed)
+    /// clock passes one; omitting it keeps every existing caller's real-time default.</summary>
     static AgentInstance SeedAcpAgent(
-            AgentOrchestrator orch, string agentId, IHostedAgentRuntime runtime, string status = "Running") {
+            AgentOrchestrator orch, string agentId, IHostedAgentRuntime runtime, string status = "Running",
+            AgentActivityClock? activityClock = null) {
         var agent = new AgentInstance(
             agentId, "review this", "default", null, "/repo", "cursor",
             runtime,
             new WorktreeInfo("/repo", "b", "/repo"),
             new CancellationTokenSource()) {
-            Status = status
+            Status = status,
+            ActivityClock = activityClock ?? new AgentActivityClock(TimeProvider.System)
         };
 
         orch.RegisterAgentForTest(agent);

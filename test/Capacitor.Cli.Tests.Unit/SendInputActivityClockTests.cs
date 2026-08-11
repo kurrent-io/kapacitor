@@ -41,6 +41,34 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(agent.ActivityClock.IdleForMs).IsEqualTo(0UL);
     }
 
+    /// <summary>Pins the mechanism the design's residual note is about: ACP's default (non-borrowed)
+    /// <c>SendUserInputAsync</c> is fire-and-forget — its non-throwing return means "enqueued", not
+    /// "the agent read it" (<c>AcpHostedAgentRuntime.EnqueueTurn</c>'s full-queue branch drops
+    /// silently, no throw) — yet <see cref="AgentOrchestrator.HandleSendInput"/> still advances the
+    /// clock on it, by design (a false advance only delays a reap/silence verdict, never manufactures
+    /// one). Uses <see cref="FakeAcpRuntime"/> (an <see cref="IHostedAgentRuntime"/> test double
+    /// already in this partial class, from the ACP-forwarding tests) via <c>SeedAcpAgent</c> — its
+    /// <c>SendUserInputAsync</c> is itself a non-throwing no-op, matching the enqueue-accepted shape
+    /// this test pins, without needing the full duplex <c>AcpHostedAgentRuntime</c>/<c>FakeAcpAgent</c>
+    /// harness the finalizer-verdict tests use.</summary>
+    [Test]
+    public async Task Acp_enqueue_accepted_input_advances_the_activity_seq_and_resets_the_idle_clock() {
+        var time  = new FakeTimeProvider();
+        var clock = new AgentActivityClock(time);
+
+        await using var orch = BuildOrchestrator(new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var agent = SeedAcpAgent(orch, "send-input-acp-ok", new FakeAcpRuntime(), activityClock: clock);
+
+        time.Advance(TimeSpan.FromSeconds(10));
+        await Assert.That(agent.ActivityClock.IdleForMs).IsGreaterThanOrEqualTo(9_900UL);
+
+        await orch.HandleSendInputForTest(new SendInputCommand(agent.Id, "hello", null));
+
+        // Spawn (1) + the enqueue-accepted delivery (2).
+        await Assert.That(agent.ActivityClock.ActivitySeq).IsEqualTo(2UL);
+        await Assert.That(agent.ActivityClock.IdleForMs).IsEqualTo(0UL);
+    }
+
     [Test]
     public async Task Failed_delivery_advances_nothing() {
         var server = new CaptureServerConnection();
