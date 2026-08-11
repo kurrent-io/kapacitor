@@ -18,10 +18,14 @@ public class ServiceVerifyInstallTests {
     sealed class FakeServiceManager : IServiceManager {
         public readonly List<string> Calls = [];
         public LabelProbe InitialProbe = LabelProbe.Absent;
+        public bool InitialUnitPresent;
         public bool Bootstrapped, Uninstalled;
+        public bool StayUnknownAfterUninstall;
         public int? RunningPid = 4242;
         public string PlistPath = "/fake/agents/io.kurrent.kcap.daemon.svc-verify-install.plist";
         public string PlistContent = OwnPlistContent;
+        public Exception? GenerateFilesThrows;
+        public Exception? WriteAndBootstrapThrows;
         public Action<string>? OnGenerateFiles;
         public Action<string>? OnWriteAndBootstrap;
 
@@ -35,14 +39,18 @@ public class ServiceVerifyInstallTests {
 
         public IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec) {
             OnGenerateFiles?.Invoke(spec.ServiceId);
+            if (GenerateFilesThrows is not null) throw GenerateFilesThrows;
             return [new GeneratedFile(PlistPath, PlistContent)];
         }
 
         public ServiceQuery Query(string serviceId) {
             Calls.Add("query");
-            if (Uninstalled) return new ServiceQuery(LabelProbe.Absent, false, ServiceState.NotInstalled, null, null);
+            if (Uninstalled)
+                return StayUnknownAfterUninstall
+                    ? new ServiceQuery(LabelProbe.Unknown, true, ServiceState.NotInstalled, null, null)
+                    : new ServiceQuery(LabelProbe.Absent, false, ServiceState.NotInstalled, null, null);
             if (Bootstrapped) return new ServiceQuery(LabelProbe.Loaded, true, ServiceState.Running, "/bin/kcap-daemon", RunningPid);
-            return new ServiceQuery(InitialProbe, InitialProbe != LabelProbe.Absent, ServiceState.NotInstalled, null, null);
+            return new ServiceQuery(InitialProbe, InitialProbe != LabelProbe.Absent || InitialUnitPresent, ServiceState.NotInstalled, null, null);
         }
 
         public void Install(ServiceSpec spec, bool startNow) { }
@@ -50,6 +58,7 @@ public class ServiceVerifyInstallTests {
         public void WriteAndBootstrap(ServiceSpec spec) {
             Calls.Add("writeAndBootstrap");
             OnWriteAndBootstrap?.Invoke(spec.ServiceId);
+            if (WriteAndBootstrapThrows is not null) throw WriteAndBootstrapThrows;
             Bootstrapped = true;
         }
 
@@ -248,6 +257,83 @@ public class ServiceVerifyInstallTests {
 
             await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
             await Assert.That(manager.UninstallCalls).IsEqualTo(0);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task PreQuery_absent_but_unit_present_stopped_but_installed_is_contended() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            // `service stop` retains the plist by design — a stopped-but-installed service must be
+            // treated the same as Loaded, not as a fresh Absent slot to overwrite.
+            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Absent, InitialUnitPresent = true };
+            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Contended);
+            await Assert.That(manager.QueryCalls).IsEqualTo(1);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task GenerateFiles_throwing_touches_no_disk_state_and_clears_its_own_marker() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            var manager = new FakeServiceManager { GenerateFilesThrows = new InvalidOperationException("invalid captured env value") };
+            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+
+            // GenerateFiles is pure — nothing was ever mutated, so there's nothing to roll back.
+            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(0);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task WriteAndBootstrap_throwing_still_rolls_back_the_plist_it_already_wrote() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            // launchctl bootstrap can throw (EPERM under MDM, I/O error) AFTER WriteUnitFiles has
+            // already put the plist on disk — readPlist reflects that with matching ("own") content.
+            var manager = new FakeServiceManager { WriteAndBootstrapThrows = new InvalidOperationException("launchctl bootstrap failed (exit 5): Input/output error") };
+            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Rollback_reserve_exhausted_with_undetermined_state_is_rollback_budget() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            var manager = new FakeServiceManager { RunningPid = 111, StayUnknownAfterUninstall = true }; // ownership never holds
+            var time = new FakeTimeProvider();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+
+            var sut = new ServiceVerify(manager, _ => 222, Hello, time,
+                forwardBudget: TimeSpan.FromSeconds(2), rollbackReserve: TimeSpan.FromSeconds(1), readPlist: OwnPlist);
+
+            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            // Uninstall ran, but the post-uninstall probe never settles below Unknown before the
+            // reserve runs out — a genuine timeout, not an observed-wrong state.
+            await Assert.That(exit).IsEqualTo(VerifyExit.RollbackBudget);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }

@@ -870,7 +870,18 @@ public static class DaemonCommands {
         return ["--max-agents", maxAgents.ToString()];
     }
 
-    static async Task<int> ServiceInstall(IServiceManager manager, string[] args, string id, bool startNow) {
+    internal static async Task<int> ServiceInstall(IServiceManager manager, string[] args, string id, bool startNow) {
+        var verify = args.Contains("--verify");
+
+        // --verify is a launchd-only slice for now: the engine's readiness/version check needs a
+        // manager that actually implements a verify-aware WriteAndBootstrap, and the on-disk
+        // recheck needs GenerateFiles to return exactly one file (Windows returns two). Reject
+        // early and clearly rather than let either assumption fail deep inside the transaction.
+        if (verify && manager is not LaunchdServiceManager) {
+            await Console.Error.WriteLineAsync("install --verify is only supported on macOS (launchd) in this release.");
+            return 1;
+        }
+
         var daemonPath = ResolveDaemonBinary();
         if (daemonPath is null) { await Console.Error.WriteLineAsync(DaemonNotFoundMessage()); return 1; }
 
@@ -891,40 +902,46 @@ public static class DaemonCommands {
         var logPath = PathHelpers.ConfigPath($"daemon-{id}.log");
         var spec    = new ServiceSpec(id, daemonPath, logPath, env, extra);
 
-        if (args.Contains("--verify")) {
+        if (verify) {
             var engine = new ServiceVerify(manager, DaemonPidProbe.ValidatedPid, HelloProbe.RunAsync, TimeProvider.System);
             var exit   = await engine.InstallVerifiedAsync(spec, replace: false, CapacitorVersion.Current());
             if (exit != VerifyExit.Ok) return exit;
-
-            // Same closed-stdio tolerance as the engine's own Say: a broken pipe on this purely
-            // informational line must not turn an already-successful verified install into a crash.
-            try { await Console.Out.WriteLineAsync($"Service '{id}' installed (verified, {manager.Describe()})."); }
-            catch (IOException) { }
         } else {
             manager.Install(spec, startNow);
-
-            await Console.Out.WriteLineAsync($"Service '{id}' installed ({manager.Describe()}).");
-            await Console.Out.WriteLineAsync("  Auto-restarts on crash/SIGKILL; starts at login.");
         }
 
-        // A reviewer switch frozen into a unit is worth saying out loud: the unit outlives the shell it
-        // was captured from, so an operator who later changes the variable has no effect until they
-        // reinstall. The line must state what the captured VALUE does, not assume it enables — since
-        // these became opt-outs, a captured `0` DISABLES, and the old "the reviewer it enables stays on"
-        // text was exactly backwards for that case. Classified through the same Core parser the daemon
-        // reads, so the notice and the daemon can never disagree about a value's meaning.
-        foreach (var flag in ServiceEnvironment.CarriedConsentFlags(env)) {
-            var effect = ReviewerConsent.IsEnabled(env[flag])
-                ? "keeps that reviewer ENABLED (already the default)"
-                : "DISABLES that reviewer";
-            await Console.Out.WriteLineAsync(
-                $"  Reviewer:  {flag}={env[flag]} captured into the unit — {effect} for this service "
-              + "until you reinstall with a different value.");
-        }
+        // Closed-stdio tolerance for the entire success tail (not just the first line): the npm
+        // grandchild shares the GUI's pipes, and by this point the real mutation already happened
+        // — a broken pipe on any of these purely informational lines must never turn an
+        // already-successful install into a crash/non-zero exit.
+        try {
+            if (verify) {
+                await Console.Out.WriteLineAsync($"Service '{id}' installed (verified, {manager.Describe()}).");
+            } else {
+                await Console.Out.WriteLineAsync($"Service '{id}' installed ({manager.Describe()}).");
+                await Console.Out.WriteLineAsync("  Auto-restarts on crash/SIGKILL; starts at login.");
+            }
 
-        await Console.Out.WriteLineAsync($"  Log:       {logPath}");
-        await Console.Out.WriteLineAsync($"  Stop:      kcap daemon service stop --name {id}");
-        await Console.Out.WriteLineAsync($"  Remove:    kcap daemon service uninstall --name {id}");
+            // A reviewer switch frozen into a unit is worth saying out loud: the unit outlives the shell it
+            // was captured from, so an operator who later changes the variable has no effect until they
+            // reinstall. The line must state what the captured VALUE does, not assume it enables — since
+            // these became opt-outs, a captured `0` DISABLES, and the old "the reviewer it enables stays on"
+            // text was exactly backwards for that case. Classified through the same Core parser the daemon
+            // reads, so the notice and the daemon can never disagree about a value's meaning.
+            foreach (var flag in ServiceEnvironment.CarriedConsentFlags(env)) {
+                var effect = ReviewerConsent.IsEnabled(env[flag])
+                    ? "keeps that reviewer ENABLED (already the default)"
+                    : "DISABLES that reviewer";
+                await Console.Out.WriteLineAsync(
+                    $"  Reviewer:  {flag}={env[flag]} captured into the unit — {effect} for this service "
+                  + "until you reinstall with a different value.");
+            }
+
+            await Console.Out.WriteLineAsync($"  Log:       {logPath}");
+            await Console.Out.WriteLineAsync($"  Stop:      kcap daemon service stop --name {id}");
+            await Console.Out.WriteLineAsync($"  Remove:    kcap daemon service uninstall --name {id}");
+        } catch (IOException) { }
+
         return 0;
     }
 

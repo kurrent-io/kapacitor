@@ -35,16 +35,20 @@ public static class VerifyExit {
     public const int HelloValidation = 25;
     public const string HelloValidationToken = "verify_hello_validation";
 
-    /// <summary>Rollback's own bounded poll ran out before the verified-safe state was observed —
-    /// distinct from <see cref="RestoreVerification"/>, which is an affirmative failure (a definitely
-    /// wrong state was observed, e.g. a foreign plist), not a timeout. The marker is retained either way.</summary>
+    /// <summary>Rollback's bounded poll ran out with the state still genuinely undetermined — the
+    /// LAST observation was <see cref="LabelProbe.Unknown"/>, so there's no way to tell whether the
+    /// restore actually happened. A timeout, not an observed-wrong state: compare
+    /// <see cref="RestoreVerification"/>, which is what a Loaded (or file-still-present) last
+    /// observation gets even at the same reserve expiry. The marker is retained either way.</summary>
     public const int RollbackBudget = 26;
     public const string RollbackBudgetToken = "verify_rollback_budget";
 
-    /// <summary>Rollback (or the final recheck) affirmatively found the wrong state — the service
-    /// still loaded, or a plist on disk whose fingerprint doesn't match what this transaction wrote
-    /// (a foreign writer). The marker, and any foreign file, are left alone so an operator/resumer can
-    /// see the transaction never reached a verified-safe state.</summary>
+    /// <summary>Rollback (or the final recheck) affirmatively found the wrong state: still Loaded,
+    /// unloaded but the unit file still present, or a plist on disk whose fingerprint doesn't match
+    /// what this transaction wrote (a foreign writer) — including when the reserve ran out and THAT
+    /// was the last observation (see <see cref="RollbackBudget"/> for the Unknown-only timeout case).
+    /// The marker, and any foreign file, are left alone so an operator/resumer can see the
+    /// transaction never reached a verified-safe state.</summary>
     public const int RestoreVerification = 27;
     public const string RestoreVerificationToken = "verify_restore_verification";
 }
@@ -152,9 +156,11 @@ sealed class ServiceVerify(
         if (stopError is not null) Say($"stop: {stopError}");
 
         var rollbackDeadline = time.GetUtcNow() + _rollbackReserve;
+        LabelProbe lastProbe;
 
         while (true) {
-            if (manager.Query(serviceId).Probe == LabelProbe.Absent) {
+            lastProbe = manager.Query(serviceId).Probe;
+            if (lastProbe == LabelProbe.Absent) {
                 ServiceTxnMarker.Delete(serviceId);
                 Say(VerifyExit.ReadinessTimeoutToken);
                 return VerifyExit.ReadinessTimeout;
@@ -164,10 +170,16 @@ sealed class ServiceVerify(
             await Task.Delay(PollInterval, time, CancellationToken.None);
         }
 
-        // Reserve ran out before the restore was ever confirmed — a timeout, not an observed-wrong
-        // state, so this is RollbackBudget rather than RestoreVerification (see VerifyExit).
-        Say(VerifyExit.RollbackBudgetToken);
-        return VerifyExit.RollbackBudget;
+        // 26 vs 27 turns on the LAST observation, not just "reserve expired": Unknown means we
+        // genuinely couldn't tell (a timeout); still Loaded is an affirmatively wrong state (see
+        // VerifyExit) even though it was also observed at the reserve deadline.
+        if (lastProbe == LabelProbe.Unknown) {
+            Say(VerifyExit.RollbackBudgetToken);
+            return VerifyExit.RollbackBudget;
+        }
+
+        Say(VerifyExit.RestoreVerificationToken);
+        return VerifyExit.RestoreVerification;
     }
 
     enum InstallReady { NotReady, Ready, VersionMismatch }
@@ -203,24 +215,47 @@ sealed class ServiceVerify(
         }
 
         var pre = manager.Query(serviceId);
-        switch (pre.Probe) {
-            case LabelProbe.Loaded:
-                // Fresh install must not clear an existing label — that's --replace's job (Task 11).
-                Say(VerifyExit.ContendedToken);
-                return VerifyExit.Contended;
-            case LabelProbe.Unknown:
-                Say(VerifyExit.BootoutUnknownToken);
-                return VerifyExit.BootoutUnknown;
+        if (pre.Probe == LabelProbe.Loaded || (pre.Probe == LabelProbe.Absent && pre.UnitPresent)) {
+            // Already installed — loaded, or stopped-but-installed (`service stop` retains the
+            // plist by design). A fresh install must not overwrite or clear an existing unit;
+            // that's --replace's job (Task 11).
+            Say(VerifyExit.ContendedToken);
+            return VerifyExit.Contended;
+        }
+        if (pre.Probe == LabelProbe.Unknown) {
+            Say(VerifyExit.BootoutUnknownToken);
+            return VerifyExit.BootoutUnknown;
         }
 
         var preState = DescribeQuery(pre);
         ServiceTxnMarker.Write(serviceId, new TxnMarker(1, "install", "captured", preState, "no-unit", null));
 
-        var plist       = manager.GenerateFiles(spec).Single().Content;
-        var fingerprint = ServiceTxnMarker.Fingerprint(plist);
+        // GenerateFiles is a pure computation (no I/O for any current manager) — a throw here (e.g.
+        // an invalid captured env value) never touched disk, so there's nothing for a rollback to
+        // undo; just report it and clear the marker we just wrote.
+        GeneratedFile generated;
+        try {
+            generated = manager.GenerateFiles(spec).Single();
+        } catch (Exception ex) {
+            Say($"install: {ex.Message}");
+            ServiceTxnMarker.Delete(serviceId);
+            Say(VerifyExit.ReadinessTimeoutToken);
+            return VerifyExit.ReadinessTimeout;
+        }
+
+        var fingerprint = ServiceTxnMarker.Fingerprint(generated.Content);
         ServiceTxnMarker.Write(serviceId, new TxnMarker(1, "install", "written", preState, "no-unit", fingerprint));
 
-        manager.WriteAndBootstrap(spec);
+        try {
+            manager.WriteAndBootstrap(spec);
+        } catch (Exception ex) {
+            // Unlike GenerateFiles, WriteAndBootstrap writes the unit file before it bootstraps —
+            // a throw here (EPERM under MDM, launchctl I/O error, ...) can still leave the plist on
+            // disk, so route through the same fingerprint-gated rollback as every other failure.
+            Say($"install: {ex.Message}");
+            return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.ReadinessTimeout, VerifyExit.ReadinessTimeoutToken);
+        }
+
         ServiceTxnMarker.Write(serviceId, new TxnMarker(1, "install", "bootstrapped", preState, "no-unit", fingerprint));
 
         var deadline = time.GetUtcNow() + _forwardBudget;
@@ -228,7 +263,7 @@ sealed class ServiceVerify(
         while (time.GetUtcNow() < deadline) {
             var primary = await IsInstallReadyAsync(serviceId, expectedVersion, deadline - time.GetUtcNow());
             if (primary == InstallReady.VersionMismatch)
-                return await InstallRollback(serviceId, fingerprint, VerifyExit.HelloValidation, VerifyExit.HelloValidationToken);
+                return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.HelloValidation, VerifyExit.HelloValidationToken);
 
             if (primary == InstallReady.Ready) {
                 // Same floor rationale as start: confirming what the primary check just observed
@@ -238,13 +273,15 @@ sealed class ServiceVerify(
 
                 var confirm = await IsInstallReadyAsync(serviceId, expectedVersion, confirmBudget);
                 if (confirm == InstallReady.VersionMismatch)
-                    return await InstallRollback(serviceId, fingerprint, VerifyExit.HelloValidation, VerifyExit.HelloValidationToken);
+                    return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.HelloValidation, VerifyExit.HelloValidationToken);
 
                 if (confirm == InstallReady.Ready) {
                     // Final recheck adds what start's doesn't need: the plist on disk must still be
                     // the one this transaction wrote. A foreign writer's replacement is never deleted
                     // by us — the marker and the foreign file are both left for an operator to see.
-                    var onDisk = _readPlist(LaunchdUnit.PlistPath(serviceId));
+                    // Uses the manager-provided path (not a launchd-specific helper) so this stays
+                    // meaningful on every platform.
+                    var onDisk = _readPlist(generated.Path);
                     if (onDisk is not null && ServiceTxnMarker.Fingerprint(onDisk) == fingerprint) {
                         ServiceTxnMarker.Write(serviceId, new TxnMarker(1, "install", "committed", preState, "no-unit", fingerprint));
                         ServiceTxnMarker.Delete(serviceId);
@@ -260,7 +297,7 @@ sealed class ServiceVerify(
             await Task.Delay(PollInterval, time, CancellationToken.None);
         }
 
-        return await InstallRollback(serviceId, fingerprint, VerifyExit.ReadinessTimeout, VerifyExit.ReadinessTimeoutToken);
+        return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.ReadinessTimeout, VerifyExit.ReadinessTimeoutToken);
     }
 
     /// <summary>Install's ownership + readiness + version predicate. Version mismatch is reported
@@ -285,8 +322,8 @@ sealed class ServiceVerify(
     /// is label-absent AND file-gone (unlike start, which retains the plist), bounded by
     /// <see cref="_rollbackReserve"/>. A foreign plist (fingerprint mismatch) is never touched — same
     /// rule as the final recheck, checked before the uninstall is even attempted.</summary>
-    async Task<int> InstallRollback(string serviceId, string fingerprint, int reasonExit, string reasonToken) {
-        var onDisk = _readPlist(LaunchdUnit.PlistPath(serviceId));
+    async Task<int> InstallRollback(string serviceId, string plistPath, string fingerprint, int reasonExit, string reasonToken) {
+        var onDisk = _readPlist(plistPath);
         if (onDisk is not null && ServiceTxnMarker.Fingerprint(onDisk) != fingerprint) {
             Say(VerifyExit.RestoreVerificationToken);
             return VerifyExit.RestoreVerification;
@@ -296,10 +333,11 @@ sealed class ServiceVerify(
         if (uninstallError is not null) Say($"uninstall: {uninstallError}");
 
         var rollbackDeadline = time.GetUtcNow() + _rollbackReserve;
+        ServiceQuery lastQuery;
 
         while (true) {
-            var q = manager.Query(serviceId);
-            if (q.Probe == LabelProbe.Absent && !q.UnitPresent) {
+            lastQuery = manager.Query(serviceId);
+            if (lastQuery.Probe == LabelProbe.Absent && !lastQuery.UnitPresent) {
                 ServiceTxnMarker.Delete(serviceId);
                 Say(reasonToken);
                 return reasonExit;
@@ -309,7 +347,15 @@ sealed class ServiceVerify(
             await Task.Delay(PollInterval, time, CancellationToken.None);
         }
 
-        Say(VerifyExit.RollbackBudgetToken);
-        return VerifyExit.RollbackBudget;
+        // 26 vs 27 turns on the LAST observation, not just "reserve expired": Unknown means we
+        // genuinely couldn't tell (a timeout); still Loaded, or unloaded with the file still
+        // present, is an affirmatively wrong state (see VerifyExit) even at the same deadline.
+        if (lastQuery.Probe == LabelProbe.Unknown) {
+            Say(VerifyExit.RollbackBudgetToken);
+            return VerifyExit.RollbackBudget;
+        }
+
+        Say(VerifyExit.RestoreVerificationToken);
+        return VerifyExit.RestoreVerification;
     }
 }

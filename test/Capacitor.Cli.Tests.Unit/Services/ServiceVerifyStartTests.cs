@@ -14,7 +14,7 @@ public class ServiceVerifyStartTests {
     /// e.g. Stop happened after Start, and the restore Query happened after Stop.</summary>
     sealed class FakeServiceManager : IServiceManager {
         public readonly List<string> Calls = [];
-        public bool Started, Stopped, RemainsLoadedAfterStop;
+        public bool Started, Stopped, RemainsLoadedAfterStop, ProbeUnknownAfterStop;
         public int? RunningPid = 4242;
         public string? StopError;
         public Action<string>? OnStart;
@@ -31,8 +31,12 @@ public class ServiceVerifyStartTests {
 
         public ServiceQuery Query(string serviceId) {
             Calls.Add("query");
-            if (Stopped && !RemainsLoadedAfterStop)
-                return new ServiceQuery(LabelProbe.Absent, true, ServiceState.Installed, "/bin/kcap-daemon", null);
+            if (Stopped) {
+                if (ProbeUnknownAfterStop)
+                    return new ServiceQuery(LabelProbe.Unknown, true, ServiceState.Installed, "/bin/kcap-daemon", null);
+                if (!RemainsLoadedAfterStop)
+                    return new ServiceQuery(LabelProbe.Absent, true, ServiceState.Installed, "/bin/kcap-daemon", null);
+            }
             if (Started)
                 return new ServiceQuery(LabelProbe.Loaded, true, ServiceState.Running, "/bin/kcap-daemon", RunningPid);
             return new ServiceQuery(LabelProbe.Absent, true, ServiceState.Installed, "/bin/kcap-daemon", null);
@@ -172,7 +176,7 @@ public class ServiceVerifyStartTests {
     }
 
     [Test]
-    public async Task Rollback_reserve_exhausted_keeps_the_marker() {
+    public async Task Rollback_reserve_exhausted_while_still_loaded_is_restore_verification() {
         var dir = Directory.CreateTempSubdirectory().FullName;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
@@ -188,9 +192,10 @@ public class ServiceVerifyStartTests {
             var task = sut.StartVerifiedAsync(Id);
             var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            // Reserve ran out before the restore was ever confirmed — RollbackBudget, not
-            // RestoreVerification (that's reserved for an affirmatively-observed wrong state).
-            await Assert.That(exit).IsEqualTo(VerifyExit.RollbackBudget);
+            // The last observation is still Loaded (an affirmatively wrong state), so this is
+            // RestoreVerification even though the reserve also ran out — RollbackBudget is only
+            // for a last observation that's genuinely Unknown (see the sibling test below).
+            await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
             await Assert.That(manager.StopCalls).IsEqualTo(1);
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
             await Assert.That(ServiceTxnMarker.Read(Id)!.Phase).IsEqualTo("bootstrapped");
@@ -201,6 +206,31 @@ public class ServiceVerifyStartTests {
             var lastStop = manager.Calls.LastIndexOf("stop");
             await Assert.That(manager.Calls.LastIndexOf("query")).IsGreaterThan(lastStop);
             await Assert.That(manager.Calls.Skip(lastStop + 1).Count(c => c == "query")).IsGreaterThan(1);
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Rollback_reserve_exhausted_while_still_unknown_is_rollback_budget() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            var manager = new FakeServiceManager { ProbeUnknownAfterStop = true, StopError = "launchctl bootout: 5: Input/output error" };
+            var time = new FakeTimeProvider();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(false, null, null, null));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
+                forwardBudget: TimeSpan.FromSeconds(2), rollbackReserve: TimeSpan.FromSeconds(1));
+
+            var task = sut.StartVerifiedAsync(Id);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            // The last observation is genuinely Unknown — we ran out of reserve without ever being
+            // able to tell whether the restore happened, so this is RollbackBudget, not
+            // RestoreVerification (which needs an affirmatively-observed wrong state).
+            await Assert.That(exit).IsEqualTo(VerifyExit.RollbackBudget);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 
