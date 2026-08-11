@@ -120,22 +120,29 @@ public class AppStartupTests {
         await Assert.That(callsAfterClose).IsEquivalentTo([1], CollectionOrdering.Matching);
     }
 
-    /// Fix-round-1 regression coverage: the interim lifecycle prompt dialog used to ignore its
-    /// ConfirmAsync CancellationToken entirely — the tcs only ever resolved on a button click or
-    /// the window's own Closed event. Since ConfirmAndTakeoverAsync holds the operation gate
-    /// across the whole ConfirmAsync await, a dialog left open through a lifetime-cancel (app
+    /// Fix-round-1 regression coverage (Task 21), carried forward against Task 22's REAL
+    /// LifecyclePromptWindow/LifecyclePromptViewModel: the interim lifecycle prompt dialog used to
+    /// ignore its ConfirmAsync CancellationToken entirely — the tcs only ever resolved on a button
+    /// click or the window's own Closed event. Since ConfirmAndTakeoverAsync holds the operation
+    /// gate across the whole ConfirmAsync await, a dialog left open through a lifetime-cancel (app
     /// shutdown) would hold that gate forever, and QuiescedAsync (the very backstop shutdown
-    /// relies on) would never complete. WireDialogCancellation is the extracted fix: a cancelled
-    /// token closes the dialog, which resolves false through the SAME Closed handler a manual
-    /// Cancel click uses.
+    /// relies on) would never complete. WireDialogCancellation is the fix: a cancelled token
+    /// closes the dialog, which resolves false through the SAME Closed handler a manual
+    /// Cancel/titlebar close uses (wired here exactly like App.ShowLifecyclePromptDialogAsync
+    /// does, since that wiring — not the window itself — is what owns the fallback). The overall
+    /// dispatch is bounded (WaitAsync) so a reintroduced SizeToContent+Wrap headless hang (Task
+    /// 21's carried-forward finding) fails this test instead of hanging CI — LifecyclePromptWindow
+    /// deliberately uses a fixed Width/Height instead, see its .axaml.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task WireDialogCancellation_resolves_false_and_closes_the_dialog() {
         var (resolvedFalse, stillVisible) = await AvaloniaSession.DispatchAsync(() => {
             var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var prompt = new LifecyclePrompt(LifecyclePrompt.KindRepair, null, null, false, "disclosure text");
-            var dialog = AppUnderTest.BuildLifecyclePromptWindow(prompt, tcs);
+            var dialog = new LifecyclePromptWindow { DataContext = new LifecyclePromptViewModel(prompt, tcs) };
+            dialog.Closed += (_, _) => tcs.TrySetResult(false);
             dialog.Show();
+            Dispatcher.UIThread.RunJobs();
 
             using var cts = new CancellationTokenSource();
             AppUnderTest.WireDialogCancellation(dialog, tcs, cts.Token);
@@ -144,7 +151,7 @@ public class AppStartupTests {
             Dispatcher.UIThread.RunJobs(); // flush the posted Close()
 
             return (tcs.Task.IsCompletedSuccessfully && tcs.Task.Result == false, dialog.IsVisible);
-        });
+        }).WaitAsync(TimeSpan.FromSeconds(10));
 
         await Assert.That(resolvedFalse).IsTrue();
         await Assert.That(stillVisible).IsFalse();
@@ -152,27 +159,24 @@ public class AppStartupTests {
 
     /// A dialog resolved normally (button click, before any cancellation) must not have its
     /// registration fire later and try to re-close an already-closed window — the registration is
-    /// disposed as soon as the tcs completes, so a later Cancel() is a silent no-op. Uses a
-    /// single-paragraph (null-version) prompt like the test above — a two-paragraph prompt (both
-    /// versions set) hangs Avalonia's headless SizeToContent.Height + TextWrapping.Wrap measure
-    /// pass regardless of WireDialogCancellation, a pre-existing limitation of this exact
-    /// SizeToContent+Wrap+buttons shape (BuildConfirmForceStopWindow uses the identical shape,
-    /// also never headless-tested) that is orthogonal to this fix; see the fix-round report.
+    /// disposed as soon as the tcs completes, so a later Cancel() is a silent no-op.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task WireDialogCancellation_after_normal_resolution_ignores_a_later_cancel() {
         var result = await AvaloniaSession.DispatchAsync(() => {
             var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var prompt = new LifecyclePrompt(LifecyclePrompt.KindRepair, null, null, false, "disclosure text");
-            var dialog = AppUnderTest.BuildLifecyclePromptWindow(prompt, tcs);
+            var dialog = new LifecyclePromptWindow { DataContext = new LifecyclePromptViewModel(prompt, tcs) };
+            dialog.Closed += (_, _) => tcs.TrySetResult(false);
             dialog.Show();
+            Dispatcher.UIThread.RunJobs();
 
             using var cts = new CancellationTokenSource();
             AppUnderTest.WireDialogCancellation(dialog, tcs, cts.Token);
 
-            // Same resolution path a real "accept"/"cancel" button click takes (see
-            // BuildLifecyclePromptWindow): set the result, then close — Closed re-affirms false via
-            // TrySetResult, which is a no-op once already resolved true.
+            // Same resolution path a real Accept/Decline click takes (LifecyclePromptViewModel.
+            // Resolve): set the result, then close — Closed re-affirms false via TrySetResult,
+            // which is a no-op once already resolved true.
             tcs.TrySetResult(true);
             dialog.Close();
             Dispatcher.UIThread.RunJobs();
@@ -181,7 +185,7 @@ public class AppStartupTests {
             Dispatcher.UIThread.RunJobs();
 
             return tcs.Task.Result;
-        });
+        }).WaitAsync(TimeSpan.FromSeconds(10));
 
         await Assert.That(result).IsTrue();
     }

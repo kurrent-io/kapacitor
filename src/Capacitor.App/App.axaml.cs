@@ -1,3 +1,4 @@
+using System.Reactive.Subjects;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -85,14 +86,22 @@ public partial class App : Application {
             // One LocalControlOps and one AppNotifier for the whole app: the tray menu and the
             // window rows share a single stop/open-in-web code path (spec §7) and a single
             // toast/stderr channel (spec §11). notifier is built here (not after service.Start()
-            // below) because the lifecycle controller's interim status/attention surface needs it.
+            // below) because PauseController/AgentActionService, constructed further down, need it.
             var ops = new LocalControlOps(service.DaemonName);
             var notifier = new AppNotifier();
+
+            // AI-1654 Task 22: BehaviorSubjects, not plain Subjects — MainWindowViewModel and
+            // TrayViewModel don't exist yet at this point in StartAsync (built further down), so a
+            // BehaviorSubject replays its latest value to whichever one subscribes later, meaning a
+            // Status/Attention call this early (the startup-phase reconciliation, e.g.) is never
+            // silently dropped for having no subscriber yet.
+            var lifecycleStatus    = new BehaviorSubject<string?>(null);
+            var lifecycleAttention = new BehaviorSubject<string?>(null);
 
             // AI-1654 subscribe-before-pump: the controller's attach subscription must be live
             // BEFORE service.Start() begins pumping, or the startup phase could miss the very
             // first terminal outcome it hinges on (DaemonLifecycleController.Start's own comment).
-            var lifecycle = BuildLifecycleController(service, notifier);
+            var lifecycle = BuildLifecycleController(service, lifecycleStatus.OnNext, lifecycleAttention.OnNext);
             lifecycle.Start();
             _lifecycle = lifecycle;
 
@@ -128,7 +137,7 @@ public partial class App : Application {
             });
 
             _coordinator = new MainWindowCoordinator(
-                () => BuildAndShowMainWindow(service, actions, notifier, ticker, _shutdown.Token, activity, lifecycle.StartActionAsync));
+                () => BuildAndShowMainWindow(service, actions, notifier, ticker, _shutdown.Token, activity, lifecycle.StartActionAsync, lifecycleStatus));
             // A shutdown that started before this continuation resumed already ran its first
             // pass against a null coordinator, so a window built now must never be
             // close-protected (BeginShutdownPass's rule 1 is the general defense; this is the
@@ -141,7 +150,8 @@ public partial class App : Application {
             // tray icon ever created, leaving the error window as the only surface.
             _trayVm = new TrayViewModel(
                 service, _pause, actions, consent, openMainWindow: _coordinator.ShowMainWindow,
-                quit: () => desktop.TryShutdown(), openReviewPrompts: _promptCoordinator.ShowPromptWindow);
+                quit: () => desktop.TryShutdown(), openReviewPrompts: _promptCoordinator.ShowPromptWindow,
+                lifecycleAttention: lifecycleAttention);
             _tray = new TrayIconManager(this, _trayVm);
         } catch (Exception ex) {
             // BEFORE any await: a shutdown request can arrive while cleanup below is still
@@ -270,12 +280,14 @@ public partial class App : Application {
     // timing such that ShowMainWindow() DOES still see a non-null MainWindow.
     internal static MainWindow BuildAndShowMainWindow(
             IDaemonClientService service, AgentActionService actions, IAppNotifier notifier, ITicker ticker,
-            CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null) {
+            CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
+            IObservable<string?>? lifecycleStatus = null) {
         // Notifier is set on the WINDOW (spec §11 toast overlay), not the ViewModel — the toast
         // is a View-level concern (WindowNotificationManager lives on MainWindow) independent of
         // the VM's WhenActivated-scoped projections.
         var window = new MainWindow {
-            DataContext = new MainWindowViewModel(service, actions, ticker, shutdownToken, activity, startAction), Notifier = notifier,
+            DataContext = new MainWindowViewModel(service, actions, ticker, shutdownToken, activity, startAction, lifecycleStatus),
+            Notifier = notifier,
         };
         window.Show();
         return window;
@@ -286,14 +298,15 @@ public partial class App : Application {
     // KCAP_APP_CLI_PATH override (CliResolver.ResolvePath returning null) is treated as "no CLI"
     // here — unlike CreateDefaultAsync's own lenient `daemon start -d` fallback above, the
     // lifecycle features must never silently point at the wrong binary.
-    DaemonLifecycleController BuildLifecycleController(DaemonClientService service, IAppNotifier notifier) {
+    DaemonLifecycleController BuildLifecycleController(
+            DaemonClientService service, Action<string> setLifecycleStatus, Action<string> setLifecycleAttention) {
         var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists);
         var runner  = new DaemonClientService.ProcessRunner();
         var profile = AppConfig.ResolvedProfile; // already resolved by CreateDefaultAsync above
         var cli     = new KcapCli(runner, cliPath, service.DaemonName, profile?.ProfileName ?? "default", terminalPath: null);
         var probe   = new LoginShellProbe(runner, Environment.GetEnvironmentVariable);
         var store   = new AppStateStore(PathHelpers.ConfigPath("app-state.json"));
-        var surface = new NotifierLifecycleSurface(notifier, ConfirmLifecyclePromptAsync);
+        var surface = new LifecycleSurface(setLifecycleStatus, setLifecycleAttention, ConfirmLifecyclePromptAsync);
 
         return new DaemonLifecycleController(
             service, cli, probe, store, surface, () => Task.FromResult(ValidProfileName(profile)), TimeProvider.System);
@@ -304,21 +317,16 @@ public partial class App : Application {
             ? profile.ProfileName
             : null;
 
-    // Interim ILifecycleSurface (Task 22 replaces this with the styled dialog/status-lane
-    // implementation): Status/Attention both ride the one existing toast/stderr channel (spec
-    // §11); ConfirmAsync marshals to a plain modal window, same shape as ConfirmForceStopAsync.
-    sealed class NotifierLifecycleSurface(IAppNotifier notifier, Func<LifecyclePrompt, CancellationToken, Task<bool>> confirm) : ILifecycleSurface {
-        public void Status(string message) => notifier.Notify(message);
-        public void Attention(string message) => notifier.Notify(message);
-        public Task<bool> ConfirmAsync(LifecyclePrompt prompt, CancellationToken ct) => confirm(prompt, ct);
-    }
-
     Task<bool> ConfirmLifecyclePromptAsync(LifecyclePrompt prompt, CancellationToken ct) =>
         Dispatcher.UIThread.InvokeAsync(() => ShowLifecyclePromptDialogAsync(prompt, ct));
 
     Task<bool> ShowLifecyclePromptDialogAsync(LifecyclePrompt prompt, CancellationToken ct) {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var dialog = BuildLifecyclePromptWindow(prompt, tcs);
+        var dialog = new LifecyclePromptWindow { DataContext = new LifecyclePromptViewModel(prompt, tcs) };
+        // Closing via the titlebar/Esc without Accept/Decline also resolves false —
+        // BuildConfirmForceStopWindow's same rule below. TrySetResult is idempotent, so this is a
+        // no-op once AcceptCommand/DeclineCommand already resolved it.
+        dialog.Closed += (_, _) => tcs.TrySetResult(false);
         WireDialogCancellation(dialog, tcs, ct);
 
         if (_coordinator?.Window is { IsVisible: true } owner) {
@@ -342,54 +350,6 @@ public partial class App : Application {
             Dispatcher.UIThread.Post(() => { if (!tcs.Task.IsCompleted) dialog.Close(); }));
         tcs.Task.ContinueWith(_ => registration.Dispose(), CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-    }
-
-    // Plain code-built window, same pattern as BuildConfirmForceStopWindow below — Task 22
-    // replaces this with the styled LifecyclePromptWindow/LifecyclePromptViewModel.
-    internal static Window BuildLifecyclePromptWindow(LifecyclePrompt prompt, TaskCompletionSource<bool> tcs) {
-        var title = prompt.Kind switch {
-            LifecyclePrompt.KindRestartUpdate => "Restart daemon to update?",
-            LifecyclePrompt.KindTakeover      => "Take over daemon management?",
-            _                                 => "Repair daemon service?",
-        };
-
-        var lines = new List<string>();
-        if (prompt.DaemonVersion is not null || prompt.CliVersion is not null)
-            lines.Add($"Daemon {prompt.DaemonVersion ?? "?"} vs CLI {prompt.CliVersion ?? "?"}.");
-        lines.Add(prompt.Disclosure);
-        if (prompt.PathDegraded)
-            lines.Add("The terminal PATH could not be determined — the reinstalled service may not match your shell's PATH.");
-
-        var cancelButton = new Button { Content = "Cancel", IsCancel = true };
-        var acceptButton = new Button { Content = "Continue", IsDefault = true };
-
-        var window = new Window {
-            Title = title,
-            Icon = ProductIcon.WindowIcon,
-            Width = 420,
-            SizeToContent = SizeToContent.Height,
-            CanResize = false,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Content = new StackPanel {
-                Margin = new Thickness(20),
-                Spacing = 16,
-                Children = {
-                    new TextBlock { Text = string.Join("\n\n", lines), TextWrapping = TextWrapping.Wrap },
-                    new StackPanel {
-                        Orientation = Orientation.Horizontal,
-                        Spacing = 8,
-                        HorizontalAlignment = HorizontalAlignment.Right,
-                        Children = { cancelButton, acceptButton },
-                    },
-                },
-            },
-        };
-
-        acceptButton.Click += (_, _) => { tcs.TrySetResult(true); window.Close(); };
-        cancelButton.Click += (_, _) => { tcs.TrySetResult(false); window.Close(); };
-        window.Closed += (_, _) => tcs.TrySetResult(false);
-
-        return window;
     }
 
     internal static string ActivityStatKey(string daemonName) {

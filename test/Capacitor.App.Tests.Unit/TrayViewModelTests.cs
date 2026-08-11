@@ -866,6 +866,69 @@ public class TrayViewModelTests {
         });
     }
 
+    // ---- AI-1654 Task 22: ILifecycleSurface.Attention ----
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Lifecycle_attention_upgrades_idle_and_supplies_its_own_header_text() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            var lifecycleAttention = new BehaviorSubject<string?>(null);
+            using var vm = new TrayViewModel(service, pause, actions, consent, lifecycleAttention: lifecycleAttention);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
+            service.SnapshotsSubject.OnNext(Snap("connected", 0));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Idle);
+
+            lifecycleAttention.OnNext("restore-verification failed — see terminal for repair steps");
+
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: restore-verification failed — see terminal for repair steps");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Lifecycle_attention_never_downgrades_a_connection_trouble_row() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            var lifecycleAttention = new BehaviorSubject<string?>("orphan label needs repair");
+            using var vm = new TrayViewModel(service, pause, actions, consent, lifecycleAttention: lifecycleAttention);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Stopped); // row 1 still wins
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: not running"); // untouched by the lifecycle text
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Lifecycle_attention_wins_header_text_over_pending_consent() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            var lifecycleAttention = new BehaviorSubject<string?>("orphan label needs repair");
+            using var vm = new TrayViewModel(service, pause, actions, consent, lifecycleAttention: lifecycleAttention);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
+            service.SnapshotsSubject.OnNext(Snap("connected", 0));
+            consent.Add(Entry("a1", "p1"));
+
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: orphan label needs repair");
+            await Assert.That(vm.MenuModel.PendingConsent).IsEqualTo(1); // the badge count is unaffected
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task ReviewPendingCommand_invokes_the_injected_delegate() {

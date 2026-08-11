@@ -1,3 +1,4 @@
+using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
 using Avalonia.Media;
 using Capacitor.App.Services;
@@ -268,6 +269,27 @@ public class MainWindowViewModelTests {
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
             await Assert.That(vm.StartMessage).IsNull();
+        });
+    }
+
+    // AI-1654 Task 22 §6: ILifecycleSurface.Status one-liners ride the same StartMessage lane.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Lifecycle_status_sets_and_is_cleared_like_a_start_failure() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var (actions, _) = NewActions(service);
+            var lifecycleStatus = new Subject<string?>();
+            var vm = new MainWindowViewModel(
+                service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(),
+                lifecycleStatus: lifecycleStatus);
+            using var activation = vm.Activator.Activate();
+
+            lifecycleStatus.OnNext("daemon started, app not yet attached — retrying");
+            await Assert.That(vm.StartMessage).IsEqualTo("daemon started, app not yet attached — retrying");
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+            await Assert.That(vm.StartMessage).IsNull(); // same Connected-transition clear RunStartAsync's own message gets
         });
     }
 

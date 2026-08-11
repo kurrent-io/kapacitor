@@ -151,10 +151,17 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// preserved so a caller without a live controller (most existing tests) keeps today's
     /// behavior verbatim.
     /// </param>
+    /// <param name="lifecycleStatus">
+    /// AI-1654 Task 22 §6: ILifecycleSurface.Status one-liners (e.g. "daemon started, app not yet
+    /// attached — retrying", a coded transaction failure) ride the SAME start-message lane
+    /// RunStartAsync already uses — one place near the Start button for "why isn't this working",
+    /// cleared by the identical Connected-transition rule below. Null (most existing tests, and
+    /// any caller without a live lifecycle controller) means this lane never receives anything.
+    /// </param>
     public MainWindowViewModel(
             IDaemonClientService service, AgentActionService actions, ITicker ticker,
             CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
-            TimeProvider? time = null) {
+            IObservable<string?>? lifecycleStatus = null, TimeProvider? time = null) {
         _service = service;
         _time = time ?? TimeProvider.System;
         Agents = new ReadOnlyObservableCollection<AgentRowViewModel>(_agentsSource);
@@ -253,6 +260,11 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
 
             status.Where(s => s.State == AttachState.Connected)
                 .Subscribe(_ => StartMessage = null)
+                .DisposeWith(disposables);
+
+            lifecycleStatus?.ObserveOn(RxSchedulers.MainThreadScheduler)
+                .Where(msg => msg is not null)
+                .Subscribe(msg => StartMessage = msg)
                 .DisposeWith(disposables);
 
             _gridEnabled = connected
