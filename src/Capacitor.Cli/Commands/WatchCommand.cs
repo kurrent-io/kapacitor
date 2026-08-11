@@ -1390,6 +1390,14 @@ static partial class WatchCommand {
     /// All other lines and malformed JSON are silently ignored so this is safe to
     /// call unconditionally for every line of any vendor transcript.
     /// </summary>
+    /// <summary>
+    /// Which watchers feed <see cref="UpdateCodexPendingToolCalls"/>. It reads RAW drain lines,
+    /// which are unbounded, so — unlike when it read the 64 KiB-bounded redacted list — running it
+    /// for every vendor would make an unrelated watcher parse a multi-megabyte line it can never
+    /// match. Not gated on watcher role: a collab child needs it for ShouldPostSubagentStop.
+    /// </summary>
+    internal static bool TracksCodexToolCalls(string vendor) => vendor == "codex";
+
     internal static void UpdateCodexPendingToolCalls(HashSet<string> pending, string line) {
         try {
             using var doc  = JsonDocument.Parse(line);
@@ -1880,17 +1888,13 @@ static partial class WatchCommand {
                 state.AccumulatedDisconnected = TimeSpan.Zero;
             }
 
-            // Track Codex tool calls in flight across all new lines (Codex-only,
-            // but runs unconditionally so it is not gated on the title phase or
-            // threshold). Non-Codex lines have a different top-level shape (no
-            // response_item), so this is a cheap no-op for them.
-            //
-            // Raw drainRead.Lines, not the redacted newLines: an oversized function_call_output
-            // (a build log) redacts to a placeholder with no call_id, which would strand the id
-            // and pin toolInFlight true forever — and for Codex the idle timeout is the ONLY
-            // per-conversation session-end path, so the session would stay Active for good.
-            foreach (var line in drainRead.Lines) {
-                UpdateCodexPendingToolCalls(state.PendingCodexToolCalls, line);
+            // Codex tool calls in flight, from RAW drainRead.Lines: an oversized
+            // function_call_output redacts to a placeholder with no call_id, stranding it and
+            // pinning toolInFlight true forever (#528). Never gated on title phase or threshold.
+            if (TracksCodexToolCalls(vendor)) {
+                foreach (var line in drainRead.Lines) {
+                    UpdateCodexPendingToolCalls(state.PendingCodexToolCalls, line);
+                }
             }
 
             // Claude subagent idle-ceiling guard. Reads drainRead.Lines, NOT the redacted newLines:
@@ -1906,12 +1910,9 @@ static partial class WatchCommand {
 
             // A Codex collab CHILD watcher additionally folds its own rollout's turn state
             // (task_complete vs renewed activity) so the polling loop can post a live
-            // subagent-stop once the child is done + idle. Gated, unlike the
-            // pending-call tracking above, because only codex child watchers ever consult it.
-            // Raw lines for the same reason, and here in the other direction: a redacted
-            // response_item is not recognised as renewed activity, so a child that re-engaged
-            // would still look finished and be reported stopped while working. Matches what
-            // SeedCodexSubagentTurnState already does when it folds this state from disk.
+            // subagent-stop once the child is done + idle. Raw lines here too, in the other
+            // direction: a redacted response_item reads as no activity, so a re-engaged child
+            // would be reported stopped while working. Matches SeedCodexSubagentTurnState.
             if (vendor == "codex" && agentId is not null) {
                 foreach (var line in drainRead.Lines) {
                     state.CodexSubagentTurn.Observe(line);

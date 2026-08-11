@@ -847,13 +847,20 @@ public class UpdateClaudePendingToolCallsTests {
     }
 }
 
-/// <summary>
-/// The Codex counterpart of <see cref="ClaudeToolTrackingSourceTests"/>: both watcher state trackers
-/// must be fed the drain's RAW lines. RedactLine swaps anything over the size limit for a placeholder
-/// with no <c>call_id</c> and a <c>type</c> neither tracker recognises, and an oversized
-/// <c>function_call_output</c> — a build log, a big file read — is routine. See issue #528.
-/// </summary>
+// Codex counterpart of ClaudeToolTrackingSourceTests: both trackers must read the drain's RAW
+// lines, because RedactLine's oversize placeholder carries no call_id and no recognised type (#528).
 public class CodexToolTrackingSourceTests {
+    // The tracker reads RAW lines, which are unbounded — so unlike when it read the 64 KiB-bounded
+    // redacted list, it must not run for vendors whose transcripts it can never match. Both roles
+    // for codex: a collab child needs it too, for ShouldPostSubagentStop.
+    [Test]
+    [Arguments("codex",  true)]
+    [Arguments("claude", false)]
+    [Arguments("cursor", false)]
+    [Arguments("gemini", false)]
+    public async Task TracksCodexToolCalls_only_for_codex(string vendor, bool expected) =>
+        await Assert.That(WatchCommand.TracksCodexToolCalls(vendor)).IsEqualTo(expected);
+
     const string FunctionCall =
         """{"type":"response_item","payload":{"type":"function_call","call_id":"call_big","name":"shell","arguments":"{}"}}""";
 
@@ -862,11 +869,8 @@ public class CodexToolTrackingSourceTests {
       + new string('x', SecretRedactor.MaxRedactableLineChars + 1024)
       + "\"}}";
 
-    /// <summary>
-    /// Worse for Codex than the Claude equivalent was: the idle timeout is the ONLY per-conversation
-    /// session-end path (the desktop app's shared app-server never exits), so a stranded call_id
-    /// pins toolInFlight true and leaves the session Active in the read model forever.
-    /// </summary>
+    // A stranded call_id pins toolInFlight true, and for Codex the idle timeout is the only
+    // per-conversation session-end path — so the session stays Active forever.
     [Test]
     public async Task RedactedLines_StrandTheCallId_ButRawLinesClearIt() {
         var viaRedacted = new HashSet<string>(StringComparer.Ordinal);
@@ -882,11 +886,8 @@ public class CodexToolTrackingSourceTests {
         await Assert.That(viaRaw.Count).IsEqualTo(0);
     }
 
-    /// <summary>
-    /// The other direction on the same placeholder: Observe treats any response_item as the turn
-    /// re-opening, so an oversized one is not recognised and a child that re-engaged after
-    /// task_complete still looks finished — a premature live subagent-stop.
-    /// </summary>
+    // Other direction on the same placeholder: an unrecognised response_item leaves a re-engaged
+    // child looking finished, so it is reported stopped while still working.
     [Test]
     public async Task RedactedResponseItem_FailsToReopenTheTurn_ButTheRawOneDoes() {
         var viaRedacted = new CodexSubagentTurnTracker();
