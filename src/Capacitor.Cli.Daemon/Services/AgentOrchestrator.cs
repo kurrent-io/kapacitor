@@ -1077,17 +1077,56 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         finally { Interlocked.Exchange(ref _quarantineSweepRunning, 0); }
     }
 
+    /// <summary>Round-dispatch grace: the per-daemon ordering section for status reports. Held from
+    /// snapshot construction THROUGH completion of the hub send, so captured content is monotone in
+    /// wire order (SignalR preserves per-connection send order).
+    ///
+    /// <para>This is load-bearing, not hygiene. The server folds every flow-participant report and
+    /// treats ANY activity-seq regression as permanent corruption — the fold latches "regressed" and
+    /// disables that agent's liveness supervision for good. Two concurrent emissions that captured
+    /// their snapshots independently can send seq N after seq N+1 (a report built before a delivery
+    /// advanced the clock, sent after the delivery-triggered one), tripping exactly that latch:
+    /// silently DISABLING supervision, the opposite failure direction from the one this work fixes.
+    /// Serializing snapshot+send removes the interleaving entirely.</para>
+    ///
+    /// <para>EVERY status-report emission site MUST route through
+    /// <see cref="SendDaemonStatusReportOnceAsync"/> and therefore through this gate — today the 60s
+    /// periodic loop, the server's on-request nudge, the launch-stage transition, and the delivered-
+    /// input report; and equally any future one (a correlated status-request/echo handler above all,
+    /// since a correlated reply is the exact variant whose content is captured under contention).
+    /// A site that calls <c>_server.DaemonStatusReportAsync</c> directly bypasses the ordering and
+    /// reintroduces the latch.</para>
+    ///
+    /// <para>Deliberately never disposed: emissions are fire-and-forget, so a waiter parked here
+    /// during teardown would surface an <see cref="ObjectDisposedException"/> on a task nobody
+    /// observes. Same treatment as the per-agent <c>BorrowedSnapshotGate</c>.</para></summary>
+    readonly SemaphoreSlim _statusReportOrderingGate = new(1, 1);
+
     /// <summary>Phase B (D2): build + send one status report, one-way, swallowing errors (an
-    /// old server has no handler; a transient send failure must not touch the agent loops).</summary>
+    /// old server has no handler; a transient send failure must not touch the agent loops).
+    /// Round-dispatch grace: the build+send pair runs under
+    /// <see cref="_statusReportOrderingGate"/> — see that field for why the ordering is load-bearing
+    /// and why every emission site has to come through here.</summary>
     internal async Task SendDaemonStatusReportOnceAsync() {
-        try { await _server.DaemonStatusReportAsync(BuildStatusReport()); }
-        catch (Exception ex) { _logger.LogDebug(ex, "DaemonStatusReport send failed — ignoring"); }
+        await _statusReportOrderingGate.WaitAsync();
+        try {
+            // BuildStatusReport() is evaluated INSIDE the section, not passed in from outside it —
+            // a snapshot captured before acquisition is exactly the stale content the section exists
+            // to keep off the wire.
+            try { await _server.DaemonStatusReportAsync(BuildStatusReport()); }
+            catch (Exception ex) { _logger.LogDebug(ex, "DaemonStatusReport send failed — ignoring"); }
+        } finally {
+            _statusReportOrderingGate.Release();
+        }
+
         // Settlement lost-ack redelivery (D1): after advertising the watermarks, re-deliver any UNRETIRED terminal acks — a lost
         // ack in a reconnect window is re-elicited here instead of waiting for the server to retransmit
         // the whole command (the server tolerates the duplicate per D2″). No-op when nothing is
         // unretired; sends are contained + one-way, so this can never fault the report path. This covers
         // the periodic tick, the server's on-request report, and the activity-triggered report — every
         // status-report moment is also a re-sync moment. A validated AckProcessedPrefix stops the re-sends.
+        // Runs OUTSIDE the ordering section above: it re-sends acks, not the report, so serializing it
+        // would only extend the section's hold without ordering anything the server folds by seq.
         Processor?.RedeliverUnretiredProcessedAcks();
     }
 
@@ -2749,6 +2788,22 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // agent, it can never manufacture one, so it is kill-delaying-only and deliberately not
             // worth restructuring the ACP queue (an acknowledged write) to close.
             agent.ActivityClock.Advance();
+
+            // ...and announce it immediately rather than letting the fresh attestation wait out the
+            // rest of the 60s report cadence — the server's dispatch-relative grace is what consumes
+            // it, and a report that lands after the grace has already elapsed is worthless. One
+            // report per successfully handled invocation: SendInputCommand carries no round/dispatch
+            // identity (agent + text + attachments), so "one per round" is not implementable and
+            // duplicates are tolerated by design — a duplicate is content-honest, and the server's
+            // freshness rule still requires the idle it attests to genuinely cover the bound.
+            //
+            // Fire-and-forget, matching the launch-stage transition hook: the send is contained and
+            // one-way (SendDaemonStatusReportOnceAsync swallows its own failures), so a report
+            // failure can never fail the delivery — and awaiting it here would block THIS agent's
+            // delivery (we still hold BorrowedSnapshotGate) behind another emission's hub send.
+            // The report snapshot is captured inside the ordering section, i.e. strictly after the
+            // Advance() above, so this report can never carry a pre-delivery seq.
+            _ = SendDaemonStatusReportOnceAsync();
 
             LogSendInputDelivered(agentId, agent.Runtime.Vendor, message.Length);
         } finally {
