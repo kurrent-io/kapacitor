@@ -120,6 +120,72 @@ public class AppStartupTests {
         await Assert.That(callsAfterClose).IsEquivalentTo([1], CollectionOrdering.Matching);
     }
 
+    /// Fix-round-1 regression coverage: the interim lifecycle prompt dialog used to ignore its
+    /// ConfirmAsync CancellationToken entirely — the tcs only ever resolved on a button click or
+    /// the window's own Closed event. Since ConfirmAndTakeoverAsync holds the operation gate
+    /// across the whole ConfirmAsync await, a dialog left open through a lifetime-cancel (app
+    /// shutdown) would hold that gate forever, and QuiescedAsync (the very backstop shutdown
+    /// relies on) would never complete. WireDialogCancellation is the extracted fix: a cancelled
+    /// token closes the dialog, which resolves false through the SAME Closed handler a manual
+    /// Cancel click uses.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task WireDialogCancellation_resolves_false_and_closes_the_dialog() {
+        var (resolvedFalse, stillVisible) = await AvaloniaSession.DispatchAsync(() => {
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var prompt = new LifecyclePrompt(LifecyclePrompt.KindRepair, null, null, false, "disclosure text");
+            var dialog = AppUnderTest.BuildLifecyclePromptWindow(prompt, tcs);
+            dialog.Show();
+
+            using var cts = new CancellationTokenSource();
+            AppUnderTest.WireDialogCancellation(dialog, tcs, cts.Token);
+
+            cts.Cancel(); // simulates DisposeAsync cancelling _lifetime while the dialog is open
+            Dispatcher.UIThread.RunJobs(); // flush the posted Close()
+
+            return (tcs.Task.IsCompletedSuccessfully && tcs.Task.Result == false, dialog.IsVisible);
+        });
+
+        await Assert.That(resolvedFalse).IsTrue();
+        await Assert.That(stillVisible).IsFalse();
+    }
+
+    /// A dialog resolved normally (button click, before any cancellation) must not have its
+    /// registration fire later and try to re-close an already-closed window — the registration is
+    /// disposed as soon as the tcs completes, so a later Cancel() is a silent no-op. Uses a
+    /// single-paragraph (null-version) prompt like the test above — a two-paragraph prompt (both
+    /// versions set) hangs Avalonia's headless SizeToContent.Height + TextWrapping.Wrap measure
+    /// pass regardless of WireDialogCancellation, a pre-existing limitation of this exact
+    /// SizeToContent+Wrap+buttons shape (BuildConfirmForceStopWindow uses the identical shape,
+    /// also never headless-tested) that is orthogonal to this fix; see the fix-round report.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task WireDialogCancellation_after_normal_resolution_ignores_a_later_cancel() {
+        var result = await AvaloniaSession.DispatchAsync(() => {
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var prompt = new LifecyclePrompt(LifecyclePrompt.KindRepair, null, null, false, "disclosure text");
+            var dialog = AppUnderTest.BuildLifecyclePromptWindow(prompt, tcs);
+            dialog.Show();
+
+            using var cts = new CancellationTokenSource();
+            AppUnderTest.WireDialogCancellation(dialog, tcs, cts.Token);
+
+            // Same resolution path a real "accept"/"cancel" button click takes (see
+            // BuildLifecyclePromptWindow): set the result, then close — Closed re-affirms false via
+            // TrySetResult, which is a no-op once already resolved true.
+            tcs.TrySetResult(true);
+            dialog.Close();
+            Dispatcher.UIThread.RunJobs();
+
+            cts.Cancel(); // must not throw or flip the already-resolved result
+            Dispatcher.UIThread.RunJobs();
+
+            return tcs.Task.Result;
+        });
+
+        await Assert.That(result).IsTrue();
+    }
+
     sealed class NullProcessRunner : IProcessRunner {
         public Task<ProcessResult> RunAsync(string fileName, string[] args, RunOptions options, CancellationToken ct) =>
             Task.FromResult(new ProcessResult(0, "", "", false));

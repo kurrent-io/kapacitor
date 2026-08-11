@@ -314,11 +314,12 @@ public partial class App : Application {
     }
 
     Task<bool> ConfirmLifecyclePromptAsync(LifecyclePrompt prompt, CancellationToken ct) =>
-        Dispatcher.UIThread.InvokeAsync(() => ShowLifecyclePromptDialogAsync(prompt));
+        Dispatcher.UIThread.InvokeAsync(() => ShowLifecyclePromptDialogAsync(prompt, ct));
 
-    Task<bool> ShowLifecyclePromptDialogAsync(LifecyclePrompt prompt) {
+    Task<bool> ShowLifecyclePromptDialogAsync(LifecyclePrompt prompt, CancellationToken ct) {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var dialog = BuildLifecyclePromptWindow(prompt, tcs);
+        WireDialogCancellation(dialog, tcs, ct);
 
         if (_coordinator?.Window is { IsVisible: true } owner) {
             dialog.Show(owner);
@@ -328,6 +329,19 @@ public partial class App : Application {
         }
 
         return tcs.Task;
+    }
+
+    // ConfirmAndTakeoverAsync holds the operation gate across the whole ConfirmAsync await — a
+    // dialog left open through a lifetime-cancel (app shutdown or DisposeAsync) must not leave the
+    // gate (and therefore QuiescedAsync) blocked on a human who may never come back. Cancellation
+    // can arrive on any thread, so the close is posted rather than called inline; the registration
+    // is disposed once the dialog resolves on its own so it doesn't outlive the window. Extracted
+    // (internal, static) so a test can drive it directly against a real headless window.
+    internal static void WireDialogCancellation(Window dialog, TaskCompletionSource<bool> tcs, CancellationToken ct) {
+        var registration = ct.Register(() =>
+            Dispatcher.UIThread.Post(() => { if (!tcs.Task.IsCompleted) dialog.Close(); }));
+        tcs.Task.ContinueWith(_ => registration.Dispose(), CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
     // Plain code-built window, same pattern as BuildConfirmForceStopWindow below — Task 22
