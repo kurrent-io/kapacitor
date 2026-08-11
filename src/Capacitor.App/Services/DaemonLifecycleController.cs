@@ -157,6 +157,12 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         lock (_lock) return _lastObserved != triggering;
     }
 
+    /// The freshest known attach state, read right before a Reconcile call rather than threaded
+    /// through as a captured parameter across an async gap — a captured value can go stale (e.g.
+    /// a racing Connected arriving mid-query) and silently disable the attached-only checks for
+    /// the run's only reconciliation pass.
+    bool IsCurrentlyAttached() { lock (_lock) return _lastObserved.State == AttachState.Connected; }
+
     TaskCompletionSource<bool> ArmConfirmWaiter() {
         lock (_lock) {
             _confirmSinceGen = _generation;
@@ -258,13 +264,18 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
                 var snap = await QueryForStartupBranchAsync(triggering, _lifetime.Token).ConfigureAwait(false);
                 if (snap is null) return; // query failure/unknown — already surfaced above, no mutation (spec §6)
 
-                Reconcile(snap, attached: false, allowTxnActiveRequery: false);
+                // The true CURRENT attach state, not the (possibly stale) reason this branch was
+                // triggered by: when QueryForStartupBranchAsync had to re-evaluate against a
+                // racing Connected, this run's only reconciliation pass must not silently run in
+                // permanently-unattached mode — that would make the attached-only checks
+                // (ownership mismatch, coexistence) unreachable for the whole run.
+                Reconcile(snap, IsCurrentlyAttached(), allowTxnActiveRequery: false);
 
                 if (snap.TxnActive) {
                     // spec §6: a held flock is waited out, never mutated into. One bounded
                     // re-query (not offered as repair); still active afterward → no action this
                     // run rather than risk contending the CLI's own transaction lock.
-                    snap = await AwaitOneTxnActiveRequeryAsync(attached: false, _lifetime.Token).ConfigureAwait(false);
+                    snap = await AwaitOneTxnActiveRequeryAsync(_lifetime.Token).ConfigureAwait(false);
                     if (snap is null || snap.TxnActive) return;
                 }
 
@@ -314,6 +325,10 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
             return;
         }
 
+        // No DaemonPid check here, unlike the start rows above: a racing/wedged manual daemon on
+        // this name is the install --verify transaction's own job to detect and safely roll back
+        // from (post-install ownership + hello verification, spec §3.4; E2E item 2) — not a
+        // pre-flight guess by the app.
         await RunVerifiedMutationAsync(c => _cli.ServiceInstallVerifiedAsync(replace: false, c), ct).ConfigureAwait(false);
     }
 
@@ -382,7 +397,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
             _surface.Attention("A previous daemon service operation left a stale transaction marker — repair may be needed.");
 
         if (snap.TxnActive && allowTxnActiveRequery)
-            _ = RunTxnActiveRequeryAsync(attached);
+            _ = RunTxnActiveRequeryAsync();
 
         if (attached && snap.UnitPresent && snap.State == StateNotInstalled && snap.DaemonPid is not null)
             _surface.Attention(
@@ -391,11 +406,13 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
 
     // The inline, AWAITED building block: used by RunStartupBranchAsync, which already holds the
     // gate for its whole decision, to both wait out the delay AND gate the matrix's eligibility
-    // on the result — no mutation while the flock is (or was very recently) held.
-    async Task<ServiceSnapshot?> AwaitOneTxnActiveRequeryAsync(bool attached, CancellationToken ct) {
+    // on the result — no mutation while the flock is (or was very recently) held. `attached` is
+    // read fresh (IsCurrentlyAttached) right before reconciling, not captured beforehand — the
+    // delay is itself a window a race can land in.
+    async Task<ServiceSnapshot?> AwaitOneTxnActiveRequeryAsync(CancellationToken ct) {
         await Task.Delay(TxnActiveRequeryDelay, _time, ct).ConfigureAwait(false);
         var fresh = await QueryStatusForActionAsync(ct).ConfigureAwait(false);
-        if (fresh is not null) Reconcile(fresh, attached, allowTxnActiveRequery: false);
+        if (fresh is not null) Reconcile(fresh, IsCurrentlyAttached(), allowTxnActiveRequery: false);
         return fresh;
     }
 
@@ -405,8 +422,9 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     // Start click for the whole wait — only the query+reconcile is gate-scoped, exactly like
     // every other mutation-adjacent evidence read (spec §3.2). Exactly one follow-up query
     // (allowTxnActiveRequery: false on the way back in) — an orphaned grandchild that outlives a
-    // force-quit is waited out, not repaired (spec §6).
-    async Task RunTxnActiveRequeryAsync(bool attached) {
+    // force-quit is waited out, not repaired (spec §6). Same freshest-read rule as above:
+    // `attached` comes from IsCurrentlyAttached() at reconcile time, never a captured parameter.
+    async Task RunTxnActiveRequeryAsync() {
         try {
             await Task.Delay(TxnActiveRequeryDelay, _time, _lifetime.Token).ConfigureAwait(false);
         } catch (OperationCanceledException) {
@@ -416,7 +434,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         if (!await TryAcquireGateAsync(_lifetime.Token).ConfigureAwait(false)) return;
         try {
             var fresh = await QueryStatusForActionAsync(_lifetime.Token).ConfigureAwait(false);
-            if (fresh is not null) Reconcile(fresh, attached, allowTxnActiveRequery: false);
+            if (fresh is not null) Reconcile(fresh, IsCurrentlyAttached(), allowTxnActiveRequery: false);
         } catch (OperationCanceledException) {
             // shutdown mid-requery
         } catch (Exception ex) {

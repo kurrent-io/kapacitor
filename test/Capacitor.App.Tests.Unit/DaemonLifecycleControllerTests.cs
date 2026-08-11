@@ -225,13 +225,13 @@ public class DaemonLifecycleControllerTests {
     // ---- a racing (meaningfully different) event forces one re-evaluation instead of silence ----
 
     [Test]
-    public async Task Racing_connected_during_the_startup_query_forces_a_fresh_reevaluation() {
+    public async Task Racing_connected_during_the_startup_query_forces_a_fresh_reevaluation_in_attached_mode() {
         await using var h = new Harness();
         var first = new TaskCompletionSource<ServiceSnapshot?>();
         var call = 0;
         h.Cli.StatusBehavior = _ => {
             call++;
-            return call == 1 ? first.Task : Task.FromResult<ServiceSnapshot?>(Snap(txnMarker: true, txnActive: false));
+            return call == 1 ? first.Task : Task.FromResult<ServiceSnapshot?>(Snap(state: "running", jobPid: 100, daemonPid: 200));
         };
         h.Start();
 
@@ -242,7 +242,13 @@ public class DaemonLifecycleControllerTests {
         first.SetResult(Snap(state: "running", jobPid: 1, daemonPid: 1)); // release the now-stale first query
 
         await WaitUntilAsync(() => h.Cli.StatusCallCount == 2, what: "the forced re-evaluation against fresh state");
-        await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "reconciliation still ran despite the race");
+
+        // The re-evaluation must reconcile in ATTACHED mode (we're now actually Connected) — the
+        // ownership-mismatch check only fires while attached, so this proves the race no longer
+        // strands the run's only reconciliation pass in permanently-unattached mode.
+        await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "the attached-mode ownership-mismatch attention");
+        await Assert.That(h.Surface.AttentionMessages[0]).Contains("100");
+        await Assert.That(h.Surface.AttentionMessages[0]).Contains("200");
     }
 
     // ---- startup phase closes on the FIRST terminal outcome ----
