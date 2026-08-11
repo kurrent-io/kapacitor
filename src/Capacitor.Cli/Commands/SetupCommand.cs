@@ -815,6 +815,16 @@ public static class SetupCommand {
 
     static async Task<(string ServerUrl, string? PreAuthToken, string Provider, bool LoginComplete)?> RunDiscoveryAsync(
             string[] args, bool forceDevice) {
+        // Resolved before contacting the auth service: a non-interactive session has no discovery
+        // provider at all, so there is nothing to ask the proxy about.
+        var chosen = OAuthLoginFlow.ChooseDiscoveryProvider(args, isInteractive: !HeadlessEnvironment.IsHeadless());
+
+        if (chosen is null) {
+            await Console.Error.WriteLineAsync(OAuthLoginFlow.HeadlessDiscoveryUnsupportedMessage());
+
+            return null;
+        }
+
         AnsiConsole.MarkupLine($"  Proxy: [dim]{Markup.Escape(AuthProxyEndpoint.Url)}[/]");
 
         using var http  = new HttpClient();
@@ -827,7 +837,7 @@ public static class SetupCommand {
             return null;
         }
 
-        var provider = OAuthLoginFlow.ChooseDiscoveryProvider(args, isInteractive: !HeadlessEnvironment.IsHeadless());
+        var provider = chosen;
         // WorkOS discovery always authenticates via a loopback browser (see
         // WorkOSDiscovery.RunWithLiveAuthAsync's orglessLogin) — headless never switches it to a
         // device flow the way GitHub App's AcquireGitHubTokenAsync does, so the label must not

@@ -828,6 +828,16 @@ string? ResolveSessionId(string[] args, int skipCount = 1, string[]? valueFlags 
     ArgParsing.ResolveSessionId(args, skipCount, valueFlags);
 
 async Task<int> HandleDiscoverLoginAsync(bool forceDevice) {
+    // Before the proxy call: a non-interactive session has no discovery provider, so there is
+    // nothing to ask about (see OAuthLoginFlow.ChooseDiscoveryProvider).
+    var provider = OAuthLoginFlow.ChooseDiscoveryProvider(args, isInteractive: !HeadlessEnvironment.IsHeadless());
+
+    if (provider is null) {
+        await Console.Error.WriteLineAsync(OAuthLoginFlow.HeadlessDiscoveryUnsupportedMessage());
+
+        return 1;
+    }
+
     using var http  = new HttpClient();
     var proxyClient = new AuthProxyClient(http);
 
@@ -838,8 +848,6 @@ async Task<int> HandleDiscoverLoginAsync(bool forceDevice) {
 
         return 1;
     }
-
-    var provider = OAuthLoginFlow.ChooseDiscoveryProvider(args, isInteractive: !HeadlessEnvironment.IsHeadless());
 
     if (provider == AuthProvider.WorkOS) {
         var workosDiscovery = await WorkOSDiscovery.RunWithLiveAuthAsync(

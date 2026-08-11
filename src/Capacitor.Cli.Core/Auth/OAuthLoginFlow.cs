@@ -60,15 +60,33 @@ public static class OAuthLoginFlow {
 
     /// <summary>
     /// Picks the discovery provider before any auth runs: <c>--github</c> selects the GitHub App
-    /// path; otherwise login defaults to the org SSO path (WorkOS). Headless callers can't run the
-    /// WorkOS 127.0.0.1 browser loopback, so a no-flag headless caller falls back to GitHub (whose
-    /// device flow works without a local browser).
+    /// path; otherwise discovery uses the org SSO path (WorkOS). Returns <c>null</c> when no
+    /// provider can serve a non-interactive session — the caller reports
+    /// <see cref="HeadlessDiscoveryUnsupportedMessage"/> and stops.
+    ///
+    /// <para>A no-flag headless caller used to fall back to the GitHub App, whose device flow needs
+    /// no local browser (WorkOS authenticates through a 127.0.0.1 loopback callback that a remote
+    /// box's browser can never reach). That fallback was the only remaining source of NEW GitHub App
+    /// sign-ins, and it dead-ended: the GitHub App branch has no provisioning path, so a headless
+    /// user with no workspace authenticated and was then told to ask an admin to install a GitHub
+    /// App. Failing before auth is both honest and one round trip cheaper. Closing this properly
+    /// means giving WorkOS a headless path — see the DoD in issue #535.</para>
     /// </summary>
-    internal static string ChooseDiscoveryProvider(string[] args, bool isInteractive) {
+    internal static string? ChooseDiscoveryProvider(string[] args, bool isInteractive) {
         if (args.Contains("--github")) return AuthProvider.GitHubApp;
 
-        return isInteractive ? AuthProvider.WorkOS : AuthProvider.GitHubApp;
+        return isInteractive ? AuthProvider.WorkOS : null;
     }
+
+    /// <summary>
+    /// What a non-interactive session is told instead of being routed onto legacy auth. Names the
+    /// two routes that actually work — create a workspace in a browser, or point at one that
+    /// already exists — and deliberately mentions no GitHub App.
+    /// </summary>
+    internal static string HeadlessDiscoveryUnsupportedMessage() =>
+        "Setting up a new workspace needs an interactive terminal, and this session is non-interactive.\n"
+      + $"  • Create a workspace at {ProvisioningEndpoint.Url}/signup, then run: kcap setup <slug>\n"
+      + "  • Or point at an existing workspace: kcap setup --server-url <url>";
 
     /// <summary>
     /// `kcap login` runs tenant discovery when there's no configured server (nothing to log into yet)
