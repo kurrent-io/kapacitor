@@ -2737,6 +2737,19 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             else
                 await agent.Runtime.SendUserInputAsync(message);
 
+            // Round-dispatch grace: input delivery is itself an activity signal, not just an
+            // agent's own subsequent output — reused via the SAME AgentActivityClock.Advance() PTY
+            // output/ACP envelopes/turn transitions already call. A throw from either await above
+            // skips this line entirely, so a failed/cancelled delivery advances nothing.
+            //
+            // For the default (non-borrowed) ACP path, SendUserInputAsync's non-throwing return only
+            // means "enqueued" (AcpHostedAgentRuntime.EnqueueTurn(acknowledgeWrite: false)) — a full
+            // _pendingTurns queue silently drops the input without throwing. Advancing on that is a
+            // known, accepted residual: a false advance only DELAYS a reap/silence verdict for this
+            // agent, it can never manufacture one, so it is kill-delaying-only and deliberately not
+            // worth restructuring the ACP queue (an acknowledged write) to close.
+            agent.ActivityClock.Advance();
+
             LogSendInputDelivered(agentId, agent.Runtime.Vendor, message.Length);
         } finally {
             agent.BorrowedSnapshotGate.Release();
