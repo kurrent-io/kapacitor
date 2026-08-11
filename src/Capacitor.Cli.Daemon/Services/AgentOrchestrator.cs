@@ -2741,6 +2741,61 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         } finally {
             agent.BorrowedSnapshotGate.Release();
         }
+
+        // Codex turn-start diagnostic: a PTY Codex runtime exposes no turn-start signal to the daemon, so on a
+        // follow-up round the log otherwise stops at "delivered" and cannot tell a slow-but-working
+        // reviewer from one that received the input and never began a turn. Watch Codex's rollout
+        // for growth after delivery and log the verdict. Fire-and-forget, bounded, best-effort —
+        // never affects delivery. Only reached on the successful-delivery path (the guards and the
+        // borrowed-snapshot failure above all return before here).
+        if (string.Equals(agent.Runtime.Vendor, "codex", StringComparison.OrdinalIgnoreCase))
+            _ = ObserveCodexTurnAfterSendAsync(agent);
+    }
+
+    /// <summary>
+    /// Codex turn-start diagnostic: after input is delivered to a hosted Codex reviewer, watch its rollout
+    /// JSONL for growth (the only clean turn-start signal a PTY runtime gives the daemon — see
+    /// <see cref="CodexTurnObserver"/>) and log whether a turn began. Fully best-effort: an
+    /// unresolvable rollout, a read fault, or the agent stopping is logged (or silently dropped for
+    /// cancellation) and never disturbs the send path.
+    /// </summary>
+    async Task ObserveCodexTurnAfterSendAsync(AgentInstance agent) {
+        try {
+            // Same cwd + spawn-time disambiguation the session-id detector uses, so we watch the
+            // reviewer's OWN rollout, not a concurrent Codex session under the shared tree.
+            if (CodexSessionRolloutLocator.TryLocatePath(CodexPaths.Sessions, agent.Worktree.Path, agent.CreatedAt) is not { } rolloutPath) {
+                LogCodexTurnRolloutUnresolved(agent.Id);
+                return;
+            }
+
+            long CurrentLength() {
+                try { return new FileInfo(rolloutPath).Length; } catch { return -1; }
+            }
+
+            var baseline = CurrentLength();
+            if (baseline < 0) {
+                LogCodexTurnRolloutUnresolved(agent.Id);
+                return;
+            }
+
+            using var cts   = CancellationTokenSource.CreateLinkedTokenSource(agent.ReadCts.Token, _shutdownCts.Token);
+            var       start = DateTime.UtcNow;
+
+            var outcome = await CodexTurnObserver.ObserveGrowthAsync(
+                CurrentLength, baseline, CodexTurnObserveTimeout, CodexTurnObserveInterval, TimeProvider.System, cts.Token);
+
+            switch (outcome) {
+                case CodexTurnObserver.Outcome.TurnObserved:
+                    LogCodexTurnStarted(agent.Id, (long)(DateTime.UtcNow - start).TotalMilliseconds);
+                    break;
+                case CodexTurnObserver.Outcome.NotObserved:
+                    LogCodexTurnNotObserved(agent.Id, CodexTurnObserveTimeout.TotalSeconds);
+                    break;
+                // Cancelled: the agent stopped or the daemon is shutting down — no verdict to report.
+            }
+        } catch (Exception ex) {
+            LogCodexTurnObserveFailed(ex, agent.Id);
+        }
     }
 
     static readonly TimeSpan BorrowedSnapshotRefreshTimeout = TimeSpan.FromSeconds(30);
@@ -3340,6 +3395,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     static readonly TimeSpan SessionIdPollInterval = TimeSpan.FromSeconds(2);
     static readonly TimeSpan SessionIdPollTimeout  = TimeSpan.FromMinutes(3);
 
+    // Codex turn-start diagnostic: how long, and how often, to watch a hosted Codex reviewer's rollout for growth
+    // after a round's input is delivered, so the daemon log can say whether Codex began a turn.
+    // A working reviewer appends response items within seconds of starting; 2 minutes of silence
+    // is the "received input, produced no turn" signature, not a slow-but-working reviewer.
+    static readonly TimeSpan CodexTurnObserveInterval = TimeSpan.FromSeconds(2);
+    static readonly TimeSpan CodexTurnObserveTimeout  = TimeSpan.FromMinutes(2);
+
     /// <summary>
     /// Vendor-dispatched, best-effort background fallback that discovers a spawned agent's
     /// session id from the transcript/rollout its harness writes and reports it to the server,
@@ -3781,6 +3843,19 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "SendInput dropped: agent {AgentId} is private — server-origin input is ignored")]
     partial void LogSendInputPrivateAgent(string agentId);
+
+    // Codex (PTY) turn-start diagnostic — after SendInput is delivered, did Codex act?
+    [LoggerMessage(Level = LogLevel.Information, Message = "Codex turn started for agent {AgentId} after input ({ElapsedMs}ms after delivery)")]
+    partial void LogCodexTurnStarted(string agentId, long elapsedMs);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Codex produced NO turn for agent {AgentId} within {Seconds}s of input delivery — the reviewer received the prompt but did not act on it")]
+    partial void LogCodexTurnNotObserved(string agentId, double seconds);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Codex turn observer: could not resolve a rollout for agent {AgentId} — skipping turn-start diagnostic for this round")]
+    partial void LogCodexTurnRolloutUnresolved(string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Codex turn observer faulted for agent {AgentId} (diagnostic only — delivery unaffected)")]
+    partial void LogCodexTurnObserveFailed(Exception ex, string agentId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "SendSpecialKey '{Key}' dropped: agent {AgentId} not found on this daemon ({KnownAgents} agents registered)")]
     partial void LogSendSpecialKeyUnknownAgent(string agentId, string key, int knownAgents);

@@ -120,6 +120,40 @@ public class CodexSessionRolloutLocatorTests {
         }
     }
 
+    // TryLocatePath returns the winning rollout's FILE PATH (for growth-watching), and
+    // must agree with TryLocate on which file won.
+    [Test]
+    public async Task TryLocatePath_returns_the_matching_rollout_file() {
+        var root = Directory.CreateTempSubdirectory("kcap-codexrollout-").FullName;
+        try {
+            var spawn = DateTime.UtcNow;
+            var uuid  = "019f0022-1702-7a02-a630-edbfb043add4";
+            var wt    = Path.Combine(root, "worktree");
+            var file  = WriteRollout(root, uuid, wt, creationUtc: spawn);
+
+            var path = CodexSessionRolloutLocator.TryLocatePath(root, wt, spawn.AddSeconds(-1));
+
+            await Assert.That(path).IsEqualTo(file);
+        } finally {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task TryLocatePath_returns_null_when_no_rollout_matches() {
+        var root = Directory.CreateTempSubdirectory("kcap-codexrollout-").FullName;
+        try {
+            var spawn = DateTime.UtcNow;
+            WriteRollout(root, "019f0022-1702-7a02-a630-edbfb043add4", "/some/other/cwd", creationUtc: spawn);
+
+            var path = CodexSessionRolloutLocator.TryLocatePath(root, Path.Combine(root, "worktree"), spawn.AddSeconds(-1));
+
+            await Assert.That(path).IsNull();
+        } finally {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Test]
     public async Task TryLocate_ignores_a_foreign_cwd_rollout() {
         var root = Directory.CreateTempSubdirectory("kcap-codexrollout-").FullName;
