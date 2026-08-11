@@ -50,12 +50,14 @@ public class DaemonClientServiceTests {
     sealed class FakeProcessRunner : IProcessRunner {
         public string? SeenFileName;
         public string[]? SeenArgs;
-        public Func<CancellationToken, Task<(int ExitCode, string Stderr)>>? Behavior;
+        public RunOptions? SeenOptions;
+        public Func<CancellationToken, Task<ProcessResult>>? Behavior;
 
-        public Task<(int ExitCode, string Stderr)> RunAsync(string fileName, string[] args, CancellationToken ct) {
+        public Task<ProcessResult> RunAsync(string fileName, string[] args, RunOptions options, CancellationToken ct) {
             SeenFileName = fileName;
             SeenArgs     = args;
-            return (Behavior ?? (_ => Task.FromResult((0, ""))))(ct);
+            SeenOptions  = options;
+            return (Behavior ?? (_ => Task.FromResult(new ProcessResult(0, "", "", false))))(ct);
         }
     }
 
@@ -329,7 +331,7 @@ public class DaemonClientServiceTests {
     [Test]
     public async Task StartDaemon_success_argv_and_restart_kick() {
         var script = new Script();
-        var runner = new FakeProcessRunner { Behavior = _ => Task.FromResult((0, "")) };
+        var runner = new FakeProcessRunner { Behavior = _ => Task.FromResult(new ProcessResult(0, "", "", false)) };
         await using var svc = new DaemonClientService("daemon-a", script.Run, runner, "/opt/kcap");
         svc.Start();
         await WaitUntilAsync(() => script.LiveEnumerations >= 1, what: "enumeration to start");
@@ -365,7 +367,7 @@ public class DaemonClientServiceTests {
         }
 
         var nonZeroWithStderr = new FakeProcessRunner {
-            Behavior = _ => Task.FromResult((1, "boom: could not bind socket"))
+            Behavior = _ => Task.FromResult(new ProcessResult(1, "", "boom: could not bind socket", false))
         };
         await using (var svc2 = new DaemonClientService("daemon-b", script.Run, nonZeroWithStderr, "kcap")) {
             var r2 = await svc2.StartDaemonAsync(CancellationToken.None);
@@ -374,7 +376,7 @@ public class DaemonClientServiceTests {
         }
 
         var nonZeroEmptyStderr = new FakeProcessRunner {
-            Behavior = _ => Task.FromResult((1, ""))
+            Behavior = _ => Task.FromResult(new ProcessResult(1, "", "", false))
         };
         await using (var svc3 = new DaemonClientService("daemon-c", script.Run, nonZeroEmptyStderr, "kcap")) {
             var r3 = await svc3.StartDaemonAsync(CancellationToken.None);

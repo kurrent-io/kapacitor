@@ -121,8 +121,8 @@ public class AppStartupTests {
     }
 
     sealed class NullProcessRunner : IProcessRunner {
-        public Task<(int ExitCode, string Stderr)> RunAsync(string fileName, string[] args, CancellationToken ct) =>
-            Task.FromResult((0, ""));
+        public Task<ProcessResult> RunAsync(string fileName, string[] args, RunOptions options, CancellationToken ct) =>
+            Task.FromResult(new ProcessResult(0, "", "", false));
     }
 
     /// Minimal stand-in for LocalControlClient.RunAsync: yields Connecting once, then sits

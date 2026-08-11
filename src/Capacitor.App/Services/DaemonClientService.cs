@@ -117,18 +117,18 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
 
     public async Task<StartDaemonResult> StartDaemonAsync(CancellationToken ct) {
         try {
-            var (exit, stderr) = await _processRunner
-                .RunAsync(_cliPath, ["daemon", "start", "-d", "--name", DaemonName], ct)
+            var result = await _processRunner
+                .RunAsync(_cliPath, ["daemon", "start", "-d", "--name", DaemonName], new RunOptions(), ct)
                 .ConfigureAwait(false);
 
-            if (exit == 0) {
+            if (result.ExitCode == 0) {
                 _ = RestartLoopAsync(); // immediate kick — the attach doesn't sit out a backoff
                 return new(true, null);
             }
 
-            return new(false, string.IsNullOrWhiteSpace(stderr)
-                ? $"kcap daemon start exited with code {exit}"
-                : stderr.Trim());
+            return new(false, string.IsNullOrWhiteSpace(result.Stderr)
+                ? $"kcap daemon start exited with code {result.ExitCode}"
+                : result.Stderr.Trim());
         } catch (OperationCanceledException) {
             throw; // ct abandons the WAIT, not the started daemon — never reported as a failure
         } catch (Exception ex) {
@@ -168,38 +168,67 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
         Agents.Dispose();
     }
 
-    /// Production IProcessRunner: wraps System.Diagnostics.Process with stderr capture and a
-    /// ct-linked wait. `ct` abandons the WAIT only — a detached `daemon start -d` keeps running.
+    /// Production IProcessRunner: wraps System.Diagnostics.Process with stdout/stderr capture, an
+    /// env overlay, an internal timeout, and a per-call cancel mode. `RunOptions.Timeout` is an
+    /// internal deadline distinct from `ct`: on expiry the tree is killed and awaited, and the
+    /// result comes back with TimedOut=true rather than throwing. `ct` cancellation behaves per
+    /// `RunOptions.CancelMode`: AbandonWait abandons the WAIT only (a detached `daemon start -d`
+    /// keeps running) and still throws OperationCanceledException; KillTree kills the tree and
+    /// awaits its exit first, then STILL throws — cancellation is cancellation, TimedOut is only
+    /// for the internal Timeout.
     /// Internal (not private): lets ProcessRunnerTests drive a REAL child process, since
     /// IProcessRunner itself is only a seam for DaemonClientService's own consumers.
     internal sealed class ProcessRunner : IProcessRunner {
-        public async Task<(int ExitCode, string Stderr)> RunAsync(string fileName, string[] args, CancellationToken ct) {
+        public async Task<ProcessResult> RunAsync(string fileName, string[] args, RunOptions options, CancellationToken ct) {
             var psi = new ProcessStartInfo(fileName) {
                 RedirectStandardOutput = true,
                 RedirectStandardError  = true,
                 UseShellExecute        = false,
             };
             foreach (var a in args) psi.ArgumentList.Add(a);
+            if (options.EnvOverlay is not null)
+                foreach (var (key, value) in options.EnvOverlay) psi.Environment[key] = value;
 
             using var process = Process.Start(psi) ?? throw new InvalidOperationException($"Failed to start '{fileName}'.");
-            // CancellationToken.None on both drains: `ct` abandons the WAIT below (class doc),
-            // never the pipes — a drain tied to `ct` would stop reading on cancellation and let
-            // a detached child block on a full pipe buffer.
+            // CancellationToken.None on both drains: neither `ct` nor the internal timeout ever
+            // abandons the pipes — a drain tied to either would stop reading on cancellation and
+            // let a detached/killed child block on a full pipe buffer.
             var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
             var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
 
+            using var timeoutCts = options.Timeout is { } timeout ? new CancellationTokenSource(timeout) : null;
+            using var waitCts = timeoutCts is null ? null : CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
             try {
-                await process.WaitForExitAsync(ct).ConfigureAwait(false);
+                await process.WaitForExitAsync(waitCts?.Token ?? ct).ConfigureAwait(false);
             } catch (OperationCanceledException) {
-                // The drains outlive this method on the abandoned-wait path — observe them so a
-                // later fault surfaces nowhere instead of as an unobserved task exception.
-                Observe(stdoutTask);
-                Observe(stderrTask);
-                throw;
+                if (ct.IsCancellationRequested) {
+                    if (options.CancelMode == CancelMode.KillTree)
+                        await KillAndAwaitAsync(process).ConfigureAwait(false);
+
+                    // The drains outlive this method on the abandoned-wait path — observe them
+                    // so a later fault surfaces nowhere instead of as an unobserved task
+                    // exception. Under KillTree the child is already dead, so this still
+                    // completes promptly; it just isn't awaited before the throw below.
+                    Observe(stdoutTask);
+                    Observe(stderrTask);
+                    throw;
+                }
+
+                // Only the internal timeout could have fired the linked token.
+                await KillAndAwaitAsync(process).ConfigureAwait(false);
+                await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+                return new ProcessResult(process.ExitCode, stdoutTask.Result, stderrTask.Result, TimedOut: true);
             }
 
             await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
-            return (process.ExitCode, stderrTask.Result);
+            return new ProcessResult(process.ExitCode, stdoutTask.Result, stderrTask.Result, TimedOut: false);
+        }
+
+        static async Task KillAndAwaitAsync(Process process) {
+            try { process.Kill(entireProcessTree: true); }
+            catch (InvalidOperationException) { /* already exited */ }
+            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
         }
 
         static void Observe(Task task) => task.ContinueWith(t => _ = t.Exception, CancellationToken.None,

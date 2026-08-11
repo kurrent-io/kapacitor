@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Capacitor.App.Services;
 
@@ -35,10 +36,10 @@ public class ProcessRunnerTests {
         var (fileName, args) = EchoBothStreamsThenExit(3);
         var runner = new DaemonClientService.ProcessRunner();
 
-        var (exitCode, stderr) = await runner.RunAsync(fileName, args, CancellationToken.None);
+        var result = await runner.RunAsync(fileName, args, new RunOptions(), CancellationToken.None);
 
-        await Assert.That(exitCode).IsEqualTo(3);
-        await Assert.That(stderr).Contains("err-marker");
+        await Assert.That(result.ExitCode).IsEqualTo(3);
+        await Assert.That(result.Stderr).Contains("err-marker");
     }
 
     [Test]
@@ -46,8 +47,100 @@ public class ProcessRunnerTests {
         var (fileName, args) = EchoBothStreamsThenExit(0);
         var runner = new DaemonClientService.ProcessRunner();
 
-        var (exitCode, _) = await runner.RunAsync(fileName, args, CancellationToken.None);
+        var result = await runner.RunAsync(fileName, args, new RunOptions(), CancellationToken.None);
 
-        await Assert.That(exitCode).IsEqualTo(0);
+        await Assert.That(result.ExitCode).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task RunAsync_captures_stdout() {
+        Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
+
+        var runner = new DaemonClientService.ProcessRunner();
+
+        var result = await runner.RunAsync("/bin/echo", ["hi"], new RunOptions(), CancellationToken.None);
+
+        await Assert.That(result.Stdout).IsEqualTo("hi\n");
+    }
+
+    [Test]
+    public async Task RunAsync_env_overlay_adds_without_clobbering_the_rest() {
+        Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
+
+        var runner = new DaemonClientService.ProcessRunner();
+        var options = new RunOptions(EnvOverlay: new Dictionary<string, string> { ["KCAP_PROFILE"] = "work" });
+
+        var result = await runner.RunAsync("/usr/bin/env", [], options, CancellationToken.None);
+
+        await Assert.That(result.Stdout).Contains("KCAP_PROFILE=work");
+        await Assert.That(result.Stdout).Contains("PATH="); // overlay adds, never replaces the inherited env
+    }
+
+    [Test]
+    public async Task Timeout_kills_the_tree_and_returns_promptly() {
+        Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
+
+        var runner = new DaemonClientService.ProcessRunner();
+        var sw = Stopwatch.StartNew();
+
+        var result = await runner.RunAsync(
+            "/bin/sleep", ["30"], new RunOptions(Timeout: TimeSpan.FromMilliseconds(200)), CancellationToken.None);
+        sw.Stop();
+
+        await Assert.That(result.TimedOut).IsTrue();
+        await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(10));
+    }
+
+    [Test]
+    public async Task AbandonWait_cancelled_ct_throws_and_the_child_survives() {
+        Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
+
+        var marker = Path.Combine(Path.GetTempPath(), $"kcap-processrunner-{Guid.NewGuid():N}");
+        try {
+            var runner = new DaemonClientService.ProcessRunner();
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            await Assert.ThrowsAsync<OperationCanceledException>(() =>
+                runner.RunAsync("/bin/sh", ["-c", $"sleep 0.3; touch {marker}"], new RunOptions(), cts.Token));
+
+            // Not killed: still running at the point the wait was abandoned, so it hasn't
+            // reached `touch` yet — then it finishes on its own past the abandoned wait.
+            await Assert.That(File.Exists(marker)).IsFalse();
+            await WaitUntilAsync(() => File.Exists(marker), TimeSpan.FromSeconds(5), "the abandoned child to finish and touch the marker");
+        } finally {
+            File.Delete(marker);
+        }
+    }
+
+    [Test]
+    public async Task KillTree_cancelled_ct_kills_the_child_then_throws() {
+        Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
+
+        var marker = Path.Combine(Path.GetTempPath(), $"kcap-processrunner-{Guid.NewGuid():N}");
+        try {
+            var runner = new DaemonClientService.ProcessRunner();
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            await Assert.ThrowsAsync<OperationCanceledException>(() =>
+                runner.RunAsync(
+                    "/bin/sh", ["-c", $"sleep 0.3; touch {marker}"],
+                    new RunOptions(CancelMode: CancelMode.KillTree), cts.Token));
+
+            // Killed before it could reach `touch` — unlike AbandonWait, it never gets there.
+            await Task.Delay(TimeSpan.FromSeconds(1));
+            await Assert.That(File.Exists(marker)).IsFalse();
+        } finally {
+            File.Delete(marker);
+        }
+    }
+
+    static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null, string what = "condition") {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
+        while (!condition()) {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException($"Timed out waiting for: {what}");
+            await Task.Delay(10);
+        }
     }
 }
