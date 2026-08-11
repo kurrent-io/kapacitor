@@ -81,7 +81,7 @@ public static class DaemonCommands {
         }
 
         try {
-            if (ReadPidFile(name) is { } existing && IsOurDaemon(existing.Pid, existing.StartToken)) {
+            if (DaemonPidProbe.ReadPidFile(name) is { } existing && DaemonPidProbe.IsOurDaemon(existing.Pid, existing.StartToken)) {
                 await Console.Error.WriteLineAsync(
                     $"Daemon '{name}' already running (PID {existing.Pid}). "
                   + $"Use `kcap daemon stop --name {name}` first."
@@ -157,7 +157,7 @@ public static class DaemonCommands {
 
         using var _ = startLock;
 
-        if (ReadPidFile(name) is { } existing && IsOurDaemon(existing.Pid, existing.StartToken)) {
+        if (DaemonPidProbe.ReadPidFile(name) is { } existing && DaemonPidProbe.IsOurDaemon(existing.Pid, existing.StartToken)) {
             Console.Error.WriteLine(
                 $"Daemon '{name}' already running (PID {existing.Pid}). "
               + $"Use `kcap daemon stop --name {name}` first."
@@ -319,7 +319,7 @@ public static class DaemonCommands {
             return 0;
         }
 
-        if (ReadPidFile(name) is not { } entry) {
+        if (DaemonPidProbe.ReadPidFile(name) is null) {
             // ReadPidFile returns null for BOTH an absent file and a present-but-
             // unparseable one (empty/partial — e.g. a mid-write SIGKILL; it no
             // longer unlinks the latter).
@@ -347,7 +347,7 @@ public static class DaemonCommands {
         }
 
         try {
-            if (!IsOurDaemon(entry.Pid, entry.StartToken)) {
+            if (DaemonPidProbe.ValidatedPid(name) is not { } pid) {
                 // A dead/foreign PID. Clean up under the flock so we don't unlink a
                 // PID a concurrent start wrote after our read (TOCTOU).
                 if (TryCleanupMarkersUnderLock(name))
@@ -358,26 +358,26 @@ public static class DaemonCommands {
                 return 0;
             }
 
-            // Refuse to kill ourselves. IsOurDaemon has already said this PID is a live process
-            // whose start token matches, so every identity check upstream has PASSED — the PID is
-            // simply not a daemon. A real daemon is never the process running `daemon stop`, so
-            // reaching here means the PID file is describing something it should not, and killing
-            // its tree would take down this process and everything above it.
+            // Refuse to kill ourselves. DaemonPidProbe.ValidatedPid has already said this PID is a
+            // live process whose start token matches, so every identity check upstream has PASSED —
+            // the PID is simply not a daemon. A real daemon is never the process running `daemon
+            // stop`, so reaching here means the PID file is describing something it should not, and
+            // killing its tree would take down this process and everything above it.
             //
             // Without this, Process.Kill(entireProcessTree: true) throws
             // "Cannot be used to terminate a process tree containing the calling process" — an
             // opaque InvalidOperationException that says nothing about WHICH pid file caused it.
             // That is exactly how this surfaced: a random, always-different CI test failing
             // with an identical stack, because the pid file named the test runner itself.
-            if (entry.Pid == Environment.ProcessId) {
+            if (pid == Environment.ProcessId) {
                 Console.Error.WriteLine(
-                    $"Daemon '{name}' resolves to the current process (PID {entry.Pid}); refusing to stop it. "
+                    $"Daemon '{name}' resolves to the current process (PID {pid}); refusing to stop it. "
                   + $"Its PID file at {DaemonLockPaths.PidPath(name)} does not describe a daemon.");
 
                 return 1;
             }
 
-            var process = Process.GetProcessById(entry.Pid);
+            var process = Process.GetProcessById(pid);
             var killed  = false;
 
             try {
@@ -400,7 +400,7 @@ public static class DaemonCommands {
                 // advance; this covers the ANCESTOR case, which cannot be detected portably. Report
                 // which daemon and which PID rather than letting an unattributed exception escape.
                 Console.Error.WriteLine(
-                    $"Daemon '{name}' (PID {entry.Pid}) could not be stopped: {ex.Message} "
+                    $"Daemon '{name}' (PID {pid}) could not be stopped: {ex.Message} "
                   + $"Its PID file at {DaemonLockPaths.PidPath(name)} appears not to describe a daemon.");
 
                 return 1;
@@ -410,7 +410,7 @@ public static class DaemonCommands {
                 // Wait for it to actually exit so the kernel releases its flock before
                 // we try to reclaim it for cleanup below.
                 try { process.WaitForExit(5000); } catch { /* best-effort */ }
-                Console.Out.WriteLine($"Daemon '{name}' stopped (PID {entry.Pid}).");
+                Console.Out.WriteLine($"Daemon '{name}' stopped (PID {pid}).");
             }
         } catch (ArgumentException) {
             Console.Out.WriteLine($"Daemon '{name}' was not running.");
@@ -558,9 +558,9 @@ public static class DaemonCommands {
         }
 
         foreach (var name in names) {
-            if (ReadPidFile(name) is not { } entry) {
+            if (DaemonPidProbe.ReadPidFile(name) is not { } entry) {
                 await Console.Out.WriteLineAsync($"Daemon '{name}': not running");
-            } else if (IsOurDaemon(entry.Pid, entry.StartToken)) {
+            } else if (DaemonPidProbe.IsOurDaemon(entry.Pid, entry.StartToken)) {
                 await Console.Out.WriteLineAsync($"Daemon '{name}': running (PID {entry.Pid})");
 
                 // Version of the *running* daemon (from the marker it wrote at
@@ -666,8 +666,8 @@ public static class DaemonCommands {
             switch (probe) {
                 case null when hasLock: {
                     heldCount++;
-                    var pidEntry = ReadPidFile(name);
-                    var alive    = pidEntry is { } e && IsOurDaemon(e.Pid, e.StartToken);
+                    var pidEntry = DaemonPidProbe.ReadPidFile(name);
+                    var alive    = pidEntry is { } e && DaemonPidProbe.IsOurDaemon(e.Pid, e.StartToken);
                     var pidStr   = pidEntry is { } e2 ? e2.Pid.ToString() : "?";
 
                     var aliveStr = alive
@@ -742,69 +742,9 @@ public static class DaemonCommands {
     }
 
     // ── shared helpers ──────────────────────────────────────────────────────
-
-    record struct PidEntry(int Pid, string? StartToken);
-
-    static PidEntry? ReadPidFile(string daemonName) {
-        var pidPath = DaemonLockPaths.PidPath(daemonName);
-
-        if (!File.Exists(pidPath)) return null;
-
-        var lines = File.ReadAllText(pidPath)
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        if (lines.Length == 0 || !int.TryParse(lines[0], out var pid)) {
-            // report "no usable PID" but do NOT delete the file. The
-            // daemon writes it with File.WriteAllText (truncate+write) under the
-            // flock, so a SIGKILL/native abort mid-write can leave a present but
-            // empty/partial/unparseable file — which is itself a hard-death
-            // breadcrumb that DaemonLock.InspectPriorHolder reports as
-            // (unclean, null). Since callers here (status, the pre-spawn guards)
-            // read this before the successor daemon runs, unlinking a corrupt
-            // file would erase that breadcrumb. Cleanup of corrupt/stale files is
-            // left to the explicit paths (`daemon stop`, `daemon doctor --clean`).
-            return null;
-        }
-
-        var startToken = lines.Length > 1 ? lines[1] : null;
-
-        return new PidEntry(pid, startToken);
-    }
-
-    /// <summary>
-    /// Verify that a PID belongs to our daemon. The strong check is start-token
-    /// equality — PIDs get recycled, but a recycled process won't share the
-    /// same kernel start instant (<see cref="ProcessStartToken"/>). A
-    /// same-scheme token mismatch is conclusive (a different incarnation), so we
-    /// return false rather than fall back to the weaker name check, which can't
-    /// tell two of our own daemons apart.
-    ///
-    /// The name fallback applies only when the token can't be compared at all:
-    /// no token recorded, the live token is unreadable, or the recorded token is
-    /// a legacy/foreign scheme — notably a PID file that stored bare
-    /// <c>Process.StartTime</c> ticks. Falling back there keeps a still-running
-    /// old daemon manageable across an upgrade instead of stranding it.
-    /// </summary>
-    static bool IsOurDaemon(int pid, string? expectedStartToken) {
-        try {
-            using var process = Process.GetProcessById(pid);
-
-            if (expectedStartToken is not null && ProcessStartToken.Matches(pid, expectedStartToken) is { } matched)
-                return matched;
-
-            // No token, unreadable, or a legacy/foreign scheme we can't compare:
-            // best-effort match by process image name.
-            var daemonPath = ResolveDaemonBinary();
-
-            var ourName = daemonPath is not null
-                ? Path.GetFileNameWithoutExtension(daemonPath)
-                : "kcap-daemon";
-
-            return string.Equals(process.ProcessName, ourName, StringComparison.OrdinalIgnoreCase);
-        } catch (ArgumentException) {
-            return false; // process doesn't exist
-        }
-    }
+    //
+    // PID-file parsing and identity validation (formerly ReadPidFile/IsOurDaemon here)
+    // now live in DaemonPidProbe — see its ValidatedPid for the combined check.
 
     /// <summary>
     /// Returns the daemon names that currently have a PID file on disk
@@ -1019,9 +959,11 @@ public static class DaemonCommands {
     }
 
     /// <summary>
-    /// Resolve the kcap-daemon executable shipped alongside this binary.
+    /// Resolve the kcap-daemon executable shipped alongside this binary. Internal so
+    /// <see cref="DaemonPidProbe"/>'s moved-in <c>IsOurDaemon</c> can reuse it for the
+    /// process-image-name fallback rather than duplicating the lookup.
     /// </summary>
-    static string? ResolveDaemonBinary() {
+    internal static string? ResolveDaemonBinary() {
         var dir     = AppContext.BaseDirectory;
         var ext     = OperatingSystem.IsWindows() ? ".exe" : "";
         var sibling = Path.Combine(dir, $"kcap-daemon{ext}");
