@@ -56,7 +56,9 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
 
     IDisposable? _subscription;
     bool _armClaimed;
+    bool _disposed;
     int _generation;
+    (AttachState State, string? Reason) _lastObserved = (AttachState.Connecting, null);
     TaskCompletionSource<bool>? _confirmWaiter;
     int _confirmSinceGen;
 
@@ -95,42 +97,54 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
             CliVersion = await _cli.VersionAsync(_lifetime.Token).ConfigureAwait(false);
         } catch (OperationCanceledException) {
             // shutdown before the version probe returned — nothing to cache
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: daemon lifecycle version probe failed unexpectedly: {ex.Message}");
         }
     }
 
-    // Every AttachStatus transition bumps the generation and may signal an armed confirm
-    // waiter; only a TERMINAL outcome (never Connecting) can claim the once-per-run arm, and
-    // only the FIRST one ever does — a later duplicate/different terminal outcome is inert.
+    // Every AttachStatus transition bumps the generation, records the last-observed outcome, and
+    // may signal an armed confirm waiter — this ALWAYS happens, regardless of the once-per-run
+    // arm below. Only a TERMINAL outcome (never Connecting) can claim that arm, and only the
+    // FIRST one ever does — but the switch itself still runs for every later event: the arm gates
+    // startup AUTO-ACTION eligibility only, never event admission, so a later daemon_incompatible
+    // (say) still reaches its case — a future skew/takeover hook (Task 20) can act on it there
+    // unconditionally without this dispatcher changing shape.
     void OnAttachStatus(AttachStatus status) {
         TaskCompletionSource<bool>? toSignal = null;
-        bool claimedHere;
+        bool isFirstTerminalOutcome;
 
         lock (_lock) {
             _generation++;
             var gen = _generation;
+            _lastObserved = (status.State, status.Reason);
 
             if (status.State == AttachState.Connected && _confirmWaiter is not null && gen > _confirmSinceGen) {
                 toSignal       = _confirmWaiter;
                 _confirmWaiter = null;
             }
 
-            claimedHere = status.State != AttachState.Connecting && !_armClaimed;
-            if (claimedHere) _armClaimed = true;
+            isFirstTerminalOutcome = status.State != AttachState.Connecting && !_armClaimed;
+            if (isFirstTerminalOutcome) _armClaimed = true;
         }
 
         toSignal?.TrySetResult(true);
-        if (!claimedHere) return;
+        if (status.State == AttachState.Connecting) return;
 
         switch (status.State) {
             case AttachState.Connected:
-                ClosePhase();
-                _ = RunConnectedReconciliationAsync();
+                if (isFirstTerminalOutcome) {
+                    ClosePhase();
+                    _ = RunReconciliationAsync(attached: true);
+                }
                 break;
             case AttachState.Unreachable when status.Reason == IncompatibleReason:
-                ClosePhase(); // Task 20 adds the skew/takeover offer here
+                if (isFirstTerminalOutcome) {
+                    ClosePhase();
+                    _ = RunReconciliationAsync(attached: false); // Task 20 adds the skew/takeover offer here too
+                }
                 break;
             case AttachState.Unreachable:
-                _ = RunStartupBranchAsync();
+                if (isFirstTerminalOutcome) _ = RunStartupBranchAsync((status.State, status.Reason));
                 break;
         }
     }
@@ -138,6 +152,10 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     void ClosePhase() => _phaseClosed.TrySetResult(true);
 
     int CurrentGeneration() { lock (_lock) return _generation; }
+
+    bool ObservedStatusChangedSince((AttachState State, string? Reason) triggering) {
+        lock (_lock) return _lastObserved != triggering;
+    }
 
     TaskCompletionSource<bool> ArmConfirmWaiter() {
         lock (_lock) {
@@ -163,32 +181,72 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         }
     }
 
-    /// Discards a query whose result raced a newer AttachStatus transition — evidence is
-    /// revalidated immediately before mutating (spec §3.2), never acted on once stale.
-    async Task<ServiceSnapshot?> QueryFreshStatusAsync(CancellationToken ct) {
+    enum QueryOutcome { Ok, Failed, Stale }
+
+    async Task<(ServiceSnapshot? Snap, QueryOutcome Outcome)> QueryStatusAsync(CancellationToken ct) {
         var gen0 = CurrentGeneration();
         var snap = await _cli.ServiceStatusAsync(ct).ConfigureAwait(false);
-        return CurrentGeneration() == gen0 ? snap : null;
+        if (CurrentGeneration() != gen0) return (null, QueryOutcome.Stale);
+        return snap is null ? (null, QueryOutcome.Failed) : (snap, QueryOutcome.Ok);
     }
 
-    async Task RunConnectedReconciliationAsync() {
+    /// General-purpose status query for reconciliation/requery/Start-action callers: one retry on
+    /// stale evidence (never silently walks away with zero query), and a genuine CLI-level
+    /// failure — on either attempt — surfaces an honest line and is logged (spec §6 "unknown").
+    async Task<ServiceSnapshot?> QueryStatusForActionAsync(CancellationToken ct) {
+        var (snap, outcome) = await QueryStatusAsync(ct).ConfigureAwait(false);
+        if (outcome == QueryOutcome.Stale) (snap, outcome) = await QueryStatusAsync(ct).ConfigureAwait(false);
+
+        if (outcome != QueryOutcome.Ok) {
+            _surface.Status("Could not read the daemon service status — skipping automatic action this run.");
+            Console.Error.WriteLine("kcap: daemon service status query failed, was unparseable, or never settled");
+            return null;
+        }
+
+        return snap;
+    }
+
+    /// Startup-branch-specific query: retries once ONLY when the evidence is genuinely stale — a
+    /// MEANINGFULLY different attach outcome (e.g. a racing Connected) arrived mid-query — never
+    /// for a merely duplicate re-observation of the same outcome that triggered this branch. That
+    /// distinction is what lets a duplicate daemon_unreachable stay a true no-op (the
+    /// once-per-run arm) while a genuine race still gets re-evaluated instead of the branch
+    /// silently walking away with zero reconciliation for the whole run.
+    async Task<ServiceSnapshot?> QueryForStartupBranchAsync((AttachState State, string? Reason) triggering, CancellationToken ct) {
+        var gen0 = CurrentGeneration();
+        var snap = await _cli.ServiceStatusAsync(ct).ConfigureAwait(false);
+
+        if (CurrentGeneration() != gen0 && ObservedStatusChangedSince(triggering))
+            snap = await _cli.ServiceStatusAsync(ct).ConfigureAwait(false); // one re-evaluation against fresh state
+
+        if (snap is null) {
+            _surface.Status("Could not read the daemon service status — skipping automatic action this run.");
+            Console.Error.WriteLine("kcap: daemon service status query failed or was unparseable during startup");
+        }
+
+        return snap;
+    }
+
+    async Task RunReconciliationAsync(bool attached) {
         if (_cli.CliPath is null) return;
         if (!await TryAcquireGateAsync(_lifetime.Token).ConfigureAwait(false)) return;
 
         try {
-            var snap = await QueryFreshStatusAsync(_lifetime.Token).ConfigureAwait(false);
-            if (snap is not null) Reconcile(snap, attached: true, allowTxnActiveRequery: true);
+            var snap = await QueryStatusForActionAsync(_lifetime.Token).ConfigureAwait(false);
+            if (snap is not null) Reconcile(snap, attached, allowTxnActiveRequery: true);
         } catch (OperationCanceledException) {
             // shutdown mid-query
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: daemon lifecycle reconciliation failed unexpectedly: {ex.Message}");
         } finally {
             _gate.Release();
         }
     }
 
     /// §4.2: the startup branch. Runs at most once per app run (the arm claimed synchronously in
-    /// OnAttachStatus); closes the startup phase only once this full flow — matrix decision, any
-    /// mutation, and its confirmation wait — has completed.
-    async Task RunStartupBranchAsync() {
+    /// OnAttachStatus); closes the startup phase only once this full flow — query, optional
+    /// txn-active wait, matrix decision, any mutation, and its confirmation wait — has completed.
+    async Task RunStartupBranchAsync((AttachState State, string? Reason) triggering) {
         try {
             if (_cli.CliPath is null) {
                 _surface.Status("kcap CLI not found — daemon lifecycle management is off for this run.");
@@ -197,16 +255,27 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
 
             if (!await TryAcquireGateAsync(_lifetime.Token).ConfigureAwait(false)) return;
             try {
-                var snap = await QueryFreshStatusAsync(_lifetime.Token).ConfigureAwait(false);
-                if (snap is null) return; // unknown / stale evidence — no mutation (spec §6)
+                var snap = await QueryForStartupBranchAsync(triggering, _lifetime.Token).ConfigureAwait(false);
+                if (snap is null) return; // query failure/unknown — already surfaced above, no mutation (spec §6)
 
-                Reconcile(snap, attached: false, allowTxnActiveRequery: true);
+                Reconcile(snap, attached: false, allowTxnActiveRequery: false);
+
+                if (snap.TxnActive) {
+                    // spec §6: a held flock is waited out, never mutated into. One bounded
+                    // re-query (not offered as repair); still active afterward → no action this
+                    // run rather than risk contending the CLI's own transaction lock.
+                    snap = await AwaitOneTxnActiveRequeryAsync(attached: false, _lifetime.Token).ConfigureAwait(false);
+                    if (snap is null || snap.TxnActive) return;
+                }
+
                 await RunStartupMatrixAsync(snap, _lifetime.Token).ConfigureAwait(false);
             } finally {
                 _gate.Release();
             }
         } catch (OperationCanceledException) {
             // shutdown mid-branch
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: daemon lifecycle startup branch failed unexpectedly: {ex.Message}");
         } finally {
             ClosePhase();
         }
@@ -278,11 +347,15 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         var waiter = ArmConfirmWaiter();
         try {
             var result = await mutate(ct).ConfigureAwait(false);
+            _ = _client.RestartLoopAsync(); // kick reattach after any attempted action, success or coded failure
 
             if (result.ExitCode == VerifyExitCodes.Ok) {
-                _ = _client.RestartLoopAsync(); // kick reattach regardless of the confirm outcome below
-                var won = await Task.WhenAny(waiter.Task, Task.Delay(ConfirmWindow, _time, ct)).ConfigureAwait(false);
-                if (won != waiter.Task && !ct.IsCancellationRequested)
+                using var confirmDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                var delay = Task.Delay(ConfirmWindow, _time, confirmDeadline.Token);
+                var won = await Task.WhenAny(waiter.Task, delay).ConfigureAwait(false);
+                if (won == waiter.Task)
+                    confirmDeadline.Cancel(); // fresh Connected already arrived — release the timer early
+                else if (!ct.IsCancellationRequested)
                     _surface.Status("daemon started, app not yet attached — retrying");
             } else {
                 _surface.Status($"{VerifyExitCodes.Token(result.ExitCode)}: {result.Stderr.Trim()}");
@@ -293,15 +366,17 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     }
 
     /// Reconciliation (spec §3.2): surfaces every inconsistent combination found in one
-    /// ServiceStatusAsync snapshot — never mutates. `attached` gates the checks that only make
-    /// sense while genuinely connected (or that would otherwise double-report a startup-matrix
-    /// row's own Attention for the exact same evidence).
+    /// ServiceStatusAsync snapshot — never mutates. The attached-only checks only make sense (or
+    /// would otherwise double-report a startup-matrix row's own Attention for the exact same
+    /// evidence) while genuinely connected.
     void Reconcile(ServiceSnapshot snap, bool attached, bool allowTxnActiveRequery) {
-        if (snap.JobPid is not null && snap.DaemonPid is not null && snap.JobPid != snap.DaemonPid)
-            _surface.Attention(
-                $"The daemon service job (pid {snap.JobPid}) does not match the attached daemon (pid {snap.DaemonPid}).");
-        else if (attached && snap.State == StateRunning && snap.DaemonPid is null)
-            _surface.Attention("The service reports its job running, but no attached-daemon evidence backs it.");
+        if (attached) {
+            if (snap.JobPid is not null && snap.DaemonPid is not null && snap.JobPid != snap.DaemonPid)
+                _surface.Attention(
+                    $"The daemon service job (pid {snap.JobPid}) does not match the attached daemon (pid {snap.DaemonPid}).");
+            else if (snap.State == StateRunning && snap.DaemonPid is null)
+                _surface.Attention("The service reports its job running, but no attached-daemon evidence backs it.");
+        }
 
         if (snap.TxnMarker && !snap.TxnActive)
             _surface.Attention("A previous daemon service operation left a stale transaction marker — repair may be needed.");
@@ -314,15 +389,40 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
                 $"A daemon is running outside the installed service — the service is stopped while a manual daemon (pid {snap.DaemonPid}) owns the name.");
     }
 
-    // Exactly one follow-up query (allowTxnActiveRequery: false on the way back in) — an
-    // orphaned grandchild that outlives a force-quit is waited out, not repaired (spec §6).
+    // The inline, AWAITED building block: used by RunStartupBranchAsync, which already holds the
+    // gate for its whole decision, to both wait out the delay AND gate the matrix's eligibility
+    // on the result — no mutation while the flock is (or was very recently) held.
+    async Task<ServiceSnapshot?> AwaitOneTxnActiveRequeryAsync(bool attached, CancellationToken ct) {
+        await Task.Delay(TxnActiveRequeryDelay, _time, ct).ConfigureAwait(false);
+        var fresh = await QueryStatusForActionAsync(ct).ConfigureAwait(false);
+        if (fresh is not null) Reconcile(fresh, attached, allowTxnActiveRequery: false);
+        return fresh;
+    }
+
+    // The fire-and-forget building block: scheduled from Reconcile's own txn-active branch
+    // (Connected/incompatible reconciliation-only paths, which don't otherwise hold the gate for
+    // this). The delay itself runs UNGATED — a passive background check must never block a user's
+    // Start click for the whole wait — only the query+reconcile is gate-scoped, exactly like
+    // every other mutation-adjacent evidence read (spec §3.2). Exactly one follow-up query
+    // (allowTxnActiveRequery: false on the way back in) — an orphaned grandchild that outlives a
+    // force-quit is waited out, not repaired (spec §6).
     async Task RunTxnActiveRequeryAsync(bool attached) {
         try {
             await Task.Delay(TxnActiveRequeryDelay, _time, _lifetime.Token).ConfigureAwait(false);
-            var snap = await QueryFreshStatusAsync(_lifetime.Token).ConfigureAwait(false);
-            if (snap is not null) Reconcile(snap, attached, allowTxnActiveRequery: false);
+        } catch (OperationCanceledException) {
+            return;
+        }
+
+        if (!await TryAcquireGateAsync(_lifetime.Token).ConfigureAwait(false)) return;
+        try {
+            var fresh = await QueryStatusForActionAsync(_lifetime.Token).ConfigureAwait(false);
+            if (fresh is not null) Reconcile(fresh, attached, allowTxnActiveRequery: false);
         } catch (OperationCanceledException) {
             // shutdown mid-requery
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: daemon lifecycle txn-active requery failed unexpectedly: {ex.Message}");
+        } finally {
+            _gate.Release();
         }
     }
 
@@ -340,7 +440,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
 
         if (!await TryAcquireGateAsync(lct).ConfigureAwait(false)) return;
         try {
-            var snap = await QueryFreshStatusAsync(lct).ConfigureAwait(false);
+            var snap = await QueryStatusForActionAsync(lct).ConfigureAwait(false);
             if (snap is null) return;
 
             if (snap.State == StateRunning) {
@@ -383,6 +483,9 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     }
 
     public async ValueTask DisposeAsync() {
+        if (_disposed) return;
+        _disposed = true;
+
         _subscription?.Dispose();
         _lifetime.Cancel();
         await QuiescedAsync().ConfigureAwait(false);

@@ -156,6 +156,95 @@ public class DaemonLifecycleControllerTests {
         await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task Row4_starts_verified_even_when_terminal_PATH_is_unknown() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "not_installed"));
+        h.Probe.TerminalPathBehavior = _ => Task.FromResult<string?>(null);
+        h.Start();
+
+        h.PushUnreachable();
+
+        await WaitUntilAsync(() => h.Cli.StartVerifiedCallCount == 1, what: "service start --verify despite unknown PATH");
+        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Row5_nothing_installBinaryPath_null_is_status_only_no_mutation() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(installBinaryPath: null));
+        h.Start();
+
+        h.PushUnreachable();
+
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the honest no-install-binary line");
+        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+    }
+
+    // ---- txn_active defers the startup matrix (spec §6: wait and re-query, never mutate into a held flock) ----
+
+    [Test]
+    public async Task TxnActive_defers_the_matrix_until_the_one_requery_clears_it() {
+        await using var h = new Harness();
+        var call = 0;
+        h.Cli.StatusBehavior = _ => {
+            call++;
+            return Task.FromResult<ServiceSnapshot?>(call == 1 ? Snap(txnActive: true) : Snap(txnActive: false));
+        };
+        h.Start();
+
+        h.PushUnreachable();
+        await WaitUntilAsync(() => h.Cli.StatusCallCount == 1, what: "the initial matrix query");
+        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0); // deferred — not mutated into the held flock
+
+        await WaitUntilAsync(() => h.Time.TimersCreated >= 1, what: "the txn-active requery timer to be armed");
+        h.Clock.Advance(TxnActiveRequeryDelay);
+
+        await WaitUntilAsync(() => h.Cli.StatusCallCount == 2, what: "the one bounded requery");
+        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the matrix proceeding once the flock cleared");
+    }
+
+    [Test]
+    public async Task TxnActive_still_active_after_the_one_requery_takes_no_action_this_run() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(txnActive: true));
+        h.Start();
+
+        h.PushUnreachable();
+        await WaitUntilAsync(() => h.Cli.StatusCallCount == 1, what: "the initial matrix query");
+        await WaitUntilAsync(() => h.Time.TimersCreated >= 1, what: "the txn-active requery timer to be armed");
+        h.Clock.Advance(TxnActiveRequeryDelay);
+
+        await WaitUntilAsync(() => h.Cli.StatusCallCount == 2, what: "the one bounded requery");
+        await h.Controller.PhaseClosed;
+        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+    }
+
+    // ---- a racing (meaningfully different) event forces one re-evaluation instead of silence ----
+
+    [Test]
+    public async Task Racing_connected_during_the_startup_query_forces_a_fresh_reevaluation() {
+        await using var h = new Harness();
+        var first = new TaskCompletionSource<ServiceSnapshot?>();
+        var call = 0;
+        h.Cli.StatusBehavior = _ => {
+            call++;
+            return call == 1 ? first.Task : Task.FromResult<ServiceSnapshot?>(Snap(txnMarker: true, txnActive: false));
+        };
+        h.Start();
+
+        h.PushUnreachable();
+        await WaitUntilAsync(() => h.Cli.StatusCallCount == 1, what: "the first (pending) status query");
+
+        h.PushConnected(); // races the in-flight query with a MEANINGFULLY different outcome
+        first.SetResult(Snap(state: "running", jobPid: 1, daemonPid: 1)); // release the now-stale first query
+
+        await WaitUntilAsync(() => h.Cli.StatusCallCount == 2, what: "the forced re-evaluation against fresh state");
+        await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "reconciliation still ran despite the race");
+    }
+
     // ---- startup phase closes on the FIRST terminal outcome ----
 
     [Test]
@@ -177,17 +266,20 @@ public class DaemonLifecycleControllerTests {
     }
 
     [Test]
-    public async Task Incompatible_first_then_unreachable_is_inert() {
+    public async Task Incompatible_first_runs_reconciliation_then_unreachable_is_inert() {
         await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(txnMarker: true, txnActive: false));
         h.Start();
 
         h.PushUnreachable(reason: "daemon_incompatible");
+        await WaitUntilAsync(() => h.Cli.StatusCallCount == 1, what: "reconciliation runs on the incompatible path too");
         await h.Controller.PhaseClosed;
+        await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "the stale-marker attention it found");
 
-        h.PushUnreachable();
+        h.PushUnreachable(); // daemon_unreachable, a later terminal outcome — inert (arm already claimed)
         await Task.Delay(50);
 
-        await Assert.That(h.Cli.StatusCallCount).IsEqualTo(0);
+        await Assert.That(h.Cli.StatusCallCount).IsEqualTo(1);
         await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
         await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
     }
@@ -358,6 +450,17 @@ public class DaemonLifecycleControllerTests {
         await quiesced;
     }
 
+    // ---- disposal ----
+
+    [Test]
+    public async Task DisposeAsync_is_idempotent() {
+        var h = new Harness();
+        h.Start();
+
+        await h.Controller.DisposeAsync();
+        await h.Controller.DisposeAsync(); // must not throw ObjectDisposedException
+    }
+
     // ---- §4.4 Start action (light coverage — Task 21 wires the trigger) ----
 
     [Test]
@@ -394,14 +497,15 @@ public class DaemonLifecycleControllerTests {
         public readonly FakeLifecycleSurface Surface = new();
         public readonly FakeTimeProvider Clock = new(new DateTimeOffset(2026, 8, 10, 9, 0, 0, TimeSpan.Zero));
         public readonly TimerCountingTimeProvider Time;
-        public readonly AppStateStore Store =
-            new(Path.Combine(Directory.CreateTempSubdirectory("kcap-lifecycle-").FullName, "app-state.json"));
+        public readonly string TempDir = Directory.CreateTempSubdirectory("kcap-lifecycle-").FullName;
+        public readonly AppStateStore Store;
         public readonly DaemonLifecycleController Controller;
 
         public string? ProfileName = "default";
 
         public Harness() {
-            Time = new TimerCountingTimeProvider(Clock);
+            Time  = new TimerCountingTimeProvider(Clock);
+            Store = new AppStateStore(Path.Combine(TempDir, "app-state.json"));
             Controller = new DaemonLifecycleController(
                 Client, Cli, Probe, Store, Surface, () => Task.FromResult<string?>(ProfileName), Time);
         }
@@ -414,7 +518,10 @@ public class DaemonLifecycleControllerTests {
         public void PushUnreachable(string reason = "daemon_unreachable") =>
             Client.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, reason, null));
 
-        public async ValueTask DisposeAsync() => await Controller.DisposeAsync();
+        public async ValueTask DisposeAsync() {
+            await Controller.DisposeAsync();
+            try { Directory.Delete(TempDir, recursive: true); } catch { /* best-effort test cleanup */ }
+        }
     }
 }
 
