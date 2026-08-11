@@ -88,9 +88,17 @@ public partial class AgentOrchestratorVendorTests {
     /// <para>(ii) send-completion order equals snapshot-capture order — the report that captured
     /// seq 1 completes first, so the server never folds seq 1 after seq 2.</para>
     ///
-    /// Without the section this fails at BOTH: the delivery-triggered emission would capture seq 2 and
-    /// complete immediately past the parked seq-1 send, delivering the regression that permanently
-    /// latches the server's fold into <c>Regressed</c>.</summary>
+    /// <para>(iii) the snapshot is captured INSIDE the section, not before acquiring it. This is a
+    /// separate mutation from (i)/(ii) and it is genuinely unsound rather than untidy: two emissions
+    /// that build their reports outside the section can enqueue on the semaphore in the OPPOSITE order
+    /// to their capture order (<see cref="SemaphoreSlim"/> is only approximately FIFO), putting the
+    /// older content on the wire second. The probe below pins it by advancing the clock again while
+    /// the second emission is provably still parked on the gate — a capture taken before acquisition
+    /// cannot see that advance.</para>
+    ///
+    /// Without the section this fails at BOTH (i) and (ii): the delivery-triggered emission would
+    /// capture seq 2 and complete immediately past the parked seq-1 send, delivering the regression
+    /// that permanently latches the server's fold into <c>Regressed</c>.</summary>
     [Test]
     public async Task Report_content_is_monotone_in_send_completion_order() {
         var probe = new OrderingProbeServerConnection();
@@ -114,6 +122,14 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(probe.EnteredCount).IsEqualTo(1);
         await Assert.That(probe.CompletedInOrder.Count).IsEqualTo(0);
 
+        // (iii) the assertion above has just PROVEN the delivery-triggered emission is still parked on
+        // the gate, so this advance necessarily happens before it can capture. A snapshot taken inside
+        // the section therefore reads seq 3; one hoisted above the acquire froze at seq 2 back when the
+        // delivery fired. The 100ms settle above is what makes the mutant deterministic too — it gives
+        // a hoisted build ample time to have run before the clock moves.
+        agent.ActivityClock.Advance();
+        await Assert.That(agent.ActivityClock.ActivitySeq).IsEqualTo(3UL);
+
         probe.ReleaseFirstSend();
         await slowPeriodic.WaitAsync(TimeSpan.FromSeconds(5));
         await PollUntilAsync(() => probe.CompletedInOrder.Count >= 2);
@@ -124,7 +140,7 @@ public partial class AgentOrchestratorVendorTests {
             .Select(r => r.LiveAgents.Single(a => a.Id == agent.Id).ActivitySeq)
             .ToList();
         await Assert.That(seqs[0]).IsEqualTo(1UL);
-        await Assert.That(seqs[1]).IsEqualTo(2UL);
+        await Assert.That(seqs[1]).IsEqualTo(3UL);
     }
 
     /// <summary>Contract pin for the "no correlation nonce" half of the design: the unsolicited

@@ -1127,6 +1127,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // status-report moment is also a re-sync moment. A validated AckProcessedPrefix stops the re-sends.
         // Runs OUTSIDE the ordering section above: it re-sends acks, not the report, so serializing it
         // would only extend the section's hold without ordering anything the server folds by seq.
+        //
+        // Round-dispatch grace added a FOURTH trigger — the delivered-input report — which therefore
+        // also re-drives this sweep at input rate rather than at the 60s cadence. Benign in both
+        // directions: the unretired set is normally empty (so this is a no-op), and a duplicate ack is
+        // explicitly tolerated by the server per D2″ — the same tolerance the on-request trigger
+        // already relies on.
         Processor?.RedeliverUnretiredProcessedAcks();
     }
 
@@ -2799,11 +2805,21 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             //
             // Fire-and-forget, matching the launch-stage transition hook: the send is contained and
             // one-way (SendDaemonStatusReportOnceAsync swallows its own failures), so a report
-            // failure can never fail the delivery — and awaiting it here would block THIS agent's
-            // delivery (we still hold BorrowedSnapshotGate) behind another emission's hub send.
-            // The report snapshot is captured inside the ordering section, i.e. strictly after the
-            // Advance() above, so this report can never carry a pre-delivery seq.
-            _ = SendDaemonStatusReportOnceAsync();
+            // failure can never fail the delivery. The report snapshot is captured inside the
+            // ordering section, i.e. strictly after the Advance() above, so this report can never
+            // carry a pre-delivery seq.
+            //
+            // Task.Run, not a bare discard, because a discard is only asynchronous when it BLOCKS:
+            // SemaphoreSlim.WaitAsync completes synchronously on an uncontended gate — the common
+            // case — and the method would then run BuildStatusReport() inline, on the SignalR
+            // receive-loop thread that dispatched this command, while we still hold this agent's
+            // BorrowedSnapshotGate. That build is not cheap or purely in-memory: it reads the PID
+            // record store off disk (twice, via the blocked-candidate and startup-reap-completeness
+            // arms). Contended, it would be worse still — an inline await would park the receive loop
+            // and this agent's delivery behind another emission's whole hub send. Offloading costs
+            // nothing in ordering terms: content is made monotone by the gate, never by the order
+            // emissions are STARTED in.
+            _ = Task.Run(() => SendDaemonStatusReportOnceAsync());
 
             LogSendInputDelivered(agentId, agent.Runtime.Vendor, message.Length);
         } finally {
