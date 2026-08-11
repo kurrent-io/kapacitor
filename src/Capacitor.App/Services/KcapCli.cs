@@ -40,6 +40,9 @@ public sealed class KcapCli : IKcapCli {
     // safety-net kill must never race the transaction's own rollback budget.
     static readonly TimeSpan MutationTimeout = TimeSpan.FromSeconds(45);
     static readonly TimeSpan VersionTimeout = TimeSpan.FromSeconds(10);
+    // Same tier as VersionTimeout — also a read-only query — so a hung `launchctl print` can
+    // never block the §3.2 per-mutation gate forever once the lifecycle controller polls this.
+    static readonly TimeSpan StatusTimeout = TimeSpan.FromSeconds(10);
 
     readonly IProcessRunner _runner;
     readonly string _daemonName;
@@ -66,7 +69,7 @@ public sealed class KcapCli : IKcapCli {
     public async Task<ServiceSnapshot?> ServiceStatusAsync(CancellationToken ct) {
         var result = await Run(
                 ["daemon", "service", "status", "--name", _daemonName, "--json"],
-                new RunOptions(EnvOverlay: Env()), ct)
+                new RunOptions(EnvOverlay: Env(), Timeout: StatusTimeout), ct)
             .ConfigureAwait(false);
 
         if (result.ExitCode != 0 || result.TimedOut) return null;

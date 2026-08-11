@@ -70,6 +70,7 @@ public class KcapCliTests {
             ["daemon", "service", "status", "--name", "daemon-a", "--json"], CollectionOrdering.Matching);
         await Assert.That(snapshot).IsEqualTo(new ServiceSnapshot(
             "default", true, "running", null, "/usr/local/bin/kcap-daemon", 111, 111, false, true));
+        await Assert.That(runner.SeenOptions!.Timeout).IsEqualTo(TimeSpan.FromSeconds(10));
     }
 
     [Test]
@@ -108,6 +109,9 @@ public class KcapCliTests {
         var cli = MakeCli(runner);
 
         await Assert.That(await cli.ServiceStatusAsync(CancellationToken.None)).IsNull();
+        // Confirms the query is actually bounded — a hung `launchctl print` must not be able to
+        // block this forever and deadlock the §3.2 per-mutation gate.
+        await Assert.That(runner.SeenOptions!.Timeout).IsEqualTo(TimeSpan.FromSeconds(10));
     }
 
     [Test]
