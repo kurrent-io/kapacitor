@@ -47,14 +47,18 @@ public sealed class KcapCli : IKcapCli {
     readonly IProcessRunner _runner;
     readonly string _daemonName;
     readonly string _profileName;
-    readonly string? _terminalPath;
+    // Lazy, not a static ctor value: the terminal PATH is only known once the async probe has run,
+    // and the probe itself caches — so resolving it per install call is cheap and always current.
+    readonly Func<CancellationToken, Task<string?>>? _terminalPathAsync;
 
-    public KcapCli(IProcessRunner runner, string? cliPath, string daemonName, string profileName, string? terminalPath) {
-        _runner       = runner;
-        CliPath       = cliPath;
-        _daemonName   = daemonName;
-        _profileName  = profileName;
-        _terminalPath = terminalPath;
+    public KcapCli(
+            IProcessRunner runner, string? cliPath, string daemonName, string profileName,
+            Func<CancellationToken, Task<string?>>? terminalPathAsync) {
+        _runner            = runner;
+        CliPath            = cliPath;
+        _daemonName        = daemonName;
+        _profileName       = profileName;
+        _terminalPathAsync = terminalPathAsync;
     }
 
     public string? CliPath { get; }
@@ -89,11 +93,12 @@ public sealed class KcapCli : IKcapCli {
     // The interface's `replace` is the only per-call knob; the profile is pinned once at
     // construction (spec decision 7) and reused verbatim for both the `--profile` flag and the
     // KCAP_PROFILE overlay below, so the two can never disagree.
-    public Task<ProcessResult> ServiceInstallVerifiedAsync(bool replace, CancellationToken ct) {
+    public async Task<ProcessResult> ServiceInstallVerifiedAsync(bool replace, CancellationToken ct) {
         List<string> args = ["daemon", "service", "install", "--name", _daemonName, "--profile", _profileName, "--verify"];
         if (replace) args.Add("--replace");
 
-        return Run(args.ToArray(), new RunOptions(EnvOverlay: Env(), Timeout: MutationTimeout), ct);
+        var env = await EnvWithTerminalPathAsync(ct).ConfigureAwait(false);
+        return await Run(args.ToArray(), new RunOptions(EnvOverlay: env, Timeout: MutationTimeout), ct).ConfigureAwait(false);
     }
 
     public Task<ProcessResult> DetachedStartAsync(CancellationToken ct) =>
@@ -104,11 +109,19 @@ public sealed class KcapCli : IKcapCli {
     Task<ProcessResult> Run(string[] args, RunOptions options, CancellationToken ct) =>
         _runner.RunAsync(CliPath!, args, options, ct);
 
-    // Every child carries the pinned profile; PATH only when the terminal probe knew it (spec
-    // decision 7) — an unknown probe must never overlay a PATH that isn't actually the user's.
-    Dictionary<string, string> Env() {
-        var env = new Dictionary<string, string> { ["KCAP_PROFILE"] = _profileName };
-        if (_terminalPath is not null) env["PATH"] = _terminalPath;
+    // Every child carries the pinned profile.
+    Dictionary<string, string> Env() => new() { ["KCAP_PROFILE"] = _profileName };
+
+    // PATH overlaid ONLY here (spec decision 7): install is the sole unit-writing mutation, so it's
+    // the only call that needs the terminal's PATH baked into the launchd unit. Start-verify
+    // (bootstrap/kickstart of an already-installed unit) and every read-only query are exempt.
+    // Resolved lazily against the mutation's own token, never a detached one; an unknown probe
+    // result (null) leaves PATH out rather than overlaying a value that isn't actually the user's —
+    // ServiceEnvironment.Capture then honestly bakes whatever the app itself inherited.
+    async Task<Dictionary<string, string>> EnvWithTerminalPathAsync(CancellationToken ct) {
+        var env = Env();
+        var terminalPath = _terminalPathAsync is null ? null : await _terminalPathAsync(ct).ConfigureAwait(false);
+        if (terminalPath is not null) env["PATH"] = terminalPath;
 
         return env;
     }

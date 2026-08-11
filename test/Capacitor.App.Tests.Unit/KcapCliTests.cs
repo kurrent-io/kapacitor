@@ -19,7 +19,7 @@ public class KcapCliTests {
     }
 
     static KcapCli MakeCli(FakeProcessRunner runner, string? terminalPath = null) =>
-        new(runner, "kcap", "daemon-a", "work", terminalPath);
+        new(runner, "kcap", "daemon-a", "work", _ => Task.FromResult(terminalPath));
 
     [Test]
     public async Task CliPath_reflects_the_constructor_value() {
@@ -165,13 +165,12 @@ public class KcapCliTests {
     }
 
     [Test]
-    public async Task Every_call_carries_the_pinned_profile_and_no_path_when_unknown() {
+    public async Task Every_call_carries_the_pinned_profile() {
         var runner = new FakeProcessRunner();
         var cli = MakeCli(runner, terminalPath: null);
 
         await cli.VersionAsync(CancellationToken.None);
         await Assert.That(runner.SeenOptions!.EnvOverlay!["KCAP_PROFILE"]).IsEqualTo("work");
-        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey("PATH")).IsFalse();
 
         await cli.ServiceStatusAsync(CancellationToken.None);
         await Assert.That(runner.SeenOptions!.EnvOverlay!["KCAP_PROFILE"]).IsEqualTo("work");
@@ -186,15 +185,74 @@ public class KcapCliTests {
         await Assert.That(runner.SeenOptions!.EnvOverlay!["KCAP_PROFILE"]).IsEqualTo("work");
     }
 
+    // Decision 7: the PATH overlay belongs on the unit-writing mutation (install) only — starting
+    // an already-installed unit recaptures nothing, and read-only queries never need it. Even a
+    // probe that DOES know the terminal PATH must not leak it onto these calls.
     [Test]
-    public async Task PATH_overlay_present_only_when_terminal_path_given() {
+    public async Task Read_only_and_start_verify_calls_never_carry_a_path_overlay_even_when_the_probe_knows_it() {
         var runner = new FakeProcessRunner();
         var cli = MakeCli(runner, terminalPath: "/usr/bin:/bin");
 
         await cli.VersionAsync(CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey("PATH")).IsFalse();
+
+        await cli.ServiceStatusAsync(CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey("PATH")).IsFalse();
+
+        await cli.ServiceStartVerifiedAsync(CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey("PATH")).IsFalse();
+
+        await cli.DetachedStartAsync(CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey("PATH")).IsFalse();
+    }
+
+    [Test]
+    public async Task ServiceInstallVerifiedAsync_carries_the_resolved_terminal_path() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner, terminalPath: "/usr/bin:/bin");
+
+        await cli.ServiceInstallVerifiedAsync(replace: false, CancellationToken.None);
 
         await Assert.That(runner.SeenOptions!.EnvOverlay!["PATH"]).IsEqualTo("/usr/bin:/bin");
         await Assert.That(runner.SeenOptions!.EnvOverlay!["KCAP_PROFILE"]).IsEqualTo("work");
+    }
+
+    [Test]
+    public async Task ServiceInstallVerifiedAsync_omits_path_overlay_when_the_probe_resolves_unknown() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner, terminalPath: null);
+
+        await cli.ServiceInstallVerifiedAsync(replace: false, CancellationToken.None);
+
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey("PATH")).IsFalse();
+        await Assert.That(runner.SeenOptions!.EnvOverlay!["KCAP_PROFILE"]).IsEqualTo("work");
+    }
+
+    [Test]
+    public async Task ServiceInstallVerifiedAsync_with_no_resolver_omits_path_overlay() {
+        var runner = new FakeProcessRunner();
+        var cli = new KcapCli(runner, "kcap", "daemon-a", "work", terminalPathAsync: null);
+
+        await cli.ServiceInstallVerifiedAsync(replace: false, CancellationToken.None);
+
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey("PATH")).IsFalse();
+    }
+
+    // The probe is queried lazily, per install call, with the mutation's own token — never a
+    // detached/None token that could outlive the caller's cancellation.
+    [Test]
+    public async Task ServiceInstallVerifiedAsync_resolves_the_path_with_the_calls_own_cancellation_token() {
+        var runner = new FakeProcessRunner();
+        CancellationToken? seenToken = null;
+        var cli = new KcapCli(runner, "kcap", "daemon-a", "work", ct => {
+            seenToken = ct;
+            return Task.FromResult<string?>("/usr/bin:/bin");
+        });
+        using var cts = new CancellationTokenSource();
+
+        await cli.ServiceInstallVerifiedAsync(replace: false, cts.Token);
+
+        await Assert.That(seenToken).IsEqualTo(cts.Token);
     }
 
     [Test]

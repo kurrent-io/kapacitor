@@ -317,8 +317,10 @@ public partial class App : Application {
         var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists);
         var runner  = new DaemonClientService.ProcessRunner();
         var profile = AppConfig.ResolvedProfile; // already resolved by CreateDefaultAsync above
-        var cli     = new KcapCli(runner, cliPath, service.DaemonName, profile?.ProfileName ?? "default", terminalPath: null);
         var probe   = new LoginShellProbe(runner, Environment.GetEnvironmentVariable);
+        // Shared with the probe above (not re-resolved) — decision 7's PATH overlay on `install`
+        // must reflect the SAME probe outcome that the controller's preconditions/PathDegraded see.
+        var cli     = new KcapCli(runner, cliPath, service.DaemonName, profile?.ProfileName ?? "default", probe.TerminalPathAsync);
         var store   = new AppStateStore(PathHelpers.ConfigPath("app-state.json"));
         var surface = new LifecycleSurface(setLifecycleStatus, setLifecycleAttention, ConfirmLifecyclePromptAsync);
 
