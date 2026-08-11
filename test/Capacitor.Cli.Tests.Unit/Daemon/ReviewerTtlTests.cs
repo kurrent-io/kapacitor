@@ -50,8 +50,8 @@ public partial class AgentOrchestratorVendorTests {
 
         var reap = orch.FindReviewersToReap();
 
-        await Assert.That(reap).Contains(("rev-old", "reviewer_ttl_expired"));
-        await Assert.That(reap).Contains(("rev-idle", "reviewer_idle_expired"));
+        await Assert.That(Verdicts(reap)).Contains(("rev-old", "reviewer_ttl_expired"));
+        await Assert.That(Verdicts(reap)).Contains(("rev-idle", "reviewer_idle_expired"));
         await Assert.That(reap.Select(r => r.Id)).DoesNotContain("interactive");
         await Assert.That(reap.Select(r => r.Id)).DoesNotContain("rev-fresh");
     }

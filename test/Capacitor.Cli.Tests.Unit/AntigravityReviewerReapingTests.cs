@@ -57,7 +57,7 @@ public partial class AgentOrchestratorVendorTests {
 
         // The REASON, not merely "it is in the list": at this elapsed time the TTL rule cannot fire,
         // so naming the idle rule pins that the plain idle path was reached at all.
-        await Assert.That(orch.FindReviewersToReap()).Contains(("agy-between-turns", "reviewer_idle_expired"));
+        await Assert.That(Verdicts(orch.FindReviewersToReap())).Contains(("agy-between-turns", "reviewer_idle_expired"));
     }
 
     /// <summary>
@@ -111,7 +111,7 @@ public partial class AgentOrchestratorVendorTests {
         var reap = orch.FindReviewersToReap();
 
         await Assert.That(reap.Select(r => r.Id)).DoesNotContain("agy-mid-turn");
-        await Assert.That(reap).Contains(("agy-settled", "reviewer_idle_expired"));
+        await Assert.That(Verdicts(reap)).Contains(("agy-settled", "reviewer_idle_expired"));
     }
 
     /// <summary>
