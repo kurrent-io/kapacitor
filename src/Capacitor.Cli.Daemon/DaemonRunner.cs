@@ -665,7 +665,10 @@ public static partial class DaemonRunner {
         // if the daemon was shut down because the server told us
         // our (owner, name) slot is contested mid-run (heartbeat-triggered
         // path), exit with code 3 so wrappers (systemd, npm, CI) can tell
-        // this apart from a normal Ctrl+C exit.
+        // this apart from a normal Ctrl+C exit. Deliberately NOT decision-6-aware (unlike the
+        // initial-connect NameInUseExit above): this is a mid-run contest, not the initial connect,
+        // and the one resulting respawn's own fresh initial connect is what settles it — bounding
+        // the loop either way without needing this exit to also be supervised-conditional.
         return nameInUse ? 3 : 0;
     }
 
