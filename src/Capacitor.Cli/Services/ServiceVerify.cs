@@ -200,6 +200,15 @@ sealed class ServiceVerify(
             return VerifyExit.Contended;
         }
 
+        // Viability is checked BEFORE marker recovery (unlike Task 10's non-destructive placeholder,
+        // recovery below can now call Uninstall) so VerifyExit.Viability's documented "nothing is
+        // touched" contract stays true even when a leftover marker exists — a missing binary aborts
+        // before anything on disk is touched, recovery or otherwise.
+        if (!File.Exists(spec.DaemonBinaryPath)) {
+            Say(VerifyExit.ViabilityToken);
+            return VerifyExit.Viability;
+        }
+
         // A leftover marker means a prior attempt never reached a terminal state. "committed" is
         // just a crash between writing that phase and deleting the marker — self-heal
         // unconditionally. Any other phase may have left real residue on disk; recovery authority
@@ -210,11 +219,6 @@ sealed class ServiceVerify(
             } else if (RecoverLeftoverMarker(spec, serviceId, leftover) is { } recoveryExit) {
                 return recoveryExit;
             }
-        }
-
-        if (!File.Exists(spec.DaemonBinaryPath)) {
-            Say(VerifyExit.ViabilityToken);
-            return VerifyExit.Viability;
         }
 
         var pre = manager.Query(serviceId);
@@ -246,7 +250,12 @@ sealed class ServiceVerify(
             }
         }
 
-        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "captured", preState, "no-unit", null));
+        // For --replace, the marker is already at the correct phase here — either "captured" (the
+        // matrix did nothing) or "label-cleared"/"owner-stopped" (it did) — re-writing "captured"
+        // unconditionally would regress a phase that already recorded real destructive work.
+        if (!replace) {
+            ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "captured", preState, "no-unit", null));
+        }
 
         // GenerateFiles is a pure computation (no I/O for any current manager) — a throw here (e.g.
         // an invalid captured env value) never touched disk, so there's nothing for a rollback to
@@ -358,19 +367,57 @@ sealed class ServiceVerify(
         }
 
         // The dead transaction's own residue (benign-absence semantics — a label that's already
-        // gone costs nothing to "clear" again): clean it up and proceed.
-        manager.Uninstall(serviceId, out var uninstallError);
-        if (uninstallError is not null) Say($"uninstall: {uninstallError}");
+        // gone costs nothing to "clear" again): clean it up. A failed Uninstall here (label still
+        // Loaded/Unknown) means we can't actually prove the residue is gone — never delete the
+        // marker on an unconfirmed clear; surface instead of guessing the cleanup worked.
+        if (!manager.Uninstall(serviceId, out var uninstallError)) {
+            if (uninstallError is not null) Say($"uninstall: {uninstallError}");
+            Say(VerifyExit.RestoreVerificationToken);
+            return VerifyExit.RestoreVerification;
+        }
+
         ServiceTxnMarker.Delete(serviceId);
         return null;
     }
 
     /// <summary>
+    /// Uninstall (clear the label/plist) and poll until confirmed <see cref="LabelProbe.Absent"/>,
+    /// bounded by <see cref="_rollbackReserve"/> — mirrors <see cref="InstallRollback"/>'s own
+    /// reasoning: <c>launchctl bootout</c> can return before the label is actually gone, and a
+    /// failed/incomplete Uninstall (still Loaded/Unknown) must never be treated as cleared before
+    /// writing a NEW unit over it. Returns the terminal exit code on failure (nothing further is
+    /// written), or null once Absent is confirmed and it's safe to proceed.
+    /// </summary>
+    async Task<int?> ClearLabelAsync(string serviceId) {
+        manager.Uninstall(serviceId, out var error);
+        if (error is not null) Say($"uninstall: {error}");
+
+        var deadline = time.GetUtcNow() + _rollbackReserve;
+        LabelProbe lastProbe;
+
+        while (true) {
+            lastProbe = manager.Query(serviceId).Probe;
+            if (lastProbe == LabelProbe.Absent) return null;
+
+            if (time.GetUtcNow() >= deadline) break;
+            await Task.Delay(PollInterval, time, CancellationToken.None);
+        }
+
+        // Same 26-vs-27 split as every other rollback poll in this file: Unknown is a genuine
+        // timeout (couldn't tell), still Loaded is an affirmatively wrong state.
+        var reason = lastProbe == LabelProbe.Unknown ? VerifyExit.RollbackBudget : VerifyExit.RestoreVerification;
+        Say(lastProbe == LabelProbe.Unknown ? VerifyExit.RollbackBudgetToken : VerifyExit.RestoreVerificationToken);
+        return reason;
+    }
+
+    /// <summary>
     /// install --replace's ownership matrix (spec §3.4 table). Called only after the pre-mutation
     /// probe has already been rejected as <see cref="LabelProbe.Unknown"/> by the caller, with the
-    /// "captured" marker already on disk. Returns a non-null exit code only for <see
-    /// cref="VerifyExit.StopUnconfirmed"/> (marker retained at its last-recorded phase); every other
-    /// outcome falls through to the shared write+bootstrap+verify tail.
+    /// "captured" marker already on disk. Returns a non-null exit code when clearing the label
+    /// couldn't be confirmed (<see cref="ClearLabelAsync"/>'s own exits) or the kill couldn't be
+    /// confirmed (<see cref="VerifyExit.StopUnconfirmed"/>) — in every such case nothing further is
+    /// written and the marker is retained at its last-recorded phase. Every other outcome falls
+    /// through to the shared write+bootstrap+verify tail.
     /// </summary>
     async Task<int?> ApplyReplaceMatrixAsync(string serviceId, ServiceQuery pre, string preState, string op) {
         var validatedPid = validatedDaemonPid(serviceId);
@@ -379,8 +426,7 @@ sealed class ServiceVerify(
         if (owning) {
             // The label's own bootout already terminates the process it owns (launchd/systemd tear
             // down the job as part of unloading it) — no separate kill needed or wanted.
-            manager.Uninstall(serviceId, out var ownError);
-            if (ownError is not null) Say($"uninstall: {ownError}");
+            if (await ClearLabelAsync(serviceId) is { } clearExit) return clearExit;
             ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "label-cleared", preState, "no-unit", null));
             return null;
         }
@@ -389,8 +435,7 @@ sealed class ServiceVerify(
             // A non-owning or orphan label, or a stopped-but-installed unit — --replace (unlike a
             // fresh install) is allowed to clear this. Benign-absence semantics: an already-absent
             // label costs nothing to "clear" again.
-            manager.Uninstall(serviceId, out var clearError);
-            if (clearError is not null) Say($"uninstall: {clearError}");
+            if (await ClearLabelAsync(serviceId) is { } clearExit) return clearExit;
             ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "label-cleared", preState, "no-unit", null));
         }
 

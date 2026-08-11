@@ -31,6 +31,7 @@ public class ServiceVerifyReplaceTests {
         public bool InitialUnitPresent;
         public int? InitialJobPid;
         public bool Bootstrapped, Uninstalled;
+        public bool UninstallSucceeds = true;
         public int? RunningPid = 4242;
         public string PlistPath = "/fake/agents/io.kurrent.kcap.daemon.svc-verify-replace.plist";
         public string PlistContent = OwnPlistContent;
@@ -60,6 +61,13 @@ public class ServiceVerifyReplaceTests {
 
         public bool Uninstall(string serviceId, out string? error) {
             Calls.Add("uninstall");
+            if (!UninstallSucceeds) {
+                // Mirrors LaunchdServiceManager.Uninstall's real failure contract: bootout failed
+                // and the label is STILL Loaded — the plist is retained, nothing changes.
+                error = "launchctl bootout failed (exit 5) and the label is still Loaded — plist retained";
+                return false;
+            }
+
             Uninstalled  = true;
             Bootstrapped = false;
             error = null;
@@ -190,6 +198,39 @@ public class ServiceVerifyReplaceTests {
     }
 
     [Test]
+    public async Task No_unit_with_a_manual_owner_kills_without_an_uninstall_call() {
+        var (_, daemonPath) = SetUpViableInstall();
+        try {
+            // Absent label, no plist at all — nothing to "clear" (Uninstall must never run) — but a
+            // manual (non-service) daemon still holds the name, so the kill/stop-verification step
+            // must engage on its own.
+            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Absent, InitialUnitPresent = false, InitialJobPid = null };
+
+            var helloCalls = 0;
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) {
+                helloCalls++;
+                return Task.FromResult(helloCalls == 1
+                    ? new HelloProbeResult(false, null, null, null)
+                    : new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+            }
+
+            int? ValidatedPid(string _) =>
+                manager.Bootstrapped ? manager.RunningPid
+                : helloCalls == 0 ? ManualOwnerPid
+                : null;
+
+            var sut = new ServiceVerify(manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(0);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
     public async Task Stop_never_confirmed_reports_stop_unconfirmed_and_writes_nothing() {
         var (_, daemonPath) = SetUpViableInstall();
         try {
@@ -212,6 +253,36 @@ public class ServiceVerifyReplaceTests {
             await Assert.That(manager.UninstallCalls).IsEqualTo(1); // the label was still cleared
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
             await Assert.That(ServiceTxnMarker.Read(Id)!.Phase).IsEqualTo("label-cleared");
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Clear_that_never_confirms_absent_aborts_before_writing_anything() {
+        var (_, daemonPath) = SetUpViableInstall();
+        try {
+            // Uninstall reports failure (label still Loaded — the real LaunchdServiceManager
+            // contract when bootout fails and a re-query still shows it loaded) and Query never
+            // settles to Absent either. The matrix must abort rather than trust a failed/unconfirmed
+            // clear and write a new unit over a label that was never actually cleared.
+            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = null, UninstallSucceeds = false };
+            var time    = new FakeTimeProvider();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(false, null, null, null));
+
+            var sut = new ServiceVerify(manager, _ => null, Hello, time,
+                forwardBudget: TimeSpan.FromSeconds(2), rollbackReserve: TimeSpan.FromSeconds(1), readPlist: OwnPlist);
+
+            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+            // The marker never advanced past "captured" — Uninstall's failure was never treated as
+            // a completed clear.
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
+            await Assert.That(ServiceTxnMarker.Read(Id)!.Phase).IsEqualTo("captured");
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 

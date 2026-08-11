@@ -32,6 +32,12 @@ static class DaemonKill {
                 // ancestor). Never expected in production — a daemon is never the process running
                 // `install --replace` — but if it ever happens, do not report a kill that didn't.
                 return false;
+            } catch {
+                // Kill(entireProcessTree: true) can also throw AggregateException (a child it
+                // couldn't signal, e.g. EPERM) or a raw Win32Exception. This call runs mid-transaction
+                // (ServiceVerify already holds the flock and has mutated state) — it must never
+                // escape uncaught; the gone-check below is the authoritative answer regardless of
+                // what the kill attempt itself reported.
             }
 
             try { process.WaitForExit(wait); } catch { /* best-effort */ }
