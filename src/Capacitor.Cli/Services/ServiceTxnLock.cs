@@ -35,6 +35,7 @@ sealed class ServiceTxnLock : IDisposable {
     /// Blocks up to <paramref name="wait"/>; null on contention timeout. Lock file is created but NEVER deleted.
     /// </summary>
     public static ServiceTxnLock? TryAcquire(string serviceId, TimeSpan wait) {
+        DaemonLockPaths.EnsureDirectory();
         var path = LockPath(serviceId);
         var deadline = DateTime.UtcNow.Add(wait);
 

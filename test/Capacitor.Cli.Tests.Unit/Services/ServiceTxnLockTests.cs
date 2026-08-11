@@ -13,11 +13,33 @@ public class ServiceTxnLockTests {
             await Assert.That(ServiceTxnLock.IsHeld("a")).IsFalse();
             var l = ServiceTxnLock.TryAcquire("a", TimeSpan.Zero);
             await Assert.That(l).IsNotNull();
-            await Assert.That(ServiceTxnLock.IsHeld("a")).IsTrue();
-            await Assert.That(ServiceTxnLock.TryAcquire("a", TimeSpan.FromMilliseconds(50))).IsNull();
-            l!.Dispose();
+            try {
+                await Assert.That(ServiceTxnLock.IsHeld("a")).IsTrue();
+                await Assert.That(ServiceTxnLock.TryAcquire("a", TimeSpan.FromMilliseconds(50))).IsNull();
+            } finally {
+                l!.Dispose();
+            }
+
             await Assert.That(ServiceTxnLock.IsHeld("a")).IsFalse();
             await Assert.That(File.Exists(ServiceTxnLock.LockPath("a"))).IsTrue();
+        } finally {
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        }
+    }
+
+    [Test]
+    public async Task Creates_missing_lock_directory() {
+        var tempParent = Directory.CreateTempSubdirectory().FullName;
+        var lockDir = Path.Combine(tempParent, "nonexistent-subdir");
+        DaemonLockPaths.OverrideDirectoryForTesting(lockDir);
+        try {
+            var l = ServiceTxnLock.TryAcquire("b", TimeSpan.Zero);
+            await Assert.That(l).IsNotNull();
+            try {
+                await Assert.That(Directory.Exists(lockDir)).IsTrue();
+            } finally {
+                l!.Dispose();
+            }
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
