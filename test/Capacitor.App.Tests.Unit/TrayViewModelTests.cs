@@ -908,6 +908,57 @@ public class TrayViewModelTests {
         });
     }
 
+    /// Fix round 1: rows that resolve to Attention ON THEIR OWN (2, 5, 6, 9, 10) — as opposed to
+    /// row 1 (Stopped), the only row the test above exercises — are the ones a co-occurring
+    /// lifecycle Attention could actually collide with, since both land on TrayState.Attention.
+    /// Each row's own text must still win; only a genuinely fine baseState (Idle/Running) may ever
+    /// yield its header to the lifecycle message.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Lifecycle_attention_never_masks_a_connection_trouble_rows_own_header_text() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            var lifecycleAttention = new BehaviorSubject<string?>("orphan label needs repair");
+            using var vm = new TrayViewModel(service, pause, actions, consent, lifecycleAttention: lifecycleAttention);
+
+            // Row 2: daemon_incompatible — the skew special-case (no daemon-name prefix) wins even
+            // over the connection-trouble exemption below.
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_incompatible", null));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("app and daemon are incompatible — make sure both are up to date");
+
+            // Row 10: an unrecognized Unreachable reason.
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "some_future_reason", null));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: needs attention");
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
+
+            // Row 5: reconnecting.
+            service.SnapshotsSubject.OnNext(Snap("reconnecting"));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: reconnecting to server");
+
+            // Row 5: disconnected.
+            service.SnapshotsSubject.OnNext(Snap("disconnected"));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: disconnected from server");
+
+            // Row 6: connected, malformed (negative) active-agent count.
+            service.SnapshotsSubject.OnNext(Snap("connected", -1));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: needs attention");
+
+            // Row 9: unrecognized connection value.
+            service.SnapshotsSubject.OnNext(Snap("weird"));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: needs attention");
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Lifecycle_attention_wins_header_text_over_pending_consent() {

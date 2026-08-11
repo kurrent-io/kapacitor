@@ -132,23 +132,28 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
             string daemonName, AttachStatus status, DaemonStatusDto? snap, PauseState pauseState,
             IReadOnlySet<string> stopsInFlight, int pendingConsent, string? lifecycleAttention) {
         var (state, count) = Project(status, snap);
+        var baseState = state; // the row's own verdict (rows 1-10), before either upgrade below
 
         // Row 11 (spec §8): pending consent asserts Attention only while Connected — a launch is
-        // awaiting the owner. Connection-trouble rows above already left state at something other
-        // than Idle/Running, so they keep precedence for free; the running-count badge (count)
-        // keeps the agent count regardless.
+        // awaiting the owner. Judged against baseState (not state) so a later independent upgrade
+        // can never make this fire retroactively; connection-trouble rows above already left
+        // baseState at something other than Idle/Running, so they keep precedence for free, and
+        // the running-count badge (count) keeps the agent count regardless.
         var pendingAttention = status.State == AttachState.Connected && pendingConsent > 0
-            && state is TrayState.Idle or TrayState.Running;
+            && baseState is TrayState.Idle or TrayState.Running;
         if (pendingAttention) state = TrayState.Attention;
 
         // AI-1654 §6: a lifecycle Attention call (e.g. a restore-verification failure, an orphan
-        // label repair affordance) only ever UPGRADES an otherwise-fine tray state — the same
-        // precedence rule pendingAttention uses above — so it can never mask a connection-trouble
-        // row (1–6, 9–10) that is already more specific about what's wrong. When active it also
-        // wins the header body in HeaderText: it carries the daemon's own operator-actionable
-        // text, more specific than the generic fallbacks there.
+        // label repair affordance) only ever upgrades a GENUINELY fine row (Idle/Running) — judged
+        // against baseState, never against the already-Attention state a connection-trouble row
+        // (2, 5, 6, 9, 10) produced on its own. Fix round 1: the original `state is ... or
+        // TrayState.Attention` check let ANY co-occurring Attention row hand its header line to a
+        // stale/unrelated lifecycle message, masking exactly the text the comment claimed to
+        // protect (e.g. "reconnecting to server" swallowed by a leftover repair-affordance line).
+        // When active it also wins the header body over pendingAttention's generic text in
+        // HeaderText — both are judged off the same baseState, so either or both can be active.
         var lifecycleAttentionActive = !string.IsNullOrEmpty(lifecycleAttention)
-            && state is TrayState.Idle or TrayState.Running or TrayState.Attention;
+            && baseState is TrayState.Idle or TrayState.Running;
         if (lifecycleAttentionActive) state = TrayState.Attention;
 
         return new TrayMenuModel(
