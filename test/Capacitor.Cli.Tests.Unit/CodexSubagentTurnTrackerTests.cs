@@ -121,10 +121,8 @@ public class CodexSubagentTurnTrackerTests {
     }
 
     // ── BackfillCodexWatcherStateAsync (resume recovery) ──────────────────
-    // Every Codex watcher resumes from the server watermark, so the drain never re-delivers
-    // already-acknowledged lines — for a child, the task_complete that should drive the live
-    // stop; for either role, a function_call whose output has not landed yet. The backfill
-    // rebuilds both from the window of rollout lines just before that cursor.
+    // A watcher resuming at the server watermark never sees the acknowledged prefix again, so
+    // the backfill rebuilds from it what the drain can no longer deliver.
 
     const string FunctionCall =
         """{"timestamp":"2026-08-11T08:55:00.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call_seed1","arguments":"{}"}}""";
@@ -167,9 +165,7 @@ public class CodexSubagentTurnTrackerTests {
         await Assert.That(Eligible(state.CodexSubagentTurn, pending: state.PendingCodexToolCalls.Count)).IsFalse();
     }
 
-    // The gap this fixes: a session watcher (no agent id) that reconnects while a tool is
-    // still running came up with an empty pending set, so ShouldEndOnIdle read toolInFlight
-    // false and could end a live session with reason idle_timeout.
+    // The gap this fixes (#532): a session watcher resuming mid-tool came up with an empty set.
     [Test]
     public async Task Backfill_RecoversACallLeftOpenBeforeTheCursor_ForASessionWatcher() {
         var state = await BackfilledFrom(isChildWatcher: false, upToLine: null, FunctionCall, TokenCount);
@@ -177,9 +173,7 @@ public class CodexSubagentTurnTrackerTests {
         await Assert.That(state.PendingCodexToolCalls).Contains("call_seed1");
     }
 
-    // The decision the backfill exists to protect, wired the way RunWatch wires it: without the
-    // recovered call_id the set is empty, toolInFlight reads false, and a session whose tool is
-    // still running is ended with reason idle_timeout.
+    // The decision itself, wired the way RunWatch wires it — an empty set idle-ends a live session.
     [Test]
     public async Task Backfill_KeepsASessionWithARunningTool_OffTheIdleEnd() {
         var state = await BackfilledFrom(isChildWatcher: false, upToLine: null, FunctionCall, TokenCount);
@@ -193,8 +187,7 @@ public class CodexSubagentTurnTrackerTests {
         await Assert.That(idle).IsFalse();
     }
 
-    // Turn state only drives the child's live subagent-stop; a session watcher never reads it,
-    // so folding it there would be state kept for nobody.
+    // Turn state only drives the child's live subagent-stop.
     [Test]
     public async Task Backfill_DoesNotFoldTurnState_ForASessionWatcher() {
         var state = await BackfilledFrom(isChildWatcher: false, upToLine: null, TaskComplete);
@@ -202,8 +195,7 @@ public class CodexSubagentTurnTrackerTests {
         await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsFalse();
     }
 
-    // Only the prefix is the watcher's blind spot; the cursor onwards arrives through the
-    // normal drain, which folds it there.
+    // Only the prefix is the blind spot; the cursor onwards arrives through the drain.
     [Test]
     public async Task Backfill_StopsAtTheCursor() {
         var state = await BackfilledFrom(isChildWatcher: true, upToLine: 1, FunctionCall, FunctionCallOutput, TaskComplete);
@@ -212,9 +204,7 @@ public class CodexSubagentTurnTrackerTests {
         await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsFalse();
     }
 
-    // Bounded like the Claude backfill: an in-flight call sits at the tail by construction —
-    // nothing is written between a function_call and its output — so anything further back is
-    // settled, and a window keeps startup work off the length of the rollout.
+    // An in-flight call sits at the tail by construction, so anything older is settled.
     [Test]
     public async Task Backfill_IgnoresACallOlderThanTheScanWindow() {
         var lines = new List<string> { FunctionCall };  // never resolved, then buried

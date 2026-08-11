@@ -1158,16 +1158,11 @@ static partial class WatchCommand {
     }
 
     /// <summary>
-    /// Codex's counterpart to <see cref="BackfillClaudePendingToolCallsAsync"/>, rebuilding what a
-    /// watcher resuming at the server watermark can never re-read. Both roles need the pending
-    /// call set: a <c>function_call</c> that opened before the cursor produces no rollout line
-    /// until its output lands, so without this a session watcher reads <c>toolInFlight</c> false
-    /// and idle-ends a session whose tool is still running. A CHILD additionally folds turn state,
-    /// or a watcher dying between the <c>task_complete</c> ack and the grace-delayed stop POST
-    /// leaves the card spinning until the parent-end teardown; a session watcher never reads it.
-    /// Bounded and cursor-stopped like the Claude backfill — the drain folds the rest.
-    /// Best-effort: an unreadable rollout just leaves fresh-start state, with the idle timeout and
-    /// the parent-end teardown as backstops.
+    /// Codex's counterpart to <see cref="BackfillClaudePendingToolCallsAsync"/>, same window and
+    /// fail-soft properties. Both roles need the pending set — a <c>function_call</c> that opened
+    /// before the cursor writes nothing until its output lands, so a session watcher would read
+    /// <c>toolInFlight</c> false and idle-end a live session. Turn state is child-only: nothing
+    /// else re-delivers the acknowledged <c>task_complete</c> that arms the live stop.
     /// </summary>
     internal static async Task BackfillCodexWatcherStateAsync(
             WatchState state, string transcriptPath, bool isChildWatcher, int upToLine, CancellationToken ct) {
