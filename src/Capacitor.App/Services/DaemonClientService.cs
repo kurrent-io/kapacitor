@@ -67,8 +67,8 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
                 _snapshots.OnNext(snap);
                 Agents.EditDiff(snap.Agents, EqualityComparer<AgentStatusDto>.Default);
                 break;
-            case LocalControlEvent.Unreachable(var reason):
-                _status.OnNext(new(AttachState.Unreachable, reason, null));
+            case LocalControlEvent.Unreachable(var reason, var version):
+                _status.OnNext(new(AttachState.Unreachable, reason, null, version));
                 break;
             default:
                 throw new UnreachableException($"unhandled event {e.GetType().Name}");

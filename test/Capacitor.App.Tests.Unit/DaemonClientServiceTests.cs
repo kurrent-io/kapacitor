@@ -131,6 +131,22 @@ public class DaemonClientServiceTests {
         await Assert.That(seen[3]).IsEqualTo(new AttachStatus(AttachState.Connecting, null, null));
     }
 
+    [Test] // spec decision 6: hello DaemonVersion propagates Unreachable → AttachStatus
+    public async Task Unreachable_daemon_version_propagates_into_attach_status() {
+        var script = new Script();
+        await using var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
+        svc.Start();
+
+        var seen = new List<AttachStatus>();
+        using var sub = svc.Status.Subscribe(seen.Add);
+        await WaitUntilAsync(() => seen.Count >= 1, what: "initial Connecting status");
+
+        script.Feed(new LocalControlEvent.Unreachable("daemon_incompatible", "1.0"));
+        await WaitUntilAsync(() => seen.Count >= 2, what: "Unreachable status after Unreachable event");
+
+        await Assert.That(seen[1]).IsEqualTo(new AttachStatus(AttachState.Unreachable, "daemon_incompatible", null, "1.0"));
+    }
+
     [Test]
     public async Task No_stale_reconnect() {
         var script = new Script();

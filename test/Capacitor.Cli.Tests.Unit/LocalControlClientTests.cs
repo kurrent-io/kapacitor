@@ -131,6 +131,8 @@ public class LocalControlClientTests {
 
     static string GoodHello(params string[] caps) => JsonSerializer.Serialize(
         new HelloReplyDto(1, "1.0", "m", [.. caps]), HelloIpcJsonContext.Default.HelloReplyDto);
+    static string HelloWithVersion(string version, params string[] caps) => JsonSerializer.Serialize(
+        new HelloReplyDto(1, version, "m", [.. caps]), HelloIpcJsonContext.Default.HelloReplyDto);
 
     /// Runs a client against scripts in an isolated socket dir; collects events until
     /// `until` returns true or the deadline passes; returns collected events.
@@ -338,6 +340,63 @@ public class LocalControlClientTests {
             evs => evs.OfType<LocalControlEvent.Unreachable>().Count() >= 2);
         var reasons = events.OfType<LocalControlEvent.Unreachable>().Select(u => u.Reason).ToArray();
         await Assert.That(reasons).IsEquivalentTo(new[] { "daemon_incompatible", "daemon_unreachable" }, CollectionOrdering.Matching);
+    }
+
+    [Test] // spec decision 6: the hello reply's DaemonVersion propagates into the incompatible Unreachable
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Hello_reply_missing_status_cap_carries_daemon_version_into_incompatible() {
+        if (OperatingSystem.IsWindows()) return;
+
+        var events = await RunClientAsync(
+            [HelloThen(GoodHello("consent/1"))],              // DaemonVersion "1.0", no status/1
+            evs => evs.OfType<LocalControlEvent.Unreachable>().Any());
+
+        var unreachable = (LocalControlEvent.Unreachable)events[^1];
+        await Assert.That(unreachable.Reason).IsEqualTo("daemon_incompatible");
+        await Assert.That(unreachable.DaemonVersion).IsEqualTo("1.0");
+    }
+
+    [Test] // dedupe key is the (reason, version) PAIR: a version change re-emits even though the
+           // reason stays "daemon_incompatible" across every cycle
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Daemon_version_change_while_incompatible_reemits_unreachable() {
+        if (OperatingSystem.IsWindows()) return;
+
+        var events = await RunClientAsync(
+            [HelloEof(),                                        // no dto ⇒ version null
+             HelloThen(HelloWithVersion("1.0", "consent/1")),    // incompatible, version "1.0"
+             HelloThen(HelloWithVersion("2.0", "consent/1"))],   // incompatible, version "2.0"
+            evs => evs.OfType<LocalControlEvent.Unreachable>().Count() >= 3);
+
+        var seen = events.OfType<LocalControlEvent.Unreachable>()
+            .Select(u => (u.Reason, u.DaemonVersion)).ToArray();
+        await Assert.That(seen).IsEquivalentTo(
+            new[] { ("daemon_incompatible", (string?)null), ("daemon_incompatible", "1.0"), ("daemon_incompatible", "2.0") },
+            CollectionOrdering.Matching);
+    }
+
+    [Test] // a transport failure never read a hello reply, so no version is ever known
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Transport_failure_has_null_daemon_version() {
+        if (OperatingSystem.IsWindows()) return;
+
+        var sockDir = Directory.CreateTempSubdirectory("kcap-lcc-");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        try {
+            var client = new LocalControlClient("lcc-none-v") { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
+            var events = new List<LocalControlEvent>();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await foreach (var e in client.RunAsync(cts.Token)) {
+                events.Add(e);
+                if (e is LocalControlEvent.Unreachable) break;
+            }
+            var unreachable = (LocalControlEvent.Unreachable)events[^1];
+            await Assert.That(unreachable.Reason).IsEqualTo("daemon_unreachable");
+            await Assert.That(unreachable.DaemonVersion).IsNull();
+        } finally {
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+            try { Directory.Delete(sockDir.FullName, true); } catch { }
+        }
     }
 
     [Test] // daemon dies mid-stream → Unreachable; restart → Connected with fresh snapshot

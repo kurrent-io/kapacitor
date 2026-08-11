@@ -15,8 +15,10 @@ public abstract record LocalControlEvent {
         IReadOnlyList<string>? Capabilities, DaemonStatusDto FirstSnapshot) : LocalControlEvent;
 
     /// Reason is "daemon_unreachable" (transport/unresponsive) or "daemon_incompatible"
-    /// (protocol evidence — a heuristic that background retries self-correct).
-    public sealed record Unreachable(string Reason) : LocalControlEvent;
+    /// (protocol evidence — a heuristic that background retries self-correct). DaemonVersion is
+    /// the hello reply's version when one was read before the failure (null otherwise, e.g. a
+    /// transport failure or a mid-stream break, which never re-reads hello).
+    public sealed record Unreachable(string Reason, string? DaemonVersion = null) : LocalControlEvent;
 
     public sealed record Status(DaemonStatusDto Snapshot) : LocalControlEvent;
 }
@@ -63,18 +65,22 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
     const string Unreach = "daemon_unreachable";
     const string Incompat = "daemon_incompatible";
 
-    /// One attach-cycle outcome: either a classified failure reason, or success carrying the
-    /// negotiated capabilities, the first validated snapshot, and the still-open subscribe
-    /// stream for the caller to keep reading from.
-    sealed record CycleOutcome(string? Reason, IReadOnlyList<string>? Capabilities, DaemonStatusDto? FirstSnapshot, NetworkStream? Stream) {
-        public static CycleOutcome Failed(string reason) => new(reason, null, null, null);
-        public static CycleOutcome Ok(IReadOnlyList<string> caps, DaemonStatusDto first, NetworkStream stream) => new(null, caps, first, stream);
+    /// One attach-cycle outcome: either a classified failure reason (with the hello reply's
+    /// DaemonVersion, when one was read before the failure), or success carrying the negotiated
+    /// capabilities, the first validated snapshot, and the still-open subscribe stream for the
+    /// caller to keep reading from.
+    sealed record CycleOutcome(string? Reason, string? DaemonVersion, IReadOnlyList<string>? Capabilities, DaemonStatusDto? FirstSnapshot, NetworkStream? Stream) {
+        public static CycleOutcome Failed(string reason, string? daemonVersion = null) => new(reason, daemonVersion, null, null, null);
+        public static CycleOutcome Ok(IReadOnlyList<string> caps, DaemonStatusDto first, NetworkStream stream) => new(null, null, caps, first, stream);
     }
 
     public async IAsyncEnumerable<LocalControlEvent> RunAsync([EnumeratorCancellation] CancellationToken ct) {
         yield return new LocalControlEvent.Connecting();
 
-        string? lastReason = null; // transition-only: the last yielded Unreachable reason, cleared on Connected
+        // transition-only: the last yielded Unreachable (reason, DaemonVersion) pair, cleared on
+        // Connected — a version change re-emits even when the reason stays the same (spec
+        // decision 6), so the dedupe key is the PAIR, not the reason alone.
+        (string Reason, string? DaemonVersion)? last = null;
         var attempt = 0;
 
         // Waits the current backoff slot on the injected clock and advances the schedule.
@@ -93,9 +99,10 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
                 // Shared cancellation checkpoint (mirrors the connected-streak one below): a
                 // cycle that failed BECAUSE cancellation won a race must never surface as data.
                 if (ct.IsCancellationRequested) yield break;
-                if (reason != lastReason) {
-                    lastReason = reason;
-                    yield return new LocalControlEvent.Unreachable(reason);
+                var key = (reason, cycle.DaemonVersion);
+                if (key != last) {
+                    last = key;
+                    yield return new LocalControlEvent.Unreachable(reason, cycle.DaemonVersion);
                 }
                 if (!await WaitBackoffAsync()) yield break;
                 continue;
@@ -112,7 +119,7 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
 
             // The cycle SUCCEEDED only because the first VALID snapshot arrived — reset the
             // backoff schedule and yield Connected carrying that very snapshot (§4.1/§4.3).
-            lastReason = null;
+            last = null;
             attempt = 0;
 
             var sub = cycle.Stream!;
@@ -137,8 +144,12 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
             // cancellation won the race" rule as every other checkpoint in this method.
             if (ct.IsCancellationRequested) yield break;
 
-            if (streakReason != lastReason) {
-                lastReason = streakReason;
+            // The streak-break read (ReadSnapshotAsync on the established stream) never re-reads
+            // hello, so it has no DaemonVersion of its own — the dedupe key's version half is
+            // always null here.
+            var streakKey = (streakReason, (string?)null);
+            if (streakKey != last) {
+                last = streakKey;
                 yield return new LocalControlEvent.Unreachable(streakReason);
             }
             if (!await WaitBackoffAsync()) yield break;
@@ -150,6 +161,7 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
     /// data so RunAsync owns every event-ordering decision at a single call site.
     async Task<CycleOutcome> RunCycleAsync(CancellationToken ct) {
         NetworkStream? sub = null;
+        string? daemonVersion = null; // captured from the hello reply, if one was ever read
         try {
             IReadOnlyList<string> caps;
             await using (var hello = await DialAsync(ct)) {
@@ -160,8 +172,9 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
                 if (reply is null) return CycleOutcome.Failed(Incompat);            // hello-then-EOF heuristic
                 if (reply.Type != FrameType.HelloReply) return CycleOutcome.Failed(Incompat); // Error/unexpected type
                 var dto = JsonSerializer.Deserialize(reply.Text, HelloIpcJsonContext.Default.HelloReplyDto);
+                daemonVersion = dto?.DaemonVersion;                                // captured BEFORE the caps gate
                 caps = dto?.Capabilities ?? [];                                    // null ⇒ empty
-                if (!caps.Contains("status/1")) return CycleOutcome.Failed(Incompat);
+                if (!caps.Contains("status/1")) return CycleOutcome.Failed(Incompat, daemonVersion);
             }
 
             sub = await DialAsync(ct);
@@ -169,7 +182,7 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
             var first = await ReadSnapshotAsync(sub, FirstSnapshotTimeout, ct);
             if (first.Reason is { } r0) {
                 await DisposeQuietly(sub);
-                return CycleOutcome.Failed(r0);
+                return CycleOutcome.Failed(r0, daemonVersion);
             }
 
             return CycleOutcome.Ok(caps, first.Snapshot!, sub);
@@ -178,7 +191,7 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
             return CycleOutcome.Failed(Unreach); // reason is moot: RunAsync's ct checkpoint fires first
         } catch (Exception ex) {
             await DisposeQuietly(sub);
-            return CycleOutcome.Failed(Classify(ex));
+            return CycleOutcome.Failed(Classify(ex), daemonVersion);
         }
     }
 
