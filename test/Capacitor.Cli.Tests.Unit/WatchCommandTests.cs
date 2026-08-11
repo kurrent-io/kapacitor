@@ -847,6 +847,62 @@ public class UpdateClaudePendingToolCallsTests {
     }
 }
 
+/// <summary>
+/// The Codex counterpart of <see cref="ClaudeToolTrackingSourceTests"/>: both watcher state trackers
+/// must be fed the drain's RAW lines. RedactLine swaps anything over the size limit for a placeholder
+/// with no <c>call_id</c> and a <c>type</c> neither tracker recognises, and an oversized
+/// <c>function_call_output</c> — a build log, a big file read — is routine. See issue #528.
+/// </summary>
+public class CodexToolTrackingSourceTests {
+    const string FunctionCall =
+        """{"type":"response_item","payload":{"type":"function_call","call_id":"call_big","name":"shell","arguments":"{}"}}""";
+
+    static string OversizedFunctionCallOutput() =>
+        "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"call_big\",\"output\":\""
+      + new string('x', SecretRedactor.MaxRedactableLineChars + 1024)
+      + "\"}}";
+
+    /// <summary>
+    /// Worse for Codex than the Claude equivalent was: the idle timeout is the ONLY per-conversation
+    /// session-end path (the desktop app's shared app-server never exits), so a stranded call_id
+    /// pins toolInFlight true and leaves the session Active in the read model forever.
+    /// </summary>
+    [Test]
+    public async Task RedactedLines_StrandTheCallId_ButRawLinesClearIt() {
+        var viaRedacted = new HashSet<string>(StringComparer.Ordinal);
+        WatchCommand.UpdateCodexPendingToolCalls(viaRedacted, SecretRedactor.RedactLine(FunctionCall));
+        WatchCommand.UpdateCodexPendingToolCalls(viaRedacted, SecretRedactor.RedactLine(OversizedFunctionCallOutput()));
+
+        await Assert.That(viaRedacted.Contains("call_big")).IsTrue();
+
+        var viaRaw = new HashSet<string>(StringComparer.Ordinal);
+        WatchCommand.UpdateCodexPendingToolCalls(viaRaw, FunctionCall);
+        WatchCommand.UpdateCodexPendingToolCalls(viaRaw, OversizedFunctionCallOutput());
+
+        await Assert.That(viaRaw.Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The other direction on the same placeholder: Observe treats any response_item as the turn
+    /// re-opening, so an oversized one is not recognised and a child that re-engaged after
+    /// task_complete still looks finished — a premature live subagent-stop.
+    /// </summary>
+    [Test]
+    public async Task RedactedResponseItem_FailsToReopenTheTurn_ButTheRawOneDoes() {
+        var viaRedacted = new CodexSubagentTurnTracker();
+        viaRedacted.Observe("""{"type":"event_msg","payload":{"type":"task_complete"}}""");
+        viaRedacted.Observe(SecretRedactor.RedactLine(OversizedFunctionCallOutput()));
+
+        await Assert.That(viaRedacted.TurnCompleted).IsTrue();
+
+        var viaRaw = new CodexSubagentTurnTracker();
+        viaRaw.Observe("""{"type":"event_msg","payload":{"type":"task_complete"}}""");
+        viaRaw.Observe(OversizedFunctionCallOutput());
+
+        await Assert.That(viaRaw.TurnCompleted).IsFalse();
+    }
+}
+
 public class ClaudeToolTrackingSourceTests {
     const string ToolUse =
         """{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_big","name":"Bash","input":{"command":"build"}}]}}""";

@@ -1884,7 +1884,12 @@ static partial class WatchCommand {
             // but runs unconditionally so it is not gated on the title phase or
             // threshold). Non-Codex lines have a different top-level shape (no
             // response_item), so this is a cheap no-op for them.
-            foreach (var line in newLines) {
+            //
+            // Raw drainRead.Lines, not the redacted newLines: an oversized function_call_output
+            // (a build log) redacts to a placeholder with no call_id, which would strand the id
+            // and pin toolInFlight true forever — and for Codex the idle timeout is the ONLY
+            // per-conversation session-end path, so the session would stay Active for good.
+            foreach (var line in drainRead.Lines) {
                 UpdateCodexPendingToolCalls(state.PendingCodexToolCalls, line);
             }
 
@@ -1903,8 +1908,12 @@ static partial class WatchCommand {
             // (task_complete vs renewed activity) so the polling loop can post a live
             // subagent-stop once the child is done + idle. Gated, unlike the
             // pending-call tracking above, because only codex child watchers ever consult it.
+            // Raw lines for the same reason, and here in the other direction: a redacted
+            // response_item is not recognised as renewed activity, so a child that re-engaged
+            // would still look finished and be reported stopped while working. Matches what
+            // SeedCodexSubagentTurnState already does when it folds this state from disk.
             if (vendor == "codex" && agentId is not null) {
-                foreach (var line in newLines) {
+                foreach (var line in drainRead.Lines) {
                     state.CodexSubagentTurn.Observe(line);
                 }
             }
