@@ -20,6 +20,11 @@ public class ServiceVerifyStartTests {
         public Action<string>? OnStart;
         public Action<string>? OnStop;
 
+        /// <summary>When set, a post-start Query blocks for its whole timeout (a hung
+        /// <c>launchctl print</c>) by advancing this clock — so a test can prove the readiness step
+        /// never hands the Query a second full budget after a late hello already burned the first.</summary>
+        public FakeTimeProvider? HangQueryClock;
+
         public int StartCalls => Calls.Count(c => c == "start");
         public int StopCalls => Calls.Count(c => c == "stop");
         public int UninstallCalls => Calls.Count(c => c == "uninstall");
@@ -28,6 +33,7 @@ public class ServiceVerifyStartTests {
 
         public ServiceQuery Query(string serviceId, TimeSpan timeout) {
             Calls.Add("query");
+            if (Started && HangQueryClock is not null) HangQueryClock.Advance(timeout);
             if (Stopped) {
                 if (ProbeUnknownAfterStop)
                     return new ServiceQuery(LabelProbe.Unknown, true, ServiceState.Installed, "/bin/kcap-daemon", null);
@@ -258,19 +264,20 @@ public class ServiceVerifyStartTests {
     }
 
     [Test]
-    public async Task Recheck_starved_by_the_forward_deadline_still_gets_a_floor_to_confirm() {
+    public async Task Final_recheck_gets_the_reserved_confirm_slice_when_the_primary_lands_near_the_deadline() {
         var dir = Directory.CreateTempSubdirectory().FullName;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager();
             var time = new FakeTimeProvider();
 
-            // The primary hello call itself burns the entire remaining forward budget (a slow
-            // resolve landing right at the deadline) — the confirmation call right after it must
-            // still get a real chance to probe rather than being auto-failed by remaining <= 0.
+            // The primary hello burns almost the whole poll budget (a slow resolve landing right at
+            // the poll cutoff), leaving just enough for its own ownership Query. The final recheck
+            // must still get a real probe — not from a clock-technicality floor, but from the
+            // confirm slice reserved INSIDE the forward budget for exactly this case.
             var helloCalls = 0;
             Task<HelloProbeResult> Hello(string _, TimeSpan budget) {
-                if (helloCalls++ == 0) time.Advance(budget);
+                if (helloCalls++ == 0) time.Advance(budget - TimeSpan.FromMilliseconds(1));
                 return Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
             }
 
@@ -282,6 +289,38 @@ public class ServiceVerifyStartTests {
             await Assert.That(helloCalls).IsEqualTo(2);
             await Assert.That(manager.StopCalls).IsEqualTo(0);
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task A_late_hello_never_hands_a_hung_query_a_second_full_budget() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            var time = new FakeTimeProvider();
+            var start = time.GetUtcNow();
+
+            // A hung `launchctl print`: the ownership Query blocks for its entire timeout. Paired
+            // with a hello that consumes ~all of its own budget, the OLD readiness step handed the
+            // Query a stale FULL budget (elapsed ~2x the forward deadline) and committed anyway.
+            var manager = new FakeServiceManager { HangQueryClock = time };
+            Task<HelloProbeResult> Hello(string _, TimeSpan budget) {
+                time.Advance(budget);
+                return Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+            }
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
+                forwardBudget: TimeSpan.FromSeconds(2), rollbackReserve: TimeSpan.FromSeconds(1));
+
+            var task = sut.StartVerifiedAsync(Id);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            // Readiness is capped to the single forward deadline: the burned-budget hello leaves no
+            // time for the Query, so the step aborts to rollback rather than doubling its spend...
+            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+            // ...and the whole transaction stays inside the advertised forward + reserve envelope.
+            var elapsed = time.GetUtcNow() - start;
+            await Assert.That(elapsed <= TimeSpan.FromSeconds(3)).IsTrue();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 

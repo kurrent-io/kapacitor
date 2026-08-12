@@ -316,8 +316,8 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     }
 
     /// §4.2 table, keyed on the loaded-label/job state before plist presence. An unrecognized wire
-    /// state is Unknown, not NotInstalled (Standards-2: positive-evidence-only) — never a silent
-    /// entry into the auto-install/start path below.
+    /// state is Unknown, not NotInstalled — positive evidence only, never a silent entry into the
+    /// auto-install/start path below.
     async Task RunStartupMatrixAsync(ServiceSnapshot snap, CancellationToken ct) {
         var state = ServiceStateClassifier.Parse(snap.State);
         if (state == ServiceState.Unknown) {

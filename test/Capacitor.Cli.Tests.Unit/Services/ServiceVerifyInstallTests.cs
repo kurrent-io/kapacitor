@@ -29,6 +29,11 @@ public class ServiceVerifyInstallTests {
         public Action<string>? OnGenerateFiles;
         public Action<string>? OnWriteAndBootstrap;
 
+        /// <summary>When set, a post-bootstrap Query blocks for its whole timeout (a hung
+        /// <c>launchctl print</c>) by advancing this clock — proves the readiness step never hands
+        /// the Query a second full budget once a late hello has burned the first.</summary>
+        public FakeTimeProvider? HangQueryClock;
+
         public int QueryCalls              => Calls.Count(c => c == "query");
         public int WriteAndBootstrapCalls  => Calls.Count(c => c == "writeAndBootstrap");
         public int UninstallCalls          => Calls.Count(c => c == "uninstall");
@@ -41,6 +46,7 @@ public class ServiceVerifyInstallTests {
 
         public ServiceQuery Query(string serviceId, TimeSpan timeout) {
             Calls.Add("query");
+            if (Bootstrapped && HangQueryClock is not null) HangQueryClock.Advance(timeout);
             // Bootstrapped wins over a PRIOR Uninstalled: entry-time marker recovery and the
             // --replace matrix both call Uninstall() before this same transaction's own later
             // WriteAndBootstrap succeeds, and Uninstall never gets a second chance to reset the
@@ -576,6 +582,81 @@ public class ServiceVerifyInstallTests {
 
             var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
             var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task A_late_hello_never_hands_a_hung_query_a_second_full_budget() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            var time = new FakeTimeProvider();
+            var start = time.GetUtcNow();
+
+            // A hung `launchctl print`: the ownership Query blocks for its whole timeout. Paired
+            // with a hello that consumes ~all of its own budget, the OLD readiness step handed the
+            // Query a stale FULL budget (elapsed ~2x the forward deadline) and committed anyway.
+            var manager = new FakeServiceManager { HangQueryClock = time };
+            Task<HelloProbeResult> Hello(string _, TimeSpan budget) {
+                time.Advance(budget);
+                return Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+            }
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
+                forwardBudget: TimeSpan.FromSeconds(2), rollbackReserve: TimeSpan.FromSeconds(1), readPlist: OwnPlist);
+
+            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            // Capped to the single forward deadline: the burned-budget hello leaves no time for the
+            // Query, so readiness aborts to rollback instead of doubling its spend...
+            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+            // ...and the whole transaction stays inside the advertised forward + reserve envelope.
+            var elapsed = time.GetUtcNow() - start;
+            await Assert.That(elapsed <= TimeSpan.FromSeconds(3)).IsTrue();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Rollback_never_uninstalls_an_unreadable_present_plist() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            // A lock-unaware writer replaced our plist with a foreign/unreadable file between
+            // bootstrap and rollback: _readPlist returns null (can't fingerprint it) but the file
+            // demonstrably exists. Uninstalling it would delete something we never verified is ours,
+            // so rollback must fail closed and leave it untouched.
+            var manager = new FakeServiceManager { WriteAndBootstrapThrows = new InvalidOperationException("launchctl bootstrap failed (exit 5)") };
+            var sut = new ServiceVerify(manager, _ => 4242,
+                (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
+                TimeProvider.System,
+                readPlist: _ => null,     // present but unreadable — cannot be fingerprinted
+                plistExists: _ => true);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(0);      // the foreign file is never paved
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();     // marker retained for explicit repair
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Rollback_uninstalls_when_the_plist_is_genuinely_absent() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            // The other null-read shape: the file is genuinely gone (read null AND not present), so
+            // the idempotent uninstall still runs and verifies the restored (absent) state.
+            var manager = new FakeServiceManager { WriteAndBootstrapThrows = new InvalidOperationException("launchctl bootstrap failed (exit 5)") };
+            var sut = new ServiceVerify(manager, _ => 4242,
+                (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
+                TimeProvider.System,
+                readPlist: _ => null,
+                plistExists: _ => false);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
             await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
             await Assert.That(manager.UninstallCalls).IsEqualTo(1);

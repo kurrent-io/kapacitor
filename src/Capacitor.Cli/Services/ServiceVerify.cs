@@ -56,9 +56,12 @@ public static class VerifyExit {
 /// <summary>
 /// Spec §3.4 transaction engine: viability → marker → mutate → ownership+readiness poll → final
 /// recheck → commit, or rollback to the verified-safe failure state. One forward cutoff bounds the
-/// entire forward phase (viability, clear, write, bootstrap, readiness); a separately reserved
-/// rollback budget guarantees time to restore. Injectable seams (manager, pid probe, hello probe,
-/// clock, profile viability) make every case drivable without shelling out to <c>launchctl</c>.
+/// entire forward phase (viability, clear, write, bootstrap, readiness AND the final recheck); a
+/// separately reserved rollback budget guarantees time to restore. Every bounded readiness sub-call
+/// (hello then Query) draws from that single forward deadline, recomputed immediately before each,
+/// so a slow hello can never hand the Query a second full budget. Injectable seams (manager, pid
+/// probe, hello probe, clock, profile viability) make every case drivable without shelling out to
+/// <c>launchctl</c>.
 /// </summary>
 sealed class ServiceVerify(
     IVerifyServiceManager manager,
@@ -79,14 +82,30 @@ sealed class ServiceVerify(
     public static readonly TimeSpan DefaultRollbackReserve = TimeSpan.FromSeconds(10);
 
     /// <summary>The advertised transaction bound: the forward cutoff plus the rollback reserve bound
-    /// the whole mutate-then-restore envelope (30s at the defaults). A caller's kill-timeout (the
-    /// desktop app's mutation timeout, §3.6) MUST sit strictly above this. Two bounded phases can
-    /// precede it — lock acquisition (≤ 10s) and, only on crash residue, a recovery pre-phase
-    /// (≤ the rollback reserve) — so for full headroom a caller should allow the sum, not just this.</summary>
+    /// the whole mutate-then-restore envelope (30s at the defaults). Forward work — including the
+    /// final recheck, which runs inside a slice reserved within the forward budget — is honored by
+    /// the single forward deadline; rollback is honored by the separate reserve. A caller's
+    /// kill-timeout (the desktop app's mutation timeout, §3.6) MUST sit strictly above this. Two
+    /// bounded phases can precede it — lock acquisition (≤ 10s) and, only on crash residue, a
+    /// recovery pre-phase (≤ the rollback reserve) — so for full headroom a caller should allow the
+    /// sum, not just this. The one accepted exception is <see cref="KillWait"/> (≤ 5s) on the
+    /// manual-owner takeover kill, whose raw wait sits just outside the forward envelope but well
+    /// within the caller's 60s kill-timeout.</summary>
     public static readonly TimeSpan AdvertisedBound = DefaultForwardBudget + DefaultRollbackReserve;
 
     readonly TimeSpan _forwardBudget    = forwardBudget ?? DefaultForwardBudget;
     readonly TimeSpan _rollbackReserve  = rollbackReserve ?? DefaultRollbackReserve;
+
+    /// <summary>A small slice reserved INSIDE the forward budget for the final recheck, so a primary
+    /// readiness observation that lands right at the poll cutoff still gets one confirmation probe
+    /// without pushing total forward work (poll + recheck) past the single forward deadline. Capped
+    /// at half the forward budget so a pathologically small budget still leaves a poll window.</summary>
+    readonly TimeSpan _confirmReserve   = ConfirmReserveFor(forwardBudget ?? DefaultForwardBudget);
+
+    static TimeSpan ConfirmReserveFor(TimeSpan forward) {
+        var reserve = TimeSpan.FromTicks(Math.Min((2 * PollInterval).Ticks, (forward / 2).Ticks));
+        return reserve > TimeSpan.Zero ? reserve : forward;
+    }
 
     /// <summary>Whether the pinned profile resolves to a valid absolute http/https server URL — the
     /// CLI-side enforcement of §4.1's precondition, so a <c>--replace</c> can never destroy a working
@@ -143,17 +162,19 @@ sealed class ServiceVerify(
         ServiceTxnMarker.Write(serviceId,
             new TxnMarker(1, "start", "bootstrapped", DescribeQuery(pre), "unloaded-plist-retained", null));
 
-        while (time.GetUtcNow() < deadline) {
-            var (ready, pid) = await IsReadyAsync(serviceId, Remaining(deadline), requirePid: null);
+        // Reserve a final-confirm slice INSIDE the forward budget: the primary poll runs to
+        // pollDeadline, leaving _confirmReserve for one recheck within the ORIGINAL deadline, so the
+        // total forward work (poll + recheck) stays inside the single forward cutoff.
+        var pollDeadline = deadline - _confirmReserve;
+
+        while (time.GetUtcNow() < pollDeadline) {
+            var (ready, pid) = await IsReadyAsync(serviceId, pollDeadline, requirePid: null);
             if (ready) {
-                // Confirm what the primary check just observed; floor at one interval so a slow-but-
-                // healthy primary hello isn't rolled back on a clock technicality. The final recheck
+                // Confirm what the primary check just observed; the reserved slice guarantees this
+                // recheck a probe even when the primary lands at the poll cutoff. The recheck
                 // requires the SAME incarnation (pinned pid) so a job that answered then respawned
                 // under KeepAlive can't bless a crash-looping unit.
-                var confirmBudget = Remaining(deadline);
-                if (confirmBudget < PollInterval) confirmBudget = PollInterval;
-
-                var (confirmed, _) = await IsReadyAsync(serviceId, confirmBudget, requirePid: pid);
+                var (confirmed, _) = await IsReadyAsync(serviceId, deadline, requirePid: pid);
                 if (confirmed) {
                     ServiceTxnMarker.Write(serviceId,
                         new TxnMarker(1, "start", "committed", DescribeQuery(pre), "unloaded-plist-retained", null));
@@ -163,7 +184,7 @@ sealed class ServiceVerify(
                 }
             }
 
-            if (time.GetUtcNow() >= deadline) break;
+            if (time.GetUtcNow() >= pollDeadline) break;
             await Task.Delay(PollInterval, time, CancellationToken.None);
         }
 
@@ -172,14 +193,17 @@ sealed class ServiceVerify(
 
     /// <summary>Ownership + readiness predicate: hello well-formed AND the freshly-queried job pid
     /// matches the validated daemon pid (both non-null). Returns the observed job pid so a caller can
-    /// pin it; <paramref name="requirePid"/>, when set, demands that SAME incarnation.</summary>
-    async Task<(bool Ready, int? JobPid)> IsReadyAsync(string serviceId, TimeSpan budget, int? requirePid) {
-        if (budget <= TimeSpan.Zero) return (false, null);
+    /// pin it; <paramref name="requirePid"/>, when set, demands that SAME incarnation. Both bounded
+    /// sub-calls draw from ONE absolute <paramref name="deadline"/>, recomputed immediately before
+    /// each: a late-but-well-formed hello cannot then hand the Query a second full budget.</summary>
+    async Task<(bool Ready, int? JobPid)> IsReadyAsync(string serviceId, DateTimeOffset deadline, int? requirePid) {
+        if (Remaining(deadline) <= TimeSpan.Zero) return (false, null);
 
-        var h = await hello(serviceId, budget);
+        var h = await hello(serviceId, Remaining(deadline));
         if (!h.WellFormed) return (false, null);
 
-        var jobPid    = manager.Query(serviceId, budget).JobPid;
+        if (Remaining(deadline) <= TimeSpan.Zero) return (false, null);
+        var jobPid    = manager.Query(serviceId, Remaining(deadline)).JobPid;
         var daemonPid = validatedDaemonPid(serviceId);
         var owned     = jobPid is not null && daemonPid is not null && jobPid == daemonPid;
         if (!owned) return (false, jobPid);
@@ -309,18 +333,20 @@ sealed class ServiceVerify(
 
         ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "bootstrapped", preState, "no-unit", fingerprint));
 
-        while (time.GetUtcNow() < forward) {
-            var (primary, pinnedPid) = await IsInstallReadyAsync(serviceId, expectedVersion, Remaining(forward), requirePid: null);
+        // The primary poll runs to pollDeadline, leaving _confirmReserve for the final recheck within
+        // the ORIGINAL forward cutoff — total forward work (poll + recheck) stays inside one deadline.
+        var pollDeadline = forward - _confirmReserve;
+
+        while (time.GetUtcNow() < pollDeadline) {
+            var (primary, pinnedPid) = await IsInstallReadyAsync(serviceId, expectedVersion, pollDeadline, requirePid: null);
             if (primary == InstallReady.VersionMismatch)
                 return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.HelloValidation, VerifyExit.HelloValidationToken);
 
             if (primary == InstallReady.Ready) {
-                var confirmBudget = Remaining(forward);
-                if (confirmBudget < PollInterval) confirmBudget = PollInterval;
-
                 // Final recheck requires the SAME incarnation (pinnedPid): a job that answered then
                 // exited and let a KeepAlive respawn take over must not commit a crash-looping unit.
-                var (confirm, _) = await IsInstallReadyAsync(serviceId, expectedVersion, confirmBudget, requirePid: pinnedPid);
+                // The reserved slice guarantees it a probe even when the primary lands at the cutoff.
+                var (confirm, _) = await IsInstallReadyAsync(serviceId, expectedVersion, forward, requirePid: pinnedPid);
                 if (confirm == InstallReady.VersionMismatch)
                     return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.HelloValidation, VerifyExit.HelloValidationToken);
 
@@ -340,7 +366,7 @@ sealed class ServiceVerify(
                 }
             }
 
-            if (time.GetUtcNow() >= forward) break;
+            if (time.GetUtcNow() >= pollDeadline) break;
             await Task.Delay(PollInterval, time, CancellationToken.None);
         }
 
@@ -504,16 +530,17 @@ sealed class ServiceVerify(
     /// <see cref="InstallReady.VersionMismatch"/> the caller rolls back on immediately. Returns the
     /// observed job pid so the caller can pin it; <paramref name="requirePid"/>, when set, demands that
     /// SAME incarnation.</summary>
-    async Task<(InstallReady Status, int? JobPid)> IsInstallReadyAsync(string serviceId, string? expectedVersion, TimeSpan budget, int? requirePid) {
-        if (budget <= TimeSpan.Zero) return (InstallReady.NotReady, null);
+    async Task<(InstallReady Status, int? JobPid)> IsInstallReadyAsync(string serviceId, string? expectedVersion, DateTimeOffset deadline, int? requirePid) {
+        if (Remaining(deadline) <= TimeSpan.Zero) return (InstallReady.NotReady, null);
 
-        var h = await hello(serviceId, budget);
+        var h = await hello(serviceId, Remaining(deadline));
         if (!h.WellFormed) return (InstallReady.NotReady, null);
         if (h.DaemonName != serviceId) return (InstallReady.VersionMismatch, null);
         if (h.ProtocolVersion != HelloProtocol.CurrentVersion) return (InstallReady.VersionMismatch, null);
         if (expectedVersion is not null && h.DaemonVersion != expectedVersion) return (InstallReady.VersionMismatch, null);
 
-        var jobPid    = manager.Query(serviceId, budget).JobPid;
+        if (Remaining(deadline) <= TimeSpan.Zero) return (InstallReady.NotReady, null);
+        var jobPid    = manager.Query(serviceId, Remaining(deadline)).JobPid;
         var daemonPid = validatedDaemonPid(serviceId);
         var owned     = jobPid is not null && daemonPid is not null && jobPid == daemonPid;
         if (!owned) return (InstallReady.NotReady, jobPid);
@@ -525,8 +552,18 @@ sealed class ServiceVerify(
     /// is label-absent AND file-gone (unlike start, which retains the plist), bounded by the reserve. A
     /// foreign plist (fingerprint mismatch) is never touched — checked before the uninstall.</summary>
     async Task<int> InstallRollback(string serviceId, string plistPath, string fingerprint, int reasonExit, string reasonToken) {
+        // Never uninstall what we can't verify is ours. A null read is either genuine absence OR a
+        // present-but-unreadable file (a lock-unaware writer replaced ours between bootstrap and
+        // rollback): only the confirmed-absent case (read null AND the file does not exist) may be
+        // cleared. Present-but-unreadable, and readable-but-foreign, both surface untouched — the
+        // same fail-closed rule RecoverLeftoverMarker applies at entry.
         var onDisk = _readPlist(plistPath);
-        if (onDisk is not null && ServiceTxnMarker.Fingerprint(onDisk) != fingerprint) {
+        if (onDisk is null) {
+            if (_plistExists(plistPath)) {
+                Say(VerifyExit.RestoreVerificationToken);
+                return VerifyExit.RestoreVerification;
+            }
+        } else if (ServiceTxnMarker.Fingerprint(onDisk) != fingerprint) {
             Say(VerifyExit.RestoreVerificationToken);
             return VerifyExit.RestoreVerification;
         }

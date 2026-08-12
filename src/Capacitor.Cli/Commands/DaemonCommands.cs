@@ -970,7 +970,7 @@ public static class DaemonCommands {
         return 0;
     }
 
-    /// <summary>Plain install under the per-label service lock (Finding parity with stop/start/uninstall):
+    /// <summary>Plain install under the per-label service lock, matching stop/start/uninstall:
     /// null lock → the same coded-contention message, exit 1, without calling <c>Install</c>. Internal so
     /// the lock-contention path is testable without <c>ResolveDaemonBinary</c> in the loop.</summary>
     internal static async Task<int> ServiceInstallPlain(IServiceManager manager, ServiceSpec spec, bool startNow) {
