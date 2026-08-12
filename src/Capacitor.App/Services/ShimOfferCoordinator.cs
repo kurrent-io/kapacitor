@@ -119,7 +119,11 @@ public sealed class ShimOfferCoordinator {
     }
 
     Task SurfaceResultAsync(ShimResult result) => result.Outcome switch {
-        ShimOutcome.Installed => Status("kcap is now on your terminal PATH."),
+        // Confirmed on-PATH: the item is no longer applicable-but-absent (Offerable's own
+        // contract), on both the auto-offer accept path and the manual tray-install path — both
+        // route through here. InstalledButNotOnPath deliberately does NOT reset it: kcap is still
+        // absent from the terminal PATH, so the item stays offerable for a retry.
+        ShimOutcome.Installed => InstalledStatus(),
         ShimOutcome.InstalledButNotOnPath => Status(result.Detail ?? "kcap was linked, but is not yet on your terminal PATH."),
         ShimOutcome.Cancelled => ClaimDeniedThenStatus("Installing the command-line tool was canceled."),
         ShimOutcome.Failed => Status(result.SudoFallback is null
@@ -127,6 +131,11 @@ public sealed class ShimOfferCoordinator {
             : $"{result.Detail} Or run: {result.SudoFallback}"),
         _ => Task.CompletedTask,
     };
+
+    Task InstalledStatus() {
+        _offerable.OnNext(false);
+        return Status("kcap is now on your terminal PATH.");
+    }
 
     async Task ClaimDeniedThenStatus(string message) {
         await ClaimDeniedAsync().ConfigureAwait(false);

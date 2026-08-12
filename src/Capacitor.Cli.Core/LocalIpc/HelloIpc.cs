@@ -16,6 +16,13 @@ public sealed record ClientHelloDto(string? ClientName, string? ClientVersion);
 public sealed record HelloReplyDto(
     int ProtocolVersion, string DaemonVersion, string DaemonName, List<string>? Capabilities);
 
+/// <summary>Single source of truth for the local control socket hello protocol version this build
+/// speaks — both what <c>HandleHelloAsync</c> reports and what a per-verb hello probe (e.g.
+/// <c>service install --verify</c>) requires of a freshly-installed daemon.</summary>
+public static class HelloProtocol {
+    public const int CurrentVersion = 1;
+}
+
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(ClientHelloDto))]
 [JsonSerializable(typeof(HelloReplyDto))]

@@ -845,7 +845,7 @@ public static class DaemonCommands {
         switch (action) {
             case "install":   return await ServiceInstall(manager, rest, id, startNow: !noStart);
             case "uninstall": return await ServiceUninstall(manager, id);
-            case "start":     return rest.Contains("--verify") ? await ServiceStartVerified(manager, id) : await ServiceStart(manager, id);
+            case "start":     return await ServiceStart(manager, rest, id);
             case "stop":      return await ServiceStop(manager, id);
             case "status":    return rest.Contains("--json") ? await ServiceStatusJson(manager, id) : await ServiceStatus(manager, id);
             default:          return ServiceUsage();
@@ -971,7 +971,23 @@ public static class DaemonCommands {
         return 0;
     }
 
-    static async Task<int> ServiceStart(IServiceManager manager, string id) {
+    /// <summary>
+    /// Routes plain vs <c>--verify</c> starts. <c>--verify</c> is gated to launchd like
+    /// <see cref="ServiceInstall"/>'s own gate — the engine's readiness/ownership poll needs a
+    /// manager whose WriteAndBootstrap/Query actually implement the verify algorithm.
+    /// </summary>
+    internal static async Task<int> ServiceStart(IServiceManager manager, string[] args, string id) {
+        if (!args.Contains("--verify")) return await ServiceStartPlain(manager, id);
+
+        if (manager is not LaunchdServiceManager) {
+            await Console.Error.WriteLineAsync("start --verify is only supported on macOS (launchd) in this release.");
+            return 1;
+        }
+
+        return await ServiceStartVerified(manager, id);
+    }
+
+    static async Task<int> ServiceStartPlain(IServiceManager manager, string id) {
         using var txn = ServiceTxnLock.TryAcquire(id, TimeSpan.FromSeconds(10));
 
         if (txn is null) {
@@ -1056,7 +1072,7 @@ public static class DaemonCommands {
         Console.Error.WriteLine("                          --replace (requires --verify) takes over an existing label/unit/live owner");
         Console.Error.WriteLine("  uninstall [--name N]   Stop and remove the service unit");
         Console.Error.WriteLine("  start [--name N] [--verify]   Start the installed service now");
-        Console.Error.WriteLine("                          --verify polls readiness/ownership and rolls back on failure");
+        Console.Error.WriteLine("                          --verify (macOS/launchd only) polls readiness/ownership and rolls back on failure");
         Console.Error.WriteLine("  stop [--name N]        Stop the running service (stays installed)");
         Console.Error.WriteLine("  status [--name N] [--json]   Show installed/running state (--json for machine-readable output)");
         return 1;

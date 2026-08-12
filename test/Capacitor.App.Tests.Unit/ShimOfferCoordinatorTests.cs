@@ -271,6 +271,21 @@ public class ShimOfferCoordinatorTests {
         await Assert.That(h.Store.State.ShimDenied).IsFalse();
     }
 
+    // Regression: a confirmed on-PATH install used to leave Offerable stuck at true forever, so
+    // the "Install command-line tool…" tray item never disappeared after a successful install.
+    [Test]
+    public async Task Accept_then_Installed_resets_Offerable_to_false() {
+        using var h = new Harness(immediatePhaseClosed: true);
+        var probeCalls = 0;
+        h.Probe.KcapOnPathBehavior = _ => Task.FromResult<bool?>(++probeCalls == 1 ? false : true);
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
+        h.Runner.Enqueue(new ProcessResult(0, "", "", false));
+        h.Coordinator.Start();
+
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the installed status line");
+        await Assert.That(h.OfferableValues.Last()).IsFalse();
+    }
+
     [Test]
     public async Task Accept_then_InstalledButNotOnPath_surfaces_the_detail_line() {
         using var h = new Harness(immediatePhaseClosed: true);
@@ -281,6 +296,20 @@ public class ShimOfferCoordinatorTests {
 
         await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the not-on-PATH status line");
         await Assert.That(h.Surface.StatusMessages[0]).Contains("PATH");
+    }
+
+    // kcap is still absent from the terminal PATH after InstalledButNotOnPath — unlike a
+    // confirmed Installed, the tray item must stay offerable so the user can retry.
+    [Test]
+    public async Task Accept_then_InstalledButNotOnPath_leaves_Offerable_true() {
+        using var h = new Harness(immediatePhaseClosed: true);
+        h.Probe.KcapOnPathBehavior = _ => Task.FromResult<bool?>(false);
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
+        h.Runner.Enqueue(new ProcessResult(0, "", "", false));
+        h.Coordinator.Start();
+
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the not-on-PATH status line");
+        await Assert.That(h.OfferableValues.Last()).IsTrue();
     }
 
     [Test]
@@ -306,6 +335,19 @@ public class ShimOfferCoordinatorTests {
         await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the failed status line");
         await Assert.That(h.Surface.StatusMessages[0]).Contains("sudo mkdir -p /usr/local/bin");
         await Assert.That(h.Store.State.ShimDenied).IsFalse(); // Failed is not the same as declined/canceled
+    }
+
+    // Failed never confirmed anything about PATH — the tray item must stay offerable.
+    [Test]
+    public async Task Accept_then_Failed_leaves_Offerable_true() {
+        using var h = new Harness(immediatePhaseClosed: true);
+        h.Probe.KcapOnPathBehavior = _ => Task.FromResult<bool?>(false);
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
+        h.Runner.Enqueue(new ProcessResult(1, "", "administrator privileges denied", false));
+        h.Coordinator.Start();
+
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the failed status line");
+        await Assert.That(h.OfferableValues.Last()).IsTrue();
     }
 
     [Test]

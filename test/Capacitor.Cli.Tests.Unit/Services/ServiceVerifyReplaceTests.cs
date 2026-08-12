@@ -111,7 +111,7 @@ public class ServiceVerifyReplaceTests {
             var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = ManualOwnerPid, RunningPid = ManualOwnerPid };
 
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => ManualOwnerPid, Hello, TimeProvider.System, readPlist: OwnPlist);
 
@@ -144,7 +144,7 @@ public class ServiceVerifyReplaceTests {
                 helloCalls++;
                 return Task.FromResult(helloCalls == 1
                     ? new HelloProbeResult(false, null, null, null)
-                    : new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+                    : new HelloProbeResult(true, 1, ExpectedVersion, Id));
             }
 
             // Call #1 (matrix entry, before any hello): the manual owner's pid. Call #2 (the
@@ -186,7 +186,7 @@ public class ServiceVerifyReplaceTests {
             var manager = new FakeServiceManager { InitialProbe = LabelProbe.Absent, InitialUnitPresent = true, InitialJobPid = null };
 
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             int? ValidatedPid(string _) => manager.Bootstrapped ? manager.RunningPid : null;
 
@@ -215,7 +215,7 @@ public class ServiceVerifyReplaceTests {
                 helloCalls++;
                 return Task.FromResult(helloCalls == 1
                     ? new HelloProbeResult(false, null, null, null)
-                    : new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+                    : new HelloProbeResult(true, 1, ExpectedVersion, Id));
             }
 
             int? ValidatedPid(string _) =>
@@ -249,7 +249,7 @@ public class ServiceVerifyReplaceTests {
             var helloCalls = 0;
             Task<HelloProbeResult> Hello(string _, TimeSpan __) {
                 helloCalls++;
-                return Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+                return Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
             }
 
             // Live (ManualOwnerPid) BEFORE Uninstall runs, gone the moment it does — models bootout

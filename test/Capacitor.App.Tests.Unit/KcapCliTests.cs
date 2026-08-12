@@ -264,4 +264,61 @@ public class KcapCliTests {
 
         await Assert.That(runner.SeenFileName).IsEqualTo("kcap");
     }
+
+    // Fix: a broken KCAP_APP_CLI_PATH (CliResolver.ResolvePath returned null) used to make Run
+    // throw via a null-forgiving `CliPath!` — the app treats null CliPath as "no CLI", so every
+    // call must degrade the same honest way instead of crashing whichever caller hits it.
+    static KcapCli MakeCliWithNullPath(FakeProcessRunner runner) =>
+        new(runner, null, "daemon-a", "work", _ => Task.FromResult<string?>(null));
+
+    [Test]
+    public async Task VersionAsync_with_null_CliPath_returns_null_without_calling_the_runner() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCliWithNullPath(runner);
+
+        await Assert.That(await cli.VersionAsync(CancellationToken.None)).IsNull();
+        await Assert.That(runner.SeenFileName).IsNull();
+    }
+
+    [Test]
+    public async Task ServiceStatusAsync_with_null_CliPath_returns_null_without_calling_the_runner() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCliWithNullPath(runner);
+
+        await Assert.That(await cli.ServiceStatusAsync(CancellationToken.None)).IsNull();
+        await Assert.That(runner.SeenFileName).IsNull();
+    }
+
+    [Test]
+    public async Task ServiceStartVerifiedAsync_with_null_CliPath_returns_exit_127_without_calling_the_runner() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCliWithNullPath(runner);
+
+        var result = await cli.ServiceStartVerifiedAsync(CancellationToken.None);
+
+        await Assert.That(result.ExitCode).IsEqualTo(127);
+        await Assert.That(runner.SeenFileName).IsNull();
+    }
+
+    [Test]
+    public async Task ServiceInstallVerifiedAsync_with_null_CliPath_returns_exit_127_without_calling_the_runner() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCliWithNullPath(runner);
+
+        var result = await cli.ServiceInstallVerifiedAsync(replace: false, CancellationToken.None);
+
+        await Assert.That(result.ExitCode).IsEqualTo(127);
+        await Assert.That(runner.SeenFileName).IsNull();
+    }
+
+    [Test]
+    public async Task DetachedStartAsync_with_null_CliPath_returns_exit_127_without_calling_the_runner() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCliWithNullPath(runner);
+
+        var result = await cli.DetachedStartAsync(CancellationToken.None);
+
+        await Assert.That(result.ExitCode).IsEqualTo(127);
+        await Assert.That(runner.SeenFileName).IsNull();
+    }
 }

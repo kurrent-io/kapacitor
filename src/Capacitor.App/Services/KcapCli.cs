@@ -63,15 +63,23 @@ public sealed class KcapCli : IKcapCli {
 
     public string? CliPath { get; }
 
+    /// A no-CLI (broken KCAP_APP_CLI_PATH — CliResolver.ResolvePath returned null) result the app
+    /// treats identically to "unknown"/"nothing resolved": these two read-only queries return
+    /// null instead of throwing, the same degradation an unparseable or timed-out response
+    /// already models.
     public async Task<string?> VersionAsync(CancellationToken ct) {
-        var result = await Run(["--version", "--no-update-check"], new RunOptions(EnvOverlay: Env(), Timeout: VersionTimeout), ct)
+        if (CliPath is not { } cliPath) return null;
+
+        var result = await Run(cliPath, ["--version", "--no-update-check"], new RunOptions(EnvOverlay: Env(), Timeout: VersionTimeout), ct)
             .ConfigureAwait(false);
 
         return result.ExitCode == 0 && !result.TimedOut ? CliResolver.ParseVersion(result.Stdout) : null;
     }
 
     public async Task<ServiceSnapshot?> ServiceStatusAsync(CancellationToken ct) {
-        var result = await Run(
+        if (CliPath is not { } cliPath) return null;
+
+        var result = await Run(cliPath,
                 ["daemon", "service", "status", "--name", _daemonName, "--json"],
                 new RunOptions(EnvOverlay: Env(), Timeout: StatusTimeout), ct)
             .ConfigureAwait(false);
@@ -86,28 +94,37 @@ public sealed class KcapCli : IKcapCli {
     }
 
     public Task<ProcessResult> ServiceStartVerifiedAsync(CancellationToken ct) =>
-        Run(
-            ["daemon", "service", "start", "--name", _daemonName, "--verify"],
-            new RunOptions(EnvOverlay: Env(), Timeout: MutationTimeout), ct);
+        CliPath is not { } cliPath
+            ? NoCliResult()
+            : Run(cliPath, ["daemon", "service", "start", "--name", _daemonName, "--verify"],
+                new RunOptions(EnvOverlay: Env(), Timeout: MutationTimeout), ct);
 
     // The interface's `replace` is the only per-call knob; the profile is pinned once at
     // construction (spec decision 7) and reused verbatim for both the `--profile` flag and the
     // KCAP_PROFILE overlay below, so the two can never disagree.
     public async Task<ProcessResult> ServiceInstallVerifiedAsync(bool replace, CancellationToken ct) {
+        if (CliPath is not { } cliPath) return await NoCliResult().ConfigureAwait(false);
+
         List<string> args = ["daemon", "service", "install", "--name", _daemonName, "--profile", _profileName, "--verify"];
         if (replace) args.Add("--replace");
 
         var env = await EnvWithTerminalPathAsync(ct).ConfigureAwait(false);
-        return await Run(args.ToArray(), new RunOptions(EnvOverlay: env, Timeout: MutationTimeout), ct).ConfigureAwait(false);
+        return await Run(cliPath, args.ToArray(), new RunOptions(EnvOverlay: env, Timeout: MutationTimeout), ct).ConfigureAwait(false);
     }
 
     public Task<ProcessResult> DetachedStartAsync(CancellationToken ct) =>
-        Run(
-            ["daemon", "start", "-d", "--name", _daemonName],
-            new RunOptions(EnvOverlay: Env(), CancelMode: CancelMode.AbandonWait), ct);
+        CliPath is not { } cliPath
+            ? NoCliResult()
+            : Run(cliPath, ["daemon", "start", "-d", "--name", _daemonName],
+                new RunOptions(EnvOverlay: Env(), CancelMode: CancelMode.AbandonWait), ct);
 
-    Task<ProcessResult> Run(string[] args, RunOptions options, CancellationToken ct) =>
-        _runner.RunAsync(CliPath!, args, options, ct);
+    // Deterministic exit 127 ("command not found") rather than throwing on a null CliPath — a
+    // broken KCAP_APP_CLI_PATH must degrade the same way every other no-CLI case does, not crash
+    // whichever lifecycle mutation happens to call it.
+    static Task<ProcessResult> NoCliResult() => Task.FromResult(new ProcessResult(127, "", "kcap CLI not found", false));
+
+    Task<ProcessResult> Run(string cliPath, string[] args, RunOptions options, CancellationToken ct) =>
+        _runner.RunAsync(cliPath, args, options, ct);
 
     // Every child carries the pinned profile.
     Dictionary<string, string> Env() => new() { ["KCAP_PROFILE"] = _profileName };

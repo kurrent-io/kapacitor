@@ -25,21 +25,18 @@ public sealed class PathShimInstaller(IProcessRunner runner, ILoginShellProbe pr
 
         switch (Preflight(destination, target)) {
             case ShimPreflight.AlreadyInstalled:
-                return new ShimResult(ShimOutcome.Installed, null, null);
+                // The symlink resolving to our target is not by itself "on PATH" (spec §5: "never
+                // report success on the symlink alone") — a prior install (or a hand-made link) can
+                // sit there while the login shell's PATH still omits /usr/local/bin. Same probe, same
+                // Installed/InstalledButNotOnPath mapping as the freshly-linked branch below.
+                return await ProbeOutcomeAsync(destination, ct).ConfigureAwait(false);
             case ShimPreflight.Conflict:
                 return new ShimResult(ShimOutcome.Failed, $"{destination} already exists ({Describe(destination)}) and was left untouched.", null);
         }
 
         var result = await runner.RunAsync(OsascriptPath, OsascriptArgs(target), new RunOptions(), ct).ConfigureAwait(false);
 
-        if (result.ExitCode == 0) {
-            var onPath = await probe.KcapOnPathAsync(ct).ConfigureAwait(false);
-            return onPath == true
-                ? new ShimResult(ShimOutcome.Installed, null, null)
-                : new ShimResult(ShimOutcome.InstalledButNotOnPath,
-                    $"kcap was linked at {destination}, but your login shell's PATH doesn't include /usr/local/bin. Add: export PATH=\"/usr/local/bin:$PATH\"",
-                    null);
-        }
+        if (result.ExitCode == 0) return await ProbeOutcomeAsync(destination, ct).ConfigureAwait(false);
 
         // The parenthesized form only — a bare "-128" substring can appear unescaped inside a
         // genuine failure's shell error text (e.g. a target path like ".../app-128/kcap"), which
@@ -51,6 +48,18 @@ public sealed class PathShimInstaller(IProcessRunner runner, ILoginShellProbe pr
         var sudoFallback = "sudo mkdir -p /usr/local/bin && sudo ln -s " + PosixQuote(target) + " /usr/local/bin/kcap";
         var detail = string.IsNullOrWhiteSpace(result.Stderr) ? "osascript failed." : result.Stderr.Trim();
         return new ShimResult(ShimOutcome.Failed, detail, sudoFallback);
+    }
+
+    /// Shared post-install/AlreadyInstalled mapping (spec §5: "never report success on the symlink
+    /// alone"): re-run the login-shell PATH probe and only call it Installed when `kcap` actually
+    /// resolves — otherwise InstalledButNotOnPath with the same actionable Detail.
+    async Task<ShimResult> ProbeOutcomeAsync(string destination, CancellationToken ct) {
+        var onPath = await probe.KcapOnPathAsync(ct).ConfigureAwait(false);
+        return onPath == true
+            ? new ShimResult(ShimOutcome.Installed, null, null)
+            : new ShimResult(ShimOutcome.InstalledButNotOnPath,
+                $"kcap was linked at {destination}, but your login shell's PATH doesn't include /usr/local/bin. Add: export PATH=\"/usr/local/bin:$PATH\"",
+                null);
     }
 
     /// lstat taxonomy on `destination`, never following through a foreign link: absent →

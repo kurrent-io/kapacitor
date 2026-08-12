@@ -1,3 +1,5 @@
+using Capacitor.Cli.Core.LocalIpc;
+
 namespace Capacitor.Cli.Services;
 
 /// <summary>Coded, stable exit codes for the <see cref="ServiceVerify"/> transaction engine.
@@ -502,16 +504,28 @@ sealed class ServiceVerify(
         return false;
     }
 
-    /// <summary>Install's ownership + readiness + version predicate. Version mismatch is reported
-    /// distinctly from "not yet ready" — it's a deterministic fact about the running daemon, not
-    /// something a retry can fix, so the caller rolls back immediately rather than waiting out the
-    /// forward budget.</summary>
+    /// <summary>Install's ownership + readiness + protocol/name/version predicate (spec §3.4:
+    /// "Install/replace validates protocol, daemon name, and version"). Every one of those three is
+    /// a deterministic fact about the answering daemon, not something a retry can fix, so each
+    /// reports the SAME <see cref="InstallReady.VersionMismatch"/> the caller rolls back on
+    /// immediately rather than waiting out the forward budget:
+    /// <list type="bullet">
+    /// <item>wrong <c>DaemonName</c> — something else is answering on our socket under this
+    /// service id;</item>
+    /// <item>unsupported <c>ProtocolVersion</c> — an incompatible wire shape;</item>
+    /// <item><c>DaemonVersion</c> mismatch, but only when <paramref name="expectedVersion"/> is
+    /// non-null — null means the caller opted out of version validation, not "any version is
+    /// wrong".</item>
+    /// </list>
+    /// </summary>
     async Task<InstallReady> IsInstallReadyAsync(string serviceId, string? expectedVersion, TimeSpan budget) {
         if (budget <= TimeSpan.Zero) return InstallReady.NotReady;
 
         var h = await hello(serviceId, budget);
         if (!h.WellFormed) return InstallReady.NotReady;
-        if (h.DaemonVersion != expectedVersion) return InstallReady.VersionMismatch;
+        if (h.DaemonName != serviceId) return InstallReady.VersionMismatch;
+        if (h.ProtocolVersion != HelloProtocol.CurrentVersion) return InstallReady.VersionMismatch;
+        if (expectedVersion is not null && h.DaemonVersion != expectedVersion) return InstallReady.VersionMismatch;
 
         var jobPid    = manager.Query(serviceId).JobPid;
         var daemonPid = validatedDaemonPid(serviceId);

@@ -167,7 +167,7 @@ public class ServiceVerifyInstallTests {
             var helloCalls = 0;
             Task<HelloProbeResult> Hello(string id, TimeSpan _) {
                 if (helloCalls++ == 0) phaseAtFirstHello = ServiceTxnMarker.Read(id)!.Phase;
-                return Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+                return Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
             }
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
@@ -194,7 +194,7 @@ public class ServiceVerifyInstallTests {
 
             var manager = new FakeServiceManager();
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
 
@@ -218,7 +218,7 @@ public class ServiceVerifyInstallTests {
 
             var manager = new FakeServiceManager();
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
 
@@ -243,7 +243,7 @@ public class ServiceVerifyInstallTests {
 
             var manager = new FakeServiceManager();
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
 
@@ -333,7 +333,7 @@ public class ServiceVerifyInstallTests {
             var time = new FakeTimeProvider();
 
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, "0.9.0", "kcap-daemon")); // != ExpectedVersion
+                Task.FromResult(new HelloProbeResult(true, 1, "0.9.0", Id)); // version != ExpectedVersion; name/protocol right
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
                 forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
@@ -347,6 +347,78 @@ public class ServiceVerifyInstallTests {
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 
+    /// <summary>Spec §3.4: install/replace validates the daemon NAME too — a well-formed, right-
+    /// version hello answering under a different reported name means something else is on our
+    /// socket, and that's just as much a rollback trigger as a version mismatch.</summary>
+    [Test]
+    public async Task Wrong_hello_name_rolls_back_by_uninstalling_its_own_unit() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            var manager = new FakeServiceManager();
+            var time = new FakeTimeProvider();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "someone-elses-daemon"));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
+                forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
+
+            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.HelloValidation);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    /// <summary>Spec §3.4: install/replace validates the hello's PROTOCOL version too — an
+    /// otherwise-well-formed hello reporting a protocol this build doesn't speak is a deterministic
+    /// incompatibility, not something a retry can fix.</summary>
+    [Test]
+    public async Task Unsupported_protocol_version_rolls_back_by_uninstalling_its_own_unit() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            var manager = new FakeServiceManager();
+            var time = new FakeTimeProvider();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 2, ExpectedVersion, Id)); // protocol 2 != this build's 1
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
+                forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
+
+            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.HelloValidation);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    /// <summary>The nullable contract: <c>expectedVersion: null</c> means "skip version
+    /// validation" (callers pass a non-null <c>CapacitorVersion.Current()</c> in practice), not
+    /// "any version is a mismatch" — a well-formed hello with the right name/protocol and
+    /// confirmed ownership still commits.</summary>
+    [Test]
+    public async Task Null_expected_version_skips_version_validation_but_still_succeeds() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            var manager = new FakeServiceManager();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "whatever-version-nobody-checks", Id));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, expectedVersion: null);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
     [Test]
     public async Task Foreign_plist_at_final_recheck_is_never_deleted_and_keeps_the_marker() {
         var (dir, daemonPath) = SetUpViableInstall();
@@ -354,7 +426,7 @@ public class ServiceVerifyInstallTests {
             var manager = new FakeServiceManager();
 
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             // A different writer's plist text is on disk by the time the final recheck reads it —
             // the fingerprint can never match what WriteAndBootstrap wrote.
@@ -429,7 +501,7 @@ public class ServiceVerifyInstallTests {
             var time = new FakeTimeProvider();
 
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 222, Hello, time,
                 forwardBudget: TimeSpan.FromSeconds(2), rollbackReserve: TimeSpan.FromSeconds(1), readPlist: OwnPlist);
@@ -453,7 +525,7 @@ public class ServiceVerifyInstallTests {
             var time = new FakeTimeProvider();
 
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "kcap-daemon"));
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 222, Hello, time,
                 forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);

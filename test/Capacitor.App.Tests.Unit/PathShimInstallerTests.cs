@@ -324,11 +324,55 @@ public class PathShimInstallerTests {
         File.WriteAllText(target, "cli");
         File.CreateSymbolicLink(dest, target);
         var runner = new FakeProcessRunner();
-        var installer = new PathShimInstaller(runner, new FakeLoginShellProbe());
+        var probe = new FakeLoginShellProbe { KcapOnPathBehavior = _ => Task.FromResult<bool?>(true) };
+        var installer = new PathShimInstaller(runner, probe);
 
         var result = await Install(installer, dest, target, CancellationToken.None);
 
         await Assert.That(result.Outcome).IsEqualTo(ShimOutcome.Installed);
+        await Assert.That(runner.Calls).IsEmpty();
+    }
+
+    // Regression: AlreadyInstalled used to short-circuit straight to Installed on the symlink
+    // alone (spec §5 forbids exactly that — "never report success on the symlink alone"). The
+    // symlink resolving to our target says nothing about whether the login shell's PATH actually
+    // includes /usr/local/bin, so AlreadyInstalled must run the SAME post-install probe the
+    // freshly-linked branch does.
+    [Test]
+    public async Task InstallAsync_already_installed_then_probe_true_is_installed() {
+        Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
+
+        var dir = NewTempDir();
+        var dest = Path.Combine(dir, "kcap");
+        var target = Path.Combine(dir, "target-cli");
+        File.WriteAllText(target, "cli");
+        File.CreateSymbolicLink(dest, target);
+        var runner = new FakeProcessRunner();
+        var probe = new FakeLoginShellProbe { KcapOnPathBehavior = _ => Task.FromResult<bool?>(true) };
+        var installer = new PathShimInstaller(runner, probe);
+
+        var result = await Install(installer, dest, target, CancellationToken.None);
+
+        await Assert.That(result.Outcome).IsEqualTo(ShimOutcome.Installed);
+        await Assert.That(runner.Calls).IsEmpty();
+    }
+
+    [Test]
+    public async Task InstallAsync_already_installed_then_probe_false_is_installed_but_not_on_path() {
+        Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
+
+        var dir = NewTempDir();
+        var dest = Path.Combine(dir, "kcap");
+        var target = Path.Combine(dir, "target-cli");
+        File.WriteAllText(target, "cli");
+        File.CreateSymbolicLink(dest, target);
+        var runner = new FakeProcessRunner();
+        var probe = new FakeLoginShellProbe { KcapOnPathBehavior = _ => Task.FromResult<bool?>(false) };
+        var installer = new PathShimInstaller(runner, probe);
+
+        var result = await Install(installer, dest, target, CancellationToken.None);
+
+        await Assert.That(result.Outcome).IsEqualTo(ShimOutcome.InstalledButNotOnPath);
         await Assert.That(runner.Calls).IsEmpty();
     }
 
