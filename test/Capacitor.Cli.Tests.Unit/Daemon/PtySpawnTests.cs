@@ -156,10 +156,10 @@ public class PtySpawnTests {
         try {
             var rc = Spawn(plan, out var result);
             // Assert a genuine successful spawn BEFORE the cleanup block: on a failure path
-            // pty_spawn leaves result zero-filled (Pid 0, MasterFd -1), and running cleanup on
-            // those sentinels would be actively harmful — kill(0, SIGKILL) signals the whole
-            // process group (the test host) and close(0) closes stdin. So only enter the
-            // fd-owning try once we hold a real child + fd.
+            // pty_spawn leaves result zero-filled (Pid 0) with MasterFd -1. close(-1) is a
+            // harmless no-op, but kill(0, SIGKILL) is actively harmful — it signals the whole
+            // process group (the test host). So only enter the fd-owning try once we hold a
+            // real child + fd.
             await Assert.That(rc).IsEqualTo(0);
             await Assert.That(result.Pid).IsGreaterThan(0);
             await Assert.That(result.MasterFd).IsGreaterThanOrEqualTo(0);
