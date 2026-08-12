@@ -670,21 +670,14 @@ int pty_spawn(const pty_exec_plan *plan, char *const envp[], const char *cwd,
     }
 
     // ── PARENT ──
-    // forkpty returns the master bare — unlike the error pipe above, it carries no CLOEXEC flag,
-    // so without this every child the daemon execs later inherits a live read/write descriptor
-    // onto THIS PTY agent's terminal, crossing an isolation boundary the daemon draws
-    // deliberately. Set it as the first parent statement — the earliest a caller can, since
-    // forkpty has no O_CLOEXEC-style atomic variant. That fully closes inheritance by any LATER
-    // exec, but only NARROWS (cannot eliminate) the race against a child forked concurrently on
-    // another daemon thread, whose fork can begin before forkpty even returns here; a hard
-    // guarantee against concurrent spawns would require serializing all process creation across
-    // the forkpty+F_SETFD pair, out of scope for this fix.
-    // Best-effort, deliberately NOT fail-closed like the error-pipe CLOEXEC above, whose absence
-    // is a genuine correctness hazard (a stray write-end copy defers the exec-success EOF). A
-    // leaked master is a real isolation/resource cost but never a wrong result, and on a
-    // just-returned valid fd this fcntl cannot realistically fail (EBADF/EINVAL both unreachable),
-    // so tearing down an otherwise-healthy agent for it would be strictly worse than the residual
-    // leak it guards against.
+    // forkpty returns the master with no CLOEXEC flag, so a child the daemon execs later would
+    // inherit a live descriptor onto THIS agent's terminal (an isolation boundary). Doing this
+    // as the first parent statement is the earliest possible — forkpty has no atomic O_CLOEXEC
+    // variant — so it fully closes later-exec inheritance but only NARROWS the race against a
+    // concurrent fork on another thread (fully closing that means serializing process creation,
+    // out of scope here). Best-effort, unlike the fail-closed error-pipe CLOEXEC above: a leaked
+    // master is an isolation/resource cost, never a wrong result, and F_SETFD on a just-returned
+    // valid fd cannot realistically fail — so failing the spawn over it would be worse.
     fcntl(master_fd, F_SETFD, FD_CLOEXEC);
     close(errpipe[1]);
 
