@@ -349,7 +349,7 @@ public class TrayAdapterTests {
         });
     }
 
-    // ---- "Install command-line tool…" item (AI-1654 §5, Task 24) ----
+    // ---- "Install command-line tool…" item (spec §5) ----
 
     [Test]
     [NotInParallel("AvaloniaSession")]

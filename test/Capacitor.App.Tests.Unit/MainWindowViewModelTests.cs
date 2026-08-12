@@ -272,7 +272,7 @@ public class MainWindowViewModelTests {
         });
     }
 
-    // AI-1654 Task 22 §6: ILifecycleSurface.Status one-liners ride the same StartMessage lane.
+    // spec §6: ILifecycleSurface.Status one-liners ride the same StartMessage lane.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Lifecycle_status_sets_and_is_cleared_like_a_start_failure() {
@@ -293,7 +293,7 @@ public class MainWindowViewModelTests {
         });
     }
 
-    // AI-1654 §4.4: StartDaemonCommand is repointed to the service-aware
+    // spec §4.4: StartDaemonCommand is repointed to the service-aware
     // DaemonLifecycleController.StartActionAsync when the composition root supplies one — the
     // plain detached StartDaemonAsync is a fallback for callers with no live controller, not the
     // production path.

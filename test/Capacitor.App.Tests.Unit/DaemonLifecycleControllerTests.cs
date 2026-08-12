@@ -3,7 +3,7 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.App.Tests.Unit;
 
-/// Startup phase, reconciliation, and the §4.2 startup matrix (AI-1654 task 19). Every
+/// Startup phase, reconciliation, and the §4.2 startup matrix (spec). Every
 /// clock-dependent wait goes through FakeTimeProvider (never Task.Delay-based ordering);
 /// settling between an event push and its effect is driven by WaitUntilAsync polling on the
 /// fakes' call counters (PauseControllerTests/ConsentServiceTests idiom).

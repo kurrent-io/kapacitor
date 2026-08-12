@@ -325,7 +325,7 @@ public class AppStartupTests {
         await Assert.That(fake.ShutdownCalls).IsEquivalentTo([1], CollectionOrdering.Matching);
     }
 
-    // AI-1654 §3.6: shutdown awaits DaemonLifecycleController.QuiescedAsync (mutations are never
+    // spec §3.6: shutdown awaits DaemonLifecycleController.QuiescedAsync (mutations are never
     // abandoned) but only up to a cap, since an internally-triggered mutation has no shutdown-token
     // wiring of its own. AwaitQuiescedAsync is the extracted seam DisposeAndShutdownAsync wires it
     // through — no live controller/App needed to drive it directly.

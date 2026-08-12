@@ -8,7 +8,7 @@ public sealed record CliInfo(string? Path, string? Version);
 /// CLI). Pure given its env/filesystem seams, so DaemonClientService.CreateDefaultAsync and every
 /// later lifecycle feature resolve through the same logic.
 public static class CliResolver {
-    /// KCAP_APP_CLI_PATH (dev seam, app-shell design decision 6) → *(AI-1653: bundle-relative
+    /// KCAP_APP_CLI_PATH (dev seam, app-shell design decision 6) → *(future: bundle-relative
     /// path arm lands here)* → "kcap" on PATH.
     ///
     /// Returns null ONLY when the override is set but the path it names does not exist — a broken

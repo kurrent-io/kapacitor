@@ -25,7 +25,7 @@ public static class RepoLabel {
 // pass it to AgentActionService.RequestStop, which decides protected-ness (decision 5).
 public sealed record TrayAgentEntry(string Id, string Label, string Kind, bool StopEnabled);
 public sealed record TrayPauseItem(bool Enabled, bool Checked);
-// ShimInstallVisible (AI-1654 §5): "Install command-line tool…" tray-item visibility — trailing
+// ShimInstallVisible (spec §5): "Install command-line tool…" tray-item visibility — trailing
 // with a default so every existing positional/object-initializer call site stays valid.
 public sealed record TrayMenuModel(
     TrayState State, int RunningCount, string Header,

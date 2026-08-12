@@ -55,18 +55,18 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
     // OpenMainWindowCommand/QuitCommand above.
     public ReactiveCommand<Unit, Unit> ReviewPendingCommand { get; }
 
-    // The tray menu's "Install command-line tool…" target (AI-1654 §5) — CreateFromTask, not
+    // The tray menu's "Install command-line tool…" target (spec §5) — CreateFromTask, not
     // Create, since ShimOfferCoordinator.RunManualInstallAsync is async; a no-op default keeps
     // this VM constructible for every test that predates the shim coordinator.
     public ReactiveCommand<Unit, Unit> InstallShimCommand { get; }
 
     /// <param name="lifecycleAttention">
-    /// AI-1654 Task 22 §6: ILifecycleSurface.Attention repair-affordance text (e.g. a
+    /// spec §6: ILifecycleSurface.Attention repair-affordance text (e.g. a
     /// restore-verification failure). Null (most existing tests, and any caller without a live
     /// lifecycle controller) means this stream never upgrades the tray state — see Build.
     /// </param>
     /// <param name="shimOfferable">
-    /// AI-1654 §5: ShimOfferCoordinator.Offerable — true while the "Install command-line tool…"
+    /// spec §5: ShimOfferCoordinator.Offerable — true while the "Install command-line tool…"
     /// item should show. Null (most existing tests) means the item never shows.
     /// </param>
     public TrayViewModel(
@@ -162,7 +162,7 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
             && baseState is TrayState.Idle or TrayState.Running;
         if (pendingAttention) state = TrayState.Attention;
 
-        // AI-1654 §6: a lifecycle Attention call (e.g. a restore-verification failure, an orphan
+        // spec §6: a lifecycle Attention call (e.g. a restore-verification failure, an orphan
         // label repair affordance) only ever upgrades a GENUINELY fine row (Idle/Running) — judged
         // against baseState, never against the already-Attention state a connection-trouble row
         // (2, 5, 6, 9, 10) produced on its own. Fix round 1: the original `state is ... or

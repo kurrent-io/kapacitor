@@ -2,7 +2,7 @@ using System.Reactive.Subjects;
 
 namespace Capacitor.App.Services;
 
-/// AI-1654 §5: the once-ever shim offer + the "Install command-line tool…" tray item it shares a
+/// spec §5: the once-ever shim offer + the "Install command-line tool…" tray item it shares a
 /// code path with. Waits for the SAME startup-phase signal the lifecycle controller exposes
 /// (`PhaseClosed`, any path — an immediate `Connected` releases this exactly like a completed
 /// `daemon_unreachable` branch) before probing anything, so the offer dialog can never race the

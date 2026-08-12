@@ -3,7 +3,7 @@ using TUnit.Assertions.Enums;
 
 namespace Capacitor.App.Tests.Unit;
 
-/// AI-1654 §5 offer surface (Task 24): the once-ever auto-offer gated on PhaseClosed + a positive
+/// spec §5 offer surface: the once-ever auto-offer gated on PhaseClosed + a positive
 /// probe result, and the "Install command-line tool…" tray item's independent visibility/manual
 /// retry. FakeLoginShellProbe and FakeLifecycleSurface are shared from
 /// DaemonLifecycleControllerTests.cs (same namespace); PathShimInstaller is real (sealed, no

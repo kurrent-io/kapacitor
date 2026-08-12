@@ -146,13 +146,13 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// unbounded wait would survive app exit).
     /// </param>
     /// <param name="startAction">
-    /// AI-1654 §4.4: the service-aware Start action (DaemonLifecycleController.StartActionAsync).
+    /// spec §4.4: the service-aware Start action (DaemonLifecycleController.StartActionAsync).
     /// Null falls back to the plain detached `StartDaemonAsync` RunStartAsync always used —
     /// preserved so a caller without a live controller (most existing tests) keeps today's
     /// behavior verbatim.
     /// </param>
     /// <param name="lifecycleStatus">
-    /// AI-1654 Task 22 §6: ILifecycleSurface.Status one-liners (e.g. "daemon started, app not yet
+    /// spec §6: ILifecycleSurface.Status one-liners (e.g. "daemon started, app not yet
     /// attached — retrying", a coded transaction failure) ride the SAME start-message lane
     /// RunStartAsync already uses — one place near the Start button for "why isn't this working",
     /// cleared by the identical Connected-transition rule below. Null (most existing tests, and

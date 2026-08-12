@@ -30,7 +30,7 @@ static class VerifyExitCodes {
     };
 }
 
-/// The state machine of AI-1654 (spec §3.2/§4.2): reacts to IDaemonClientService's attach
+/// The state machine of the lifecycle slice (spec §3.2/§4.2): reacts to IDaemonClientService's attach
 /// stream, drives the §4.2 startup matrix through IKcapCli, and surfaces every inconsistency via
 /// ILifecycleSurface — never a silent mutation outside the matrix's own explicit rows.
 public sealed class DaemonLifecycleController : IAsyncDisposable {

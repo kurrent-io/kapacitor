@@ -16,7 +16,7 @@ using Capacitor.Cli.Core.LocalIpc;
 namespace Capacitor.App;
 
 public partial class App : Application {
-    // AI-1654 §3.6: app shutdown WAITS (does not cancel) for an in-flight lifecycle mutation, but
+    // spec §3.6: app shutdown WAITS (does not cancel) for an in-flight lifecycle mutation, but
     // only up to this cap — an internally-triggered mutation (startup matrix, skew, txn-requery)
     // has no other shutdown-token wiring, so an uncapped wait could hang shutdown forever.
     static readonly TimeSpan QuiesceShutdownCap = TimeSpan.FromSeconds(60);
@@ -26,11 +26,11 @@ public partial class App : Application {
     // survive app exit).
     readonly CancellationTokenSource _shutdown = new();
     DaemonClientService? _service; // concrete type: IAsyncDisposable is not on the interface
-    // AI-1654: subscribed and Start()'d BEFORE _service.Start() begins pumping (subscribe-before-
+    // spec: subscribed and Start()'d BEFORE _service.Start() begins pumping (subscribe-before-
     // pump — DaemonLifecycleController.Start's own doc comment). Disposed before _service in every
     // teardown path below: it's the dependent (subscribes to _service's streams), so it goes first.
     DaemonLifecycleController? _lifecycle;
-    // AI-1654 Task 24: no disposal needed — it holds no subscription of its own, only a one-shot
+    // spec: no disposal needed — it holds no subscription of its own, only a one-shot
     // await chain against BuildLifecycleController's cliPath/probe/store/surface and _shutdown.Token,
     // so cancelling _shutdown (every teardown path below already does) is what stops it.
     ShimOfferCoordinator? _shimOffer;
@@ -94,7 +94,7 @@ public partial class App : Application {
             var ops = new LocalControlOps(service.DaemonName);
             var notifier = new AppNotifier();
 
-            // AI-1654 Task 22: BehaviorSubjects, not plain Subjects — MainWindowViewModel and
+            // spec: BehaviorSubjects, not plain Subjects — MainWindowViewModel and
             // TrayViewModel don't exist yet at this point in StartAsync (built further down), so a
             // BehaviorSubject replays its latest value to whichever one subscribes later, meaning a
             // Status/Attention call this early (the startup-phase reconciliation, e.g.) is never
@@ -102,7 +102,7 @@ public partial class App : Application {
             var lifecycleStatus    = new BehaviorSubject<string?>(null);
             var lifecycleAttention = new BehaviorSubject<string?>(null);
 
-            // AI-1654 subscribe-before-pump: the controller's attach subscription must be live
+            // spec subscribe-before-pump: the controller's attach subscription must be live
             // BEFORE service.Start() begins pumping, or the startup phase could miss the very
             // first terminal outcome it hinges on (DaemonLifecycleController.Start's own comment).
             var (lifecycle, shimOffer) = BuildLifecycleController(service, lifecycleStatus.OnNext, lifecycleAttention.OnNext);
@@ -304,7 +304,7 @@ public partial class App : Application {
         return window;
     }
 
-    // AI-1654 composition: wires the daemon-service CLI facade (decision 1: everything through the
+    // spec composition: wires the daemon-service CLI facade (decision 1: everything through the
     // CLI), the login-shell PATH probe, and the persisted decline-memory store. A broken
     // KCAP_APP_CLI_PATH override (CliResolver.ResolvePath returning null) is treated as "no CLI"
     // here — unlike CreateDefaultAsync's own lenient `daemon start -d` fallback above, the
@@ -328,7 +328,7 @@ public partial class App : Application {
             service, cli, probe, store, surface, () => Task.FromResult(ValidProfileName(profile)), TimeProvider.System);
 
         // The shim links to the RESOLVED ABSOLUTE path only — CliResolver's bare "kcap" fallback
-        // (no override set, or AI-1653's not-yet-landed bundle-relative arm) means there is
+        // (no override set, or the not-yet-landed bundle-relative arm) means there is
         // nothing to link, so the offer and the menu item both stay off for the whole run.
         var shimTarget = cliPath is not null && Path.IsPathRooted(cliPath) ? cliPath : null;
         var shimOffer = new ShimOfferCoordinator(
@@ -510,7 +510,7 @@ public partial class App : Application {
     }
 
     async Task DisposeAndShutdownAsync() {
-        // AI-1654 §3.6: mutations are never abandoned — give a lifecycle-controller-triggered
+        // spec §3.6: mutations are never abandoned — give a lifecycle-controller-triggered
         // mutation (startup matrix, skew, txn-requery; none of these carry _shutdown.Token) a
         // bounded chance to finish naturally, WHILE the UI is still up, before anything below
         // starts tearing it down.

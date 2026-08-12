@@ -866,7 +866,7 @@ public class TrayViewModelTests {
         });
     }
 
-    // ---- AI-1654 Task 22: ILifecycleSurface.Attention ----
+    // ---- spec: ILifecycleSurface.Attention ----
 
     [Test]
     [NotInParallel("AvaloniaSession")]
@@ -997,7 +997,7 @@ public class TrayViewModelTests {
         });
     }
 
-    // ---- AI-1654 Task 24: the shim tray item ----
+    // ---- spec: the shim tray item ----
 
     [Test]
     [NotInParallel("AvaloniaSession")]
