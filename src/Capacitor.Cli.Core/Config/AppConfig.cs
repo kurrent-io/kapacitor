@@ -395,9 +395,11 @@ public static class AppConfig {
     /// the resolved profile from <see cref="ResolvedProfile"/> and loads the
     /// fallback config from disk when needed.
     /// </summary>
-    public static async Task<Profile?> GetActiveProfileAsync() {
+    public static async Task<Profile?> GetActiveProfileAsync(CancellationToken ct = default) {
         if (ResolvedProfile?.Profile is { } profile) return profile;
 
-        return PickActiveProfile(null, await LoadProfileConfig());
+        // Thread ct so a caller under a hard deadline (e.g. the Cursor hook's 2s dispatcher race)
+        // lets the disk read observe cancellation instead of lingering after its work is abandoned.
+        return PickActiveProfile(null, await LoadProfileConfig(ct));
     }
 }

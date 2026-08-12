@@ -155,6 +155,7 @@ static class PiHookCommand {
             ? StartMemoryIndexTask(
                 baseUrl, file, scopeRoot,
                 activeProfile?.DisableMemoryIndex is true,
+                activeProfile?.DisableSessionGuidelines is true,
                 HookBudget.Remaining(processStart, "session-start"),
                 memoryClientFactory, memoryStoreFactory, reason)
             : Task.FromResult<string?>(null);
@@ -308,25 +309,26 @@ static class PiHookCommand {
             string   file,
             string?  scopeRoot,
             bool     disabled,
+            bool     guidelinesDisabled,
             TimeSpan budget,
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
             Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory,
             string?  reason = null) {
-        if (disabled || string.IsNullOrWhiteSpace(file) || string.IsNullOrWhiteSpace(scopeRoot)
+        if ((disabled && guidelinesDisabled) || string.IsNullOrWhiteSpace(file) || string.IsNullOrWhiteSpace(scopeRoot)
          || budget <= TimeSpan.Zero
          || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
             return Task.FromResult<string?>(null);
 
         try {
-            var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
-            var provider = new SessionStartMemoryContextProvider(
-                new SessionStartMemoryScopeResolver(),
+            var store    = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var provider = SessionStartMemoryHookSupport.CompositeProvider(
                 memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
                 disposeClients: memoryClientFactory is null);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
                 LifecycleFor(file, reason),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
+                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None,
+                    GuidelinesDisabled: guidelinesDisabled));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);
         }

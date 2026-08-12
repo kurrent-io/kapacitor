@@ -649,7 +649,13 @@ public static class ClaudeHookCommand {
             // Context-envelope emission (lessons/version-nudge).
             if (responseNode is not null) {
                 try {
-                    var disabled        = AppConfig.ResolvedProfile?.Profile?.DisableSessionGuidelines is true;
+                    // The EFFECTIVE profile (the `activeProfile` resolved above), not
+                    // AppConfig.ResolvedProfile?.Profile: ProfileResolver returns a null Profile
+                    // whenever --server-url or KCAP_URL wins, so the resolved read silently ignored
+                    // disable_session_guidelines for every KCAP_URL user (the same defect the memory
+                    // adapters already fixed). Scoped to guidelines here; the memory read above keeps
+                    // its existing behaviour.
+                    var disabled        = activeProfile?.DisableSessionGuidelines is true;
                     var lessonsFragment = SessionGuidelinesEmitter.BuildFragment(responseNode, disabled);
                     // update_check=false opts out of ALL kcap update nudging, including the
                     // in-agent one — skip emission entirely rather than let a server that still

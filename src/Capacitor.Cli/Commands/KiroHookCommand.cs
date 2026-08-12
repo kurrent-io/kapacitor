@@ -77,28 +77,27 @@ static class KiroHookCommand {
             string     sessionId,
             string?    scopeRoot,
             bool       disabled,
+            bool       guidelinesDisabled,
             TimeSpan   budget,
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
             Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
-        if (disabled || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
+        if ((disabled && guidelinesDisabled) || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
          || budget <= TimeSpan.Zero
          || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
             return Task.FromResult<string?>(null);
 
         try {
-            var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
-            var provider = new SessionStartMemoryContextProvider(
-                new SessionStartMemoryScopeResolver(),
+            var store    = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var provider = SessionStartMemoryHookSupport.CompositeProvider(
                 memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
-                // Only clients we created are ours to dispose; an injected factory's client belongs
-                // to its caller and may be handed back again on the 401-refresh call.
                 disposeClients: memoryClientFactory is null);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
                 new SessionMemoryLifecycle(SessionStartHarness.Kiro, sessionId, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true,
                     SessionLifecycleReason.RepeatedTurnCallback, CallbackMayRepeat: true),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
+                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None,
+                    GuidelinesDisabled: guidelinesDisabled));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);
         }
@@ -236,6 +235,7 @@ static class KiroHookCommand {
             // KCAP_URL wins, so reading AppConfig.ResolvedProfile?.Profile here would silently ignore
             // the user's opt-out on those deployments (the defect found reviewing the Copilot adapter).
             activeProfile?.DisableMemoryIndex is true,
+            activeProfile?.DisableSessionGuidelines is true,
             // Remaining() already reserves Safety — do not subtract it again.
             HookBudget.Remaining(processStart, "session-start"),
             memoryClientFactory, memoryStoreFactory);

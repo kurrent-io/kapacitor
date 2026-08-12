@@ -101,28 +101,30 @@ public class AntigravitySessionStartMemoryTests {
     public async Task Fetch_is_skipped_when_disabled_or_unscoped_or_out_of_budget() {
         // Each guard alone must suppress the fetch. A non-postable base url is checked
         // BEFORE any client is built, because EnsureAbsolute calls Environment.Exit(2).
+        // Both lanes off ⇒ suppressed; a single lane off would still fetch.
         await Assert.That(await AntigravityHookCommand.StartMemoryIndexTask(
             "https://example.test", "e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
-            disabled: true, TimeSpan.FromSeconds(5), null, null)).IsNull();
+            disabled: true, guidelinesDisabled: true, TimeSpan.FromSeconds(5), null, null)).IsNull();
 
+        // The scope / budget / url guards suppress even with guidelines ENABLED.
         await Assert.That(await AntigravityHookCommand.StartMemoryIndexTask(
             "https://example.test", "e80c33bfc10f4d2fb626b0043f488fc0", scopeRoot: null,
-            disabled: false, TimeSpan.FromSeconds(5), null, null)).IsNull();
+            disabled: false, guidelinesDisabled: false, TimeSpan.FromSeconds(5), null, null)).IsNull();
 
         await Assert.That(await AntigravityHookCommand.StartMemoryIndexTask(
             "https://example.test", "e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
-            disabled: false, TimeSpan.Zero, null, null)).IsNull();
+            disabled: false, guidelinesDisabled: false, TimeSpan.Zero, null, null)).IsNull();
 
         await Assert.That(await AntigravityHookCommand.StartMemoryIndexTask(
             "", "e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
-            disabled: false, TimeSpan.FromSeconds(5), null, null)).IsNull();
+            disabled: false, guidelinesDisabled: false, TimeSpan.FromSeconds(5), null, null)).IsNull();
     }
 
     [Test]
     public async Task A_throwing_store_factory_resolves_to_null_rather_than_faulting() {
         var task = AntigravityHookCommand.StartMemoryIndexTask(
             "https://example.test", "e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
-            disabled: false, TimeSpan.FromSeconds(5),
+            disabled: false, guidelinesDisabled: true, TimeSpan.FromSeconds(5),
             memoryClientFactory: null,
             memoryStoreFactory: () => throw new InvalidOperationException("boom"));
 

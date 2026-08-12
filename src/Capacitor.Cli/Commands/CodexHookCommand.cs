@@ -145,10 +145,11 @@ static class CodexHookCommand {
             string?    sessionId,
             string?    scopeRoot,
             bool       disabled,
+            bool       guidelinesDisabled,
             TimeSpan   budget,
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
             Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
-        if (disabled || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
+        if ((disabled && guidelinesDisabled) || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
          || budget <= TimeSpan.Zero)
             return Task.FromResult<string?>(null);
 
@@ -163,18 +164,18 @@ static class CodexHookCommand {
         // injected factories can throw synchronously.
         try {
             var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
-            var provider = new SessionStartMemoryContextProvider(
-                new SessionStartMemoryScopeResolver(),
+            // Only clients WE created are ours to dispose; an injected factory's client is
+            // owned by its caller and may be handed back again on the 401-refresh call.
+            var provider = SessionStartMemoryHookSupport.CompositeProvider(
                 memoryClientFactory ?? DefaultMemoryClientFactory(baseUrl),
-                // Only clients WE created are ours to dispose; an injected factory's client is
-                // owned by its caller and may be handed back again on the 401-refresh call.
                 disposeClients: memoryClientFactory is null);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
                 new SessionMemoryLifecycle(SessionStartHarness.Codex, sessionId!, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true, SessionLifecycleReason.New,
                     CallbackMayRepeat: false),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
+                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None,
+                    GuidelinesDisabled: guidelinesDisabled));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);
         }
@@ -403,6 +404,7 @@ static class CodexHookCommand {
             // produced activeProfile) is what falls back to the on-disk active profile. Reading the
             // resolved one silently ignored `disable_memory_index: true` for every KCAP_URL user.
             activeProfile?.DisableMemoryIndex is true,
+            activeProfile?.DisableSessionGuidelines is true,
             // Remaining() already reserves Safety — subtracting it again here halved the window.
             HookBudget.Remaining(processStart, "session-start"),
             memoryClientFactory, memoryStoreFactory);

@@ -97,17 +97,19 @@ public class PiSessionStartMemoryTests {
     // EnsureAbsolute can Environment.Exit(2), which would kill the hook before it writes stdout).
     [Test]
     public async Task Memory_task_short_circuits_without_prerequisites() {
+        // The url / scope / budget guards suppress even with guidelines ENABLED; disabled alone
+        // does not (a single lane off still fetches the other) — both off is required.
         await Assert.That(await PiHookCommand.StartMemoryIndexTask(
-            "not a url", "/abs/file.jsonl", "/scope", disabled: false,
+            "not a url", "/abs/file.jsonl", "/scope", disabled: false, guidelinesDisabled: false,
             TimeSpan.FromSeconds(2), null, null)).IsNull();
         await Assert.That(await PiHookCommand.StartMemoryIndexTask(
-            "http://localhost:5100", "/abs/file.jsonl", scopeRoot: null, disabled: false,
+            "http://localhost:5100", "/abs/file.jsonl", scopeRoot: null, disabled: false, guidelinesDisabled: false,
             TimeSpan.FromSeconds(2), null, null)).IsNull();
         await Assert.That(await PiHookCommand.StartMemoryIndexTask(
-            "http://localhost:5100", "/abs/file.jsonl", "/scope", disabled: true,
+            "http://localhost:5100", "/abs/file.jsonl", "/scope", disabled: true, guidelinesDisabled: true,
             TimeSpan.FromSeconds(2), null, null)).IsNull();
         await Assert.That(await PiHookCommand.StartMemoryIndexTask(
-            "http://localhost:5100", "/abs/file.jsonl", "/scope", disabled: false,
+            "http://localhost:5100", "/abs/file.jsonl", "/scope", disabled: false, guidelinesDisabled: false,
             TimeSpan.Zero, null, null)).IsNull();
     }
 }
