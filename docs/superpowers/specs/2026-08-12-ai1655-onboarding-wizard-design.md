@@ -220,8 +220,21 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   lifecycle auto-actions, main-window Start), constructed at the composition root in BOTH
   startup modes (it needs no graph). External interface:
   `Task<MutationOutcome> RunAsync(MutationRequest, CancellationToken)`, where
-  `MutationRequest` names the verb (install/replace/start-verify/detached-start), the
-  expected identity `{profile, canonical server, daemon name}`, and the surfacing caller.
+  `MutationRequest` names the verb (install/replace/start-verify/detached-start) and the
+  expected identity `{profile, canonical server, daemon name}` — nothing else: a
+  surfacing-caller field would make request equality (and therefore coalescing) ambiguous,
+  and callers don't need it since each surfaces the RETURNED outcome itself. **The action's
+  lifetime is lane-owned, never caller-owned**: the lane runs probe → child → terminal
+  process result → reconciliation as ONE internal task under its own lifetime token — the
+  child is started under that token, not a caller's, because the runner's `AbandonWait`
+  cancellation throws with NO `ProcessResult` while the child runs on, and a lane that let a
+  caller's token drive the shared work could neither reconcile that invocation nor protect a
+  second coalesced waiter. Each `RunAsync` caller merely AWAITS the owned task with
+  per-waiter cancellation: cancelling detaches THAT waiter only (caller A's Back/close never
+  aborts classification for waiter B, and never releases the lane while the transaction
+  runs). When every waiter has detached, the action still runs to its terminal state and
+  records its outcome — surfaced as attention on the next query if unclaimed; a retry or
+  queued request always waits for the owned action to quiesce first.
   **One global action lane covers probe → mutation → reconciliation**: an identical
   concurrent request coalesces into the in-flight action's single mutation and outcome; a
   DIFFERENT request queues and performs its OWN fresh §4 floor probe after acquiring the
@@ -245,10 +258,21 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   NEW public Core seam (bounded one-shot hello + one status snapshot; today
   `LocalControlClient` is a retrying stream and the CLI's `HelloProbe` is internal, so
   wizard-first mode has no probe to call without this extraction, enumerated in §11).
-  **Fresh-generation semantics**: a generation token is armed when the lane is acquired;
-  only evidence observed strictly after the mutation began counts toward classification;
-  bounded waits and cancellation propagate the caller's token, and cancellation abandons
-  classification, never the child (§6a rules unchanged).
+  **Fresh-generation semantics, bound to ONE daemon process**: a lane generation token
+  rejects pre-mutation events, but that alone cannot stop evidence from DIFFERENT daemon
+  processes being combined — the control server dispatches exactly one opening frame per
+  connection, so hello (capabilities) and the status snapshot arrive on separate sockets,
+  and service ownership (`job_pid`/`daemon_pid`) comes from yet another query; a daemon
+  replaced between those reads could contribute `consent/3` + version from one process and
+  identity + ownership from another, falsely satisfying `Succeeded` exactly in the
+  swapped-legacy-daemon case reconciliation exists to catch. So `HelloReplyDto` and
+  `DaemonInfoDto` gain additive `pid` + `instance_id` (a per-boot GUID) members — additive
+  DTO members, no protocol bump, skipped by old clients — and the lane requires ALL evidence
+  contributing to one classification to carry the SAME instance id, with the socket-side
+  `pid` correlated against the service query's `daemon_pid`; any inconsistency (including
+  absent fields from a pre-slice daemon) fails closed into `AttentionSkew`/re-probe, never
+  `Succeeded`. Bounded waits are lane-owned (§6a rules unchanged: cancellation abandons
+  waiters, never the child).
 
 - **`OnboardingGate`** answers the decision-1 predicate once at startup, returning
   `(Complete | Incomplete(reason))` with reasons: `no_profile`, `invalid_server_url`,
@@ -636,10 +660,16 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   Connected-below-floor / missing-`consent/3` / incompatible-hello → `AttentionSkew` +
   caller-routed takeover + coordinator claim application; swapped old CLI leaving only an
   unseeded stopped unit, and legacy `status --json` without the new unit fields →
-  `AttentionRepair`, never silence. **Lane concurrency:** lifecycle+main-window and
-  service+detached concurrent requests — an identical pair coalesces into ONE mutation and
-  outcome (never two mutations from one approval); a different queued request re-probes
-  fresh after acquiring the lane.
+  `AttentionRepair`, never silence. **Instance binding:** forced daemon swaps at
+  hello→snapshot and snapshot→ownership → inconsistent `instance_id`/`pid` correlation →
+  fail closed, never `Succeeded`; a pre-slice daemon without the fields → same. **Lane
+  concurrency & lifetime:** lifecycle+main-window and service+detached concurrent requests —
+  an identical pair coalesces into ONE mutation and outcome (never two mutations from one
+  approval); a different queued request re-probes fresh after acquiring the lane; waiter A
+  cancels → B still receives the terminal outcome (and vice versa); ALL waiters cancel →
+  the owned action runs to its terminal state, its outcome recorded and surfaced on the next
+  query, and a retry waits for quiesce; wizard close hitting the cap while the shared child
+  is live → §6a post-cap rules.
 - **Digest pipeline (release acceptance):** per-RID publish asserts the packaged daemon's
   digest equals the CLI's embedded constant; a mismatched or missing build input fails the
   production publish closed; dev/source builds hash the co-built daemon output, and an absent
@@ -748,7 +778,9 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
 - **Zero server-side work** (signup rides the existing provisioning backend) and **zero new CLI
   verbs or flags**. Enumerated protocol/daemon changes: **one new IPC frame pair**
   (`ConsentRulesPutV2` with mandatory expected-identity + its ack), advertised as `consent/3`
-  (§6) — new frame type, structurally rejected by old daemons, no protocol bump; **the decision-4
+  (§6) — new frame type, structurally rejected by old daemons, no protocol bump; **additive
+  `pid` + `instance_id` members on `HelloReplyDto` and `DaemonInfoDto`** (§4's evidence
+  binding — additive DTO members, no protocol bump, skipped by old clients); **the decision-4
   boot seed** — directive-gated policy classification before `ServerConnection`, the exact-value
   contract (only `prompt`; anything else is a coded refusal), the `default_source` provenance
   stamp in `consent.json` (daemon-internal, never on the wire), the coded exit-0 refusal
