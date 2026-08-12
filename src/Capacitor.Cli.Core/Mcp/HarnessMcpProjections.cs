@@ -41,8 +41,8 @@ public sealed record HarnessMcpProjection(
 /// <c>kcap/.mcp.json</c> rather than anything generated. Pi is absent because it registers no MCP
 /// config at all — it emits a bridge that discovers tools at runtime.</para></summary>
 public static class HarnessMcpProjections {
-    // Every non-Claude JSON harness receives the same subset: kcap-workitems is Claude-Code-plugin
-    // only (its session-id default rides the Claude hook env).
+    // Every non-Claude JSON harness receives the same subset — the full set,
+    // kcap-workitems included (see KcapMcpServers.ForCursor).
     public static readonly HarnessMcpProjection Cursor      = new("cursor",      KcapMcpServers.ForCursor, McpConfigShape.Standard);
     public static readonly HarnessMcpProjection Copilot     = new("copilot",     KcapMcpServers.ForCursor, McpConfigShape.Copilot);
     public static readonly HarnessMcpProjection Gemini      = new("gemini",      KcapMcpServers.ForCursor, McpConfigShape.Gemini);

@@ -10,15 +10,17 @@ public class KcapMcpServersTests {
     }
 
     [Test]
-    public async Task ForCodex_excludes_only_workitems() {
+    public async Task ForCodex_is_the_full_set_including_workitems() {
+        // kcap-workitems is now registered on every harness, so the Codex subset is All.
         var names = KcapMcpServers.ForCodex.Select(s => s.Name).ToArray();
-        await Assert.That(names).IsEquivalentTo(new[] { "kcap-review", "kcap-sessions", "kcap-flows", "kcap-memory", "kcap-analytics" });
+        await Assert.That(names).IsEquivalentTo(new[] { "kcap-review", "kcap-sessions", "kcap-flows", "kcap-memory", "kcap-workitems", "kcap-analytics" });
     }
 
     [Test]
-    public async Task ForCursor_excludes_only_workitems() {
+    public async Task ForCursor_is_the_full_set_including_workitems() {
+        // every non-Claude JSON harness now receives kcap-workitems too.
         var names = KcapMcpServers.ForCursor.Select(s => s.Name).ToArray();
-        await Assert.That(names).IsEquivalentTo(new[] { "kcap-review", "kcap-sessions", "kcap-flows", "kcap-memory", "kcap-analytics" });
+        await Assert.That(names).IsEquivalentTo(new[] { "kcap-review", "kcap-sessions", "kcap-flows", "kcap-memory", "kcap-workitems", "kcap-analytics" });
     }
 
     [Test]

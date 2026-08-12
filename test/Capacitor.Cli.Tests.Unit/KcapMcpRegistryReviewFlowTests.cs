@@ -43,6 +43,16 @@ public class KcapMcpRegistryReviewFlowTests {
     }
 
     [Test]
+    public async Task Resolve_rejects_write_server_kcap_workitems() {
+        // kcap-workitems is registered on every harness, but it is a writer: it must never be
+        // auto-approved for an unattended review-flow reviewer (only kcap-review/kcap-sessions are).
+        var ok = KcapMcpRegistry.TryResolveReviewFlowAllowlist(["kcap-workitems"], out _, out var rejected);
+
+        await Assert.That(ok).IsFalse();
+        await Assert.That(rejected).IsEqualTo("kcap-workitems");
+    }
+
+    [Test]
     public async Task Resolve_rejects_unknown_server() {
         var ok = KcapMcpRegistry.TryResolveReviewFlowAllowlist(["not-a-server"], out _, out var rejected);
 

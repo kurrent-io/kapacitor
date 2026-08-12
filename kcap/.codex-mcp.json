@@ -19,6 +19,10 @@
     "kcap-analytics": {
       "command": "kcap",
       "args": ["mcp", "analytics"]
+    },
+    "kcap-workitems": {
+      "command": "kcap",
+      "args": ["mcp", "workitems"]
     }
   }
 }

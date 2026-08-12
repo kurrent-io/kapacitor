@@ -49,6 +49,8 @@ public class PluginCommandGeminiTests {
         await Assert.That(servers["kcap-analytics"]!["trust"]!.GetValue<bool>()).IsTrue();
         await Assert.That(servers["kcap-flows"]!["trust"]).IsNull();
         await Assert.That(servers["kcap-memory"]!["trust"]).IsNull();
+        // kcap-workitems is registered for Gemini but writes, so it is never auto-trusted.
+        await Assert.That(servers["kcap-workitems"]!["trust"]).IsNull();
         await Assert.That(servers["my-tool"]).IsNotNull();  // user server preserved
         await Assert.That(root["hooks"]).IsNotNull();       // hooks block preserved
         await Assert.That(root["theme"]!.GetValue<string>()).IsEqualTo("dark");  // unrelated setting preserved

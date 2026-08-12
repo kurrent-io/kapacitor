@@ -55,9 +55,10 @@ public class McpCanonicalContractTests {
     }
 
     [Test]
-    public async Task Codex_subset_excludes_workitems() {
+    public async Task Codex_subset_includes_workitems() {
+        // kcap-workitems is now registered for Codex (and every harness).
         var names = KcapMcpServers.ForCodex.Select(s => s.Name).ToArray();
-        await Assert.That(names).DoesNotContain("kcap-workitems");
+        await Assert.That(names).Contains("kcap-workitems");
     }
 
     [Test]
@@ -67,9 +68,10 @@ public class McpCanonicalContractTests {
     }
 
     [Test]
-    public async Task Cursor_subset_excludes_workitems_but_keeps_flows_and_memory() {
+    public async Task Cursor_subset_includes_workitems_flows_and_memory() {
+        // kcap-workitems now rides the same writer path as every other non-Claude harness.
         var names = KcapMcpServers.ForCursor.Select(s => s.Name).ToArray();
-        await Assert.That(names).DoesNotContain("kcap-workitems");
+        await Assert.That(names).Contains("kcap-workitems");
         await Assert.That(names).Contains("kcap-flows");
         await Assert.That(names).Contains("kcap-memory");
     }
