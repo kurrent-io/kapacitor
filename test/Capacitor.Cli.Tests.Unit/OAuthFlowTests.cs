@@ -204,6 +204,23 @@ public class OAuthFlowTests {
         await Assert.That(OAuthLoginFlow.ChooseDiscoveryProvider(["--github"], isInteractive: false))
             .IsEqualTo(AuthProvider.GitHubApp);
 
+    // `--device` is the documented way to authenticate from SSH / a container (help-login.txt,
+    // help-setup.txt, README's command tour), and only GitHub has a device flow. Dropping headless
+    // discovery must not take that contract with it: this is an explicit request, same class as
+    // --github, not the implicit fallback this change removed.
+    [Test]
+    public async Task Explicit_device_flag_still_selects_legacy_provider_when_headless() =>
+        await Assert.That(OAuthLoginFlow.ChooseDiscoveryProvider(["--device"], isInteractive: false))
+            .IsEqualTo(AuthProvider.GitHubApp);
+
+    // ...but ONLY when headless. On a machine with a browser, `--device` has always meant "use the
+    // device flow if the login step needs GitHub", never "switch discovery off org SSO" — routing it
+    // to the legacy provider here would be a regression in the opposite direction.
+    [Test]
+    public async Task Device_flag_does_not_divert_an_interactive_session_away_from_sso() =>
+        await Assert.That(OAuthLoginFlow.ChooseDiscoveryProvider(["--device"], isInteractive: true))
+            .IsEqualTo(AuthProvider.WorkOS);
+
     // The message a headless user gets instead. It must not send anyone to the legacy GitHub App,
     // and it must name both real routes: create a workspace, or point at an existing one.
     [Test]

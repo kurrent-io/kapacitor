@@ -74,8 +74,15 @@ public static class OAuthLoginFlow {
     /// </summary>
     internal static string? ChooseDiscoveryProvider(string[] args, bool isInteractive) {
         if (args.Contains("--github")) return AuthProvider.GitHubApp;
+        if (isInteractive) return AuthProvider.WorkOS;
 
-        return isInteractive ? AuthProvider.WorkOS : null;
+        // Headless: only an explicit device-flow request can still get through, and only GitHub has
+        // one. `--device` is the documented way to sign in from SSH or a container, so it stays an
+        // escape hatch alongside --github — it is a deliberate request, not the implicit fallback
+        // removed above. Tested on the headless branch only: on a machine with a browser `--device`
+        // has always meant "use the device flow if the login step needs GitHub", never "take
+        // discovery off org SSO".
+        return args.Contains("--device") ? AuthProvider.GitHubApp : null;
     }
 
     /// <summary>
