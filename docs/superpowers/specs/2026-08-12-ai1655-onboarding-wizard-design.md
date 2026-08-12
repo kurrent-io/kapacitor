@@ -127,8 +127,10 @@ window (`OnboardingWindow`), step content switched by template.
      **(b) effective identity** — the unit's *complete* effective identity, derived inside the
      transaction the same way the daemon itself would resolve it (a baked `KCAP_URL` takes
      precedence; else the baked profile under the baked `KCAP_CONFIG_DIR`'s config root),
-     must match the invoking environment's expectation (the pinned `KCAP_PROFILE` + its
-     canonical server URL). `unit_profile` alone is NOT identity: two units can bake the same
+     must match the invoking environment's expectation (the pinned `KCAP_PROFILE` + the
+     captured `KCAP_EXPECT_SERVER_URL` — NOT the profile's config-resolved server at gate
+     time, which a concurrent `server_url` edit could have changed to match, §4).
+     `unit_profile` alone is NOT identity: two units can bake the same
      profile name yet resolve different servers. Malformed, duplicate, unreadable, or
      ambiguous relevant env entries → fail closed.
      **The gated start launches the validated artifact, not a memory of one — in two pinned
@@ -241,14 +243,27 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   long-lived identity-pinned instance participates in mutations, resolving the earlier
   contradiction between "the wizard constructs its own `KcapCli`" and "one instance runs
   probe and mutations"; the graph's own `KcapCli` remains for non-mutating queries only).
-  **The canonical server is pinned INTO the child**: the executor overlays
-  `KCAP_URL=<the request's canonical server>` alongside `KCAP_PROFILE` — `KCAP_PROFILE`
-  alone lets a concurrent `kcap config set server_url` redirect the child at execution time
-  (the CLI resolves the profile's server from config, and the start gate would derive the
-  same changed value and approve it; detached start has no gate at all). `KCAP_URL` takes
-  precedence in the CLI's resolution chain and is ALREADY on `ServiceEnvironment`'s baked
-  allowlist, so install bakes it into the unit — a deliberate consequence: the unit stays
-  pinned to the server it was enabled for, which is exactly what §3's gate (b) compares. External interface:
+  **The canonical server is an enforced EXPECTATION, not a resolution override**: the
+  executor overlays `KCAP_EXPECT_SERVER_URL=<the request's canonical server>` alongside
+  `KCAP_PROFILE` — deliberately NOT `KCAP_URL`, which round-20 review showed would be a
+  credential-confusion hole: `ProfileResolver` checks the env URL FIRST and returns a
+  profile-NULL result without consulting `KCAP_PROFILE`, so `TokenStore` would fall back to
+  the on-disk ACTIVE profile — a request for profile A while B is active would boot against
+  A's server while reading/refreshing B's token (and a pre-upgrade unbound token would pass
+  `BoundToTarget` even for another server's credential), with the unit's baked
+  `KCAP_PROFILE=A` masking the mismatch. With the expectation variable, profile/token
+  resolution is untouched (always the pinned profile's own identity, settings, and token
+  file); instead, the CLI's §3 gate (b) compares the unit's derived identity against the
+  expectation, and **the daemon itself, on every boot path (unit or detached), compares its
+  RESOLVED canonical server against a present expectation before `ServerConnection` and
+  before any token use — mismatch is a coded exit-0 refusal** (`server_expectation_mismatch`
+  token; comes to rest, no respin), which is what closes the concurrent
+  `kcap config set server_url` redirect on ALL surfaces including gate-less detached start:
+  the redirected resolution no longer matches the captured expectation, so the daemon
+  refuses instead of authenticating anywhere. `ServiceEnvironment`'s allowlist gains the
+  variable, so install bakes it — the unit stays pinned to the server it was enabled for,
+  and a deliberate later server change surfaces as a visible refusal + attention (reinstall
+  re-captures), never a silent wrong-server or wrong-credential boot. External interface:
   `Task<MutationOutcome> RunAsync(MutationRequest, CancellationToken)`, where
   `MutationRequest` names the verb (install/replace/start-verify/detached-start) and the
   expected identity `{profile, canonical server, daemon name}` — nothing else: a
@@ -409,7 +424,7 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   the in-transaction gates), and the detached `daemon start -d` fallback (the spawned daemon
   seeds from its own env). For daemon mutations, `KcapCli` is the **action-scoped executor the
   `DaemonMutationLane` creates per owned action** (identity + pinned CLI path bound once per
-  action, `KCAP_URL` + `KCAP_PROFILE` overlaid — see the lane bullet); long-lived instances
+  action, `KCAP_EXPECT_SERVER_URL` + `KCAP_PROFILE` overlaid — see the lane bullet); long-lived instances
   (the graph's, or the wizard's own post-Sign-in instance for `plugin install`/import) serve
   non-mutating and non-daemon shelling only.
 - **CLI compatibility floor — an enforced precondition, not an assumption**: every
@@ -789,10 +804,16 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   executable/name/profile/server binding (asserted at the executor seam); a reconciliation
   straddling the slot swap keeps its action-start observation strategy; a queued request
   whose daemon/profile differs from the newly built graph gets an identity-specific one-shot
-  probe, never the mismatched live adapter; **server pinning** — a forced-order
+  probe, never the mismatched live adapter; **server expectation** — a forced-order
   `kcap config set server_url` on the pinned profile after the lane captured its request,
-  raced against install, gated start, AND detached start: the child resolves the overlaid
-  `KCAP_URL` (the request's canonical server), never the mutated config value; a timed-out wrapper yields
+  raced against install, gated start, AND detached start: the daemon's resolved server no
+  longer matches the captured `KCAP_EXPECT_SERVER_URL` → coded exit-0 refusal
+  (`server_expectation_mismatch`), never a wrong-server or wrong-credential boot;
+  **credential identity under the expectation** — active profile B, requested profile A:
+  (a) A and B share the canonical server with different tokens → A's token used; (b) B holds
+  a pre-upgrade unbound token for another server → never read (B is never resolved); (c) a
+  WorkOS refresh writes A's token file only; (d) A's profile daemon settings survive the
+  overlay (profile resolution untouched by the expectation variable); a timed-out wrapper yields
   the exact existing runner shape (`ProcessResult.TimedOut == true`), asserted at the runner
   seam, not only the final `MutationOutcome`; a waiterless `Succeeded` is logged and does
   NOT enter the FIFO; graph construction awaits `QuiescedAsync` over a still-live action; a
@@ -924,7 +945,9 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   directive is removed from the daemon's ambient environment at startup and added to the
   PTY/ACP env-scrub lists, so hosted children never inherit it. Enumerated CLI changes:
   `ServiceEnvironment`'s baked-env allowlist gains `KCAP_CONSENT_SEED_DEFAULT` (deliberate unit
-  content — decision 4); `service start --verify` enforces the §3 step-7 gates in-transaction
+  content — decision 4) and `KCAP_EXPECT_SERVER_URL` (§4's server expectation; the daemon
+  enforces it on every boot path with the coded exit-0 `server_expectation_mismatch`
+  refusal — one further daemon-side boot check, enumerated with the seed); `service start --verify` enforces the §3 step-7 gates in-transaction
   when invoked with the directive (embedded-digest + effective-identity evidence, bootout +
   bootstrap-from-validated-disk), with the additive coded failures `verify_start_gate` = 28
   (pre-mutation) and `verify_start_gate_drift` = 29 (post-bootout, marker-backed rollback);
