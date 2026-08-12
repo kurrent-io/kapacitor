@@ -507,6 +507,16 @@ record JudgeFactPayload {
 
     [JsonPropertyName("source_eval_run_id")]
     public required string SourceEvalRunId { get; init; }
+
+    // Optional judge-declared applicability (where the fact is specific to). Omitted from the wire
+    // when null so older servers ignore them; a non-empty array restricts, absent = applies everywhere.
+    [JsonPropertyName("applies_to_vendors")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string[]? AppliesToVendors { get; init; }
+
+    [JsonPropertyName("applies_to_session_kinds")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string[]? AppliesToSessionKinds { get; init; }
 }
 
 public record JudgeFact {
