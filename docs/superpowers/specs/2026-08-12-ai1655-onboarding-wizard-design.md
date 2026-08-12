@@ -1,6 +1,6 @@
 # AI-1655 — First-run onboarding wizard (desktop supervisor slice 3)
 
-**Date:** 2026-08-12 (revised after spec-review rounds 1–2, Codex reviewer)
+**Date:** 2026-08-12 (revised after spec-review rounds 1–3, Codex reviewer)
 **Status:** Approved design.
 **Issue:** AI-1655. Umbrella spec: [2026-07-31-desktop-supervisor-app-design.md](2026-07-31-desktop-supervisor-app-design.md) §6–7.
 **Prior slices:** control IPC + consent (AI-1623/AI-1648), app shell (AI-1650), tray/agents/stop (AI-1651), consent prompts + Activity (AI-1652), daemon lifecycle + PATH shim (AI-1654). AI-1653 (bundling/signing) has NOT landed — the wizard keeps the `KCAP_APP_CLI_PATH` dev seam and works from source.
@@ -11,26 +11,26 @@ A fresh desktop machine has no profile, no token, no hooks, no daemon — and th
 main window that can only say "daemon unreachable". AI-1654's lifecycle controller deliberately
 does nothing on fresh machines (its §4.2: "The wizard (AI-1655) owns fresh machines"). Umbrella §7
 assigns first-run onboarding to a wizard: PATH shim, connect, login, harness hook setup, historical
-import, daemon enablement — and the consent-default flip from the upgrade-safe `allow` to `prompt`,
-which is what actually answers the silent-launch complaint on desktop machines. The 2026-08-10
-issue amendment folds **create a workspace** into scope: the branch umbrella decision 6 reserved,
-riding the existing WorkOS self-service provisioning backend (AI-914/915/916) through the CLI's
-existing create-tenant flow (AI-1110) — no new server-side work.
+import, daemon enablement — and moving the app-managed daemon's consent default off the
+upgrade-safe `allow`, which is what actually answers the silent-launch complaint on desktop
+machines. The 2026-08-10 issue amendment folds **create a workspace** into scope: the branch
+umbrella decision 6 reserved, riding the existing WorkOS self-service provisioning backend
+(AI-914/915/916) through the CLI's existing create-tenant flow (AI-1110) — no new server-side work.
 
 ## 2. Decisions
 
 | # | Decision |
 |---|----------|
-| 1 | **Trigger: the wizard opens only when setup is incomplete.** The gate is a local, side-effect-free eligibility check (`OnboardingGate`, §4) returning an explicit reason: no resolvable profile, no canonical `http(s)` server URL, or no usable token. "Usable" is **provider-aware, matching `TokenStore`'s real refresh rules**: the token file must exist for the resolved profile, be stamped for the profile's canonical server, and be unexpired OR refresh-capable — where GitHubApp is *always* refresh-capable (server `/auth/refresh`; its `RefreshToken` is normally null) and WorkOS requires both `RefreshToken` and `ClientId`. A profile whose persisted provider stamp is `none` **for the profile's current server identity** (§4) needs no token at all. No server round-trip, no refresh side effects. Configured machines never see the wizard. Rejected: always-on-first-run (annoys existing npm-CLI users for one consent-flip offer); a persisted "wizard done" claim (derived state re-opens the wizard until setup is actually complete, and stops the moment it is). |
-| 2 | **Wizard-first startup: when the gate fires, `App.StartAsync` builds NO daemon graph** — no `DaemonClientService`, no tray, no `DaemonLifecycleController`, no `ShimOfferCoordinator`. The wizard is the only window. Forced, not just simpler: everything in the graph pins identity at construction (`KcapCli` pins the profile, `DaemonClientService` pins the daemon name) and on a gate-failing machine the wizard is what *decides* those identities. On wizard close — finished or abandoned — startup re-resolves the profile fresh and builds the normal graph, **with one carve-out: if the gate still fails at close, the lifecycle controller starts with its startup auto-action arm permanently closed and the post-close auto shim offer suppressed** (user-clicked actions and the tray shim item keep working). Without the carve-out, a URL-valid/token-less machine whose user closes the wizard before sign-in would flow straight into AI-1654's silent auto-install — §4.1 preconditions require a profile URL but no token — minting an `allow` daemon the moment a later terminal login makes it operational, with no pending flip recorded. Gate and graph must also agree on what "valid URL" means: both use the same `ServerIdentity` canonicalization (today `App.ValidProfileName` accepts any absolute URI, e.g. `file://`, that the gate would reject). Graph construction after wizard close additionally **defers until the wizard's service-operation lane has quiesced** (§6a) so a still-running install transaction is never raced by a fresh lifecycle controller. |
-| 3 | **Hybrid drive: auth/discovery/provisioning run IN-PROC via a GUI-neutral Core façade; steps with tested non-interactive CLI surfaces are shelled.** This amends umbrella §7's "every step shells the bundled CLI" the way AI-1650 amended the MVVM choice — the rationale (reuse existing tested flows, never reimplement) is preserved: `OAuthLoginFlow`/`WorkOSDiscovery`/`WorkOSTokenSource`/`TokenStore` ARE the tested flow, in Core. Shelling login is impossible for exactly the cases that matter: multi-tenant discovery and create-workspace are Spectre prompts that hard-fail on redirected stdin, and the tenant pick happens mid-auth-session (a shelled two-phase `login --list`/`login --tenant` forces re-auth between list and pick). The Core seams as they exist today are NOT app-consumable — sync `ITenantPicker.Pick`, no cancellation anywhere, `Console` writes inside `WorkOSDiscovery`/`OAuthLoginFlow`, GitHub discovery orchestration living in `SetupCommand` with internal helpers — so this slice reshapes them into an explicit onboarding façade (§5) that the CLI's `setup`/`login` re-plumb onto, behavior-preserving. Rejected: growing a non-interactive CLI surface (`login --tenant`, `tenant create`, `detect --json` — large public surface in an app slice, and the mid-session pick problem stands); PTY-driving the interactive commands (screen-scraping Spectre redraws has no contract). |
-| 4 | **Shelled steps:** `kcap plugin install --<vendor>` per selected harness (prompt-free, idempotent), `kcap import <scope> --yes` with vendor flags (streamed, §7), and the AI-1654 `service install --verify` transaction for daemon enablement — behind a single-flight service-operation lane (§6a) that preserves AI-1654's never-kill-inside-the-transaction-bound rule. The consent flip goes over the app's `ConsentIpc`, not a CLI child — **hardened this slice with a daemon-side identity-conditional put** (§6): `ConsentRulesPut` gains optional expected-identity fields the daemon enforces atomically at dispatch, advertised as the `consent/2` capability. Probe-then-put over separate connections is TOCTOU (each get/put opens a fresh socket and a same-name daemon can be replaced between them), so the guard must live where the write lands. |
+| 1 | **Trigger: the wizard opens only when setup is incomplete.** The gate is a local, side-effect-free eligibility check (`OnboardingGate`, §4) returning an explicit reason: no resolvable profile, no canonical `http(s)` server URL, or no usable token. "Usable" is **provider-aware, matching `TokenStore`'s real refresh rules**: the token file must exist for the resolved profile, be stamped for the profile's canonical server, and be unexpired OR refresh-capable — where GitHubApp is *always* refresh-capable (server `/auth/refresh`; its `RefreshToken` is normally null) and WorkOS requires both `RefreshToken` and `ClientId`. A profile whose persisted provider stamp is `none` **for the profile's current server identity** (§4) needs no token at all. No server round-trip, no refresh side effects. Configured machines never see the wizard. Rejected: always-on-first-run (annoys existing npm-CLI users); a persisted "wizard done" claim (derived state re-opens the wizard until setup is actually complete, and stops the moment it is). |
+| 2 | **Wizard-first startup: when the gate fires, `App.StartAsync` builds NO daemon graph** — no `DaemonClientService`, no tray, no `DaemonLifecycleController`, no `ShimOfferCoordinator`. The wizard is the only window. Forced, not just simpler: everything in the graph pins identity at construction (`KcapCli` pins the profile, `DaemonClientService` pins the daemon name) and on a gate-failing machine the wizard is what *decides* those identities. On wizard close — finished or abandoned — startup re-resolves the profile fresh and builds the normal graph, **with one carve-out: if the gate still fails at close, the lifecycle controller starts with its startup auto-action arm permanently closed and the post-close auto shim offer suppressed** (user-clicked actions and the tray shim item keep working). Without the carve-out, a URL-valid/token-less machine whose user closes the wizard before sign-in would flow straight into AI-1654's silent auto-install — §4.1 preconditions require a profile URL but no token. Gate and graph must also agree on what "valid URL" means: both use the same `ServerIdentity` canonicalization (today `App.ValidProfileName` accepts any absolute URI, e.g. `file://`, that the gate would reject). Graph construction after wizard close additionally **defers until both wizard lanes have quiesced** — the service-operation lane (§6a) and the auth lane's commit boundary (§5): a close after the boundary begins detaches the UI, but the app awaits the operation's terminal `Committed`/`Failed` before resolving configuration, building the graph, or completing shutdown. |
+| 3 | **Hybrid drive: auth/discovery/provisioning run IN-PROC via a GUI-neutral Core façade; steps with tested non-interactive CLI surfaces are shelled.** This amends umbrella §7's "every step shells the bundled CLI" the way AI-1650 amended the MVVM choice — the rationale (reuse existing tested flows, never reimplement) is preserved: `OAuthLoginFlow`/`WorkOSDiscovery`/`WorkOSTokenSource`/`TokenStore` ARE the tested flow, in Core. Shelling login is impossible for exactly the cases that matter: multi-tenant discovery and create-workspace are Spectre prompts that hard-fail on redirected stdin, and the tenant pick happens mid-auth-session (a shelled two-phase `login --list`/`login --tenant` forces re-auth between list and pick). The Core seams as they exist today are NOT app-consumable — sync `ITenantPicker.Pick`, no cancellation anywhere, `Console` writes inside `WorkOSDiscovery`/`OAuthLoginFlow`, GitHub discovery orchestration living in `SetupCommand` with internal helpers — so this slice reshapes them into an explicit onboarding façade (§5) that the CLI's `setup`/`login` re-plumb onto, behavior-preserving. Rejected: growing a non-interactive CLI surface (large public surface in an app slice; the mid-session pick problem stands); PTY-driving the interactive commands (screen-scraping Spectre redraws has no contract). |
+| 4 | **App-initiated daemon installs are born `prompt`: the service transaction seeds `consent.json` before bootstrap.** The app sets `KCAP_CONSENT_SEED_DEFAULT=prompt` in the env overlay of every `service install --verify` / `service start --verify` it runs (wizard step 7, lifecycle auto-install, coordinator); the CLI verb, inside the per-label transaction — after lock acquisition and the label-absence/termination proof, before the first destructive step — writes `{stateDir}/consent.json` with that default **only when the file does not exist** (validated `allow|deny|prompt`; write failure → coded abort, nothing destroyed). This is the causal barrier round-3 review demanded: the daemon's local-control host opens and `ServerConnection` connects on the daemon's own schedule, so *no* post-attach flip can beat a server-issued launch — the policy must be committed before the daemon exists. Single-writer is preserved by construction: the transaction has just proven no live daemon owns the name. LaunchConsentStore reads the seeded file exactly like any operator-written policy — **zero daemon-side behavior change for seeding**. Headless daemons are untouched (no env var → no seed; the upgrade-safe `allow` default stands). This generalizes umbrella §5's "the app's onboarding flips the daemon it manages to `prompt`" to *every* daemon the app installs — deliberate: an app-managed desktop daemon has a UI for prompts (AI-1652), and a prompt-with-no-UI resolves as the designed fail-closed deny. |
 | 5 | **The wizard includes visibility and daemon name** (setup's step 3/6 and 5/6, which umbrella §7's list omitted): a Defaults step with the visibility picker (default `org_public`) and daemon-name field (default: lowercased username). |
 | 6 | **Import step: vendor checkboxes + scope choice** (Everything / one org / specific repo — mirroring `ImportScopePrompt`'s vocabulary), running `kcap import --all|--org <o>|--repo <r> --yes` plus selected vendor flags. Setup's own embedded import is current-repo-scoped, which is meaningless for a GUI launch. |
-| 7 | **The consent-flip claim is durable, identity-keyed, and armed as a required precondition of the sign-in commit.** Claims live in their own store — `{config}/consent-flip-claims.json`, a collection keyed by canonical `{profile, server URL, daemon name}` with merge semantics (arm upserts its key; apply/clear removes only its key) — mutated under `ConfigFileLock` and **flushed (file and directory) before the commit proceeds**, AI-1654-marker-grade, because the claim is safety-bearing: it is what prevents a later silent `allow` daemon. It is deliberately NOT in `app-state.json`, which is UX-grade by contract (no fsync, corrupt-reads-as-defaults, process-local locking) — round-2 review showed a lost-arm-then-durable-commit or a two-app-instance clobber there re-opens the exact token-without-claim hole the ordering exists to close. The façade exposes an async **before-commit hook** carrying the final post-picker/post-provisioning identity; the app's hook persists the claim, and **hook failure prevents the commit** (surfaced as a retryable sign-in error). "Sign-in completion" means the façade's commit boundary (§5), NOT `SetupFunnel.SigninCompleted`. The Defaults step rebinding the daemon name updates the claim under the same lock. Step 7 applies the flip and clears the claim; an abandoned wizard applies it via `ConsentFlipCoordinator` on a later attach (§6). Abandoning before sign-in arms nothing (covered instead by decision 2's carve-out). |
-| 8 | **Harness detection moves to `Capacitor.Cli.Core` as `AgentDetection`, composing the EXISTING per-vendor rules verbatim** (§8) — the parameterized inputs are the PATH string (the app feeds `LoginShellProbe.TerminalPathAsync`), PATHEXT, platform, home dir, and an environment accessor. Today the composition lives in `SetupCommand` (CLI project, unreachable from the app, and a GUI process's `PATH` is not the user's terminal PATH); the per-vendor building blocks (`CursorPaths.IsInstalled`, `GeminiPaths`' marker rules, `AntigravityPaths.IsInstalled`, `AgentDetector`) are already in Core. No new CLI verb. |
-| 9 | **The app emits NO telemetry this slice; desktop-onboarding funnel coverage is explicitly deferred** to a follow-up issue. The app never calls `CliTelemetry.Initialize`, so Core's embedded `SetupFunnel` emissions no-op (`Capture`/`CaptureNow` are guarded on `Enabled`/`_client`). Reversed from the pre-review draft ("reuse `SetupFunnel` from the adapters"), which was unsafe on three verified counts: `Initialize` hardcodes `source: "cli"` and prints the one-time privacy disclosure to `Console.Error` — invisible in a WinExe, so an app-first user would silently consume `notice_shown` and never see the disclosure the telemetry spec requires; `CaptureNow` is deliberately sync-over-async, safe only "because this is a console app with no SynchronizationContext" (its own comment) and can deadlock on Avalonia's UI context; and app-emitted fragments (`Workspace*` without `cli_setup_started`/`succeeded`) would corrupt the funnel while mislabeled as CLI traffic. The follow-up owns: an app source label, a visible disclosure surface, async delivery, and the desktop funnel sequence. |
-| 10 | **`config.json` gains ONE Core mutation API and every writer migrates to it.** `AppConfig.SaveProfileConfig` (lock-free, fixed `config.json.tmp`) is replaced by a field-scoped mutate call: acquire `ConfigFileLock` → re-read under the lock → apply the caller's mutation to the fresh snapshot → publish via unique temp + rename — as a **synchronous critical section** (the lock is a thread-affine named `Mutex`: `WaitOne`/`ReleaseMutex` must happen on one thread, so the API must not await while holding it; async callers wrap it in `Task.Run`). Locking only the wizard's writes cannot work: `ConfigFileLock` requires every writer to participate, and today `ConfigCommand`, `ProfileCommand`, `UseCommand`, `UpdateCommand`, `IgnoreCommand`, `RemapCommand`, `ImportCommand`, `SetupCommand`, `Program`, `WorkOSDiscovery`, and `MachineIdProvider` all do lock-free load-modify-save — any of them can commit a stale snapshot over a wizard write (or vice versa). Deleting the old method makes the migration compiler-enforced. Accepted residual, documented: the app has no single-instance guard — with claims moved out of `app-state.json` (decision 7) this is back to a pure UX gap (two tray icons), not a safety one. |
+| 7 | **The consent-flip claim covers what seeding cannot: PRE-EXISTING daemons.** With decision 4, a daemon the app installs is born `prompt`; the claim's only remaining job is a daemon that already exists at onboarding time (running, or installed-stopped with an existing policy file). Claims live in their own store — `{config}/consent-flip-claims.json`, a collection keyed by canonical `{profile, server URL, daemon name}` with merge semantics (arm upserts; apply/clear removes only its key) — mutated under `ConfigFileLock` and **flushed (file and directory) before the sign-in commit proceeds**, AI-1654-marker-grade. Deliberately NOT in `app-state.json` (UX-grade by contract). The façade's async **before-commit hook** carries the full identity SET the boundary is about to make gate-complete — GitHub discovery publishes a token per discovered tenant, so one claim per published identity (each with that profile's resolved daemon name) — and **hook failure prevents the commit** (retryable sign-in error). "Sign-in completion" means the façade's commit boundary (§5), NOT `SetupFunnel.SigninCompleted`. The Defaults step rebinding the daemon name re-keys the claim under the same lock. Step 7 applies/consumes the claim; `ConsentFlipCoordinator` applies it to pre-existing daemons on a later attach (§6). Abandoning before sign-in arms nothing (decision 2's carve-out covers that population). **Store corruption fails safe, not open** (§4): the corrupt file is quarantined and surfaced, the coordinator goes inert — and no `allow` daemon can be minted meanwhile, because every app install seeds `prompt` regardless of claim-store health. |
+| 8 | **Harness detection moves to `Capacitor.Cli.Core` as `AgentDetection`, composing the existing per-vendor rules through PURE inputs** (§8). `AgentDetector` (today in the CLI project) moves to Core; the env-reading vendor helpers (`KiroPaths` `KIRO_HOME`, `PiPaths` `PI_CODING_AGENT_DIR`, `OpenCodePaths` `OPENCODE_CONFIG_DIR`/XDG) gain pure overloads/input records so PATH, PATHEXT, home, and every relevant override are passed as values — an injected accessor around an aggregate that still reads globals inside would be composition theater, and parity tests must run in parallel without mutating process env. The app feeds the terminal PATH from `LoginShellProbe`. No new CLI verb. |
+| 9 | **The app emits NO telemetry this slice; desktop-onboarding funnel coverage is explicitly deferred** to a follow-up issue. The app never calls `CliTelemetry.Initialize`, so Core's embedded `SetupFunnel` emissions no-op (`Capture`/`CaptureNow` are guarded on `Enabled`/`_client`). Reversed from the pre-review draft, which was unsafe on three verified counts: `Initialize` hardcodes `source: "cli"` and prints the one-time privacy disclosure to `Console.Error` — invisible in a WinExe, silently consuming `notice_shown`; `CaptureNow` is deliberately sync-over-async, safe only in a console app without a SynchronizationContext, and can deadlock on Avalonia's UI context; and app-emitted fragments would corrupt the funnel while mislabeled as CLI traffic. The follow-up owns: an app source label, a visible disclosure surface, async delivery, and the desktop funnel sequence. |
+| 10 | **`config.json` gains ONE Core mutation API and every writer migrates to it.** `AppConfig.SaveProfileConfig` (lock-free, fixed `config.json.tmp`) is replaced by a field-scoped mutate call: acquire `ConfigFileLock` → re-read under the lock → apply the caller's mutation to the fresh snapshot → publish via unique temp + rename — as a **synchronous critical section** (the lock is a thread-affine named `Mutex`: no await while holding it; async callers wrap in `Task.Run`). The re-read uses a **pure load/parse/migrate-in-memory primitive** — today `LoadProfileConfig` *writes* the v1→v2 migration back during load, which under the mutation API would recursively acquire the same thread-affine mutex; instead, migration is applied in memory inside the critical section and persists through the same publication as the caller's mutation. Locking only the wizard's writes cannot work: `ConfigFileLock` requires every writer to participate, and today `ConfigCommand`, `ProfileCommand`, `UseCommand`, `UpdateCommand`, `IgnoreCommand`, `RemapCommand`, `ImportCommand`, `SetupCommand`, `Program`, `WorkOSDiscovery`, `MachineIdProvider`, and `LoadProfileConfig`'s migration path all write lock-free. Deleting the old method makes the migration compiler-enforced. Accepted residual, documented: the app has no single-instance guard — with claims in their own locked, keyed store (decision 7) this is a pure UX gap (two tray icons), not a safety one. |
 
 ## 3. Wizard flow
 
@@ -45,48 +45,56 @@ window (`OnboardingWindow`), step content switched by template.
    workspace slug/URL (Core-moved `ToServerOrigin`/`ResolveTenantArg` rules), "find my
    workspaces" (discovery), or **Create a workspace**. Auth, tenant enumeration, and provisioning
    all happen inside the Sign-in step — both discovery paths must authenticate *before* tenants
-   can be listed, and WorkOS creation runs inside discovery after org-less sign-in, so a step
-   split along "pick tenant, then sign in" would misstate the real flow.
+   can be listed, and WorkOS creation runs inside discovery after org-less sign-in.
 3. **Sign in** — executes ONE façade operation (§5) for the chosen intent, rendering its
    structured progress inline: browser-open notice with the fallback URL, GitHub device code +
    verification URL when that flow applies, the tenant picker list when discovery finds several,
    and the create-workspace sub-flow (org name → slug with live availability → confirm →
    provisioning progress mirroring the CLI's 4 s × 150 poll contract, `WorkOSTokenSource` keeping
    the org-less token alive per AI-1171, its `CurrentRefreshToken` used for the final org switch).
-   The operation ends at the §5 **commit boundary**: claim armed (decision 7), then all durable
-   publications run to completion. Pasted-URL joins to an `AuthProvider.None` server run the same
-   boundary (claim + profile + provider stamp, no token) and the step auto-satisfies.
+   The operation ends at the §5 **commit boundary**: claims armed for every identity about to be
+   published (decision 7), then all durable publications run to completion. Pasted-URL joins to
+   an `AuthProvider.None` server run the same boundary (claim + profile + provider stamp, no
+   token) and the step auto-satisfies.
    **Step transitions:** while the operation is in flight *before the boundary*, Back/Skip/close
    cancel it through the §5 cancellation lane (no durable write); once the boundary is entered,
-   the operation runs to Committed regardless (§5). After the commit, Back returns to Connect for
-   a *different* intent, and re-entry shows the step satisfied. Retry re-runs the operation only
-   after the previous lane has quiesced.
+   the operation runs to `Committed` regardless, and a close hands the wait to the app per
+   decision 2. After the commit, Back returns to Connect for a *different* intent, and re-entry
+   shows the step satisfied. Retry re-runs the operation only after the previous lane has
+   quiesced.
 4. **Defaults** — visibility picker + daemon-name field (decision 5), written per decision 10 to
-   the active profile; a daemon-name change updates the decision-7 claim under its lock.
+   the active profile; a daemon-name change re-keys the decision-7 claim under its lock.
 5. **Coding agents** — `AgentDetection` results (§8) as pre-checked checkboxes →
    `kcap plugin install --<vendor>` per selection (Claude Code is the flagless default install).
 6. **Import history** — vendor checkboxes + scope choice (decision 6); output streams into a live
    log pane per the §7 contract; Cancel kills the child tree. A failed import never blocks
    finishing onboarding.
-7. **Enable daemon** — through the §6a service lane, branched on **ownership evidence, not
-   liveness**: a fresh `service status --json` decides. Positive ownership (`job_pid` ==
-   `daemon_pid`, both non-null) → already enabled, skip install. A live **identity-matched**
-   manual daemon (or a non-owning loaded unit) is NOT enablement — a manually started daemon dies
-   at logout, and once the post-wizard graph starts Connected, AI-1654's closed startup phase will
-   never silently repair it — so the step offers the dialoged takeover
-   (`service install --replace --verify`, with AI-1654's replacement/recapture disclosures);
-   decline → enablement stays visibly incomplete (skippable). Nothing at all → plain
-   `service install --verify`. Then the consent flip (§6): identity-conditional put against the
-   claim's daemon name + server URL. On the declined-takeover path the flip still applies when
-   identity matches — the flip protects the machine owner regardless of which process hosts the
-   daemon — while the step reports enablement (persistence) as skipped.
+7. **Enable daemon** — through the §6a service lane, on **AI-1654's full state matrix** (not a
+   reduced one), from a fresh `service status --json`:
+   - *No unit, no live owner* → `service install --verify` (seeds `prompt`, decision 4).
+   - *Unit present, loaded-inactive or stopped, `daemon_pid` null* → `service start --verify`
+     (seeds `prompt` when no policy file exists yet).
+   - *Positive ownership* (`job_pid` == `daemon_pid`, both non-null) **AND identity match** (§6
+     probe: expected daemon name + canonical server URL) → already enabled; apply a pending
+     claim via the §6 conditional put (pre-existing daemon, decision 7). Ownership *without*
+     identity match (a unit owning a daemon configured for another profile/server) is NOT
+     "enabled" — the step offers the dialoged takeover.
+   - *Identity-matched manual daemon or non-owning loaded unit* → NOT enablement (a manual
+     daemon dies at logout; a Connected post-wizard graph closes AI-1654's startup phase and
+     will never silently repair it): dialoged takeover (`service install --replace --verify`
+     with AI-1654's disclosures, seeding on the rewrite); decline → enablement stays visibly
+     incomplete (skippable), and a pending claim still applies via conditional put when identity
+     matches — the flip protects the owner regardless of which process hosts the daemon.
+   - *Orphan label / stale `txn_marker`* → AI-1654's repair affordance semantics; `txn_active` →
+     wait, never a parallel mutation; *launchd `unknown` / status unparseable* → no mutation,
+     honest message.
 8. **Done** — summary of what was set up and what was skipped (and why).
 
 Abandonment: config writes are incremental, so a re-entered wizard finds steps pre-satisfied.
 Accepted residual, documented: a user who signs in and quits never re-enters (the gate now
 passes), so hooks/import stay undone until `kcap setup`/`kcap import` or the AI-1656 settings
-surface — consent is covered by the durable claim, and pre-sign-in abandonment by the decision-2
-carve-out.
+surface — consent is covered by decision 4 (any later app install is born `prompt`) plus the
+claim for pre-existing daemons, and pre-sign-in abandonment by the decision-2 carve-out.
 
 ## 4. Components (app)
 
@@ -108,23 +116,28 @@ src/Capacitor.App/Services/Onboarding/ConsentFlipCoordinator.cs     — pending-
   schema), written inside the §5 commit boundary (never on a bare `/auth/config` read — a
   later-cancelled login must not leave a stamp). The gate honors `none` only when the stamp's
   server identity equals the profile's current canonical `server_url` — a stale stamp from a
-  previous URL never bypasses the token requirement (`kcap config set server_url` rewrites only
-  that field and must not carry the exemption along). Legacy profiles without the stamp are
+  previous URL never bypasses the token requirement. Legacy profiles without the stamp are
   token-required — documented residual: a pre-existing `AuthProvider.None` server profile sees
-  the wizard until stamped (one wizard pass or `kcap config set`). A server that changes provider
+  the wizard until a sign-in/setup pass stamps it (the stamp is written only inside a commit
+  boundary, so the recovery is running the wizard's Sign-in step or `kcap setup`/`kcap login`
+  against that server — a bare `kcap config set` cannot mint it). A server that changes provider
   in place (same URL, `none` → authenticated) passes the gate wrongly until requests 401 —
-  documented; recovery is `kcap login` or re-running setup. Unreadable/corrupt token files →
-  `token_unusable` (the wizard is the recovery path). The gate and `App.ValidProfileName` share
-  one `ServerIdentity`-based validator (decision 2).
+  documented; recovery identical. Unreadable/corrupt token files → `token_unusable` (the wizard
+  is the recovery path). The gate and `App.ValidProfileName` share one `ServerIdentity`-based
+  validator (decision 2).
 - **`WizardAuthService`** drives the §5 façade: single-flight — one auth operation at a time, a
-  new attempt only after the previous lane has quiesced (cancelled-before-boundary or completed);
-  cancellation is a distinct outcome, never rendered as failure.
+  new attempt only after the previous lane has quiesced (cancelled-before-boundary or terminal);
+  cancellation is a distinct outcome, never rendered as failure. Owns the decision-2 close
+  handoff: pre-boundary close cancels and awaits quiesce; post-boundary close detaches the UI
+  and exposes the terminal-result task the app awaits before graph construction or shutdown.
 - **`ConsentFlipClaims`**: the decision-7 store. Load tolerates corruption by quarantining (the
-  file is renamed aside and surfaced, not silently defaulted — losing claims silently is the
-  failure mode the store exists to prevent).
-- **`KcapCli`** gains `PluginInstallAsync(vendor)` (bounded timeout) and the §7 streaming import
-  call. The wizard constructs its own instance after Sign-in, pinned to the wizard-chosen
-  profile — in wizard-first mode no startup instance exists to conflict with.
+  file is renamed aside and surfaced, not silently defaulted); the coordinator goes inert while
+  a quarantine is unresolved. Safe by decision 4: no automatic path can mint an `allow` daemon
+  while claims are unreadable, because app installs seed `prompt` independently of this store.
+- **`KcapCli`** gains `PluginInstallAsync(vendor)` (bounded timeout), the §7 streaming import
+  call, and the decision-4 `KCAP_CONSENT_SEED_DEFAULT=prompt` env overlay on its
+  install/start-verify calls. The wizard constructs its own instance after Sign-in, pinned to
+  the wizard-chosen profile — in wizard-first mode no startup instance exists to conflict with.
 - **App state** (`app-state.json`) keeps only UX claims (`ShimOffered`/`ShimDenied`) — nothing
   safety-bearing (restored to its AI-1654 contract; the flip claim lives in `ConsentFlipClaims`).
 
@@ -154,55 +167,64 @@ behavior-preserving for the CLI (asserted by its existing command tests).
 - **The commit boundary is an ordered state machine, not a single write** — the existing flows
   durably publish in multiple files (WorkOS: config then token; GitHub discovery: config then one
   token per tenant), so "cancelled ⇒ no durable write" can only hold BEFORE the boundary:
-  1. Before-commit hook (decision 7): the caller persists the flip claim for the final
-     identity; hook failure aborts the operation (nothing durable written, retryable).
+  1. Before-commit hook (decision 7): the caller persists flip claims for **every identity the
+     boundary will publish** (all discovered tenants on the GitHub path, each with its profile's
+     resolved daemon name); hook failure aborts the operation (nothing durable written,
+     retryable).
   2. Boundary entered: the remaining publications — profile creation/activation
      (`TenantDiscovery.MergeProfiles` / explicit profile write via the decision-10 mutation
      API), provider stamp (§4), `TokenStore.SaveAsync` (per tenant where applicable) — run
      under `CancellationToken.None` to completion; a cancel arriving mid-boundary is answered
-     with `Committed`, never a torn stop.
+     with `Committed`, never a torn stop; a close hands the wait to the app (decision 2).
   3. Result: `Committed` | `Cancelled` (strictly pre-boundary, nothing durable) | `Failed`.
   Crash residue inside the boundary is defined and harmless by ordering: claim-without-profile
   and profile-without-token both leave the gate failing, so the wizard returns; the dangerous
-  inverse (token without claim) cannot occur because the claim is step 1.
+  inverse (token without claim) cannot occur because the claims are step 1.
 - **Async picker**: `ITenantPicker.Pick` (sync) gains an async, cancellable counterpart the
   façade consumes; the Spectre picker adapts trivially, the app's picker awaits the ViewModel.
 - **Helper moves**: `SetupCommand.ToServerOrigin` and `ResolveTenantArg` become public Core
   helpers; `AppConfig.ValidVisibilities` becomes public. §11's scope statement enumerates the
   CLI-project churn this causes.
 
-## 6. Consent flip
+## 6. Consent: seeding, conditional put, coordinator
 
-- **Identity-conditional put (the TOCTOU fix, decision 4):** `ConsentRulesPut` gains optional
-  `expected_name` + `expected_server_url` fields; the daemon compares them against its own
-  identity **at dispatch, on the same connection that carries the write**, answering a coded
-  `identity_mismatch` ack (Ok=false) without mutating anything on mismatch. Advertised as
-  `consent/2` in `LocalControlCapabilities.Current` (entry lives next to the routing switch, per
-  the AI-1648 rule). A pre-`consent/2` daemon would skip unknown JSON members and write
-  unguarded, so **the flip requires `consent/2`**: the hello's capability list is checked first;
-  absent → no put, claim stays pending (wizard-installed daemons are current by construction;
-  the coordinator retries on a later attach after the daemon updates). Probe-then-put over
-  separate sockets (each `LocalControlOps` call dials fresh, and hello/status/get/put are four
-  connections) can never carry this guarantee — a same-name daemon swap between probe and put
-  lands the write on the wrong daemon. The status read for display uses
-  `DaemonStatusDto.Daemon.ServerUrl` (nested under `DaemonInfoDto` — there is no top-level
-  field).
-- **Step-7 flip** (explicit user action on the Enable-daemon step): conditional put with the
-  claim's identity. No factory guard — the user is looking at the step that says what it does.
+- **Seeding (decision 4)** covers every daemon the app installs: policy committed inside the
+  service transaction, before bootstrap, hence strictly before the daemon's `ServerConnection`
+  can admit a launch. The adversarial ordering — server issues a launch the instant the daemon
+  registers — is answered structurally: the launch meets `prompt`, and with no UI attached the
+  consent gate's existing fail-closed path denies it.
+- **Identity-conditional put — a NEW frame, not new fields (the round-3 correction):**
+  `consent/2` is ALREADY taken (AI-1652's identity-checked prompt resolution:
+  ConsentSubscribeV2/ConsentResolveV2), and adding optional members to the existing
+  `ConsentRulesPut` (frame 14) payload cannot fail closed — STJ skips unknown members, so a
+  pre-change daemon would pass a `consent/2` capability check AND perform the unguarded write.
+  Instead, per AI-1652's own pattern: a **`ConsentRulesPutV2` frame** (next free `FrameType`)
+  whose payload carries **mandatory** `expected_name` + `expected_server_url`; the daemon
+  compares them against its own identity at dispatch, on the same connection that carries the
+  write, answering a coded `identity_mismatch` ack without mutating on mismatch. An old daemon
+  cannot decode the new frame type at all — structural rejection is the fail-closed floor, with
+  a new **`consent/3`** capability advertised for discovery (entry next to the routing switch,
+  per the AI-1648 rule). The flip uses ONLY the v2 frame; a daemon without `consent/3` gets no
+  put and the claim stays pending (wizard-installed daemons are current by construction; the
+  coordinator retries after the daemon updates). Status reads use
+  `DaemonStatusDto.Daemon.ServerUrl` (nested under `DaemonInfoDto`).
+- **Step-7 application** (explicit user action): conditional put with the claim's identity. No
+  factory guard — the user is looking at the step that says what it does.
 - **`ConsentFlipCoordinator`** (normal post-wizard startup, sibling of `ShimOfferCoordinator`):
   when a claim matching the *current* resolved profile/daemon is pending and attach reaches
   `Connected`, it runs capability check → get → factory guard → conditional put; on success, or
   on finding non-factory policy, it clears the claim (its key only). A claim whose identity no
-  longer matches the resolved profile/daemon stays pending and inert (never applied to a
-  different daemon than it was armed for).
+  longer matches stays pending and inert. **Scope note:** the coordinator exists for
+  pre-existing daemons only (decision 7); its attach-then-put ordering leaves those daemons'
+  pre-flip window open — documented residual: such a daemon predates onboarding and was already
+  operating under `allow`; the coordinator narrows, not creates, that exposure.
 - **Factory guard** (coordinator path only): apply only when the live policy is default `allow`
   with zero rules. Two deliberate weakenings, accepted and documented rather than mechanized:
   (a) *provenance*: an explicit operator-chosen `allow` + zero rules is indistinguishable from
   factory state over the wire — the flip errs toward the safer `prompt` and the operator can
-  revert (`kcap daemon consent set-default allow`). (b) *policy race*: between the guard's get
-  and the put, a concurrent consent edit can be overwritten — same window as the CLI's own
-  `consent set-default`, one IPC round-trip on a just-onboarded machine; accepted. (The
-  *identity* race is NOT accepted — that is what the conditional put closes.)
+  revert. (b) *policy race*: between the guard's get and the put, a concurrent consent edit can
+  be overwritten — same window as the CLI's own `consent set-default`; accepted. (The *identity*
+  race is NOT accepted — that is what the v2 frame closes.)
 
 ## 6a. Service-operation lane (step 7)
 
@@ -212,13 +234,18 @@ One service operation at a time, app-side, complementing the CLI's own per-label
   transaction bound** (AI-1654 §3.6's rule survives verbatim). Back/Skip/close during a running
   operation detach the *UI* from the wait; the lane still owns the child.
 - Retry (or re-entering the step) first awaits the prior child's exit, then re-queries
-  `service status --json` and acts on the evidence: `txn_active` → keep waiting (an orphaned
-  transaction is still completing); a stale `txn_marker` → the step surfaces AI-1654's repair
-  affordance semantics rather than blindly re-installing.
-- Wizard close hands the lane to the app's shutdown/graph-build sequencing: post-close graph
-  construction (decision 2) and app shutdown both defer until the lane quiesces, with the same
-  bounded cap and kill-above-transaction-bound discipline `App.DisposeAndShutdownAsync` already
-  implements for the lifecycle controller.
+  `service status --json` and acts on the evidence: `txn_active` → keep waiting; a stale
+  `txn_marker` → the step surfaces AI-1654's repair affordance semantics rather than blindly
+  re-installing.
+- Wizard close hands the lane to the app's sequencing with **explicit post-cap rules**: graph
+  construction waits for the lane up to the CLI transaction's own bound (forward + rollback
+  reserve — a finite, known cap); if the child is somehow still live past it (pathological), the
+  graph is built with the lifecycle controller's auto-action arm closed and an attention state
+  surfaced from re-queried evidence — **auto-mutation stays forbidden while the transaction may
+  be live**. App shutdown past its bounded cap may exit with the child detached — safe by
+  AI-1654 §3.6's own contract (the transaction completes in the child; force-quit is a tested
+  path) — and the next launch reconciles marker/status before any mutation (AI-1654 §3.2's
+  startup reconciliation, unchanged).
 
 ## 7. Import streaming contract
 
@@ -237,22 +264,23 @@ final summary lines.
 
 ## 8. AgentDetection contract (Core move)
 
-`AgentDetection` composes the **existing Core per-vendor rules verbatim** — it does not restate
-them: `AgentDetector`'s PATH walk (PATH + PATHEXT + platform executable rules) for binary
-probes, and the vendor path helpers for installation signals (`CursorPaths.IsInstalled`'s
-`~/.cursor`-plus-Electron-directory rules; `GeminiPaths`' marker-file rules, which deliberately
-do NOT treat bare `~/.gemini` as installed to avoid the Antigravity false positive;
-`AntigravityPaths.IsInstalled(home, geminiCliHome)`; the `kiro-cli` and `agy`+`antigravity`
-binary probes; OpenCode's data-dir + XDG/`OPENCODE` overrides; Claude and Codex binary-only).
-Inputs: PATH string, PATHEXT, platform, home dir, and an **environment accessor** for the
-product-specific overrides those helpers honor. Output: per-vendor
-`{binary_found, install_signal_found}`. Edge behavior: unreadable PATH entries/dirs → not
-detected (no throw); symlinks followed; duplicate PATH entries deduped. Parity tests assert the
-composition reproduces `SetupCommand`'s current detection matrix; `SetupCommand` consumes it.
-Documented residual: env-override-based signals reflect the *app process's* environment — a
-GUI launch does not see overrides exported only in shell rc files (the terminal-PATH probe
-covers PATH, nothing covers arbitrary env). NativeAOT publish must stay warning-free with no
-new Core dependency.
+`AgentDetection` composes the **existing per-vendor rules through pure inputs** (decision 8):
+`AgentDetector` moves from the CLI project into Core (PATH walk: PATH + PATHEXT + platform
+executable rules, all passed as values); the vendor path helpers are consumed through pure
+overloads/input records — `CursorPaths.IsInstalled`'s `~/.cursor`-plus-Electron-directory rules;
+`GeminiPaths`' marker-file rules (bare `~/.gemini` deliberately NOT installed — the Antigravity
+false-positive guard); `AntigravityPaths.IsInstalled(home, geminiCliHome)` with the `agy` +
+`antigravity` binary probes; the `kiro-cli` probe and `KiroPaths`' `KIRO_HOME`; `PiPaths`'
+`PI_CODING_AGENT_DIR`; `OpenCodePaths`' data-dir + `OPENCODE_CONFIG_DIR`/XDG overrides; Claude
+and Codex binary-only. Every environment override those helpers read internally today becomes a
+passed value on the pure overload (the existing global-reading entry points remain for current
+callers, delegating to the pure form). Output: per-vendor `{binary_found, install_signal_found}`.
+Edge behavior: unreadable PATH entries/dirs → not detected (no throw); symlinks followed;
+duplicate PATH entries deduped. Parity tests assert the composition reproduces `SetupCommand`'s
+current detection matrix and run fully parallel — no process-global environment mutation.
+Documented residual: override values reflect the *app process's* environment — a GUI launch does
+not see exports living only in shell rc files (the terminal-PATH probe covers PATH, nothing
+covers arbitrary env). NativeAOT publish must stay warning-free with no new Core dependency.
 
 ## 9. Error handling
 
@@ -269,13 +297,14 @@ Uniform rule: every failure is a message + Retry/Skip on its step; nothing wedge
   step" (the CLI's own message, GUI-shaped); `WorkspaceFailed` reasons verbatim.
 - **Coding agents:** per-vendor exit codes; a failed vendor gets ⚠ + retry, successes stand.
 - **Import:** §7. Cancel = `KillTree`; failure never blocks Next.
-- **Enable daemon:** skipped-login users see "requires sign-in". §6a lane semantics for
-  navigation; install failures surface the AI-1654 verify exit codes (20–27) with the same
-  wording the lifecycle controller uses. `identity_mismatch` ack or missing `consent/2` → no
-  write, claim pending, repair guidance. Flip failure with the daemon up → retry; the claim
-  persists until applied or cleared per §6.
+- **Enable daemon:** skipped-login users see "requires sign-in". §3 step-7 matrix + §6a lane
+  semantics for navigation; install failures surface the AI-1654 verify exit codes (20–27) with
+  the same wording the lifecycle controller uses; seed-write failure → coded abort, nothing
+  destroyed. `identity_mismatch` ack or missing `consent/3` → no write, claim pending, repair
+  guidance.
 - **Gate edge cases:** unreadable token file → wizard (it is the recovery path); config
-  unreadable → wizard with `no_profile`; corrupt claims file → quarantined + surfaced (§4).
+  unreadable → wizard with `no_profile`; corrupt claims file → quarantined + surfaced,
+  coordinator inert (§4) — safe because installs seed `prompt` regardless (decision 4).
 
 ## 10. Testing
 
@@ -285,61 +314,70 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
 - **`OnboardingGate` matrix:** no profile / invalid URL (incl. `file://` — shared-validator
   assertion) / no token file / WorkOS expired with+without `RefreshToken`+`ClientId` / GitHubApp
   expired (usable — server-refreshable) / wrong-server token / legacy unbound token / corrupt
-  token file / provider stamp `none` matching current server (no token required) / stale `none`
-  stamp after `server_url` change (token required again) / legacy profile without the stamp.
+  token file / provider stamp `none` matching current server / stale `none` stamp after
+  `server_url` change (token required again) / legacy profile without the stamp.
 - **Decision-2 carve-out:** gate-still-failing close → graph builds with auto-actions closed and
-  shim auto-offer suppressed; assertions of **zero service mutation** for: valid URL + no token +
-  abandon; invalid/non-HTTP URL + abandon; close during an in-flight auth operation.
+  shim auto-offer suppressed; **zero service mutation** asserted for: valid URL + no token +
+  abandon; invalid/non-HTTP URL + abandon; close during an in-flight pre-boundary auth operation.
+- **Seeding (decision 4):** install/start-verify with the env var seeds `prompt` only when the
+  policy file is absent (existing file untouched); seed inside the lock, before destructive
+  steps; seed-write failure → coded abort, nothing destroyed; headless install without the env
+  var → no seed; **adversarial launch test**: daemon installed via seeded transaction, server
+  issues a launch immediately on registration → launch meets `prompt` (denied without UI) — no
+  `allow` window, by construction not by timing.
 - **Claim store & protocol:** arm flushed before boundary (fault injection at write/flush/rename,
   then proceed through a successful token commit + quit + relaunch → coordinator still holds the
-  claim); hook failure blocks the commit (nothing durable); keyed merge under two concurrent
-  writers (two identities → two keys, no last-writer-wins clobber); `AuthProvider.None`
-  profile-only commit still arms; Defaults rebinding updates the key; identity mismatch at
-  application time (terminal `kcap use` between arming and attach) → pending and inert; corrupt
-  store → quarantine surfaced.
-- **Consent flip:** `consent/2` conditional put against the real-socket harness — match applies,
-  mismatch answers coded ack and mutates nothing, daemon **replaced between get and put** (the
-  round-2 TOCTOU case) → mismatch ack from the new daemon, no write; missing `consent/2` → no
-  put, claim pending; factory-guard matrix (factory / explicit non-default / rules present); the
-  two documented §6 weakenings asserted as behavior so the residuals stay deliberate.
+  claim); hook failure blocks the commit; **multi-tenant GitHub discovery arms one claim per
+  published identity**; keyed merge under two concurrent writers (two identities → two keys, no
+  clobber); `AuthProvider.None` profile-only commit still arms; Defaults rebinding re-keys;
+  terminal `kcap use` to another (claimed) identity → that identity's claim applies on its own
+  attach; corrupt store → quarantine surfaced, coordinator inert, and a subsequent app install
+  still seeds `prompt` (fails safe, not open).
+- **Conditional put (v2 frame):** against the real-socket harness — match applies; mismatch
+  answers the coded ack and mutates nothing; **pre-change daemon** (advertises `consent/2`, no
+  `consent/3`, cannot decode the v2 frame) → no put attempted (capability gate) AND structural
+  rejection if sent anyway; daemon **replaced between get and put** → v2 frame lands on the new
+  daemon, identity mismatch, no write; factory-guard matrix; the two documented §6 weakenings
+  asserted as behavior.
 - **Commit boundary:** cancellation on both sides of every publication boundary — pre-boundary
   cancel = nothing durable; mid-boundary cancel = `Committed` with all publications present;
-  crash inside the boundary → defined residue (claim-without-profile, profile-without-token) and
-  the gate still fails; provider stamp absent after a cancelled login.
-- **Step 7 ownership matrix:** owning unit (skip install, flip only) / manual owner + no unit
-  (takeover offered; decline → flip applied, enablement incomplete) / manual owner + non-owning
-  loaded unit (same, via `--replace` path) — against real `service status --json` fixtures.
-- **§6a lane:** close/Back during install → child unkilled (AbandonWait), lane owned; retry
-  waits child exit + re-query (`txn_active` → wait; stale marker → repair surface); post-close
-  graph construction defers until quiesce.
+  close AND process-shutdown requests on both sides (post-boundary close → app awaits terminal
+  result before graph/shutdown); crash inside the boundary → defined residue and the gate still
+  fails; provider stamp absent after a cancelled login.
+- **Step-7 matrix:** every §3 row — install / start-existing (stopped unit) / owning+identity
+  (skip + claim apply) / owning wrong-server (takeover offered, NOT "enabled") / manual owner
+  no unit / manual owner + non-owning unit / orphan label / stale marker (repair) / `txn_active`
+  (wait) / `unknown` (no mutation) — against real `service status --json` fixtures.
+- **§6a lane:** close/Back during install → child unkilled, lane owned; retry waits child exit +
+  re-query; **child outliving the cap** → graph built with auto-arm closed + attention state, no
+  auto-mutation while the transaction may be live; next-launch reconciliation sees the marker.
 - **Façade:** cancellation at every pre-boundary await — picker, availability check, each
   provisioning poll/refresh, final org switch, browser wait, device poll — each asserting *no
   durable write*; Retry-after-cancel only after quiesce; single-flight; CLI behavior parity for
-  `setup`/`login` through the Spectre adapters (existing command tests keep passing unmodified
-  where they exist).
+  `setup`/`login` through the Spectre adapters.
 - **Step ViewModels** via `Avalonia.Headless`: the §3 transition table — pasted URL / GitHub
   discovery / WorkOS discovery / zero-tenant create / "I already have a workspace" retarget /
-  `AuthProvider.None` auto-satisfy — plus Back/Skip before and after the boundary, and re-entry
+  `AuthProvider.None` auto-satisfy — plus Back/Skip on both sides of the boundary, and re-entry
   recognizing satisfied states.
 - **Config mutation API:** the wizard racing REAL `ConfigCommand`/`ProfileCommand`/`UseCommand`
-  entry points (not two cooperating wizard writers) — unrelated fields preserved both
-  directions; unique temp names (no shared-tmp collision); lock held across a synchronous
-  critical section only (no await-under-mutex).
+  entry points — unrelated fields preserved both directions; unique temp names; lock held across
+  a synchronous critical section only (no await-under-mutex); **legacy v1 config migrated
+  in-memory under the lock while racing a real command writer** (no recursive acquisition, no
+  lost migration).
 - **`AgentDetection`:** §8 parity matrix against the composed helpers, PATHEXT/Windows rules,
-  Gemini marker rules (bare `~/.gemini` NOT detected), env-override injection, unreadable-dir
-  behavior.
+  Gemini marker rules (bare `~/.gemini` NOT detected), override values as pure inputs — parity
+  suite runs in parallel with zero process-env mutation.
 - **Streaming runner** against a real child process: interleaved stdout/stderr tagging, bounded
   tail, callback exception swallowed, mid-stream `KillTree` cancel with no orphaned child, and a
   large-output run asserting BOTH the ViewModel tail and the runner-retained result stay bounded
   (full captures empty).
 - **App startup:** gate-fires → wizard-first (asserting no service/tray/lifecycle/shim
-  coordinator built); wizard-close → normal graph with freshly resolved profile (extends
-  `AppStartupTests` patterns).
+  coordinator built); wizard-close → normal graph with freshly resolved profile.
 - **AOT:** `dotnet publish` warning-free (Core façade + AgentDetection are BCL-only).
-- **E2E stays manual** (umbrella §10): fresh machine full pass; abandon-after-sign-in → flip
-  lands on next attach; abandon-before-sign-in → no auto-install; multi-tenant pick; real
-  create-workspace against staging (`KCAP_SIGNUP_URL`); import cancel mid-run; manual-daemon
-  takeover on step 7; shim step on a `.zshrc`-only-PATH machine.
+- **E2E stays manual** (umbrella §10): fresh machine full pass; abandon-after-sign-in → later
+  auto-install is born `prompt`; abandon-before-sign-in → no auto-install; multi-tenant pick;
+  real create-workspace against staging (`KCAP_SIGNUP_URL`); import cancel mid-run;
+  manual-daemon takeover on step 7; shim step on a `.zshrc`-only-PATH machine.
 
 ## 11. Scope boundaries
 
@@ -349,15 +387,18 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
 - **Follow-up issue (new):** desktop app telemetry — source label, disclosure surface, async
   delivery, desktop onboarding funnel (decision 9).
 - **Zero server-side work** (signup rides the existing provisioning backend) and **zero new CLI
-  verbs or flags**. **One additive daemon-side IPC change** (decision 4/§6): optional
-  expected-identity fields on `ConsentRulesPut`, enforced at dispatch, advertised as
-  `consent/2` — additive DTO members, no protocol bump, older clients unaffected. CLI-project
-  changes, enumerated: `AgentDetection` composition move (decision 8); `setup`/`login` re-plumbed
-  onto the §5 façade with Spectre adapters (behavior-preserving);
+  verbs or flags**. Enumerated protocol/daemon changes: **one new IPC frame pair**
+  (`ConsentRulesPutV2` with mandatory expected-identity + its ack), advertised as `consent/3`
+  (§6) — new frame type, structurally rejected by old daemons, no protocol bump. Enumerated CLI
+  changes: `service install/start --verify` honor `KCAP_CONSENT_SEED_DEFAULT` (env-driven, no
+  new flag — decision 4); `AgentDetection` composition move + `AgentDetector` to Core +
+  pure-input overloads on `KiroPaths`/`PiPaths`/`OpenCodePaths` (decision 8); `setup`/`login`
+  re-plumbed onto the §5 façade with Spectre adapters (behavior-preserving);
   `ToServerOrigin`/`ResolveTenantArg` moved to Core; every `config.json` writer migrated to the
   decision-10 mutation API (`ConfigCommand`, `ProfileCommand`, `UseCommand`, `UpdateCommand`,
   `IgnoreCommand`, `RemapCommand`, `ImportCommand`, `SetupCommand`, `Program`,
-  `WorkOSDiscovery`, `MachineIdProvider`). Core gains the façade seams (§5), the
-  `auth_provider` server-scoped stamp (§4), the mutation API (decision 10), and public
-  `ValidVisibilities`. User-visible CLI behavior is unchanged, so no README/help churn.
+  `WorkOSDiscovery`, `MachineIdProvider`, and `LoadProfileConfig`'s migration path via the pure
+  in-memory primitive). Core gains the façade seams (§5), the `auth_provider` server-scoped
+  stamp (§4), the mutation API (decision 10), and public `ValidVisibilities`. User-visible CLI
+  behavior is unchanged, so no README/help churn.
 - One PR (references AI-1655 and its GitHub issue).
