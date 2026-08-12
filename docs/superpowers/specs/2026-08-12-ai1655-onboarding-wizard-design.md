@@ -29,7 +29,7 @@ umbrella decision 6 reserved, riding the existing WorkOS self-service provisioni
 | 6 | **Import step: vendor checkboxes + scope choice** (Everything / one org / specific repo — mirroring `ImportScopePrompt`'s vocabulary), running `kcap import --all|--org <o>|--repo <r> --yes` plus selected vendor flags. Setup's own embedded import is current-repo-scoped, which is meaningless for a GUI launch. |
 | 7 | **The consent-flip claim covers what seeding cannot: PRE-EXISTING daemons.** With decision 4, a daemon the app installs is born `prompt`; the claim's only remaining job is a daemon that already exists at onboarding time (running, or installed-stopped with an existing policy file). Claims live in their own store — `{config}/consent-flip-claims.json`, a collection keyed by canonical `{profile, server URL}` with merge semantics (arm upserts; apply/clear removes only its key) — mutated under `ConfigFileLock` and **flushed (file and directory) before the sign-in commit proceeds**, AI-1654-marker-grade. Deliberately NOT in `app-state.json` (UX-grade by contract). **The daemon NAME is not part of the key — it is resolved from config at application time** (round-5 correction): a name is an address, not the protected principal (owner × profile × server), and keying on it made claim validity depend on a cross-file dance — the wizard's Defaults write and any terminal `kcap config set daemon.name` would each have to re-key a second store crash-consistently. Resolving the name at application time means daemon renames need no claim writes at all: the §6 conditional put still verifies BOTH the currently-resolved name and the claim's server identity against the live daemon, so the guard is undiminished. The façade's async **before-commit hook** carries the full identity SET the boundary is about to make gate-complete — GitHub discovery publishes a token per discovered tenant, so one claim per published identity — and **hook failure prevents the commit** (retryable sign-in error). "Sign-in completion" means the façade's commit boundary (§5), NOT `SetupFunnel.SigninCompleted`. Step 7 applies/consumes the claim; `ConsentFlipCoordinator` applies it to pre-existing daemons on a later attach (§6). Abandoning before sign-in arms nothing (decision 2's carve-out covers that population). **Store corruption fails safe, not open** (§4): the corrupt file is quarantined and surfaced, the coordinator goes inert — and no `allow` daemon can be minted meanwhile (subject to §3's one qualified exception), because every app install seeds `prompt` regardless of claim-store health. |
 | 8 | **Harness detection moves to `Capacitor.Cli.Core` as `AgentDetection`, composing the existing per-vendor rules through PURE inputs** (§8). `AgentDetector` (today in the CLI project) moves to Core; the env-reading vendor helpers (`KiroPaths` `KIRO_HOME`, `PiPaths` `PI_CODING_AGENT_DIR`, `OpenCodePaths` `OPENCODE_CONFIG_DIR`/XDG) gain pure overloads/input records so PATH, PATHEXT, home, and every relevant override are passed as values — an injected accessor around an aggregate that still reads globals inside would be composition theater, and parity tests must run in parallel without mutating process env. The app feeds the terminal PATH from `LoginShellProbe`. No new CLI verb. |
-| 9 | **The app emits NO telemetry this slice; desktop-onboarding funnel coverage is explicitly deferred** to a follow-up issue. The app never calls `CliTelemetry.Initialize`, so Core's embedded `SetupFunnel` emissions no-op (`Capture`/`CaptureNow` are guarded on `Enabled`/`_client`). Reversed from the pre-review draft, which was unsafe on three verified counts: `Initialize` hardcodes `source: "cli"` and prints the one-time privacy disclosure to `Console.Error` — invisible in a WinExe, silently consuming `notice_shown`; `CaptureNow` is deliberately sync-over-async, safe only in a console app without a SynchronizationContext, and can deadlock on Avalonia's UI context; and app-emitted fragments would corrupt the funnel while mislabeled as CLI traffic. The follow-up owns: an app source label, a visible disclosure surface, async delivery, and the desktop funnel sequence. |
+| 9 | **The app emits NO telemetry this slice; desktop-onboarding funnel coverage is explicitly deferred** to a follow-up issue. The app never calls `CliTelemetry.Initialize`, so Core's embedded `SetupFunnel` emissions no-op (`Capture`/`CaptureNow` are guarded on `Enabled`/`_client`). Reversed from the pre-review draft, which was unsafe on three verified counts: `Initialize` hardcodes `source: "cli"` and prints the one-time privacy disclosure to `Console.Error` — invisible in a WinExe, silently consuming `notice_shown`; `CaptureNow` is deliberately sync-over-async, safe only in a console app without a SynchronizationContext, and can deadlock on Avalonia's UI context; and app-emitted fragments would corrupt the funnel while mislabeled as CLI traffic. The follow-up owns: an app source label, a visible disclosure surface, async delivery, and the desktop funnel sequence. **The guarantee extends to shelled children**: every CLI process the app spawns still executes `Program.cs`, whose `CliTelemetry.Initialize` runs before dispatch — the compatibility probe, status, plugin, import, and mutation children would each send CLI-labeled telemetry AND the very first one would print the one-time privacy disclosure to an invisible stderr and consume `notice_shown`. So every app-spawned CLI child carries a deliberate `KCAP_TELEMETRY=0` env overlay (the existing highest-precedence kill switch) — a process-spawn overlay only, never baked into service-unit content, so unit-launched daemons and terminal use keep normal telemetry behavior. This also keeps the machine-readable stderr contracts clean: reason lines (`start_gate_reason=`, `daemon_start_reason=`) are parsed by prefix, not by assuming stderr contains nothing else. |
 | 10 | **`config.json` gains ONE Core mutation API and every writer migrates to it.** `AppConfig.SaveProfileConfig` (lock-free, fixed `config.json.tmp`) is replaced by a field-scoped mutate call: acquire `ConfigFileLock` → re-read under the lock → apply the caller's mutation to the fresh snapshot → publish via unique temp + rename — as a **synchronous critical section** (the lock is a thread-affine named `Mutex`: no await while holding it; async callers wrap in `Task.Run`). The re-read uses a **pure load/parse/migrate-in-memory primitive** — today `LoadProfileConfig` *writes* the v1→v2 migration back during load, which under the mutation API would recursively acquire the same thread-affine mutex; instead, migration is applied in memory inside the critical section and persists through the same publication as the caller's mutation. Locking only the wizard's writes cannot work: `ConfigFileLock` requires every writer to participate, and today `ConfigCommand`, `ProfileCommand`, `UseCommand`, `UpdateCommand`, `IgnoreCommand`, `RemapCommand`, `ImportCommand`, `SetupCommand`, `Program`, `WorkOSDiscovery`, `MachineIdProvider`, and `LoadProfileConfig`'s migration path all write lock-free. Deleting the old method makes the migration compiler-enforced. Accepted residual, documented: the app has no single-instance guard — with claims in their own locked, keyed store (decision 7) this is a pure UX gap (two tray icons), not a safety one. |
 
 ## 3. Wizard flow
@@ -156,11 +156,21 @@ window (`OnboardingWindow`), step content switched by template.
      rollback — a swapped legacy daemon is a PERSISTENT running unseeded daemon; *swapped CLI
      executable* → none of the new gates execute at all, and the old CLI can successfully
      complete a mutation, leaving a persistent unseeded daemon or unit. For the two
-     non-rollback outcomes the app's contract is **post-result reconciliation**: after every
-     mutation result the controller re-queries attach/status evidence, and a Connected daemon
-     below the floor or lacking `consent/3` surfaces the attention state and the existing
-     AI-1654 skew/takeover lane, while `ConsentFlipCoordinator` applies any pending claim
-     under its factory guard. This whole family is the **one qualified exception** to
+     non-rollback outcomes the app's contract is **post-result reconciliation, packaged as
+     ONE deep module (mutation + reconciliation) shared by wizard step 7, the lifecycle
+     controller, and main-window Start** — it cannot live on "the controller", because
+     decision 2 builds no controller or client service while the wizard is open, and the
+     main-window path's `RestartLoopAsync` kick makes an immediate status read prove nothing
+     about a fresh attach. The module: arms a fresh attach/probe generation BEFORE the
+     mutation (the wizard-first path uses the §6 one-shot hello/status probes — no graph
+     needed), performs a bounded wait/re-query after the result, and classifies the terminal
+     evidence: *Connected, floor-satisfying, `consent/3` present* → done; *Connected but
+     below-floor or missing `consent/3`* → attention + the AI-1654 skew/takeover lane, with
+     `ConsentFlipCoordinator` applying any pending claim under its factory guard;
+     *incompatible hello* → same takeover lane; *unreachable/timeout* → degraded-but-owned
+     surface, no assumption of success; *installed-but-stopped unit* (what a swapped old CLI
+     can leave) or *legacy status evidence* (an old CLI's `status --json` lacking the new
+     unit fields) → attention + repair affordance, never silence. This whole family is the **one qualified exception** to
      decision 4's and §4's "no app action / no automatic path mints an `allow` daemon"
      guarantees, and those statements carry it; the acceptance tests force the order
      deterministically per path (a test seam pauses after the final check, swaps the
@@ -250,14 +260,26 @@ src/Capacitor.App/Services/Onboarding/ConsentFlipCoordinator.cs     — pending-
   wizard-chosen profile — in wizard-first mode no startup instance exists to conflict with.
 - **CLI compatibility floor — an enforced precondition, not an assumption**: every
   daemon-mutating app action (wizard step 7, lifecycle auto-actions, main-window detached
-  Start) **awaits** the `--version --no-update-check` probe result — no mutation runs until
-  the probe resolves, then it proceeds or refuses on that result — and requires a version at
-  or above the floor; missing, malformed, or below-floor → fail closed with update/reinstall
-  guidance, no spawn. **The floor is the literal `0.12.0`** (`KcapCliCompatibility.Floor`),
-  coupled to release engineering by rule: this slice ships in a release version ≥ that literal
-  (current tags are v0.11.x; the merge bumps minor) — a build-generated floor was rejected
-  because it drifts upward with every app build and would wrongly refuse older-but-capable
-  CLIs. Comparison: a **strict parse-success predicate first** — `PrereleaseSemver` is an
+  Start) runs a **fresh** `--version --no-update-check` probe **immediately before each
+  mutation** — a one-time cached approval would turn the probe→exec window into an indefinite
+  stale authorization (replace the pinned file once after startup and every later
+  Start/install/takeover would invoke the old CLI under the cached pass; the reconciliation
+  lane would then re-invoke the same downgraded CLI). Concurrent callers share only the
+  in-flight action's probe; no mutation runs until its probe resolves, then it proceeds or
+  refuses on that result; missing, malformed, or below-floor → fail closed with
+  update/reinstall guidance, no spawn; reinstalling a compatible CLI lets the next action
+  recover without restarting the app. **The floor is the literal `0.12.0-beta.1`**
+  (`KcapCliCompatibility.Floor`) — NOT `0.12.0`: this repo's release invariant ships
+  internal-first releases as SemVer prereleases on the beta channel, so a plain-release floor
+  would classify the first beta carrying this slice (and the app bundled beside it) as
+  below-floor, refusing its own CLI. Coupling to release engineering is asserted, not
+  assumed: the first `v0.12.0-beta.1` tag is cut at-or-after this slice's merge, and the
+  app-package build FAILS if its sibling CLI's version does not satisfy the floor
+  (a build-time assertion, since merging alone bumps nothing under MinVer). Pre-tag source
+  E2E publishes the dev CLI with `-p:MinVerVersionOverride=0.12.0-beta.1` (the same
+  mechanism the release workflow already uses) behind `KCAP_APP_CLI_PATH`. A build-generated
+  floor was rejected because it drifts upward with every app build and would wrongly refuse
+  older-but-capable CLIs. Comparison: a **strict parse-success predicate first** — `PrereleaseSemver` is an
   ordering helper that accepts invalid SemVer (leading-zero core numbers like `01.2.3`,
   illegal prerelease identifiers), so a strict compatibility parser rejects those BEFORE the
   `PrereleaseSemver` comparison (chosen over `SemverCompare`, which strips prerelease suffixes
@@ -543,8 +565,12 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   successor's hosted children still see the variable scrubbed. No directive (headless unit
   / manual terminal start) → every arm behaves exactly as today. Directive baked into the unit
   is covered by the existing TxnMarker fingerprint tests (rolls back with the unit).
-- **Compatibility floor & resolver seam:** below/equal/above the concrete `0.12.0` literal,
-  including this repo's beta shapes (the floor's own prerelease is below the floor); strict
+- **Compatibility floor & resolver seam:** below/equal/above the concrete `0.12.0-beta.1`
+  literal, including this repo's beta shapes (`0.11.x` below; `0.12.0-beta.N` ≥ beta.1 passes;
+  plain `0.12.0` passes); **fresh probe per mutation** — CLI replaced after startup and
+  between two mutations → the second is refused; reinstalling a compatible CLI → the next
+  action recovers without an app restart; concurrent callers share only the in-flight
+  action's probe; strict
   parse rejections that `PrereleaseSemver` alone would accept (`01.2.3`, leading-zero and
   illegal prerelease identifiers) → fail closed; malformed/unknown `--version` → fail closed;
   a mutation requested while the probe is in flight performs NO mutation until the probe
@@ -558,6 +584,18 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   auto-actions, main-window Start). **Exit-43 routing**: both surfaces map
   `daemon_start_reason=package_inconsistent` to reinstall guidance and any unknown reason to
   fail-closed attention.
+- **Telemetry suppression:** with a fresh telemetry state, an app-spawned probe/status/plugin/
+  import/mutation child creates NO notice marker, device id, spool entry, or network event —
+  the disclosure is not swallowed — and the `start_gate_reason=`/`daemon_start_reason=` lines
+  remain prefix-parseable; a unit-launched daemon and a terminal invocation keep today's
+  telemetry behavior (the overlay rides process spawns only).
+- **Reconciliation module (all three callers):** wizard step 7 (no graph — one-shot probes),
+  lifecycle controller, and main-window Start each: fresh generation armed before the
+  mutation; delayed attach and no attach classified (degraded-but-owned, no success
+  assumption); Connected-below-floor / missing-`consent/3` / incompatible-hello → attention +
+  takeover lane + coordinator claim application; swapped old CLI leaving only an unseeded
+  stopped unit → attention + repair, never silence; legacy `status --json` without the new
+  unit fields → classified legacy, attention.
 - **Digest pipeline (release acceptance):** per-RID publish asserts the packaged daemon's
   digest equals the CLI's embedded constant; a mismatched or missing build input fails the
   production publish closed; dev/source builds hash the co-built daemon output, and an absent
@@ -693,8 +731,11 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   (no bare `"kcap"` fallback for app-managed starts); `daemon start` gains the
   directive-gated pre-spawn digest check with pinned exit 43 +
   `daemon_start_reason=package_inconsistent`; `ILoginShellProbe` gains the validated
-  path-returning resolver question (§4) and the app gains `KcapCliCompatibility.Floor` =
-  `0.12.0` with the strict-parse-then-`PrereleaseSemver` comparison;
+  path-returning resolver question (§4); the app gains `KcapCliCompatibility.Floor` =
+  `0.12.0-beta.1` with the strict-parse-then-`PrereleaseSemver` comparison, a fresh probe per
+  mutation, the shared mutation+reconciliation module (§3), and the `KCAP_TELEMETRY=0`
+  overlay on every spawned CLI child (decision 9); the app-package build asserts its sibling
+  CLI satisfies the floor;
   `service status --json` gains additive `unit_profile`, `unit_server_url`, and
   `unit_consent_seed` fields derived from the unit's baked env (UX evidence only — the
   transaction re-derives under the lock);
