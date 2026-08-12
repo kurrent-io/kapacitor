@@ -30,6 +30,12 @@ internal sealed partial class LocalPermissionBridge(
     const int    MaxBindAttempts = 15;
     const string PathSuffix      = "/permission-request";
 
+    // Revoked reviewer prefixes are intentionally retained (see RevokeReviewerToken), so the
+    // listener's prefix set only grows over a daemon's lifetime, bounded by the reviewer-launch
+    // count. Warn once each time the count crosses a multiple of this step so runaway growth in a
+    // very long-lived daemon is diagnosable rather than silent.
+    const int    ReviewerPrefixHighWaterStep = 1024;
+
     /// <summary>Cap on a reviewer submission body. The poster is a sandboxed vendor child, so an
     /// unbounded read is a memory-exhaustion lever.</summary>
     internal const int MaxSubmitBodyBytes = 1024 * 1024;
@@ -234,6 +240,12 @@ internal sealed partial class LocalPermissionBridge(
             _listener.Prefixes.Add($"http://127.0.0.1:{_port}/{token}/");
             _reviewerTokens[token] = new ReviewerGrant(
                 [.. allowlistServers], reviewContext, activityClock, submitForwarder);
+
+            // Prefixes are never removed on revoke, so this count only rises — surface a warning at
+            // each high-water step so a leak is diagnosable (the count grows by one per launch).
+            var prefixCount = _listener.Prefixes.Count;
+            if (prefixCount % ReviewerPrefixHighWaterStep == 0)
+                LogReviewerPrefixHighWater(logger, prefixCount);
 
             return $"http://127.0.0.1:{_port}/{token}";
         }
@@ -728,4 +740,7 @@ internal sealed partial class LocalPermissionBridge(
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Permission bridge shutdown failed; continuing teardown")]
     static partial void LogDisposeFailed(ILogger logger, Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Local permission bridge has {PrefixCount} listener prefixes; revoked reviewer prefixes are retained until the daemon stops")]
+    static partial void LogReviewerPrefixHighWater(ILogger logger, int prefixCount);
 }
