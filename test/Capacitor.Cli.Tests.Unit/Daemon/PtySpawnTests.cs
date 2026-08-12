@@ -143,6 +143,37 @@ public class PtySpawnTests {
         } finally { Free(plan); }
     }
 
+    [Test]
+    public async Task Successful_spawn_marks_the_pty_master_fd_close_on_exec() {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
+
+        // Regression (spec §3.0a): forkpty returns the master bare, so without an explicit
+        // FD_CLOEXEC on it every child the daemon spawns afterwards inherits a live read/write
+        // descriptor onto this PTY agent's terminal — crossing an isolation boundary the daemon
+        // draws deliberately. The master must therefore be close-on-exec, exactly as the error
+        // pipe already is.
+        var plan = Preflight("/bin/sleep", ["sleep", "5"]);
+        try {
+            var rc = Spawn(plan, out var result);
+            try {
+                await Assert.That(rc).IsEqualTo(0);
+                await Assert.That(result.MasterFd).IsGreaterThanOrEqualTo(0);
+                var flags = fcntl(result.MasterFd, F_GETFD, 0);
+                await Assert.That(flags).IsGreaterThanOrEqualTo(0); // fcntl itself succeeded
+                await Assert.That(flags & FD_CLOEXEC).IsEqualTo(FD_CLOEXEC);
+            } finally {
+                UnixPtyInterop.close(result.MasterFd);
+                UnixPtyInterop.kill(result.Pid, UnixPtyInterop.SIGKILL);
+                UnixPtyInterop.waitpid(result.Pid, out _, 0);
+            }
+        } finally { Free(plan); }
+    }
+
+    const int F_GETFD    = 1;
+    const int FD_CLOEXEC = 1;
+    [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+    static extern int fcntl(int fd, int cmd, int arg);
+
     // See PtyShimNativeTests for why these NULL-termination helpers exist: argv/envp cross
     // into the shim as a bare `char* const[]` with no length prefix (mirrors execve), so the
     // native walk to the NULL sentinel reads out of bounds unless every array handed across
