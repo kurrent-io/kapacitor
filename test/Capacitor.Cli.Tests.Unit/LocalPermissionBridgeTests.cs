@@ -983,6 +983,31 @@ public class LocalPermissionBridgeTests {
         } finally { await bridge.DisposeAsync(); }
     }
 
+    // Regression: revocation must remove the grant from the dictionary ONLY, never the HttpListener
+    // prefix. On the managed (Linux/macOS) HttpListener, a request on a KEEP-ALIVE connection to a
+    // just-removed prefix no longer routes to HandleAsync and yields a transport artifact — a
+    // spurious empty-body 200 or a connection reset — instead of the intended 404. Reusing one
+    // client (so every request after the first rides a keep-alive connection) across many
+    // register→revoke→request cycles reproduces that ~4%-per-request artifact deterministically:
+    // with the prefix kept, every revoked request cleanly 404s from the dict miss.
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Revoked_token_requests_404_on_reused_keepalive_connection() {
+        var (bridge, _) = CreateBridge();
+        try {
+            await bridge.StartAsync(CancellationToken.None);
+            using var client = CreateClient();
+
+            for (var i = 0; i < 200; i++) {
+                var reviewerUrl = bridge.RegisterReviewerToken(["kcap-review"]);
+                bridge.RevokeReviewerToken(reviewerUrl);
+                using var r = await client.PostAsync(
+                    $"{reviewerUrl}/codex/permission-request",
+                    JsonContent.Create(new { session_id = "abc", tool_name = "submit_review_result" }));
+                await Assert.That((int)r.StatusCode).IsEqualTo(404);
+            }
+        } finally { await bridge.DisposeAsync(); }
+    }
+
     [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
     public async Task Concurrent_reviewer_tokens_are_independent() {
         var (bridge, server) = CreateBridge((_, _, _, _, _) => Task.FromResult(new PermissionDecision("deny", null, null)));

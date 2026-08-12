@@ -245,10 +245,16 @@ internal sealed partial class LocalPermissionBridge(
         var token = ExtractToken(reviewerBridgeUrlOrToken);
         if (token is null) return;
 
-        lock (_prefixLock) {
-            if (_reviewerTokens.TryRemove(token, out _))
-                _listener?.Prefixes.Remove($"http://127.0.0.1:{_port}/{token}/");
-        }
+        // Removing the token from the dictionary is the ONE authoritative revocation: HandleAsync
+        // re-validates every request against _reviewerTokens (a stray prefix "can't quietly admit
+        // anything"), so a dict miss is a deterministic 404. We deliberately do NOT remove the
+        // HttpListener prefix. On the managed (Linux/macOS) HttpListener, a request on a keep-alive
+        // connection to a just-removed prefix no longer routes to our handler and instead yields a
+        // transport-level artifact — a spurious empty-body 200 or a connection reset — rather than
+        // the clean 404 our code would return. Keeping the prefix registered means the request still
+        // reaches HandleAsync, where the dict miss produces the intended 404. The prefixes are freed
+        // when the listener closes; their count is bounded by the daemon's reviewer-launch count.
+        _reviewerTokens.TryRemove(token, out _);
     }
 
     /// <summary>Atomically publishes a completed immutable sidecar generation for a live reviewer.

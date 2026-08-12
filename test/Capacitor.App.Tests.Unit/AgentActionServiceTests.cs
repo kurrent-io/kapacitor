@@ -32,7 +32,7 @@ public class AgentActionServiceTests {
         var ops = new ScriptedLocalControlOps();
         var notifier = new RecordingNotifier();
         var service = NewService(ops, notifier, new RecordingOpener());
-        var states = new List<IReadOnlySet<string>>();
+        var states = new StopStateRecorder();
         using var sub = service.StopsInFlight.Subscribe(states.Add);
 
         ops.QueueStop(new StopAgentResult(true, "stopped", null));
@@ -117,7 +117,7 @@ public class AgentActionServiceTests {
         var notifier = new RecordingNotifier();
         var cts = new CancellationTokenSource();
         var service = NewService(ops, notifier, new RecordingOpener(), shutdownToken: cts.Token);
-        var states = new List<IReadOnlySet<string>>();
+        var states = new StopStateRecorder();
         using var sub = service.StopsInFlight.Subscribe(states.Add);
 
         var gate = ops.ArmStop();
@@ -137,7 +137,7 @@ public class AgentActionServiceTests {
         var ops = new ScriptedLocalControlOps();
         var notifier = new RecordingNotifier();
         var service = NewService(ops, notifier, new RecordingOpener());
-        var states = new List<IReadOnlySet<string>>();
+        var states = new StopStateRecorder();
         using var sub = service.StopsInFlight.Subscribe(states.Add);
 
         ops.QueueStopUnmappedFailure(new InvalidOperationException("boom"));
@@ -159,7 +159,7 @@ public class AgentActionServiceTests {
         var ops = new ScriptedLocalControlOps();
         var notifier = new RecordingNotifier();
         var service = NewService(ops, notifier, new RecordingOpener());
-        var states = new List<IReadOnlySet<string>>();
+        var states = new StopStateRecorder();
         using var sub = service.StopsInFlight.Subscribe(states.Add);
 
         var gate = ops.ArmStop();
@@ -180,7 +180,7 @@ public class AgentActionServiceTests {
         var ops = new ScriptedLocalControlOps();
         var notifier = new RecordingNotifier();
         var service = NewService(ops, notifier, new RecordingOpener());
-        var states = new List<IReadOnlySet<string>>();
+        var states = new StopStateRecorder();
         using var sub = service.StopsInFlight.Subscribe(states.Add);
 
         var gateA = ops.ArmStop();
@@ -203,7 +203,7 @@ public class AgentActionServiceTests {
         var ops = new ScriptedLocalControlOps();
         var notifier = new RecordingNotifier();
         var service = NewService(ops, notifier, new RecordingOpener());
-        var states = new List<IReadOnlySet<string>>();
+        var states = new StopStateRecorder();
         using var sub = service.StopsInFlight.Subscribe(states.Add);
 
         await Assert.That(states.Count).IsEqualTo(1);
@@ -290,7 +290,7 @@ public class AgentActionServiceTests {
         var notifier = new RecordingNotifier();
         var confirmer = new RecordingConfirmer();
         var service = NewService(ops, notifier, new RecordingOpener(), confirmForceStop: confirmer.Confirm);
-        var states = new List<IReadOnlySet<string>>();
+        var states = new StopStateRecorder();
         using var sub = service.StopsInFlight.Subscribe(states.Add);
 
         confirmer.Queue(false);
@@ -346,7 +346,7 @@ public class AgentActionServiceTests {
         var notifier = new RecordingNotifier();
         var confirmer = new RecordingConfirmer();
         var service = NewService(ops, notifier, new RecordingOpener(), confirmForceStop: confirmer.Confirm);
-        var states = new List<IReadOnlySet<string>>();
+        var states = new StopStateRecorder();
         using var sub = service.StopsInFlight.Subscribe(states.Add);
 
         var gate = confirmer.Arm();
@@ -362,4 +362,18 @@ public class AgentActionServiceTests {
         await WaitUntilAsync(() => states[^1].Count == 0, what: "in-flight cleared");
         await Assert.That(ops.StopCalls).IsEqualTo(1); // exactly one call ever issued
     }
+}
+
+/// Thread-safe collector for StopsInFlight pushes. AgentActionService.RequestStop pushes
+/// synchronously on the test thread, while RunStopAsync's completion pushes on a threadpool
+/// thread — BehaviorSubject invokes subscribers on whichever thread calls OnNext. A plain
+/// List&lt;T&gt; written from both threads while the test thread polls Count/[^1] tears under a
+/// concurrent Add during an internal array resize and NREs on read. Every access takes one lock.
+sealed class StopStateRecorder {
+    readonly Lock _gate = new();
+    readonly List<IReadOnlySet<string>> _states = [];
+
+    public void Add(IReadOnlySet<string> state) { lock (_gate) _states.Add(state); }
+    public int Count { get { lock (_gate) return _states.Count; } }
+    public IReadOnlySet<string> this[Index index] { get { lock (_gate) return _states[index]; } }
 }
