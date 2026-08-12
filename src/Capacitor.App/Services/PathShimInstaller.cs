@@ -8,7 +8,7 @@ public sealed record ShimResult(ShimOutcome Outcome, string? Detail, string? Sud
 
 /// Installs a `/usr/local/bin/kcap` symlink to the resolved CLI so a terminal PATH that omits the
 /// app's own resolution still finds `kcap` (spec §5). Mechanics only — the once-ever offer and
-/// tray-menu wiring are Task 24.
+/// tray-menu wiring live in ShimOfferCoordinator.
 public sealed class PathShimInstaller(IProcessRunner runner, ILoginShellProbe probe) {
     public const string Destination = "/usr/local/bin/kcap";
 
@@ -52,9 +52,11 @@ public sealed class PathShimInstaller(IProcessRunner runner, ILoginShellProbe pr
 
     /// Shared post-install/AlreadyInstalled mapping (spec §5: "never report success on the symlink
     /// alone"): re-run the login-shell PATH probe and only call it Installed when `kcap` actually
-    /// resolves — otherwise InstalledButNotOnPath with the same actionable Detail.
+    /// resolves — otherwise InstalledButNotOnPath with the same actionable Detail. Forces a FRESH
+    /// probe (never the pre-install cached answer, which the offer decision itself already
+    /// consumed and is now stale — the install just changed the filesystem).
     async Task<ShimResult> ProbeOutcomeAsync(string destination, CancellationToken ct) {
-        var onPath = await probe.KcapOnPathAsync(ct).ConfigureAwait(false);
+        var onPath = await probe.KcapOnPathAsync(ct, forceRefresh: true).ConfigureAwait(false);
         return onPath == true
             ? new ShimResult(ShimOutcome.Installed, null, null)
             : new ShimResult(ShimOutcome.InstalledButNotOnPath,

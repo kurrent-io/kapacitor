@@ -299,6 +299,29 @@ public class LoginShellProbeTests {
         await Assert.That(runner.Calls).HasCount().EqualTo(1);
     }
 
+    // Regression (Finding 10): the post-install probe must never reuse the pre-install cached
+    // answer — forceRefresh bypasses it AND repopulates the cache with the fresh result.
+    [Test]
+    public async Task KcapOnPathAsync_forceRefresh_bypasses_and_repopulates_the_cache() {
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, Wrap("ABSENT"), "", false));
+        runner.Enqueue(new ProcessResult(0, Wrap("FOUND"), "", false));
+        var probe = Probe(runner);
+
+        var cached = await probe.KcapOnPathAsync(CancellationToken.None);
+        await Assert.That(cached).IsFalse();
+        await Assert.That(runner.Calls).HasCount().EqualTo(1);
+
+        var fresh = await probe.KcapOnPathAsync(CancellationToken.None, forceRefresh: true);
+        await Assert.That(fresh).IsTrue();
+        await Assert.That(runner.Calls).HasCount().EqualTo(2); // a real second runner invocation
+
+        // Repopulated: a later non-forced call reads the fresh value without re-running.
+        var second = await probe.KcapOnPathAsync(CancellationToken.None);
+        await Assert.That(second).IsTrue();
+        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+    }
+
     // --- caching is independent per question ---
 
     [Test]

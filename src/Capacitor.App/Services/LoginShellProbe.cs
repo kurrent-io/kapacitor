@@ -11,7 +11,10 @@ public interface ILoginShellProbe {
 
     /// True/false once positively determined via `command -v kcap`; null = unknown. Cached
     /// independently of TerminalPathAsync, with the same retry-on-process-start-failure rule.
-    Task<bool?> KcapOnPathAsync(CancellationToken ct);
+    /// <paramref name="forceRefresh"/> bypasses and repopulates the cache — a caller that just
+    /// changed the filesystem (e.g. a fresh symlink install) needs a real re-probe, not the
+    /// pre-change cached answer.
+    Task<bool?> KcapOnPathAsync(CancellationToken ct, bool forceRefresh = false);
 }
 
 public sealed class LoginShellProbe(IProcessRunner runner, Func<string, string?> getEnv) : ILoginShellProbe {
@@ -31,7 +34,8 @@ public sealed class LoginShellProbe(IProcessRunner runner, Func<string, string?>
         return value;
     }
 
-    public async Task<bool?> KcapOnPathAsync(CancellationToken ct) {
+    public async Task<bool?> KcapOnPathAsync(CancellationToken ct, bool forceRefresh = false) {
+        if (forceRefresh) _kcapOnPath = null; // discard any cached answer — repopulated below
         var task = _kcapOnPath ??= ProbeKcapOnPath();
         var (value, cacheable) = await task.WaitAsync(ct).ConfigureAwait(false);
         if (!cacheable) _kcapOnPath = null;

@@ -357,6 +357,53 @@ public class PathShimInstallerTests {
         await Assert.That(runner.Calls).IsEmpty();
     }
 
+    // Regression (Finding 10): ShimOfferCoordinator's offer decision already consumed
+    // KcapOnPathAsync (caching its "absent" answer) before ever calling InstallAsync — the
+    // post-install probe must not just replay that stale cached answer.
+    [Test]
+    public async Task InstallAsync_success_stale_cached_false_but_fresh_probe_true_is_installed() {
+        Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
+
+        var dir = NewTempDir();
+        var dest = Path.Combine(dir, "kcap");
+        var target = Path.Combine(dir, "target-cli");
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, "", "", false));
+        var probe = new FakeLoginShellProbe {
+            KcapOnPathBehavior = _ => Task.FromResult<bool?>(false), // the stale, already-cached pre-install answer
+            KcapOnPathFreshBehavior = _ => Task.FromResult<bool?>(true), // the real post-install state
+        };
+        var installer = new PathShimInstaller(runner, probe);
+
+        var result = await Install(installer, dest, target, CancellationToken.None);
+
+        await Assert.That(result.Outcome).IsEqualTo(ShimOutcome.Installed);
+        await Assert.That(probe.KcapOnPathForceRefreshCallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task InstallAsync_already_installed_stale_cached_false_but_fresh_probe_true_is_installed() {
+        Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
+
+        var dir = NewTempDir();
+        var dest = Path.Combine(dir, "kcap");
+        var target = Path.Combine(dir, "target-cli");
+        File.WriteAllText(target, "cli");
+        File.CreateSymbolicLink(dest, target);
+        var runner = new FakeProcessRunner();
+        var probe = new FakeLoginShellProbe {
+            KcapOnPathBehavior = _ => Task.FromResult<bool?>(false),
+            KcapOnPathFreshBehavior = _ => Task.FromResult<bool?>(true),
+        };
+        var installer = new PathShimInstaller(runner, probe);
+
+        var result = await Install(installer, dest, target, CancellationToken.None);
+
+        await Assert.That(result.Outcome).IsEqualTo(ShimOutcome.Installed);
+        await Assert.That(runner.Calls).IsEmpty();
+        await Assert.That(probe.KcapOnPathForceRefreshCallCount).IsEqualTo(1);
+    }
+
     [Test]
     public async Task InstallAsync_already_installed_then_probe_false_is_installed_but_not_on_path() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
