@@ -75,18 +75,31 @@ internal static class UpdateNotice {
             var profile = await AppConfig.GetActiveProfileAsync();
             if (profile?.UpdateCheck == false) return;
 
-            var channel = UpdateCommand.ResolveChannel(args, profile?.UpdateChannel);
-            var result  = await GetSharedCheckAsync(channel);
+            var channel  = UpdateCommand.ResolveChannel(args, profile?.UpdateChannel);
+            var result   = await GetSharedCheckAsync(channel);
+
+            // Cap the recommendation at the connected server's version (min(npm latest, server)) so we
+            // never steer a user to a CLI newer than the server they talk to. Uncapped ⇒ today's copy.
+            var advisory = UpdateAdvisoryResolver.Resolve(result, channel);
 
             // Re-check after the await: `kcap status` may have won the race and already reported
             // while this was in flight (both may share the same in-flight task via GetSharedCheckAsync).
-            if (_reported || result is not { Newer: true, Latest: not null, Current: not null }) return;
+            if (_reported || !advisory.Newer || advisory.Target is null || advisory.Current is null) return;
 
             _reported = true;
 
             await Console.Error.WriteLineAsync();
-            await Console.Error.WriteLineAsync($"Update available: {result.Current} {UpdateCommand.Arrow} {result.Latest}");
-            await Console.Error.WriteLineAsync("Run `kcap update` to update");
+
+            if (advisory.ServerCapped) {
+                // The server is behind npm latest; plain `kcap update` follows the dist-tag and would
+                // overshoot the cap, so recommend the pinned install of the server's version.
+                await Console.Error.WriteLineAsync(
+                    $"Update available: {advisory.Current} {UpdateCommand.Arrow} {advisory.Target} (server version)");
+                await Console.Error.WriteLineAsync($"Run: npm install -g @kurrent/kcap@{advisory.Target}");
+            } else {
+                await Console.Error.WriteLineAsync($"Update available: {advisory.Current} {UpdateCommand.Arrow} {advisory.Target}");
+                await Console.Error.WriteLineAsync("Run `kcap update` to update");
+            }
         } catch {
             // Best effort — an update notice must never break the command it's attached to.
         }

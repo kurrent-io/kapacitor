@@ -78,11 +78,18 @@ public static class HttpClientExtensions {
         HttpClient NewClient(DelegatingHandler? retry = null) {
             var primary = new HttpClientHandler { AllowAutoRedirect = allowAutoRedirect };
 
-            if (retry is null) return new(primary);
+            HttpMessageHandler inner = primary;
 
-            retry.InnerHandler = primary;
+            if (retry is not null) {
+                retry.InnerHandler = primary;
+                inner = retry;
+            }
 
-            return new(retry);
+            // Capture the server's own version (X-Kcap-Server-Version) from every response — outermost,
+            // so it observes the FINAL response after any 401-retry. No extra requests; best-effort.
+            var capture = new ServerVersionCaptureHandler(baseUrl) { InnerHandler = inner };
+
+            return new(capture);
         }
 
         var provider = await DiscoverProviderAsync(baseUrl, ct);
@@ -154,6 +161,11 @@ public static class HttpClientExtensions {
 
     /// <summary>Wire header naming the installed CLI's display version (see <see cref="CapacitorVersion.CurrentDisplay"/>).</summary>
     public const string CliVersionHeader = "X-Kcap-Cli-Version";
+
+    /// <summary>Response header carrying the connected server's own version, captured by
+    /// <see cref="ServerVersionCaptureHandler"/> so the passive update notice can cap its
+    /// recommendation at <c>min(npm latest, server version)</c>.</summary>
+    public const string ServerVersionHeader = "X-Kcap-Server-Version";
 
     /// <summary>
     /// Wire header sent ONLY to declare the active profile's update-check preference is off. Its
@@ -523,5 +535,28 @@ public static class HttpClientExtensions {
                 $"(per-attempt timeout {perAttemptTimeout.TotalSeconds:F0}s).",
                 inner
             );
+    }
+}
+
+/// <summary>
+/// Passively records the connected server's version from each response's
+/// <see cref="HttpClientExtensions.ServerVersionHeader"/> into <see cref="ServerVersionStore"/>, so
+/// the passive update notice and <c>kcap status</c> can cap their recommendation at the server's
+/// version. Installed as the OUTERMOST handler on every authenticated client (see the choke point's
+/// <c>NewClient</c>), so it observes the final response after any retry. Best-effort: it never alters
+/// the request/response and never lets a capture failure surface.
+/// </summary>
+internal sealed class ServerVersionCaptureHandler(string serverUrl) : DelegatingHandler {
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
+        var response = await base.SendAsync(request, ct);
+
+        try {
+            if (response.Headers.TryGetValues(HttpClientExtensions.ServerVersionHeader, out var values))
+                ServerVersionStore.Set(serverUrl, values.FirstOrDefault());
+        } catch {
+            // Header capture must never affect the response the caller gets back.
+        }
+
+        return response;
     }
 }

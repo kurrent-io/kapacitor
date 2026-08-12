@@ -27,6 +27,15 @@ Options:
 Beta releases correspond to server versions rolled out to internal
 tenants first. Most users should stay on the default stable channel.
 
+The passive "update available" hint and the kcap status version line are
+capped at the version of the server you're connected to: when your tenant's
+server trails npm (rollouts are manual and can lag by days), they recommend
+the server's version — shown with a "(server version)" marker and a pinned
+"npm install -g @kurrent/kcap@<version>" command — rather than steering you
+to a CLI newer than the server supports. `kcap update` itself is never
+capped; it always installs the latest on your channel. The cap applies on
+the stable channel only; beta deliberately rides ahead.
+
 update_check (kcap config set update_check false):
   Controls ALL kcap update nudging, not just the local stderr hint. With
   it off, kcap: skips the passive "update available" hint printed after

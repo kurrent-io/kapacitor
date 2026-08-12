@@ -109,7 +109,7 @@ public static class StatusCommand {
         // check is performed at all (never force one the user turned off) — the line still
         // prints the bare version.
         if (args.Contains("--no-update-check")) {
-            await Console.Out.WriteLineAsync(FormatVersionLine(current, null));
+            await Console.Out.WriteLineAsync(FormatVersionLine(current, default));
 
             return;
         }
@@ -117,17 +117,20 @@ public static class StatusCommand {
         var profile = await AppConfig.GetActiveProfileAsync();
 
         if (profile?.UpdateCheck == false) {
-            await Console.Out.WriteLineAsync(FormatVersionLine(current, null));
+            await Console.Out.WriteLineAsync(FormatVersionLine(current, default));
 
             return;
         }
 
-        var channel = UpdateCommand.ResolveChannel(args, profile?.UpdateChannel);
-        var result  = await UpdateNotice.GetSharedCheckAsync(channel);
+        var channel  = UpdateCommand.ResolveChannel(args, profile?.UpdateChannel);
+        var result   = await UpdateNotice.GetSharedCheckAsync(channel);
 
-        await Console.Out.WriteLineAsync(FormatVersionLine(current, result));
+        // Cap the recommendation at the connected server's version (min(npm latest, server)).
+        var advisory = UpdateAdvisoryResolver.Resolve(result, channel);
 
-        if (result is { Newer: true, Latest: not null }) {
+        await Console.Out.WriteLineAsync(FormatVersionLine(current, advisory));
+
+        if (advisory.Newer) {
             // Surfaced inline already — the exit-time footer (UpdateNotice.FlushAsync) must not
             // print the same information a second time.
             UpdateNotice.MarkReported();
@@ -136,13 +139,16 @@ public static class StatusCommand {
 
     /// <summary>
     /// Pure formatting for the Version line: <c>kcap {current}</c>, with an inline
-    /// <c>(update available: {latest})</c> annotation appended only when
-    /// <paramref name="result"/> reports a newer version. Split out from
-    /// <see cref="WriteVersionLineAsync"/> so the exact text is unit-testable without any I/O.
+    /// <c>(update available: {target})</c> annotation appended only when <paramref name="advisory"/>
+    /// reports a newer version — and, when the target was capped at the server's version, a
+    /// <c>, server version</c> marker. Split out from <see cref="WriteVersionLineAsync"/> so the exact
+    /// text is unit-testable without any I/O.
     /// </summary>
-    internal static string FormatVersionLine(string current, UpdateCommand.UpdateCheckResult? result) =>
-        result is { Newer: true, Latest: not null }
-            ? $"kcap {current} (update available: {result.Latest})"
+    internal static string FormatVersionLine(string current, UpdateAdvisory advisory) =>
+        advisory is { Newer: true, Target: { } target }
+            ? advisory.ServerCapped
+                ? $"kcap {current} (update available: {target}, server version)"
+                : $"kcap {current} (update available: {target})"
             : $"kcap {current}";
 
     static async Task WriteAgentStatusAsync() {

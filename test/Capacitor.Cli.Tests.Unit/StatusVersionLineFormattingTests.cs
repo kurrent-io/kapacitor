@@ -12,32 +12,41 @@ namespace Capacitor.Cli.Tests.Unit;
 /// </summary>
 public class StatusVersionLineFormattingTests {
     [Test]
-    public async Task NullResult_PrintsBareVersion() {
-        await Assert.That(StatusCommand.FormatVersionLine("0.11.12", null)).IsEqualTo("kcap 0.11.12");
+    public async Task NotAvailable_PrintsBareVersion() {
+        await Assert.That(StatusCommand.FormatVersionLine("0.11.12", default)).IsEqualTo("kcap 0.11.12");
     }
 
     [Test]
     public async Task NotNewer_PrintsBareVersion_NoAnnotation() {
-        var result = new UpdateCommand.UpdateCheckResult(Current: "0.11.12", Latest: "0.11.12", Newer: false, FromCache: true);
+        var advisory = new UpdateAdvisory(Current: "0.11.12", Target: "0.11.12", Newer: false, ServerCapped: false);
 
-        await Assert.That(StatusCommand.FormatVersionLine("0.11.12", result)).IsEqualTo("kcap 0.11.12");
+        await Assert.That(StatusCommand.FormatVersionLine("0.11.12", advisory)).IsEqualTo("kcap 0.11.12");
     }
 
     [Test]
     public async Task Newer_AppendsInlineUpdateAvailableAnnotation() {
-        var result = new UpdateCommand.UpdateCheckResult(Current: "0.11.12", Latest: "0.11.14", Newer: true, FromCache: true);
+        var advisory = new UpdateAdvisory(Current: "0.11.12", Target: "0.11.14", Newer: true, ServerCapped: false);
 
-        await Assert.That(StatusCommand.FormatVersionLine("0.11.12", result))
+        await Assert.That(StatusCommand.FormatVersionLine("0.11.12", advisory))
             .IsEqualTo("kcap 0.11.12 (update available: 0.11.14)");
     }
 
-    // Newer:true with a null Latest is a shape the current UpdateCheckResult never actually
-    // produces together, but the formatter defends against it anyway rather than trusting the
-    // flag alone — same discipline as UpdateNotice.FlushAsync's own pattern match.
     [Test]
-    public async Task Newer_ButLatestNull_PrintsBareVersion() {
-        var result = new UpdateCommand.UpdateCheckResult(Current: "0.11.12", Latest: null, Newer: true, FromCache: true);
+    public async Task ServerCapped_AppendsServerVersionMarker() {
+        // npm is ahead of the server; the annotation names the capped (server) target and marks it.
+        var advisory = new UpdateAdvisory(Current: "0.11.12", Target: "0.11.15", Newer: true, ServerCapped: true);
 
-        await Assert.That(StatusCommand.FormatVersionLine("0.11.12", result)).IsEqualTo("kcap 0.11.12");
+        await Assert.That(StatusCommand.FormatVersionLine("0.11.12", advisory))
+            .IsEqualTo("kcap 0.11.12 (update available: 0.11.15, server version)");
+    }
+
+    // Newer:true with a null Target is a shape the resolver never actually produces together, but the
+    // formatter defends against it anyway rather than trusting the flag alone — same discipline as
+    // UpdateNotice.FlushAsync's own pattern match.
+    [Test]
+    public async Task Newer_ButTargetNull_PrintsBareVersion() {
+        var advisory = new UpdateAdvisory(Current: "0.11.12", Target: null, Newer: true, ServerCapped: false);
+
+        await Assert.That(StatusCommand.FormatVersionLine("0.11.12", advisory)).IsEqualTo("kcap 0.11.12");
     }
 }

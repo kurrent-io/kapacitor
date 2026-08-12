@@ -118,7 +118,8 @@ error, so you no longer have to run `kcap whoami` to work out why recording stop
 hooks print the same advice to stderr instead of an in-session notice, since not every agent
 surfaces hook output in its UI. `kcap status` prints its own
 **Version** line — the installed CLI version, with an inline `(update available: …)` annotation
-when a newer one is out — see [`kcap update`](#other-commands) for the full opt-out story.
+when a newer one is out (capped at your connected server's version, marked `(…, server version)` when
+your tenant trails npm) — see [`kcap update`](#other-commands) for the full opt-out story.
 
 Setup closes with a **Next steps** box. Each item opens with a question, because neither step is for
 everyone:
