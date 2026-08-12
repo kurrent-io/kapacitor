@@ -89,14 +89,14 @@ static class GeminiHookCommand {
     /// rendering completes before any byte is written. A render throw OR an empty render degrades to the
     /// allow object rather than to silence — silence is what re-exposes stderr.</para>
     /// </summary>
-    internal static string RenderSessionStartPayload(string? fragment) {
+    internal static string RenderSessionStartPayload(string? fragment, string? workItemsNudge = null) {
         // Start from the payload that cannot fail, and only upgrade to the memory envelope when
         // rendering genuinely succeeds.
         var payload = AllowPayload;
 
-        if (fragment is not null) {
+        if (fragment is not null || !string.IsNullOrWhiteSpace(workItemsNudge)) {
             try {
-                var rendered = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Gemini, fragment);
+                var rendered = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Gemini, fragment, workItemsNudge);
                 if (!string.IsNullOrEmpty(rendered)) payload = rendered;
             } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
                 // keep AllowPayload
@@ -360,8 +360,10 @@ static class GeminiHookCommand {
         // what lands rather than the backstop's bare allow. The memory index is independent of lifecycle
         // capture — a server rejecting the POST has not invalidated an index already fetched — and Gemini
         // parses hook stdout unconditionally, with the exit code only setting its own `success` flag.
-        result.Write(RenderSessionStartPayload(
-            await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start")));
+        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
+        var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
+            SessionStartHarness.Gemini, sessionId, activeProfile?.DisableWorkItemsNudge is true);
+        result.Write(RenderSessionStartPayload(fragment, workItemsNudge));
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return outcome == HookPostOutcome.Failed ? 1 : 0;
 

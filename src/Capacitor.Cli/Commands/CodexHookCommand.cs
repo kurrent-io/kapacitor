@@ -64,7 +64,7 @@ static class CodexHookCommand {
     /// followed by a second (minimal) one — that would break Codex's single-JSON-value contract.
     /// Any such fault degrades to the minimal handshake instead.</para>
     /// </summary>
-    internal static void WriteSessionStartOutput(TextWriter writer, string? fragment) {
+    internal static void WriteSessionStartOutput(TextWriter writer, string? fragment, string? workItemsNudge = null) {
         string payload;
 
         try {
@@ -77,9 +77,12 @@ static class CodexHookCommand {
             // criterion, so the constant wins; the adapter still owns the only shape that is
             // actually new (the fragment-bearing one), where the trailing newline matches the
             // sibling harnesses.
-            payload = fragment is null
+            // Byte-identity on the NO-CONTENT path (no memory fragment AND no nudge) is an acceptance
+            // criterion, so the constant still wins there. A nudge alone routes through the adapter
+            // (with the trailing newline the fragment-bearing shape already ships).
+            payload = fragment is null && string.IsNullOrWhiteSpace(workItemsNudge)
                 ? SessionScopedOutputJson
-                : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Codex, fragment);
+                : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Codex, fragment, workItemsNudge);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             payload = SessionScopedOutputJson;
         }
@@ -429,8 +432,13 @@ static class CodexHookCommand {
         // recording outcome must not decide whether the host can proceed.
         var fragment = await AwaitMemoryFragmentAsync(memoryTask, processStart);
 
+        // The static work-items nudge, resolved (availability-gated + opt-out) independently
+        // of the lease-driven memory/guidelines fragment and merged only at the output layer.
+        var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
+            SessionStartHarness.Codex, sessionId, activeProfile?.DisableWorkItemsNudge is true);
+
         await RunSessionStartHandshakeForTest(
-            writeStdout: () => WriteSessionStartOutput(Console.Out, fragment),
+            writeStdout: () => WriteSessionStartOutput(Console.Out, fragment, workItemsNudge),
             postStdoutWork: () => RunPostStdoutWork(baseUrl, spool, enrichedNode, sessionId, outcome));
 
         // Non-zero on a permanent rejection is preserved — it is the signal the session was not

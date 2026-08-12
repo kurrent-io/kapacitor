@@ -62,6 +62,15 @@ public record Profile {
     public bool? DisableMemoryIndex { get; init; }
 
     /// <summary>
+    /// when true, kcap skips injecting the SessionStart work-items nudge (the standing
+    /// guidance that tells the agent to register the session with a work item and declare
+    /// blockers/dependencies as it works). Independent of the memory-index and guidelines
+    /// opt-outs so each SessionStart injection can be toggled separately.
+    /// </summary>
+    [JsonPropertyName("disable_workitems_nudge")]
+    public bool? DisableWorkItemsNudge { get; init; }
+
+    /// <summary>
     /// When true, kcap keeps <c>ANTHROPIC_API_KEY</c> / <c>OPENAI_API_KEY</c>
     /// in the spawn environment for headless agent CLIs (title generation,
     /// summaries, judges). Default <c>false</c> scrubs them so subscription

@@ -40,11 +40,11 @@ static class KiroHookCommand {
     /// Codex and Copilot there is no null-case asymmetry to encode. Serialized before the first byte
     /// so a renderer fault degrades to silence rather than injecting a partial document.</para>
     /// </summary>
-    internal static void WriteAgentSpawnOutput(TextWriter writer, string? fragment) {
+    internal static void WriteAgentSpawnOutput(TextWriter writer, string? fragment, string? workItemsNudge = null) {
         string payload;
 
         try {
-            payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Kiro, fragment);
+            payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Kiro, fragment, workItemsNudge);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return;
         }
@@ -258,8 +258,10 @@ static class KiroHookCommand {
         // EnsureWatcherRunning stall can strand an already-committed injection. Flushed explicitly:
         // a fragment sitting in a buffer when Kiro's hook timeout kills the process is a fragment
         // whose lease was spent for nothing.
-        WriteAgentSpawnOutput(Console.Out,
-            await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
+        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
+        var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
+            SessionStartHarness.Kiro, sessionId, activeProfile?.DisableWorkItemsNudge is true);
+        WriteAgentSpawnOutput(Console.Out, fragment, workItemsNudge);
         await Console.Out.FlushAsync();
 
         // BOUNDED by what is left of the ceiling. Writing early is not sufficient on its own: Kiro

@@ -668,7 +668,13 @@ public static class ClaudeHookCommand {
                     // hook budget so a slow fetch can't delay the hook (fail-open → null).
                     var memoryFragment = await AwaitMemoryFragmentAsync(memoryIndexTask, processStart);
 
-                    var envelope = SessionStartAdditionalContext.BuildEnvelope(lessonsFragment, nudgeFragment, memoryFragment);
+                    // The static work-items nudge. Claude has always carried kcap-workitems, so
+                    // the availability gate is always satisfied here; only the opt-out can suppress it.
+                    var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
+                        SessionStartHarness.Claude, sessionId, activeProfile?.DisableWorkItemsNudge is true);
+
+                    var envelope = SessionStartAdditionalContext.BuildEnvelope(
+                        lessonsFragment, nudgeFragment, memoryFragment, workItemsNudge);
 
                     if (envelope is not null) {
                         writer.WriteLine(envelope);

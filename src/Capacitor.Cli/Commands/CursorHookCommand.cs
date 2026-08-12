@@ -495,7 +495,13 @@ public static class CursorHookCommand {
             var fragment = await RunMemoryOrchestrationAsync(
                 client, baseUrl, sessionId, workspaceRoot, sw, budgetTotal, ct,
                 memoryClientFactory, memoryStoreFactory, memoryBudgetOverride, memoryScopeResolver);
-            return SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, fragment);
+            // The static work-items nudge, isolated from the lease-driven fragment above and
+            // merged only at render. The opt-out flag is not in scope here (it lives inside the
+            // orchestration), so re-read it; sessionStart fires once per session and the read is
+            // fail-open under the surrounding catch.
+            var nudgeOptOut    = (await AppConfig.GetActiveProfileAsync(ct))?.DisableWorkItemsNudge is true;
+            var workItemsNudge = WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Cursor, sessionId, nudgeOptOut);
+            return SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, fragment, workItemsNudge);
         } catch {
             // Fail-open per design: any exception (budget cancellation,
             // transcript-file IO race, JSON quirk we missed) must never crash Cursor's agent

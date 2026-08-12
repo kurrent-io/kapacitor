@@ -118,13 +118,13 @@ static class AntigravityHookCommand {
     /// <para>Serialized before the first byte so a renderer fault degrades to silence rather than a
     /// partial document.</para>
     /// </summary>
-    internal static void WritePreInvocationOutput(TextWriter writer, string? fragment) {
-        if (fragment is null) return;
+    internal static void WritePreInvocationOutput(TextWriter writer, string? fragment, string? workItemsNudge = null) {
+        if (fragment is null && string.IsNullOrWhiteSpace(workItemsNudge)) return;
 
         string payload;
 
         try {
-            payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Antigravity, fragment);
+            payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Antigravity, fragment, workItemsNudge);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return;
         }
@@ -212,8 +212,10 @@ static class AntigravityHookCommand {
         // EnsureWatcherRunning stall can strand an already-committed injection. AwaitBounded already
         // subtracts HookBudget.Safety — do NOT subtract it again. Written even when the watcher-spawn
         // gate below returns early — a withheld watcher must not suppress injection.
-        WritePreInvocationOutput(
-            stdout, await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
+        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
+        var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
+            SessionStartHarness.Antigravity, sessionId, activeProfile?.DisableWorkItemsNudge is true);
+        WritePreInvocationOutput(stdout, fragment, workItemsNudge);
         await stdout.FlushAsync();
 
         // BOUNDED by what remains of the ceiling — the POST retries for ~30s, far past this hook's 5s

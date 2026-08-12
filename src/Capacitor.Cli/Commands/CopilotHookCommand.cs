@@ -55,13 +55,13 @@ static class CopilotHookCommand {
     /// to silence rather than emitting a partial document — Copilot parses stdout as exactly one JSON
     /// object.</para>
     /// </summary>
-    internal static void WriteSessionStartOutput(TextWriter writer, string? fragment) {
-        if (fragment is null) return;
+    internal static void WriteSessionStartOutput(TextWriter writer, string? fragment, string? workItemsNudge = null) {
+        if (fragment is null && string.IsNullOrWhiteSpace(workItemsNudge)) return;
 
         string payload;
 
         try {
-            payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Copilot, fragment);
+            payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Copilot, fragment, workItemsNudge);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return;
         }
@@ -322,8 +322,10 @@ static class CopilotHookCommand {
         if (outcome == HookPostOutcome.Failed) return 1;
 
         // Copilot parses this hook's stdout as its (optional) single JSON result document. Silent when
-        // there is no fragment, which keeps all pre-existing paths byte-identical.
-        WriteSessionStartOutput(Console.Out, fragment);
+        // there is neither a fragment nor a nudge, which keeps all pre-existing paths byte-identical.
+        var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
+            SessionStartHarness.Copilot, sessionId, activeProfile?.DisableWorkItemsNudge is true);
+        WriteSessionStartOutput(Console.Out, fragment, workItemsNudge);
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return 0;
 

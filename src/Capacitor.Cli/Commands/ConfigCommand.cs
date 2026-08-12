@@ -169,6 +169,8 @@ public static class ConfigCommand {
             "disable_session_guidelines" => throw new ArgumentException($"Invalid value for disable_session_guidelines: '{value}'. Must be true or false."),
             "disable_memory_index" when bool.TryParse(value, out var b) => profile with { DisableMemoryIndex = b },
             "disable_memory_index" => throw new ArgumentException($"Invalid value for disable_memory_index: '{value}'. Must be true or false."),
+            "disable_workitems_nudge" when bool.TryParse(value, out var b) => profile with { DisableWorkItemsNudge = b },
+            "disable_workitems_nudge" => throw new ArgumentException($"Invalid value for disable_workitems_nudge: '{value}'. Must be true or false."),
             "use_provider_api_key" when bool.TryParse(value, out var b) => profile with { UseProviderApiKey = b },
             "use_provider_api_key" => throw new ArgumentException($"Invalid value for use_provider_api_key: '{value}'. Must be true or false."),
             "default_visibility" when value is "private" or "project" or "org_public" or "public" => profile with { DefaultVisibility = value },
@@ -203,6 +205,7 @@ public static class ConfigCommand {
         Console.Error.WriteLine("  update_check                All kcap update nudging: stderr hint, server headers (banner/notification), in-agent nudge (true/false)");
         Console.Error.WriteLine("  default_visibility          Default session visibility (private, project, org_public, public)");
         Console.Error.WriteLine("  disable_session_guidelines  Skip injecting recurring-lessons context at SessionStart (true/false)");
+        Console.Error.WriteLine("  disable_workitems_nudge     Skip injecting the work-items nudge at SessionStart (true/false)");
         Console.Error.WriteLine("  use_provider_api_key        Keep ANTHROPIC_API_KEY/OPENAI_API_KEY in headless agent spawns (true/false)");
         Console.Error.WriteLine("  excluded_repos              Excluded repos, comma-separated (owner/repo,owner/repo)");
         Console.Error.WriteLine("  flows.reviewer_vendor       Preferred review-flow reviewer vendor (used only when the definition names none)");

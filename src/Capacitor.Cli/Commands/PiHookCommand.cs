@@ -170,8 +170,10 @@ static class PiHookCommand {
         // BEFORE the watcher gate and before any early return: a withheld watcher must not suppress
         // an injection whose once-per-session lease is already spent. pi.exec hands the extension
         // stdout regardless of exit code, so no commit gate is needed (unlike Copilot).
-        await WriteMemoryFragment(
-            stdout, await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
+        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
+        var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
+            SessionStartHarness.Pi, sessionId, activeProfile?.DisableWorkItemsNudge is true);
+        await WriteMemoryFragment(stdout, fragment, workItemsNudge);
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return outcome == HookPostOutcome.Failed ? 1 : 0;
 
@@ -271,16 +273,18 @@ static class PiHookCommand {
     static Task<HookPostOutcome> PostHookAsync(string baseUrl, string endpoint, string body)
         => AgentHookPoster.PostAsync(baseUrl, endpoint, body, "pi-hook");
 
-    internal static async Task WriteMemoryFragment(TextWriter stdout, string? fragment) {
-        var payload = RenderMemoryOutput(fragment);
+    internal static async Task WriteMemoryFragment(TextWriter stdout, string? fragment, string? workItemsNudge = null) {
+        var payload = RenderMemoryOutput(fragment, workItemsNudge);
         if (payload.Length == 0) return;
         await stdout.WriteAsync(payload);
         await stdout.FlushAsync();
     }
 
     /// <summary>The exact bytes stdout receives. Pure so the zero-bytes rule is assertable.</summary>
-    internal static string RenderMemoryOutput(string? fragment) =>
-        fragment is null ? "" : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Pi, fragment);
+    internal static string RenderMemoryOutput(string? fragment, string? workItemsNudge = null) =>
+        fragment is null && string.IsNullOrWhiteSpace(workItemsNudge)
+            ? ""
+            : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Pi, fragment, workItemsNudge);
 
     /// <summary>
     /// The lifecycle this harness reports. SessionId is the session FILE PATH — the identity

@@ -144,7 +144,11 @@ static class OpenCodeHookCommand {
         // once-only lease on output that plugin discards — it captures stdout only since the version
         // that added this flag. The lease is what makes injection once-per-session, so spending it for
         // a caller that cannot deliver is the one thing worth negotiating about.
-        var memoryTask = MemoryContractOf(args) >= 1
+        // Whether the installed plugin can consume a stdout fragment at all. The work-items nudge rides
+        // the same channel, so it is gated on this too — a plugin that discards stdout must not be
+        // handed the nudge as raw text.
+        var canConsumeFragment = MemoryContractOf(args) >= 1;
+        var memoryTask = canConsumeFragment
             ? StartMemoryIndexTask(
                 baseUrl, sessionId, scopeRoot,
                 activeProfile?.DisableMemoryIndex is true,
@@ -165,8 +169,11 @@ static class OpenCodeHookCommand {
         // BEFORE the watcher gate below, and before any early return: a withheld watcher must not
         // suppress an injection whose once-per-session lease has already been spent. The plugin reads
         // stdout regardless of what the watcher did.
-        await WriteMemoryFragment(
-            stdout, await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
+        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
+        var workItemsNudge = canConsumeFragment
+            ? WorkItemsNudgeEmitter.Resolve(SessionStartHarness.OpenCode, sessionId, activeProfile?.DisableWorkItemsNudge is true)
+            : null;
+        await WriteMemoryFragment(stdout, fragment, workItemsNudge);
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return 0;
 
@@ -186,8 +193,8 @@ static class OpenCodeHookCommand {
     /// memory index existed, and the plugin treats any non-empty stdout as a fragment — so emitting a
     /// placeholder would have it append an empty system entry to every request.</para>
     /// </summary>
-    internal static async Task WriteMemoryFragment(TextWriter stdout, string? fragment) {
-        var payload = RenderMemoryOutput(fragment);
+    internal static async Task WriteMemoryFragment(TextWriter stdout, string? fragment, string? workItemsNudge = null) {
+        var payload = RenderMemoryOutput(fragment, workItemsNudge);
         if (payload.Length == 0) return;
 
         await stdout.WriteAsync(payload);
@@ -196,10 +203,10 @@ static class OpenCodeHookCommand {
 
     /// <summary>The exact bytes stdout receives. Pure, so the zero-bytes rule is assertable without a
     /// writer — "wrote nothing" and "was never called" are otherwise indistinguishable.</summary>
-    internal static string RenderMemoryOutput(string? fragment) =>
-        fragment is null
+    internal static string RenderMemoryOutput(string? fragment, string? workItemsNudge = null) =>
+        fragment is null && string.IsNullOrWhiteSpace(workItemsNudge)
             ? ""
-            : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.OpenCode, fragment);
+            : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.OpenCode, fragment, workItemsNudge);
 
     /// <summary>
     /// The lifecycle this harness reports. <c>CallbackMayRepeat</c> is true because the plugin's start

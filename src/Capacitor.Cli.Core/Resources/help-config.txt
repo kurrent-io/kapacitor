@@ -16,6 +16,7 @@ Config keys:
   default_visibility          Default session visibility (private, project, org_public, public)
   disable_session_guidelines  Skip injecting recurring-lessons context at SessionStart (true/false)
   disable_memory_index        Skip injecting the team-memory index at SessionStart (true/false)
+  disable_workitems_nudge     Skip injecting the work-items nudge at SessionStart (true/false)
   use_provider_api_key        Keep ANTHROPIC_API_KEY/OPENAI_API_KEY in headless agent spawns (true/false)
   excluded_repos              Excluded repos, comma-separated (owner/repo,owner/repo)
   update_check                Enable update check (true/false)
