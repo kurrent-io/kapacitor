@@ -299,13 +299,24 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   daemon echoes it into the marker, and the lane's reconciliation attributes ONLY a marker
   whose `attempt_id` equals this action's — it is also that marker's single consumer
   (deletes on attribution); *service verbs* — launchd launches from unit env, so no
-  per-spawn id can pass through: instead the verify transaction CLEARS any existing marker
-  under the per-label flock before bootstrap, and during its readiness window attributes a
-  marker whose daemon name matches the label and whose expectation equals the unit's baked
-  one (`attempt_id` absent = unit boot; the held flock makes launchd's job for this label
-  the only unit-boot source meanwhile) — the transaction is that marker's single consumer
-  and passes the coded reason to the app as the `refusal_reason=` line under the standard
-  prefix rules; the lane uses the line, never a second read. A marker failing identity
+  per-spawn id can pass through, and the service flock does NOT exclude other boots (it is
+  its own lock; detached/manual starts and a direct `launchctl kickstart` take different or
+  no locks) — so service attribution rests on **verified pre-clear + positive process
+  correlation**, never on lock-implied exclusivity: the transaction clears the marker before
+  bootstrap and VERIFIES the clear (an undeletable stale marker would otherwise be
+  attributed to the new action — verification failure disables coded attribution for this
+  action, which then degrades to the generic timeout, and is logged; the mutation itself
+  proceeds); during the readiness window it attributes ONLY a marker whose daemon name and
+  baked expectation match AND whose `pid` equals a job PID **positively observed via
+  `launchctl print` for this label** in that window — a manual same-name boot is never this
+  label's job, so its pid never matches, while a concurrent kickstart of the same unit IS
+  this unit booting and is legitimately attributable. The transaction is that marker's
+  single consumer and passes the coded reason to the app as the `refusal_reason=` line
+  under the standard prefix rules; the lane uses the line, never a second read. The daemon
+  publishes the marker only AFTER acquiring its daemon-name lock (two same-name daemons
+  cannot interleave marker writes); leftover deletion (passing boot, consuming reader) is
+  HYGIENE, not the safety property — attribution's identity/pid correlation is what
+  protects against a stale survivor, so a failed deletion is logged and tolerated. A marker failing identity
   validation against the `MutationRequest` is NOT attributed (foreign evidence → attention,
   not `Refused`). Lifecycle: a daemon that passes its boot checks deletes any leftover
   marker before `ServerConnection`; a corrupt/unknown-schema marker is renamed aside,
@@ -315,10 +326,20 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   safety refusal is preserved unconditionally (never a nonzero crash-respin loop), and the
   observer side degrades honestly: no attributable marker → the generic outcome
   (`UnconfirmedNoAttach` / readiness timeout) with log-pointing guidance, never a fabricated
-  coded result and never an unbounded wait. The lane maps an attributed refusal to
-  `Refused(reason)` with the matching recovery surface (expectation mismatch →
-  takeover/reinstall) — distinguishable from unrelated startup failure on every verb,
-  including detached-start refusals on both sides of the wrapper's liveness window. External interface:
+  coded result and never an unbounded wait. **The marker token enum is TOTAL and its routing pinned** (one recovery per token, forward
+  safe): `server_expectation_mismatch` → the dialoged takeover (the unit re-capture — ONE
+  action; "reinstall kcap" remains reserved for `package_inconsistent`);
+  `consent_seed_unwritable` → attention + storage guidance (disk/permissions — takeover
+  cannot fix it); `consent_seed_invalid` (the directive value-contract rejections, now a
+  stable token rather than prose) → the dialoged takeover (rewrites the bad unit content);
+  any unknown/future token → fail-closed attention, never destructive. The `refusal_reason=`
+  line obeys the standard prefix rules (exactly one matching line; zero/duplicate/
+  conflicting → fail closed to the generic outcome); the verify exit code is retained
+  (`verify_readiness_timeout`) with the reason line as auxiliary evidence. The lane maps an
+  attributed refusal to `Refused(reason)` with that token's pinned surface —
+  distinguishable from unrelated startup failure on every verb, including detached-start
+  refusals on both sides of the wrapper's liveness window; without an attributable marker,
+  the outcome is the generic one with log-pointing guidance. External interface:
   `Task<MutationOutcome> RunAsync(MutationRequest, CancellationToken)`, where
   `MutationRequest` names the verb (install/replace/start-verify/detached-start) and the
   expected identity `{profile, canonical server, daemon name}` — nothing else: a
@@ -737,10 +758,12 @@ Uniform rule: every failure is a message + Retry/Skip on its step; nothing wedge
   transaction's readiness predicate: on `install`/`replace` the transaction times out and
   rolls back to the verified-safe failure state (unit REMOVED), surfacing
   `verify_readiness_timeout`; on `start` the rollback is a bootout with the plist retained,
-  same code. The verify result cannot distinguish seed-failure from any other never-ready
-  daemon — the step's timeout guidance therefore points at the daemon log, where the token is
-  the diagnosis; no `VerifyExit` code exists for seed failure itself (the CLI writes no policy
-  file). `identity_mismatch` ack or missing `consent/3` → no write, claim pending, repair
+  same code. The EXIT CODE cannot distinguish seed-failure from any other never-ready
+  daemon — no `VerifyExit` code exists for seed failure itself (the CLI writes no policy
+  file) — but the §4 boot-refusal marker can, when attributable: the readiness-failure path
+  then adds the auxiliary `refusal_reason=` line and the app routes per the pinned token
+  enum; without an attributable marker the timeout guidance points at the daemon log, where
+  the token is the diagnosis. `identity_mismatch` ack or missing `consent/3` → no write, claim pending, repair
   guidance.
 - **Gate edge cases:** unreadable token file → wizard (it is the recovery path); config
   unreadable → wizard with `no_profile`; corrupt claims file → quarantined with the §4
@@ -888,7 +911,15 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   per-name markers never cross-attribute; single-consumer discipline (transaction consumes
   for service verbs and the lane uses only the reason line; detached reconciliation
   consumes directly) → no starvation, no stale attribution, no duplicate presentation;
-  corrupt marker → renamed aside, ignored, logged; **marker-write containment** — fault
+  corrupt marker → renamed aside, ignored, logged; **service attribution correlation** —
+  pre-clear verification failure → coded attribution disabled, generic timeout, mutation
+  proceeds; an external same-name manual boot with the SAME expectation and absent
+  attempt_id during the readiness window → pid never matches the label's observed job PID →
+  not attributed, no false `Refused`/takeover; a concurrent kickstart of the same unit →
+  attributed (it is this unit booting); **reason-enum totality** — per-verb routing for
+  each pinned token (`server_expectation_mismatch` → takeover; `consent_seed_unwritable` →
+  attention + storage guidance; `consent_seed_invalid` → takeover) plus unknown, duplicate,
+  and malformed `refusal_reason=` evidence → fail-closed generic outcome; **marker-write containment** — fault
   injection at dir-create/temp-write/flush/rename while provoking
   `consent_seed_unwritable` → the exit-0 refusal is preserved (no respin), no
   registration/token use, the lane quiesces, and the degraded surface is the generic
