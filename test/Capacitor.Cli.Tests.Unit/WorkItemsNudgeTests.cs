@@ -119,6 +119,40 @@ public class WorkItemsNudgeAvailabilityTests {
     }
 
     [Test]
+    public async Task Cursor_non_object_entry_suppresses() {
+        // A null / string / array value for the key is malformed → fail closed.
+        foreach (var badValue in new[] { "null", "\"kcap\"", "[1,2]" }) {
+            var home = NewHome(out _);
+            var path = CursorPaths.UserMcpJson(home);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(path, "{\"mcpServers\":{\"kcap-workitems\":" + badValue + "}}");
+            await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, home))
+                .IsFalse().Because($"value {badValue} is malformed");
+        }
+    }
+
+    [Test]
+    public async Task Cursor_non_boolean_enabled_suppresses() {
+        var home = NewHome(out _);
+        var path = CursorPaths.UserMcpJson(home);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        // A string "false" (or any non-Boolean) enabled value must not read as enabled.
+        await File.WriteAllTextAsync(path, """{"mcpServers":{"kcap-workitems":{"command":"kcap","enabled":"false"}}}""");
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Cursor, home)).IsFalse();
+    }
+
+    [Test]
+    public async Task Pi_workitems_only_in_a_comment_suppresses() {
+        var home = NewHome(out _);
+        var path = PiPaths.KcapMcpExtension(home);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        // "workitems" appears only in a comment, not in the actual server-list array literal.
+        await File.WriteAllTextAsync(path,
+            "// note: \"workitems\" is not registered here\nconst KCAP_MCP_SERVERS = [\"review\", \"sessions\"];");
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, home)).IsFalse();
+    }
+
+    [Test]
     public async Task OpenCode_enabled_entry_is_available() {
         var home = NewHome(out _);
         var path = OpenCodePaths.McpConfigJson(home);

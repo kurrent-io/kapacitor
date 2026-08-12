@@ -57,8 +57,11 @@ static class WorkItemsNudgeAvailability {
 
     static bool CodexHasWorkItems(string? codexConfigPath) {
         try {
-            return CodexConfigToml.ReadMcpServerNames(codexConfigPath)
-                .Any(n => string.Equals(n, ServerName, StringComparison.OrdinalIgnoreCase));
+            // ReadMcpServerCommands requires each returned table to carry a `command` string, so a
+            // malformed/command-less [mcp_servers.kcap-workitems] table does NOT count (fail-closed).
+            // Codex has no per-server enable flag, so a valid command table is a live registration.
+            return CodexConfigToml.ReadMcpServerCommands(codexConfigPath)
+                .Any(s => string.Equals(s.Name, ServerName, StringComparison.OrdinalIgnoreCase));
         } catch {
             return false;
         }
@@ -68,9 +71,17 @@ static class WorkItemsNudgeAvailability {
         try {
             var path = PiPaths.KcapMcpExtension(home);
             if (!File.Exists(path)) return false;
-            // The bridge materializes its server list as bare quoted names in KCAP_MCP_SERVERS; an
-            // extension that includes workitems contains the quoted token.
-            return File.ReadAllText(path).Contains("\"workitems\"", StringComparison.Ordinal);
+            var content = File.ReadAllText(path);
+            // Match the ACTUAL materialized server-list construct, not an arbitrary token occurrence:
+            // find the `KCAP_MCP_SERVERS = [ … ]` array literal and require "workitems" inside it. A
+            // stray "workitems" in a comment or unrelated string does not count.
+            var key = content.IndexOf("KCAP_MCP_SERVERS", StringComparison.Ordinal);
+            if (key < 0) return false;
+            var open = content.IndexOf('[', key);
+            if (open < 0) return false;
+            var close = content.IndexOf(']', open);
+            if (close < 0) return false;
+            return content.Substring(open, close - open + 1).Contains("\"workitems\"", StringComparison.Ordinal);
         } catch {
             return false;
         }
@@ -84,11 +95,14 @@ static class WorkItemsNudgeAvailability {
 
             foreach (var (name, entry) in block) {
                 if (!string.Equals(name, ServerName, StringComparison.OrdinalIgnoreCase)) continue;
-                // Present. Treat an explicit `"enabled": false` (OpenCode's disable flag) as absent;
-                // no other harness shape has a disable flag, so a present entry is enabled by default.
-                if (entry is JsonObject o && o["enabled"] is JsonValue en &&
-                    en.TryGetValue<bool>(out var enabled) && !enabled)
-                    return false;
+                // A materialized MCP entry is always an object (command/args or type/enabled). Anything
+                // else — null, a string, an array — is malformed and fails closed.
+                if (entry is not JsonObject o) return false;
+                // Honor an explicit enable flag STRICTLY: only a Boolean `true` counts. A `false`, a
+                // non-Boolean (e.g. "false"), or any other shape suppresses. Absent flag ⇒ enabled
+                // (the JSON harnesses other than OpenCode carry no enable flag).
+                if (o.TryGetPropertyValue("enabled", out var enNode))
+                    return enNode is JsonValue enVal && enVal.TryGetValue<bool>(out var enabled) && enabled;
                 return true;
             }
             return false;
