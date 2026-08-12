@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Antigravity;
@@ -71,20 +72,51 @@ static class WorkItemsNudgeAvailability {
         try {
             var path = PiPaths.KcapMcpExtension(home);
             if (!File.Exists(path)) return false;
-            var content = File.ReadAllText(path);
-            // Match the ACTUAL materialized server-list construct, not an arbitrary token occurrence:
-            // find the `KCAP_MCP_SERVERS = [ … ]` array literal and require "workitems" inside it. A
-            // stray "workitems" in a comment or unrelated string does not count.
-            var key = content.IndexOf("KCAP_MCP_SERVERS", StringComparison.Ordinal);
-            if (key < 0) return false;
-            var open = content.IndexOf('[', key);
-            if (open < 0) return false;
-            var close = content.IndexOf(']', open);
-            if (close < 0) return false;
-            return content.Substring(open, close - open + 1).Contains("\"workitems\"", StringComparison.Ordinal);
+            // Strip JS comments FIRST so a commented-out `KCAP_MCP_SERVERS = [...]` before the real
+            // declaration can't be matched, then find the real `KCAP_MCP_SERVERS = [ … ]` array and
+            // require "workitems" as an exact array ELEMENT — not a substring, so a token inside an
+            // unrelated string doesn't count either.
+            var content = StripJsComments(File.ReadAllText(path));
+            for (var k = content.IndexOf("KCAP_MCP_SERVERS", StringComparison.Ordinal);
+                 k >= 0;
+                 k = content.IndexOf("KCAP_MCP_SERVERS", k + 1, StringComparison.Ordinal)) {
+                var eq = content.IndexOf('=', k);
+                if (eq < 0) continue;
+                var open = content.IndexOf('[', eq);
+                if (open < 0) continue;
+                var close = content.IndexOf(']', open);
+                if (close < 0) return false;
+                var elements = content.Substring(open + 1, close - open - 1)
+                    .Split(',')
+                    .Select(e => e.Trim());
+                return elements.Any(e => e is "\"workitems\"" or "'workitems'");
+            }
+            return false;
         } catch {
             return false;
         }
+    }
+
+    /// <summary>Removes JS line (<c>//…</c>) and block (<c>/* … */</c>) comments so a commented-out
+    /// server list can't be mistaken for the real declaration. Not string-literal-aware, which is
+    /// safe here: the generated extension carries no <c>//</c> or <c>/*</c> inside the single-line
+    /// string literals near the declaration.</summary>
+    static string StripJsComments(string s) {
+        var sb = new StringBuilder(s.Length);
+        for (var i = 0; i < s.Length; i++) {
+            if (i + 1 < s.Length && s[i] == '/' && s[i + 1] == '/') {
+                i += 2;
+                while (i < s.Length && s[i] != '\n') i++;
+                if (i < s.Length) sb.Append('\n'); // keep the newline
+            } else if (i + 1 < s.Length && s[i] == '/' && s[i + 1] == '*') {
+                i += 2;
+                while (i + 1 < s.Length && !(s[i] == '*' && s[i + 1] == '/')) i++;
+                i++; // land on the '/' of '*/'; the loop's i++ steps past it
+            } else {
+                sb.Append(s[i]);
+            }
+        }
+        return sb.ToString();
     }
 
     static bool JsonBlockHasServer(string path, string blockKey) {

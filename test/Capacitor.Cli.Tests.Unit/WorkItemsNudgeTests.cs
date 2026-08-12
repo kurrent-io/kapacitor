@@ -142,13 +142,34 @@ public class WorkItemsNudgeAvailabilityTests {
     }
 
     [Test]
-    public async Task Pi_workitems_only_in_a_comment_suppresses() {
+    public async Task Pi_commented_declaration_before_the_real_one_suppresses() {
         var home = NewHome(out _);
         var path = PiPaths.KcapMcpExtension(home);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        // "workitems" appears only in a comment, not in the actual server-list array literal.
+        // A commented-out declaration mentioning workitems precedes the REAL declaration, which omits
+        // it — comment stripping must make the real one win.
         await File.WriteAllTextAsync(path,
-            "// note: \"workitems\" is not registered here\nconst KCAP_MCP_SERVERS = [\"review\", \"sessions\"];");
+            "// const KCAP_MCP_SERVERS = [\"workitems\"]\nconst KCAP_MCP_SERVERS = [\"review\", \"sessions\"];");
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, home)).IsFalse();
+    }
+
+    [Test]
+    public async Task Pi_block_commented_workitems_suppresses() {
+        var home = NewHome(out _);
+        var path = PiPaths.KcapMcpExtension(home);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path,
+            "/* KCAP_MCP_SERVERS = [\"workitems\"] */ const KCAP_MCP_SERVERS = [\"review\"];");
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, home)).IsFalse();
+    }
+
+    [Test]
+    public async Task Pi_non_exact_element_suppresses() {
+        var home = NewHome(out _);
+        var path = PiPaths.KcapMcpExtension(home);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        // "workitems" only as a substring of another element must not count.
+        await File.WriteAllTextAsync(path, "const KCAP_MCP_SERVERS = [\"review\", \"workitems-extra\"];");
         await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Pi, home)).IsFalse();
     }
 
