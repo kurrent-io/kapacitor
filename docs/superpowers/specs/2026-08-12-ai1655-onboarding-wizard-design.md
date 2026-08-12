@@ -235,22 +235,34 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   runs). **The owned action is observable at the module seam** — the promises above are
   unimplementable through a lone `RunAsync` task a cancelled waiter has lost: the lane also
   exposes `QuiescedAsync()` (what decision 2's wizard-to-graph handoff and §6a's shutdown
-  sequencing actually await, bounded by their existing caps) and a **single-consumer
-  pending-attention slot** — an outcome that completes with zero waiters is retained there,
-  drained exactly once by the composition root after the handoff (or by the wizard if still
-  open) and routed to the surfacing rules; a subsequent `RunAsync` NEVER returns the prior
-  outcome — it performs its own request; the prior outcome reaches the user only through the
-  slot. A retry or queued request always waits for the owned action to quiesce first.
+  sequencing actually await, bounded by their existing caps) and a **FIFO of pending
+  actionable outcomes** — a single cell cannot be lossless: action A can finish waiterless
+  with `AttentionSkew` and queued action B finish waiterless with `AttentionRepair` before
+  any drain, and overwrite/drop/block are each wrong. Retention policy: only ACTIONABLE
+  waiterless outcomes are queued (`AttentionSkew`, `AttentionRepair`, `Failed`, `Refused`,
+  `UnconfirmedNoAttach`); a waiterless `Succeeded`/`SucceededAfterTimeout` is logged, never
+  queued — success must not consume an attention surface. Draining is an **atomic take-all**
+  by exactly one consumer (the wizard while open, else the composition root after the
+  handoff), surfacing in FIFO order, each outcome exactly once; a subsequent `RunAsync` NEVER
+  returns a prior outcome — it performs its own request; prior outcomes reach the user only
+  through the drain. A retry or queued request always waits for the owned action to quiesce first.
   **Every mutation has a finite lane-owned deadline** — including detached start, which today
   is the ONE unbounded child (`DetachedStartAsync` sets no `Timeout`): under lane-owned
   lifetime a hung `daemon start -d` would otherwise own the global lane forever and starve
   every queued mutation of its fresh probe. Service verbs keep the §6a bound
   (kill-timeout strictly above forward + reserve; pathological kill → attention). Detached
-  start gets a bounded internal `Timeout` whose expiry tree-kills the CLI WRAPPER only — the
-  daemon, if already spawned, is detached by design and survives — after which the lane
-  proceeds to reconciliation of the possible partial effect (instance-bound probes classify
-  `Succeeded`/`UnconfirmedNoAttach`/attention), records the outcome, quiesces, and admits
-  the next request.
+  start gets a bounded internal `Timeout` whose expiry kills the CLI wrapper via a **new
+  process-only kill mode** (`RunOptions` gains it; today's internal timeout ALWAYS calls
+  `Process.Kill(entireProcessTree: true)`, and the detached daemon is a direct, un-reparented
+  child of the wrapper — `PreventInheritedHandles` changes descriptor inheritance, not
+  parentage, and there is no setsid/double-fork on this path — so a tree kill would kill the
+  daemon this contract promises to spare). The mode is tested with real processes. The lane
+  then reconciles the possible partial effect through the instance-bound probes: a FULLY
+  verified daemon (process result absent but identity + instance evidence complete) is the
+  distinct outcome **`SucceededAfterTimeout`** — deliberately not `Succeeded`, whose
+  successful-`ProcessResult` predicate stays intact; a timeout with incomplete evidence is
+  `UnconfirmedNoAttach` or attention. The lane records the outcome, quiesces, and admits the
+  next request.
   **One global action lane covers probe → mutation → reconciliation**: an identical
   concurrent request coalesces into the in-flight action's single mutation and outcome; a
   DIFFERENT request queues and performs its OWN fresh §4 floor probe after acquiring the
@@ -260,6 +272,8 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   `Succeeded` — requires ALL mandatory predicates: successful process result, canonical
   identity match, and (for service enablement verbs) positive ownership
   (`job_pid` == `daemon_pid`) — a Connected daemon alone is never success;
+  `SucceededAfterTimeout` — detached-start only: the wrapper timed out (no process result)
+  but identity + instance evidence is complete; mapped to success UX with a logged note;
   `AttentionSkew` (Connected/hello evidence below floor, missing `consent/3`, or
   incompatible — the caller routes it into the takeover offer, and the coordinator applies
   any pending claim under its factory guard);
@@ -694,16 +708,19 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   an identical pair coalesces into ONE mutation and outcome (never two mutations from one
   approval); a different queued request re-probes fresh after acquiring the lane; waiter A
   cancels → B still receives the terminal outcome (and vice versa); ALL waiters cancel with
-  no immediate retry → the owned action runs to its terminal state and its outcome lands in
-  the pending-attention slot, drained EXACTLY ONCE after the wizard-to-graph handoff (a late
-  `AttentionSkew`/`AttentionRepair` surfaces once after the graph exists, never silently
-  lost); graph construction awaits `QuiescedAsync` over a still-live action; a retry waits
-  for quiesce; wizard close hitting the cap while the shared child is live → §6a post-cap
-  rules. **Deadlines:** a detached CLI that never exits, and one that spawns the daemon then
-  hangs — the lane's bounded timeout tree-kills the CLI wrapper only, reconciliation
-  classifies the partial effect (spawned daemon found via instance-bound probes / nothing
-  found → `UnconfirmedNoAttach`), the lane quiesces, and the next queued request is
-  admitted.
+  no immediate retry → the owned action runs to its terminal state and its actionable
+  outcome lands in the FIFO; **two queued actions whose waiters all detach, producing
+  DIFFERENT attention outcomes before any drain** → both surface, in FIFO order, exactly
+  once (no overwrite, no drop); a drain racing the wizard-to-graph handoff → atomic take-all
+  by exactly one consumer, no loss or duplicate; a waiterless `Succeeded` is logged and does
+  NOT enter the FIFO; graph construction awaits `QuiescedAsync` over a still-live action; a
+  retry waits for quiesce; wizard close hitting the cap while the shared child is live →
+  §6a post-cap rules. **Deadlines (real processes, not runner fakes):** a detached CLI that
+  never exits, and one that spawns the daemon then hangs — the lane's bounded timeout kills
+  the wrapper via the process-only kill mode (the un-reparented daemon child demonstrably
+  survives), reconciliation classifies the partial effect (fully verified daemon →
+  `SucceededAfterTimeout`; incomplete evidence → `UnconfirmedNoAttach`), the lane quiesces,
+  and the next queued request is admitted.
 - **Digest pipeline (release acceptance):** per-RID publish asserts the packaged daemon's
   digest equals the CLI's embedded constant; a mismatched or missing build input fails the
   production publish closed; dev/source builds hash the co-built daemon output, and an absent
