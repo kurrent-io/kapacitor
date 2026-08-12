@@ -226,7 +226,29 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   global serialization silently). The observation adapter is therefore not fixed at
   construction: the lane holds a current-adapter slot, starting as the one-shot
   `LocalControlProbe` adapter and **atomically swapped to the live-graph adapter when the
-  graph is built**; each action reads the slot at execution time. External interface:
+  graph is built** — but **each owned action pins its observation strategy ONCE, at action
+  start, and keeps it for the action's whole lifetime** (an action spanning the post-cap
+  graph build must not switch observers mid-reconciliation), and the live adapter is used
+  ONLY when the graph's full identity (the client's daemon name + its profile/server)
+  matches the request identity — `DaemonClientService` is constructed for one immutable
+  name and cannot observe an arbitrary target; a mismatched request gets an
+  identity-specific one-shot probe regardless of the slot, or the lane would classify
+  evidence from the graph's daemon instead of the daemon it mutated. **Execution is
+  action-scoped, not instance-pinned**: the lane owns an executor factory that binds
+  `{pinned absolute CLI path (from this action's fresh probe), profile, daemon name,
+  canonical server}` ONCE per owned action; the action's floor probe and its mutation run
+  through that single binding (`KcapCli` becomes this action-scoped executor — no
+  long-lived identity-pinned instance participates in mutations, resolving the earlier
+  contradiction between "the wizard constructs its own `KcapCli`" and "one instance runs
+  probe and mutations"; the graph's own `KcapCli` remains for non-mutating queries only).
+  **The canonical server is pinned INTO the child**: the executor overlays
+  `KCAP_URL=<the request's canonical server>` alongside `KCAP_PROFILE` — `KCAP_PROFILE`
+  alone lets a concurrent `kcap config set server_url` redirect the child at execution time
+  (the CLI resolves the profile's server from config, and the start gate would derive the
+  same changed value and approve it; detached start has no gate at all). `KCAP_URL` takes
+  precedence in the CLI's resolution chain and is ALREADY on `ServiceEnvironment`'s baked
+  allowlist, so install bakes it into the unit — a deliberate consequence: the unit stays
+  pinned to the server it was enabled for, which is exactly what §3's gate (b) compares. External interface:
   `Task<MutationOutcome> RunAsync(MutationRequest, CancellationToken)`, where
   `MutationRequest` names the verb (install/replace/start-verify/detached-start) and the
   expected identity `{profile, canonical server, daemon name}` — nothing else: a
@@ -385,8 +407,11 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   call, and the decision-4 `KCAP_CONSENT_SEED_DEFAULT=prompt` env overlay on **every daemon
   spawn it performs**: install/replace (baked into the unit), `service start --verify` (arms
   the in-transaction gates), and the detached `daemon start -d` fallback (the spawned daemon
-  seeds from its own env). The wizard constructs its own instance after Sign-in, pinned to the
-  wizard-chosen profile — in wizard-first mode no startup instance exists to conflict with.
+  seeds from its own env). For daemon mutations, `KcapCli` is the **action-scoped executor the
+  `DaemonMutationLane` creates per owned action** (identity + pinned CLI path bound once per
+  action, `KCAP_URL` + `KCAP_PROFILE` overlaid — see the lane bullet); long-lived instances
+  (the graph's, or the wizard's own post-Sign-in instance for `plugin install`/import) serve
+  non-mutating and non-daemon shelling only.
 - **CLI compatibility floor — an enforced precondition, not an assumption**: every
   daemon-mutating app action (wizard step 7, lifecycle auto-actions, main-window detached
   Start) runs a **fresh** `--version --no-update-check` probe **immediately before each
@@ -758,7 +783,16 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   envelopes carry their `MutationRequest` identity for routing; **app-lifetime lane** — a
   wizard action outliving the graph-build cap, then a main-window mutation: both run through
   the SAME lane instance, the latter queues behind the live action, the adapter slot swaps
-  atomically at graph build, and the late actionable envelope reaches the normal consumer; a timed-out wrapper yields
+  atomically at graph build, and the late actionable envelope reaches the normal consumer;
+  **action-scoped bindings** — a wizard action, the graph handoff, then a queued
+  second-identity action: each action's floor probe and mutation use ONE
+  executable/name/profile/server binding (asserted at the executor seam); a reconciliation
+  straddling the slot swap keeps its action-start observation strategy; a queued request
+  whose daemon/profile differs from the newly built graph gets an identity-specific one-shot
+  probe, never the mismatched live adapter; **server pinning** — a forced-order
+  `kcap config set server_url` on the pinned profile after the lane captured its request,
+  raced against install, gated start, AND detached start: the child resolves the overlaid
+  `KCAP_URL` (the request's canonical server), never the mutated config value; a timed-out wrapper yields
   the exact existing runner shape (`ProcessResult.TimedOut == true`), asserted at the runner
   seam, not only the final `MutationOutcome`; a waiterless `Succeeded` is logged and does
   NOT enter the FIFO; graph construction awaits `QuiescedAsync` over a still-live action; a
