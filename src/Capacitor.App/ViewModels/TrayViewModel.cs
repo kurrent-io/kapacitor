@@ -165,8 +165,8 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         // spec §6: a lifecycle Attention call (e.g. a restore-verification failure, an orphan
         // label repair affordance) only ever upgrades a GENUINELY fine row (Idle/Running) — judged
         // against baseState, never against the already-Attention state a connection-trouble row
-        // (2, 5, 6, 9, 10) produced on its own. Fix round 1: the original `state is ... or
-        // TrayState.Attention` check let ANY co-occurring Attention row hand its header line to a
+        // (2, 5, 6, 9, 10) produced on its own. A `state is ... or
+        // TrayState.Attention` check would let ANY co-occurring Attention row hand its header line to a
         // stale/unrelated lifecycle message, masking exactly the text the comment claimed to
         // protect (e.g. "reconnecting to server" swallowed by a leftover repair-affordance line).
         // When active it also wins the header body over pendingAttention's generic text in

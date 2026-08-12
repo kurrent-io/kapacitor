@@ -126,7 +126,7 @@ public class DaemonLifecycleControllerTests {
         await Assert.That(h.Surface.AttentionMessages).IsEmpty();
     }
 
-    // Standards-2: an unrecognized wire state must never fall through to the NotInstalled
+    // An unrecognized wire state must never fall through to the NotInstalled
     // (auto-install/start) branch — positive evidence only.
     [Test]
     public async Task Unrecognized_state_is_status_only_no_auto_install_or_start() {
@@ -691,7 +691,7 @@ public class DaemonLifecycleControllerTests {
         await Assert.That(h.Client.RestartCount).IsEqualTo(0);
     }
 
-    // Standards-2 counterpart for the Start action's own state-classification switch.
+    // Counterpart for the Start action's own state-classification switch.
     [Test]
     public async Task StartAction_unrecognized_state_is_status_only_no_action() {
         await using var h = new Harness();
