@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core.Auth;
 
 namespace Capacitor.Cli.Core;
 
@@ -76,9 +77,15 @@ public static class ServerVersionStore {
         }
     }
 
-    /// <summary>Normalizes a server URL to a stable cache key: trimmed, no trailing slash,
-    /// lower-cased (scheme+host+port only — these carry no case-sensitive path).</summary>
-    internal static string Normalize(string serverUrl) => serverUrl.Trim().TrimEnd('/').ToLowerInvariant();
+    /// <summary>Normalizes a server URL to a stable cache key using the repo's own server identity
+    /// (<see cref="ServerIdentity.Canonicalize"/>): scheme and host are lower-cased and an implicit vs
+    /// explicit default port converges, but the path is preserved case-sensitively — a path-routed
+    /// deployment (<c>/TenantA</c> vs <c>/tenanta</c>) is a DISTINCT server, and flattening its case
+    /// would cap it against the wrong server. Falls back to a conservative trim (NOT lower-cased) for a
+    /// URL that isn't an admissible server base, so the store still yields a stable key without
+    /// conflating query/fragment-bearing spellings.</summary>
+    internal static string Normalize(string serverUrl) =>
+        ServerIdentity.Canonicalize(serverUrl) ?? serverUrl.Trim().TrimEnd('/');
 
     static string PathFor(string normalizedUrl) {
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalizedUrl)))[..16].ToLowerInvariant();

@@ -64,6 +64,18 @@ public class UpdateAdvisoryResolverTests {
     }
 
     [Test]
+    public async Task CappedTarget_StripsServerBuildMetadata() {
+        // MinVer stamps a commit SHA as +buildmetadata; it must not leak into the "(server version)" copy
+        // or the pinned `npm install @kurrent/kcap@<target>` command (which would then fail to resolve).
+        var advisory = UpdateAdvisoryResolver.Resolve(Result("0.11.0", "0.12.0", newer: true), "latest", cachedServerVersion: "0.11.15+sha.abc");
+
+        await Assert.That(advisory.Target).IsEqualTo("0.11.15")
+            .Because("build metadata is stripped from the user-facing / pinned-install target");
+        await Assert.That(advisory.ServerCapped).IsTrue();
+        await Assert.That(advisory.Newer).IsTrue();
+    }
+
+    [Test]
     public async Task UserAtServerVersion_ButBehindNpm_NotNewer() {
         // Already as current as the server supports ⇒ no nudge (never a downgrade recommendation).
         var advisory = UpdateAdvisoryResolver.Resolve(Result("0.11.15", "0.12.0", newer: true), "latest", cachedServerVersion: "0.11.15");

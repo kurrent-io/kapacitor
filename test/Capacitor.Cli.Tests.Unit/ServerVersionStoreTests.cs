@@ -52,6 +52,26 @@ public class ServerVersionStoreTests {
     }
 
     [Test]
+    public async Task Set_DefaultPort_ConvergesWithImplicit() {
+        // https://host and https://host:443 are the same server — one cache entry, not two.
+        var host = $"cap-{Guid.NewGuid():N}.example.com";
+        ServerVersionStore.Set($"https://{host}", "0.11.15");
+
+        await Assert.That(ServerVersionStore.Get($"https://{host}:443")).IsEqualTo("0.11.15");
+    }
+
+    [Test]
+    public async Task Set_PathCase_IsSignificant() {
+        // Path-routed deployments are DISTINCT servers; path casing must not be flattened, or one tenant
+        // would be capped against another's server version.
+        var host = $"cap-{Guid.NewGuid():N}.example.com";
+        ServerVersionStore.Set($"https://{host}/TenantA", "0.11.15");
+
+        await Assert.That(ServerVersionStore.Get($"https://{host}/tenanta")).IsNull();
+        await Assert.That(ServerVersionStore.Get($"https://{host}/TenantA")).IsEqualTo("0.11.15");
+    }
+
+    [Test]
     public async Task Set_DistinctServers_AreIndependent() {
         var a = UniqueUrl("srv-a");
         var b = UniqueUrl("srv-b");

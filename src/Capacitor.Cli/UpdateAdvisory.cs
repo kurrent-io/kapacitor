@@ -41,8 +41,11 @@ internal static class UpdateAdvisoryResolver {
             return new(current, latest, result.Newer, ServerCapped: false);
 
         // min(npm latest, server version): the server caps only when it is strictly older than npm latest.
+        // Strip any +buildmetadata from the server version before it becomes the user-facing / pinned-install
+        // target — MinVer stamps a commit SHA there, and `npm install @kurrent/kcap@0.11.15+sha` would not
+        // resolve (SemVer comparison ignores build metadata, so the cap decision is unchanged either way).
         var capped = PrereleaseSemver.IsNewer(latest, cachedServerVersion);
-        var target = capped ? cachedServerVersion : latest;
+        var target = capped ? CapacitorVersion.Display(cachedServerVersion) : latest;
 
         return new(current, target, PrereleaseSemver.IsNewer(target, current), ServerCapped: capped);
     }
