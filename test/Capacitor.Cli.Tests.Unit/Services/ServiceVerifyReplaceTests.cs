@@ -25,7 +25,7 @@ public class ServiceVerifyReplaceTests {
     /// RunningPid, and Bootstrapped must win over an EARLIER Uninstalled (--replace clears the old
     /// label/unit BEFORE the same transaction's own later WriteAndBootstrap runs — the reverse
     /// order of every fresh-install rollback scenario).</summary>
-    sealed class FakeServiceManager : IServiceManager {
+    sealed class FakeServiceManager : IVerifyServiceManager {
         public readonly List<string> Calls = [];
         public LabelProbe InitialProbe = LabelProbe.Absent;
         public bool InitialUnitPresent;
@@ -40,26 +40,21 @@ public class ServiceVerifyReplaceTests {
         public int WriteAndBootstrapCalls => Calls.Count(c => c == "writeAndBootstrap");
         public int UninstallCalls         => Calls.Count(c => c == "uninstall");
 
-        public string Describe() => "fake";
-        public IReadOnlyList<string> ListInstalled() => [];
-        public ServiceStatus Status(string serviceId) => new(ServiceState.NotInstalled, null);
         public IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec) => [new GeneratedFile(PlistPath, PlistContent)];
 
-        public ServiceQuery Query(string serviceId) {
+        public ServiceQuery Query(string serviceId, TimeSpan timeout) {
             Calls.Add("query");
             if (Bootstrapped) return new ServiceQuery(LabelProbe.Loaded, true, ServiceState.Running, "/bin/kcap-daemon", RunningPid);
             if (Uninstalled) return new ServiceQuery(LabelProbe.Absent, false, ServiceState.NotInstalled, null, null);
             return new ServiceQuery(InitialProbe, InitialProbe != LabelProbe.Absent || InitialUnitPresent, ServiceState.NotInstalled, null, InitialJobPid);
         }
 
-        public void Install(ServiceSpec spec, bool startNow) { }
-
-        public void WriteAndBootstrap(ServiceSpec spec) {
+        public void WriteAndBootstrap(ServiceSpec spec, TimeSpan timeout) {
             Calls.Add("writeAndBootstrap");
             Bootstrapped = true;
         }
 
-        public bool Uninstall(string serviceId, out string? error) {
+        public bool Uninstall(string serviceId, TimeSpan timeout, out string? error) {
             Calls.Add("uninstall");
             if (!UninstallSucceeds) {
                 // Mirrors LaunchdServiceManager.Uninstall's real failure contract: bootout failed
@@ -74,8 +69,8 @@ public class ServiceVerifyReplaceTests {
             return true;
         }
 
-        public bool Start(string serviceId, out string? error) { error = null; return true; }
-        public bool Stop(string serviceId, out string? error) { error = null; return true; }
+        public bool Start(string serviceId, TimeSpan timeout, out string? error) { error = null; return true; }
+        public bool Stop(string serviceId, TimeSpan timeout, out string? error) { error = null; return true; }
     }
 
     static async Task<int> Drive(Task<int> task, FakeTimeProvider time, TimeSpan step) {
@@ -113,7 +108,14 @@ public class ServiceVerifyReplaceTests {
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var sut = new ServiceVerify(manager, _ => ManualOwnerPid, Hello, TimeProvider.System, readPlist: OwnPlist);
+            // The owning daemon's pid is live until its label is booted out, then gone — the owning
+            // takeover must confirm that pid released the name lock before writing the replacement.
+            int? ValidatedPid(string _) =>
+                manager.Bootstrapped ? manager.RunningPid
+                : manager.Uninstalled ? null
+                : ManualOwnerPid;
+
+            var sut = new ServiceVerify(manager, ValidatedPid, Hello, TimeProvider.System, readPlist: OwnPlist);
 
             var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
 
@@ -345,5 +347,169 @@ public class ServiceVerifyReplaceTests {
             await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Owning_label_whose_pid_never_exits_reports_stop_unconfirmed_and_writes_nothing() {
+        var (_, daemonPath) = SetUpViableInstall();
+        try {
+            // Owning label (JobPid == validated), but the old daemon never releases the name — its
+            // validated pid stays non-null past the forward budget, so the takeover must not write a
+            // replacement over a name the old incarnation still holds.
+            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = ManualOwnerPid };
+            var time    = new FakeTimeProvider();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+
+            var sut = new ServiceVerify(manager, _ => ManualOwnerPid, Hello, time, forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
+
+            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.StopUnconfirmed);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1); // the label was cleared first
+            await Assert.That(ServiceTxnMarker.Read(Id)!.Phase).IsEqualTo("label-cleared");
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task GenerateFiles_throwing_under_replace_is_a_viability_abort_touching_nothing() {
+        var (_, daemonPath) = SetUpViableInstall();
+        try {
+            // The classic --replace hazard: an XML-unrepresentable captured env value makes the plist
+            // render throw. That must abort as a VIABILITY failure BEFORE the old label/owner is
+            // cleared — never destroy the working unit and only then discover the new one can't render.
+            var manager = new ThrowingRenderManager();
+            var sut = new ServiceVerify(manager, _ => ManualOwnerPid, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
+                TimeProvider.System, readPlist: OwnPlist);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
+            await Assert.That(manager.DestructiveCalls).IsEqualTo(0); // no query/uninstall/bootstrap
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Invalid_pinned_profile_url_under_replace_is_a_viability_abort_touching_nothing() {
+        var (_, daemonPath) = SetUpViableInstall();
+        try {
+            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = ManualOwnerPid };
+            var sut = new ServiceVerify(manager, _ => ManualOwnerPid, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
+                TimeProvider.System, readPlist: OwnPlist, profileViable: () => false);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
+            await Assert.That(manager.Calls).IsEmpty();
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Clearing_an_orphan_plist_re_uninstalls_until_the_file_is_gone_then_installs() {
+        var (_, daemonPath) = SetUpViableInstall();
+        try {
+            // The first bootout fails and RETAINS the plist; the label later reads Absent while the
+            // file lingers. Clearing must re-uninstall the now-unloaded unit and confirm the file gone
+            // — never treat an orphan plist as a clean clear.
+            var manager = new OrphanPlistManager(reUninstallRemovesPlist: true);
+            var time    = new FakeTimeProvider();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+
+            var sut = new ServiceVerify(manager, _ => manager.Bootstrapped ? manager.RunningPid : null, Hello, time,
+                forwardBudget: TimeSpan.FromSeconds(5), readPlist: OwnPlist);
+
+            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+            await Assert.That(manager.UninstallCalls).IsGreaterThanOrEqualTo(2); // first failed, re-uninstall removed the file
+            await Assert.That(manager.PlistPresent).IsFalse();
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Clearing_an_orphan_plist_that_cannot_be_removed_fails_coded_without_installing() {
+        var (_, daemonPath) = SetUpViableInstall();
+        try {
+            // Same orphan-plist shape, but the re-uninstall never manages to remove the file — Absent
+            // label with the unit still on disk is an affirmatively wrong state, so this fails coded
+            // rather than declaring success (and never writes a new unit over the residue).
+            var manager = new OrphanPlistManager(reUninstallRemovesPlist: false);
+            var time    = new FakeTimeProvider();
+
+            var sut = new ServiceVerify(manager, _ => manager.Bootstrapped ? manager.RunningPid : null,
+                (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), time,
+                forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
+
+            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+            await Assert.That(manager.PlistPresent).IsTrue();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    /// <summary>Renders throw (an XML-unrepresentable captured env value) and records whether ANY
+    /// launchctl-touching op ran — the render-viability guard must abort before all of them.</summary>
+    sealed class ThrowingRenderManager : IVerifyServiceManager {
+        public int DestructiveCalls;
+        public IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec) => throw new InvalidOperationException("invalid captured env value");
+        public ServiceQuery Query(string serviceId, TimeSpan timeout) { DestructiveCalls++; return new(LabelProbe.Absent, false, ServiceState.NotInstalled, null, null); }
+        public void WriteAndBootstrap(ServiceSpec spec, TimeSpan timeout) => DestructiveCalls++;
+        public bool Uninstall(string serviceId, TimeSpan timeout, out string? error) { DestructiveCalls++; error = null; return true; }
+        public bool Start(string serviceId, TimeSpan timeout, out string? error) { DestructiveCalls++; error = null; return true; }
+        public bool Stop(string serviceId, TimeSpan timeout, out string? error) { DestructiveCalls++; error = null; return true; }
+    }
+
+    /// <summary>A non-owning Loaded label whose first bootout fails and RETAINS the plist; the label
+    /// then unloads while the file lingers, so a clear must re-uninstall to remove it.</summary>
+    sealed class OrphanPlistManager(bool reUninstallRemovesPlist) : IVerifyServiceManager {
+        public readonly List<string> Calls = [];
+        public int UninstallCalls;
+        public bool PlistPresent = true;
+        public bool Bootstrapped;
+        public int? RunningPid = 7777;
+        int _queriesAfterFirstUninstall;
+
+        public int WriteAndBootstrapCalls => Calls.Count(c => c == "writeAndBootstrap");
+
+        public IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec) => [new GeneratedFile("/fake/agents/orphan.plist", OwnPlistContent)];
+
+        public ServiceQuery Query(string serviceId, TimeSpan timeout) {
+            Calls.Add("query");
+            if (Bootstrapped) return new(LabelProbe.Loaded, true, ServiceState.Running, "/bin/kcap-daemon", RunningPid);
+            if (UninstallCalls == 0) return new(LabelProbe.Loaded, true, ServiceState.NotInstalled, null, null); // pre-clear: loaded, non-owning
+            _queriesAfterFirstUninstall++;
+            // Label lingers Loaded for one poll, then unloads — but the plist stays until re-uninstalled.
+            var probe = _queriesAfterFirstUninstall >= 2 ? LabelProbe.Absent : LabelProbe.Loaded;
+            return new(probe, PlistPresent, ServiceState.NotInstalled, null, null);
+        }
+
+        public void WriteAndBootstrap(ServiceSpec spec, TimeSpan timeout) { Calls.Add("writeAndBootstrap"); Bootstrapped = true; }
+
+        public bool Uninstall(string serviceId, TimeSpan timeout, out string? error) {
+            Calls.Add("uninstall");
+            UninstallCalls++;
+            if (UninstallCalls == 1) {
+                error = "launchctl bootout failed (exit 5) and the label is still Loaded — plist retained";
+                return false; // first bootout fails, plist retained
+            }
+            if (reUninstallRemovesPlist) PlistPresent = false; // re-uninstall of the unloaded label deletes the file
+            error = null;
+            return true;
+        }
+
+        public bool Start(string serviceId, TimeSpan timeout, out string? error) { error = null; return true; }
+        public bool Stop(string serviceId, TimeSpan timeout, out string? error) { error = null; return true; }
     }
 }

@@ -12,8 +12,9 @@ public static class VerifyExit {
     public const int Contended = 20;
     public const string ContendedToken = "verify_contended";
 
-    /// <summary>Install-verify's pre-mutation viability check: <c>spec.DaemonBinaryPath</c> does not
-    /// exist. Nothing is touched — checked before the pre-mutation <c>Query</c> even runs.</summary>
+    /// <summary>Pre-mutation viability failed before anything on disk was touched: the daemon binary
+    /// is missing, the pinned profile does not resolve to a valid http/https server URL, or the plist
+    /// could not be rendered (e.g. an XML-unrepresentable captured env value). Nothing is touched.</summary>
     public const int Viability = 21;
     public const string ViabilityToken = "verify_viability";
 
@@ -22,10 +23,9 @@ public static class VerifyExit {
     public const int BootoutUnknown = 22;
     public const string BootoutUnknownToken = "verify_bootout_unknown";
 
-    /// <summary>Install-verify's <c>--replace</c> ownership matrix killed a validated live owner but
-    /// couldn't confirm it gone (validated pid null AND a fresh hello dial failing) within the
-    /// forward budget. Nothing is written yet at this point — the marker is retained at whatever
-    /// phase the matrix last reached (<c>label-cleared</c> or <c>captured</c>).</summary>
+    /// <summary>Either <c>--replace</c>'s takeover kill couldn't confirm the owner gone, or an owning
+    /// takeover's cleared label never released the daemon name (its validated pid never went null),
+    /// within the forward budget. Nothing is written; the marker is retained at its last phase.</summary>
     public const int StopUnconfirmed = 23;
     public const string StopUnconfirmedToken = "verify_stop_unconfirmed";
 
@@ -34,76 +34,95 @@ public static class VerifyExit {
     public const int ReadinessTimeout = 24;
     public const string ReadinessTimeoutToken = "verify_readiness_timeout";
 
-    /// <summary>Install-verify's hello was well-formed but reported a <c>DaemonVersion</c> other than
-    /// the expected one — a deterministic mismatch, so rollback fires without waiting out the forward
-    /// budget. Applies equally to a fresh install and <c>--replace</c> — both share the same
-    /// write+bootstrap+verify tail.</summary>
+    /// <summary>Install-verify's hello was well-formed but reported a wrong name/protocol/version — a
+    /// deterministic mismatch, so rollback fires without waiting out the forward budget.</summary>
     public const int HelloValidation = 25;
     public const string HelloValidationToken = "verify_hello_validation";
 
-    /// <summary>Rollback's bounded poll ran out with the state still genuinely undetermined — the
-    /// LAST observation was <see cref="LabelProbe.Unknown"/>, so there's no way to tell whether the
-    /// restore actually happened. A timeout, not an observed-wrong state: compare
-    /// <see cref="RestoreVerification"/>, which is what a Loaded (or file-still-present) last
-    /// observation gets even at the same reserve expiry. The marker is retained either way.</summary>
+    /// <summary>A rollback poll ran out with the state genuinely undetermined — the LAST observation
+    /// was <see cref="LabelProbe.Unknown"/>, so there is no way to tell whether the restore happened.
+    /// A timeout, not an observed-wrong state (compare <see cref="RestoreVerification"/>). The marker
+    /// is retained.</summary>
     public const int RollbackBudget = 26;
     public const string RollbackBudgetToken = "verify_rollback_budget";
 
     /// <summary>Rollback (or the final recheck) affirmatively found the wrong state: still Loaded,
-    /// unloaded but the unit file still present, or a plist on disk whose fingerprint doesn't match
-    /// what this transaction wrote (a foreign writer) — including when the reserve ran out and THAT
-    /// was the last observation (see <see cref="RollbackBudget"/> for the Unknown-only timeout case).
-    /// The marker, and any foreign file, are left alone so an operator/resumer can see the
-    /// transaction never reached a verified-safe state.</summary>
+    /// unloaded but the unit file still present, or a plist whose fingerprint doesn't match what this
+    /// transaction wrote (a foreign writer). The marker, and any foreign file, are left alone.</summary>
     public const int RestoreVerification = 27;
     public const string RestoreVerificationToken = "verify_restore_verification";
 }
 
 /// <summary>
-/// Spec §3.4 transaction engine: marker → mutate → ownership+readiness poll → final recheck →
-/// commit, or rollback to the verified-safe failure state. Injectable seams (manager, pid probe,
-/// hello probe, clock) make every case drivable without shelling out to <c>launchctl</c>.
+/// Spec §3.4 transaction engine: viability → marker → mutate → ownership+readiness poll → final
+/// recheck → commit, or rollback to the verified-safe failure state. One forward cutoff bounds the
+/// entire forward phase (viability, clear, write, bootstrap, readiness); a separately reserved
+/// rollback budget guarantees time to restore. Injectable seams (manager, pid probe, hello probe,
+/// clock, profile viability) make every case drivable without shelling out to <c>launchctl</c>.
 /// </summary>
 sealed class ServiceVerify(
-    IServiceManager manager,
+    IVerifyServiceManager manager,
     Func<string, int?> validatedDaemonPid,
     Func<string, TimeSpan, Task<HelloProbeResult>> hello,
     TimeProvider time,
     TimeSpan? forwardBudget = null,
     TimeSpan? rollbackReserve = null,
     Func<string, string?>? readPlist = null,
-    Func<string, bool>? plistExists = null) {
+    Func<string, bool>? plistExists = null,
+    Func<bool>? profileViable = null,
+    Action? onCommitted = null) {
     static readonly TimeSpan LockWait      = TimeSpan.FromSeconds(10);
     static readonly TimeSpan PollInterval  = TimeSpan.FromMilliseconds(500);
     static readonly TimeSpan KillWait      = TimeSpan.FromSeconds(5);
 
-    readonly TimeSpan _forwardBudget    = forwardBudget ?? TimeSpan.FromSeconds(20);
-    readonly TimeSpan _rollbackReserve  = rollbackReserve ?? TimeSpan.FromSeconds(10);
+    public static readonly TimeSpan DefaultForwardBudget   = TimeSpan.FromSeconds(20);
+    public static readonly TimeSpan DefaultRollbackReserve = TimeSpan.FromSeconds(10);
+
+    /// <summary>The advertised transaction bound: the forward cutoff plus the rollback reserve bound
+    /// the whole mutate-then-restore envelope (30s at the defaults). A caller's kill-timeout (the
+    /// desktop app's mutation timeout, §3.6) MUST sit strictly above this. Two bounded phases can
+    /// precede it — lock acquisition (≤ 10s) and, only on crash residue, a recovery pre-phase
+    /// (≤ the rollback reserve) — so for full headroom a caller should allow the sum, not just this.</summary>
+    public static readonly TimeSpan AdvertisedBound = DefaultForwardBudget + DefaultRollbackReserve;
+
+    readonly TimeSpan _forwardBudget    = forwardBudget ?? DefaultForwardBudget;
+    readonly TimeSpan _rollbackReserve  = rollbackReserve ?? DefaultRollbackReserve;
+
+    /// <summary>Whether the pinned profile resolves to a valid absolute http/https server URL — the
+    /// CLI-side enforcement of §4.1's precondition, so a <c>--replace</c> can never destroy a working
+    /// unit only to install one whose daemon exits config-invalid. Default true for the engine's own
+    /// tests; the command wires the real resolution.</summary>
+    readonly Func<bool> _profileViable = profileViable ?? (() => true);
 
     /// <summary>Install-only seam for the on-disk plist read (final recheck + rollback's foreign-file
-    /// guard). Real launchd needs HOME to compute the path at all, so tests inject this directly
-    /// rather than fiddling with the environment for fakes that aren't real launchd anyway.</summary>
+    /// guard). Real launchd needs HOME to compute the path, so tests inject this directly.</summary>
     readonly Func<string, string?> _readPlist = readPlist ?? (path => {
         try { return File.Exists(path) ? File.ReadAllText(path) : null; } catch { return null; }
     });
 
     /// <summary>Entry-recovery-only seam: distinguishes "absent" from "present but unreadable" when
-    /// <see cref="_readPlist"/> returns null for both — a permission error or transient I/O failure
-    /// on a file that demonstrably exists must never be treated the same as the file simply not being
-    /// there (see <see cref="RecoverLeftoverMarker"/>).</summary>
+    /// <see cref="_readPlist"/> returns null for both.</summary>
     readonly Func<string, bool> _plistExists = plistExists ?? File.Exists;
 
-    /// <summary>Closed-stdio tolerance: the npm grandchild shares the GUI's pipes, so a broken
-    /// pipe must never abort the transaction.</summary>
+    /// <summary>Closed-stdio tolerance: the npm grandchild shares the GUI's pipes, so a broken pipe
+    /// must never abort the transaction.</summary>
     static void Say(string line) {
         try { Console.Error.WriteLine(line); } catch (IOException) { }
+    }
+
+    /// <summary>Time left before <paramref name="deadline"/>, floored at zero — every launchctl call
+    /// and every wait recomputes this immediately before use so the single deadline can never be
+    /// overrun by accumulated elapsed time.</summary>
+    TimeSpan Remaining(DateTimeOffset deadline) {
+        var r = deadline - time.GetUtcNow();
+        return r > TimeSpan.Zero ? r : TimeSpan.Zero;
     }
 
     static string DescribeQuery(ServiceQuery q) =>
         $"{q.Probe.ToString().ToLowerInvariant()}|{(q.UnitPresent ? "unit" : "nounit")}|{q.BinaryPath}|pid={q.JobPid}";
 
-    /// <summary>start --verify: no viability check (spec: start writes nothing). Accepts ANY
-    /// well-formed hello — capability-incompatible old daemons included.</summary>
+    /// <summary>start --verify: no viability check (start writes nothing). Accepts ANY well-formed
+    /// hello — capability-incompatible old daemons included.</summary>
     public async Task<int> StartVerifiedAsync(string serviceId) {
         using var txn = ServiceTxnLock.TryAcquire(serviceId, LockWait);
         if (txn is null) {
@@ -111,30 +130,34 @@ sealed class ServiceVerify(
             return VerifyExit.Contended;
         }
 
-        var pre = manager.Query(serviceId);
+        var deadline = time.GetUtcNow() + _forwardBudget;
+
+        var pre = manager.Query(serviceId, Remaining(deadline));
         ServiceTxnMarker.Write(serviceId,
             new TxnMarker(1, "start", "captured", DescribeQuery(pre), "unloaded-plist-retained", null));
 
-        // bootstrap-or-kickstart (Task 7); a false return doesn't short-circuit — the readiness
-        // poll below is the source of truth — but the reason is worth surfacing if it never recovers.
-        if (!manager.Start(serviceId, out var startError) && startError is not null) Say($"start: {startError}");
+        // A false Start doesn't short-circuit — the readiness poll is the source of truth — but the
+        // reason is worth surfacing if it never recovers.
+        if (!manager.Start(serviceId, Remaining(deadline), out var startError) && startError is not null) Say($"start: {startError}");
 
         ServiceTxnMarker.Write(serviceId,
             new TxnMarker(1, "start", "bootstrapped", DescribeQuery(pre), "unloaded-plist-retained", null));
 
-        var deadline = time.GetUtcNow() + _forwardBudget;
-
         while (time.GetUtcNow() < deadline) {
-            if (await IsReadyAsync(serviceId, deadline - time.GetUtcNow())) {
-                // Confirming what the primary check JUST observed, not a fresh independent
-                // check — must not be budget-starved by the same forward deadline that gated
-                // the primary check (a slow primary hello can legitimately resolve with almost
-                // nothing left), or a genuinely healthy daemon gets rolled back on a clock
-                // technicality. Floor it at one poll interval.
-                var confirmBudget = deadline - time.GetUtcNow();
+            var (ready, pid) = await IsReadyAsync(serviceId, Remaining(deadline), requirePid: null);
+            if (ready) {
+                // Confirm what the primary check just observed; floor at one interval so a slow-but-
+                // healthy primary hello isn't rolled back on a clock technicality. The final recheck
+                // requires the SAME incarnation (pinned pid) so a job that answered then respawned
+                // under KeepAlive can't bless a crash-looping unit.
+                var confirmBudget = Remaining(deadline);
                 if (confirmBudget < PollInterval) confirmBudget = PollInterval;
 
-                if (await IsReadyAsync(serviceId, confirmBudget)) {
+                var (confirmed, _) = await IsReadyAsync(serviceId, confirmBudget, requirePid: pid);
+                if (confirmed) {
+                    ServiceTxnMarker.Write(serviceId,
+                        new TxnMarker(1, "start", "committed", DescribeQuery(pre), "unloaded-plist-retained", null));
+                    onCommitted?.Invoke();
                     ServiceTxnMarker.Delete(serviceId);
                     return VerifyExit.Ok;
                 }
@@ -147,46 +170,47 @@ sealed class ServiceVerify(
         return await Rollback(serviceId);
     }
 
-    /// <summary>Ownership + readiness predicate: hello well-formed AND the freshly-queried job
-    /// pid matches the validated daemon pid (both non-null).</summary>
-    async Task<bool> IsReadyAsync(string serviceId, TimeSpan budget) {
-        if (budget <= TimeSpan.Zero) return false;
+    /// <summary>Ownership + readiness predicate: hello well-formed AND the freshly-queried job pid
+    /// matches the validated daemon pid (both non-null). Returns the observed job pid so a caller can
+    /// pin it; <paramref name="requirePid"/>, when set, demands that SAME incarnation.</summary>
+    async Task<(bool Ready, int? JobPid)> IsReadyAsync(string serviceId, TimeSpan budget, int? requirePid) {
+        if (budget <= TimeSpan.Zero) return (false, null);
 
         var h = await hello(serviceId, budget);
-        if (!h.WellFormed) return false;
+        if (!h.WellFormed) return (false, null);
 
-        var jobPid    = manager.Query(serviceId).JobPid;
+        var jobPid    = manager.Query(serviceId, budget).JobPid;
         var daemonPid = validatedDaemonPid(serviceId);
-        return jobPid is not null && daemonPid is not null && jobPid == daemonPid;
+        var owned     = jobPid is not null && daemonPid is not null && jobPid == daemonPid;
+        if (!owned) return (false, jobPid);
+        if (requirePid is not null && jobPid != requirePid) return (false, jobPid);
+        return (true, jobPid);
     }
 
-    /// <summary>Bootout (plist retained) then verify the restore, polled (bounded by
-    /// <see cref="_rollbackReserve"/>) rather than single-shot — <c>launchctl bootout</c> can
-    /// return before the label is actually gone. Absent → the rollback itself is the
-    /// verified-safe state, marker deleted. Still loaded when the reserve runs out → the marker
-    /// is kept so a resumer can see the transaction never settled.</summary>
+    /// <summary>Bootout (plist retained) then verify the restore, polled (bounded by the reserve)
+    /// rather than single-shot — <c>bootout</c> can return before the label is gone. Absent → the
+    /// rollback itself is the verified-safe state, marker deleted. Still loaded at reserve expiry →
+    /// marker kept so a resumer can see the transaction never settled.</summary>
     async Task<int> Rollback(string serviceId) {
-        manager.Stop(serviceId, out var stopError);
+        var deadline = time.GetUtcNow() + _rollbackReserve;
+
+        manager.Stop(serviceId, Remaining(deadline), out var stopError);
         if (stopError is not null) Say($"stop: {stopError}");
 
-        var rollbackDeadline = time.GetUtcNow() + _rollbackReserve;
         LabelProbe lastProbe;
-
         while (true) {
-            lastProbe = manager.Query(serviceId).Probe;
+            lastProbe = manager.Query(serviceId, Remaining(deadline)).Probe;
             if (lastProbe == LabelProbe.Absent) {
                 ServiceTxnMarker.Delete(serviceId);
                 Say(VerifyExit.ReadinessTimeoutToken);
                 return VerifyExit.ReadinessTimeout;
             }
 
-            if (time.GetUtcNow() >= rollbackDeadline) break;
+            if (time.GetUtcNow() >= deadline) break;
             await Task.Delay(PollInterval, time, CancellationToken.None);
         }
 
-        // 26 vs 27 turns on the LAST observation, not just "reserve expired": Unknown means we
-        // genuinely couldn't tell (a timeout); still Loaded is an affirmatively wrong state (see
-        // VerifyExit) even though it was also observed at the reserve deadline.
+        // Unknown = a genuine timeout (couldn't tell); still Loaded = an affirmatively wrong state.
         if (lastProbe == LabelProbe.Unknown) {
             Say(VerifyExit.RollbackBudgetToken);
             return VerifyExit.RollbackBudget;
@@ -198,128 +222,115 @@ sealed class ServiceVerify(
 
     enum InstallReady { NotReady, Ready, VersionMismatch }
 
-    /// <summary>install [--replace] --verify. <paramref name="replace"/> selects the ownership
-    /// matrix (spec §3.4): a fresh install refuses to touch an existing label/unit (<see
-    /// cref="VerifyExit.Contended"/>), while <c>--replace</c> clears/takes it over first.</summary>
+    /// <summary>install [--replace] --verify. <paramref name="replace"/> selects the ownership matrix
+    /// (spec §3.4): a fresh install refuses to touch an existing label/unit
+    /// (<see cref="VerifyExit.Contended"/>), while <c>--replace</c> clears/takes it over first.</summary>
     public async Task<int> InstallVerifiedAsync(ServiceSpec spec, bool replace, string? expectedVersion) {
         var serviceId = spec.ServiceId;
+        var op        = replace ? "replace" : "install";
+
         using var txn = ServiceTxnLock.TryAcquire(serviceId, LockWait);
         if (txn is null) {
             Say(VerifyExit.ContendedToken);
             return VerifyExit.Contended;
         }
 
-        // Viability is checked BEFORE marker recovery (unlike Task 10's non-destructive placeholder,
-        // recovery below can now call Uninstall) so VerifyExit.Viability's documented "nothing is
-        // touched" contract stays true even when a leftover marker exists — a missing binary aborts
-        // before anything on disk is touched, recovery or otherwise.
+        // Viability is proven BEFORE any destructive step (recovery, marker, bootout, kill) so
+        // VerifyExit.Viability's "nothing is touched" contract holds even for --replace: a missing
+        // binary, an invalid pinned-profile URL, or a plist that cannot be rendered (e.g. an
+        // XML-unrepresentable captured env value) must abort before the old setup is ever cleared.
         if (!File.Exists(spec.DaemonBinaryPath)) {
             Say(VerifyExit.ViabilityToken);
             return VerifyExit.Viability;
         }
 
-        // A leftover marker means a prior attempt never reached a terminal state. "committed" is
-        // just a crash between writing that phase and deleting the marker — self-heal
-        // unconditionally. Any other phase may have left real residue on disk; recovery authority
-        // there is scoped by CONTENT (see RecoverLeftoverMarker), never by presence alone.
-        if (ServiceTxnMarker.Read(serviceId) is { } leftover) {
-            if (leftover.Phase == "committed") {
-                ServiceTxnMarker.Delete(serviceId);
-            } else if (await RecoverLeftoverMarker(spec, serviceId, leftover) is { } recoveryExit) {
-                return recoveryExit;
-            }
+        if (!_profileViable()) {
+            Say(VerifyExit.ViabilityToken);
+            return VerifyExit.Viability;
         }
 
-        var pre = manager.Query(serviceId);
-        if (pre.Probe == LabelProbe.Unknown) {
-            // Neither clearly loaded nor clearly absent — nothing destructive after an unknown,
-            // for a fresh install OR a replace.
-            Say(VerifyExit.BootoutUnknownToken);
-            return VerifyExit.BootoutUnknown;
-        }
-
-        var preState = DescribeQuery(pre);
-        var op       = replace ? "replace" : "install";
-
-        if (!replace) {
-            if (pre.Probe == LabelProbe.Loaded || (pre.Probe == LabelProbe.Absent && pre.UnitPresent)) {
-                // Already installed — loaded, or stopped-but-installed (`service stop` retains the
-                // plist by design). A fresh install must not overwrite or clear an existing unit;
-                // that's --replace's job.
-                Say(VerifyExit.ContendedToken);
-                return VerifyExit.Contended;
-            }
-        } else {
-            // Marker discipline extends to the matrix's own destructive steps (Uninstall / kill):
-            // write "captured" before touching anything, same as the fresh path does below.
-            ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "captured", preState, "no-unit", null));
-
-            if (await ApplyReplaceMatrixAsync(serviceId, pre, preState, op) is { } stopExit) {
-                return stopExit;
-            }
-        }
-
-        // For --replace, the marker is already at the correct phase here — either "captured" (the
-        // matrix did nothing) or "label-cleared"/"owner-stopped" (it did) — re-writing "captured"
-        // unconditionally would regress a phase that already recorded real destructive work.
-        if (!replace) {
-            ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "captured", preState, "no-unit", null));
-        }
-
-        // GenerateFiles is a pure computation (no I/O for any current manager) — a throw here (e.g.
-        // an invalid captured env value) never touched disk, so there's nothing for a rollback to
-        // undo; just report it and clear the marker we just wrote.
         GeneratedFile generated;
         try {
             generated = manager.GenerateFiles(spec).Single();
         } catch (Exception ex) {
             Say($"{op}: {ex.Message}");
-            ServiceTxnMarker.Delete(serviceId);
-            Say(VerifyExit.ReadinessTimeoutToken);
-            return VerifyExit.ReadinessTimeout;
+            Say(VerifyExit.ViabilityToken);
+            return VerifyExit.Viability;
+        }
+        var fingerprint = ServiceTxnMarker.Fingerprint(generated.Content);
+
+        // A leftover marker means a prior attempt never reached a terminal state. "committed" is just a
+        // crash between writing that phase and deleting the marker — self-heal. Any other phase may
+        // have left residue; recovery authority is scoped by CONTENT (see RecoverLeftoverMarker).
+        if (ServiceTxnMarker.Read(serviceId) is { } leftover) {
+            if (leftover.Phase == "committed") {
+                ServiceTxnMarker.Delete(serviceId);
+            } else if (await RecoverLeftoverMarker(serviceId, generated.Path, leftover) is { } recoveryExit) {
+                return recoveryExit;
+            }
         }
 
-        var fingerprint = ServiceTxnMarker.Fingerprint(generated.Content);
+        // ── forward phase: one cutoff shared by pre-query, the matrix, write, bootstrap, readiness ──
+        var forward = time.GetUtcNow() + _forwardBudget;
+
+        var pre = manager.Query(serviceId, Remaining(forward));
+        if (pre.Probe == LabelProbe.Unknown) {
+            Say(VerifyExit.BootoutUnknownToken);
+            return VerifyExit.BootoutUnknown;
+        }
+
+        var preState = DescribeQuery(pre);
+
+        if (!replace) {
+            if (pre.Probe == LabelProbe.Loaded || (pre.Probe == LabelProbe.Absent && pre.UnitPresent)) {
+                // Loaded, or stopped-but-installed (`service stop` retains the plist). A fresh install
+                // must not overwrite or clear an existing unit — that's --replace's job.
+                Say(VerifyExit.ContendedToken);
+                return VerifyExit.Contended;
+            }
+            ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "captured", preState, "no-unit", null));
+        } else {
+            ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "captured", preState, "no-unit", null));
+            if (await ApplyReplaceMatrixAsync(serviceId, pre, preState, op, forward) is { } stopExit) {
+                return stopExit;
+            }
+        }
+
         ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "written", preState, "no-unit", fingerprint));
 
         try {
-            manager.WriteAndBootstrap(spec);
+            manager.WriteAndBootstrap(spec, Remaining(forward));
         } catch (Exception ex) {
-            // Unlike GenerateFiles, WriteAndBootstrap writes the unit file before it bootstraps —
-            // a throw here (EPERM under MDM, launchctl I/O error, ...) can still leave the plist on
-            // disk, so route through the same fingerprint-gated rollback as every other failure.
+            // WriteAndBootstrap writes the unit before it bootstraps — a throw here can still leave the
+            // plist on disk, so route through the same fingerprint-gated rollback.
             Say($"{op}: {ex.Message}");
             return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.ReadinessTimeout, VerifyExit.ReadinessTimeoutToken);
         }
 
         ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "bootstrapped", preState, "no-unit", fingerprint));
 
-        var deadline = time.GetUtcNow() + _forwardBudget;
-
-        while (time.GetUtcNow() < deadline) {
-            var primary = await IsInstallReadyAsync(serviceId, expectedVersion, deadline - time.GetUtcNow());
+        while (time.GetUtcNow() < forward) {
+            var (primary, pinnedPid) = await IsInstallReadyAsync(serviceId, expectedVersion, Remaining(forward), requirePid: null);
             if (primary == InstallReady.VersionMismatch)
                 return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.HelloValidation, VerifyExit.HelloValidationToken);
 
             if (primary == InstallReady.Ready) {
-                // Same floor rationale as start: confirming what the primary check just observed
-                // must not be starved by the same forward deadline that gated it.
-                var confirmBudget = deadline - time.GetUtcNow();
+                var confirmBudget = Remaining(forward);
                 if (confirmBudget < PollInterval) confirmBudget = PollInterval;
 
-                var confirm = await IsInstallReadyAsync(serviceId, expectedVersion, confirmBudget);
+                // Final recheck requires the SAME incarnation (pinnedPid): a job that answered then
+                // exited and let a KeepAlive respawn take over must not commit a crash-looping unit.
+                var (confirm, _) = await IsInstallReadyAsync(serviceId, expectedVersion, confirmBudget, requirePid: pinnedPid);
                 if (confirm == InstallReady.VersionMismatch)
                     return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.HelloValidation, VerifyExit.HelloValidationToken);
 
                 if (confirm == InstallReady.Ready) {
-                    // Final recheck adds what start's doesn't need: the plist on disk must still be
-                    // the one this transaction wrote. A foreign writer's replacement is never deleted
-                    // by us — the marker and the foreign file are both left for an operator to see.
-                    // Uses the manager-provided path (not a launchd-specific helper) so this stays
-                    // meaningful on every platform.
+                    // The plist on disk must still be the one this transaction wrote — a lock-unaware
+                    // old CLI can overwrite it under a healthy job, and a PID check would miss that.
                     var onDisk = _readPlist(generated.Path);
                     if (onDisk is not null && ServiceTxnMarker.Fingerprint(onDisk) == fingerprint) {
                         ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "committed", preState, "no-unit", fingerprint));
+                        onCommitted?.Invoke();
                         ServiceTxnMarker.Delete(serviceId);
                         return VerifyExit.Ok;
                     }
@@ -329,7 +340,7 @@ sealed class ServiceVerify(
                 }
             }
 
-            if (time.GetUtcNow() >= deadline) break;
+            if (time.GetUtcNow() >= forward) break;
             await Task.Delay(PollInterval, time, CancellationToken.None);
         }
 
@@ -337,139 +348,119 @@ sealed class ServiceVerify(
     }
 
     /// <summary>
-    /// Entry-time recovery for a leftover marker whose phase is anything other than "committed".
-    /// Recovery authority is scoped by CONTENT, not presence: only a plist whose fingerprint
-    /// matches what the dead transaction itself recorded is provably its own residue and safe to
-    /// clean; everything else is surfaced (<see cref="VerifyExit.RestoreVerification"/>) rather than
-    /// guessed at. Returns null when it's safe to proceed (the marker has already been deleted);
-    /// otherwise the exit code to return immediately (the marker is left untouched).
+    /// Entry-time recovery for a leftover marker whose phase is not "committed". Recovery authority is
+    /// scoped by CONTENT: only a plist whose fingerprint matches what the dead transaction recorded is
+    /// provably its own residue and safe to clean; everything else is surfaced
+    /// (<see cref="VerifyExit.RestoreVerification"/>). Returns null when it is safe to proceed (marker
+    /// already deleted); otherwise the exit code to return immediately (marker left untouched).
     /// </summary>
-    async Task<int?> RecoverLeftoverMarker(ServiceSpec spec, string serviceId, TxnMarker leftover) {
+    async Task<int?> RecoverLeftoverMarker(string serviceId, string onDiskPath, TxnMarker leftover) {
         if (leftover.PlistFingerprint is null) {
-            // Died before ever writing a plist (captured, or one of --replace's pre-write phases) —
-            // nothing on disk to clean up.
+            // Died before ever writing a plist — nothing on disk to clean up.
             ServiceTxnMarker.Delete(serviceId);
             return null;
-        }
-
-        string onDiskPath;
-        try {
-            onDiskPath = manager.GenerateFiles(spec).Single().Path;
-        } catch {
-            // Can't even compute where our own residue would live — never pave over something we
-            // can't examine.
-            Say(VerifyExit.RestoreVerificationToken);
-            return VerifyExit.RestoreVerification;
         }
 
         var onDisk = _readPlist(onDiskPath);
         if (onDisk is null) {
             if (_plistExists(onDiskPath)) {
-                // Present but unreadable (permission error, transient I/O failure, ...) is NOT the
-                // same as absent — the file demonstrably exists and was never fingerprint-compared,
-                // so never guess it's our own gone residue.
+                // Present but unreadable is NOT absent — the file exists and was never fingerprint-
+                // compared, so never guess it's our own gone residue.
                 Say(VerifyExit.RestoreVerificationToken);
                 return VerifyExit.RestoreVerification;
             }
-
-            // Confirmed absent — residue already gone.
-            ServiceTxnMarker.Delete(serviceId);
+            ServiceTxnMarker.Delete(serviceId); // confirmed absent — residue already gone
             return null;
         }
 
         if (ServiceTxnMarker.Fingerprint(onDisk) != leftover.PlistFingerprint) {
-            // A foreign writer touched the file after the dead transaction — surface, never pave.
+            // A foreign writer touched the file after the death — surface, never pave.
             Say(VerifyExit.RestoreVerificationToken);
             return VerifyExit.RestoreVerification;
         }
 
-        // The dead transaction's own residue (benign-absence semantics — a label that's already
-        // gone costs nothing to "clear" again): clean it up via the SAME confirmed-Absent clear the
-        // --replace matrix uses — Uninstall returning true on a bare bootout exit 0 does not by
-        // itself prove the label is gone (the exact race ClearLabelAsync polls past), so trusting
-        // the raw bool here would risk deleting the marker on an unconfirmed clear.
-        if (await ClearLabelAsync(serviceId) is { } clearExit) return clearExit;
+        // Our own residue: clear it via the SAME confirmed-gone poll the matrix uses — a bare Uninstall
+        // bool on a bootout exit 0 does not itself prove the label/file are gone.
+        if (await ClearLabelAsync(serviceId, time.GetUtcNow() + _rollbackReserve) is { } clearExit) return clearExit;
 
         ServiceTxnMarker.Delete(serviceId);
         return null;
     }
 
     /// <summary>
-    /// Uninstall (clear the label/plist) and poll until confirmed <see cref="LabelProbe.Absent"/>,
-    /// bounded by <see cref="_rollbackReserve"/> — mirrors <see cref="InstallRollback"/>'s own
-    /// reasoning: <c>launchctl bootout</c> can return before the label is actually gone, and a
-    /// failed/incomplete Uninstall (still Loaded/Unknown) must never be treated as cleared before
-    /// writing a NEW unit over it. Returns the terminal exit code on failure (nothing further is
-    /// written), or null once Absent is confirmed and it's safe to proceed. The pinned split is
-    /// deliberate: <see cref="VerifyExit.BootoutUnknown"/>(22) is the PRE-mutation abort (nothing
-    /// touched yet), while this poll's own Unknown-at-reserve-expiry is POST-mutation and genuinely
-    /// undetermined — that's <see cref="VerifyExit.RollbackBudget"/>(26), never 22.
+    /// Uninstall (clear the label/plist) and poll — bounded by <paramref name="deadline"/> — until BOTH
+    /// the label is <see cref="LabelProbe.Absent"/> AND the unit file is gone. A <c>bootout</c> that
+    /// fails-then-retains the plist leaves the label unloading while the file lingers; when the label
+    /// later reads Absent, re-attempt the Uninstall to delete the now-unloaded file rather than
+    /// declaring an orphan-plist state a clean clear. Returns null once both hold, else the terminal
+    /// exit code (nothing further is written).
     /// </summary>
-    async Task<int?> ClearLabelAsync(string serviceId) {
-        manager.Uninstall(serviceId, out var error);
+    async Task<int?> ClearLabelAsync(string serviceId, DateTimeOffset deadline) {
+        manager.Uninstall(serviceId, Remaining(deadline), out var error);
         if (error is not null) Say($"uninstall: {error}");
 
-        var deadline = time.GetUtcNow() + _rollbackReserve;
-        LabelProbe lastProbe;
-
+        ServiceQuery last;
         while (true) {
-            lastProbe = manager.Query(serviceId).Probe;
-            if (lastProbe == LabelProbe.Absent) return null;
+            last = manager.Query(serviceId, Remaining(deadline));
+            if (last.Probe == LabelProbe.Absent) {
+                if (!last.UnitPresent) return null;                     // label gone AND file gone
+                // Label unloaded but plist retained by a failed bootout — delete the now-unloaded unit.
+                manager.Uninstall(serviceId, Remaining(deadline), out var reError);
+                if (reError is not null) Say($"uninstall: {reError}");
+            }
 
             if (time.GetUtcNow() >= deadline) break;
             await Task.Delay(PollInterval, time, CancellationToken.None);
         }
 
-        // Same 26-vs-27 split as every other rollback poll in this file: Unknown is a genuine
-        // timeout (couldn't tell), still Loaded is an affirmatively wrong state.
-        var reason = lastProbe == LabelProbe.Unknown ? VerifyExit.RollbackBudget : VerifyExit.RestoreVerification;
-        Say(lastProbe == LabelProbe.Unknown ? VerifyExit.RollbackBudgetToken : VerifyExit.RestoreVerificationToken);
+        // Unknown = a genuine timeout; still Loaded, or Absent-but-file-present, is affirmatively wrong.
+        var reason = last.Probe == LabelProbe.Unknown ? VerifyExit.RollbackBudget : VerifyExit.RestoreVerification;
+        Say(last.Probe == LabelProbe.Unknown ? VerifyExit.RollbackBudgetToken : VerifyExit.RestoreVerificationToken);
         return reason;
     }
 
     /// <summary>
-    /// install --replace's ownership matrix (spec §3.4 table). Called only after the pre-mutation
-    /// probe has already been rejected as <see cref="LabelProbe.Unknown"/> by the caller, with the
-    /// "captured" marker already on disk. Returns a non-null exit code when clearing the label
-    /// couldn't be confirmed (<see cref="ClearLabelAsync"/>'s own exits) or the kill couldn't be
-    /// confirmed (<see cref="VerifyExit.StopUnconfirmed"/>) — in every such case nothing further is
-    /// written and the marker is retained at its last-recorded phase. Every other outcome falls
+    /// install --replace's ownership matrix (spec §3.4). Called after the pre-mutation probe was
+    /// rejected as <see cref="LabelProbe.Unknown"/>, with the "captured" marker on disk. Everything it
+    /// does draws from the shared forward <paramref name="deadline"/>. Returns a non-null exit code
+    /// when a clear/kill couldn't be confirmed (marker retained at its last phase); otherwise falls
     /// through to the shared write+bootstrap+verify tail.
     /// </summary>
-    async Task<int?> ApplyReplaceMatrixAsync(string serviceId, ServiceQuery pre, string preState, string op) {
+    async Task<int?> ApplyReplaceMatrixAsync(string serviceId, ServiceQuery pre, string preState, string op, DateTimeOffset deadline) {
         var validatedPid = validatedDaemonPid(serviceId);
         var owning       = pre.Probe == LabelProbe.Loaded && pre.JobPid is not null && pre.JobPid == validatedPid;
 
         if (owning) {
-            // The label's own bootout already terminates the process it owns (launchd/systemd tear
-            // down the job as part of unloading it) — no separate kill needed or wanted.
-            if (await ClearLabelAsync(serviceId) is { } clearExit) return clearExit;
+            // The label's own bootout terminates the process it owns — no separate kill needed. But the
+            // old job may still be terminating and holding the name lock, so confirm its validated pid
+            // is gone before writing/bootstrapping the replacement, else the new job hits a
+            // deliberate-refusal exit and the replacement spuriously fails.
+            if (await ClearLabelAsync(serviceId, deadline) is { } clearExit) return clearExit;
             ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "label-cleared", preState, "no-unit", null));
+
+            if (!await WaitForPidGoneAsync(serviceId, deadline)) {
+                Say(VerifyExit.StopUnconfirmedToken);
+                return VerifyExit.StopUnconfirmed;
+            }
             return null;
         }
 
         if (pre.Probe == LabelProbe.Loaded || pre.UnitPresent) {
-            // A non-owning or orphan label, or a stopped-but-installed unit — --replace (unlike a
-            // fresh install) is allowed to clear this. Benign-absence semantics: an already-absent
-            // label costs nothing to "clear" again.
-            if (await ClearLabelAsync(serviceId) is { } clearExit) return clearExit;
+            // A non-owning/orphan label, or a stopped-but-installed unit — --replace may clear it.
+            if (await ClearLabelAsync(serviceId, deadline) is { } clearExit) return clearExit;
             ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "label-cleared", preState, "no-unit", null));
         }
 
-        // Re-read AFTER any clearing above, not the pre-clear snapshot: the clear itself (bootout)
-        // can terminate the true owner as a side effect of unloading its label — e.g. `pre.JobPid`
-        // came back null from a launchctl-print race even though the label truly did own the live
-        // daemon, so `owning` was false and we went through the clear above anyway. Killing the
-        // ORIGINAL captured pid after a clear that can take up to _rollbackReserve risks signaling
-        // a since-recycled pid instead. "Kill the validated owner IF ONE REMAINS" only holds if the
-        // owner check happens after the clear, not before it.
+        // Re-read AFTER any clearing: bootout can terminate the true owner as a side effect of
+        // unloading its label, so the pre-clear pid may be stale — kill the validated owner only if one
+        // still remains.
         var liveOwner = validatedDaemonPid(serviceId);
-        if (liveOwner is null) return null; // no live owner left to stop
+        if (liveOwner is null) return null;
 
         if (!DaemonKill.KillValidatedOwner(serviceId, liveOwner.Value, KillWait))
             Say($"replace: kill of validated owner (PID {liveOwner}) did not confirm gone immediately");
 
-        if (!await WaitForStopConfirmedAsync(serviceId, _forwardBudget)) {
+        if (!await WaitForStopConfirmedAsync(serviceId, deadline)) {
             Say(VerifyExit.StopUnconfirmedToken);
             return VerifyExit.StopUnconfirmed;
         }
@@ -478,10 +469,18 @@ sealed class ServiceVerify(
         return null;
     }
 
-    /// <summary>Stop-confirmation predicate for --replace's takeover kill: gone means the validated
-    /// pid is null AND a fresh hello dial is not well-formed — a stronger bar than <see
-    /// cref="DaemonKill"/>'s own pid-only gone-check, since a hung-but-still-answering process is not
-    /// actually stopped.</summary>
+    /// <summary>Poll (bounded by <paramref name="deadline"/>) until the validated daemon pid is null —
+    /// the owning job actually exited and released the name lock.</summary>
+    async Task<bool> WaitForPidGoneAsync(string serviceId, DateTimeOffset deadline) {
+        while (true) {
+            if (validatedDaemonPid(serviceId) is null) return true;
+            if (time.GetUtcNow() >= deadline) return false;
+            await Task.Delay(PollInterval, time, CancellationToken.None);
+        }
+    }
+
+    /// <summary>Stop-confirmation for --replace's takeover kill: gone means the validated pid is null
+    /// AND a fresh hello dial is not well-formed — a hung-but-still-answering process is not stopped.</summary>
     async Task<bool> IsStoppedAsync(string serviceId, TimeSpan budget) {
         if (budget <= TimeSpan.Zero) return false;
 
@@ -491,53 +490,40 @@ sealed class ServiceVerify(
         return validatedDaemonPid(serviceId) is null;
     }
 
-    async Task<bool> WaitForStopConfirmedAsync(string serviceId, TimeSpan budget) {
-        var deadline = time.GetUtcNow() + budget;
-
+    async Task<bool> WaitForStopConfirmedAsync(string serviceId, DateTimeOffset deadline) {
         while (time.GetUtcNow() < deadline) {
-            if (await IsStoppedAsync(serviceId, deadline - time.GetUtcNow())) return true;
-
+            if (await IsStoppedAsync(serviceId, Remaining(deadline))) return true;
             if (time.GetUtcNow() >= deadline) break;
             await Task.Delay(PollInterval, time, CancellationToken.None);
         }
-
         return false;
     }
 
-    /// <summary>Install's ownership + readiness + protocol/name/version predicate (spec §3.4:
-    /// "Install/replace validates protocol, daemon name, and version"). Every one of those three is
-    /// a deterministic fact about the answering daemon, not something a retry can fix, so each
-    /// reports the SAME <see cref="InstallReady.VersionMismatch"/> the caller rolls back on
-    /// immediately rather than waiting out the forward budget:
-    /// <list type="bullet">
-    /// <item>wrong <c>DaemonName</c> — something else is answering on our socket under this
-    /// service id;</item>
-    /// <item>unsupported <c>ProtocolVersion</c> — an incompatible wire shape;</item>
-    /// <item><c>DaemonVersion</c> mismatch, but only when <paramref name="expectedVersion"/> is
-    /// non-null — null means the caller opted out of version validation, not "any version is
-    /// wrong".</item>
-    /// </list>
-    /// </summary>
-    async Task<InstallReady> IsInstallReadyAsync(string serviceId, string? expectedVersion, TimeSpan budget) {
-        if (budget <= TimeSpan.Zero) return InstallReady.NotReady;
+    /// <summary>Install's ownership + readiness + protocol/name/version predicate. Name, protocol, and
+    /// version are deterministic facts a retry can't fix, so each reports the same
+    /// <see cref="InstallReady.VersionMismatch"/> the caller rolls back on immediately. Returns the
+    /// observed job pid so the caller can pin it; <paramref name="requirePid"/>, when set, demands that
+    /// SAME incarnation.</summary>
+    async Task<(InstallReady Status, int? JobPid)> IsInstallReadyAsync(string serviceId, string? expectedVersion, TimeSpan budget, int? requirePid) {
+        if (budget <= TimeSpan.Zero) return (InstallReady.NotReady, null);
 
         var h = await hello(serviceId, budget);
-        if (!h.WellFormed) return InstallReady.NotReady;
-        if (h.DaemonName != serviceId) return InstallReady.VersionMismatch;
-        if (h.ProtocolVersion != HelloProtocol.CurrentVersion) return InstallReady.VersionMismatch;
-        if (expectedVersion is not null && h.DaemonVersion != expectedVersion) return InstallReady.VersionMismatch;
+        if (!h.WellFormed) return (InstallReady.NotReady, null);
+        if (h.DaemonName != serviceId) return (InstallReady.VersionMismatch, null);
+        if (h.ProtocolVersion != HelloProtocol.CurrentVersion) return (InstallReady.VersionMismatch, null);
+        if (expectedVersion is not null && h.DaemonVersion != expectedVersion) return (InstallReady.VersionMismatch, null);
 
-        var jobPid    = manager.Query(serviceId).JobPid;
+        var jobPid    = manager.Query(serviceId, budget).JobPid;
         var daemonPid = validatedDaemonPid(serviceId);
-        return jobPid is not null && daemonPid is not null && jobPid == daemonPid
-            ? InstallReady.Ready
-            : InstallReady.NotReady;
+        var owned     = jobPid is not null && daemonPid is not null && jobPid == daemonPid;
+        if (!owned) return (InstallReady.NotReady, jobPid);
+        if (requirePid is not null && jobPid != requirePid) return (InstallReady.NotReady, jobPid);
+        return (InstallReady.Ready, jobPid);
     }
 
     /// <summary>Rollback for the fresh-install path: uninstall OUR unit and verify the restored state
-    /// is label-absent AND file-gone (unlike start, which retains the plist), bounded by
-    /// <see cref="_rollbackReserve"/>. A foreign plist (fingerprint mismatch) is never touched — same
-    /// rule as the final recheck, checked before the uninstall is even attempted.</summary>
+    /// is label-absent AND file-gone (unlike start, which retains the plist), bounded by the reserve. A
+    /// foreign plist (fingerprint mismatch) is never touched — checked before the uninstall.</summary>
     async Task<int> InstallRollback(string serviceId, string plistPath, string fingerprint, int reasonExit, string reasonToken) {
         var onDisk = _readPlist(plistPath);
         if (onDisk is not null && ServiceTxnMarker.Fingerprint(onDisk) != fingerprint) {
@@ -545,28 +531,26 @@ sealed class ServiceVerify(
             return VerifyExit.RestoreVerification;
         }
 
-        manager.Uninstall(serviceId, out var uninstallError);
+        var deadline = time.GetUtcNow() + _rollbackReserve;
+
+        manager.Uninstall(serviceId, Remaining(deadline), out var uninstallError);
         if (uninstallError is not null) Say($"uninstall: {uninstallError}");
 
-        var rollbackDeadline = time.GetUtcNow() + _rollbackReserve;
-        ServiceQuery lastQuery;
-
+        ServiceQuery last;
         while (true) {
-            lastQuery = manager.Query(serviceId);
-            if (lastQuery.Probe == LabelProbe.Absent && !lastQuery.UnitPresent) {
+            last = manager.Query(serviceId, Remaining(deadline));
+            if (last.Probe == LabelProbe.Absent && !last.UnitPresent) {
                 ServiceTxnMarker.Delete(serviceId);
                 Say(reasonToken);
                 return reasonExit;
             }
 
-            if (time.GetUtcNow() >= rollbackDeadline) break;
+            if (time.GetUtcNow() >= deadline) break;
             await Task.Delay(PollInterval, time, CancellationToken.None);
         }
 
-        // 26 vs 27 turns on the LAST observation, not just "reserve expired": Unknown means we
-        // genuinely couldn't tell (a timeout); still Loaded, or unloaded with the file still
-        // present, is an affirmatively wrong state (see VerifyExit) even at the same deadline.
-        if (lastQuery.Probe == LabelProbe.Unknown) {
+        // Unknown = a genuine timeout; still Loaded, or unloaded-with-file-present, is affirmatively wrong.
+        if (last.Probe == LabelProbe.Unknown) {
             Say(VerifyExit.RollbackBudgetToken);
             return VerifyExit.RollbackBudget;
         }

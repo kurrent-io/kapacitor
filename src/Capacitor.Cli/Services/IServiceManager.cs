@@ -57,3 +57,21 @@ interface IServiceManager {
     /// stopping is not uninstalling.</summary>
     bool Stop(string serviceId, out string? error);
 }
+
+/// <summary>
+/// The launchctl-invoking operations the <c>--verify</c> transaction drives, each bounded by a
+/// per-call <paramref name="timeout"/> carved from the transaction's remaining budget. A launchctl
+/// child that exceeds it is tree-killed and mapped to a bounded failure (Query → <see
+/// cref="LabelProbe.Unknown"/>; Start/Stop/Uninstall → false; WriteAndBootstrap → throw) so a hung
+/// tool can never block the transaction past its deadline. Only <see cref="LaunchdServiceManager"/>
+/// implements it — verify is launchd-only; the plain verbs keep the un-timed <see
+/// cref="IServiceManager"/> methods, which stay unbounded.
+/// </summary>
+interface IVerifyServiceManager {
+    IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec);
+    ServiceQuery Query(string serviceId, TimeSpan timeout);
+    void         WriteAndBootstrap(ServiceSpec spec, TimeSpan timeout);
+    bool         Uninstall(string serviceId, TimeSpan timeout, out string? error);
+    bool         Start(string serviceId, TimeSpan timeout, out string? error);
+    bool         Stop(string serviceId, TimeSpan timeout, out string? error);
+}

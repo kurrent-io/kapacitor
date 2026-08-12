@@ -12,7 +12,7 @@ public class ServiceVerifyStartTests {
     /// state machine driven by Start/Stop, so a test only sets the flags/pid it cares about.
     /// <see cref="Calls"/> records every verb in argv-order (per the brief) so a test can assert
     /// e.g. Stop happened after Start, and the restore Query happened after Stop.</summary>
-    sealed class FakeServiceManager : IServiceManager {
+    sealed class FakeServiceManager : IVerifyServiceManager {
         public readonly List<string> Calls = [];
         public bool Started, Stopped, RemainsLoadedAfterStop, ProbeUnknownAfterStop;
         public int? RunningPid = 4242;
@@ -24,12 +24,9 @@ public class ServiceVerifyStartTests {
         public int StopCalls => Calls.Count(c => c == "stop");
         public int UninstallCalls => Calls.Count(c => c == "uninstall");
 
-        public string Describe() => "fake";
         public IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec) => [];
-        public IReadOnlyList<string> ListInstalled() => [];
-        public ServiceStatus Status(string serviceId) => new(ServiceState.NotInstalled, null);
 
-        public ServiceQuery Query(string serviceId) {
+        public ServiceQuery Query(string serviceId, TimeSpan timeout) {
             Calls.Add("query");
             if (Stopped) {
                 if (ProbeUnknownAfterStop)
@@ -42,16 +39,15 @@ public class ServiceVerifyStartTests {
             return new ServiceQuery(LabelProbe.Absent, true, ServiceState.Installed, "/bin/kcap-daemon", null);
         }
 
-        public void Install(ServiceSpec spec, bool startNow) { }
-        public void WriteAndBootstrap(ServiceSpec spec) { }
+        public void WriteAndBootstrap(ServiceSpec spec, TimeSpan timeout) { }
 
-        public bool Uninstall(string serviceId, out string? error) {
+        public bool Uninstall(string serviceId, TimeSpan timeout, out string? error) {
             Calls.Add("uninstall");
             error = null;
             return true;
         }
 
-        public bool Start(string serviceId, out string? error) {
+        public bool Start(string serviceId, TimeSpan timeout, out string? error) {
             Calls.Add("start");
             OnStart?.Invoke(serviceId);
             Started = true;
@@ -59,7 +55,7 @@ public class ServiceVerifyStartTests {
             return true;
         }
 
-        public bool Stop(string serviceId, out string? error) {
+        public bool Stop(string serviceId, TimeSpan timeout, out string? error) {
             Calls.Add("stop");
             OnStop?.Invoke(serviceId);
             Stopped = true;
@@ -285,6 +281,58 @@ public class ServiceVerifyStartTests {
             await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
             await Assert.That(helloCalls).IsEqualTo(2);
             await Assert.That(manager.StopCalls).IsEqualTo(0);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Final_recheck_at_a_different_incarnation_rolls_back_instead_of_committing() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            // A new job pid on every observation (KeepAlive respawn between the primary check and the
+            // final recheck): each check owns, but the pinned incarnation never survives to the
+            // recheck, so a crash-looping unit is never committed — it rolls back at the forward cutoff.
+            var manager = new FakeServiceManager { RunningPid = 1000 };
+            var time = new FakeTimeProvider();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) {
+                if (manager.Started) manager.RunningPid++;
+                return Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+            }
+
+            var sut = new ServiceVerify(manager, _ => manager.RunningPid, Hello, time, forwardBudget: TimeSpan.FromSeconds(2));
+
+            var task = sut.StartVerifiedAsync(Id);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+            await Assert.That(manager.StopCalls).IsEqualTo(1);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Start_success_records_committed_phase_before_deleting_the_marker() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            var manager = new FakeServiceManager();
+            string? phaseAtCommit = null;
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            // A crash between verify-success and marker removal must be recoverable as "committed →
+            // just clear the marker", so the durable committed phase is written BEFORE the delete —
+            // mirroring the install path.
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                onCommitted: () => phaseAtCommit = ServiceTxnMarker.Read(Id)?.Phase);
+
+            var exit = await sut.StartVerifiedAsync(Id);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+            await Assert.That(phaseAtCommit).IsEqualTo("committed");
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }

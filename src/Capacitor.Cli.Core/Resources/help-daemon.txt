@@ -61,6 +61,8 @@ Subcommands for service (per-user; auto-restarts on crash/SIGKILL, starts at log
                           the poll budget. --replace (requires --verify) takes
                           over an existing label/unit — clears a foreign/loaded
                           label, stops a validated live owner, then installs.
+                          --no-start cannot be combined with --verify (verify
+                          proves the STARTED daemon is ready).
   uninstall [--name N]    Stop and remove the service unit.
   start [--name N] [--verify]
                           Start the installed service now. --verify (macOS/

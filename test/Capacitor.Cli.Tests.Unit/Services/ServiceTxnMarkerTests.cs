@@ -72,6 +72,26 @@ public class ServiceTxnMarkerTests {
     // File.Delete on a path that is actually a directory throws (UnauthorizedAccessException on
     // every platform .NET runs Delete on) — this is what the try/catch in Delete swallows.
     [Test]
+    public async Task Write_and_delete_fire_the_directory_durability_barrier() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        var original = ServiceTxnMarker.FlushDirectory;
+        var flushed  = new List<string>();
+        ServiceTxnMarker.FlushDirectory = d => { flushed.Add(d); return true; };
+        try {
+            ServiceTxnMarker.Write("a", M());
+            ServiceTxnMarker.Delete("a");
+            // Both the rename (Write) and the unlink (Delete) must be followed by a directory flush so
+            // a power loss can't preserve the file's content while losing the directory entry.
+            await Assert.That(flushed.Contains(DaemonLockPaths.Directory)).IsTrue();
+            await Assert.That(flushed.Count).IsGreaterThanOrEqualTo(2);
+        } finally {
+            ServiceTxnMarker.FlushDirectory = original;
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        }
+    }
+
+    [Test]
     public async Task Delete_swallows_the_exception_when_the_path_cannot_be_deleted_as_a_file() {
         var dir = Directory.CreateTempSubdirectory().FullName;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);

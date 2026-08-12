@@ -169,6 +169,49 @@ public partial class LaunchdStartStopTests {
         });
     }
 
+    // ── bounded verify-path ops: a hung launchctl (RunBounded reports TimedOut) maps to a bounded
+    //    failure rather than blocking, so the transaction's deadline is never overrun. ──
+
+    [Test]
+    public async Task Bounded_query_maps_a_timed_out_launchctl_print_to_unknown() {
+        Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");
+
+        await WithHome(async _ => {
+            var mgr = new LaunchdServiceManager(runBounded: (_, _, _) => (137, "", "", true));
+
+            var q = mgr.Query("test", TimeSpan.FromSeconds(1));
+
+            await Assert.That(q.Probe).IsEqualTo(LabelProbe.Unknown);
+        });
+    }
+
+    [Test]
+    public async Task Bounded_uninstall_on_a_timed_out_bootout_retains_the_plist_and_fails() {
+        Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");
+
+        await WithHome(async path => {
+            var mgr = new LaunchdServiceManager(runBounded: (_, _, _) => (0, "", "", true));
+
+            var ok = mgr.Uninstall("test", TimeSpan.FromSeconds(1), out var error);
+
+            await Assert.That(ok).IsFalse();
+            await Assert.That(error).IsNotNull();
+            await Assert.That(File.Exists(path)).IsTrue();
+        });
+    }
+
+    [Test]
+    public async Task Bounded_write_and_bootstrap_throws_on_a_timed_out_bootstrap() {
+        Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");
+
+        await WithHome(async _ => {
+            var mgr = new LaunchdServiceManager(writeUnit: (_, _, _) => { }, runBounded: (_, _, _) => (0, "", "", true));
+            var spec = new ServiceSpec("test", "/opt/kcap/kcap-daemon", "/tmp/daemon-test.log", new Dictionary<string, string>(), []);
+
+            await Assert.That(() => mgr.WriteAndBootstrap(spec, TimeSpan.FromSeconds(1))).Throws<TimeoutException>();
+        });
+    }
+
     [Test]
     public async Task Start_probe_unknown_fails_without_issuing_bootstrap_or_kickstart() {
         Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");

@@ -15,7 +15,7 @@ public class ServiceVerifyInstallTests {
     /// <see cref="WriteAndBootstrap"/>/<see cref="Uninstall"/>, so a test only sets what it cares
     /// about. <see cref="Calls"/> records every verb in argv-order, matching
     /// ServiceVerifyStartTests' fake.</summary>
-    sealed class FakeServiceManager : IServiceManager {
+    sealed class FakeServiceManager : IVerifyServiceManager {
         public readonly List<string> Calls = [];
         public LabelProbe InitialProbe = LabelProbe.Absent;
         public bool InitialUnitPresent;
@@ -33,17 +33,13 @@ public class ServiceVerifyInstallTests {
         public int WriteAndBootstrapCalls  => Calls.Count(c => c == "writeAndBootstrap");
         public int UninstallCalls          => Calls.Count(c => c == "uninstall");
 
-        public string Describe() => "fake";
-        public IReadOnlyList<string> ListInstalled() => [];
-        public ServiceStatus Status(string serviceId) => new(ServiceState.NotInstalled, null);
-
         public IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec) {
             OnGenerateFiles?.Invoke(spec.ServiceId);
             if (GenerateFilesThrows is not null) throw GenerateFilesThrows;
             return [new GeneratedFile(PlistPath, PlistContent)];
         }
 
-        public ServiceQuery Query(string serviceId) {
+        public ServiceQuery Query(string serviceId, TimeSpan timeout) {
             Calls.Add("query");
             // Bootstrapped wins over a PRIOR Uninstalled: entry-time marker recovery and the
             // --replace matrix both call Uninstall() before this same transaction's own later
@@ -59,16 +55,14 @@ public class ServiceVerifyInstallTests {
             return new ServiceQuery(InitialProbe, InitialProbe != LabelProbe.Absent || InitialUnitPresent, ServiceState.NotInstalled, null, null);
         }
 
-        public void Install(ServiceSpec spec, bool startNow) { }
-
-        public void WriteAndBootstrap(ServiceSpec spec) {
+        public void WriteAndBootstrap(ServiceSpec spec, TimeSpan timeout) {
             Calls.Add("writeAndBootstrap");
             OnWriteAndBootstrap?.Invoke(spec.ServiceId);
             if (WriteAndBootstrapThrows is not null) throw WriteAndBootstrapThrows;
             Bootstrapped = true;
         }
 
-        public bool Uninstall(string serviceId, out string? error) {
+        public bool Uninstall(string serviceId, TimeSpan timeout, out string? error) {
             Calls.Add("uninstall");
             Uninstalled  = true;
             Bootstrapped = false;
@@ -76,8 +70,8 @@ public class ServiceVerifyInstallTests {
             return true;
         }
 
-        public bool Start(string serviceId, out string? error) { error = null; return true; }
-        public bool Stop(string serviceId, out string? error) { error = null; return true; }
+        public bool Start(string serviceId, TimeSpan timeout, out string? error) { error = null; return true; }
+        public bool Stop(string serviceId, TimeSpan timeout, out string? error) { error = null; return true; }
     }
 
     /// <summary>Same drive loop as ServiceVerifyStartTests: Task.Delay(interval, time, ct)'s
@@ -158,8 +152,10 @@ public class ServiceVerifyInstallTests {
         var (dir, daemonPath) = SetUpViableInstall();
         try {
             var manager = new FakeServiceManager();
-            var phaseAtGenerateFiles = "";
-            manager.OnGenerateFiles = id => phaseAtGenerateFiles = ServiceTxnMarker.Read(id)!.Phase;
+            // Render viability now runs GenerateFiles BEFORE the first destructive step, so no marker
+            // exists yet when it fires (the old ordering wrote "captured" first — that was the bug).
+            var markerExistsAtGenerateFiles = true;
+            manager.OnGenerateFiles = id => markerExistsAtGenerateFiles = ServiceTxnMarker.Exists(id);
             var phaseAtWriteAndBootstrap = "";
             manager.OnWriteAndBootstrap = id => phaseAtWriteAndBootstrap = ServiceTxnMarker.Read(id)!.Phase;
 
@@ -175,7 +171,7 @@ public class ServiceVerifyInstallTests {
             var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
             await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
-            await Assert.That(phaseAtGenerateFiles).IsEqualTo("captured");
+            await Assert.That(markerExistsAtGenerateFiles).IsFalse();
             await Assert.That(phaseAtWriteAndBootstrap).IsEqualTo("written");
             await Assert.That(phaseAtFirstHello).IsEqualTo("bootstrapped");
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
@@ -459,7 +455,7 @@ public class ServiceVerifyInstallTests {
     }
 
     [Test]
-    public async Task GenerateFiles_throwing_touches_no_disk_state_and_clears_its_own_marker() {
+    public async Task GenerateFiles_throwing_is_a_viability_abort_before_any_destructive_step() {
         var (dir, daemonPath) = SetUpViableInstall();
         try {
             var manager = new FakeServiceManager { GenerateFilesThrows = new InvalidOperationException("invalid captured env value") };
@@ -467,10 +463,28 @@ public class ServiceVerifyInstallTests {
 
             var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            // GenerateFiles is pure — nothing was ever mutated, so there's nothing to roll back.
-            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+            // Rendering the plist is a VIABILITY step now — a throw aborts before anything on disk is
+            // touched (no query, no marker), rather than after the marker was already written.
+            await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
+            await Assert.That(manager.Calls).IsEmpty();
             await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
             await Assert.That(manager.UninstallCalls).IsEqualTo(0);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Invalid_pinned_profile_url_is_a_viability_abort_touching_nothing() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            var manager = new FakeServiceManager();
+            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
+                TimeProvider.System, readPlist: OwnPlist, profileViable: () => false);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
+            await Assert.That(manager.Calls).IsEmpty();
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
@@ -537,6 +551,34 @@ public class ServiceVerifyInstallTests {
             await Assert.That(manager.UninstallCalls).IsEqualTo(1);
             // No stop-by-pid path exists here at all — the only rollback verb is Uninstall.
             await Assert.That(manager.Calls.Contains("stop")).IsFalse();
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Final_recheck_at_a_different_incarnation_rolls_back_instead_of_committing() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            // Every readiness check observes a NEW job pid — a KeepAlive respawn between the primary
+            // check and the final recheck. Ownership holds for each individual check, but the pinned
+            // incarnation never survives to the recheck, so the transaction must never commit a
+            // crash-looping unit; it rolls back at the forward cutoff.
+            var manager = new FakeServiceManager { RunningPid = 1000 };
+            var time = new FakeTimeProvider();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) {
+                if (manager.Bootstrapped) manager.RunningPid++;   // respawn: a new pid per observation
+                return Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+            }
+
+            var sut = new ServiceVerify(manager, _ => manager.RunningPid, Hello, time,
+                forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
+
+            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }

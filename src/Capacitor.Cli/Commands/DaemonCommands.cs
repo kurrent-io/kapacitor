@@ -874,6 +874,14 @@ public static class DaemonCommands {
         var verify  = args.Contains("--verify");
         var replace = args.Contains("--replace");
 
+        // --no-start withholds the start; --verify's whole job is to prove the started daemon is
+        // ready. The two contradict — reject rather than silently start anyway (or silently skip
+        // verification).
+        if (verify && !startNow) {
+            await Console.Error.WriteLineAsync("--no-start is incompatible with --verify.");
+            return 1;
+        }
+
         // --replace only has meaning inside the verify transaction engine (it selects the
         // ownership matrix in ServiceVerify.InstallVerifiedAsync) — a plain (non-verified) install
         // has no transaction to hand it to.
@@ -912,11 +920,19 @@ public static class DaemonCommands {
         var spec    = new ServiceSpec(id, daemonPath, logPath, env, extra);
 
         if (verify) {
-            var engine = new ServiceVerify(manager, DaemonPidProbe.ValidatedPid, HelloProbe.RunAsync, TimeProvider.System);
+            // The CLI is the safety boundary for §4.1's precondition: prove the pinned profile resolves
+            // to a valid server URL here too, so the transaction never destroys a working unit only to
+            // install one whose daemon would exit config-invalid and never satisfy readiness.
+            var profileUrlValid = await ServiceInstallViability.PinnedProfileServerUrlValidAsync(env);
+            var engine = new ServiceVerify((LaunchdServiceManager)manager, DaemonPidProbe.ValidatedPid, HelloProbe.RunAsync,
+                TimeProvider.System, profileViable: () => profileUrlValid);
             var exit   = await engine.InstallVerifiedAsync(spec, replace: replace, CapacitorVersion.Current());
             if (exit != VerifyExit.Ok) return exit;
         } else {
-            manager.Install(spec, startNow);
+            // Plain (non-verify) install serializes on the same per-label lock every other mutating
+            // verb takes — a terminal install must not race an app-driven --replace --verify.
+            var exit = await ServiceInstallPlain(manager, spec, startNow);
+            if (exit != 0) return exit;
         }
 
         // Closed-stdio tolerance for the entire success tail (not just the first line): the npm
@@ -951,6 +967,21 @@ public static class DaemonCommands {
             await Console.Out.WriteLineAsync($"  Remove:    kcap daemon service uninstall --name {id}");
         } catch (IOException) { }
 
+        return 0;
+    }
+
+    /// <summary>Plain install under the per-label service lock (Finding parity with stop/start/uninstall):
+    /// null lock → the same coded-contention message, exit 1, without calling <c>Install</c>. Internal so
+    /// the lock-contention path is testable without <c>ResolveDaemonBinary</c> in the loop.</summary>
+    internal static async Task<int> ServiceInstallPlain(IServiceManager manager, ServiceSpec spec, bool startNow) {
+        using var txn = ServiceTxnLock.TryAcquire(spec.ServiceId, TimeSpan.FromSeconds(10));
+
+        if (txn is null) {
+            await Console.Error.WriteLineAsync($"Another service operation is in progress for '{spec.ServiceId}'. Try again shortly.");
+            return 1;
+        }
+
+        manager.Install(spec, startNow);
         return 0;
     }
 
@@ -1009,7 +1040,7 @@ public static class DaemonCommands {
     /// acquires the <see cref="ServiceTxnLock"/> itself — no double-acquire here.
     /// </summary>
     static async Task<int> ServiceStartVerified(IServiceManager manager, string id) {
-        var engine = new ServiceVerify(manager, DaemonPidProbe.ValidatedPid, HelloProbe.RunAsync, TimeProvider.System);
+        var engine = new ServiceVerify((LaunchdServiceManager)manager, DaemonPidProbe.ValidatedPid, HelloProbe.RunAsync, TimeProvider.System);
         var exit = await engine.StartVerifiedAsync(id);
 
         // Same closed-stdio tolerance as the engine's own Say: a broken pipe on this purely
@@ -1070,6 +1101,7 @@ public static class DaemonCommands {
         Console.Error.WriteLine("  install [--name N] [--profile P] [--max-agents N] [--no-start] [--replace] [--verify]");
         Console.Error.WriteLine("                          --verify (macOS/launchd only) polls readiness/version/ownership and rolls back on failure");
         Console.Error.WriteLine("                          --replace (requires --verify) takes over an existing label/unit/live owner");
+        Console.Error.WriteLine("                          --no-start is incompatible with --verify");
         Console.Error.WriteLine("  uninstall [--name N]   Stop and remove the service unit");
         Console.Error.WriteLine("  start [--name N] [--verify]   Start the installed service now");
         Console.Error.WriteLine("                          --verify (macOS/launchd only) polls readiness/ownership and rolls back on failure");
@@ -1142,5 +1174,26 @@ public static class DaemonCommands {
         Console.Error.WriteLine("  -d, --detach          Run in background (logs to file automatically)");
 
         return 1;
+    }
+}
+
+/// <summary>Pre-mutation viability for <c>service install --verify</c>: does the unit's pinned profile
+/// resolve to a valid server URL? Mirrors the daemon's own resolution — <see cref="ProfileResolver"/>
+/// over the captured <c>KCAP_URL</c>/<c>KCAP_PROFILE</c> — and the daemon's validity check (absolute
+/// http/https), so the CLI rejects before the transaction destroys anything what the daemon would only
+/// reject at startup.</summary>
+static class ServiceInstallViability {
+    public static async Task<bool> PinnedProfileServerUrlValidAsync(IReadOnlyDictionary<string, string> env) {
+        var envUrl     = env.GetValueOrDefault("KCAP_URL");
+        var envProfile = env.GetValueOrDefault("KCAP_PROFILE");
+
+        var config   = await AppConfig.LoadProfileConfig();
+        var resolver = new ProfileResolver(config, cliServerUrl: null, envUrl, envProfile,
+            repoConfig: null, repoRemoteUrls: [], repoPath: null);
+        var url = resolver.Resolve().ServerUrl;
+
+        return url is not null
+            && Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && uri.Scheme is "http" or "https";
     }
 }
