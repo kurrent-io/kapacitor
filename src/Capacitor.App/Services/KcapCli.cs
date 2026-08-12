@@ -12,9 +12,23 @@ public sealed record ServiceSnapshot(
 [JsonSerializable(typeof(ServiceSnapshot))]
 public partial class KcapCliJsonContext : JsonSerializerContext;
 
+/// Domain classification of ServiceSnapshot.State's wire string, with an explicit Unknown arm —
+/// positive-evidence-only (spec §6): an unrecognized/future/typo'd value must never silently read
+/// as NotInstalled and enter a positive-mutation path.
+public enum ServiceState { Running, Installed, NotInstalled, Unknown }
+
+public static class ServiceStateClassifier {
+    public static ServiceState Parse(string state) => state switch {
+        "running"       => ServiceState.Running,
+        "installed"     => ServiceState.Installed,
+        "not_installed" => ServiceState.NotInstalled,
+        _               => ServiceState.Unknown,
+    };
+}
+
 /// Typed facade over every CLI call the app shells out to (spec §3.1/§3.6, decision 1:
-/// everything through the CLI). Consumed by the lifecycle controller (Task 19+) and faked in
-/// tests behind IProcessRunner.
+/// everything through the CLI). Consumed by the lifecycle controller and faked in tests behind
+/// IProcessRunner.
 public interface IKcapCli {
     string? CliPath { get; }
 
@@ -36,9 +50,12 @@ public interface IKcapCli {
 }
 
 public sealed class KcapCli : IKcapCli {
-    // Strictly above the CLI's own 20s forward + 10s rollback reserve (spec §3.4) — the caller's
-    // safety-net kill must never race the transaction's own rollback budget.
-    static readonly TimeSpan MutationTimeout = TimeSpan.FromSeconds(45);
+    // Strictly above the CLI transaction's true worst case: 20s forward + 10s rollback reserve
+    // (spec §3.4) plus up to ~10s lock-wait and ~10s crash-recovery pre-phase, plus a 5s KillWait
+    // outside the 30s envelope on the manual-owner branch — ~50s worst case. 60s keeps margin
+    // above that without the caller's safety-net kill racing a legitimately still-working
+    // transaction.
+    static readonly TimeSpan MutationTimeout = TimeSpan.FromSeconds(60);
     static readonly TimeSpan VersionTimeout = TimeSpan.FromSeconds(10);
     // Same tier as VersionTimeout — also a read-only query — so a hung `launchctl print` can
     // never block the §3.2 per-mutation gate forever once the lifecycle controller polls this.

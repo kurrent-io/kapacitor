@@ -35,9 +35,6 @@ static class VerifyExitCodes {
 /// ILifecycleSurface — never a silent mutation outside the matrix's own explicit rows.
 public sealed class DaemonLifecycleController : IAsyncDisposable {
     const string IncompatibleReason = "daemon_incompatible";
-    const string StateRunning       = "running";
-    const string StateInstalled     = "installed";
-    const string StateNotInstalled  = "not_installed";
 
     /// Decision 3: every unit rewrite this controller offers — same-binary or not — carries this
     /// disclosure. Path equality is not installer provenance.
@@ -89,8 +86,8 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     /// tasks (shim offer timing, skew dialogs never stacking with startup work).
     public Task PhaseClosed => _phaseClosed.Task;
 
-    /// Cached once at Start(); null when the CLI is missing or --version failed. Consumed by
-    /// Task 20's skew classification.
+    /// Cached once at Start(); null when the CLI is missing or --version failed. Consumed by the
+    /// skew classification below.
     public string? CliVersion { get; private set; }
 
     /// Subscribes to the attach stream. MUST be called before the host calls
@@ -128,8 +125,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     // arm below. Only a TERMINAL outcome (never Connecting) can claim that arm, and only the
     // FIRST one ever does — but the switch itself still runs for every later event: the arm gates
     // startup AUTO-ACTION eligibility only, never event admission, so a later daemon_incompatible
-    // (say) still reaches its case — a future skew/takeover hook (Task 20) can act on it there
-    // unconditionally without this dispatcher changing shape.
+    // still reaches its skew/takeover case below unconditionally.
     void OnAttachStatus(AttachStatus status) {
         TaskCompletionSource<bool>? toSignal = null;
         bool isFirstTerminalOutcome;
@@ -319,11 +315,20 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         }
     }
 
-    /// §4.2 table, keyed on the loaded-label/job state before plist presence.
+    /// §4.2 table, keyed on the loaded-label/job state before plist presence. An unrecognized wire
+    /// state is Unknown, not NotInstalled (Standards-2: positive-evidence-only) — never a silent
+    /// entry into the auto-install/start path below.
     async Task RunStartupMatrixAsync(ServiceSnapshot snap, CancellationToken ct) {
-        if (snap.State == StateRunning) return; // launchd's own backoff keeps retrying
+        var state = ServiceStateClassifier.Parse(snap.State);
+        if (state == ServiceState.Unknown) {
+            _surface.Status("Daemon service reported an unrecognized state — skipping automatic action this run.");
+            Console.Error.WriteLine($"kcap: daemon lifecycle startup matrix saw an unrecognized service state: {snap.State}");
+            return;
+        }
 
-        if (snap.State == StateInstalled) { // loaded, inactive
+        if (state == ServiceState.Running) return; // launchd's own backoff keeps retrying
+
+        if (state == ServiceState.Installed) { // loaded, inactive
             if (!snap.UnitPresent) {
                 _surface.Attention("The daemon service label is loaded but its unit file is missing — needs repair.");
                 return;
@@ -336,7 +341,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
             return;
         }
 
-        // snap.State == StateNotInstalled: no loaded label.
+        // state == ServiceState.NotInstalled: no loaded label.
         if (snap.UnitPresent) {
             if (snap.DaemonPid is not null) {
                 AttentionCoexistence(snap.DaemonPid.Value);
@@ -392,6 +397,16 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         var waiter = ArmConfirmWaiter();
         try {
             var result = await mutate(ct).ConfigureAwait(false);
+
+            // §3.6: a forced kill after the CLI transaction's own bound is exceeded (pathological)
+            // — the killed tree's exit code is not a verify outcome and must never be read as one.
+            // Re-query fresh evidence and surface Attention; never auto-mutate off a kill the app
+            // itself had to force.
+            if (result.TimedOut) {
+                await SurfaceTimeoutAttentionAsync(ct).ConfigureAwait(false);
+                return false;
+            }
+
             _ = _client.RestartLoopAsync(); // kick reattach after any attempted action, success or coded failure
 
             if (result.ExitCode == VerifyExitCodes.Ok) {
@@ -410,6 +425,13 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         } finally {
             DisarmConfirmWaiter(waiter);
         }
+    }
+
+    async Task SurfaceTimeoutAttentionAsync(CancellationToken ct) {
+        var snap = await _cli.ServiceStatusAsync(ct).ConfigureAwait(false);
+        _surface.Attention(snap is null
+            ? "The daemon service operation timed out and its outcome could not be re-checked — check state."
+            : $"The daemon service operation timed out — check state (txn_marker={snap.TxnMarker}, txn_active={snap.TxnActive}).");
     }
 
     /// §4.3: runs on every Connected (paired with the latest known snapshot version) and every
@@ -465,7 +487,8 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
             // post-mutation retract entirely and leave an accepted pair mislabeled "declined" on
             // disk. "Declined" must mean the user declined, full stop.
             var (outcome, succeeded) = await ConfirmAndTakeoverAsync(
-                prompt, onAcceptedNotStale: () => RetractDeclineAsync(pairKey), _lifetime.Token).ConfigureAwait(false);
+                prompt, revalidate: fresh => ClassifyTakeover(fresh) == kind,
+                onAcceptedNotStale: () => RetractDeclineAsync(pairKey), _lifetime.Token).ConfigureAwait(false);
 
             switch (outcome) {
                 case ConfirmOutcome.Declined:
@@ -495,8 +518,16 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     /// grow a second `ServiceInstallVerifiedAsync(replace: true)` call site. `onAcceptedNotStale`,
     /// when given, runs after acceptance is confirmed fresh but BEFORE the mutation itself (skew's
     /// decline-claim retract — see its own comment above).
+    ///
+    /// `revalidate`, when given, re-queries a FRESH status right before mutating and rejects a
+    /// classification that no longer matches what the dialog disclosed (spec §3.2: "evidence is
+    /// revalidated inside the gate immediately before mutating"). The generation-token check above
+    /// only catches changes that produced an attach event — a terminal replacing the plist/unit
+    /// directly (no attach event, generation unchanged) needs this second, disk-fresh check. Null
+    /// for the repair affordance, which discloses no classification to go stale.
     async Task<(ConfirmOutcome Outcome, bool MutationSucceeded)> ConfirmAndTakeoverAsync(
-            LifecyclePrompt prompt, Func<Task>? onAcceptedNotStale, CancellationToken ct) {
+            LifecyclePrompt prompt, Func<ServiceSnapshot, bool>? revalidate, Func<Task>? onAcceptedNotStale,
+            CancellationToken ct) {
         var gen0     = CurrentGeneration(); // captured immediately before ConfirmAsync (stale-consent check below)
         var accepted = await _surface.ConfirmAsync(prompt, ct).ConfigureAwait(false);
         if (!accepted) return (ConfirmOutcome.Declined, false);
@@ -504,6 +535,15 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         if (CurrentGeneration() != gen0) {
             _surface.Status("The daemon changed while the prompt was open — canceled, nothing changed.");
             return (ConfirmOutcome.Stale, false);
+        }
+
+        if (revalidate is not null) {
+            var fresh = await QueryStatusForActionAsync(ct).ConfigureAwait(false);
+            if (fresh is null) return (ConfirmOutcome.Stale, false); // already surfaced by QueryStatusForActionAsync
+            if (!revalidate(fresh)) {
+                _surface.Status("The daemon service changed while the prompt was open — canceled, nothing changed.");
+                return (ConfirmOutcome.Stale, false);
+            }
         }
 
         if (onAcceptedNotStale is not null) await onAcceptedNotStale().ConfigureAwait(false);
@@ -563,11 +603,13 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     /// would otherwise double-report a startup-matrix row's own Attention for the exact same
     /// evidence) while genuinely connected.
     void Reconcile(ServiceSnapshot snap, bool attached, bool allowTxnActiveRequery) {
+        var state = ServiceStateClassifier.Parse(snap.State);
+
         if (attached) {
             if (snap.JobPid is not null && snap.DaemonPid is not null && snap.JobPid != snap.DaemonPid)
                 _surface.Attention(
                     $"The daemon service job (pid {snap.JobPid}) does not match the attached daemon (pid {snap.DaemonPid}).");
-            else if (snap.State == StateRunning && snap.DaemonPid is null)
+            else if (state == ServiceState.Running && snap.DaemonPid is null)
                 _surface.Attention("The service reports its job running, but no attached-daemon evidence backs it.");
         }
 
@@ -577,7 +619,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         if (snap.TxnActive && allowTxnActiveRequery)
             _ = RunTxnActiveRequeryAsync();
 
-        if (attached && snap.UnitPresent && snap.State == StateNotInstalled && snap.DaemonPid is not null)
+        if (attached && snap.UnitPresent && state == ServiceState.NotInstalled && snap.DaemonPid is not null)
             _surface.Attention(
                 $"A daemon is running outside the installed service — the service is stopped while a manual daemon (pid {snap.DaemonPid}) owns the name.");
     }
@@ -622,9 +664,9 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         }
     }
 
-    /// §4.4: the Start action (Task 21 wires the trigger). Branches on the loaded-label/job state
-    /// BEFORE plist presence, same precedence as the startup matrix — but unlike that matrix, a
-    /// Start click is NEVER itself consent to rewrite a unit: a mismatched/orphaned/coexisting
+    /// §4.4: the Start action. Branches on the loaded-label/job state BEFORE plist presence, same
+    /// precedence as the startup matrix — but unlike that matrix, a Start click is NEVER itself
+    /// consent to rewrite a unit: a mismatched/orphaned/coexisting
     /// unit always goes through the dialoged repair affordance (OfferRepairAsync) instead of a
     /// silent Attention. Public + caller-awaited from the UI, so every path here is exception-safe
     /// — a click must never crash the app.
@@ -646,12 +688,19 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
                 var snap = await QueryStatusForActionAsync(lct).ConfigureAwait(false);
                 if (snap is null) return; // unknown — already surfaced, no action (spec §6)
 
-                if (snap.State == StateRunning) {
+                var state = ServiceStateClassifier.Parse(snap.State);
+                if (state == ServiceState.Unknown) {
+                    _surface.Status("Daemon service reported an unrecognized state — skipping this action.");
+                    Console.Error.WriteLine($"kcap: daemon lifecycle start action saw an unrecognized service state: {snap.State}");
+                    return;
+                }
+
+                if (state == ServiceState.Running) {
                     _ = _client.RestartLoopAsync();
                     return;
                 }
 
-                if (snap.State == StateInstalled) {
+                if (state == ServiceState.Installed) {
                     if (snap.UnitPresent && snap.DaemonPid is null)
                         await RunVerifiedMutationAsync(_cli.ServiceStartVerifiedAsync, lct).ConfigureAwait(false);
                     else
@@ -659,7 +708,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
                     return;
                 }
 
-                // snap.State == StateNotInstalled: no loaded label.
+                // state == ServiceState.NotInstalled: no loaded label.
                 if (snap.UnitPresent) {
                     if (snap.DaemonPid is null)
                         await RunVerifiedMutationAsync(_cli.ServiceStartVerifiedAsync, lct).ConfigureAwait(false); // bootstrap the stopped unit
@@ -694,7 +743,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         var terminalPath = await _probe.TerminalPathAsync(ct).ConfigureAwait(false);
         var prompt = new LifecyclePrompt(LifecyclePrompt.KindRepair, null, null, terminalPath is null, TakeoverDisclosure);
 
-        await ConfirmAndTakeoverAsync(prompt, onAcceptedNotStale: null, ct).ConfigureAwait(false);
+        await ConfirmAndTakeoverAsync(prompt, revalidate: null, onAcceptedNotStale: null, ct).ConfigureAwait(false);
     }
 
     /// App shutdown awaits this: completes once no mutation child is in flight. Does not itself

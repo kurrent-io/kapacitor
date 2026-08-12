@@ -126,6 +126,22 @@ public class DaemonLifecycleControllerTests {
         await Assert.That(h.Surface.AttentionMessages).IsEmpty();
     }
 
+    // Standards-2: an unrecognized wire state must never fall through to the NotInstalled
+    // (auto-install/start) branch — positive evidence only.
+    [Test]
+    public async Task Unrecognized_state_is_status_only_no_auto_install_or_start() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(state: "some_future_state"));
+        h.Start();
+
+        h.PushUnreachable();
+
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the honest unrecognized-state line");
+        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Surface.AttentionMessages).IsEmpty();
+    }
+
     [Test]
     public async Task Row5_nothing_no_profile_is_status_only_no_mutation() {
         await using var h = new Harness();
@@ -421,6 +437,63 @@ public class DaemonLifecycleControllerTests {
         await Assert.That(h.Surface.StatusMessages.Count).IsEqualTo(1);
     }
 
+    // ---- Finding 8: forced-kill timeout is never read as a verify outcome (spec §3.6) ----
+
+    [Test]
+    public async Task TimedOut_mutation_reQueries_status_and_raises_attention_not_a_status_line() {
+        await using var h = new Harness();
+        var statusCalls = 0;
+        h.Cli.StatusBehavior = _ => {
+            statusCalls++;
+            // First call is the matrix's own classification query (Row5: nothing installed →
+            // install). Second is RunVerifiedMutationAsync's post-timeout re-query.
+            return Task.FromResult<ServiceSnapshot?>(statusCalls == 1 ? Snap() : Snap(txnMarker: true, txnActive: true));
+        };
+        // ExitCode 0 here is deliberate: a killed tree's exit code must never be trusted as Ok.
+        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromResult(new ProcessResult(0, "", "killed", true));
+        h.Start();
+
+        h.PushUnreachable();
+
+        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the install attempt");
+        await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "the timeout attention");
+        await Assert.That(h.Surface.AttentionMessages[0]).Contains("txn_marker=True");
+        await Assert.That(h.Surface.AttentionMessages[0]).Contains("txn_active=True");
+        await Assert.That(h.Surface.StatusMessages).IsEmpty(); // never a plain exit-code Status line
+        await Assert.That(statusCalls).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task TimedOut_mutation_never_kicks_reattach_or_waits_for_confirmation() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Cli.StartVerifiedBehavior = _ => Task.FromResult(new ProcessResult(0, "", "killed", true));
+        h.Start();
+
+        h.PushUnreachable();
+
+        await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "the timeout attention");
+        await h.Controller.PhaseClosed;
+        await Assert.That(h.Client.RestartCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task TimedOut_mutation_status_reQuery_failure_still_raises_attention() {
+        await using var h = new Harness();
+        var statusCalls = 0;
+        h.Cli.StatusBehavior = _ => {
+            statusCalls++;
+            return Task.FromResult<ServiceSnapshot?>(statusCalls == 1 ? Snap() : null);
+        };
+        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromResult(new ProcessResult(1, "", "killed", true));
+        h.Start();
+
+        h.PushUnreachable();
+
+        await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "the timeout attention despite an unreadable re-query");
+        await Assert.That(h.Surface.StatusMessages).IsEmpty();
+    }
+
     // ---- version caching ----
 
     [Test]
@@ -607,6 +680,22 @@ public class DaemonLifecycleControllerTests {
     public async Task StartAction_status_unknown_takes_no_action() {
         await using var h = new Harness();
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(null);
+        h.Start();
+
+        await h.Controller.StartActionAsync(CancellationToken.None);
+
+        await Assert.That(h.Surface.StatusMessages.Count).IsEqualTo(1);
+        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(0);
+        await Assert.That(h.Client.RestartCount).IsEqualTo(0);
+    }
+
+    // Standards-2 counterpart for the Start action's own state-classification switch.
+    [Test]
+    public async Task StartAction_unrecognized_state_is_status_only_no_action() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(state: "some_future_state"));
         h.Start();
 
         await h.Controller.StartActionAsync(CancellationToken.None);
@@ -881,6 +970,85 @@ public class DaemonLifecycleControllerTests {
         h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(false);
         h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
         await WaitUntilAsync(() => h.Surface.Prompts.Count == 2, what: "the re-offered prompt");
+    }
+
+    // Finding 7: a terminal can replace the plist/unit while the dialog is open WITHOUT producing
+    // an attach event — the generation token alone is blind to this. Acceptance must re-query
+    // fresh status and re-classify before mutating; a classification flip aborts exactly like the
+    // generation-based stale-consent path above.
+    [Test]
+    public async Task Skew_accept_aborts_when_fresh_status_reclassifies_without_a_generation_bump() {
+        await using var h = new Harness();
+        var confirmTcs = new TaskCompletionSource<bool>();
+        h.Surface.ConfirmBehavior = (_, _) => confirmTcs.Task;
+        var sameBinary      = Snap(unitPresent: true, state: "installed", installBinaryPath: "/opt/kcap/kcapd", binaryPath: "/opt/kcap/kcapd");
+        var differentBinary = Snap(unitPresent: true, state: "installed", installBinaryPath: "/opt/kcap/kcapd", binaryPath: "/usr/local/bin/kcapd-old");
+        var noMutationRow   = Snap(state: "running", jobPid: 1, daemonPid: 1);
+        var next = noMutationRow; // swapped explicitly at each step below — never inferred from call count
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(next);
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        // Claim the once-per-run arm on a harmless no-mutation row first — the daemon_incompatible
+        // push below must NOT be the run's first terminal outcome, or it would ALSO fire a
+        // concurrent RunReconciliationAsync status query racing RunSkewCheckAsync's own two
+        // (dialog-build + in-gate revalidation), making "which call sees which snapshot"
+        // nondeterministic instead of exercising the intended sequence.
+        h.PushUnreachable();
+        await h.Controller.PhaseClosed;
+
+        next = sameBinary; // the dialog-build query below
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the skew prompt shown");
+        await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindRestartUpdate);
+
+        next = differentBinary; // a terminal silently replaced the plist mid-dialog — no attach event
+        confirmTcs.SetResult(true); // accept — generation is unchanged
+
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the reclassification abort status");
+        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+
+        // Never a real decline — the claim is retracted and the run flag cleared, same as the
+        // generation-based stale-consent path.
+        var afterAbort = await h.Store.LoadAsync();
+        await Assert.That((afterAbort.DeclinedTakeoverPairs ?? []).Contains("0.9|1.0.0")).IsFalse();
+
+        next = sameBinary;
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(false);
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 2, what: "the re-offered prompt");
+    }
+
+    // Unchanged evidence between show and accept proceeds — the counterpart to the reclassification
+    // abort above. Distinct from Skew_accept_calls_install_verified_replace_true_and_nothing_else:
+    // this one asserts the revalidation query itself ran (a StatusCallCount delta of 2) rather than
+    // just the eventual install call.
+    [Test]
+    public async Task Skew_accept_with_unchanged_status_revalidates_then_proceeds() {
+        await using var h = new Harness();
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
+        var installedSnap = Snap(unitPresent: true, state: "installed", installBinaryPath: "/opt/kcap/kcapd", binaryPath: "/opt/kcap/kcapd");
+        var noMutationRow = Snap(state: "running", jobPid: 1, daemonPid: 1);
+        var next = noMutationRow;
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(next);
+        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromResult(Ok());
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+
+        // Claim the arm on a harmless no-mutation row first — see the comment on
+        // Skew_accept_aborts_when_fresh_status_reclassifies_without_a_generation_bump above for why
+        // daemon_incompatible must not be the run's first terminal outcome here.
+        h.PushUnreachable();
+        await h.Controller.PhaseClosed;
+        var statusCallsBeforeSkew = h.Cli.StatusCallCount;
+
+        next = installedSnap;
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+
+        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the takeover install");
+        await Assert.That(h.Cli.StatusCallCount - statusCallsBeforeSkew).IsEqualTo(2); // the dialog query + the in-gate revalidation
+
+        h.PushConnected(); // let the mutation's confirm-wait resolve so disposal doesn't wait on it
     }
 
     [Test]
