@@ -339,8 +339,7 @@ public static class SetupCommand {
             EnableCodexNetworkAccess: () => CodexConfigToml.EnableNetworkAccess(codexAllowDomains),
             RegisterCodexMcp:         () => CodexConfigToml.RegisterKcapMcpServers(),
             // every non-Claude JSON harness registers the ForCursor subset — the full set,
-            // kcap-workitems included (session id resolves from an explicit arg /
-            // KCAP_SESSION_ID / CODEX_THREAD_ID; breakdown/relation tools need no session id).
+            // kcap-workitems included (see KcapMcpServers.ForCursor).
             RegisterCursorMcp:        () => HarnessMcpProjections.Cursor.Register(CursorPaths.UserMcpJson()),
             RegisterCopilotMcp:       () => HarnessMcpProjections.Copilot.Register(CopilotPaths.McpConfigJson()),
             InstallCopilotInstructions: () => AgentInstructionsWriter.Write(
