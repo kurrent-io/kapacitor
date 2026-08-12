@@ -128,9 +128,7 @@ static class McpWorkItemsServer {
     }
 
     // Server-level usage preamble (MCP `instructions`) — steers agents to DECLARE a work item's
-    // structure, not just attach to it. A work item's breakdown (parent→parts) and dependencies
-    // (blocks/blocked-by) are declared facts, never inferred, so an item whose structure nobody
-    // declares has an empty topology and renders no blockers/dependencies or progress figure.
+    // structure (breakdown + relations, which the server never infers), not just attach to it.
     internal const string ServerInstructions =
         "Use these tools to attach the current session to its SDLC work item AND to declare that work " +
         "item's structure. When you plan or discover that a work item breaks into parts, create the part " +
