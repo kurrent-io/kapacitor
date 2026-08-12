@@ -155,22 +155,22 @@ public class PtySpawnTests {
         var plan = Preflight("/bin/sleep", ["sleep", "5"]);
         try {
             var rc = Spawn(plan, out var result);
-            // Assert a genuine successful spawn BEFORE the cleanup block: on a failure path
-            // pty_spawn leaves result zero-filled (Pid 0) with MasterFd -1. close(-1) is a
-            // harmless no-op, but kill(0, SIGKILL) is actively harmful — it signals the whole
-            // process group (the test host). So only enter the fd-owning try once we hold a
-            // real child + fd.
-            await Assert.That(rc).IsEqualTo(0);
-            await Assert.That(result.Pid).IsGreaterThan(0);
-            await Assert.That(result.MasterFd).IsGreaterThanOrEqualTo(0);
             try {
+                await Assert.That(rc).IsEqualTo(0);
+                await Assert.That(result.MasterFd).IsGreaterThanOrEqualTo(0);
                 var flags = fcntl(result.MasterFd, F_GETFD, 0);
                 await Assert.That(flags).IsGreaterThanOrEqualTo(0); // fcntl itself succeeded
                 await Assert.That(flags & FD_CLOEXEC).IsEqualTo(FD_CLOEXEC);
             } finally {
-                UnixPtyInterop.close(result.MasterFd);
-                UnixPtyInterop.kill(result.Pid, UnixPtyInterop.SIGKILL);
-                UnixPtyInterop.waitpid(result.Pid, out _, 0);
+                // Cleanup is GUARDED, not gated: it always runs after Spawn returns, so a child
+                // created before a failing assertion is still reaped — but each op is conditioned
+                // on a valid sentinel, since pty_spawn zero-fills result on failure (Pid 0,
+                // MasterFd -1) and kill(0, SIGKILL) would signal the whole process group.
+                if (result.MasterFd >= 0) UnixPtyInterop.close(result.MasterFd);
+                if (result.Pid > 0) {
+                    UnixPtyInterop.kill(result.Pid, UnixPtyInterop.SIGKILL);
+                    UnixPtyInterop.waitpid(result.Pid, out _, 0);
+                }
             }
         } finally { Free(plan); }
     }
