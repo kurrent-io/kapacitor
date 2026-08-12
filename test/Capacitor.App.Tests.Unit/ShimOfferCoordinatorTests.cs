@@ -63,14 +63,15 @@ public class ShimOfferCoordinatorTests {
         public readonly PathShimInstaller Installer;
         public readonly ShimOfferCoordinator Coordinator;
 
-        public Harness(bool immediatePhaseClosed = false, bool noTarget = false) {
+        public Harness(bool immediatePhaseClosed = false, bool noTarget = false, Func<bool>? isMacOs = null) {
             Target      = noTarget ? null : Path.Combine(TempDir, "target-cli");
             Destination = Path.Combine(TempDir, "kcap");
             Installer   = new PathShimInstaller(Runner, Probe);
 
             var phaseClosed = immediatePhaseClosed ? Task.CompletedTask : PhaseClosedSource.Task;
             Coordinator = new ShimOfferCoordinator(
-                phaseClosed, Probe, Installer, Store, Surface, Target, CancellationToken.None, Destination);
+                phaseClosed, Probe, Installer, Store, Surface, Target, CancellationToken.None, Destination,
+                isMacOs ?? (() => true));
             Coordinator.Offerable.Subscribe(OfferableValues.Add);
         }
 
@@ -104,6 +105,31 @@ public class ShimOfferCoordinatorTests {
         h.Coordinator.Start();
 
         await WaitUntilAsync(() => h.OfferableValues.Contains(true), what: "the item to become visible");
+    }
+
+    // ---- spec §3.3: macOS-only, no-op elsewhere ----
+
+    [Test]
+    public async Task Off_macOS_never_probes_never_offers_and_the_menu_item_stays_hidden() {
+        using var h = new Harness(immediatePhaseClosed: true, isMacOs: () => false);
+        var probed = false;
+        h.Probe.KcapOnPathBehavior = _ => { probed = true; return Task.FromResult<bool?>(false); };
+        h.Coordinator.Start();
+
+        await Task.Delay(100); // give a wrongly-firing probe/offer every chance to appear
+        await Assert.That(probed).IsFalse();
+        await Assert.That(h.OfferableValues).DoesNotContain(true);
+        await Assert.That(h.Surface.Prompts).IsEmpty();
+    }
+
+    [Test]
+    public async Task Off_macOS_manual_install_is_a_no_op_no_installer_spawn() {
+        using var h = new Harness(isMacOs: () => false);
+
+        await h.Coordinator.RunManualInstallAsync();
+
+        await Assert.That(h.Runner.Calls).IsEmpty();
+        await Assert.That(h.Surface.StatusMessages).IsEmpty();
     }
 
     // ---- detection: absolute target required, positive probe required ----

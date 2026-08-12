@@ -9,6 +9,9 @@ namespace Capacitor.App.Services;
 /// startup matrix. `ConfirmAsync` is routed through the SAME `ILifecycleSurface` the skew/repair
 /// dialogs use — its own `SemaphoreSlim(1,1)` already guarantees this offer never stacks over one
 /// of those, so no second serialization lives here.
+///
+/// spec §3.3: macOS-only, no-op elsewhere — off-macOS the target is forced null at construction,
+/// so this degrades exactly like "nothing to link" everywhere below.
 public sealed class ShimOfferCoordinator {
     internal const string ShimDisclosure =
         "This links /usr/local/bin/kcap to this app's CLI, so kcap works from any terminal. " +
@@ -36,18 +39,28 @@ public sealed class ShimOfferCoordinator {
         : this(phaseClosed, probe, installer, store, surface, target, lifetime, PathShimInstaller.Destination) { }
 
     // Test seam mirroring PathShimInstaller.InstallAsync's own internal destination-override
-    // overload (Task 23): lets tests drive real Preflight/InstallAsync taxonomy against a temp
-    // path instead of the real /usr/local/bin/kcap. Production always goes through the public
-    // constructor above, which pins `destination` to PathShimInstaller.Destination.
+    // overload: lets tests drive real Preflight/InstallAsync taxonomy against a temp path instead
+    // of the real /usr/local/bin/kcap. Production always goes through the public constructor
+    // above, which pins `destination` to PathShimInstaller.Destination.
     internal ShimOfferCoordinator(
             Task phaseClosed, ILoginShellProbe probe, PathShimInstaller installer, IAppStateStore store,
-            ILifecycleSurface surface, string? target, CancellationToken lifetime, string destination) {
+            ILifecycleSurface surface, string? target, CancellationToken lifetime, string destination)
+        : this(phaseClosed, probe, installer, store, surface, target, lifetime, destination, OperatingSystem.IsMacOS) { }
+
+    // spec §3.3: macOS-only, no-op elsewhere. `isMacOs` is a test seam (off-macOS can't otherwise
+    // be exercised from macOS CI); production always resolves to the real OS check. Nulling
+    // `_target` off-macOS reuses every existing "nothing to link" no-op path below (RunAsync,
+    // RunInstallAsync) instead of adding a second guard.
+    internal ShimOfferCoordinator(
+            Task phaseClosed, ILoginShellProbe probe, PathShimInstaller installer, IAppStateStore store,
+            ILifecycleSurface surface, string? target, CancellationToken lifetime, string destination,
+            Func<bool> isMacOs) {
         _phaseClosed = phaseClosed;
         _probe       = probe;
         _installer   = installer;
         _store       = store;
         _surface     = surface;
-        _target      = target;
+        _target      = isMacOs() ? target : null;
         _lifetime    = lifetime;
         _destination = destination;
     }
