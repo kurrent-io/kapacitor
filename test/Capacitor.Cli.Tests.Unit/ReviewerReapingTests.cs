@@ -690,6 +690,43 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(orch.ReapClaimGateWait).IsLessThan(AgentOrchestrator.HeartbeatInterval);
     }
 
+    /// <summary>The TOCTOU between a WON claim and the stop it gates: <c>HandleStopAgent</c> re-resolves
+    /// the id from the live agent map rather than taking the claimed instance directly, so a relaunch
+    /// reusing the id between the claim and the stop would otherwise tear down the FRESH incarnation on
+    /// the claimed one's evidence. Unreachable today — ids are unique per launch — but
+    /// <c>StopClaimedReapAsync</c>'s incarnation re-check closes it structurally.
+    ///
+    /// <para>Drives the post-claim half directly via <c>StopClaimedReapForTest</c> rather than
+    /// re-running <c>ReapReviewerForTest</c> end to end: a second claim attempt on the same candidate
+    /// would already abort on the swapped map entry through the claim's OWN incarnation check (a
+    /// different guard, exercised elsewhere in this file) before ever reaching the one under test
+    /// here.</para></summary>
+    [Test]
+    public async Task Relaunch_between_claim_and_stop_aborts_the_reap() {
+        var server = new CaptureServerConnection();
+
+        await using var orch = BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var claimed = orch.SeedAgentForTest("reused-id", LaunchKind.ReviewFlow, status: "Running",
+            pty: new RecordingPtyProcess());
+        var candidate = new AgentOrchestrator.ReapCandidate(claimed, "reviewer_ttl_expired", 0, FencedOnActivity: false);
+
+        await Assert.That(await orch.TryClaimReapForTest(candidate)).IsTrue();
+        await Assert.That(claimed.IsReapClaimed).IsTrue();
+
+        // Stands in for a relaunch reusing the id after the claim won but before the stop runs — the
+        // exact window HandleStopAgent's by-id resolve cannot see.
+        var relaunched = orch.SeedAgentForTest("reused-id", LaunchKind.ReviewFlow, status: "Running",
+            pty: new RecordingPtyProcess());
+
+        await orch.StopClaimedReapForTest(candidate);
+
+        await Assert.That(claimed.Status).IsEqualTo("Running");
+        await Assert.That(relaunched.Status).IsEqualTo("Running");
+        await Assert.That(server.StatusChangedCalls).DoesNotContain(("reused-id", "Completed"));
+    }
+
     /// <summary>PTY double that PARKS inside its first write, holding whatever section its caller is in
     /// until the test releases it. Later writes (the submit CR, and anything the stop path sends) pass
     /// straight through by default, so only the one window under test is controlled.

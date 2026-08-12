@@ -143,6 +143,51 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(seqs[1]).IsEqualTo(3UL);
     }
 
+    /// <summary>Qodo (reliability): a stalled send must not hold <c>_statusReportOrderingGate</c> — and
+    /// every OTHER waiter behind it — forever. <see cref="AgentOrchestrator.StatusReportSendTimeout"/>
+    /// bounds the in-gate WAIT, not the send's invocation, so a parked first send times out, the gate
+    /// releases, and a second emission proceeds and reaches the wire — and the content-monotonicity
+    /// property from <see cref="Report_content_is_monotone_in_send_completion_order"/> still holds: the
+    /// abandoned send's INVOCATION already happened under the gate before the second one's, so it keeps
+    /// its place in wire (completion) order even though it finishes later.</summary>
+    [Test]
+    public async Task Timed_out_send_releases_the_gate_for_the_next_report() {
+        var probe = new OrderingProbeServerConnection();
+        var time  = new FakeTimeProvider();
+        var clock = new AgentActivityClock(time);
+
+        await using var orch = BuildOrchestrator(probe, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        orch.StatusReportSendTimeout = TimeSpan.FromMilliseconds(200);
+
+        var agent = orch.SeedAgentForTest("timeout-1", pty: new RecordingPtyProcess(), activityClock: clock);
+
+        // Parks inside the hub send, holding the gate past the (shortened) send timeout.
+        var stalled = orch.SendDaemonStatusReportOnceAsync();
+        await probe.FirstSendEntered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        clock.Advance(); // so the second emission's capture is distinguishable from the parked one's
+
+        // Bounded by the test's own 5s wait, not by StatusReportSendTimeout: if the gate stayed held
+        // for the never-releasing parked send, this would hang instead of completing.
+        await orch.SendDaemonStatusReportOnceAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        await PollUntilAsync(() => probe.CompletedInOrder.Count >= 1);
+        await Assert.That(probe.CompletedInOrder[0].LiveAgents.Single(a => a.Id == agent.Id).ActivitySeq)
+            .IsEqualTo(2UL); // the second emission's own capture, on the wire first
+
+        // The abandoned first send eventually completes once released — content-honest (still seq 1,
+        // captured before the release) even though it lands second.
+        probe.ReleaseFirstSend();
+        await stalled.WaitAsync(TimeSpan.FromSeconds(5));
+        await PollUntilAsync(() => probe.CompletedInOrder.Count >= 2);
+
+        var seqs = probe.CompletedInOrder
+            .Select(r => r.LiveAgents.Single(a => a.Id == agent.Id).ActivitySeq)
+            .ToList();
+        await Assert.That(seqs[0]).IsEqualTo(2UL);
+        await Assert.That(seqs[1]).IsEqualTo(1UL);
+    }
+
     /// <summary>Contract pin for the "no correlation nonce" half of the design: the unsolicited
     /// delivery-triggered report reuses the ONE report shape, and that shape carries no nonce/echo
     /// member at all — so it is structurally incapable of masquerading as the answer to a correlated

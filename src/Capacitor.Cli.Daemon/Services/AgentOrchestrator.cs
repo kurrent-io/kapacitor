@@ -1169,52 +1169,69 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         finally { Interlocked.Exchange(ref _quarantineSweepRunning, 0); }
     }
 
-    /// <summary>Round-dispatch grace: the per-daemon ordering section for status reports. Held from
-    /// snapshot construction THROUGH completion of the hub send, so captured content is monotone in
-    /// wire order (SignalR preserves per-connection send order).
+    /// <summary>Round-dispatch grace: the per-daemon ordering section for status-report build+send.
     ///
-    /// <para>This is load-bearing, not hygiene. The server folds every flow-participant report and
-    /// treats ANY activity-seq regression as permanent corruption — the fold latches "regressed" and
-    /// disables that agent's liveness supervision for good. Two concurrent emissions that captured
-    /// their snapshots independently can send seq N after seq N+1 (a report built before a delivery
-    /// advanced the clock, sent after the delivery-triggered one), tripping exactly that latch:
-    /// silently DISABLING supervision, the opposite failure direction from the one this work fixes.
-    /// Serializing snapshot+send removes the interleaving entirely.</para>
+    /// <para><b>Invariant.</b> Wire content must be non-decreasing in per-agent
+    /// <see cref="AgentActivityClock.ActivitySeq"/> — the server's flow-participant fold treats ANY
+    /// regression as permanent corruption (latches "regressed", disables that agent's liveness
+    /// supervision for good). <see cref="BuildStatusReport"/> runs inside this section, and the hub-send
+    /// is INVOKED inside it too, so invocation order — and with it SignalR's per-connection wire order
+    /// — is fixed by acquisition order regardless of how long any one send takes to finish (see
+    /// <see cref="SendDaemonStatusReportOnceAsync"/>'s bounded wait).</para>
     ///
-    /// <para>EVERY status-report emission site MUST route through
-    /// <see cref="SendDaemonStatusReportOnceAsync"/> and therefore through this gate — today the 60s
-    /// periodic loop, the server's on-request nudge, the launch-stage transition, and the delivered-
-    /// input report; and equally any future one (a correlated status-request/echo handler above all,
-    /// since a correlated reply is the exact variant whose content is captured under contention).
-    /// A site that calls <c>_server.DaemonStatusReportAsync</c> directly bypasses the ordering and
-    /// reintroduces the latch.</para>
+    /// <para><b>Rule.</b> EVERY status-report emission site MUST route through
+    /// <see cref="SendDaemonStatusReportOnceAsync"/>; a direct <c>_server.DaemonStatusReportAsync</c>
+    /// call bypasses the ordering and can regress the fold.</para>
     ///
-    /// <para><b>Lock ordering.</b> This gate is held across a whole hub send and takes
-    /// <see cref="AgentActivityClock"/>'s lock underneath it (via <see cref="BuildStatusReport"/>), so
-    /// the permitted edge is ordering → clock. It must NEVER be acquired while a per-agent
-    /// <see cref="AgentInstance.BorrowedSnapshotGate"/> is held: that would put an unbounded network
-    /// wait under a per-agent lock whose other holder can be parked in an uncancellable pty write.
-    /// The delivery-triggered emission therefore offloads (see <see cref="HandleSendInput"/>) rather
-    /// than awaiting this gate inside the section.</para>
+    /// <para><b>Lock order.</b> ordering → clock (via <see cref="BuildStatusReport"/>). MUST NEVER be
+    /// acquired while a per-agent <see cref="AgentInstance.BorrowedSnapshotGate"/> is held —
+    /// <see cref="HandleSendInput"/> offloads its emission for exactly this reason.</para>
     ///
-    /// <para>Deliberately never disposed: emissions are fire-and-forget, so a waiter parked here
-    /// during teardown would surface an <see cref="ObjectDisposedException"/> on a task nobody
-    /// observes. Same treatment as the per-agent <c>BorrowedSnapshotGate</c>.</para></summary>
+    /// <para>Never disposed: emissions are fire-and-forget, so a waiter parked here during teardown
+    /// must not fault on an <see cref="ObjectDisposedException"/> nobody observes.</para>
+    ///
+    /// See docs/superpowers/specs/2026-08-10-ai1842-round-dispatch-grace-design.md (kcap-server) for
+    /// rationale.</summary>
     readonly SemaphoreSlim _statusReportOrderingGate = new(1, 1);
 
-    /// <summary>Phase B (D2): build + send one status report, one-way, swallowing errors (an
-    /// old server has no handler; a transient send failure must not touch the agent loops).
-    /// Round-dispatch grace: the build+send pair runs under
-    /// <see cref="_statusReportOrderingGate"/> — see that field for why the ordering is load-bearing
-    /// and why every emission site has to come through here.</summary>
+    /// <summary>Bound on <see cref="SendDaemonStatusReportOnceAsync"/>'s in-gate wait for the hub send
+    /// to complete. A parked send (dead/degraded connection) must not hold every other emission behind
+    /// it forever; see that method for why releasing the WAIT here is safe. Settable so tests don't
+    /// wait the real 30s.</summary>
+    internal TimeSpan StatusReportSendTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Phase B (D2): build + send one status report, one-way, swallowing errors (an old
+    /// server has no handler). Snapshot build AND the send's INVOCATION happen inside
+    /// <see cref="_statusReportOrderingGate"/> — see that field for the ordering invariant. The WAIT for
+    /// completion is bounded by <see cref="StatusReportSendTimeout"/> and released on timeout without
+    /// waiting further: invocation order, not completion order, is what the invariant needs, so
+    /// dropping the wait here is safe while dropping the invocation itself out from under the gate
+    /// would not be.</summary>
     internal async Task SendDaemonStatusReportOnceAsync() {
-        await _statusReportOrderingGate.WaitAsync();
+        try {
+            await _statusReportOrderingGate.WaitAsync(_shutdownCts.Token);
+        } catch (OperationCanceledException) {
+            return; // shutdown must not strand a waiter behind a gate nobody will release
+        }
+
         try {
             // BuildStatusReport() is evaluated INSIDE the section, not passed in from outside it —
             // a snapshot captured before acquisition is exactly the stale content the section exists
-            // to keep off the wire.
-            try { await _server.DaemonStatusReportAsync(BuildStatusReport()); }
-            catch (Exception ex) { _logger.LogDebug(ex, "DaemonStatusReport send failed — ignoring"); }
+            // to keep off the wire. The invocation itself is inside this try too (not just the await):
+            // a double that throws synchronously instead of returning a faulted Task must be swallowed
+            // the same as an awaited failure.
+            Task? send = null;
+            try {
+                send = _server.DaemonStatusReportAsync(BuildStatusReport());
+                await send.WaitAsync(StatusReportSendTimeout, _shutdownCts.Token);
+            } catch (TimeoutException) {
+                // The invocation already happened under the gate (see the gate's own doc), so wire
+                // FIFO on this single connection still holds even though we stop waiting here.
+                LogStatusReportSendTimedOut(StatusReportSendTimeout.TotalSeconds);
+                ObserveAbandonedStatusReportSend(send!);
+            } catch (Exception ex) {
+                _logger.LogDebug(ex, "DaemonStatusReport send failed — ignoring");
+            }
         } finally {
             _statusReportOrderingGate.Release();
         }
@@ -1235,6 +1252,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // already relies on.
         Processor?.RedeliverUnretiredProcessedAcks();
     }
+
+    /// <summary>Observes an abandoned status-report send (see
+    /// <see cref="SendDaemonStatusReportOnceAsync"/>) so its eventual completion — or fault, once it
+    /// finally lands or the connection reclaims it — is not an unobserved task exception.</summary>
+    void ObserveAbandonedStatusReportSend(Task send) =>
+        _ = send.ContinueWith(
+            t => LogStatusReportSendFailedInBackground(t.Exception!.GetBaseException()),
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
     /// <summary>The out-of-cycle report fired on a launch-stage transition, wired in
     /// <see cref="CreateActivityClock"/>. Shares <see cref="SendDaemonStatusReportOnceAsync"/>'s
@@ -2661,10 +2688,27 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         try {
             if (!await TryClaimReapAsync(candidate)) return;
 
-            await HandleStopAgent(candidate.Id);
+            await StopClaimedReapAsync(candidate);
         } catch (Exception ex) {
             LogReapFailed(ex, candidate.Id, candidate.Reason);
         }
+    }
+
+    /// <summary>The stop half of a WON claim, split out from <see cref="ReapReviewerAsync"/> so the
+    /// re-check below is independently testable. <see cref="HandleStopAgent"/> re-resolves
+    /// <paramref name="candidate"/>'s id from <c>_agents</c> rather than taking the claimed instance
+    /// directly, so a relaunch that reused the id between the claim and this call would stop the FRESH
+    /// incarnation on the claimed one's evidence. Unreachable today — ids are unique per launch — but
+    /// this makes it structural rather than assumed: re-validate the map entry is still the claimed
+    /// instance immediately before handing off, and abort (same "agent_gone" cause as the claim's own
+    /// incarnation check) on mismatch instead of stopping whatever now answers to the id.</summary>
+    async Task StopClaimedReapAsync(ReapCandidate candidate) {
+        if (!_agents.TryGetValue(candidate.Id, out var current) || !ReferenceEquals(current, candidate.Agent)) {
+            LogReapAborted(candidate.Id, candidate.Reason, "agent_gone");
+            return;
+        }
+
+        await HandleStopAgent(candidate.Id);
     }
 
     /// <summary>The atomic reap claim (round-dispatch grace §3). Runs inside
@@ -3101,12 +3145,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         await agent.BorrowedSnapshotGate.WaitAsync(_shutdownCts.Token);
         try {
-            // The losing side of the reap claim (round-dispatch grace §3). The reaper won this agent's
-            // section before we entered it, so it is condemned: deliver nothing, advance nothing,
-            // announce nothing. Refusing here rather than writing into a runtime that is about to be
-            // terminated is what makes the round's dispatch fail promptly — the server heals it on
-            // resubmit, whereas a write accepted by a dying PTY would leave the round waiting out its
-            // whole bound on a corpse.
+            // Losing side of the reap claim (round-dispatch grace §3): a reap-claimed agent gets
+            // nothing — no write, no clock advance, no report. Failing the dispatch here (not writing
+            // into a dying runtime) is deliberate; the server heals it on resubmit.
             if (agent.IsReapClaimed) {
                 LogSendInputReapClaimed(agentId);
                 return;
@@ -3124,17 +3165,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 }
             }
 
-            // Re-checked HERE, immediately before the write, and NOT only at the top of the section.
-            // The steps between the two checks are slow by design — the borrowed-snapshot refresh alone
-            // is budgeted 30s (BorrowedSnapshotRefreshTimeout), plus any attachment downloads — which is
-            // LONGER than the reap claim's own gate wait, so a perfectly healthy borrowed delivery
-            // routinely leaves the section held past it. The absolute-lifetime claim then legitimately
-            // fires without the section (see TryClaimUnfencedReapWithoutSection) against an agent whose
-            // in-flight delivery is not parked at all, and without this second read that delivery would
-            // sail on to write the round, advance the clock and emit a delivered-input report for an
-            // agent already condemned — exactly the outcome the top-of-section refusal exists to
-            // prevent. The re-read is free and sound: the latch is monotonic 0→1 and read through
-            // Volatile.Read, so observing it true is never a false positive.
+            // Re-checked HERE, not only at the top of the section: the borrowed-snapshot refresh
+            // budget (30s, BorrowedSnapshotRefreshTimeout) plus any downloads routinely exceeds the
+            // reap claim's own gate wait (20s, ReapClaimGateWait), so an unfenced claim
+            // (TryClaimUnfencedReapWithoutSection) can land mid-section. The latch is monotonic 0→1
+            // via Volatile.Read, so this re-read can never false-positive.
             if (SendInputBeforeWriteHookForTest is { } beforeWrite) await beforeWrite();
 
             if (agent.IsReapClaimed) {
@@ -3148,49 +3183,23 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             else
                 await agent.Runtime.SendUserInputAsync(message);
 
-            // Round-dispatch grace: input delivery is itself an activity signal, not just an
-            // agent's own subsequent output — reused via the SAME AgentActivityClock.Advance() PTY
-            // output/ACP envelopes/turn transitions already call. A throw from either await above
-            // skips this line entirely, so a failed/cancelled delivery advances nothing.
-            //
-            // For the default (non-borrowed) ACP path, SendUserInputAsync's non-throwing return only
-            // means "enqueued" (AcpHostedAgentRuntime.EnqueueTurn(acknowledgeWrite: false)) — a full
-            // _pendingTurns queue silently drops the input without throwing. Advancing on that is a
-            // known, accepted residual: a false advance only DELAYS a reap/silence verdict for this
-            // agent, it can never manufacture one, so it is kill-delaying-only and deliberately not
-            // worth restructuring the ACP queue (an acknowledged write) to close.
+            // Input delivery counts as activity (AgentActivityClock.Advance(), shared with PTY
+            // output/ACP envelopes/turn transitions); a throw from either await above skips it. Known
+            // residual: a full ACP _pendingTurns queue drops input silently without throwing, so this
+            // can advance on a delivery that was actually dropped — kill-delaying only, accepted.
             agent.ActivityClock.Advance();
 
-            // ...and announce it immediately rather than letting the fresh attestation wait out the
-            // rest of the 60s report cadence — the server's dispatch-relative grace is what consumes
-            // it, and a report that lands after the grace has already elapsed is worthless. One
-            // report per successfully handled invocation: SendInputCommand carries no round/dispatch
-            // identity (agent + text + attachments), so "one per round" is not implementable and
-            // duplicates are tolerated by design — a duplicate is content-honest, and the server's
-            // freshness rule still requires the idle it attests to genuinely cover the bound.
+            // One report per successfully handled invocation (SendInputCommand carries no round
+            // identity, so a duplicate is tolerated and content-honest); fire-and-forget, contained,
+            // one-way. Captured strictly after Advance() above, so it can never carry a pre-delivery
+            // seq — monotonicity comes from _statusReportOrderingGate's acquisition order, never from
+            // the order these Task.Run calls happen to be scheduled in.
             //
-            // Fire-and-forget, matching the launch-stage transition hook: the send is contained and
-            // one-way (SendDaemonStatusReportOnceAsync swallows its own failures), so a report
-            // failure can never fail the delivery. The report snapshot is captured inside the
-            // ordering section, i.e. strictly after the Advance() above, so this report can never
-            // carry a pre-delivery seq.
-            //
-            // The offload is ALSO the lock-ordering invariant, not only a latency choice: awaiting the
-            // emission here would acquire _statusReportOrderingGate while this agent's
-            // BorrowedSnapshotGate is held, creating the one edge (per-agent → ordering) both gates'
-            // docs forbid — an unbounded hub send underneath a per-agent lock whose other holder can be
-            // parked in an uncancellable pty write. Reverting this to an awaited call reintroduces it.
-            //
-            // Task.Run, not a bare discard, because a discard is only asynchronous when it BLOCKS:
-            // SemaphoreSlim.WaitAsync completes synchronously on an uncontended gate — the common
-            // case — and the method would then run BuildStatusReport() inline, on the SignalR
-            // receive-loop thread that dispatched this command, while we still hold this agent's
-            // BorrowedSnapshotGate. That build is not cheap or purely in-memory: it reads the PID
-            // record store off disk (twice, via the blocked-candidate and startup-reap-completeness
-            // arms). Contended, it would be worse still — an inline await would park the receive loop
-            // and this agent's delivery behind another emission's whole hub send. Offloading costs
-            // nothing in ordering terms: content is made monotone by the gate, never by the order
-            // emissions are STARTED in.
+            // MUST offload rather than await here (lock order): _statusReportOrderingGate must never
+            // be acquired while this agent's BorrowedSnapshotGate is held (see the gate's own doc).
+            // Task.Run, not a bare discard — WaitAsync can complete synchronously on an uncontended
+            // gate, which would otherwise run BuildStatusReport() (disk I/O) inline on this receive
+            // loop while still holding BorrowedSnapshotGate.
             _ = Task.Run(() => SendDaemonStatusReportOnceAsync());
 
             LogSendInputDelivered(agentId, agent.Runtime.Vendor, message.Length);
@@ -4321,6 +4330,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     [LoggerMessage(Level = LogLevel.Warning, Message = "EndAgentSession for agent {AgentId} did not complete within {Seconds}s; proceeding with cleanup while the retry continues in the background (server reconciles on daemon disconnect)")]
     partial void LogEndSessionTimedOut(string agentId, double seconds);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "DaemonStatusReport send did not complete within {Seconds}s; releasing the ordering gate (invocation already issued, so wire order still holds)")]
+    partial void LogStatusReportSendTimedOut(double seconds);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Abandoned DaemonStatusReport send faulted after the ordering gate was released — ignoring")]
+    partial void LogStatusReportSendFailedInBackground(Exception ex);
+
     [LoggerMessage(Level = LogLevel.Information, Message = "Spawned what's-done generator for session {SessionId} (PID {Pid})")]
     partial void LogWhatsDoneSpawned(string sessionId, int pid);
 
@@ -4462,6 +4477,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// which side won the section without also driving a stop whose (slow, side-effecting) teardown is
     /// not what is under test.</summary>
     internal Task<bool> TryClaimReapForTest(ReapCandidate candidate) => TryClaimReapAsync(candidate);
+
+    /// <summary>Test-only: the post-claim stop ALONE, without a real claim ahead of it — lets a test
+    /// swap <c>_agents</c>' entry for <c>candidate</c>'s id between "claim won" and this call to prove
+    /// the incarnation re-check aborts rather than stopping a relaunch.</summary>
+    internal Task StopClaimedReapForTest(ReapCandidate candidate) => StopClaimedReapAsync(candidate);
 
     /// <summary>Test-only entry point to the private probe-borrow-source handler.</summary>
     internal Task<BorrowProbeResult> HandleProbeBorrowSourceForTest(string path) => HandleProbeBorrowSource(path);
