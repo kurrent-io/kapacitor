@@ -127,10 +127,24 @@ static class McpWorkItemsServer {
         return 0;
     }
 
+    // Server-level usage preamble (MCP `instructions`) — steers agents to DECLARE a work item's
+    // structure, not just attach to it. A work item's breakdown (parent→parts) and dependencies
+    // (blocks/blocked-by) are declared facts, never inferred, so an item whose structure nobody
+    // declares has an empty topology and renders no blockers/dependencies or progress figure.
+    internal const string ServerInstructions =
+        "Use these tools to attach the current session to its SDLC work item AND to declare that work " +
+        "item's structure. When you plan or discover that a work item breaks into parts, create the part " +
+        "items (declare_work_item with new_title) and declare the parent→parts breakdown " +
+        "(declare_work_breakdown); when one item must land before another, declare the dependency " +
+        "(declare_work_relation — 'blocks'/'blocked_by'). Breakdown and relations are DECLARED, never " +
+        "inferred: if you don't declare them the work item's topology stays empty. Declare only real " +
+        "structure you're confident of, keep every item in the same repository, and use the retract_* " +
+        "tools when it changes.";
+
     static string BuildInitializeResponse(JsonNode id, JsonObject request) =>
         ToResponse<McpInitResult>(
             id,
-            new(McpProtocol.NegotiateVersion(request), new(new()), new("kcap-workitems", "1.0.0")),
+            new(McpProtocol.NegotiateVersion(request), new(new()), new("kcap-workitems", "1.0.0"), ServerInstructions),
             McpJsonContext.Default.McpInitResult
         );
 

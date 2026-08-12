@@ -164,6 +164,19 @@ public class McpWorkItemsServerTests {
         });
     }
 
+    [Test]
+    public async Task Server_instructions_steer_agents_to_declare_breakdown_and_relations() {
+        // The MCP `instructions` preamble (surfaced on initialize) is the whole point of the steering
+        // work: an agent that connects the tool must be told to DECLARE structure, not just attach. Pin
+        // that it names both declare tools and states the declared-never-inferred rule so the guidance
+        // can't silently regress to a bare correlation description.
+        var instructions = McpWorkItemsServer.ServerInstructions;
+
+        await Assert.That(instructions).Contains("declare_work_breakdown");
+        await Assert.That(instructions).Contains("declare_work_relation");
+        await Assert.That(instructions).Contains("never");   // "declared, never inferred"
+    }
+
     // ── declared breakdown + relations ───────────────────────────────────────
 
     [Test]
