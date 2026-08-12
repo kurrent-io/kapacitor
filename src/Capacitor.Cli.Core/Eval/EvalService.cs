@@ -1027,32 +1027,27 @@ public static class EvalService {
             // Guard before TryGetProperty: it throws InvalidOperationException on a non-object root
             // (a bare string/array/number/bool is valid JSON but not an object), which the
             // JsonException catch below would NOT swallow — the contract is malformed → null, never throw.
-            if (doc.RootElement.ValueKind != JsonValueKind.Object) {
+            if (!doc.RootElement.IsObject) {
                 return null;
             }
             if (!doc.RootElement.TryGetProperty("retain_fact", out var prop)) {
                 return null;
             }
 
-            switch (prop.ValueKind) {
-                case JsonValueKind.String: {
-                    var text = prop.GetString()?.Trim();
-                    return string.IsNullOrEmpty(text) ? null : new RetainedFact(text, null, null);
-                }
-                case JsonValueKind.Object: {
-                    var fact = prop.TryGetProperty("fact", out var f) && f.ValueKind == JsonValueKind.String
-                        ? f.GetString()?.Trim()
-                        : null;
-                    if (string.IsNullOrEmpty(fact)) return null; // object without a usable fact — skip.
-
-                    return new RetainedFact(
-                        fact,
-                        ReadStringArrayOrNull(prop, "applies_to_vendors"),
-                        ReadStringArrayOrNull(prop, "applies_to_session_kinds"));
-                }
-                default:
-                    return null; // null / number / bool / array — no fact.
+            if (prop.IsString) {
+                var text = prop.GetString()?.Trim();
+                return string.IsNullOrEmpty(text) ? null : new RetainedFact(text, null, null);
             }
+            if (prop.IsObject) {
+                var fact = prop.Str("fact")?.Trim();
+                if (string.IsNullOrEmpty(fact)) return null; // object without a usable fact — skip.
+
+                return new RetainedFact(
+                    fact,
+                    ReadStringArrayOrNull(prop, "applies_to_vendors"),
+                    ReadStringArrayOrNull(prop, "applies_to_session_kinds"));
+            }
+            return null; // null / number / bool / array — no fact.
         } catch (JsonException) {
             return null;
         }
@@ -1066,12 +1061,12 @@ public static class EvalService {
     /// the field is absent, not an array, or empty. A non-string element drops the WHOLE axis to
     /// null (fail-open: the server also whole-axis-discards a malformed declaration).</summary>
     static string[]? ReadStringArrayOrNull(JsonElement prop, string name) {
-        if (!prop.TryGetProperty(name, out var arr) || arr.ValueKind != JsonValueKind.Array) return null;
+        if (prop.Arr(name) is not { } arr) return null;
 
         var list = new List<string>();
         foreach (var item in arr.EnumerateArray()) {
-            if (item.ValueKind != JsonValueKind.String) return null; // malformed axis → drop it entirely.
-            var v = item.GetString()?.Trim();                        // trim so "codex " matches the server's exact filter
+            if (!item.IsString) return null;          // malformed axis → drop it entirely.
+            var v = item.GetString()?.Trim();         // trim so "codex " matches the server's exact filter
             if (!string.IsNullOrEmpty(v) && list.Count < MaxApplicabilityItems) list.Add(v);
         }
 
