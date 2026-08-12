@@ -27,7 +27,7 @@ umbrella decision 6 reserved, riding the existing WorkOS self-service provisioni
 | 4 | **App-managed daemons are born `prompt`: the DAEMON seeds its own policy at boot, behind a unit-baked directive.** The app sets `KCAP_CONSENT_SEED_DEFAULT=prompt` in the env overlay of its `service install [--replace] --verify` calls; `ServiceEnvironment`'s baked-env allowlist gains the key, so it becomes **deliberate unit content** — a property of the app-managed unit consumed at every daemon boot, not transaction control (and, being plist content, it is already covered by AI-1654's `TxnMarker` fingerprint and rollback: a failed install rolls the directive back with the unit; no separate seed artifact, phases, or flush ordering exist). At boot, with the directive present, the daemon — under its own `DaemonLock`, as the sole writer of `consent.json`, strictly BEFORE `ServerConnection` and before the launch gate serves anything — classifies its policy file with its own parser rules (§6). Nothing outside the daemon ever writes the file, which is what closes the offline-writer race: a manual `kcap daemon start` does not hold the service flock, so a CLI-side seed write could interleave with a live daemon's in-memory policy; a boot-time self-seed cannot. This is the causal barrier: the policy is committed before the daemon can register, so *no* post-attach flip has to beat a server-issued launch. If the directive is present and the seed/quarantine write fails, the daemon logs a stable coded token (`consent_seed_unwritable`) and **exits 0** — never runs with an uncommittable policy (per-verb surfacing in §9). **The directive's value contract is exact**: this slice defines only the literal `prompt`; any other value (empty, `allow`, `deny`, case variants, unknown) fails closed — the daemon refuses (coded token, exit 0) rather than honoring or ignoring it — and daemon boot and the §3 start gate share one parser. **The directive rides EVERY app-initiated daemon spawn, and every such spawn runs the pinned, fail-closed CLI**: the unit-writing verbs, the gated `service start --verify`, and ONE detached-start module — the main-window Start/Retry path (`DaemonClientService.StartDaemonAsync`) is re-routed through the same pinned `KcapCli.DetachedStartAsync` the lifecycle controller uses, because as it stands it resolves `CliResolver` and then **falls back to bare `"kcap"`** and starts with no pinned profile: an older PATH CLI would spawn an older, directive-unaware daemon (defeating the seed), and an unpinned start after a concurrent `kcap use` would start the pinned name against a different server. App-managed starts get no bare fallback — no resolvable current CLI means an honest "kcap CLI not found", never a legacy spawn. A configured npm-CLI user who never armed a claim — or a machine whose claims were quarantined or already consumed — cannot mint an `allow` daemon through any app action (one qualified exception: the §3 lock-unaware-writer residual); terminal/manual starts remain unchanged because they receive no overlay. **The directive is boot-local, with one deliberate carrier**: the daemon captures the validated directive into `DaemonConfig` at startup and removes it from the ambient process environment before anything can spawn a child, and it joins the existing PTY/ACP env-scrub lists as defense in depth — hosted agents inherit the daemon's environment, and a hosted agent running `kcap daemon start` or `service install` must not unknowingly seed or bake it. The one place it is re-injected explicitly: `DetachedRespawnStrategy` places the captured directive into the restart-after-update SUCCESSOR's `ProcessStartInfo.Environment` — the successor is spawned with inherited (scrubbed) env and reconstructed argv, so without explicit re-injection a detached daemon's update successor would boot directive-less and a missing/corrupt policy at that boot would fall back to `allow`. Headless daemons are untouched (no directive → today's behavior exactly; the upgrade-safe `allow` default stands). This generalizes umbrella §5's "the app's onboarding flips the daemon it manages to `prompt`" to *every* daemon the app spawns — deliberate: an app-managed desktop daemon has a UI for prompts (AI-1652), and a prompt-with-no-UI resolves as the designed fail-closed deny. |
 | 5 | **The wizard includes visibility and daemon name** (setup's step 3/6 and 5/6, which umbrella §7's list omitted): a Defaults step with the visibility picker (default `org_public`) and daemon-name field (default: lowercased username). |
 | 6 | **Import step: vendor checkboxes + scope choice** (Everything / one org / specific repo — mirroring `ImportScopePrompt`'s vocabulary), running `kcap import --all|--org <o>|--repo <r> --yes` plus selected vendor flags. Setup's own embedded import is current-repo-scoped, which is meaningless for a GUI launch. |
-| 7 | **The consent-flip claim covers what seeding cannot: PRE-EXISTING daemons.** With decision 4, a daemon the app installs is born `prompt`; the claim's only remaining job is a daemon that already exists at onboarding time (running, or installed-stopped with an existing policy file). Claims live in their own store — `{config}/consent-flip-claims.json`, a collection keyed by canonical `{profile, server URL}` with merge semantics (arm upserts; apply/clear removes only its key) — mutated under `ConfigFileLock` and **flushed (file and directory) before the sign-in commit proceeds**, AI-1654-marker-grade. Deliberately NOT in `app-state.json` (UX-grade by contract). **The daemon NAME is not part of the key — it is resolved from config at application time** (round-5 correction): a name is an address, not the protected principal (owner × profile × server), and keying on it made claim validity depend on a cross-file dance — the wizard's Defaults write and any terminal `kcap config set daemon.name` would each have to re-key a second store crash-consistently. Resolving the name at application time means daemon renames need no claim writes at all: the §6 conditional put still verifies BOTH the currently-resolved name and the claim's server identity against the live daemon, so the guard is undiminished. The façade's async **before-commit hook** carries the full identity SET the boundary is about to make gate-complete — GitHub discovery publishes a token per discovered tenant, so one claim per published identity — and **hook failure prevents the commit** (retryable sign-in error). "Sign-in completion" means the façade's commit boundary (§5), NOT `SetupFunnel.SigninCompleted`. Step 7 applies/consumes the claim; `ConsentFlipCoordinator` applies it to pre-existing daemons on a later attach (§6). Abandoning before sign-in arms nothing (decision 2's carve-out covers that population). **Store corruption fails safe, not open** (§4): the corrupt file is quarantined and surfaced, the coordinator goes inert — and no `allow` daemon can be minted meanwhile, because every app install seeds `prompt` regardless of claim-store health. |
+| 7 | **The consent-flip claim covers what seeding cannot: PRE-EXISTING daemons.** With decision 4, a daemon the app installs is born `prompt`; the claim's only remaining job is a daemon that already exists at onboarding time (running, or installed-stopped with an existing policy file). Claims live in their own store — `{config}/consent-flip-claims.json`, a collection keyed by canonical `{profile, server URL}` with merge semantics (arm upserts; apply/clear removes only its key) — mutated under `ConfigFileLock` and **flushed (file and directory) before the sign-in commit proceeds**, AI-1654-marker-grade. Deliberately NOT in `app-state.json` (UX-grade by contract). **The daemon NAME is not part of the key — it is resolved from config at application time** (round-5 correction): a name is an address, not the protected principal (owner × profile × server), and keying on it made claim validity depend on a cross-file dance — the wizard's Defaults write and any terminal `kcap config set daemon.name` would each have to re-key a second store crash-consistently. Resolving the name at application time means daemon renames need no claim writes at all: the §6 conditional put still verifies BOTH the currently-resolved name and the claim's server identity against the live daemon, so the guard is undiminished. The façade's async **before-commit hook** carries the full identity SET the boundary is about to make gate-complete — GitHub discovery publishes a token per discovered tenant, so one claim per published identity — and **hook failure prevents the commit** (retryable sign-in error). "Sign-in completion" means the façade's commit boundary (§5), NOT `SetupFunnel.SigninCompleted`. Step 7 applies/consumes the claim; `ConsentFlipCoordinator` applies it to pre-existing daemons on a later attach (§6). Abandoning before sign-in arms nothing (decision 2's carve-out covers that population). **Store corruption fails safe, not open** (§4): the corrupt file is quarantined and surfaced, the coordinator goes inert — and no `allow` daemon can be minted meanwhile (subject to §3's one qualified exception), because every app install seeds `prompt` regardless of claim-store health. |
 | 8 | **Harness detection moves to `Capacitor.Cli.Core` as `AgentDetection`, composing the existing per-vendor rules through PURE inputs** (§8). `AgentDetector` (today in the CLI project) moves to Core; the env-reading vendor helpers (`KiroPaths` `KIRO_HOME`, `PiPaths` `PI_CODING_AGENT_DIR`, `OpenCodePaths` `OPENCODE_CONFIG_DIR`/XDG) gain pure overloads/input records so PATH, PATHEXT, home, and every relevant override are passed as values — an injected accessor around an aggregate that still reads globals inside would be composition theater, and parity tests must run in parallel without mutating process env. The app feeds the terminal PATH from `LoginShellProbe`. No new CLI verb. |
 | 9 | **The app emits NO telemetry this slice; desktop-onboarding funnel coverage is explicitly deferred** to a follow-up issue. The app never calls `CliTelemetry.Initialize`, so Core's embedded `SetupFunnel` emissions no-op (`Capture`/`CaptureNow` are guarded on `Enabled`/`_client`). Reversed from the pre-review draft, which was unsafe on three verified counts: `Initialize` hardcodes `source: "cli"` and prints the one-time privacy disclosure to `Console.Error` — invisible in a WinExe, silently consuming `notice_shown`; `CaptureNow` is deliberately sync-over-async, safe only in a console app without a SynchronizationContext, and can deadlock on Avalonia's UI context; and app-emitted fragments would corrupt the funnel while mislabeled as CLI traffic. The follow-up owns: an app source label, a visible disclosure surface, async delivery, and the desktop funnel sequence. |
 | 10 | **`config.json` gains ONE Core mutation API and every writer migrates to it.** `AppConfig.SaveProfileConfig` (lock-free, fixed `config.json.tmp`) is replaced by a field-scoped mutate call: acquire `ConfigFileLock` → re-read under the lock → apply the caller's mutation to the fresh snapshot → publish via unique temp + rename — as a **synchronous critical section** (the lock is a thread-affine named `Mutex`: no await while holding it; async callers wrap in `Task.Run`). The re-read uses a **pure load/parse/migrate-in-memory primitive** — today `LoadProfileConfig` *writes* the v1→v2 migration back during load, which under the mutation API would recursively acquire the same thread-affine mutex; instead, migration is applied in memory inside the critical section and persists through the same publication as the caller's mutation. Locking only the wizard's writes cannot work: `ConfigFileLock` requires every writer to participate, and today `ConfigCommand`, `ProfileCommand`, `UseCommand`, `UpdateCommand`, `IgnoreCommand`, `RemapCommand`, `ImportCommand`, `SetupCommand`, `Program`, `WorkOSDiscovery`, `MachineIdProvider`, and `LoadProfileConfig`'s migration path all write lock-free. Deleting the old method makes the migration compiler-enforced. Accepted residual, documented: the app has no single-instance guard — with claims in their own locked, keyed store (decision 7) this is a pure UX gap (two tray icons), not a safety one. |
@@ -81,10 +81,15 @@ window (`OnboardingWindow`), step content switched by template.
      bootstrap** (a read-only status check cannot carry them: status deliberately takes no
      lock, so a concurrent rewrite between the app's read and the start would boot evidence the
      app never approved). Failing either gate → the stable coded verify failure
-     **`verify_start_gate` = 28** (stderr token `verify_start_gate`; additive to `VerifyExit`
-     20–27; gate failures occur before any mutation, so the safe state is "nothing touched" —
-     no rollback arm), which the app's controller maps like the existing codes and routes to
-     the dialoged takeover (`--replace` bakes the directive and the current binary):
+     **`verify_start_gate` = 28** (additive to `VerifyExit` 20–27; Phase-A failures occur
+     before any mutation, so the safe state is "nothing touched" — no rollback arm), carrying
+     **a pinned machine-readable reason line on stderr** —
+     `start_gate_reason=<directive_missing|identity_mismatch|foreign_binary|package_inconsistent>`
+     — because one code must drive two different recoveries and the app must not parse human
+     prose: the controller/wizard mapping is pinned as `directive_missing`,
+     `identity_mismatch`, `foreign_binary` → the dialoged takeover (`--replace` bakes the
+     directive and the current binary); `package_inconsistent` → the reinstall surface, never
+     takeover (it would re-point at the same bad bytes):
      **(a) directive + current binary CONTENT, against BUILD-TIME trusted evidence** — the
      unit bakes `KCAP_CONSENT_SEED_DEFAULT` with the exact supported value AND the SHA-256 of
      the bytes at the unit's `binary_path` equals the **expected daemon digest embedded in the
@@ -122,7 +127,9 @@ window (`OnboardingWindow`), step content switched by template.
      digest) immediately before bootstrap. Drift detected HERE is not exit 28 — the label was
      already mutated, so "nothing touched" would be a lie: it is the distinct
      **`verify_start_gate_drift` = 29**, resolving through the marker-backed rollback to the
-     start verb's verified-safe failure state (label unloaded, plist retained). **Accepted
+     start verb's verified-safe failure state (label unloaded, plist retained). The app maps
+     29 as an attention state: surface the coded reason, re-query fresh evidence, offer the
+     repair affordance — never an automatic retry (something is actively rewriting the unit). **Accepted
      residual, stated here and NOT attributed to AI-1654** (whose final-recheck seam is
      install-only; today's `StartVerifiedAsync` has no unit recheck at all): a lock-unaware
      pre-slice CLI rewriting this exact unit between that last recheck and launchd's exec can
@@ -205,15 +212,26 @@ src/Capacitor.App/Services/Onboarding/ConsentFlipCoordinator.cs     — pending-
   What is lost is the quarantined file's unknown claims, so the quarantine surfaces ONCE as an
   attention state naming the preserved path, with the recovery guidance ("pre-existing daemons
   may need `kcap daemon consent set-default prompt`, or re-run onboarding"); acknowledging it
-  (persisted, app-state) resolves the quarantine. Safe by decision 4 regardless: no automatic
+  (persisted, app-state) resolves the quarantine. Safe by decision 4 regardless — no automatic
   path can mint an `allow` daemon while claims are unreadable, because app-written units seed
-  `prompt` independently of this store.
+  `prompt` independently of this store — subject to the same single qualified exception every
+  decision-4 guarantee carries (§3's lock-unaware-writer residual).
 - **`KcapCli`** gains `PluginInstallAsync(vendor)` (bounded timeout), the §7 streaming import
   call, and the decision-4 `KCAP_CONSENT_SEED_DEFAULT=prompt` env overlay on **every daemon
   spawn it performs**: install/replace (baked into the unit), `service start --verify` (arms
   the in-transaction gates), and the detached `daemon start -d` fallback (the spawned daemon
   seeds from its own env). The wizard constructs its own instance after Sign-in, pinned to the
   wizard-chosen profile — in wizard-first mode no startup instance exists to conflict with.
+- **CLI compatibility floor — an enforced precondition, not an assumption**: every
+  daemon-mutating app action (wizard step 7, lifecycle auto-actions, main-window detached
+  Start) **awaits** the `--version --no-update-check` probe result and requires a parseable
+  version at or above this slice's floor; missing, malformed, or below-floor → fail closed
+  with update/reinstall guidance, no spawn. Bare-`kcap` resolution establishes no capability:
+  `CliResolver` returns `"kcap"` unconditionally when the override is absent, and today's
+  version cache is fire-and-forget skew telemetry the mutation paths never await — an older
+  PATH CLI would ignore the seed directive and carry none of gates 28/29 or the embedded
+  digest, on every routed path. Non-daemon shelling (`plugin install`, `import`) keeps its
+  existing lenient classification.
 - **App state** (`app-state.json`) keeps only UX claims (`ShimOffered`/`ShimDenied`) — nothing
   safety-bearing (restored to its AI-1654 contract; the flip claim lives in `ConsentFlipClaims`).
 
@@ -310,7 +328,14 @@ behavior-preserving for the CLI (asserted by its existing command tests).
   re-reads/resolves identity under it, then — still holding it — acquires the claims lock and
   removes the key only if `{profile, server, resolved daemon name}` still equal the captured
   target; fixed global lock order (config → claims), both held across the compare-and-delete;
-  otherwise the claim is retained for the next graph. A plain re-read-then-delete would not
+  otherwise the claim is retained for the next graph. **The whole compare-and-delete is one
+  synchronous Core/store operation on one thread** — `ConfigFileLock` is a thread-affine named
+  `Mutex` (`WaitOne`/`ReleaseMutex`), so no `await` may occur between acquisition and release
+  (decision 10's rule, restated here because this operation holds TWO such locks); async
+  callers wrap the entire call in `Task.Run`. **Every failure leaves the claim pending**: a
+  second-lock timeout, or any write/flush/rename failure publishing the deletion, aborts
+  without removing the key — an unexpectedly retained claim is re-applied idempotently later;
+  an unexpectedly lost one is unrecoverable. A plain re-read-then-delete would not
   do: `ConfigFileLock` hashes the exact path it is given, so holding the claims-file lock does
   not exclude a `config.json` writer — a rename landing between the re-read and the deletion
   recreates the race. With the config lock held, a racing rename can only land before the
@@ -403,19 +428,22 @@ Uniform rule: every failure is a message + Retry/Skip on its step; nothing wedge
   step" (the CLI's own message, GUI-shaped); `WorkspaceFailed` reasons verbatim.
 - **Coding agents:** per-vendor exit codes; a failed vendor gets ⚠ + retry, successes stand.
 - **Import:** §7. Cancel = `KillTree`; failure never blocks Next.
-- **Enable daemon:** skipped-login users see "requires sign-in". §3 step-7 matrix + §6a lane
-  semantics for navigation; install failures surface the AI-1654 verify exit codes (20–27, plus
-  the additive `verify_start_gate`) with the same wording the lifecycle controller uses. A
-  daemon that cannot commit its seeded policy (decision 4) logs the stable
-  `consent_seed_unwritable` token and exits 0 — **what the app then observes is per verb**,
-  because the daemon never satisfies the transaction's readiness predicate: on
-  `install`/`replace` the transaction times out and rolls back to the verified-safe failure
-  state (unit REMOVED), surfacing `verify_readiness_timeout`; on `start` the rollback is a
-  bootout with the plist retained, same code. The verify result cannot distinguish
-  seed-failure from any other never-ready daemon — the step's timeout guidance therefore points
-  at the daemon log, where the token is the diagnosis. No new `VerifyExit` code exists for seed
-  failure itself (the CLI writes no policy file); `verify_start_gate` is the only additive code.
-  `identity_mismatch` ack or missing `consent/3` → no write, claim pending, repair guidance.
+- **Enable daemon:** skipped-login users see "requires sign-in". CLI below the compatibility
+  floor (§4) → fail closed with update/reinstall guidance, no spawn. §3 step-7 matrix + §6a
+  lane semantics for navigation; install failures surface the AI-1654 verify exit codes 20–27
+  plus the two additive codes — `verify_start_gate` = 28 (with its `start_gate_reason` routing:
+  takeover vs reinstall, §3) and `verify_start_gate_drift` = 29 (attention state + repair, §3)
+  — with the same wording the lifecycle controller uses. A daemon that cannot commit its
+  seeded policy (decision 4) logs the stable `consent_seed_unwritable` token and exits 0 —
+  **what the app then observes is per verb**, because the daemon never satisfies the
+  transaction's readiness predicate: on `install`/`replace` the transaction times out and
+  rolls back to the verified-safe failure state (unit REMOVED), surfacing
+  `verify_readiness_timeout`; on `start` the rollback is a bootout with the plist retained,
+  same code. The verify result cannot distinguish seed-failure from any other never-ready
+  daemon — the step's timeout guidance therefore points at the daemon log, where the token is
+  the diagnosis; no `VerifyExit` code exists for seed failure itself (the CLI writes no policy
+  file). `identity_mismatch` ack or missing `consent/3` → no write, claim pending, repair
+  guidance.
 - **Gate edge cases:** unreadable token file → wizard (it is the recovery path); config
   unreadable → wizard with `no_profile`; corrupt claims file → quarantined with the §4
   lifecycle (fresh store, arming never rejected, one-time attention + ack) — safe because
@@ -462,6 +490,14 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   successor's hosted children still see the variable scrubbed. No directive (headless unit
   / manual terminal start) → every arm behaves exactly as today. Directive baked into the unit
   is covered by the existing TxnMarker fingerprint tests (rolls back with the unit).
+- **Compatibility floor:** an old PATH CLI (below the floor), a malformed/unknown `--version`,
+  and a probe still in flight when a mutation is requested each fail closed with
+  update/reinstall guidance and no spawn, on all three mutation surfaces (wizard step 7,
+  lifecycle auto-actions, main-window Start).
+- **Digest pipeline (release acceptance):** per-RID publish asserts the packaged daemon's
+  digest equals the CLI's embedded constant; a mismatched or missing build input fails the
+  production publish closed; dev/source builds hash the co-built daemon output, and an absent
+  one produces the fail-closed placeholder.
 - **Claim store & protocol:** arm flushed before boundary (fault injection at write/flush/rename,
   then proceed through a successful token commit + quit + relaunch → coordinator still holds the
   claim); hook failure blocks the commit; **multi-tenant GitHub discovery arms one claim per
@@ -475,7 +511,10 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   RETAINED whenever the re-read `{profile, server, name}` no longer equals the captured
   target; a rename poised WHILE deletion is in flight blocks on the held config lock and lands
   only after the clear (correctly consumed for the then-current target); the renamed
-  identity's pre-existing `allow` daemon is protected on the next graph; terminal `kcap use` to another (claimed) identity →
+  identity's pre-existing `allow` daemon is protected on the next graph; **clear-failure
+  semantics** — fault injection at each deletion publication point (second-lock timeout,
+  write/flush/rename) leaves the claim pending, and concurrent arm/clear/config mutations
+  observe the global lock order with no lost claim; terminal `kcap use` to another (claimed) identity →
   that identity's claim applies on its own attach; **quarantine lifecycle**: corruption before Sign-in (arming lands in the fresh store,
   never rejected) AND after a successful commit (existing claims quarantined, attention surfaced
   once, ack persists, coordinator operates on the fresh store), quarantined file preserved, and
@@ -571,8 +610,17 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   when invoked with the directive (embedded-digest + effective-identity evidence, bootout +
   bootstrap-from-validated-disk), with the additive coded failures `verify_start_gate` = 28
   (pre-mutation) and `verify_start_gate_drift` = 29 (post-bootout, marker-backed rollback);
-  install/replace gain the embedded-digest viability arm; **one build/packaging change** — an
-  MSBuild step hashes the packaged `kcap-daemon` and embeds the expected digest into the CLI;
+  install/replace gain the embedded-digest viability arm; **one build/packaging change, with
+  its pipeline pinned against the ACTUAL build graph** (the CLI and daemon projects are
+  independent, the release workflow publishes CLI before daemon today, and AOT CI publishes
+  them as separate matrix entries — so "an MSBuild step" alone has no final daemon artifact to
+  hash): per RID, (1) publish and finalize — including AI-1653 signing, recorded as an ordering
+  constraint: sign the daemon BEFORE hashing or signing invalidates the digest — the daemon
+  artifact first, (2) compute its SHA-256, (3) pass it as a required RID-scoped build input to
+  the CLI publish (generated `obj` source), (4) publish/sign the CLI, (5) assert the packaged
+  daemon still matches. A missing/placeholder digest fails production publish closed. Ordinary
+  source/dev builds hash the co-built daemon project output via a build-target dependency;
+  when absent, the placeholder makes the gate fail closed (never open);
   the app's main-window Start/Retry re-routes through the pinned `KcapCli.DetachedStartAsync`
   (no bare `"kcap"` fallback for app-managed starts);
   `service status --json` gains additive `unit_profile`, `unit_server_url`, and
