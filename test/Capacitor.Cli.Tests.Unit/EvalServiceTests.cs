@@ -571,6 +571,16 @@ public class EvalServiceTests {
         await Assert.That(EvalService.ExtractRetainFact("not json")).IsNull();
     }
 
+    [Test]
+    [Arguments("\"just a bare string\"")]
+    [Arguments("[1,2,3]")]
+    [Arguments("42")]
+    [Arguments("true")]
+    public async Task ExtractRetainFact_valid_json_non_object_root_is_null_not_throw(string response) {
+        // TryGetProperty throws on a non-object root; the parser must guard and return null, not throw.
+        await Assert.That(EvalService.ExtractRetainFact(response)).IsNull();
+    }
+
     // ── ParseRetrospective / BuildRetrospectivePrompt ──────────────────────
 
     [Test]

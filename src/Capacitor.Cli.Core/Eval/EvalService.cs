@@ -25,7 +25,7 @@ public static class EvalService {
     // per-question prompt already instructs the judge to emit explicit
     // nulls, so this matches existing expectations.
     const string VerdictJsonSchema = """
-        {"type":"object","properties":{"category":{"type":"string"},"question_id":{"type":"string"},"score":{"type":"integer","minimum":1,"maximum":5},"verdict":{"type":"string","enum":["pass","warn","fail"]},"finding":{"type":"string"},"evidence":{"type":["string","null"]},"recommendation":{"type":["string","null"]},"retain_fact":{"type":["string","object","null"],"properties":{"fact":{"type":"string"},"applies_to_vendors":{"type":"array","items":{"type":"string"},"maxItems":16},"applies_to_session_kinds":{"type":"array","items":{"type":"string"},"maxItems":16}},"required":["fact"]}},"required":["category","question_id","score","verdict","finding","evidence","recommendation","retain_fact"],"additionalProperties":false}
+        {"type":"object","properties":{"category":{"type":"string"},"question_id":{"type":"string"},"score":{"type":"integer","minimum":1,"maximum":5},"verdict":{"type":"string","enum":["pass","warn","fail"]},"finding":{"type":"string"},"evidence":{"type":["string","null"]},"recommendation":{"type":["string","null"]},"retain_fact":{"type":["string","object","null"],"properties":{"fact":{"type":"string"},"applies_to_vendors":{"type":"array","items":{"type":"string"},"maxItems":16},"applies_to_session_kinds":{"type":"array","items":{"type":"string"},"maxItems":16}},"required":["fact"],"additionalProperties":false}},"required":["category","question_id","score","verdict","finding","evidence","recommendation","retain_fact"],"additionalProperties":false}
         """;
 
     // maxItems mirrors the prompt's documented caps: at most three
@@ -1024,6 +1024,12 @@ public static class EvalService {
 
         try {
             using var doc = JsonDocument.Parse(json);
+            // Guard before TryGetProperty: it throws InvalidOperationException on a non-object root
+            // (a bare string/array/number/bool is valid JSON but not an object), which the
+            // JsonException catch below would NOT swallow — the contract is malformed → null, never throw.
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) {
+                return null;
+            }
             if (!doc.RootElement.TryGetProperty("retain_fact", out var prop)) {
                 return null;
             }
@@ -1052,13 +1058,13 @@ public static class EvalService {
         }
     }
 
-    /// <summary>Reads a JSON array of non-empty strings from <paramref name="prop"/>, or null when
-    /// the field is absent, not an array, or empty. A non-string element drops the WHOLE axis to
-    /// null (fail-open: the server also whole-axis-discards a malformed declaration).</summary>
     // Mirrors the schema's maxItems — a defensive cap so a hallucinating judge can't bloat the
     // outgoing payload with an unbounded applicability list.
     const int MaxApplicabilityItems = 16;
 
+    /// <summary>Reads a JSON array of non-empty strings from <paramref name="prop"/>, or null when
+    /// the field is absent, not an array, or empty. A non-string element drops the WHOLE axis to
+    /// null (fail-open: the server also whole-axis-discards a malformed declaration).</summary>
     static string[]? ReadStringArrayOrNull(JsonElement prop, string name) {
         if (!prop.TryGetProperty(name, out var arr) || arr.ValueKind != JsonValueKind.Array) return null;
 
