@@ -129,7 +129,17 @@ window (`OnboardingWindow`), step content switched by template.
      precedence; else the baked profile under the baked `KCAP_CONFIG_DIR`'s config root),
      must match the invoking environment's expectation (the pinned `KCAP_PROFILE` + the
      captured `KCAP_EXPECT_SERVER_URL` — NOT the profile's config-resolved server at gate
-     time, which a concurrent `server_url` edit could have changed to match, §4).
+     time, which a concurrent `server_url` edit could have changed to match, §4). **The
+     unit's own baked expectation participates**: the gate parses the unit's baked
+     `KCAP_EXPECT_SERVER_URL` and requires it to equal BOTH the unit's resolved server and
+     the invocation expectation — otherwise a unit installed for server S whose profile was
+     later re-pointed to T would resolve to T, match a fresh T-expecting invocation, pass
+     the gate, and only fail as the daemon's post-bootstrap refusal (a deterministic
+     takeover case degraded into a readiness timeout after mutation). A pre-existing
+     mismatch is pre-mutation exit 28 / `identity_mismatch` → takeover; the daemon's own
+     boot check remains for the irreducible post-gate race. `service status --json`
+     additionally exposes `unit_expected_server` so the stale pin is explainable in UX
+     (`unit_server_url` alone would show the resolved T while the unit is constrained to S).
      `unit_profile` alone is NOT identity: two units can bake the same
      profile name yet resolve different servers. Malformed, duplicate, unreadable, or
      ambiguous relevant env entries → fail closed.
@@ -263,7 +273,29 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   refuses instead of authenticating anywhere. `ServiceEnvironment`'s allowlist gains the
   variable, so install bakes it — the unit stays pinned to the server it was enabled for,
   and a deliberate later server change surfaces as a visible refusal + attention (reinstall
-  re-captures), never a silent wrong-server or wrong-credential boot. External interface:
+  re-captures), never a silent wrong-server or wrong-credential boot. **The expectation gets
+  the seed directive's exact boot-local carrier lifecycle** (it is equally an internal app
+  control): the daemon captures it into `DaemonConfig` at boot and removes it from ambient
+  process state before any descendant exists; it joins the PTY/ACP/RPC scrub lists;
+  `DetachedRespawnStrategy` re-injects the captured value into the restart successor (which
+  would otherwise lose the safety check); unit restarts receive it from the unit. Left
+  ambient, every hosted child would inherit it — a hosted agent running
+  `kcap daemon start`/`service install` for another profile would hit an unexplained
+  mismatch refusal and `ServiceEnvironment` would persist the inherited expectation into a
+  NEW unit, contradicting the terminal-actions-unchanged rule. **Refusal propagation — the
+  daemon's exit-0 refusals must be app-observable**: the detached wrapper redirects and
+  closes the daemon's stdio and its short liveness check either returns a generic failure
+  (fast exit) or success (late exit), so no coded token reaches the lane through process
+  results; service verbs surface only a readiness timeout. So the daemon, on EVERY coded
+  exit-0 refusal (`server_expectation_mismatch`, `consent_seed_unwritable`, invalid
+  directive), atomically writes `{stateDir}/boot-refusal.json` — token, expectation,
+  resolved value, timestamp — before exiting. The verify transactions' readiness-failure
+  paths and the lane's reconciliation both consult a FRESH marker (observed strictly after
+  the mutation began): install/start readiness timeouts carry the coded reason as a
+  `refusal_reason=` line under the standard prefix rules, and the lane maps it to
+  `Refused(reason)` with the matching recovery guidance (expectation mismatch → takeover/
+  reinstall surface) — distinguishable from unrelated startup failure on every verb,
+  including detached-start refusals on both sides of the wrapper's liveness window. External interface:
   `Task<MutationOutcome> RunAsync(MutationRequest, CancellationToken)`, where
   `MutationRequest` names the verb (install/replace/start-verify/detached-start) and the
   expected identity `{profile, canonical server, daemon name}` — nothing else: a
@@ -813,7 +845,19 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   (a) A and B share the canonical server with different tokens → A's token used; (b) B holds
   a pre-upgrade unbound token for another server → never read (B is never resolved); (c) a
   WorkOS refresh writes A's token file only; (d) A's profile daemon settings survive the
-  overlay (profile resolution untouched by the expectation variable); a timed-out wrapper yields
+  overlay (profile resolution untouched by the expectation variable); **expectation carrier
+  lifecycle** — the unit/detached successor keeps enforcing (successor re-injection; unit
+  restarts from the unit) while hosted children (PTY + each ACP/RPC) observe no expectation
+  and a hosted `kcap daemon start`/`service install` for another profile hits no inherited
+  mismatch and bakes no inherited expectation; **stale-pin gate** — profile re-pointed
+  after install: the gate returns pre-mutation 28/`identity_mismatch` (nothing booted,
+  takeover offered, `unit_expected_server` explains the pin), while a post-final-recheck
+  race still ends in the daemon's refusal; **refusal propagation** — expectation mismatch
+  before AND after the detached wrapper's liveness window, plus install/start readiness
+  timeouts: each yields the exact ProcessResult shape, the fresh `boot-refusal.json` is
+  consulted, the coded `refusal_reason=` line rides the failure, and the lane maps
+  `Refused(server_expectation_mismatch)` with takeover/reinstall guidance — distinguishable
+  from unrelated startup failure; a timed-out wrapper yields
   the exact existing runner shape (`ProcessResult.TimedOut == true`), asserted at the runner
   seam, not only the final `MutationOutcome`; a waiterless `Succeeded` is logged and does
   NOT enter the FIFO; graph construction awaits `QuiescedAsync` over a still-live action; a
@@ -972,9 +1016,12 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   the `KCAP_APP_SPAWN_NO_TELEMETRY` marker before dispatch (decision 9 — one CLI change);
   Core gains the public `LocalControlProbe` one-shot seam (§4); the app-package build asserts
   its sibling CLI satisfies the floor;
-  `service status --json` gains additive `unit_profile`, `unit_server_url`, and
-  `unit_consent_seed` fields derived from the unit's baked env (UX evidence only — the
-  transaction re-derives under the lock);
+  `service status --json` gains additive `unit_profile`, `unit_server_url`,
+  `unit_expected_server`, and `unit_consent_seed` fields derived from the unit's baked env
+  (UX evidence only — the transaction re-derives under the lock); the daemon writes the
+  atomic `{stateDir}/boot-refusal.json` marker on every coded exit-0 refusal, consulted by
+  the verify readiness-failure paths (`refusal_reason=` line) and the lane's reconciliation
+  (§4);
   `AgentDetection` composition move + `AgentDetector` to Core + pure-input overloads on
   `KiroPaths`/`PiPaths`/`OpenCodePaths` (decision 8); `setup`/`login` re-plumbed onto the §5
   façade with Spectre adapters (behavior-preserving); `ToServerOrigin`/`ResolveTenantArg` moved
