@@ -798,6 +798,7 @@ public class ClaudeHookCommandTests {
 
     sealed class Fixture : IDisposable {
         readonly string _tmpHome = Path.Combine(Path.GetTempPath(), $"kcap-claude-hook-{Guid.NewGuid():N}");
+        readonly string? _originalClaudeConfigDir;
         readonly string _spoolPath;
         public List<string> Sent { get; } = [];
         public List<string> RouteOrder { get; } = [];
@@ -817,6 +818,13 @@ public class ClaudeHookCommandTests {
 
         public Fixture(HttpStatusCode postStatus = HttpStatusCode.OK) {
             Directory.CreateDirectory(_tmpHome);
+            // Isolate Claude's config dir (settings.json / plugins) to this temp home so ambient
+            // plugin state on the dev machine can't leak in — notably the work-items-nudge availability
+            // gate, which reads whether the kcap plugin is effectively installed. Safe under the class's
+            // [NotInParallel("HomeEnvVarMutation")] lock. The kcap profile and the HTTP-stubbed memory
+            // index are unaffected (they don't read CLAUDE_CONFIG_DIR).
+            _originalClaudeConfigDir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", _tmpHome);
             _spoolPath  = Path.Combine(_tmpHome, "spool");
             _postStatus = postStatus;
             Spool = new HookSpool(_spoolPath);
@@ -855,7 +863,11 @@ public class ClaudeHookCommandTests {
             File.WriteAllText(Path.Combine(_spoolPath, $"{sid}.ordered-1-1"), jsonLine + "\n");
         }
 
-        public void Dispose() { Client.Dispose(); try { Directory.Delete(_tmpHome, true); } catch { } }
+        public void Dispose() {
+            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", _originalClaudeConfigDir);
+            Client.Dispose();
+            try { Directory.Delete(_tmpHome, true); } catch { }
+        }
     }
 
     sealed class StubHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> impl) : HttpMessageHandler {

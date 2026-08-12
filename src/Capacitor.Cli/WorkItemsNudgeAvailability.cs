@@ -37,9 +37,10 @@ static class WorkItemsNudgeAvailability {
     public static bool IsRegisteredFor(SessionStartHarness harness, string? home = null, string? codexConfigPath = null) {
         try {
             return harness switch {
-                // Claude always had kcap-workitems (bundled plugin .mcp.json); if its SessionStart hook
-                // is firing, the plugin is installed.
-                SessionStartHarness.Claude      => true,
+                // Claude carries kcap-workitems in the plugin's bundled .mcp.json, so it is available
+                // exactly when that plugin is effectively installed (enabled + its .mcp.json present).
+                SessionStartHarness.Claude      => ClaudePluginInstaller.IsEffectivelyInstalled(
+                                                       Path.Combine(ClaudePaths.Home(home), "settings.json")),
                 SessionStartHarness.Codex       => CodexHasWorkItems(codexConfigPath),
                 SessionStartHarness.Cursor      => JsonBlockHasServer(CursorPaths.UserMcpJson(home), "mcpServers"),
                 SessionStartHarness.Copilot     => JsonBlockHasServer(CopilotPaths.McpConfigJson(home), "mcpServers"),

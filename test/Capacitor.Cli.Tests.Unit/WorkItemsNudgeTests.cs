@@ -54,15 +54,24 @@ public class WorkItemsNudgeEmitterTests {
         await Assert.That(nudge).Contains("never invent an id");
     }
 
+    static string CodexConfigWithWorkItems() {
+        var dir = Directory.CreateTempSubdirectory("kcap-nudge-resolve-").FullName;
+        var path = Path.Combine(dir, "config.toml");
+        File.WriteAllText(path, "[mcp_servers.kcap-workitems]\ncommand = \"kcap\"\nargs = [\"mcp\", \"workitems\"]\n");
+        return path;
+    }
+
     [Test]
     public async Task Resolve_returns_null_when_opted_out() {
-        // Claude is always available, so opt-out is the only suppressor here.
-        await Assert.That(WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Claude, "s1", optedOut: true)).IsNull();
+        // Opt-out wins even for an available harness.
+        await Assert.That(WorkItemsNudgeEmitter.Resolve(
+            SessionStartHarness.Codex, "s1", optedOut: true, codexConfigPath: CodexConfigWithWorkItems())).IsNull();
     }
 
     [Test]
     public async Task Resolve_returns_the_nudge_for_an_available_harness() {
-        var nudge = WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Claude, "s1", optedOut: false);
+        var nudge = WorkItemsNudgeEmitter.Resolve(
+            SessionStartHarness.Codex, "s1", optedOut: false, codexConfigPath: CodexConfigWithWorkItems());
         await Assert.That(nudge).IsNotNull();
         await Assert.That(nudge!).Contains("`s1`");
     }
@@ -86,8 +95,28 @@ public class WorkItemsNudgeAvailabilityTests {
     }
 
     [Test]
-    public async Task Claude_is_always_available() {
-        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Claude)).IsTrue();
+    public async Task Claude_without_an_effective_plugin_suppresses() {
+        // A home with no installed kcap plugin → fail closed (no nudge). This is also what keeps the
+        // Claude SessionStart hook tests (isolated home / CI) free of the nudge.
+        var home = NewHome(out _);
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Claude, home)).IsFalse();
+    }
+
+    [Test]
+    public async Task Claude_with_an_effective_plugin_is_available() {
+        var home = NewHome(out _);
+        var claude = Path.Combine(home, ".claude");
+        var installPath = Path.Combine(claude, "plugins", "cache", "kcap", "kcap", "1.0.0");
+        Directory.CreateDirectory(installPath);
+        await File.WriteAllTextAsync(Path.Combine(installPath, ".mcp.json"), "{}");
+        Directory.CreateDirectory(Path.Combine(claude, "plugins"));
+        await File.WriteAllTextAsync(
+            Path.Combine(claude, "plugins", "installed_plugins.json"),
+            "{ \"plugins\": { \"kcap@kcap\": [ { \"scope\": \"user\", \"installPath\": " +
+            System.Text.Json.JsonSerializer.Serialize(installPath) + ", \"version\": \"1.0.0\" } ] } }");
+        await File.WriteAllTextAsync(
+            Path.Combine(claude, "settings.json"), "{ \"enabledPlugins\": { \"kcap@kcap\": true } }");
+        await Assert.That(WorkItemsNudgeAvailability.IsRegisteredFor(SessionStartHarness.Claude, home)).IsTrue();
     }
 
     [Test]
