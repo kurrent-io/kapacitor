@@ -20,6 +20,21 @@ public class WorkItemsNudgeEmitterTests {
     }
 
     [Test]
+    public async Task Build_suppresses_a_session_id_with_a_backtick_or_control_char() {
+        await Assert.That(WorkItemsNudgeEmitter.Build("abc`rm -rf`")).IsNull();
+        await Assert.That(WorkItemsNudgeEmitter.Build("abc\ndef")).IsNull();
+        await Assert.That(WorkItemsNudgeEmitter.Build("abc\tdef")).IsNull();
+    }
+
+    [Test]
+    public async Task Build_accepts_a_file_path_session_id() {
+        // Pi's session id is a file path — slashes/dots/colons are safe inside the code span.
+        var nudge = WorkItemsNudgeEmitter.Build("/home/u/.pi/sessions/2026-08-12T10:00.jsonl");
+        await Assert.That(nudge).IsNotNull();
+        await Assert.That(nudge!).Contains("/home/u/.pi/sessions/2026-08-12T10:00.jsonl");
+    }
+
+    [Test]
     public async Task Build_renders_the_session_id_verbatim() {
         var nudge = WorkItemsNudgeEmitter.Build("abc-123-DEF");
         await Assert.That(nudge).IsNotNull();

@@ -38,6 +38,12 @@ static class WorkItemsNudgeEmitter {
         if (string.IsNullOrWhiteSpace(sessionId)) return null;
         var id = sessionId.Trim();
         if (id.Length == 0 || id.Length > MaxSessionIdLength) return null;
+        // The id is rendered verbatim inside a Markdown code span and into agent context. Reject one
+        // carrying a backtick or any control char (newline, CR, tab, …) — it would break the code span
+        // or smuggle formatting/instructions. A well-formed id (uuid, hex, or a file path — Pi's id)
+        // passes untouched; a pathological one just suppresses the nudge (fail-safe).
+        foreach (var c in id)
+            if (c == '`' || char.IsControl(c)) return null;
 
         return
             "## Work items\n" +
