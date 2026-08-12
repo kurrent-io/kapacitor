@@ -164,9 +164,10 @@ window (`OnboardingWindow`), step content switched by template.
      nothing about a fresh attach. Its outcome algebra and success predicates are defined in
      §4; the key rule here: a swapped old CLI's residue (a persistent unseeded daemon, or an
      installed-but-stopped unit, or legacy `status --json` lacking the new unit fields)
-     always terminates in an attention/repair classification, never silence — and each
-     caller surfaces that classification through its own surface (wizard step UI, controller
-     lanes, main-window notifier), so no controller internals are imported anywhere. This whole family is the **one qualified exception** to
+     always terminates in an attention/repair classification, never silence — delivered through
+     the lane's single-consumer channel (§4) and presented by whichever consumer owns it
+     (wizard step UI while open, else the composition root's surfaces), so no controller
+     internals are imported anywhere and no classification is ever presented twice. This whole family is the **one qualified exception** to
      decision 4's and §4's "no app action / no automatic path mints an `allow` daemon"
      guarantees, and those statements carry it; the acceptance tests force the order
      deterministically per path (a test seam pauses after the final check, swaps the
@@ -223,7 +224,8 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   `MutationRequest` names the verb (install/replace/start-verify/detached-start) and the
   expected identity `{profile, canonical server, daemon name}` — nothing else: a
   surfacing-caller field would make request equality (and therefore coalescing) ambiguous,
-  and callers don't need it since each surfaces the RETURNED outcome itself. **The action's
+  and callers don't need it: presentation flows through the single-consumer channel
+  (below), and `RunAsync` results are state-only. **The action's
   lifetime is lane-owned, never caller-owned**: the lane runs probe → child → terminal
   process result → reconciliation as ONE internal task under its own lifetime token — the
   child is started under that token, not a caller's, because the runner's `AbandonWait`
@@ -238,10 +240,15 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   sequencing actually await, bounded by their existing caps) and a **FIFO of pending
   actionable outcomes** — a single cell cannot be lossless: action A can finish waiterless
   with `AttentionSkew` and queued action B finish waiterless with `AttentionRepair` before
-  any drain, and overwrite/drop/block are each wrong. Retention policy: only ACTIONABLE
-  waiterless outcomes are queued (`AttentionSkew`, `AttentionRepair`, `Failed`, `Refused`,
-  `UnconfirmedNoAttach`); a waiterless `Succeeded`/`SucceededAfterTimeout` is logged, never
-  queued — success must not consume an attention surface. Delivery is a **live single-consumer channel, not a
+  any drain, and overwrite/drop/block are each wrong. Retention/presentation policy: **EVERY actionable
+  outcome (`AttentionSkew`, `AttentionRepair`, `Failed`, `Refused`, `UnconfirmedNoAttach`)
+  travels through this channel exactly once, waiters or not, and `RunAsync` results are
+  STATE-ONLY** — a waiter uses its result to update its own state (enable buttons, show
+  step status) but never to open prompts or takeover dialogs. Without this rule, two
+  coalesced waiters receiving one shared `AttentionSkew` would each open a takeover prompt,
+  and two accepted prompts would enqueue a second destructive request. A
+  `Succeeded`/`SucceededAfterTimeout` is delivered to waiters as a state-only result and,
+  when waiterless, logged — success must not consume an attention surface. Delivery is a **live single-consumer channel, not a
   one-shot drain**: §6a permits graph construction after its cap while the owned child is
   still live, so an outcome can be enqueued AFTER the handoff's initial take — a drain-once
   contract would silently lose exactly the late attention the seam exists to carry. The
@@ -265,7 +272,7 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   parentage, and there is no setsid/double-fork on this path — so a tree kill would kill the
   daemon this contract promises to spare). The mode is tested with real processes. The lane
   then reconciles the possible partial effect through the instance-bound probes: a FULLY
-  verified daemon (process result absent but identity + instance evidence complete) is the
+  verified daemon (`ProcessResult.TimedOut == true`, identity + instance evidence complete) is the
   distinct outcome **`SucceededAfterTimeout`** — deliberately not `Succeeded`, whose
   successful-`ProcessResult` predicate stays intact; the runner result the lane consumes is
   the existing `TimedOut: true` `ProcessResult`, never a widened/nullable shape; a timeout
@@ -287,8 +294,8 @@ src/Capacitor.Cli.Core/LocalIpc/LocalControlProbe.cs                — bounded 
   evidence is complete; mapped to success UX with a logged note. A normal exit-0 remains
   `Succeeded`;
   `AttentionSkew` (Connected/hello evidence below floor, missing `consent/3`, or
-  incompatible — the caller routes it into the takeover offer, and the coordinator applies
-  any pending claim under its factory guard);
+  incompatible — the channel consumer routes it into the takeover offer, and the coordinator
+  applies any pending claim under its factory guard);
   `AttentionRepair` (stale marker, orphan/unseeded residue, legacy status evidence);
   `UnconfirmedNoAttach` (bounded wait expired with no ownership evidence — surfaced as
   "started, not yet confirmed"; deliberately NOT "degraded-but-owned": no ownership may be
@@ -719,7 +726,10 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   concurrency & lifetime:** lifecycle+main-window and service+detached concurrent requests —
   an identical pair coalesces into ONE mutation and outcome (never two mutations from one
   approval); a different queued request re-probes fresh after acquiring the lane; waiter A
-  cancels → B still receives the terminal outcome (and vice versa); ALL waiters cancel with
+  cancels → B still receives the terminal outcome (and vice versa); **coalesced actionable
+  fan-out** — an identical lifecycle+main-window request returning `AttentionSkew` (and
+  separately `AttentionRepair`) → one mutation, ONE prompt/attention surface (both waiters'
+  results are state-only), and no second takeover request enqueued; ALL waiters cancel with
   no immediate retry → the owned action runs to its terminal state and its actionable
   outcome lands in the FIFO; **two queued actions whose waiters all detach, producing
   DIFFERENT attention outcomes before any drain** → both surface, in FIFO order, exactly
