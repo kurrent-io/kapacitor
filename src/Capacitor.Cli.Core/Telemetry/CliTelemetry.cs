@@ -54,16 +54,19 @@ public static class CliTelemetry {
             // this rare fallback case.
             _deviceId = TelemetryDeviceId.GetOrCreate() ?? Guid.NewGuid().ToString("N");
 
+            var version = Version();
+
             _orgGroup = PostHogPayload.OrgGroup(serverUrl);
             _shared   = new JsonObject {
-                ["source"]      = "cli",
-                ["cli_version"] = Version(),
-                ["os"]          = OS(),
-                ["arch"]        = RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant(),
-                ["is_ci"]       = IsCi(),
-                ["is_headless"] = Auth.HeadlessEnvironment.IsHeadless(),
-                ["has_server"]  = serverUrl is not null,
-                ["logged_in"]   = loggedIn,
+                ["source"]        = "cli",
+                ["cli_version"]   = version,
+                ["build_channel"] = TelemetryEnvironment.BuildChannel(version),
+                ["os"]            = OS(),
+                ["arch"]          = RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant(),
+                ["is_ci"]         = TelemetryEnvironment.IsCi(),
+                ["is_headless"]   = Auth.HeadlessEnvironment.IsHeadless(),
+                ["has_server"]    = serverUrl is not null,
+                ["logged_in"]     = loggedIn,
             };
 
             if (TestSink is null)
@@ -198,10 +201,4 @@ public static class CliTelemetry {
         : RuntimeInformation.IsOSPlatform(OSPlatform.OSX)   ? "macos"
         : RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? "linux"
         : "other";
-
-    // CI machines are ephemeral and mint a fresh device id per run, so they are tagged rather
-    // than dropped — funnel insights filter is_ci = false.
-    static bool IsCi() =>
-        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CI"))
-     || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"));
 }

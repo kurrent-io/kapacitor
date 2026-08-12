@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json.Nodes;
+using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli;
 
@@ -29,9 +30,23 @@ static class SessionGuidelinesEmitter {
         if (responseNode is not JsonObject obj) return null;
         if (obj["top_clusters"] is not JsonArray topClusters || topClusters.Count == 0) return null;
 
-        var patterns = new List<string>();
-        var guidance = new List<string>();
+        return BuildCore(ReadNodes(topClusters));
+    }
 
+    /// <summary>
+    /// Overload for the guidelines lane: the eight non-Claude harnesses
+    /// fetch <c>GET /api/repositories/{hash}/guidelines</c> directly and pass the
+    /// parsed rows here, rather than reading <c>top_clusters</c> from a hook
+    /// response. Identical grouping/format so a fragment is byte-identical across
+    /// harnesses; returns null when there is nothing to emit. No byte cap — the
+    /// server clamps the row count and text length (matches Claude).
+    /// </summary>
+    public static string? BuildFragment(IReadOnlyList<GuidelineRow>? rows) {
+        if (rows is null || rows.Count == 0) return null;
+        return BuildCore(rows.Select(r => (r.Category, r.Text)));
+    }
+
+    static IEnumerable<(string? Category, string? Text)> ReadNodes(JsonArray topClusters) {
         foreach (var node in topClusters) {
             if (node is null) continue;
 
@@ -39,12 +54,20 @@ static class SessionGuidelinesEmitter {
             try { text = node["text"]?.GetValue<string>(); }
             catch { continue; }
 
-            if (string.IsNullOrWhiteSpace(text)) continue;
-
             string? category;
             try { category = node["category"]?.GetValue<string>(); }
             catch { category = null; }
 
+            yield return (category, text);
+        }
+    }
+
+    static string? BuildCore(IEnumerable<(string? Category, string? Text)> rows) {
+        var patterns = new List<string>();
+        var guidance = new List<string>();
+
+        foreach (var (category, text) in rows) {
+            if (string.IsNullOrWhiteSpace(text)) continue;
             var target = category == "agent_guidance" ? guidance : patterns;
             target.Add($"- {text}");
         }

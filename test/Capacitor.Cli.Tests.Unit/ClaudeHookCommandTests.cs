@@ -139,6 +139,27 @@ public class ClaudeHookCommandTests {
         await Assert.That(memoryIdx).IsGreaterThan(nudgeIdx);
     }
 
+    // Cross-vendor isolation: Claude's guidelines come from the hook POST response (top_clusters), NOT
+    // the /api/repositories/{hash}/guidelines GET the eight non-Claude harnesses use. Claude keeps a
+    // memory-only provider, so it must NEVER issue a guidelines GET — pinned here so a future refactor
+    // can't silently route Claude through the composite and double-fetch/reorder its envelope.
+    [Test, NotInParallel]
+    public async Task session_start_never_issues_a_guidelines_get() {
+        using var fx = new Fixture();
+        fx.RespondJson = """{"top_clusters":[{"text":"seal secrets","category":"safety"}],"version":"1.0.0"}""";
+        fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
+
+        var sid = Guid.NewGuid().ToString("N");
+        var (exit, _) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(fx.MemoryIndexRequested).IsTrue();
+        var paths = fx.Sent.Select(s => s.Split('|', 2)[0]).ToList();
+        await Assert.That(paths.Any(p => p.Contains("/guidelines", StringComparison.Ordinal))).IsFalse();
+        await Assert.That(paths.Any(p => p.Contains("/api/repositories/", StringComparison.Ordinal))).IsFalse();
+    }
+
     [Test, NotInParallel]
     public async Task session_start_with_only_a_ready_memory_index_emits_just_the_memory_fragment() {
         using var fx = new Fixture();

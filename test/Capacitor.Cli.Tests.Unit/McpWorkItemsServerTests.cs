@@ -164,6 +164,17 @@ public class McpWorkItemsServerTests {
         });
     }
 
+    [Test]
+    public async Task Server_instructions_steer_agents_to_declare_breakdown_and_relations() {
+        // Pin that the preamble names both declare tools + the declared-never-inferred rule, so it
+        // can't silently regress to a bare correlation description.
+        var instructions = McpWorkItemsServer.ServerInstructions;
+
+        await Assert.That(instructions).Contains("declare_work_breakdown");
+        await Assert.That(instructions).Contains("declare_work_relation");
+        await Assert.That(instructions).Contains("never");   // "declared, never inferred"
+    }
+
     // ── declared breakdown + relations ───────────────────────────────────────
 
     [Test]

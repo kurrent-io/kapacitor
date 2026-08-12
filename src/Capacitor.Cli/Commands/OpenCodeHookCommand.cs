@@ -148,6 +148,7 @@ static class OpenCodeHookCommand {
             ? StartMemoryIndexTask(
                 baseUrl, sessionId, scopeRoot,
                 activeProfile?.DisableMemoryIndex is true,
+                activeProfile?.DisableSessionGuidelines is true,
                 HookBudget.Remaining(processStart, "session-start"),
                 memoryClientFactory, memoryStoreFactory)
             : Task.FromResult<string?>(null);
@@ -234,26 +235,26 @@ static class OpenCodeHookCommand {
             string     sessionId,
             string?    scopeRoot,
             bool       disabled,
+            bool       guidelinesDisabled,
             TimeSpan   budget,
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
             Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
-        if (disabled || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
+        // Both lanes off ⇒ nothing to fetch. A single disabled lane still runs the other.
+        if ((disabled && guidelinesDisabled) || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
          || budget <= TimeSpan.Zero
          || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
             return Task.FromResult<string?>(null);
 
         try {
-            var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
-            var provider = new SessionStartMemoryContextProvider(
-                new SessionStartMemoryScopeResolver(),
+            var store    = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var provider = SessionStartMemoryHookSupport.CompositeProvider(
                 memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
-                // Only clients we created are ours to dispose; an injected factory's client belongs to
-                // its caller and may be handed back again on the 401-refresh call.
                 disposeClients: memoryClientFactory is null);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
                 LifecycleFor(sessionId),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
+                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None,
+                    GuidelinesDisabled: guidelinesDisabled));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);
         }

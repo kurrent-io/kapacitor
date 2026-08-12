@@ -155,7 +155,15 @@ analytics id outright without touching authentication.
 ## Event catalog
 
 Every CLI event carries `source: "cli"` (mirroring the server's `source: "server"`), `cli_version`,
-`os`, `arch`, `is_ci`, `is_headless`, `$ip: null`, and `$geoip_disable: true`.
+`build_channel`, `os`, `arch`, `is_ci`, `is_headless`, `$ip: null`, and `$geoip_disable: true`.
+
+`build_channel` is `release` / `prerelease` / `unknown`, derived from `cli_version`. It exists
+because `is_ci` does not cover the largest source of non-human devices in practice: local dev loops
+and Aspire-spawned dev daemons run prerelease builds against throwaway `KCAP_CONFIG_DIR`s, so each
+run mints a fresh device id while reporting `is_ci = false`. In the first day of live data these
+outnumbered real released-build devices roughly 4:1 (107 vs 26). The version string alone could
+express this, but only via a `cli_version NOT LIKE '%alpha%'` match that every future insight has to
+remember; a first-class property makes excluding them a normal filter.
 
 **No CLI event may reuse a server event name.** The server already emits `cli_setup_completed`
 (`PosthogEventMapper.cs:39`); a second producer of that name would double-count across two different
@@ -221,6 +229,14 @@ Flushed eagerly, in order:
 | `cli_setup_workspace_provisioned` | poll resolves live | |
 | `cli_setup_workspace_failed` | poll fails | `reason`: `slug_taken`, `reserved`, `poll_timeout`, `unauthorized` |
 | `cli_setup_succeeded` | setup finishes | `agents_configured` (count, not vendor names) |
+
+`has_existing_profile` means "a profile with a server URL is already persisted", via
+`AppConfig.HasConfiguredProfile`. It deliberately does NOT ask `LoadProfileConfig().Profiles.Count > 0`:
+that method synthesizes a `default` entry whenever config.json is missing, so the count test is true
+on a machine that has never run kcap and the property was hardcoded-true by construction. It shipped
+that way and reported `true` for every run in the first day of live data (14/14), which is the
+failure mode to watch for — a property whose value is structurally constant reads as a fact rather
+than as a broken measure.
 
 The drop-off measure is `cli_setup_tenant_none` minus `cli_setup_workspace_provisioned`, split by the
 last step reached — with `cli_setup_workspace_redirected` excluded from that split. It is not

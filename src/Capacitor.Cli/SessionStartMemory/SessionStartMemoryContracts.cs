@@ -39,7 +39,12 @@ internal sealed record SessionStartMemoryContextRequest(
     string? Cwd,
     bool Disabled,
     TimeSpan Budget,
-    CancellationToken CancellationToken);
+    CancellationToken CancellationToken,
+    // the guidelines lane's opt-out (disable_session_guidelines), independent of the
+    // memory lane's Disabled (disable_memory_index). Additive with a default so the Claude
+    // memory-only construction — which never runs the guidelines lane — compiles untouched and
+    // stays guidelines-off. The eight non-Claude adapters set it explicitly from activeProfile.
+    bool GuidelinesDisabled = true);
 
 internal sealed record SessionStartMemoryContextResult(
     SessionStartMemoryDisposition Disposition,

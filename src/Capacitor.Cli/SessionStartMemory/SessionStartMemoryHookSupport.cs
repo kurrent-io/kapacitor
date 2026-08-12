@@ -42,6 +42,33 @@ internal static class SessionStartMemoryHookSupport {
             baseUrl, ct, allowAutoRedirect: false, rejectedAccessToken: rejectedAccessToken)).Client;
 
     /// <summary>
+    /// Builds the combined memory + guidelines SessionStart context provider. The memory
+    /// lane and the guidelines lane share one authenticated client factory and the composite resolves
+    /// the repo/machine scope ONCE for both. Which lanes actually run is decided per request via
+    /// <see cref="SessionStartMemoryContextRequest.Disabled"/> (memory) and its
+    /// <c>GuidelinesDisabled</c> flag — a disabled lane contributes nothing.
+    ///
+    /// <para>This is the single construction site for the eight non-Claude harnesses. Claude does NOT
+    /// use it — it keeps a memory-only <see cref="SessionStartMemoryContextProvider"/> and renders
+    /// guidelines from its own hook POST response.</para>
+    ///
+    /// <para>The caller resolves its own <paramref name="clientFactory"/> (each adapter keeps its
+    /// factory choice) and passes <paramref name="disposeClients"/>: true when the factory is one we
+    /// created (ours to dispose), false for a test/injected factory whose client belongs to its caller
+    /// and may be handed back on the 401-refresh call. Both lanes share the one factory.</para>
+    /// </summary>
+    public static ISessionStartContextProvider CompositeProvider(
+            Func<string?, CancellationToken, Task<HttpClient>> clientFactory,
+            bool disposeClients,
+            ISessionStartMemoryScopeResolver? scopeResolver = null) {
+        var resolver = scopeResolver ?? new SessionStartMemoryScopeResolver();
+
+        var memory     = new SessionStartMemoryContextProvider(resolver, clientFactory, disposeClients: disposeClients);
+        var guidelines = new SessionStartGuidelinesLane(clientFactory, disposeClients: disposeClients);
+        return new SessionStartCompositeContextProvider(resolver, memory, guidelines);
+    }
+
+    /// <summary>
     /// Awaits an in-flight fragment fetch under the budget remaining AT THIS INSTANT — never the
     /// budget it was started with. On expiry the fetch is abandoned rather than cancelled mid-flight
     /// (its own lease bookkeeping owns that) and null is returned, so the caller's output degrades to

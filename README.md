@@ -217,7 +217,7 @@ Once set up, Capacitor runs silently in the background. Every Claude Code (and C
 - **Token consumption** — input/output/cache token counts per interaction
 - **Repository context** — git repo, branch, and PR linkage
 - **In-agent upgrade prompts** — in Claude Code sessions, when the server is running a newer kcap release than the local CLI, additional context is injected into the session so the agent can offer the user an upgrade via `kcap update`. The stderr `kcap` update hint continues to fire for direct command-line use, and every request also carries the CLI's version to the server so it can surface its own out-of-date banner/notification (see [`kcap update`](#other-commands) for the full picture, including how `update_check: false` turns all of this off).
-- **SessionStart context injection** — at every session start the server injects top evaluation-derived fact clusters for the current repo into Claude's `additionalContext`. The injected block is split into two sections: `## Known patterns` (repo/project facts relevant to any reader) and `## Guidance from past sessions` (agent-targeted action items derived from prior eval suggestions with `audience: "agent"`). Opt out by setting `disable_session_guidelines: true` in `~/.config/kcap/config.json` or via `kcap config set disable_session_guidelines true`.
+- **SessionStart context injection** — at every session start the server injects top evaluation-derived fact clusters for the current repo into the session's context. The injected block is split into two sections: `## Known patterns` (repo/project facts relevant to any reader) and `## Guidance from past sessions` (agent-targeted action items derived from prior eval suggestions with `audience: "agent"`). Delivered for every supported harness (Claude Code, Codex CLI, GitHub Copilot CLI, Gemini CLI, AWS Kiro CLI, Google Antigravity, Pi, OpenCode, and Cursor's `cursor-agent`): Claude reads it from its hook response, while the other eight fetch `GET /api/repositories/{hash}/guidelines` alongside the team-memory index and emit both in one combined block, through the same per-harness delivery seam as that index (see the next bullet). Opt out by setting `disable_session_guidelines: true` in `~/.config/kcap/config.json` or via `kcap config set disable_session_guidelines true`.
 - **SessionStart team-memory index** — at every session start (Claude Code, Codex CLI, GitHub Copilot CLI, Gemini CLI, AWS Kiro CLI, Google Antigravity, Pi, OpenCode, and Cursor CLI's `cursor-agent` — see the capability matrix below for the full per-harness rollout) `kcap` also fetches a compact index of durable [team memories](#memory-mcp-server-for-agents) visible for the current repo/machine and appends a `## Team memory` block to the session's injected context (`additionalContext` for Claude, Codex, Copilot, and Gemini, `additional_context` for Cursor, raw stdout for Kiro, `injectSteps`/`userMessage` for Antigravity, system-prompt append via the kcap Pi extension for Pi, and system-entry append via the kcap OpenCode plugin for OpenCode): one `slug: description` line per memory, grouped **Org / Team / Yours**, with a nudge to call `get_memory` / `search_memories` for full content. Only the index is injected — never the bodies — so the cost stays roughly flat as the pool grows (mirrors a local `MEMORY.md`). Best-effort and fail-open (a slow or failed fetch injects nothing, never blocking the hook), and only ever injected once per conversation. Opt out with `disable_memory_index: true` in `~/.config/kcap/config.json` or `kcap config set disable_memory_index true`.
 - **Crash resilience** — if a `kcap` command hits an unexpected error it records the exception (with stack trace) to `~/.config/kcap/crash.log` (honours `KCAP_CONFIG_DIR`; size-capped) and exits cleanly instead of aborting. Hook and detached-generator commands the coding agent spawns **fail open** (exit 0, nothing surfaced to the agent); other commands exit non-zero with a one-line stderr message pointing at the log.
 
@@ -561,14 +561,19 @@ At SessionStart (Claude Code), `kcap` also injects a compact **index** of the me
 kcap mcp workitems
 ```
 
-Stdio MCP server that lets coding agents correlate the current session to the SDLC work item (issue/PR) it belongs to, or list what it's already correlated to. **Claude Code:** auto-registered via the plugin's `.mcp.json`; it isn't offered for Cursor or Codex.
+Stdio MCP server that lets coding agents correlate the current session to the SDLC work item (issue/PR) it belongs to, **declare that work item's structure** — its breakdown into parts and its blocks/blocked-by dependencies — and read that structure back. **Claude Code:** auto-registered via the plugin's `.mcp.json`; it isn't offered for Cursor or Codex.
 
-It provides two tools:
+It provides seven tools:
 
 - **`declare_work_item`** — attach the current session (and its continuation chain) to a work item. Pass exactly one of `issue_key` (e.g. `"AI-1234"`), `pr_number`, `work_item_id`, or `new_title` (creates a brand-new work item).
 - **`get_session_work_items`** — list the work items the current session is attached to.
+- **`declare_work_breakdown`** — declare that a work item is broken into parts (`parent_id` + `part_ids`). Idempotent; a part has at most one parent, and all items must live in the same repository.
+- **`retract_work_breakdown`** — detach the named parts from the parent.
+- **`declare_work_relation`** — declare a dependency between two items (`from_id`, `to_id`, `relation_kind` `"blocks"` or `"blocked_by"`). Same repository, no self-relation.
+- **`retract_work_relation`** — retract a previously declared dependency.
+- **`get_work_item_topology`** — read a work item's parent, parts, and dependencies (scoped to what the caller can see).
 
-Both tools default `session_id` to the current kcap-hooked session (`KCAP_SESSION_ID`) when omitted. This is the manual-declare path alongside the server's own mechanical and LLM-assisted correlation — use it when an agent already knows which issue or PR a session belongs to.
+`declare_work_item` / `get_session_work_items` default `session_id` to the current kcap-hooked session (`KCAP_SESSION_ID`) when omitted. This is the manual path alongside the server's own mechanical and LLM-assisted correlation — use it when an agent already knows which issue or PR a session belongs to, and to record a breakdown/dependency structure the server can't infer (Home's blockers & dependencies and progress figures render only from declared parts and relations).
 
 ### Analytics MCP server (for agents)
 
@@ -1435,6 +1440,16 @@ verbatim, exactly like every other agent, with no Cursor/ACP-specific redaction.
 | `KCAP_CODEX_SUBAGENT_IDLE_MINUTES` | `5` | Idle grace between a Codex collab subagent finishing its turn (its rollout's `task_complete`, no tool call in flight) and the child watcher marking it completed on the server, so the subagent's chat card stops showing "in progress" while the parent session keeps running. The grace absorbs quick same-round re-engagements by the parent; `0` marks completion immediately at turn end. The completion is one-shot — a subagent the parent re-engages after the grace keeps streaming into its transcript but stays marked completed. Invalid or negative values fall back to the 5-minute default. |
 | `KCAP_PARENT_DEAD_CEILING_MINUTES` | `360` | Staged recovery ceiling for a watcher whose parent coding-agent PID was already dead at startup (a resolution glitch) and can't be re-resolved. The watcher first periodically re-resolves and re-arms the parent-exit watchdog; only if that keeps failing AND the transcript makes no progress for this long does it post `session-end` (`reason: parent_dead_ceiling`). Deliberately far above the idle timeout so a user parked at a Kiro/OpenCode prompt is never ended prematurely. Invalid or non-positive values fall back to 360 minutes (6h). |
 | `KCAP_CURSOR_IDLE_CEILING_MINUTES` | `60` | How long a Cursor session's transcript watcher may go idle before it exits (AI-1382). Unlike Codex/Antigravity, this exit does NOT itself POST `session-end` — Cursor's end-of-session synthesis stays owned by the `sessionEnd` hook or, as a backstop, a server-side lease-gated sweep; the next hook for that session reactivates a fresh watcher. Invalid or non-positive values fall back to the 60-minute default. |
+| `KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES` | `360` | How long a Claude **subagent** watcher may go idle before it reaps itself (see below). Applies only to subagent watchers — a Claude *session* watcher has no idle ceiling and is unaffected. Deliberately generous (6h): this is a leak backstop, not an end-of-conversation signal. Invalid or non-positive values fall back to 360 minutes. |
+
+**Claude subagent watcher reaping.** A `kcap watch` subagent watcher normally exits when the
+`SubagentStop` hook fires. If that hook is disrupted, the watcher used to survive until the entire
+parent `claude` process exited — accumulating one leaked ~40 MB process per missed stop for the
+life of the session (issue #514). Subagent watchers now also self-reap after
+`KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES` of transcript silence. A subagent with a tool still in flight
+(a `tool_use` with no matching `tool_result`) is never reaped no matter how long it is quiet, so a
+long build or test run cannot be cut short. Like Cursor's ceiling, this exit posts no
+`session-end` — a subagent watcher never owned that.
 
 ### Hosted Pi agents
 

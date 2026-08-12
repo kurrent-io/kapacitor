@@ -90,29 +90,28 @@ static class CopilotHookCommand {
             string?    scopeRoot,
             string?    source,
             bool       disabled,
+            bool       guidelinesDisabled,
             TimeSpan   budget,
             Func<CancellationToken, Task<bool>>?                commitGate,
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
             Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
-        if (disabled || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
+        if ((disabled && guidelinesDisabled) || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
          || budget <= TimeSpan.Zero
          || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
             return Task.FromResult<string?>(null);
 
         try {
-            var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
-            var provider = new SessionStartMemoryContextProvider(
-                new SessionStartMemoryScopeResolver(),
+            var store    = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var provider = SessionStartMemoryHookSupport.CompositeProvider(
                 memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
-                // Only clients we created are ours to dispose; an injected factory's client belongs
-                // to its caller and may be handed back again on the 401-refresh call.
                 disposeClients: memoryClientFactory is null);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
                 new SessionMemoryLifecycle(SessionStartHarness.Copilot, sessionId, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true,
                     SessionStartMemoryHookSupport.ReasonFor(source), CallbackMayRepeat: false),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None),
+                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None,
+                    GuidelinesDisabled: guidelinesDisabled),
                 commitGate);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);
@@ -289,6 +288,7 @@ static class CopilotHookCommand {
             // produced this parameter) is what falls back to the on-disk active profile. Reading the
             // resolved one silently ignored `disable_memory_index: true` for every KCAP_URL user.
             activeProfile?.DisableMemoryIndex is true,
+            activeProfile?.DisableSessionGuidelines is true,
             // Remaining() already reserves Safety — subtracting it again here halved the window.
             HookBudget.Remaining(processStart, "session-start"),
             // Deliverability gate: the lease is committed only once the lifecycle POST has proved the

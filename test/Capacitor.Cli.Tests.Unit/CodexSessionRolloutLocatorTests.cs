@@ -120,6 +120,41 @@ public class CodexSessionRolloutLocatorTests {
         }
     }
 
+    // TryLocateWinner returns the winning rollout's session id AND file path together (the daemon
+    // caches the path for growth-watching); id and path must agree on which file won.
+    [Test]
+    public async Task TryLocateWinner_returns_matching_id_and_file_path() {
+        var root = Directory.CreateTempSubdirectory("kcap-codexrollout-").FullName;
+        try {
+            var spawn = DateTime.UtcNow;
+            var uuid  = "019f0022-1702-7a02-a630-edbfb043add4";
+            var wt    = Path.Combine(root, "worktree");
+            var file  = WriteRollout(root, uuid, wt, creationUtc: spawn);
+
+            var winner = CodexSessionRolloutLocator.TryLocateWinner(root, wt, spawn.AddSeconds(-1));
+
+            await Assert.That(winner?.Path).IsEqualTo(file);
+            await Assert.That(winner?.SessionId).IsEqualTo(uuid.Replace("-", ""));
+        } finally {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task TryLocateWinner_returns_null_when_no_rollout_matches() {
+        var root = Directory.CreateTempSubdirectory("kcap-codexrollout-").FullName;
+        try {
+            var spawn = DateTime.UtcNow;
+            WriteRollout(root, "019f0022-1702-7a02-a630-edbfb043add4", "/some/other/cwd", creationUtc: spawn);
+
+            var winner = CodexSessionRolloutLocator.TryLocateWinner(root, Path.Combine(root, "worktree"), spawn.AddSeconds(-1));
+
+            await Assert.That(winner).IsNull();
+        } finally {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Test]
     public async Task TryLocate_ignores_a_foreign_cwd_rollout() {
         var root = Directory.CreateTempSubdirectory("kcap-codexrollout-").FullName;

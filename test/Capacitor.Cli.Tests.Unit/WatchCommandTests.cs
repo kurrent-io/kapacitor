@@ -445,6 +445,128 @@ public class WatchCommandTests {
             lastActivityAt: idle, now: now, idleTimeout: TimeSpan.FromMinutes(60))).IsFalse();
     }
 
+    // A Claude CHILD (subagent) watcher's only exit paths were the SubagentStop-driven
+    // StopWatcher signal and the parent-exit watchdog, so a missed SubagentStop leaked the watcher
+    // for the whole life of the parent session (observed: 8 watchers surviving 1-12 days against a
+    // live parent). Child watchers join the ceiling; like Cursor's, they never buffer, so the
+    // threshold gate cannot apply.
+    [Test]
+    public async Task Claude_child_watcher_is_idle_ceiling_eligible_without_threshold_reached() {
+        var now = DateTimeOffset.UtcNow;
+
+        await Assert.That(WatchCommand.ShouldEndOnIdle(
+            vendor: "claude", isSessionWatcher: false, thresholdReached: false,
+            lastActivityAt: now.AddMinutes(-61), now: now, idleTimeout: TimeSpan.FromMinutes(60))).IsTrue();
+
+        await Assert.That(WatchCommand.ShouldEndOnIdle(
+            vendor: "claude", isSessionWatcher: false, thresholdReached: false,
+            lastActivityAt: now.AddMinutes(-5), now: now, idleTimeout: TimeSpan.FromMinutes(60))).IsFalse();
+    }
+
+    // The whole reason the ceiling is safe: a subagent running a long tool call writes nothing to
+    // its transcript between the tool_use and its tool_result, so transcript silence alone must
+    // never end it.
+    [Test]
+    public async Task Claude_child_watcher_never_idle_exits_while_a_tool_is_in_flight() {
+        var now = DateTimeOffset.UtcNow;
+
+        await Assert.That(WatchCommand.ShouldEndOnIdle(
+            vendor: "claude", isSessionWatcher: false, thresholdReached: false,
+            lastActivityAt: now.AddMinutes(-61), now: now, idleTimeout: TimeSpan.FromMinutes(60),
+            toolInFlight: true)).IsFalse();
+    }
+
+    // Regression guard: the ceiling is scoped to CHILD watchers. A Claude SESSION watcher has a
+    // working parent-exit watchdog and a sessionEnd hook, so it must stay ineligible — otherwise a
+    // user idling in a live Claude session would have their session ended out from under them.
+    [Test]
+    public async Task Claude_session_watcher_stays_ineligible_for_the_idle_ceiling() {
+        var now = DateTimeOffset.UtcNow;
+
+        await Assert.That(WatchCommand.ShouldEndOnIdle(
+            vendor: "claude", isSessionWatcher: true, thresholdReached: true,
+            lastActivityAt: now.AddMinutes(-61), now: now, idleTimeout: TimeSpan.FromMinutes(60))).IsFalse();
+    }
+
+    // The tool tracker is what stops the ceiling reaping a LIVE subagent that is quiet because a
+    // build/test run is in flight. If this gate ever stops matching the watchers the ceiling
+    // applies to, PendingClaudeToolCalls stays empty, toolInFlight is permanently false, and the
+    // suppression silently disappears — so the gate is a predicate rather than an inline
+    // condition buried in the drain loop.
+    [Test]
+    [Arguments("claude", false, true)]   // child watcher: the only one with a ceiling, so the only one that needs the guard
+    [Arguments("claude", true,  false)]  // session watcher: no ceiling, so parsing every line would be pure waste
+    [Arguments("codex",  false, false)]  // other vendors have their own trackers
+    [Arguments("cursor", false, false)]
+    public async Task TracksClaudeToolCalls_matches_the_watchers_the_ceiling_applies_to(
+            string vendor, bool isSessionWatcher, bool expected) {
+        await Assert.That(WatchCommand.TracksClaudeToolCalls(vendor, isSessionWatcher)).IsEqualTo(expected);
+    }
+
+    // Guard on the composed policy at its REAL default, not a test-supplied window: a Claude
+    // subagent goes quiet for six hours before it is reaped, and never while a tool is in flight.
+    [Test]
+    public async Task Claude_subagent_ceiling_composes_to_six_hours_and_yields_to_tools_in_flight() {
+        var now    = DateTimeOffset.UtcNow;
+        var window = WatchCommand.ResolveIdleWindow("claude", isSessionWatcher: false, _ => null);
+
+        bool ExitsAfter(TimeSpan quiet, bool toolInFlight = false) => WatchCommand.ShouldEndOnIdle(
+            vendor: "claude", isSessionWatcher: false, thresholdReached: false,
+            lastActivityAt: now - quiet, now: now, idleTimeout: window, toolInFlight: toolInFlight);
+
+        await Assert.That(ExitsAfter(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1))).IsTrue();
+        await Assert.That(ExitsAfter(TimeSpan.FromHours(5) + TimeSpan.FromMinutes(59))).IsFalse();
+
+        // A 12-hour build still holds the watcher open — transcript silence alone never reaps.
+        await Assert.That(ExitsAfter(TimeSpan.FromHours(12), toolInFlight: true)).IsFalse();
+    }
+
+    // The ceiling only reaps anything if RunWatch actually hands a Claude CHILD watcher the
+    // subagent window rather than the 60-minute Codex default the `_` branch used to give it.
+    [Test]
+    public async Task ResolveIdleWindow_gives_claude_child_watchers_the_subagent_ceiling() {
+        var window = WatchCommand.ResolveIdleWindow("claude", isSessionWatcher: false, _ => null);
+
+        await Assert.That(window).IsEqualTo(WatchCommand.DefaultClaudeSubagentIdleCeiling);
+    }
+
+    [Test]
+    public async Task ResolveIdleWindow_honours_the_claude_subagent_env_override() {
+        var window = WatchCommand.ResolveIdleWindow(
+            "claude", isSessionWatcher: false,
+            name => name == "KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES" ? "90" : null);
+
+        await Assert.That(window).IsEqualTo(TimeSpan.FromMinutes(90));
+    }
+
+    // Each vendor keeps reading its OWN knob — a Claude subagent must not be retunable via the
+    // Codex knob, and vice versa.
+    [Test]
+    [Arguments("codex",       true,  "KCAP_CODEX_IDLE_MINUTES",           "15", 15)]
+    [Arguments("antigravity", true,  "KCAP_ANTIGRAVITY_IDLE_MINUTES",     "20", 20)]
+    [Arguments("cursor",      true,  "KCAP_CURSOR_IDLE_CEILING_MINUTES",  "25", 25)]
+    [Arguments("claude",      false, "KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES", "30", 30)]
+    public async Task ResolveIdleWindow_reads_the_vendors_own_knob(
+            string vendor, bool isSessionWatcher, string knob, string value, int expectedMinutes) {
+        var window = WatchCommand.ResolveIdleWindow(
+            vendor, isSessionWatcher, name => name == knob ? value : null);
+
+        await Assert.That(window).IsEqualTo(TimeSpan.FromMinutes(expectedMinutes));
+    }
+
+    [Test]
+    [Arguments(null, 360)]    // unset → default 6h
+    [Arguments("", 360)]      // empty → default
+    [Arguments("abc", 360)]   // non-numeric → default
+    [Arguments("0", 360)]     // non-positive → default
+    [Arguments("-5", 360)]    // negative → default
+    [Arguments("90", 90)]     // valid override
+    public async Task ResolveClaudeSubagentIdleCeiling_parses_env_with_default(string? env, int expectedMinutes) {
+        var result = WatchCommand.ResolveClaudeSubagentIdleCeiling(env);
+
+        await Assert.That(result).IsEqualTo(TimeSpan.FromMinutes(expectedMinutes));
+    }
+
     // ResolveCursorIdleClock: the idle clock is the LATER of transcript
     // activity and the hook heartbeat, for Cursor only.
     [Test]
@@ -642,6 +764,283 @@ public class UpdateCodexPendingToolCallsTests {
 
         await Assert.That(pending.Count).IsEqualTo(1);
         await Assert.That(pending.Contains("existing")).IsTrue();
+    }
+}
+
+// Claude's in-flight guard for the subagent idle ceiling. Shapes below are taken verbatim from a
+// real subagent transcript: tool_use carries `id`, tool_result carries `tool_use_id`, both inside
+// message.content[].
+public class UpdateClaudePendingToolCallsTests {
+    [Test]
+    public async Task ToolUse_AddsId() {
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        const string line = """{"isSidechain":true,"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01A","name":"Bash","input":{"command":"ls"}}]}}""";
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, line);
+
+        await Assert.That(pending.Contains("toolu_01A")).IsTrue();
+    }
+
+    [Test]
+    public async Task ToolResult_RemovesId() {
+        var pending = new HashSet<string>(StringComparer.Ordinal) { "toolu_01A" };
+        const string line = """{"isSidechain":true,"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01A","type":"tool_result","content":"ok"}]}}""";
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, line);
+
+        await Assert.That(pending.Contains("toolu_01A")).IsFalse();
+    }
+
+    // One assistant turn can start several tools before any result arrives.
+    [Test]
+    public async Task MultipleToolUses_InOneMessage_AllTracked() {
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        const string line = """{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"},{"type":"tool_use","id":"toolu_01A","name":"Bash","input":{}},{"type":"tool_use","id":"toolu_01B","name":"Read","input":{}}]}}""";
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, line);
+
+        await Assert.That(pending.Count).IsEqualTo(2);
+        await Assert.That(pending.Contains("toolu_01B")).IsTrue();
+    }
+
+    [Test]
+    public async Task AssistantTextOnly_LeavesSetUnchanged() {
+        var pending = new HashSet<string>(StringComparer.Ordinal) { "existing" };
+        const string line = """{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"just thinking"}]}}""";
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, line);
+
+        await Assert.That(pending.Count).IsEqualTo(1);
+        await Assert.That(pending.Contains("existing")).IsTrue();
+    }
+
+    // Claude Code writes a string content for plain user prompts, not an array.
+    [Test]
+    public async Task StringContent_LeavesSetUnchanged() {
+        var pending = new HashSet<string>(StringComparer.Ordinal) { "existing" };
+        const string line = """{"type":"user","message":{"role":"user","content":"go on then"}}""";
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, line);
+
+        await Assert.That(pending.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task CodexLine_LeavesSetUnchanged() {
+        var pending = new HashSet<string>(StringComparer.Ordinal) { "existing" };
+        const string line = """{"type":"response_item","payload":{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"}}""";
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, line);
+
+        await Assert.That(pending.Count).IsEqualTo(1);
+        await Assert.That(pending.Contains("existing")).IsTrue();
+    }
+
+    [Test]
+    public async Task MalformedJson_LeavesSetUnchanged_NoThrow() {
+        var pending = new HashSet<string>(StringComparer.Ordinal) { "existing" };
+
+        WatchCommand.UpdateClaudePendingToolCalls(pending, "not json at all {{}}");
+
+        await Assert.That(pending.Count).IsEqualTo(1);
+        await Assert.That(pending.Contains("existing")).IsTrue();
+    }
+}
+
+// Codex counterpart of ClaudeToolTrackingSourceTests: both trackers must read the drain's RAW
+// lines, because RedactLine's oversize placeholder carries no call_id and no recognised type (#528).
+public class CodexToolTrackingSourceTests {
+    // The tracker reads RAW lines, which are unbounded — so unlike when it read the 64 KiB-bounded
+    // redacted list, it must not run for vendors whose transcripts it can never match. Both roles
+    // for codex: a collab child needs it too, for ShouldPostSubagentStop.
+    [Test]
+    [Arguments("codex",  true)]
+    [Arguments("claude", false)]
+    [Arguments("cursor", false)]
+    [Arguments("gemini", false)]
+    public async Task TracksCodexToolCalls_only_for_codex(string vendor, bool expected) =>
+        await Assert.That(WatchCommand.TracksCodexToolCalls(vendor)).IsEqualTo(expected);
+
+    const string FunctionCall =
+        """{"type":"response_item","payload":{"type":"function_call","call_id":"call_big","name":"shell","arguments":"{}"}}""";
+
+    static string OversizedFunctionCallOutput() =>
+        "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"call_big\",\"output\":\""
+      + new string('x', SecretRedactor.MaxRedactableLineChars + 1024)
+      + "\"}}";
+
+    // A stranded call_id pins toolInFlight true, and for Codex the idle timeout is the only
+    // per-conversation session-end path — so the session stays Active forever.
+    [Test]
+    public async Task RedactedLines_StrandTheCallId_ButRawLinesClearIt() {
+        var viaRedacted = new HashSet<string>(StringComparer.Ordinal);
+        WatchCommand.UpdateCodexPendingToolCalls(viaRedacted, SecretRedactor.RedactLine(FunctionCall));
+        WatchCommand.UpdateCodexPendingToolCalls(viaRedacted, SecretRedactor.RedactLine(OversizedFunctionCallOutput()));
+
+        await Assert.That(viaRedacted.Contains("call_big")).IsTrue();
+
+        var viaRaw = new HashSet<string>(StringComparer.Ordinal);
+        WatchCommand.UpdateCodexPendingToolCalls(viaRaw, FunctionCall);
+        WatchCommand.UpdateCodexPendingToolCalls(viaRaw, OversizedFunctionCallOutput());
+
+        await Assert.That(viaRaw.Count).IsEqualTo(0);
+    }
+
+    // Other direction on the same placeholder: an unrecognised response_item leaves a re-engaged
+    // child looking finished, so it is reported stopped while still working.
+    [Test]
+    public async Task RedactedResponseItem_FailsToReopenTheTurn_ButTheRawOneDoes() {
+        var viaRedacted = new CodexSubagentTurnTracker();
+        viaRedacted.Observe("""{"type":"event_msg","payload":{"type":"task_complete"}}""");
+        viaRedacted.Observe(SecretRedactor.RedactLine(OversizedFunctionCallOutput()));
+
+        await Assert.That(viaRedacted.TurnCompleted).IsTrue();
+
+        var viaRaw = new CodexSubagentTurnTracker();
+        viaRaw.Observe("""{"type":"event_msg","payload":{"type":"task_complete"}}""");
+        viaRaw.Observe(OversizedFunctionCallOutput());
+
+        await Assert.That(viaRaw.TurnCompleted).IsFalse();
+    }
+}
+
+public class ClaudeToolTrackingSourceTests {
+    const string ToolUse =
+        """{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_big","name":"Bash","input":{"command":"build"}}]}}""";
+
+    // Sized off the real threshold so a legitimate change to it can't quietly turn these into
+    // tests of the small-line path. The everyday size of a big file read or a build log.
+    static string OversizedToolResult() =>
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_big\",\"type\":\"tool_result\",\"content\":\""
+      + new string('x', SecretRedactor.MaxRedactableLineChars + 1024)
+      + "\"}]}}";
+
+    /// <summary>
+    /// Why the tracker is fed the drain's RAW lines and not the redacted ones it sends: RedactLine
+    /// swaps any line over 64 KiB for a placeholder carrying no tool ids at all. Feed it the
+    /// redacted list and an oversized tool_result never clears its id, toolInFlight stays true
+    /// forever, and the idle ceiling never fires — the leak this whole feature exists to fix,
+    /// silently reinstated on exactly the busiest sessions.
+    /// </summary>
+    [Test]
+    public async Task RedactedLines_StrandThePendingId_ButRawLinesClearIt() {
+        var viaRedacted = new HashSet<string>(StringComparer.Ordinal);
+        WatchCommand.UpdateClaudePendingToolCalls(viaRedacted, SecretRedactor.RedactLine(ToolUse));
+        WatchCommand.UpdateClaudePendingToolCalls(viaRedacted, SecretRedactor.RedactLine(OversizedToolResult()));
+
+        await Assert.That(viaRedacted.Contains("toolu_big")).IsTrue();
+
+        var viaRaw = new HashSet<string>(StringComparer.Ordinal);
+        WatchCommand.UpdateClaudePendingToolCalls(viaRaw, ToolUse);
+        WatchCommand.UpdateClaudePendingToolCalls(viaRaw, OversizedToolResult());
+
+        await Assert.That(viaRaw.Count).IsEqualTo(0);
+    }
+
+    // A watcher that reconnects mid-tool resumes at a server cursor and never re-reads the
+    // tool_use that started before it, so without a backfill the pending set comes up empty and a
+    // live subagent is eligible for reaping.
+    [Test]
+    public async Task Backfill_recovers_a_tool_use_left_open_before_the_resume_cursor() {
+        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+        await File.WriteAllLinesAsync(path, [ToolUse, """{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"still working"}]}}"""]);
+
+        try {
+            var pending = new HashSet<string>(StringComparer.Ordinal);
+            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 2, CancellationToken.None);
+
+            await Assert.That(pending.Contains("toolu_big")).IsTrue();
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    [Test]
+    public async Task Backfill_leaves_nothing_pending_when_the_tool_already_completed() {
+        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+        await File.WriteAllLinesAsync(path, [ToolUse, OversizedToolResult()]);
+
+        try {
+            var pending = new HashSet<string>(StringComparer.Ordinal);
+            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 2, CancellationToken.None);
+
+            await Assert.That(pending.Count).IsEqualTo(0);
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    // Only the lines before the cursor are the watcher's blind spot; everything from the cursor on
+    // arrives through the normal drain, and scanning it here would double-apply it.
+    [Test]
+    public async Task Backfill_stops_at_the_cursor() {
+        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+        await File.WriteAllLinesAsync(path, [ToolUse, OversizedToolResult()]);
+
+        try {
+            var pending = new HashSet<string>(StringComparer.Ordinal);
+            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 1, CancellationToken.None);
+
+            await Assert.That(pending.Contains("toolu_big")).IsTrue();
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// The scan is bounded to a window ending at the cursor rather than parsing the whole history:
+    /// an unfinished tool is by definition at the tail (nothing is written after its tool_use until
+    /// the result arrives), so anything further back is settled and only costs startup latency. It
+    /// also means a stale unmatched tool_use from far earlier — an interrupted turn — can't strand
+    /// an id and suppress the ceiling forever.
+    /// </summary>
+    [Test]
+    public async Task Backfill_ignores_an_unmatched_tool_use_older_than_the_scan_window() {
+        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+
+        var lines = new List<string> { ToolUse };  // never resolved, then buried by later activity
+        lines.AddRange(Enumerable.Repeat(
+            """{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"later"}]}}""",
+            WatchCommand.ToolBackfillWindowLines + 10));
+
+        await File.WriteAllLinesAsync(path, lines);
+
+        try {
+            var pending = new HashSet<string>(StringComparer.Ordinal);
+            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, lines.Count, CancellationToken.None);
+
+            await Assert.That(pending.Count).IsEqualTo(0);
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    [Test]
+    public async Task Backfill_returns_silently_when_already_cancelled() {
+        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+        await File.WriteAllLinesAsync(path, [ToolUse]);
+
+        try {
+            var pending = new HashSet<string>(StringComparer.Ordinal);
+            using var cancelled = new CancellationTokenSource();
+            await cancelled.CancelAsync();
+
+            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 1, cancelled.Token);
+
+            await Assert.That(pending.Count).IsEqualTo(0);
+        } finally {
+            File.Delete(path);
+        }
+    }
+
+    [Test]
+    public async Task Backfill_on_a_missing_file_is_a_silent_no_op() {
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+
+        await WatchCommand.BackfillClaudePendingToolCallsAsync(
+            pending, Path.Combine(Path.GetTempPath(), $"kcap-missing-{Guid.NewGuid():N}.jsonl"), upToLine: 5, CancellationToken.None);
+
+        await Assert.That(pending.Count).IsEqualTo(0);
     }
 }
 

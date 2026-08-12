@@ -168,6 +168,12 @@ class WatchState {
     // eventually fire and end the session — adding a ceiling here would be YAGNI.
     public HashSet<string> PendingCodexToolCalls { get; } = new(StringComparer.Ordinal);
 
+    // Same guard for a Claude SUBAGENT watcher's idle ceiling: a tool_use content block adds its
+    // id, the matching tool_result removes it. A subagent running a long build or test suite
+    // writes nothing between the two, so without this the ceiling would reap a live subagent.
+    // Only populated for claude child watchers — nothing else reads it.
+    public HashSet<string> PendingClaudeToolCalls { get; } = new(StringComparer.Ordinal);
+
     // Codex collab CHILD watcher only (vendor == "codex" && agentId != null): folds the child
     // rollout's own task_complete/turn-activity lines so the polling loop can post a LIVE
     // subagent-stop once the turn is done and a grace window elapsed — before this,

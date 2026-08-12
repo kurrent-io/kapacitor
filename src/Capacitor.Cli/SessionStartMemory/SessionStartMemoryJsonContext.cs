@@ -8,6 +8,7 @@ namespace Capacitor.Cli.SessionStartMemory;
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     WriteIndented = false)]
 [JsonSerializable(typeof(SessionStartMemoryEntry[]))]
+[JsonSerializable(typeof(GuidelinesResponse))]
 [JsonSerializable(typeof(SessionStartMemoryStoreRecord))]
 [JsonSerializable(typeof(SessionStartMemoryStoreMetadata))]
 [JsonSerializable(typeof(ClaudeMemoryEnvelope))]
@@ -17,6 +18,17 @@ namespace Capacitor.Cli.SessionStartMemory;
 [JsonSerializable(typeof(GeminiMemoryEnvelope))]
 [JsonSerializable(typeof(AntigravityMemoryEnvelope))]
 internal partial class SessionStartMemoryJsonContext : JsonSerializerContext;
+
+/// <summary>Shape of <c>GET /api/repositories/{hash}/guidelines</c>.
+/// The response is snake_case (<c>JsonNamingPolicy.SnakeCaseLower</c> server-side);
+/// pinned server-side by the guidelines endpoint's wire-contract test.</summary>
+internal sealed record GuidelinesResponse(
+    [property: JsonPropertyName("repo_hash")] string? RepoHash,
+    [property: JsonPropertyName("guidelines")] GuidelineRow[]? Guidelines);
+
+internal sealed record GuidelineRow(
+    [property: JsonPropertyName("category")] string? Category,
+    [property: JsonPropertyName("text")] string? Text);
 
 internal sealed record HookMemoryOutput(
     [property: JsonPropertyName("hookEventName")] string HookEventName,

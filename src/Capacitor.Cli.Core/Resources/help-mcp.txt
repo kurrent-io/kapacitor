@@ -102,9 +102,11 @@ mcp memory:
       # needs an absolute path (e.g. /opt/homebrew/bin/kcap)
 
 mcp workitems:
-  Exposes two tools — declare_work_item, get_session_work_items — for agents
-  to attach the current session (and its continuation chain) to a work item,
-  or list what it's already attached to. Requires `kcap login`.
+  Exposes seven tools for agents to attach the current session (and its
+  continuation chain) to an SDLC work item and to DECLARE that work item's
+  structure — its breakdown (parent -> parts) and dependencies (blocks /
+  blocked-by). Breakdown and relations are declared, never inferred, so an item
+  whose structure nobody declares has an empty topology. Requires `kcap login`.
 
     Tools:
       declare_work_item        Attach the current session to a work item by
@@ -112,6 +114,16 @@ mcp workitems:
                                 title (exactly one of the four).
       get_session_work_items   List the work items the current session is
                                 attached to.
+      declare_work_breakdown   Declare that a work item is broken into parts
+                                (parent_id + part_ids); idempotent, one parent
+                                per part, all items in the same repository.
+      retract_work_breakdown   Detach the named parts from the parent.
+      declare_work_relation    Declare a dependency between two items (from_id,
+                                to_id, relation_kind 'blocks' or 'blocked_by');
+                                same repository, no self-relation.
+      retract_work_relation    Retract a previously declared dependency.
+      get_work_item_topology   Read a work item's parent, parts, and
+                                dependencies (scoped to what the caller sees).
 
   Claude Code auto-registers `kcap-workitems` via the plugin's `.mcp.json`
   (installed by `kcap setup`); it is not offered for Cursor or Codex.

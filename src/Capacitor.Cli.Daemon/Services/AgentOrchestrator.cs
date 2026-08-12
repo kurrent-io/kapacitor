@@ -37,6 +37,19 @@ internal record AgentInstance(
     public bool                 HasReceivedOutput { get; set; }
     public TerminalOutputBuffer OutputBuffer      { get; } = new();
 
+    /// <summary>Codex turn diagnostic: the reviewer's own rollout JSONL path, resolved ONCE by the
+    /// session-id detector and cached so the send path can sample its length with a single stat
+    /// (never a directory scan). Null until detection resolves it, and for non-Codex agents.</summary>
+    public string? CodexRolloutPath { get; set; }
+
+    /// <summary>Codex turn diagnostic: monotonic per-agent round generation for the post-send
+    /// rollout-growth probe. Bumped (under the send gate, BEFORE each round's input is delivered) so
+    /// a later round instantly invalidates any earlier round's probe — a probe emits a verdict only
+    /// while its captured generation is still the latest, so a later round's growth can never be
+    /// attributed to an earlier round even during the earlier probe's own poll. A plain field for
+    /// <see cref="System.Threading.Interlocked.Increment(ref long)"/>.</summary>
+    public long CodexTurnProbeGen;
+
     /// <summary>This agent's monotonic activity clock. One instance per launch — a relaunch gets a
     /// fresh one, never inheriting the predecessor's idle window. Defaults to a real-time instance so
     /// existing test constructions keep compiling; a production launch builds it explicitly, before
@@ -3143,6 +3156,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         LogSendInputReceived(agentId, agent.Runtime.Vendor, text.Length, attachmentIds?.Length ?? 0);
 
+        // Codex turn diagnostic: whether to run the post-send rollout probe, plus this round's
+        // generation and the rollout length sampled just BEFORE delivery. Declared out here so both
+        // survive the try/finally to reach ArmCodexTurnProbe below.
+        var   isCodex       = string.Equals(agent.Runtime.Vendor, "codex", StringComparison.OrdinalIgnoreCase);
+        long? codexBaseline = null;
+        long  codexGen      = 0;
+
         await agent.BorrowedSnapshotGate.WaitAsync(_shutdownCts.Token);
         try {
             // Losing side of the reap claim (round-dispatch grace §3): a reap-claimed agent gets
@@ -3177,6 +3197,19 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 return;
             }
 
+            // Codex turn diagnostic: BEFORE delivering this round's input — and while the send gate
+            // is held, so it is ordered per agent — bump the round generation and sample the rollout
+            // length from the cached path. Bumping first instantly invalidates any prior round's
+            // still-running probe (it emits a verdict only while its generation is the latest), so a
+            // fast Codex append caused by THIS input can never be credited to the previous round.
+            // Sampling the length after the bump but before the send keeps the baseline honest (the
+            // append lands strictly after it). A null here (path not cached yet, or the stat failed)
+            // is handled in ArmCodexTurnProbe.
+            if (isCodex) {
+                codexGen = Interlocked.Increment(ref agent.CodexTurnProbeGen);
+                if (agent.CodexRolloutPath is { } rolloutPath) codexBaseline = TryFileLength(rolloutPath);
+            }
+
             // PTY runtimes use bracketed paste; ACP runtimes send a structured prompt.
             if (agent.BorrowedSnapshotSource is not null)
                 await agent.Runtime.SendUserInputAndWaitForWriteAsync(message);
@@ -3206,6 +3239,90 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         } finally {
             agent.BorrowedSnapshotGate.Release();
         }
+
+        // Codex turn diagnostic: arm the post-send rollout-growth probe. Only reached on the
+        // successful-delivery path (the guards and the borrowed-snapshot failure above all return
+        // before here).
+        if (isCodex) ArmCodexTurnProbe(agent, codexBaseline, codexGen);
+    }
+
+    /// <summary>
+    /// Codex turn diagnostic: schedule a bounded, off-handler probe that watches the reviewer's
+    /// rollout for growth past <paramref name="baseline"/> (the length captured just before this
+    /// round's input was delivered) and logs whether a turn began — the only clean turn-start signal
+    /// a PTY runtime gives the daemon (see <see cref="CodexTurnObserver"/>).
+    ///
+    /// <para>Single-flight is by GENERATION, established in <see cref="HandleSendInput"/> before
+    /// delivery: <paramref name="gen"/> is this round's generation, and the probe emits a verdict
+    /// only while it is still the agent's latest — so a later round's growth is never credited to an
+    /// earlier round even during that earlier probe's own poll. This method itself does no I/O and
+    /// touches no disposable of the (already torn-down?) agent: it only schedules onto the pool, so
+    /// it cannot throw a teardown fault back onto the just-completed send. A null
+    /// <paramref name="baseline"/> (path not cached yet, or the pre-delivery stat failed) is logged
+    /// and skipped — never a false "no turn"; the generation was still bumped, so any prior probe is
+    /// already invalidated.</para>
+    /// </summary>
+    void ArmCodexTurnProbe(AgentInstance agent, long? baseline, long gen) {
+        if (agent.CodexRolloutPath is not { } rolloutPath || baseline is not { } b) {
+            LogCodexTurnRolloutUnresolved(agent.Id);
+            return;
+        }
+
+        _ = Task.Run(() => ObserveCodexTurnAsync(agent, rolloutPath, b, gen));
+    }
+
+    async Task ObserveCodexTurnAsync(AgentInstance agent, string rolloutPath, long baseline, long gen) {
+        try {
+            // The linked token is created HERE (on the pool), not on the send handler, so a
+            // concurrent teardown that has disposed ReadCts faults this best-effort probe rather
+            // than the send. Bounded by the agent's stop, daemon shutdown, and the observe timeout.
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(agent.ReadCts.Token, _shutdownCts.Token);
+
+            long CurrentLength() {
+                try { return new FileInfo(rolloutPath).Length; } catch { return -1; } // <0 ⇒ momentarily unreadable
+            }
+
+            // Monotonic elapsed measurement (same clock domain the observer uses) — DateTime.UtcNow
+            // could skew or go negative if the wall clock shifts mid-observation.
+            var startTs = TimeProvider.System.GetTimestamp();
+
+            // Single-flight: this round's generation was bumped (under the send gate) before its
+            // input was delivered, so a newer round instantly makes this one stale. The predicate is
+            // checked inside the poll loop, so a superseded probe stops within one interval instead
+            // of polling to the timeout; the generation stays the sole verdict authority.
+            var outcome = await CodexTurnObserver.ObserveGrowthAsync(
+                CurrentLength, baseline, CodexTurnObserveTimeout, CodexTurnObserveInterval, TimeProvider.System, cts.Token,
+                isCurrent: () => Volatile.Read(ref agent.CodexTurnProbeGen) == gen);
+
+            // Verdict authority: the in-loop predicate stops a superseded probe promptly, but it is
+            // checked BEFORE each length stat — so a newer round could bump the generation AND grow
+            // the rollout between that check and the read, yielding a TurnObserved that belongs to
+            // the newer round. Re-check the generation HERE, immediately before logging, so a stale
+            // round never emits a verdict (leaving only the sub-microsecond check-to-log window).
+            if (Volatile.Read(ref agent.CodexTurnProbeGen) != gen) return;
+
+            switch (outcome) {
+                case CodexTurnObserver.Outcome.TurnObserved:
+                    LogCodexTurnStarted(agent.Id, (long)TimeProvider.System.GetElapsedTime(startTs).TotalMilliseconds);
+                    break;
+                case CodexTurnObserver.Outcome.NotObserved:
+                    LogCodexTurnNotObserved(agent.Id, CodexTurnObserveTimeout.TotalSeconds);
+                    break;
+                case CodexTurnObserver.Outcome.Unavailable:
+                    // The rollout became unreadable and never showed growth — a measurement gap, NOT
+                    // evidence the reviewer ignored the input. Do not emit the strong "no turn" line.
+                    LogCodexTurnRolloutUnavailable(agent.Id);
+                    break;
+                // Superseded: a newer round took over — it reports; no verdict here.
+                // Cancelled: the agent stopped or the daemon is shutting down — no verdict to report.
+            }
+        } catch (Exception ex) {
+            LogCodexTurnObserveFailed(ex, agent.Id);
+        }
+    }
+
+    static long? TryFileLength(string path) {
+        try { return new FileInfo(path).Length; } catch { return null; }
     }
 
     static readonly TimeSpan BorrowedSnapshotRefreshTimeout = TimeSpan.FromSeconds(30);
@@ -3805,6 +3922,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     static readonly TimeSpan SessionIdPollInterval = TimeSpan.FromSeconds(2);
     static readonly TimeSpan SessionIdPollTimeout  = TimeSpan.FromMinutes(3);
 
+    // Codex turn-start diagnostic: how long, and how often, to watch a hosted Codex reviewer's rollout for growth
+    // after a round's input is delivered, so the daemon log can say whether Codex began a turn.
+    // A working reviewer appends response items within seconds of starting; 2 minutes of silence
+    // is the "received input, produced no turn" signature, not a slow-but-working reviewer.
+    static readonly TimeSpan CodexTurnObserveInterval = TimeSpan.FromSeconds(2);
+    static readonly TimeSpan CodexTurnObserveTimeout  = TimeSpan.FromMinutes(2);
+
     /// <summary>
     /// Vendor-dispatched, best-effort background fallback that discovers a spawned agent's
     /// session id from the transcript/rollout its harness writes and reports it to the server,
@@ -3829,8 +3953,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         Func<ISet<string>, string?>? locate = vendor.ToLowerInvariant() switch {
             "claude" => ruledOut => SessionTranscriptLocator.TryLocate(
                 ClaudePaths.ProjectDir(agent.Worktree.Path), agent.Worktree.Path, spawnedAtUtc, ruledOut),
-            "codex" => ruledOut => CodexSessionRolloutLocator.TryLocate(
-                CodexPaths.Sessions, agent.Worktree.Path, spawnedAtUtc, ruledOut),
+            // Codex turn diagnostic: resolve id AND path together and cache the path on the agent,
+            // so the send-path probe needs only a single stat later — no directory scan on the
+            // daemon command loop. The path is stable for a session's lifetime.
+            "codex" => ruledOut => {
+                if (CodexSessionRolloutLocator.TryLocateWinner(
+                        CodexPaths.Sessions, agent.Worktree.Path, spawnedAtUtc, ruledOut) is not { } winner)
+                    return null;
+                agent.CodexRolloutPath = winner.Path;
+                return winner.SessionId;
+            },
             _ => null,
         };
 
@@ -4260,6 +4392,22 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Reaping review-flow reviewer {AgentId} ({Reason}) failed")]
     partial void LogReapFailed(Exception ex, string agentId, string reason);
+
+    // Codex (PTY) turn-start diagnostic — after SendInput is delivered, did Codex act?
+    [LoggerMessage(Level = LogLevel.Information, Message = "Codex turn started for agent {AgentId} after input ({ElapsedMs}ms after delivery)")]
+    partial void LogCodexTurnStarted(string agentId, long elapsedMs);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Codex produced NO turn for agent {AgentId} within {Seconds}s of input delivery — the reviewer received the prompt but did not act on it")]
+    partial void LogCodexTurnNotObserved(string agentId, double seconds);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Codex turn observer: could not resolve a rollout for agent {AgentId} — skipping turn-start diagnostic for this round")]
+    partial void LogCodexTurnRolloutUnresolved(string agentId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Codex turn observer: rollout for agent {AgentId} became unreadable during observation — no turn verdict for this round (measurement gap, not evidence of no turn)")]
+    partial void LogCodexTurnRolloutUnavailable(string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Codex turn observer faulted for agent {AgentId} (diagnostic only — delivery unaffected)")]
+    partial void LogCodexTurnObserveFailed(Exception ex, string agentId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "SendSpecialKey '{Key}' dropped: agent {AgentId} not found on this daemon ({KnownAgents} agents registered)")]
     partial void LogSendSpecialKeyUnknownAgent(string agentId, string key, int knownAgents);

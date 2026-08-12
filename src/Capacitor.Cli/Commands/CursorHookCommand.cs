@@ -543,20 +543,25 @@ public static class CursorHookCommand {
         var memBudget = memoryBudgetOverride ?? (budgetTotal - sw.Elapsed - HookBudget.Safety);
         if (memBudget <= TimeSpan.Zero) return null;
 
-        // Cursor never reads AppConfig anywhere else today — this is the one, new call site
-        // (mirrors ClaudeHookCommand's own `AppConfig.ResolvedProfile?.Profile?.DisableMemoryIndex
-        // is true` read).
-        var disabled = AppConfig.ResolvedProfile?.Profile?.DisableMemoryIndex is true;
+        // Effective profile (ResolvedProfile.Profile is null under --server-url/KCAP_URL). ct-bound to
+        // the dispatcher deadline so the config read cancels rather than lingering when abandoned.
+        var activeProfile      = await AppConfig.GetActiveProfileAsync(dispatcherCt);
+        var disabled           = activeProfile?.DisableMemoryIndex is true;
+        var guidelinesDisabled = activeProfile?.DisableSessionGuidelines is true;
+        if (disabled && guidelinesDisabled) return null;
 
         try {
             using var memCts = CancellationTokenSource.CreateLinkedTokenSource(dispatcherCt);
             memCts.CancelAfter(memBudget);
 
             var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
-            var provider = new SessionStartMemoryContextProvider(
-                memoryScopeResolver ?? new SessionStartMemoryScopeResolver(),
+            // Both lanes share the one factory (the shared hook client by default). disposeClients is
+            // INVERTED from the other adapters: the default factory hands back the caller-owned shared
+            // client, which must NOT be disposed; an injected test factory's clients are disposed.
+            var provider = SessionStartMemoryHookSupport.CompositeProvider(
                 memoryClientFactory ?? ((_, _) => Task.FromResult(client)),
-                disposeClients: memoryClientFactory is not null);
+                disposeClients: memoryClientFactory is not null,
+                memoryScopeResolver);
 
             return await new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
                 // ClassificationAuthoritative is hardcoded true, and this is VALID UNDER THE
@@ -578,7 +583,8 @@ public static class CursorHookCommand {
                 new SessionMemoryLifecycle(SessionStartHarness.Cursor, sessionId, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true, SessionLifecycleReason.New,
                     CallbackMayRepeat: false),
-                new SessionStartMemoryContextRequest(baseUrl, workspaceRoot, disabled, memBudget, memCts.Token));
+                new SessionStartMemoryContextRequest(baseUrl, workspaceRoot, disabled, memBudget, memCts.Token,
+                    GuidelinesDisabled: guidelinesDisabled));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return null;
         }
