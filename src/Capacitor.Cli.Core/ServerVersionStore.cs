@@ -77,13 +77,9 @@ public static class ServerVersionStore {
         }
     }
 
-    /// <summary>Normalizes a server URL to a stable cache key using the repo's own server identity
-    /// (<see cref="ServerIdentity.Canonicalize"/>): scheme and host are lower-cased and an implicit vs
-    /// explicit default port converges, but the path is preserved case-sensitively — a path-routed
-    /// deployment (<c>/TenantA</c> vs <c>/tenanta</c>) is a DISTINCT server, and flattening its case
-    /// would cap it against the wrong server. Falls back to a conservative trim (NOT lower-cased) for a
-    /// URL that isn't an admissible server base, so the store still yields a stable key without
-    /// conflating query/fragment-bearing spellings.</summary>
+    /// <summary>Stable cache key via the repo's own <see cref="ServerIdentity.Canonicalize"/> (path stays
+    /// case-sensitive — a path-routed tenant is a distinct server), falling back to a conservative trim for
+    /// a URL that isn't an admissible server base.</summary>
     internal static string Normalize(string serverUrl) =>
         ServerIdentity.Canonicalize(serverUrl) ?? serverUrl.Trim().TrimEnd('/');
 
