@@ -596,9 +596,9 @@ public class ServiceVerifyInstallTests {
             var time = new FakeTimeProvider();
             var start = time.GetUtcNow();
 
-            // A hung `launchctl print`: the ownership Query blocks for its whole timeout. Paired
-            // with a hello that consumes ~all of its own budget, the OLD readiness step handed the
-            // Query a stale FULL budget (elapsed ~2x the forward deadline) and committed anyway.
+            // A hung `launchctl print` paired with a hello that consumes ~all of its budget must not
+            // let readiness exceed the forward deadline: the Query is bounded by remaining-to-deadline,
+            // so the transaction rolls back rather than committing after ~2x the forward time.
             var manager = new FakeServiceManager { HangQueryClock = time };
             Task<HelloProbeResult> Hello(string _, TimeSpan budget) {
                 time.Advance(budget);

@@ -57,9 +57,7 @@ public static class VerifyExit {
 /// Spec §3.4 transaction engine: viability → marker → mutate → ownership+readiness poll → final
 /// recheck → commit, or rollback to the verified-safe failure state. One forward cutoff bounds the
 /// entire forward phase (viability, clear, write, bootstrap, readiness AND the final recheck); a
-/// separately reserved rollback budget guarantees time to restore. Every bounded readiness sub-call
-/// (hello then Query) draws from that single forward deadline, recomputed immediately before each,
-/// so a slow hello can never hand the Query a second full budget. Injectable seams (manager, pid
+/// separately reserved rollback budget guarantees time to restore. Injectable seams (manager, pid
 /// probe, hello probe, clock, profile viability) make every case drivable without shelling out to
 /// <c>launchctl</c>.
 /// </summary>
@@ -81,16 +79,13 @@ sealed class ServiceVerify(
     public static readonly TimeSpan DefaultForwardBudget   = TimeSpan.FromSeconds(20);
     public static readonly TimeSpan DefaultRollbackReserve = TimeSpan.FromSeconds(10);
 
-    /// <summary>The advertised transaction bound: the forward cutoff plus the rollback reserve bound
-    /// the whole mutate-then-restore envelope (30s at the defaults). Forward work — including the
-    /// final recheck, which runs inside a slice reserved within the forward budget — is honored by
-    /// the single forward deadline; rollback is honored by the separate reserve. A caller's
-    /// kill-timeout (the desktop app's mutation timeout, §3.6) MUST sit strictly above this. Two
-    /// bounded phases can precede it — lock acquisition (≤ 10s) and, only on crash residue, a
-    /// recovery pre-phase (≤ the rollback reserve) — so for full headroom a caller should allow the
-    /// sum, not just this. The one accepted exception is <see cref="KillWait"/> (≤ 5s) on the
-    /// manual-owner takeover kill, whose raw wait sits just outside the forward envelope but well
-    /// within the caller's 60s kill-timeout.</summary>
+    /// <summary>The advertised transaction bound (30s at the defaults): forward cutoff + rollback
+    /// reserve. A caller's kill-timeout (the desktop app's mutation timeout, §3.6) MUST sit strictly
+    /// above this. Two bounded phases can precede it — lock acquisition (≤ 10s) and, only on crash
+    /// residue, a recovery pre-phase (≤ the rollback reserve) — so for full headroom a caller should
+    /// allow the sum. The one accepted exception is <see cref="KillWait"/> (≤ 5s) on the manual-owner
+    /// takeover kill, whose raw wait sits just outside the forward envelope but well within the
+    /// caller's 60s kill-timeout.</summary>
     public static readonly TimeSpan AdvertisedBound = DefaultForwardBudget + DefaultRollbackReserve;
 
     readonly TimeSpan _forwardBudget    = forwardBudget ?? DefaultForwardBudget;
@@ -162,18 +157,13 @@ sealed class ServiceVerify(
         ServiceTxnMarker.Write(serviceId,
             new TxnMarker(1, "start", "bootstrapped", DescribeQuery(pre), "unloaded-plist-retained", null));
 
-        // Reserve a final-confirm slice INSIDE the forward budget: the primary poll runs to
-        // pollDeadline, leaving _confirmReserve for one recheck within the ORIGINAL deadline, so the
-        // total forward work (poll + recheck) stays inside the single forward cutoff.
         var pollDeadline = deadline - _confirmReserve;
 
         while (time.GetUtcNow() < pollDeadline) {
             var (ready, pid) = await IsReadyAsync(serviceId, pollDeadline, requirePid: null);
             if (ready) {
-                // Confirm what the primary check just observed; the reserved slice guarantees this
-                // recheck a probe even when the primary lands at the poll cutoff. The recheck
-                // requires the SAME incarnation (pinned pid) so a job that answered then respawned
-                // under KeepAlive can't bless a crash-looping unit.
+                // Recheck against the ORIGINAL deadline, pinning pid: a job that answered then
+                // respawned under KeepAlive must not bless a crash-looping unit.
                 var (confirmed, _) = await IsReadyAsync(serviceId, deadline, requirePid: pid);
                 if (confirmed) {
                     ServiceTxnMarker.Write(serviceId,
@@ -333,8 +323,6 @@ sealed class ServiceVerify(
 
         ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "bootstrapped", preState, "no-unit", fingerprint));
 
-        // The primary poll runs to pollDeadline, leaving _confirmReserve for the final recheck within
-        // the ORIGINAL forward cutoff — total forward work (poll + recheck) stays inside one deadline.
         var pollDeadline = forward - _confirmReserve;
 
         while (time.GetUtcNow() < pollDeadline) {
@@ -343,9 +331,7 @@ sealed class ServiceVerify(
                 return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.HelloValidation, VerifyExit.HelloValidationToken);
 
             if (primary == InstallReady.Ready) {
-                // Final recheck requires the SAME incarnation (pinnedPid): a job that answered then
-                // exited and let a KeepAlive respawn take over must not commit a crash-looping unit.
-                // The reserved slice guarantees it a probe even when the primary lands at the cutoff.
+                // Recheck against the ORIGINAL forward cutoff, pinning pid (same incarnation).
                 var (confirm, _) = await IsInstallReadyAsync(serviceId, expectedVersion, forward, requirePid: pinnedPid);
                 if (confirm == InstallReady.VersionMismatch)
                     return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.HelloValidation, VerifyExit.HelloValidationToken);
