@@ -506,6 +506,21 @@ public class EvalServiceTests {
     }
 
     [Test]
+    public async Task ExtractRetainFact_trims_applicability_values() {
+        const string response = """{"retain_fact":{"fact":"F","applies_to_vendors":["  codex  "]}}""";
+        var rf = EvalService.ExtractRetainFact(response);
+        await Assert.That(rf!.Value.AppliesToVendors).IsEquivalentTo(["codex"]); // trimmed to match server filter
+    }
+
+    [Test]
+    public async Task ExtractRetainFact_caps_oversized_applicability_array() {
+        var many = string.Join(",", Enumerable.Range(0, 40).Select(i => "\"v" + i + "\""));
+        var response = "{\"retain_fact\":{\"fact\":\"F\",\"applies_to_vendors\":[" + many + "]}}";
+        var rf = EvalService.ExtractRetainFact(response);
+        await Assert.That(rf!.Value.AppliesToVendors!.Length).IsEqualTo(16); // capped
+    }
+
+    [Test]
     public async Task ExtractRetainFact_returns_null_when_field_absent() {
         const string response = """
                                 {"score":5,"verdict":"pass","finding":"."}

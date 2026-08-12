@@ -25,7 +25,7 @@ public static class EvalService {
     // per-question prompt already instructs the judge to emit explicit
     // nulls, so this matches existing expectations.
     const string VerdictJsonSchema = """
-        {"type":"object","properties":{"category":{"type":"string"},"question_id":{"type":"string"},"score":{"type":"integer","minimum":1,"maximum":5},"verdict":{"type":"string","enum":["pass","warn","fail"]},"finding":{"type":"string"},"evidence":{"type":["string","null"]},"recommendation":{"type":["string","null"]},"retain_fact":{"type":["string","object","null"],"properties":{"fact":{"type":"string"},"applies_to_vendors":{"type":"array","items":{"type":"string"}},"applies_to_session_kinds":{"type":"array","items":{"type":"string"}}}}},"required":["category","question_id","score","verdict","finding","evidence","recommendation","retain_fact"],"additionalProperties":false}
+        {"type":"object","properties":{"category":{"type":"string"},"question_id":{"type":"string"},"score":{"type":"integer","minimum":1,"maximum":5},"verdict":{"type":"string","enum":["pass","warn","fail"]},"finding":{"type":"string"},"evidence":{"type":["string","null"]},"recommendation":{"type":["string","null"]},"retain_fact":{"type":["string","object","null"],"properties":{"fact":{"type":"string"},"applies_to_vendors":{"type":"array","items":{"type":"string"},"maxItems":16},"applies_to_session_kinds":{"type":"array","items":{"type":"string"},"maxItems":16}},"required":["fact"]}},"required":["category","question_id","score","verdict","finding","evidence","recommendation","retain_fact"],"additionalProperties":false}
         """;
 
     // maxItems mirrors the prompt's documented caps: at most three
@@ -1055,14 +1055,18 @@ public static class EvalService {
     /// <summary>Reads a JSON array of non-empty strings from <paramref name="prop"/>, or null when
     /// the field is absent, not an array, or empty. A non-string element drops the WHOLE axis to
     /// null (fail-open: the server also whole-axis-discards a malformed declaration).</summary>
+    // Mirrors the schema's maxItems — a defensive cap so a hallucinating judge can't bloat the
+    // outgoing payload with an unbounded applicability list.
+    const int MaxApplicabilityItems = 16;
+
     static string[]? ReadStringArrayOrNull(JsonElement prop, string name) {
         if (!prop.TryGetProperty(name, out var arr) || arr.ValueKind != JsonValueKind.Array) return null;
 
         var list = new List<string>();
         foreach (var item in arr.EnumerateArray()) {
             if (item.ValueKind != JsonValueKind.String) return null; // malformed axis → drop it entirely.
-            var v = item.GetString();
-            if (!string.IsNullOrWhiteSpace(v)) list.Add(v);
+            var v = item.GetString()?.Trim();                        // trim so "codex " matches the server's exact filter
+            if (!string.IsNullOrEmpty(v) && list.Count < MaxApplicabilityItems) list.Add(v);
         }
 
         return list.Count == 0 ? null : list.ToArray();
