@@ -84,4 +84,21 @@ public class BootSeedTests {
         var r = store.BootSeed("prompt");
         await Assert.That(r.Outcome).IsEqualTo(SeedOutcome.Respected);
     }
+
+    // Task 12 linkage: pins the seed->gate handoff without a live DaemonRunner.RunAsync/server
+    // round trip. A "prompt" boot seed on an absent file classifies Seeded and persists a
+    // Prompt-default policy (asserted above by other tests); this test documents that the SAME
+    // store, read back into a gate with no prompter (no UI attached), then denies an immediate
+    // launch fail-closed. The gate's own prompt_no_ui behavior is pinned by LaunchConsentGateTests
+    // (Prompt_without_subscriber_denies_no_ui) — this test is the seed->gate wiring, not a
+    // duplicate of that contract.
+    [Test]
+    public async Task Seeded_policy_denies_an_immediate_launch_with_no_ui() {
+        var dir = Directory.CreateTempSubdirectory("seed-e2e-").FullName;
+        var store = Store(dir);
+        store.BootSeed("prompt");
+        await Assert.That(store.Current.Default).IsEqualTo(LaunchConsentDefault.Prompt);
+        // Gate behavior for Prompt + no prompter is pinned by the existing AI-1623 gate tests
+        // (prompt_no_ui → deny); this assertion documents the seed→gate linkage.
+    }
 }

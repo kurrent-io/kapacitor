@@ -255,6 +255,46 @@ public static partial class DaemonRunner {
 
         config.InstanceId = daemonLock.InstanceId;
 
+        // Phase B2-b (sequenced-settlement design §4.2.3): the durable per-daemon state root — used by
+        // the pre-host boot-check block immediately below AND (further down) by the coverage journal /
+        // reviewer-home sweeps. Computed once here so every consumer agrees on the exact same directory.
+        var coverageStateDir = Path.Combine(
+            config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
+
+        // Task 12 (AI-1655): pre-host boot checks. Both refusal arms return BEFORE the host is built —
+        // before any ServerConnection/token use of any kind — so a misdirected or un-consented daemon
+        // never gets far enough to touch the network or spawn anything. Order matters: the server-
+        // expectation check runs FIRST (a server the operator didn't expect must never even reach consent
+        // classification), then the Task 11 consent-seed directive. A passing boot (both checks green, or
+        // no directives at all) clears any refusal marker a PRIOR failed attempt left behind — otherwise
+        // `kcap daemon status` (or a desktop supervisor) would keep reporting a refusal that no longer
+        // applies.
+        if (!ExpectationSatisfied(config.ExpectedServerUrl, config.ServerUrl)) {
+            BootRefusal.TryWrite(coverageStateDir, config, "server_expectation_mismatch");
+            await Console.Error.WriteLineAsync("kcap-daemon: refusing to start: server_expectation_mismatch");
+
+            return 0;
+        }
+
+        // Constructed unconditionally (its ctor just loads the on-disk policy file) so the SAME
+        // instance both runs the Task 11 classification below (only when a directive is present) and is
+        // handed to DI further down — classification is therefore never done twice, and a no-directive
+        // boot pays exactly the construction cost it always paid (just earlier).
+        var consentStore = new LaunchConsentStore(coverageStateDir, NullLogger.Instance);
+
+        if (!string.IsNullOrEmpty(config.ConsentSeedDirective)) {
+            var seed = consentStore.BootSeed(config.ConsentSeedDirective);
+
+            if (seed.Outcome is SeedOutcome.RefusedInvalidDirective or SeedOutcome.RefusedUnwritable) {
+                BootRefusal.TryWrite(coverageStateDir, config, seed.RefusalToken!);
+                await Console.Error.WriteLineAsync($"kcap-daemon: refusing to start: {seed.RefusalToken}");
+
+                return 0;
+            }
+        }
+
+        BootRefusal.TryDelete(coverageStateDir);   // passing boot clears leftovers (hygiene)
+
         // Phase B2-b (sequenced-settlement design): pin the per-boot epoch here, before any service is
         // built, so the epoch advertised on DaemonConnect and the orchestrator's own _daemonEpoch (which
         // falls back to config.DaemonEpoch) are provably the same value.
@@ -264,8 +304,6 @@ public static partial class DaemonRunner {
         // Connect/spawn. this_epoch_contained is true only where OS containment leaves NO recordless
         // survivor class (the Windows Job Object). Fail-closed inside RecordBoot. NullLogger is acceptable
         // this early — the host's logging pipeline isn't built yet.
-        var coverageStateDir = Path.Combine(
-            config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
         SeedReviewerFloors(coverageStateDir, config);
 
         // Recovers reviewer homes left by a SIGKILLed predecessor. Runs unconditionally: a daemon
@@ -305,8 +343,10 @@ public static partial class DaemonRunner {
         // TimeProvider.System drives the gate's monotonic deadline discipline (spec §3.2) — a
         // real singleton in production, swapped for a FakeTimeProvider in tests.
         builder.Services.AddSingleton(TimeProvider.System);
-        builder.Services.AddSingleton(sp => new LaunchConsentStore(
-            coverageStateDir, sp.GetRequiredService<ILogger<LaunchConsentStore>>()));
+        // The exact instance the pre-host boot-check block above already constructed (and ran Task
+        // 11's BootSeed classification against, when a directive was present) — never a second
+        // construction/reload of consent.json.
+        builder.Services.AddSingleton(consentStore);
         builder.Services.AddSingleton(sp => new LaunchConsentDecisionLog(
             coverageStateDir, sp.GetRequiredService<ILogger<LaunchConsentDecisionLog>>()));
         builder.Services.AddSingleton(sp => new LaunchConsentGate(
@@ -878,6 +918,19 @@ public static partial class DaemonRunner {
         clear(BootCarriers.Expect);
         clear(BootCarriers.Attempt);
     }
+
+    /// <summary>
+    /// Task 12 (AI-1655): does the resolved <see cref="DaemonConfig.ServerUrl"/> match what the
+    /// launcher told this boot to expect (<see cref="DaemonConfig.ExpectedServerUrl"/>, carried in
+    /// via <c>KCAP_EXPECT_SERVER_URL</c>)? No expectation at all (null/empty) is trivially
+    /// satisfied — this check exists to catch a daemon that resolved a DIFFERENT server than the
+    /// one it was launched to point at, not to require an expectation be set. Compares through
+    /// <see cref="AppConfig.NormalizeUrl"/> (trailing-slash-insensitive) case-insensitively, since
+    /// a URL's host/scheme are not case-sensitive.
+    /// </summary>
+    internal static bool ExpectationSatisfied(string? expected, string resolved) =>
+        string.IsNullOrEmpty(expected)
+        || string.Equals(AppConfig.NormalizeUrl(expected), AppConfig.NormalizeUrl(resolved), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Phase B (D3): parse a seconds-valued env var into a <see cref="TimeSpan"/>
     /// (<c>0</c> → <see cref="TimeSpan.Zero"/>, which disables the bound). Unset/blank/invalid/negative
