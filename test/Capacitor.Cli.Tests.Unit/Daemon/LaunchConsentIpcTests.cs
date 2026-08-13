@@ -56,7 +56,6 @@ public class LaunchConsentIpcTests {
         var broker = new LaunchConsentBroker();
         var decisionLog = new LaunchConsentDecisionLog(stateDir, NullLogger.Instance);
         var gate = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
-        var consentIpc = new LaunchConsentIpc(broker, store, NullLogger<LaunchConsentIpc>.Instance);
 
         var config = new DaemonConfig {
             Name         = daemonName,
@@ -64,6 +63,7 @@ public class LaunchConsentIpcTests {
             StateDir     = stateDir,
             WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-consent-ipc-wt-" + Guid.NewGuid().ToString("N")[..8]),
         };
+        var consentIpc = new LaunchConsentIpc(broker, store, config, NullLogger<LaunchConsentIpc>.Instance);
 
         var connection       = new ServerConnection(config, NullLoggerFactory.Instance, NullLogger<ServerConnection>.Instance);
         var worktreeManager  = new WorktreeManager(config, NullLogger<WorktreeManager>.Instance);

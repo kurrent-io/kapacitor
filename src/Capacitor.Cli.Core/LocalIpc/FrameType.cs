@@ -19,6 +19,7 @@ public enum FrameType : byte {
     // before routing — that codec-level rejection IS the down-level fail-closed contract.
     ConsentSubscribeV2 = 17, // long-lived: v2 subscribe (same reply stream as ConsentSubscribe)
     ConsentResolveV2   = 18, // one-shot: resolve requiring the prompt_id identity echo
+    ConsentRulesPutV2  = 19, // one-shot: replace the policy, gated on an ExpectedName/ExpectedServerUrl echo (ack is ConsentAck)
     // Consent control frames — values append-only
     ConsentSubscribe = 11, // long-lived: replay pending + push new ConsentPending frames
     ConsentResolve   = 12, // one-shot: resolve a pending request (Text = ConsentResolveDto JSON)

@@ -53,7 +53,7 @@ public static class FrameCodec {
             or FrameType.Hello or FrameType.HelloReply
             or FrameType.ConsentSubscribe or FrameType.ConsentResolve
             or FrameType.ConsentSubscribeV2 or FrameType.ConsentResolveV2
-            or FrameType.ConsentRulesGet or FrameType.ConsentRulesPut
+            or FrameType.ConsentRulesGet or FrameType.ConsentRulesPut or FrameType.ConsentRulesPutV2
             or FrameType.ConsentPending or FrameType.ConsentRules
             or FrameType.ConsentAck or FrameType.DaemonStatus => Encoding.UTF8.GetBytes(f.Text),
         FrameType.Attached or FrameType.Spawn
@@ -72,7 +72,7 @@ public static class FrameCodec {
             or FrameType.Hello or FrameType.HelloReply
             or FrameType.ConsentSubscribe or FrameType.ConsentResolve
             or FrameType.ConsentSubscribeV2 or FrameType.ConsentResolveV2
-            or FrameType.ConsentRulesGet or FrameType.ConsentRulesPut
+            or FrameType.ConsentRulesGet or FrameType.ConsentRulesPut or FrameType.ConsentRulesPutV2
             or FrameType.ConsentPending or FrameType.ConsentRules
             or FrameType.ConsentAck or FrameType.DaemonStatus => new(t) { Text = Encoding.UTF8.GetString(p) },
         FrameType.Attached or FrameType.Spawn

@@ -22,11 +22,12 @@ public partial class AgentOrchestratorVendorTests {
 
     // Consent: a fresh, throwaway consent store/broker pair — these pre-existing LocalControlServer
     // tests don't exercise consent at all, so the wiring only needs to satisfy the ctor.
-    static LaunchConsentIpc TestConsentIpc() {
+    static LaunchConsentIpc TestConsentIpc(DaemonConfig config) {
         var dir = Directory.CreateTempSubdirectory("kcap-consent-ipc-").FullName;
         return new LaunchConsentIpc(
             new LaunchConsentBroker(),
             new LaunchConsentStore(dir, NullLogger.Instance),
+            config,
             NullLogger<LaunchConsentIpc>.Instance);
     }
 
@@ -633,7 +634,7 @@ public partial class AgentOrchestratorVendorTests {
             });
 
             var config = new DaemonConfig { Name = "test", ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
+            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(config), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
             var sockPath = LocalSocketPaths.Socket("test");
@@ -685,7 +686,7 @@ public partial class AgentOrchestratorVendorTests {
             });
 
             var config = new DaemonConfig { Name = "test", ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
+            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(config), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
             var sockPath = LocalSocketPaths.Socket("test");
@@ -731,7 +732,7 @@ public partial class AgentOrchestratorVendorTests {
             orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
 
             var config = new DaemonConfig { Name = daemonName, ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
+            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(config), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
             var sockPath = LocalSocketPaths.Socket(daemonName);

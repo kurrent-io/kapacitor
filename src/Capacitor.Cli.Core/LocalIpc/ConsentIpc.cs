@@ -14,6 +14,13 @@ public sealed record ConsentRuleDto(string Action, string? Requester, string? Ki
 
 public sealed record ConsentPolicyDto(string Default, int PromptTimeoutSeconds, List<ConsentRuleDto> Rules);
 
+/// Payload for ConsentRulesPutV2: a policy replacement gated on an identity echo (the daemon's
+/// own name/server URL) — the caller must already know who it's talking to, closing the same
+/// stale-target hazard ConsentResolveV2's prompt_id echo closes for resolves. Fields are
+/// MANDATORY (fail-closed by frame shape): a missing/empty ExpectedName or ExpectedServerUrl
+/// is treated as a malformed payload, never as "match everything".
+public sealed record ConsentPolicyPutV2Dto(string ExpectedName, string ExpectedServerUrl, ConsentPolicyDto Policy);
+
 /// Ok = did the primary operation apply; Error = failure detail, OR a partial-failure warning
 /// when Ok=true (e.g. ConsentResolve's decision was applied but its optional save_rule was
 /// rejected — the resolution itself is not conflated with that secondary failure).
@@ -26,5 +33,6 @@ public sealed record ConsentAckDto(bool Ok, string? Error, bool? RuleSaved);
 [JsonSerializable(typeof(ConsentPendingDto))]
 [JsonSerializable(typeof(ConsentResolveDto))]
 [JsonSerializable(typeof(ConsentPolicyDto))]
+[JsonSerializable(typeof(ConsentPolicyPutV2Dto))]
 [JsonSerializable(typeof(ConsentAckDto))]
 public partial class ConsentIpcJsonContext : JsonSerializerContext;

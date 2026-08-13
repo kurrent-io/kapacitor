@@ -7,7 +7,7 @@ namespace Capacitor.Cli.Daemon.Services;
 /// Local-socket handlers for the consent frames. Trust model: anything on the daemon's own
 /// 0600 socket is the owner (same rule as HandleLocalSpawnAsync) — no further auth.
 internal sealed class LaunchConsentIpc(
-    LaunchConsentBroker broker, LaunchConsentStore store, ILogger<LaunchConsentIpc> logger) {
+    LaunchConsentBroker broker, LaunchConsentStore store, DaemonConfig config, ILogger<LaunchConsentIpc> logger) {
 
     public async Task HandleSubscribeAsync(Stream stream, CancellationToken ct) {
         var (id, reader) = broker.Subscribe();
@@ -121,6 +121,32 @@ internal sealed class LaunchConsentIpc(
         }
         await WriteAck(stream, ack, ct);
     }
+
+    /// V2 policy replacement: gated on an identity echo (the caller's expected daemon name +
+    /// server URL) BEFORE any mutation, closing the same stale-target hazard ConsentResolveV2's
+    /// prompt_id echo closes for resolves — a rules PUT racing a daemon restart/re-point must not
+    /// silently land on the wrong daemon. Fields are mandatory: a missing/empty ExpectedName or
+    /// ExpectedServerUrl is malformed, never "match everything". On a match, delegates to the v1
+    /// body by re-serializing the embedded policy — the identity check happens once, here, on the
+    /// SAME connection carrying the write.
+    public async Task HandleRulesPutV2Async(string payload, Stream stream, CancellationToken ct) {
+        ConsentPolicyPutV2Dto? dto = null;
+        try { dto = JsonSerializer.Deserialize(payload, ConsentIpcJsonContext.Default.ConsentPolicyPutV2Dto); }
+        catch (JsonException) { }
+        if (dto is null || string.IsNullOrEmpty(dto.ExpectedName) || string.IsNullOrEmpty(dto.ExpectedServerUrl)) {
+            await WriteAck(stream, new ConsentAckDto(false, "malformed policy payload", null), ct);
+            return;
+        }
+        if (dto.ExpectedName != config.Name
+                || !string.Equals(NormalizeUrl(dto.ExpectedServerUrl), NormalizeUrl(config.ServerUrl), StringComparison.OrdinalIgnoreCase)) {
+            await WriteAck(stream, new ConsentAckDto(false, "identity_mismatch", null), ct);
+            return;
+        }
+        var v1Json = JsonSerializer.Serialize(dto.Policy, ConsentIpcJsonContext.Default.ConsentPolicyDto);
+        await HandleRulesPutAsync(v1Json, stream, ct);
+    }
+
+    static string NormalizeUrl(string u) => u.TrimEnd('/');
 
     static ConsentPendingDto ToDto(LaunchConsentPromptRequest r) =>
         new(r.RequestId, r.Requester, r.Kind, r.RepoPath, r.Vendor, r.RequestedAt, r.TimeoutSeconds, r.RequesterDisplay, r.PromptId);

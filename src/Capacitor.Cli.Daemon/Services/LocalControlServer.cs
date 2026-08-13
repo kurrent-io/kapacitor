@@ -58,9 +58,10 @@ internal sealed partial class LocalControlServer(
                 case FrameType.ConsentRulesPut:  await consentIpc.HandleRulesPutAsync(first.Text, stream, ct); break;
                 case FrameType.ConsentSubscribeV2: await consentIpc.HandleSubscribeAsync(stream, ct); break;
                 case FrameType.ConsentResolveV2:   await consentIpc.HandleResolveAsync(first.Text, stream, ct, requireEcho: true); break;
+                case FrameType.ConsentRulesPutV2:  await consentIpc.HandleRulesPutV2Async(first.Text, stream, ct); break;
                 case FrameType.Hello: await HandleHelloAsync(first.Text, stream, ct); break;
                 case FrameType.StatusSubscribe: await statusIpc.HandleSubscribeAsync(stream, ct); break;
-                default: await FrameCodec.WriteAsync(stream, LocalFrame.Error($"expected Spawn/Attach/List/Stop/StopV2/Restart/ConsentSubscribe/ConsentResolve/ConsentRulesGet/ConsentRulesPut/ConsentSubscribeV2/ConsentResolveV2/Hello/StatusSubscribe, got {first.Type}"), ct); break;
+                default: await FrameCodec.WriteAsync(stream, LocalFrame.Error($"expected Spawn/Attach/List/Stop/StopV2/Restart/ConsentSubscribe/ConsentResolve/ConsentRulesGet/ConsentRulesPut/ConsentSubscribeV2/ConsentResolveV2/ConsentRulesPutV2/Hello/StatusSubscribe, got {first.Type}"), ct); break;
             }
         } catch (Exception ex) when (ex is not OperationCanceledException) {
             LogConnectionError(ex);
