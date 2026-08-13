@@ -261,6 +261,13 @@ public static partial class DaemonRunner {
         var coverageStateDir = Path.Combine(
             config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
 
+        // Best-effort, never throws: on a brand-new daemon name nothing has created this directory yet
+        // (LaunchConsentStore's ctor — the previous sole creator — only runs below, and not at all on
+        // the expectation-mismatch arm), so without this an expectation-mismatch refusal on a fresh
+        // name would have nowhere to write its marker. Same fail-soft posture as BootRefusal.TryWrite
+        // itself — a failure here just means that call's own containment swallows the write too.
+        try { Directory.CreateDirectory(coverageStateDir); } catch { /* best-effort */ }
+
         // Task 12 (AI-1655): pre-host boot checks. Both refusal arms return BEFORE the host is built —
         // before any ServerConnection/token use of any kind — so a misdirected or un-consented daemon
         // never gets far enough to touch the network or spawn anything. Order matters: the server-
@@ -276,14 +283,13 @@ public static partial class DaemonRunner {
             return 0;
         }
 
-        // Constructed unconditionally (its ctor just loads the on-disk policy file) so the SAME
-        // instance both runs the Task 11 classification below (only when a directive is present) and is
-        // handed to DI further down — classification is therefore never done twice, and a no-directive
-        // boot pays exactly the construction cost it always paid (just earlier).
-        var consentStore = new LaunchConsentStore(coverageStateDir, NullLogger.Instance);
-
+        // A THROWAWAY store, used only for this boot-time classification — deliberately NOT the
+        // instance handed to DI below (see the DI registration's own comment for why: reusing it would
+        // silence LaunchConsentStore's diagnostics, via a NullLogger, for the daemon's entire lifetime).
+        // Constructed only when a directive is present; its ctor's file load is otherwise redundant
+        // with the DI factory's own construction.
         if (!string.IsNullOrEmpty(config.ConsentSeedDirective)) {
-            var seed = consentStore.BootSeed(config.ConsentSeedDirective);
+            var seed = new LaunchConsentStore(coverageStateDir, NullLogger.Instance).BootSeed(config.ConsentSeedDirective);
 
             if (seed.Outcome is SeedOutcome.RefusedInvalidDirective or SeedOutcome.RefusedUnwritable) {
                 BootRefusal.TryWrite(coverageStateDir, config, seed.RefusalToken!);
@@ -343,10 +349,13 @@ public static partial class DaemonRunner {
         // TimeProvider.System drives the gate's monotonic deadline discipline (spec §3.2) — a
         // real singleton in production, swapped for a FakeTimeProvider in tests.
         builder.Services.AddSingleton(TimeProvider.System);
-        // The exact instance the pre-host boot-check block above already constructed (and ran Task
-        // 11's BootSeed classification against, when a directive was present) — never a second
-        // construction/reload of consent.json.
-        builder.Services.AddSingleton(consentStore);
+        // A FRESH instance with the real ILogger<LaunchConsentStore> — deliberately NOT the throwaway
+        // NullLogger store the boot-check block above used for classification. Reusing that instance
+        // here would silence LaunchConsentStore's diagnostics (Load()-time corruption warnings, and the
+        // Persist() failure path LaunchConsentIpc doesn't independently log) for the daemon's entire
+        // lifetime. The extra file read at boot is cheap; a permanently silenced diagnostic is not.
+        builder.Services.AddSingleton(sp => new LaunchConsentStore(
+            coverageStateDir, sp.GetRequiredService<ILogger<LaunchConsentStore>>()));
         builder.Services.AddSingleton(sp => new LaunchConsentDecisionLog(
             coverageStateDir, sp.GetRequiredService<ILogger<LaunchConsentDecisionLog>>()));
         builder.Services.AddSingleton(sp => new LaunchConsentGate(

@@ -46,4 +46,25 @@ public class BootRefusalTests {
         await Assert.That(DaemonRunner.ExpectationSatisfied("https://a.example", "https://b.example")).IsFalse();
         await Assert.That(DaemonRunner.ExpectationSatisfied(null, "https://b.example")).IsTrue(); // no expectation
     }
+
+    // Pins the fix for a real gap: on a brand-new daemon name, nothing had created stateDir before
+    // an expectation-mismatch refusal fired (LaunchConsentStore's ctor — the only prior creator —
+    // never runs on that arm). DaemonRunner.RunAsync's boot-check block now best-effort-creates
+    // coverageStateDir up front (Directory.CreateDirectory, swallowed on failure) before either
+    // check; this test pins the postcondition that establishes — TryWrite persisting a marker for
+    // an expectation mismatch into a dir that did not exist a moment ago — without spinning up a
+    // real host (RunAsync itself isn't practically unit-testable end to end).
+    [Test]
+    public async Task Expectation_mismatch_marker_persists_once_the_fresh_state_dir_is_pre_created() {
+        var dir = Path.Combine(Directory.CreateTempSubdirectory("refusal-").FullName, "brand-new-name");
+        await Assert.That(Directory.Exists(dir)).IsFalse();
+
+        Directory.CreateDirectory(dir); // mirrors DaemonRunner's eager best-effort creation
+        var config = new DaemonConfig { Name = "d2", ExpectedServerUrl = "https://a", ServerUrl = "https://b" };
+        BootRefusal.TryWrite(dir, config, "server_expectation_mismatch");
+
+        var r = BootRefusal.TryRead(dir);
+        await Assert.That(r).IsNotNull();
+        await Assert.That(r!.Token).IsEqualTo("server_expectation_mismatch");
+    }
 }

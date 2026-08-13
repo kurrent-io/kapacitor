@@ -8,10 +8,13 @@ namespace Capacitor.Cli.Daemon.Services;
 /// refuses to start (Task 12, AI-1655): either the server-expectation check
 /// (<see cref="DaemonRunner.ExpectationSatisfied"/>) or a Task 11 consent-seed classification
 /// (<c>LaunchConsentStore.BootSeed</c>) came back Refused. <see cref="Expectation"/>/
-/// <see cref="Resolved"/> are the compared URLs (both null for a consent-seed refusal, which
-/// never reaches the expectation check); <see cref="Pid"/>/<see cref="InstanceId"/>/
-/// <see cref="AttemptId"/> let a caller correlate the marker with the exact boot attempt that
-/// wrote it.
+/// <see cref="Resolved"/> mirror <c>config.ExpectedServerUrl</c>/<c>config.ServerUrl</c> at write
+/// time regardless of which check actually fired — a consent-seed refusal still carries a
+/// non-null <see cref="Expectation"/> whenever the operator configured one (and it was satisfied,
+/// which is why the boot got far enough to reach the consent-seed check at all); both are null
+/// only when no expectation was configured in the first place. <see cref="Pid"/>/
+/// <see cref="InstanceId"/>/<see cref="AttemptId"/> let a caller correlate the marker with the
+/// exact boot attempt that wrote it.
 /// </summary>
 public sealed record BootRefusalRecord(
     int Schema, string DaemonName, string Token, string? Expectation, string? Resolved,
@@ -31,11 +34,12 @@ public static partial class BootRefusal {
 
     /// <summary>
     /// Best-effort atomic temp+rename write. NEVER throws — the state dir may be exactly as
-    /// unwritable (or, this early in boot, not yet CREATED) as the condition being reported, and a
-    /// marker-write failure must not mask (or replace) the refusal itself. Deliberately does NOT
-    /// create <paramref name="stateDir"/> itself — this runs as early as the very first boot check,
-    /// before anything else has established the state directory, and manufacturing it here would
-    /// blur "the directory exists" with "the directory is safe/expected to exist".
+    /// unwritable as the condition being reported, and a marker-write failure must not mask (or
+    /// replace) the refusal itself. Deliberately does NOT create <paramref name="stateDir"/>
+    /// itself — that's the CALLER's responsibility (<c>DaemonRunner.RunAsync</c>'s boot-check
+    /// block best-effort-creates it once, up front, precisely so this call has somewhere to land
+    /// even on a brand-new daemon name); manufacturing it here would blur "the directory exists"
+    /// with "the directory is safe/expected to exist".
     /// </summary>
     public static void TryWrite(string stateDir, DaemonConfig config, string token) {
         try {
