@@ -1890,11 +1890,11 @@ kcap feedback --feedback                               # send feedback; prompts 
 ```
 
 > `kcap feedback (--bug | --feedback) [-m|--message <text>]` files a report through the
-> server's support-intake pipeline (when the tenant has it configured) and prints the
-> reporter email it was filed under on success. Exactly one of `--bug`/`--feedback` is
-> required. `-m`/`--message` is required when stdin isn't a TTY (scripts, CI); on an
-> interactive terminal without it, the command prompts for a multi-line message ended by
-> an empty line.
+> server's support-intake pipeline (when the tenant has it configured). On success, it
+> prints the reporter email and promises that support replies arrive by email. Exactly one
+> of `--bug`/`--feedback` is required. `-m`/`--message` is required when stdin isn't a TTY
+> (scripts, CI); on an interactive terminal without it, the command prompts for a
+> multi-line message ended by an empty line.
 
 > `kcap update` is the one-step upgrade for npm-global installs: it checks the
 > registry, runs `npm install -g @kurrent/kcap@<tag>`, then refreshes your
