@@ -60,6 +60,7 @@ Session:
   disable                          Stop recording and delete session data
   hide                             Hide session (owner-only visibility)
   review <pr>                      Launch Claude with PR review context
+  feedback (--bug|--feedback) [-m <text>]  Report a bug or send feedback to Kurrent support
 
 Curation:
   curate apply [--dry-run] [--yes]   Write promoted guidelines into CLAUDE.md / AGENTS.md

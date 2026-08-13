@@ -42,7 +42,7 @@ public static partial class CommandEvents {
         "ignore", "remap", "repos", "projects", "project", "update", "review", "mcp",
         "curate", "cleanup", "uninstall", "disable", "hide", "import", "watch",
         "copilot-finalize", "set-title", "hook", "cursor", "cursor-verify-appendonly",
-        "generate-whats-done", "permission-request",
+        "generate-whats-done", "permission-request", "feedback",
     };
 
     // Verbs whose args[1] is a known literal rather than user data. Verbs absent from this

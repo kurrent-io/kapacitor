@@ -270,6 +270,7 @@ At a glance — each links to its section below:
 | [`kcap update`](#other-commands) | Upgrade the CLI and refresh agent plugins |
 | [`kcap uninstall`](#uninstalling) | Remove kcap from this machine |
 | [`kcap status` / `whoami` / `login` / `logout`](#other-commands) | Health, identity, and auth |
+| [`kcap feedback`](#other-commands) | Report a bug or send feedback to Kurrent support |
 
 ### Initial setup
 
@@ -1871,7 +1872,16 @@ kcap update         # upgrade the CLI and refresh agent plugins (npm-global inst
 kcap update --beta  # switch to the beta channel and update to the latest beta
 kcap update --stable # switch back to the stable channel (the default)
 kcap logout         # delete stored tokens
+kcap feedback --bug -m "the daemon crashed on stop"   # file a bug report
+kcap feedback --feedback                               # send feedback; prompts for the message on a TTY
 ```
+
+> `kcap feedback (--bug | --feedback) [-m|--message <text>]` files a report through the
+> server's support-intake pipeline (when the tenant has it configured) and prints the
+> reporter email it was filed under on success. Exactly one of `--bug`/`--feedback` is
+> required. `-m`/`--message` is required when stdin isn't a TTY (scripts, CI); on an
+> interactive terminal without it, the command prompts for a multi-line message ended by
+> an empty line.
 
 > `kcap update` is the one-step upgrade for npm-global installs: it checks the
 > registry, runs `npm install -g @kurrent/kcap@<tag>`, then refreshes your

@@ -47,9 +47,13 @@ static class InteractiveLifetime {
     /// need the safety net. Kept as an explicit allow-list so non-interactive
     /// commands (hooks, mcp servers) and commands that manage their own
     /// lifetime (<c>watch</c>, <c>daemon</c>) are never affected.
+    ///
+    /// <c>feedback</c> joins this list for the same reason <c>import</c> does: on a real TTY with
+    /// no <c>-m</c> flag it blocks on a plain <see cref="Console.ReadLine"/> loop, which has the
+    /// same "no timeout, no signal awareness" gap as a Spectre prompt.
     /// </summary>
     public static bool IsInteractiveCommand(string command) => command is
-        "setup" or "login" or "profile" or "use" or "import" or "uninstall";
+        "setup" or "login" or "profile" or "use" or "import" or "uninstall" or "feedback";
 
     /// <summary>
     /// Installs the interrupt handlers and the parent-liveness watchdog. Best

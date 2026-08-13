@@ -237,6 +237,8 @@ switch (command) {
 
         return await ValidatePlanCommand.Handle(baseUrl!, vpSessionId);
     }
+    case "feedback":
+        return await FeedbackCommand.HandleAsync(baseUrl!, args);
     case "eval": {
         // --list-questions is a standalone sub-action; short-circuit.
         if (args.Contains("--list-questions")) {
