@@ -6,24 +6,27 @@ using ProfileConfigJsonContextIndented = Capacitor.Cli.Core.Config.ProfileConfig
 
 namespace Capacitor.Cli.Tests.Unit;
 
+/// <summary>
+/// <c>ProfileCommand.AddProfile</c>/<c>RemoveProfile</c>'s actual write now goes through
+/// <see cref="ConfigMutator"/> (AI-1655 Task 3), which always targets
+/// <see cref="AppConfig.GetConfigPath"/> — a <c>static readonly</c> path pinned once per
+/// process (see <c>ConfigDirIsolationTests</c>, <c>ConfigMutatorTests</c>). So these tests can
+/// no longer point <c>configPath</c> at a private per-test temp dir and expect the mutator to
+/// honor it: they seed and assert against the one shared <c>KCAP_CONFIG_DIR</c> the whole
+/// assembly uses, sharing <c>TokenStoreProfileTests</c>'s <see cref="NotInParallelAttribute"/>
+/// key like every other config.json-touching test class.
+/// </summary>
+[NotInParallel(nameof(TokenStoreProfileTests))]
 public class ProfileCommandTests {
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            "kcap-test-" + Guid.NewGuid().ToString("N")[..8]
-        );
-
-        public TempDir() => Directory.CreateDirectory(Path);
-
-        public void Dispose() {
-            try { Directory.Delete(Path, true); } catch { /* best effort */ }
-        }
+    [Before(Test)]
+    public void Cleanup() {
+        SharedConfigDirCleanup.ClearWithRetry("config.json", () => File.Delete(AppConfig.GetConfigPath()));
+        AppConfig.ResetResolvedStateForTesting();
     }
 
     [Test]
     public async Task AddProfile_CreatesNewProfile() {
-        using var tmp = new TempDir();
-        var configPath = Path.Combine(tmp.Path, "config.json");
+        var configPath = AppConfig.GetConfigPath();
 
         var initial = new ProfileConfig {
             Profiles = new() {
@@ -50,8 +53,7 @@ public class ProfileCommandTests {
 
     [Test]
     public async Task RemoveProfile_DeletesProfile() {
-        using var tmp = new TempDir();
-        var configPath = Path.Combine(tmp.Path, "config.json");
+        var configPath = AppConfig.GetConfigPath();
 
         var initial = new ProfileConfig {
             Profiles = new() {
@@ -74,8 +76,7 @@ public class ProfileCommandTests {
 
     [Test]
     public async Task AddProfile_SchemeLessInput_AddsHttpsAndStoresNormalizedUrl() {
-        using var tmp = new TempDir();
-        var configPath = Path.Combine(tmp.Path, "config.json");
+        var configPath = AppConfig.GetConfigPath();
 
         var initial = new ProfileConfig {
             Profiles = new() {
@@ -100,8 +101,7 @@ public class ProfileCommandTests {
 
     [Test]
     public async Task RemoveProfile_CannotRemoveDefault() {
-        using var tmp = new TempDir();
-        var configPath = Path.Combine(tmp.Path, "config.json");
+        var configPath = AppConfig.GetConfigPath();
 
         var initial = new ProfileConfig {
             Profiles = new() {

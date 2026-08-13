@@ -433,22 +433,24 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         // Save config
-        var profileConfig  = await AppConfig.LoadProfileConfig();
-        var activeName     = string.IsNullOrWhiteSpace(profileConfig.ActiveProfile) ? "default" : profileConfig.ActiveProfile;
-        var defaultProfile = profileConfig.Profiles.GetValueOrDefault(activeName) ?? new Profile();
+        var activeName     = "default";
+        var defaultProfile = new Profile();
 
-        defaultProfile = defaultProfile with {
-            ServerUrl          = serverUrl,
-            DefaultVisibility  = defaultVisibility,
-            UseProviderApiKey  = useProviderApiKey,
-            Daemon             = (defaultProfile.Daemon ?? new DaemonSettings()) with { Name = daemonName }
-        };
+        await ConfigMutator.MutateAsync(c => {
+            activeName     = string.IsNullOrWhiteSpace(c.ActiveProfile) ? "default" : c.ActiveProfile;
+            defaultProfile = c.Profiles.GetValueOrDefault(activeName) ?? new Profile();
 
-        var profiles = new Dictionary<string, Profile>(profileConfig.Profiles) {
-            [activeName] = defaultProfile
-        };
-        profileConfig = profileConfig with { Profiles = profiles };
-        await AppConfig.SaveProfileConfig(profileConfig);
+            defaultProfile = defaultProfile with {
+                ServerUrl          = serverUrl,
+                DefaultVisibility  = defaultVisibility,
+                UseProviderApiKey  = useProviderApiKey,
+                Daemon             = (defaultProfile.Daemon ?? new DaemonSettings()) with { Name = daemonName }
+            };
+
+            return c with {
+                Profiles = new Dictionary<string, Profile>(c.Profiles) { [activeName] = defaultProfile }
+            };
+        });
 
         // Refresh the in-process resolved state to the exact values just
         // saved, so any same-process work after this point (e.g. the import
@@ -913,9 +915,7 @@ public static class SetupCommand {
             return null;
         }
 
-        var profileCfg = await AppConfig.LoadProfileConfig();
-        profileCfg     = TenantDiscovery.MergeProfiles(profileCfg, outcome.Tenants, outcome.Picked!);
-        await AppConfig.SaveProfileConfig(profileCfg);
+        await ConfigMutator.MutateAsync(c => TenantDiscovery.MergeProfiles(c, outcome.Tenants, outcome.Picked!));
 
         AnsiConsole.MarkupLine($"  [green]✓[/] Discovered {outcome.Tenants.Length} tenant(s). Active: [cyan]{Markup.Escape(outcome.Picked!.OrgLogin)}[/]");
 

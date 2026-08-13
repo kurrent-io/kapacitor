@@ -890,9 +890,7 @@ async Task<int> HandleDiscoverLoginAsync(bool forceDevice) {
     }
 
     // Merge discovered tenants as profiles; the picked one becomes active
-    var cfg = await AppConfig.LoadProfileConfig();
-    cfg = TenantDiscovery.MergeProfiles(cfg, outcome.Tenants, outcome.Picked!);
-    await AppConfig.SaveProfileConfig(cfg);
+    await ConfigMutator.MutateAsync(c => TenantDiscovery.MergeProfiles(c, outcome.Tenants, outcome.Picked!));
 
     // Discovery flows only via the shared GitHub App proxy, so every discovered tenant
     // uses the GitHubApp provider. If DiscoveredTenant ever gains a Provider field, read it here.

@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Capacitor.Cli.Core.Config;
-using ProfileConfigJsonContextIndented = Capacitor.Cli.Core.Config.ProfileConfigJsonContextIndented;
 using RepoConfigJsonContextIndented = Capacitor.Cli.Core.Config.RepoConfigJsonContextIndented;
 
 namespace Capacitor.Cli.Commands;
@@ -33,17 +32,14 @@ public static class UseCommand {
         }
 
         if (global || repoPath is null) {
-            config = config with { ActiveProfile = name };
+            await ConfigMutator.MutateAsync(c => c with { ActiveProfile = name });
             await Console.Out.WriteLineAsync($"Active profile set to '{name}' (global).");
         } else {
-            var bindings = new Dictionary<string, string>(config.ProfileBindings) {
-                [repoPath] = name
-            };
-            config = config with { ProfileBindings = bindings };
+            await ConfigMutator.MutateAsync(c => c with {
+                ProfileBindings = new Dictionary<string, string>(c.ProfileBindings) { [repoPath] = name }
+            });
             await Console.Out.WriteLineAsync($"Profile '{name}' bound to {repoPath}.");
         }
-
-        await SaveConfig(configPath, config);
 
         if (save && savePath is not null) {
             var repoConfig = new RepoConfig {
@@ -65,14 +61,5 @@ public static class UseCommand {
 
         var json = await File.ReadAllTextAsync(configPath);
         return ConfigMigration.MigrateIfNeeded(json).Config;
-    }
-
-    static async Task SaveConfig(string configPath, ProfileConfig config) {
-        var dir = Path.GetDirectoryName(configPath)!;
-        Directory.CreateDirectory(dir);
-        var tempPath = $"{configPath}.tmp";
-        await File.WriteAllBytesAsync(tempPath,
-            JsonSerializer.SerializeToUtf8Bytes(config, ProfileConfigJsonContextIndented.Default.ProfileConfig));
-        File.Move(tempPath, configPath, overwrite: true);
     }
 }

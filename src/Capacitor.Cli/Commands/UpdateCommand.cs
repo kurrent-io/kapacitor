@@ -49,7 +49,7 @@ public static class UpdateCommand {
 
         // Persist an explicit channel switch onto the active profile so future
         // auto-updates track it. Update the profile inside ProfileConfig and save
-        // the whole v2 config via SaveProfileConfig — NEVER write a flat
+        // the whole v2 config via ConfigMutator — NEVER write a flat
         // LegacyV1Config, which would overwrite the user's v2 profile config.
         if (args.Contains("--beta") || args.Contains("--stable")) {
             var pc = await AppConfig.LoadProfileConfig();
@@ -62,10 +62,16 @@ public static class UpdateCommand {
             var targetName = AppConfig.ResolvedProfile?.ProfileName ?? pc.ActiveProfile;
             if (pc.Profiles.TryGetValue(targetName, out var active)
              && active.UpdateChannel != channel) {
-                var profiles = new Dictionary<string, Profile>(pc.Profiles) {
-                    [targetName] = active with { UpdateChannel = channel }
-                };
-                await AppConfig.SaveProfileConfig(pc with { Profiles = profiles });
+                await ConfigMutator.MutateAsync(c => {
+                    if (!c.Profiles.TryGetValue(targetName, out var current))
+                        return c;
+
+                    return c with {
+                        Profiles = new Dictionary<string, Profile>(c.Profiles) {
+                            [targetName] = current with { UpdateChannel = channel }
+                        }
+                    };
+                });
             }
         }
 

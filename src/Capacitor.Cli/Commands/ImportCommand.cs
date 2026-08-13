@@ -2090,15 +2090,15 @@ static class ImportCommand {
         org = org.Trim();
 
         try {
-            var cfg     = await AppConfig.LoadProfileConfig();
-            var profile = cfg.Profiles.GetValueOrDefault(profileName) ?? new Core.Config.Profile();
-            var updated = cfg with {
-                Profiles = new Dictionary<string, Core.Config.Profile>(cfg.Profiles) {
-                    [profileName] = profile with { ImportOrg = org }
-                }
-            };
+            await ConfigMutator.MutateAsync(c => {
+                var profile = c.Profiles.GetValueOrDefault(profileName) ?? new Core.Config.Profile();
 
-            await AppConfig.SaveProfileConfig(updated);
+                return c with {
+                    Profiles = new Dictionary<string, Core.Config.Profile>(c.Profiles) {
+                        [profileName] = profile with { ImportOrg = org }
+                    }
+                };
+            });
         } catch {
             // Remembering the org is a convenience, not part of the import contract.
         }

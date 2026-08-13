@@ -7,6 +7,17 @@ using RepoConfigJsonContext = Capacitor.Cli.Core.Config.RepoConfigJsonContext;
 
 namespace Capacitor.Cli.Tests.Unit;
 
+/// <summary>
+/// <c>UseCommand.SetProfile</c>'s actual write now goes through <see cref="ConfigMutator"/>
+/// (AI-1655 Task 3), which always targets <see cref="AppConfig.GetConfigPath"/> — a
+/// <c>static readonly</c> path pinned once per process (see <c>ConfigDirIsolationTests</c>,
+/// <c>ConfigMutatorTests</c>). So these tests can no longer point <c>configPath</c> at a
+/// private per-test temp dir and expect the mutator to honor it: they seed and assert against
+/// the one shared <c>KCAP_CONFIG_DIR</c> the whole assembly uses, sharing
+/// <c>TokenStoreProfileTests</c>'s <see cref="NotInParallelAttribute"/> key like every other
+/// config.json-touching test class.
+/// </summary>
+[NotInParallel(nameof(TokenStoreProfileTests))]
 public class UseCommandTests {
     sealed class TempDir : IDisposable {
         public string Path { get; } = System.IO.Path.Combine(
@@ -21,10 +32,15 @@ public class UseCommandTests {
         }
     }
 
+    [Before(Test)]
+    public void Cleanup() {
+        SharedConfigDirCleanup.ClearWithRetry("config.json", () => File.Delete(AppConfig.GetConfigPath()));
+        AppConfig.ResetResolvedStateForTesting();
+    }
+
     [Test]
     public async Task Use_InRepo_SetsProfileBinding() {
-        using var tmp = new TempDir();
-        var configPath = Path.Combine(tmp.Path, "config.json");
+        var configPath = AppConfig.GetConfigPath();
 
         var initial = new ProfileConfig {
             Profiles = new Dictionary<string, Profile> {
@@ -48,8 +64,7 @@ public class UseCommandTests {
 
     [Test]
     public async Task Use_Global_SetsActiveProfile() {
-        using var tmp = new TempDir();
-        var configPath = Path.Combine(tmp.Path, "config.json");
+        var configPath = AppConfig.GetConfigPath();
 
         var initial = new ProfileConfig {
             Profiles = new Dictionary<string, Profile> {
@@ -72,8 +87,8 @@ public class UseCommandTests {
 
     [Test]
     public async Task Use_Save_WritesRepoConfig() {
+        var configPath = AppConfig.GetConfigPath();
         using var tmp = new TempDir();
-        var configPath = Path.Combine(tmp.Path, "config.json");
         var repoRoot = Path.Combine(tmp.Path, "repo");
         Directory.CreateDirectory(repoRoot);
 
@@ -102,8 +117,7 @@ public class UseCommandTests {
 
     [Test]
     public async Task Use_UnknownProfile_ReturnsError() {
-        using var tmp = new TempDir();
-        var configPath = Path.Combine(tmp.Path, "config.json");
+        var configPath = AppConfig.GetConfigPath();
 
         var initial = new ProfileConfig {
             Profiles = new Dictionary<string, Profile> {

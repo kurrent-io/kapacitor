@@ -63,15 +63,14 @@ public static class ConfigCommand {
             value = result.Url;
         }
 
-        var profileConfig = await AppConfig.LoadProfileConfig();
-        var profileName   = profileConfig.ActiveProfile;
-        var profile       = profileConfig.Profiles.GetValueOrDefault(profileName) ?? new Profile();
+        var profileName = "default";
 
-        profile = ApplySet(profile, key, value);
+        await ConfigMutator.MutateAsync(c => {
+            profileName = c.ActiveProfile;
+            var profile = ApplySet(c.Profiles.GetValueOrDefault(profileName) ?? new Profile(), key, value);
 
-        var profiles = new Dictionary<string, Profile>(profileConfig.Profiles) { [profileName] = profile };
-        profileConfig = profileConfig with { Profiles = profiles };
-        await AppConfig.SaveProfileConfig(profileConfig);
+            return c with { Profiles = new Dictionary<string, Profile>(c.Profiles) { [profileName] = profile } };
+        });
 
         // Echo what was STORED, not what was typed: flows.reviewer_vendor is canonicalized on the way
         // in, and confirming "Set flows.reviewer_vendor = Codex" while holding "codex" invites a bug
@@ -92,15 +91,14 @@ public static class ConfigCommand {
     }
 
     static async Task<int> Unset(string key) {
-        var profileConfig = await AppConfig.LoadProfileConfig();
-        var profileName   = profileConfig.ActiveProfile;
-        var profile       = profileConfig.Profiles.GetValueOrDefault(profileName) ?? new Profile();
+        var profileName = "default";
 
-        profile = ApplyUnset(profile, key);
+        await ConfigMutator.MutateAsync(c => {
+            profileName = c.ActiveProfile;
+            var profile = ApplyUnset(c.Profiles.GetValueOrDefault(profileName) ?? new Profile(), key);
 
-        var profiles = new Dictionary<string, Profile>(profileConfig.Profiles) { [profileName] = profile };
-        profileConfig = profileConfig with { Profiles = profiles };
-        await AppConfig.SaveProfileConfig(profileConfig);
+            return c with { Profiles = new Dictionary<string, Profile>(c.Profiles) { [profileName] = profile } };
+        });
 
         await Console.Out.WriteLineAsync($"Unset {key} (profile: {profileName})");
 
