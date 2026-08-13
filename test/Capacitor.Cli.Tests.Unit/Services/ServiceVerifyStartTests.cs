@@ -466,4 +466,71 @@ public class ServiceVerifyStartTests {
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
+
+    [Test]
+    public async Task Malformed_plist_at_phase_a_is_evidence_unreadable_and_touches_nothing() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            var manager = new FakeServiceManager();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            // A truncated/malformed plist — exactly the foreign-writer race Phase B's own re-check
+            // defends against — makes LaunchdUnit.EnvFromPlist/BinaryFromPlist throw XmlException.
+            // That must land as EvidenceUnreadable (28), not escape StartVerifiedAsync to a
+            // generic, uncoded exit 1.
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: _ => "<plist version=\"1.0\"><dict><key>Truncated",
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
+
+            var exit = await sut.StartVerifiedAsync(Id);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
+            await Assert.That(manager.Calls.Count).IsEqualTo(1);
+            await Assert.That(manager.Calls.All(c => c == "query")).IsTrue();
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Garbage_plist_at_phase_b_recheck_is_treated_as_drift_and_rolls_back() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            var manager = new FakeServiceManager { Started = true };
+            var stopPhases = new List<string?>();
+            manager.OnStop = id => stopPhases.Add(ServiceTxnMarker.Read(id)?.Phase);
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            var reads = 0;
+            string? ReadPlist(string _) {
+                reads++;
+                // Phase A reads a valid, passing plist; a foreign writer replaces it with
+                // unparseable garbage before Phase B's re-read — the parse itself must not escape
+                // StartVerifiedAsync (it would skip Rollback entirely, since this happens AFTER the
+                // "captured" marker write and the boot-out Stop, leaving the service stopped with a
+                // stuck marker instead of the guaranteed unloaded-plist-retained outcome).
+                return reads == 1 ? MinimalPlist("/bin/kcap-daemon", "prompt") : "not even xml, let alone a plist";
+            }
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: ReadPlist,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                digestMatches: _ => true);
+
+            var exit = await sut.StartVerifiedAsync(Id);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.StartGateDrift);
+            await Assert.That(manager.Calls.Contains("stop")).IsTrue();
+            await Assert.That(manager.StartCalls).IsEqualTo(0);
+            await Assert.That(stopPhases.Count).IsEqualTo(2);
+            await Assert.That(stopPhases[0]).IsEqualTo("captured");
+            await Assert.That(stopPhases[1]).IsEqualTo("gate-drift");
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
 }

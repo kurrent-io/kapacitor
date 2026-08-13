@@ -199,11 +199,23 @@ sealed class ServiceVerify(
         if (gated) {
             var plistPath = LaunchdUnit.PlistPath(serviceId);
             phaseAPlistContent = _readPlist(plistPath);
-            var unitEnv = phaseAPlistContent is not null ? LaunchdUnit.EnvFromPlist(phaseAPlistContent) : new Dictionary<string, string>();
-            var unitBinaryPath = phaseAPlistContent is not null ? LaunchdUnit.BinaryFromPlist(phaseAPlistContent) : null;
 
-            if (EvaluateStartGate(unitEnv, unitBinaryPath, ResolveInstallBinaryPath(), _gateEnv!, _digestMatches) is { } reason) {
-                Say($"start_gate_reason={GateReasonToken(reason)}");
+            // A malformed/truncated plist (exactly the foreign-writer race Phase B defends
+            // against, caught here instead) must not let XDocument.Parse's XmlException escape
+            // this method — that would abort to a generic, uncoded exit 1 instead of the gate's
+            // own contract. Unreadable evidence is EvidenceUnreadable, same as every other
+            // evidence read this gate performs.
+            StartGateReason? reason;
+            try {
+                var unitEnv = phaseAPlistContent is not null ? LaunchdUnit.EnvFromPlist(phaseAPlistContent) : new Dictionary<string, string>();
+                var unitBinaryPath = phaseAPlistContent is not null ? LaunchdUnit.BinaryFromPlist(phaseAPlistContent) : null;
+                reason = EvaluateStartGate(unitEnv, unitBinaryPath, ResolveInstallBinaryPath(), _gateEnv!, _digestMatches);
+            } catch {
+                reason = StartGateReason.EvidenceUnreadable;
+            }
+
+            if (reason is { } r) {
+                Say($"start_gate_reason={GateReasonToken(r)}");
                 Say(VerifyExit.StartGateToken);
                 return VerifyExit.StartGate;
             }
@@ -223,10 +235,22 @@ sealed class ServiceVerify(
                 if (bootOutError is not null) Say($"stop: {bootOutError}");
             }
 
-            var plistPath        = LaunchdUnit.PlistPath(serviceId);
-            var recheckContent   = _readPlist(plistPath);
-            var recheckBinary    = recheckContent is not null ? LaunchdUnit.BinaryFromPlist(recheckContent) : null;
-            var digestStillGood  = recheckBinary is not null && _digestMatches(recheckBinary);
+            var plistPath      = LaunchdUnit.PlistPath(serviceId);
+            var recheckContent = _readPlist(plistPath);
+
+            // Same XmlException hazard as Phase A's parse, but here escaping is worse: it would
+            // abort AFTER the marker write and boot-out, past the point Rollback runs, leaving the
+            // service stopped with a stuck marker instead of the guaranteed unloaded-plist-retained
+            // outcome. A recheck that can't be parsed/validated is exactly what drift means — the
+            // content changed (to something unreadable) or can no longer be confirmed unchanged —
+            // so route it into the same drift branch rather than letting it throw.
+            bool digestStillGood;
+            try {
+                var recheckBinary = recheckContent is not null ? LaunchdUnit.BinaryFromPlist(recheckContent) : null;
+                digestStillGood = recheckBinary is not null && _digestMatches(recheckBinary);
+            } catch {
+                digestStillGood = false;
+            }
 
             if (recheckContent != phaseAPlistContent || !digestStillGood) {
                 ServiceTxnMarker.Write(serviceId,
