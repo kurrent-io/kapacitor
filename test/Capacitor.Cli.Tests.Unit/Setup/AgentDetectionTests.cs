@@ -43,6 +43,16 @@ public class AgentDetectionTests {
     }
 
     [Test]
+    public async Task Pi_home_signal_honors_injected_PI_CODING_AGENT_DIR_override() {
+        // Detect() must never fall back to a real process-env read for Pi — everything comes
+        // through Inputs.Env, so this test never mutates Environment.GetEnvironmentVariable.
+        var agentDir = Directory.CreateTempSubdirectory("kcap-pi-agent-").FullName;
+        var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent",
+            env: new() { ["PI_CODING_AGENT_DIR"] = agentDir }));
+        await Assert.That(r.Pi.InstallSignalFound).IsTrue();
+    }
+
+    [Test]
     public async Task Antigravity_probes_both_agy_and_antigravity_binaries() {
         if (OperatingSystem.IsWindows()) return; // Unix exec-bit semantics only
 

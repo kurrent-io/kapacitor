@@ -72,10 +72,14 @@ public static class PiPaths {
     public static string AgentsMd(string? home = null) => Path.Combine(AgentDir(home), "AGENTS.md");
 
     /// <summary>
-    /// Detection by <c>~/.pi/agent</c> presence — Pi creates it on first run.
+    /// Detection by the agent-state dir's presence — Pi creates it on first run.
     /// The binary name <c>pi</c> is too generic for a PATH probe to be the only
     /// signal, so callers that also want the PATH probe OR this with
-    /// <c>AgentDetector.IsInstalled("pi")</c>.
+    /// <c>AgentDetector.IsInstalled("pi")</c>. <paramref name="agentDir"/> is a pure
+    /// override for <see cref="AgentDir"/>'s <c>PI_CODING_AGENT_DIR</c> env read, so
+    /// callers building a fully-injected detection input set never have to touch the
+    /// real environment (mirrors <c>KiroPaths.IsInstalled</c>/<c>OpenCodePaths.IsInstalled</c>).
     /// </summary>
-    public static bool IsInstalled(string? home = null) => Directory.Exists(AgentDir(home));
+    public static bool IsInstalled(string? home = null, string? agentDir = null) =>
+        Directory.Exists(AgentDir(home, agentDir));
 }

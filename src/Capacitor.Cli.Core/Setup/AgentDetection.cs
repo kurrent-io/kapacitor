@@ -11,9 +11,11 @@ namespace Capacitor.Cli.Core.Setup;
 /// <summary>
 /// Everything <see cref="AgentDetection"/> reads, injected instead of touched directly, so
 /// tests never need to mutate process-wide PATH/HOME/env state. <see cref="Env"/> covers the
-/// per-vendor overrides each <c>*Paths</c> type honors (<c>KIRO_HOME</c>,
-/// <c>PI_CODING_AGENT_DIR</c>, <c>OPENCODE_CONFIG_DIR</c>, <c>XDG_CONFIG_HOME</c>,
-/// <c>XDG_DATA_HOME</c>, <c>GEMINI_CLI_HOME</c>).
+/// per-vendor overrides each <c>*Paths</c> type accepts as a pure parameter: <c>KIRO_HOME</c>,
+/// <c>OPENCODE_CONFIG_DIR</c>, <c>XDG_CONFIG_HOME</c>, <c>XDG_DATA_HOME</c>,
+/// <c>GEMINI_CLI_HOME</c>, <c>PI_CODING_AGENT_DIR</c>. Copilot is the one exception:
+/// <c>CopilotPaths.IsInstalled()</c> has no override parameter and reads <c>COPILOT_HOME</c>
+/// from the real environment internally (sanctioned — see its arm below).
 /// </summary>
 public sealed record AgentDetectionInputs(
     string? PathEnv, string? PathExt, bool IsWindows, string? Home, Func<string, string?> Env);
@@ -53,6 +55,8 @@ public static class AgentDetection {
             Cursor: new(false, CursorPaths.IsInstalled(home)),
             // Dir presence covers users who launch Copilot through an IDE wrapper; the PATH
             // probe covers fresh installs that haven't run yet (no ~/.copilot until first launch).
+            // CopilotPaths.IsInstalled() has no override parameter — it reads COPILOT_HOME from
+            // the real environment internally, unlike every other vendor's pure IsInstalled arm.
             Copilot: new(Bin("copilot"), CopilotPaths.IsInstalled()),
             // Dir presence covers IDE-launched Gemini; the PATH probe covers a fresh install
             // that hasn't created ~/.gemini yet.
@@ -60,9 +64,9 @@ public static class AgentDetection {
             // Same dual signal for Kiro: the ~/.kiro tree or the conversation DB covers
             // IDE-launched users; the PATH probe (kiro / kiro-cli) covers fresh CLI installs.
             Kiro: new(Bin("kiro") || Bin("kiro-cli"), KiroPaths.IsInstalled(home, i.Env("KIRO_HOME"))),
-            // Pi keeps state under ~/.pi/agent; the PATH probe covers fresh installs that
-            // haven't created it yet.
-            Pi: new(Bin("pi"), PiPaths.IsInstalled(home)),
+            // Pi keeps state under ~/.pi/agent (relocatable via PI_CODING_AGENT_DIR); the PATH
+            // probe covers fresh installs that haven't created it yet.
+            Pi: new(Bin("pi"), PiPaths.IsInstalled(home, i.Env("PI_CODING_AGENT_DIR"))),
             // OpenCode keeps config under ~/.config/opencode + data under
             // ~/.local/share/opencode; the PATH probe covers fresh installs.
             OpenCode: new(Bin("opencode"),

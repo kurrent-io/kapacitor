@@ -39,6 +39,19 @@ public class PiPathsTests {
             .IsEqualTo(Path.Combine(agentDir, "AGENTS.md"));
     }
 
+    // Parallel-safe: both params are non-null, so no env var is read — mirrors
+    // KiroPaths.IsInstalled(home, kiroHome) / OpenCodePaths.IsInstalled(...).
+    [Test]
+    public async Task IsInstalled_honors_injected_agent_dir_override_without_env() {
+        var dir = Directory.CreateTempSubdirectory("kcap-pi-agent-test-").FullName;
+        try {
+            await Assert.That(PiPaths.IsInstalled(home: "/nonexistent", agentDir: dir)).IsTrue();
+            await Assert.That(PiPaths.IsInstalled(home: "/nonexistent", agentDir: "/also-nonexistent")).IsFalse();
+        } finally {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [Test]
     [NotInParallel("HomeEnvVarMutation")]
     public async Task AgentDir_reads_PI_CODING_AGENT_DIR_and_derived_members_follow() {
