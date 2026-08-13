@@ -174,6 +174,8 @@ public static class DaemonCommands {
             return 1;
         }
 
+        if (DetachedDigestGate(daemonPath, Environment.GetEnvironmentVariable) is int gateExit) return gateExit;
+
         // Redirect ALL three standard streams so the detached daemon does not
         // inherit our stdout/stderr. Left un-redirected, the daemon
         // keeps the terminal — or a capturing parent's pipe — open for its
@@ -252,6 +254,31 @@ public static class DaemonCommands {
         Console.Out.WriteLine($"  Status:    kcap daemon status --name {name}");
 
         return 0;
+    }
+
+    /// <summary><c>DaemonRunner.BootCarriers.Seed</c>'s twin: the daemon project defines the
+    /// canonical constant, but the CLI project does not reference the daemon project, so the
+    /// literal is duplicated here (same pattern as <c>ServiceVerify</c>'s duplicated verify codes).</summary>
+    const string SeedVar = "KCAP_CONSENT_SEED_DEFAULT";
+
+    /// <summary>
+    /// Task 15 (AI-1655): gates a detached spawn on the embedded daemon digest, but ONLY when
+    /// <see cref="SeedVar"/> is present in the process env — that directive is set exclusively by
+    /// an app-managed start (the desktop supervisor / a self-respawn), never by a bare `kcap daemon
+    /// start -d` typed at a terminal, so a manual start is never gated. When gated,
+    /// <see cref="DaemonDigest.Matches"/> false (including the fail-closed dev/test placeholder)
+    /// means the sibling daemon binary doesn't match what this CLI build shipped with — refuse
+    /// before spawning anything, on stdout/stderr/exit-code contract the app-side caller parses.
+    /// <paramref name="env"/> is injected so this is testable without touching real process env.
+    /// </summary>
+    internal static int? DetachedDigestGate(string daemonPath, Func<string, string?> env) {
+        if (string.IsNullOrEmpty(env(SeedVar))) return null; // manual start: no gate
+
+        if (DaemonDigest.Matches(daemonPath)) return null;
+
+        Console.Error.WriteLine("daemon_start_reason=package_inconsistent");
+
+        return 43;
     }
 
     // ── stop ────────────────────────────────────────────────────────────────
