@@ -22,6 +22,9 @@ public sealed record ProbeResult(
 /// caller's own cancellation (ct, as opposed to the internal timeout) still propagates, per
 /// normal Task cancellation semantics.
 public static class LocalControlProbe {
+    /// <param name="timeout">A SINGLE shared budget for the whole call — not a per-dial
+    /// timeout. It bounds the hello dial+read AND the StatusSubscribe dial+read together, so a
+    /// slow hello leaves correspondingly less time for the snapshot half.</param>
     public static async Task<ProbeResult> ProbeAsync(string daemonName, TimeSpan timeout, CancellationToken ct = default) {
         using var timeoutCts = new CancellationTokenSource(timeout);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
@@ -46,10 +49,17 @@ public static class LocalControlProbe {
             var frame = await FrameCodec.ReadAsync(conn, linked);
             if (frame is null || frame.Type != FrameType.DaemonStatus) return new ProbeResult(true, hello, null, false);
             var snapshot = JsonSerializer.Deserialize(frame.Text, StatusIpcJsonContext.Default.DaemonStatusDto);
-            if (snapshot is null) return new ProbeResult(true, hello, null, false);
+            // A well-formed-JSON-but-structurally-degenerate payload (e.g. {"daemon":null,...})
+            // deserializes to a non-null DTO with null members — STJ leaves declared-non-nullable
+            // reference members at their default on absent/null JSON rather than throwing (see
+            // DaemonStatusValidator's own doc comment). Skipping this would either NRE on
+            // snapshot.Daemon.Pid below or silently pass through a null-riddled Snapshot — same
+            // validation LocalControlClient.ReadSnapshotAsync applies before ever trusting a DTO.
+            if (!DaemonStatusValidator.IsValid(snapshot)) return new ProbeResult(true, hello, null, false);
+            var daemonInfo = snapshot!.Daemon;
 
-            var consistent = hello.Pid is null || snapshot.Daemon.Pid is null
-                || (hello.Pid == snapshot.Daemon.Pid && hello.InstanceId == snapshot.Daemon.InstanceId);
+            var consistent = hello.Pid is null || daemonInfo.Pid is null
+                || (hello.Pid == daemonInfo.Pid && hello.InstanceId == daemonInfo.InstanceId);
             return new ProbeResult(true, hello, snapshot, consistent);
         } catch (Exception ex) when (IsProbeFailure(ex, ct)) {
             return new ProbeResult(true, hello, null, false);

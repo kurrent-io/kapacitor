@@ -1,3 +1,5 @@
+using System.Net.Sockets;
+using System.Text.Json;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon;
@@ -128,5 +130,92 @@ public class LocalControlProbeTests {
         var r = await LocalControlProbe.ProbeAsync("no-such-daemon-xyz", TimeSpan.FromMilliseconds(500));
         await Assert.That(r.Reachable).IsFalse();
         await Assert.That(r.Hello).IsNull();
+    }
+
+    // ---- review fix: a reachable peer answering well-formed-but-structurally-degenerate JSON ----
+
+    delegate Task ConnScript(NetworkStream s, CancellationToken ct);
+
+    /// Minimal scripted-connection UDS listener — a trimmed copy of
+    /// <c>LocalControlClientTests.ScriptedServer</c> (that one is a private nested type there,
+    /// so it can't be referenced directly), sized for exactly what this file needs: one script
+    /// per accepted connection, in order.
+    sealed class ScriptedServer : IAsyncDisposable {
+        readonly Socket _listener = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        readonly CancellationTokenSource _cts = new();
+        readonly ConnScript[] _scripts;
+        int _served;
+        readonly Task _accept;
+
+        public ScriptedServer(string sockPath, params ConnScript[] scripts) {
+            _scripts = scripts;
+            _listener.Bind(new UnixDomainSocketEndPoint(sockPath));
+            _listener.Listen(8);
+            _accept = Task.Run(async () => {
+                try {
+                    while (!_cts.IsCancellationRequested) {
+                        var conn = await _listener.AcceptAsync(_cts.Token);
+                        var idx = Interlocked.Increment(ref _served) - 1;
+                        if (idx >= _scripts.Length) { conn.Dispose(); continue; }
+                        var script = _scripts[idx];
+                        _ = Task.Run(async () => {
+                            using var c = conn;
+                            await using var s = new NetworkStream(c, ownsSocket: false);
+                            try { await script(s, _cts.Token); } catch { /* scripted teardown */ }
+                        }, _cts.Token);
+                    }
+                } catch { /* shutdown */ }
+            });
+        }
+
+        public async ValueTask DisposeAsync() {
+            _cts.Cancel();
+            _listener.Dispose();
+            try { await _accept; } catch { }
+        }
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Probe_treats_a_structurally_degenerate_snapshot_as_a_snapshot_failure_not_a_throw() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        var sockDir = Directory.CreateTempSubdirectory("kcap-probe-degenerate-");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        try {
+            var name = "probe-degenerate";
+            var helloJson = JsonSerializer.Serialize(
+                new HelloReplyDto(1, "1.0", name, ["status/1"], 111, "inst-x"),
+                HelloIpcJsonContext.Default.HelloReplyDto);
+
+            ConnScript helloThen = async (s, ct) => {
+                var f = await FrameCodec.ReadAsync(s, ct);
+                if (f?.Type == FrameType.Hello)
+                    await FrameCodec.WriteAsync(s, LocalFrame.HelloJson(FrameType.HelloReply, helloJson), ct);
+            };
+            // Well-formed JSON, but structurally degenerate: daemon/agents both null. STJ source-gen
+            // leaves declared-non-nullable reference members at their default on null/absent JSON
+            // rather than throwing, so this deserializes to a NON-null DaemonStatusDto with a null
+            // Daemon — exactly the shape that must go through DaemonStatusValidator.IsValid instead
+            // of a bare null-check, or ProbeAsync either NREs on snapshot.Daemon.Pid or silently
+            // returns a null-riddled Snapshot.
+            ConnScript subscribeDegenerate = async (s, ct) => {
+                var f = await FrameCodec.ReadAsync(s, ct);
+                if (f?.Type == FrameType.StatusSubscribe)
+                    await FrameCodec.WriteAsync(s, LocalFrame.StatusJson(FrameType.DaemonStatus, """{"daemon":null,"agents":null}"""), ct);
+            };
+
+            await using var server = new ScriptedServer(LocalSocketPaths.Socket(name), helloThen, subscribeDegenerate);
+
+            var r = await LocalControlProbe.ProbeAsync(name, TimeSpan.FromSeconds(5));
+
+            await Assert.That(r.Reachable).IsTrue();
+            await Assert.That(r.Hello).IsNotNull();
+            await Assert.That(r.Snapshot).IsNull();
+            await Assert.That(r.IdentityConsistent).IsFalse();
+        } finally {
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+            try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
+        }
     }
 }
