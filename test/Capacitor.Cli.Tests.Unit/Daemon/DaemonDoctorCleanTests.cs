@@ -4,15 +4,10 @@ using Capacitor.Cli.Core.LocalIpc;
 namespace Capacitor.Cli.Tests.Unit.Daemon;
 
 /// <summary>
-/// Regression cover for the bug where <c>kcap daemon doctor --clean</c> could never
-/// remove a confirmed-stale entry whose leftover included the <c>.lock</c> file.
-///
-/// <para>The lock is a per-inode <c>flock</c> mutex that cannot be safely deleted, so
-/// <c>--clean</c> leaves it and only removes the state markers. The listing must
-/// therefore key on the markers, not the lock: once the markers are gone the entry
-/// disappears from <see cref="DaemonLockPaths.EnumerateNames"/> even though the inert
-/// lock file remains on disk. Previously the lock alone kept the name in the listing,
-/// so the entry was re-surfaced on every run.</para>
+/// A cleaned stale entry must drop out of <see cref="DaemonLockPaths.EnumerateNames"/>.
+/// The lock file is a flock mutex that <c>--clean</c> cannot safely delete, so the listing
+/// keys on the state markers: once they are gone the name disappears even though the inert
+/// lock lingers. Previously a lone lock kept re-surfacing the entry on every run.
 /// </summary>
 [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
 public class DaemonDoctorCleanTests {

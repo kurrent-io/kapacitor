@@ -692,7 +692,7 @@ kcap daemon restart --name laptop              # restart now if idle; refuses wh
 kcap daemon restart --name laptop --when-idle  # queue the restart for the next idle moment
 kcap daemon restart --name laptop --force      # restart now even if busy (tears down running agents)
 kcap daemon doctor                  # diagnose lock-file state for every daemon name
-kcap daemon doctor --clean          # also remove stale lock/pid files (held entries are never touched)
+kcap daemon doctor --clean          # also remove a stale entry's pid/marker files, dropping it from the list (held entries are never touched; the inert lock file is left in place)
 ```
 
 `agent` was this group's name before it was renamed to `daemon`, and it now belongs to a different group — [`kcap agent`](#local-agents-kcap-agent) runs coding agents. The two still share `start` and `stop`, so check which one you mean: `kcap daemon start` starts the daemon, `kcap agent start <vendor>` starts a coding agent. Daemon-only verbs typed against the wrong group (`kcap agent status`, `restart`, `logs`, `doctor`, `service`) answer with a pointer back here.

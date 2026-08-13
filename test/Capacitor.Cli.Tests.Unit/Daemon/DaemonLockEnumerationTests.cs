@@ -3,13 +3,10 @@ using Capacitor.Cli.Core;
 namespace Capacitor.Cli.Tests.Unit.Daemon;
 
 /// <summary>
-/// <see cref="DaemonLockPaths.EnumerateNames"/> derives names from the STATE markers
-/// (<c>*.pid</c>/<c>*.restart-pending</c>/<c>*.version</c>) and deliberately NOT from a
-/// lone <c>*.lock</c>. An orphan PID file (no matching lock, e.g. a daemon that stopped
-/// via the path before the per-name layout existed) must still be visible to
-/// <c>kcap daemon doctor --clean</c>; a bare lock — the inert flock file left behind
-/// after a clean, which cannot be safely deleted — must NOT be, or the entry would be
-/// re-listed forever.
+/// <see cref="DaemonLockPaths.EnumerateNames"/> derives names from the state markers
+/// (<c>*.pid</c>/<c>*.restart-pending</c>/<c>*.version</c>), not from a lone <c>*.lock</c>:
+/// an orphan PID must stay visible to <c>doctor --clean</c>, while an inert leftover lock
+/// (which cannot be safely deleted) must not, or the entry would be re-listed forever.
 /// </summary>
 [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
 public class DaemonLockEnumerationTests {
