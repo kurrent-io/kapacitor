@@ -509,6 +509,10 @@ sealed class ServiceVerify(
         // embedded digest — same "package_inconsistent" failure mode the gated start path already
         // reports, but here it's a viability abort (nothing written yet, no marker) rather than a
         // rollback. One stderr line naming the reason; no separate generic viability token.
+        // Deliberate conflation: DigestStillGood's catch also reports an unreadable/unhashable
+        // binary as package_inconsistent here, where EvaluateStartGate would separately bucket
+        // that as EvidenceUnreadable — install has no third bucket, and either way the binary
+        // about to be installed cannot be trusted, so it's still a viability abort.
         if (gated && !DigestStillGood(spec.DaemonBinaryPath)) {
             Say($"viability_reason={GateReasonToken(StartGateReason.PackageInconsistent)}");
             return VerifyExit.Viability;

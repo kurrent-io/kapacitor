@@ -753,6 +753,82 @@ public class ServiceVerifyInstallTests {
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 
+    /// <summary>Task 17 review fix (Important 1): the viability arm's digest check must fire for
+    /// <c>--replace</c> too, and — crucially — BEFORE <c>ApplyReplaceMatrixAsync</c>'s ownership
+    /// matrix ever runs. A loaded, owned label (with a live validated pid) gives that matrix real
+    /// bootout/kill work to do if it were ever reached, so an empty <see cref="FakeServiceManager.Calls"/>
+    /// here is the regression net: it proves viability precedes the replace matrix, not merely that
+    /// there happened to be nothing to replace.</summary>
+    [Test, NotInParallel]
+    public async Task Gated_replace_with_bad_binary_digest_aborts_viability_before_any_destructive_step() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        var originalErr = Console.Error;
+        var capturedErr = new StringWriter();
+        try {
+            Console.SetError(capturedErr);
+
+            // Loaded and owned (RunningPid matches the validated pid below) — exactly the shape
+            // that would otherwise drive ApplyReplaceMatrixAsync's owning-label bootout branch.
+            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, RunningPid = 4242 };
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: OwnPlist,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                digestMatches: _ => false);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
+            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            await Assert.That(lines).IsEquivalentTo(["viability_reason=package_inconsistent"]);
+            // No destructive step ran at all: not even the pre-mutation Query, let alone
+            // ApplyReplaceMatrixAsync's Uninstall-driven bootout or the takeover kill it can
+            // trigger — the manager was never touched.
+            await Assert.That(manager.Calls).IsEmpty();
+            await Assert.That(manager.UninstallCalls).IsEqualTo(0);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally {
+            Console.SetError(originalErr);
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        }
+    }
+
+    /// <summary>Task 17 review fix (Important 2): exercises the THIRD checkpoint — the
+    /// post-readiness recheck joined onto the final on-disk fingerprint recheck — in isolation.
+    /// digestMatches passes viability (call 1) and the pre-bootstrap recheck (call 2), so
+    /// WriteAndBootstrap DOES run this time (unlike the pre-bootstrap-drift test), then fails only
+    /// on the third call. The commit must never happen: <c>onCommitted</c> is the same callback the
+    /// real commit path invokes right before deleting the marker, so it not firing is direct proof
+    /// the transaction never reached "committed", not just that the final exit code is 29.</summary>
+    [Test]
+    public async Task Gated_install_digest_drift_at_post_readiness_recheck_rolls_back_with_29_never_committing() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            var manager = new FakeServiceManager();
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+
+            var digestCalls = 0;
+            var committedInvoked = false;
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: OwnPlist,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                // pass(1)=viability, pass(2)=pre-bootstrap, fail(3)=post-readiness.
+                digestMatches: _ => Interlocked.Increment(ref digestCalls) is not 3,
+                onCommitted: () => committedInvoked = true);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.StartGateDrift);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);  // reached bootstrap this time
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);          // rollback's own uninstall ran
+            await Assert.That(committedInvoked).IsFalse();                  // never reached "committed"
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
     [Test]
     public async Task Rollback_uninstalls_when_the_plist_is_genuinely_absent() {
         var (dir, daemonPath) = SetUpViableInstall();
