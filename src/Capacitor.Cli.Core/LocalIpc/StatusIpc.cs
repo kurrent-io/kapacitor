@@ -13,10 +13,14 @@ public sealed record DaemonStatusDto(DaemonInfoDto Daemon, List<AgentStatusDto> 
 /// <see cref="Connection"/> ∈ connected|connecting|reconnecting|disconnected (lowercase).
 /// <see cref="ActiveAgents"/> is derived from the SAME materialized agents array it ships
 /// with (Status is "Starting" or "Running"), so count and array can never disagree within
-/// one payload.
+/// one payload. <see cref="Pid"/>/<see cref="InstanceId"/> are additive trailing members
+/// (AI-1655) identifying the reporting daemon process for client-side correlation — always
+/// populated by a current daemon (see the "every field ALWAYS emitted" rule above); null only
+/// were an old snapshot ever replayed from before this field existed.
 /// </summary>
 public sealed record DaemonInfoDto(
-    string Name, string Version, string ServerUrl, string Connection, int MaxAgents, int ActiveAgents);
+    string Name, string Version, string ServerUrl, string Connection, int MaxAgents, int ActiveAgents,
+    int? Pid = null, string? InstanceId = null);
 
 /// <summary>
 /// <see cref="Status"/> is the daemon's internal status string VERBATIM (PascalCase, open

@@ -33,12 +33,14 @@ public class FrameCodecHelloTests {
             ProtocolVersion: 1,
             DaemonVersion: "x",
             DaemonName: "n",
-            Capabilities: new List<string> { "consent/1" });
+            Capabilities: new List<string> { "consent/1" },
+            Pid: 4242,
+            InstanceId: "inst-abc");
         var json = JsonSerializer.Serialize(dto, HelloIpcJsonContext.Default.HelloReplyDto);
         var f = new LocalFrame(FrameType.HelloReply) { Text = json };
         var rt = await RoundTrip(f);
         await Assert.That(rt.Type).IsEqualTo(FrameType.HelloReply);
-        await Assert.That(rt.Text).IsEqualTo("""{"protocol_version":1,"daemon_version":"x","daemon_name":"n","capabilities":["consent/1"]}""");
+        await Assert.That(rt.Text).IsEqualTo("""{"protocol_version":1,"daemon_version":"x","daemon_name":"n","capabilities":["consent/1"],"pid":4242,"instance_id":"inst-abc"}""");
     }
 
     [Test]

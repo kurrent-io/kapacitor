@@ -281,6 +281,23 @@ public class DaemonStatusIpcTests {
         });
     }
 
+    [Test] // AI-1655: pid/instance_id identity on the daemon block, first snapshot
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task First_snapshot_carries_pid_and_instance_id() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("st-id", async (h, ct) => {
+            h.Config.InstanceId = "inst-status-1";
+
+            await using var s = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.StatusSubscribe), ct);
+
+            var dto = await ReadStatusAsync(s, ct);
+            await Assert.That(dto.Daemon.Pid).IsEqualTo(Environment.ProcessId);
+            await Assert.That(dto.Daemon.InstanceId).IsEqualTo("inst-status-1");
+        });
+    }
+
     [Test] // add / status-change / removal each trigger a re-push
     [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Each_mutation_triggers_a_re_push() {

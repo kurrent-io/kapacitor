@@ -101,7 +101,8 @@ internal sealed partial class LocalControlServer(
         } catch (JsonException) { /* diagnostics-only payload; reply identically regardless */ }
 
         var reply = new HelloReplyDto(
-            HelloProtocol.CurrentVersion, DaemonRunner.ResolveDaemonVersion(), config.Name, [.. LocalControlCapabilities.Current]);
+            HelloProtocol.CurrentVersion, DaemonRunner.ResolveDaemonVersion(), config.Name, [.. LocalControlCapabilities.Current],
+            Environment.ProcessId, config.InstanceId);
         var json = JsonSerializer.Serialize(reply, HelloIpcJsonContext.Default.HelloReplyDto);
         await FrameCodec.WriteAsync(stream, LocalFrame.HelloJson(FrameType.HelloReply, json), ct);
     }

@@ -180,6 +180,23 @@ public class LocalControlHelloTests {
 
     [Test]
     [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Hello_reply_carries_pid_and_instance_id() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("hello-id", async (h, ct) => {
+            h.Config.InstanceId = "inst-test-1";
+            await using var s = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.Hello), ct);
+            var frame = await FrameCodec.ReadAsync(s, ct);
+            var dto = JsonSerializer.Deserialize(frame!.Text, HelloIpcJsonContext.Default.HelloReplyDto);
+
+            await Assert.That(dto!.Pid).IsEqualTo(Environment.ProcessId);
+            await Assert.That(dto.InstanceId).IsEqualTo("inst-test-1");
+        });
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task List_still_returns_AgentList_alongside_the_new_Hello_route() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 

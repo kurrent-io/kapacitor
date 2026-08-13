@@ -11,10 +11,13 @@ public sealed record ClientHelloDto(string? ClientName, string? ClientVersion);
 /// <see cref="Capabilities"/> is <see langword="null"/> = field absent (older daemon); treat as
 /// empty. STJ leaves a missing reference-typed member at its default rather than throwing, so a
 /// non-nullable declaration here would be a lie a client could NRE on the moment it dereferences an
-/// older daemon's reply.
+/// older daemon's reply. <see cref="Pid"/>/<see cref="InstanceId"/> are additive trailing members
+/// (AI-1655) identifying the replying daemon process for client-side correlation — null on an
+/// older daemon that predates them.
 /// </summary>
 public sealed record HelloReplyDto(
-    int ProtocolVersion, string DaemonVersion, string DaemonName, List<string>? Capabilities);
+    int ProtocolVersion, string DaemonVersion, string DaemonName, List<string>? Capabilities,
+    int? Pid = null, string? InstanceId = null);
 
 /// <summary>Single source of truth for the local control socket hello protocol version this build
 /// speaks — both what <c>HandleHelloAsync</c> reports and what a per-verb hello probe (e.g.
