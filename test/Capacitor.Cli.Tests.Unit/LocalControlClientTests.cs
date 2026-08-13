@@ -134,6 +134,14 @@ public class LocalControlClientTests {
     static string HelloWithVersion(string version, params string[] caps) => JsonSerializer.Serialize(
         new HelloReplyDto(1, version, "m", [.. caps]), HelloIpcJsonContext.Default.HelloReplyDto);
 
+    /// Task 7 (AI-1655): runs one scripted hello→subscribe cycle with the given raw JSON
+    /// payloads, collecting events until either Connected or Unreachable is observed —
+    /// used by the hello/snapshot identity-correlation tests below.
+    static Task<List<LocalControlEvent>> RunScriptedCycleAsync(string helloJson, string statusJson) =>
+        RunClientAsync(
+            [HelloThen(helloJson), SubscribePush(statusJson)],
+            evs => evs.OfType<LocalControlEvent.Connected>().Any() || evs.OfType<LocalControlEvent.Unreachable>().Any());
+
     /// Runs a client against scripts in an isolated socket dir; collects events until
     /// `until` returns true or the deadline passes; returns collected events.
     static async Task<List<LocalControlEvent>> RunClientAsync(
@@ -621,5 +629,57 @@ public class LocalControlClientTests {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
             try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
+    }
+
+    // ---- Task 7 (AI-1655): hello↔snapshot instance correlation ----
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Mismatched_hello_and_snapshot_identity_never_emits_Connected() {
+        if (OperatingSystem.IsWindows()) return;
+        // Use the suite's scripted-socket helper: hello reply from process A, snapshot from process B.
+        // (Concretely: serve HelloReply {pid:111,instance_id:"A"} then DaemonStatus whose DaemonInfoDto
+        // has {pid:222,instance_id:"B"}; iterate client.RunAsync and collect events until Unreachable.)
+        var events = await RunScriptedCycleAsync(
+            helloJson:  """{"protocol_version":1,"daemon_version":"1.0.0","daemon_name":"x","capabilities":["consent/1","status/1"],"pid":111,"instance_id":"A"}""",
+            statusJson: """{"daemon":{"name":"x","version":"1.0.0","server_url":"http://s","connection":"connected","max_agents":5,"active_agents":0,"pid":222,"instance_id":"B"},"agents":[]}""");
+
+        await Assert.That(events.OfType<LocalControlEvent.Connected>()).IsEmpty();
+        await Assert.That(events.OfType<LocalControlEvent.Unreachable>().Any(u => u.Reason == "daemon_incompatible")).IsTrue();
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Matching_hello_and_snapshot_identity_yields_connected_with_identity() {
+        if (OperatingSystem.IsWindows()) return;
+
+        var events = await RunScriptedCycleAsync(
+            helloJson:  """{"protocol_version":1,"daemon_version":"1.0.0","daemon_name":"x","capabilities":["consent/1","status/1"],"pid":111,"instance_id":"A"}""",
+            statusJson: """{"daemon":{"name":"x","version":"1.0.0","server_url":"http://s","connection":"connected","max_agents":5,"active_agents":0,"pid":111,"instance_id":"A"},"agents":[]}""");
+
+        var connected = events.OfType<LocalControlEvent.Connected>().Single();
+        await Assert.That(connected.Identity).IsNotNull();
+        await Assert.That(connected.Identity!.Pid).IsEqualTo(111);
+        await Assert.That(connected.Identity!.InstanceId).IsEqualTo("A");
+        await Assert.That(connected.Identity!.DaemonName).IsEqualTo("x");
+        await Assert.That(connected.Identity!.DaemonVersion).IsEqualTo("1.0.0");
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Hello_without_identity_fields_yields_connected_with_null_identity_pid() {
+        if (OperatingSystem.IsWindows()) return;
+
+        // Pre-slice daemon: hello reply carries no pid/instance_id at all, even though the
+        // snapshot (a current daemon's status payload) does — no mismatch may be inferred from
+        // that asymmetry, so Connected must still fire, with Identity built from hello alone.
+        var events = await RunScriptedCycleAsync(
+            helloJson:  """{"protocol_version":1,"daemon_version":"1.0.0","daemon_name":"x","capabilities":["consent/1","status/1"]}""",
+            statusJson: """{"daemon":{"name":"x","version":"1.0.0","server_url":"http://s","connection":"connected","max_agents":5,"active_agents":0,"pid":222,"instance_id":"B"},"agents":[]}""");
+
+        var connected = events.OfType<LocalControlEvent.Connected>().Single();
+        await Assert.That(connected.Identity).IsNotNull();
+        await Assert.That(connected.Identity!.Pid).IsNull();
+        await Assert.That(connected.Identity!.InstanceId).IsNull();
     }
 }

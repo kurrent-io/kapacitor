@@ -4,6 +4,12 @@ using System.Text.Json;
 
 namespace Capacitor.Cli.Core.LocalIpc;
 
+/// Identity of the daemon process that answered hello, correlated against the first snapshot
+/// (AI-1655 Task 7). Pid/InstanceId are null when the hello reply predates those fields
+/// (pre-slice daemon) — a null pair here is NOT evidence of a mismatch, only of an old daemon;
+/// see RunCycleAsync for the correlation rule that decides whether Connected is even reached.
+public sealed record ConnectedIdentity(int? Pid, string? InstanceId, string DaemonName, string DaemonVersion);
+
 /// Typed events from LocalControlClient.RunAsync. BCL-only — this file is compiled into the
 /// NativeAOT CLI/daemon, so no Rx types may appear on this surface.
 public abstract record LocalControlEvent {
@@ -11,8 +17,12 @@ public abstract record LocalControlEvent {
 
     /// Carries the FIRST validated snapshot: a consumer that gates rendering on Connected can
     /// never observe the connected state while holding only a previous incarnation's data.
+    /// Identity is additive (AI-1655 Task 7) — null only if a caller builds this record without
+    /// going through RunCycleAsync; the client itself always populates it once it decides to
+    /// yield Connected at all (see the hello/snapshot correlation invariant there).
     public sealed record Connected(
-        IReadOnlyList<string>? Capabilities, DaemonStatusDto FirstSnapshot) : LocalControlEvent;
+        IReadOnlyList<string>? Capabilities, DaemonStatusDto FirstSnapshot,
+        ConnectedIdentity? Identity = null) : LocalControlEvent;
 
     /// Reason is "daemon_unreachable" (transport/unresponsive) or "daemon_incompatible"
     /// (protocol evidence — a heuristic that background retries self-correct). DaemonVersion is
@@ -67,11 +77,11 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
 
     /// One attach-cycle outcome: either a classified failure reason (with the hello reply's
     /// DaemonVersion, when one was read before the failure), or success carrying the negotiated
-    /// capabilities, the first validated snapshot, and the still-open subscribe stream for the
-    /// caller to keep reading from.
-    sealed record CycleOutcome(string? Reason, string? DaemonVersion, IReadOnlyList<string>? Capabilities, DaemonStatusDto? FirstSnapshot, NetworkStream? Stream) {
-        public static CycleOutcome Failed(string reason, string? daemonVersion = null) => new(reason, daemonVersion, null, null, null);
-        public static CycleOutcome Ok(IReadOnlyList<string> caps, DaemonStatusDto first, NetworkStream stream) => new(null, null, caps, first, stream);
+    /// capabilities, the first validated snapshot, the correlated hello identity, and the
+    /// still-open subscribe stream for the caller to keep reading from.
+    sealed record CycleOutcome(string? Reason, string? DaemonVersion, IReadOnlyList<string>? Capabilities, DaemonStatusDto? FirstSnapshot, NetworkStream? Stream, ConnectedIdentity? Identity) {
+        public static CycleOutcome Failed(string reason, string? daemonVersion = null) => new(reason, daemonVersion, null, null, null, null);
+        public static CycleOutcome Ok(IReadOnlyList<string> caps, DaemonStatusDto first, NetworkStream stream, ConnectedIdentity? identity) => new(null, null, caps, first, stream, identity);
     }
 
     public async IAsyncEnumerable<LocalControlEvent> RunAsync([EnumeratorCancellation] CancellationToken ct) {
@@ -127,7 +137,7 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
             // finally: enumerator disposal (break/Take(n)/DisposeAsync while suspended at a
             // yield below) must still release `sub` — code placed after the loop never runs.
             try {
-                yield return new LocalControlEvent.Connected(cycle.Capabilities, cycle.FirstSnapshot!);
+                yield return new LocalControlEvent.Connected(cycle.Capabilities, cycle.FirstSnapshot!, cycle.Identity);
 
                 while (true) {
                     var next = await ReadSnapshotAsync(sub, timeout: null, ct);
@@ -161,19 +171,20 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
     /// data so RunAsync owns every event-ordering decision at a single call site.
     async Task<CycleOutcome> RunCycleAsync(CancellationToken ct) {
         NetworkStream? sub = null;
-        string? daemonVersion = null; // captured from the hello reply, if one was ever read
+        string? daemonVersion = null;    // captured from the hello reply, if one was ever read
+        HelloReplyDto? hello = null;     // retained (not discarded) for identity correlation below
         try {
             IReadOnlyList<string> caps;
-            await using (var hello = await DialAsync(ct)) {
-                await FrameCodec.WriteAsync(hello, new LocalFrame(FrameType.Hello), ct);
+            await using (var helloConn = await DialAsync(ct)) {
+                await FrameCodec.WriteAsync(helloConn, new LocalFrame(FrameType.Hello), ct);
                 using var helloTimeoutCts = new CancellationTokenSource(HelloReplyTimeout, _time);
                 using var helloLinkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, helloTimeoutCts.Token);
-                var reply = await FrameCodec.ReadAsync(hello, helloLinkedCts.Token);
+                var reply = await FrameCodec.ReadAsync(helloConn, helloLinkedCts.Token);
                 if (reply is null) return CycleOutcome.Failed(Incompat);            // hello-then-EOF heuristic
                 if (reply.Type != FrameType.HelloReply) return CycleOutcome.Failed(Incompat); // Error/unexpected type
-                var dto = JsonSerializer.Deserialize(reply.Text, HelloIpcJsonContext.Default.HelloReplyDto);
-                daemonVersion = dto?.DaemonVersion;                                // captured BEFORE the caps gate
-                caps = dto?.Capabilities ?? [];                                    // null ⇒ empty
+                hello = JsonSerializer.Deserialize(reply.Text, HelloIpcJsonContext.Default.HelloReplyDto);
+                daemonVersion = hello?.DaemonVersion;                              // captured BEFORE the caps gate
+                caps = hello?.Capabilities ?? [];                                  // null ⇒ empty
                 if (!caps.Contains("status/1")) return CycleOutcome.Failed(Incompat, daemonVersion);
             }
 
@@ -185,7 +196,23 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
                 return CycleOutcome.Failed(r0, daemonVersion);
             }
 
-            return CycleOutcome.Ok(caps, first.Snapshot!, sub);
+            // Correlation invariant (AI-1655 Task 7): only when BOTH the hello reply and the
+            // first snapshot's daemon info carry pid AND instance_id, and those pairs disagree,
+            // is this classified daemon_incompatible — Connected must never be yielded on a
+            // mismatch. Either side lacking the fields (a pre-slice daemon on one leg) infers
+            // nothing: Identity is still populated from hello alone, so old daemons stay
+            // attachable and the consumer decides what an identity-less Connected means.
+            var daemonInfo = first.Snapshot!.Daemon;
+            if (hello?.Pid is { } helloPid && hello.InstanceId is { } helloInstance &&
+                    daemonInfo.Pid is { } snapshotPid && daemonInfo.InstanceId is { } snapshotInstance &&
+                    (helloPid != snapshotPid || helloInstance != snapshotInstance)) {
+                await DisposeQuietly(sub);
+                return CycleOutcome.Failed(Incompat, daemonVersion);
+            }
+
+            var identity = hello is null ? null
+                : new ConnectedIdentity(hello.Pid, hello.InstanceId, hello.DaemonName, hello.DaemonVersion);
+            return CycleOutcome.Ok(caps, first.Snapshot!, sub, identity);
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             await DisposeQuietly(sub);
             return CycleOutcome.Failed(Unreach); // reason is moot: RunAsync's ct checkpoint fires first
