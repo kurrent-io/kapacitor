@@ -117,20 +117,27 @@ public static partial class DaemonLockPaths {
     public static void EnsureDirectory() => System.IO.Directory.CreateDirectory(Directory);
 
     /// <summary>
-    /// Returns the daemon names visible on disk — the union of names
-    /// derived from <c>*.lock</c>, <c>*.pid</c>, <c>*.restart-pending</c>, and
-    /// <c>*.version</c> files. Used by <c>daemon doctor</c> to classify held vs
-    /// stale entries; covers orphan PID files that have no matching lock (e.g. a
-    /// legacy daemon whose migration ran for the PID file but not the start
-    /// lock, or a stop that removed the lock but left the PID behind) and
-    /// marker-only leftovers (a crash between queueing a restart and applying it,
-    /// or a version marker left after an unclean exit).
+    /// Returns the daemon names visible on disk — the union of names derived from the
+    /// STATE markers <c>*.pid</c>, <c>*.restart-pending</c>, and <c>*.version</c>. Used
+    /// by <c>daemon doctor</c> to classify held vs stale entries; covers orphan PID
+    /// files (e.g. a stop that removed the lock but left the PID behind) and marker-only
+    /// leftovers (a crash between queueing a restart and applying it, or a version
+    /// marker left after an unclean exit).
+    ///
+    /// <para>A lone <c>*.lock</c> is deliberately NOT a name source. The lock file is a
+    /// per-inode <c>flock</c> mutex, not a liveness marker: its mere presence never means
+    /// a daemon exists (a live daemon also writes <c>.pid</c> inside the flock during
+    /// startup, so it is always covered by the PID lane), and it cannot be safely deleted
+    /// — unlinking a held/free <c>flock</c> file lets a later <c>daemon start</c> create a
+    /// fresh inode at the same path and hold a SECOND independent flock, so <c>doctor
+    /// --clean</c> deliberately leaves it. If a lone lock counted as a name, a cleaned
+    /// entry (markers removed, inert lock left) would be re-listed forever — the exact bug
+    /// this exclusion fixes. Once its markers are gone the name simply stops appearing;
+    /// the inert lock lingers harmlessly and is reused by the next start of that name.</para>
     /// </summary>
     public static IReadOnlyList<string> EnumerateNames() {
         if (!System.IO.Directory.Exists(Directory)) return [];
 
-        var fromLocks = System.IO.Directory.EnumerateFiles(Directory, "*.lock")
-            .Select(Path.GetFileNameWithoutExtension);
         var fromPids  = System.IO.Directory.EnumerateFiles(Directory, "*.pid")
             .Select(Path.GetFileNameWithoutExtension);
         var fromMarkers = System.IO.Directory.EnumerateFiles(Directory, "*.restart-pending")
@@ -139,7 +146,7 @@ public static partial class DaemonLockPaths {
             .Select(Path.GetFileNameWithoutExtension);
 
         return [
-            .. fromLocks.Concat(fromPids).Concat(fromMarkers).Concat(fromVersions)
+            .. fromPids.Concat(fromMarkers).Concat(fromVersions)
                 .Where(n => !string.IsNullOrEmpty(n))
                 .Select(n => n!)
                 .Distinct()
