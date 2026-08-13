@@ -17,8 +17,8 @@ namespace Capacitor.Cli.Core.Kiro;
 /// </summary>
 public static class KiroPaths {
     /// <summary>Kiro's config root (<c>~/.kiro</c>). Relocated by <c>KIRO_HOME</c>.</summary>
-    public static string ConfigRoot(string? home = null) {
-        var kiroHome = Environment.GetEnvironmentVariable("KIRO_HOME");
+    public static string ConfigRoot(string? home = null, string? kiroHome = null) {
+        kiroHome ??= Environment.GetEnvironmentVariable("KIRO_HOME");
         if (!string.IsNullOrEmpty(kiroHome)) return kiroHome;
 
         home ??= PathHelpers.HomeDirectory;
@@ -75,5 +75,6 @@ public static class KiroPaths {
     /// <c>kiro-cli</c>) is also probed by callers via <c>AgentDetector.IsInstalled</c>;
     /// OR the two for the widest coverage.
     /// </summary>
-    public static bool IsInstalled(string? home = null) => Directory.Exists(ConfigRoot(home));
+    public static bool IsInstalled(string? home = null, string? kiroHome = null) =>
+        Directory.Exists(ConfigRoot(home, kiroHome));
 }
