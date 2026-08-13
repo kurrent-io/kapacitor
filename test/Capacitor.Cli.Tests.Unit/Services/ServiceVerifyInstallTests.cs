@@ -643,6 +643,116 @@ public class ServiceVerifyInstallTests {
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 
+    /// <summary>Task 17 (AI-1655): the gated viability arm's digest check fires alongside the
+    /// existing missing-sibling/unusable-profile checks — BEFORE anything on disk is touched (no
+    /// query, no marker) — and reports exactly one stderr line naming the reason, not the generic
+    /// verify_viability token.</summary>
+    [Test, NotInParallel]
+    public async Task Gated_install_with_bad_binary_digest_aborts_viability_with_reason_line() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        var originalErr = Console.Error;
+        var capturedErr = new StringWriter();
+        try {
+            Console.SetError(capturedErr);
+
+            var manager = new FakeServiceManager();
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: OwnPlist,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                digestMatches: _ => false); // viability digest check fails
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
+            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            await Assert.That(lines).IsEquivalentTo(["viability_reason=package_inconsistent"]);
+            await Assert.That(manager.Calls).IsEmpty();
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally {
+            Console.SetError(originalErr);
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        }
+    }
+
+    /// <summary>Task 17: the pre-bootstrap TOCTOU recheck. Viability's digest check passes (call 1)
+    /// but the recheck immediately before WriteAndBootstrap fails (call 2) — the transaction must
+    /// roll back through the existing InstallRollback machinery to exit 29 without ever calling
+    /// WriteAndBootstrap, leaving no unit on disk.</summary>
+    [Test]
+    public async Task Gated_install_digest_drift_before_bootstrap_rolls_back_with_29() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            var manager = new FakeServiceManager();
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+
+            var digestCalls = 0;
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: OwnPlist,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                digestMatches: _ => Interlocked.Increment(ref digestCalls) == 1); // pass viability, fail pre-bootstrap
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.StartGateDrift);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+            // install's verified-safe failure state: no unit on disk — InstallRollback's own
+            // uninstall ran and confirmed absent, same machinery every other install rollback uses.
+            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    /// <summary>Task 17 happy path: a gated install whose digest passes at every checkpoint (viability,
+    /// pre-bootstrap, post-readiness) must still commit exactly like the ungated path.</summary>
+    [Test]
+    public async Task Gated_install_with_passing_digest_throughout_still_commits() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            var manager = new FakeServiceManager();
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: OwnPlist,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                digestMatches: _ => true);
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    /// <summary>Task 17: the gate is truly INACTIVE without the invoking env's consent-seed
+    /// directive — a digestMatches that always fails must have zero effect when no gateEnv seam is
+    /// wired at all, matching how a plain `kcap daemon service install --verify` from a terminal
+    /// behaves before this task.</summary>
+    [Test]
+    public async Task Ungated_install_with_failing_digest_still_commits_gate_truly_inactive() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        try {
+            var manager = new FakeServiceManager();
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: OwnPlist,
+                digestMatches: _ => false); // no gateEnv wired at all — must never be consulted
+
+            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
     [Test]
     public async Task Rollback_uninstalls_when_the_plist_is_genuinely_absent() {
         var (dir, daemonPath) = SetUpViableInstall();

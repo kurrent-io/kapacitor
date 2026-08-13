@@ -461,6 +461,15 @@ sealed class ServiceVerify(
         return VerifyExit.RestoreVerification;
     }
 
+    /// <summary>Task 17 (AI-1655) seam: the gated install/replace path's digest recheck, shared by
+    /// the viability arm and both TOCTOU rechecks below. An exception hashing the binary (a race
+    /// with a package manager mid-replace, a permissions error) is treated as failure — Task 16's
+    /// unreadable-evidence-at-a-recheck-is-drift precedent — never let it escape uncaught.</summary>
+    bool DigestStillGood(string binaryPath) {
+        try { return _digestMatches(binaryPath); }
+        catch { return false; }
+    }
+
     enum InstallReady { NotReady, Ready, VersionMismatch }
 
     /// <summary>install [--replace] --verify. <paramref name="replace"/> selects the ownership matrix
@@ -476,6 +485,12 @@ sealed class ServiceVerify(
             return VerifyExit.Contended;
         }
 
+        // Task 17 (AI-1655): gated ONLY when the invoking launcher itself carries the consent-seed
+        // directive — a bare `kcap daemon service install/replace --verify` typed at a terminal
+        // never sees any of this task's checks. Computed once, up front, so the viability arm and
+        // both rechecks below share one activation decision (mirrors StartVerifiedAsync's `gated`).
+        var gated = _gateEnv is not null && !string.IsNullOrEmpty(_gateEnv(ConsentSeedVar));
+
         // Viability is proven BEFORE any destructive step (recovery, marker, bootout, kill) so
         // VerifyExit.Viability's "nothing is touched" contract holds even for --replace: a missing
         // binary, an invalid pinned-profile URL, or a plist that cannot be rendered (e.g. an
@@ -487,6 +502,15 @@ sealed class ServiceVerify(
 
         if (!_profileViable()) {
             Say(VerifyExit.ViabilityToken);
+            return VerifyExit.Viability;
+        }
+
+        // Task 17: the binary about to be installed must still hash-match this CLI build's own
+        // embedded digest — same "package_inconsistent" failure mode the gated start path already
+        // reports, but here it's a viability abort (nothing written yet, no marker) rather than a
+        // rollback. One stderr line naming the reason; no separate generic viability token.
+        if (gated && !DigestStillGood(spec.DaemonBinaryPath)) {
+            Say($"viability_reason={GateReasonToken(StartGateReason.PackageInconsistent)}");
             return VerifyExit.Viability;
         }
 
@@ -539,6 +563,14 @@ sealed class ServiceVerify(
 
         ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "written", preState, "no-unit", fingerprint));
 
+        // Task 17: TOCTOU re-check immediately before the mutation viability's digest check
+        // authorized — the same binary content could have been swapped (a foreign writer, a broken
+        // mid-upgrade package) in the window between that check and this bootstrap. Drift here rolls
+        // back through the SAME fingerprint-gated machinery a bootstrap throw does, just with the
+        // gate's own exit code/token instead of ReadinessTimeout's.
+        if (gated && !DigestStillGood(spec.DaemonBinaryPath))
+            return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.StartGateDrift, VerifyExit.StartGateDriftToken);
+
         try {
             manager.WriteAndBootstrap(spec, Remaining(forward));
         } catch (Exception ex) {
@@ -568,6 +600,13 @@ sealed class ServiceVerify(
                     // old CLI can overwrite it under a healthy job, and a PID check would miss that.
                     var onDisk = _readPlist(generated.Path);
                     if (onDisk is not null && ServiceTxnMarker.Fingerprint(onDisk) == fingerprint) {
+                        // Task 17: the final gated recheck, joined onto this existing on-disk
+                        // recheck rather than a separate poll step — catches a binary swap that
+                        // landed AFTER bootstrap started the job (the pre-bootstrap recheck only
+                        // covers the window up to that point).
+                        if (gated && !DigestStillGood(spec.DaemonBinaryPath))
+                            return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.StartGateDrift, VerifyExit.StartGateDriftToken);
+
                         ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "committed", preState, "no-unit", fingerprint));
                         onCommitted?.Invoke();
                         ServiceTxnMarker.Delete(serviceId);
