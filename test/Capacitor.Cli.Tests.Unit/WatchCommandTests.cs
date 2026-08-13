@@ -350,16 +350,6 @@ public class WatchCommandTests {
     }
 
     [Test]
-    public async Task ShouldEndOnIdle_false_for_subagent_watcher() {
-        var should = WatchCommand.ShouldEndOnIdle(
-            vendor: "codex", isSessionWatcher: false, thresholdReached: true,
-            lastActivityAt: IdleNow - TimeSpan.FromMinutes(61), now: IdleNow, idleTimeout: IdleWindow,
-            toolInFlight: false);
-
-        await Assert.That(should).IsFalse();
-    }
-
-    [Test]
     public async Task ShouldEndOnIdle_false_below_threshold() {
         var should = WatchCommand.ShouldEndOnIdle(
             vendor: "codex", isSessionWatcher: true, thresholdReached: false,
@@ -430,18 +420,16 @@ public class WatchCommandTests {
             lastActivityAt: now.AddMinutes(-5), now: now, idleTimeout: TimeSpan.FromMinutes(60))).IsFalse();
     }
 
-    // Regression guard: the child-watcher exemption from the threshold gate is Cursor-specific —
-    // a non-session (subagent) watcher for every other idle-ceiling vendor (codex/antigravity)
-    // must stay ineligible, exactly as before this fix.
+    // Regression guard: Antigravity spawns no child watchers at all, so a non-session watcher
+    // carrying that vendor is a misconfiguration — it must stay ineligible rather than reap
+    // anything. (Codex children joined the ceiling in the #550 fix; Claude/Cursor were already in.)
     [Test]
-    [Arguments("codex")]
-    [Arguments("antigravity")]
-    public async Task NonCursor_child_watcher_stays_ineligible_for_the_idle_ceiling(string vendor) {
+    public async Task Antigravity_child_watcher_stays_ineligible_for_the_idle_ceiling() {
         var now  = DateTimeOffset.UtcNow;
         var idle = now.AddMinutes(-61);
 
         await Assert.That(WatchCommand.ShouldEndOnIdle(
-            vendor: vendor, isSessionWatcher: false, thresholdReached: true,
+            vendor: "antigravity", isSessionWatcher: false, thresholdReached: true,
             lastActivityAt: idle, now: now, idleTimeout: TimeSpan.FromMinutes(60))).IsFalse();
     }
 
@@ -543,6 +531,7 @@ public class WatchCommandTests {
     // Codex knob, and vice versa.
     [Test]
     [Arguments("codex",       true,  "KCAP_CODEX_IDLE_MINUTES",           "15", 15)]
+    [Arguments("codex",       false, "KCAP_CODEX_SUBAGENT_REAP_MINUTES",  "45", 45)]
     [Arguments("antigravity", true,  "KCAP_ANTIGRAVITY_IDLE_MINUTES",     "20", 20)]
     [Arguments("cursor",      true,  "KCAP_CURSOR_IDLE_CEILING_MINUTES",  "25", 25)]
     [Arguments("claude",      false, "KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES", "30", 30)]
@@ -565,6 +554,92 @@ public class WatchCommandTests {
         var result = WatchCommand.ResolveClaudeSubagentIdleCeiling(env);
 
         await Assert.That(result).IsEqualTo(TimeSpan.FromMinutes(expectedMinutes));
+    }
+
+    // A Codex collab CHILD watcher had NO exit path at all (#550): excluded from the idle
+    // ceiling on the assumption the parent's session-end teardown finalizes it (that teardown is
+    // server-side records only), spawned without --parent-pid (the spawning parent session
+    // watcher's ancestry has no codex process to resolve), and never sent StopWatcher. Observed:
+    // 16 children from one session still alive two days after the parent exited. Children join
+    // the ceiling as a leak backstop; like Claude's, they never buffer, so the threshold gate
+    // cannot apply.
+    [Test]
+    public async Task Codex_child_watcher_is_idle_ceiling_eligible_without_threshold_reached() {
+        var now = DateTimeOffset.UtcNow;
+
+        await Assert.That(WatchCommand.ShouldEndOnIdle(
+            vendor: "codex", isSessionWatcher: false, thresholdReached: false,
+            lastActivityAt: now - (TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1)), now: now,
+            idleTimeout: TimeSpan.FromHours(6))).IsTrue();
+
+        // Not yet idle — still false.
+        await Assert.That(WatchCommand.ShouldEndOnIdle(
+            vendor: "codex", isSessionWatcher: false, thresholdReached: false,
+            lastActivityAt: now.AddMinutes(-5), now: now, idleTimeout: TimeSpan.FromHours(6))).IsFalse();
+    }
+
+    // Same safety property as the Claude child ceiling: a subagent running a long tool call
+    // writes nothing to its rollout between the call and its output record, so rollout silence
+    // alone must never reap it.
+    [Test]
+    public async Task Codex_child_watcher_never_idle_exits_while_a_tool_is_in_flight() {
+        var now = DateTimeOffset.UtcNow;
+
+        await Assert.That(WatchCommand.ShouldEndOnIdle(
+            vendor: "codex", isSessionWatcher: false, thresholdReached: false,
+            lastActivityAt: now.AddHours(-12), now: now, idleTimeout: TimeSpan.FromHours(6),
+            toolInFlight: true)).IsFalse();
+    }
+
+    // The ceiling only reaps anything if RunWatch hands a Codex CHILD watcher the reap ceiling
+    // rather than the 60-minute session window — reaping a quiet-but-live subagent at 60 minutes
+    // would drop the rest of its transcript.
+    [Test]
+    public async Task ResolveIdleWindow_gives_codex_child_watchers_the_reap_ceiling() {
+        var window = WatchCommand.ResolveIdleWindow("codex", isSessionWatcher: false, _ => null);
+
+        await Assert.That(window).IsEqualTo(WatchCommand.DefaultCodexSubagentReapCeiling);
+    }
+
+    // KCAP_CODEX_SUBAGENT_IDLE_MINUTES is already taken by the subagent-stop grace, so the reap
+    // ceiling gets its own knob.
+    [Test]
+    [Arguments(null, 360)]    // unset → default 6h
+    [Arguments("abc", 360)]   // non-numeric → default
+    [Arguments("0", 360)]     // non-positive → default
+    [Arguments("45", 45)]     // valid override
+    public async Task ResolveCodexSubagentReapCeiling_parses_env_with_default(string? env, int expectedMinutes) {
+        var result = WatchCommand.ResolveCodexSubagentReapCeiling(env);
+
+        await Assert.That(result).IsEqualTo(TimeSpan.FromMinutes(expectedMinutes));
+    }
+
+    // #550 companion: with children joining the reap ceiling, ScanCodexSubagents' first-sight-only
+    // gate became a content-loss hazard — a ceiling-reaped child whose subagent re-engages would
+    // grow its rollout with nobody watching for the rest of the parent's life. The scan therefore
+    // re-ensures the child watcher whenever the rollout's mtime advances; this pure gate decides
+    // when, recording the mtime it fired for so an unchanged rollout stays quiet.
+    [Test]
+    public async Task ChildRolloutAdvanced_fires_on_first_sight_and_then_only_on_mtime_change() {
+        var mtimes = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+        var t0     = new DateTime(2026, 8, 13, 12, 0, 0, DateTimeKind.Utc);
+
+        await Assert.That(WatchCommand.ChildRolloutAdvanced(mtimes, "/a.jsonl", t0)).IsTrue();
+        await Assert.That(WatchCommand.ChildRolloutAdvanced(mtimes, "/a.jsonl", t0)).IsFalse();
+        await Assert.That(WatchCommand.ChildRolloutAdvanced(mtimes, "/a.jsonl", t0.AddSeconds(1))).IsTrue();
+        await Assert.That(WatchCommand.ChildRolloutAdvanced(mtimes, "/a.jsonl", t0.AddSeconds(1))).IsFalse();
+    }
+
+    // Distinct rollouts are tracked independently — one child's growth must not re-ensure another.
+    [Test]
+    public async Task ChildRolloutAdvanced_tracks_each_rollout_independently() {
+        var mtimes = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+        var t0     = new DateTime(2026, 8, 13, 12, 0, 0, DateTimeKind.Utc);
+
+        await Assert.That(WatchCommand.ChildRolloutAdvanced(mtimes, "/a.jsonl", t0)).IsTrue();
+        await Assert.That(WatchCommand.ChildRolloutAdvanced(mtimes, "/b.jsonl", t0)).IsTrue();
+        await Assert.That(WatchCommand.ChildRolloutAdvanced(mtimes, "/a.jsonl", t0.AddSeconds(5))).IsTrue();
+        await Assert.That(WatchCommand.ChildRolloutAdvanced(mtimes, "/b.jsonl", t0)).IsFalse();
     }
 
     // ResolveCursorIdleClock: the idle clock is the LATER of transcript

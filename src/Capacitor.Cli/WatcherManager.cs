@@ -284,6 +284,17 @@ static class WatcherManager {
         }
     }
 
+    /// <summary>
+    /// Kills every watcher in <paramref name="keys"/> concurrently (#550): a session watcher
+    /// stops the child watchers it spawned on its own way out — children have no parent-pid
+    /// watchdog (their spawner's ancestry contains no coding agent) and the server's StopWatcher
+    /// only reaches the session watcher's connection, so the parent's teardown is the only thing
+    /// that knows they exist. <see cref="KillWatcher"/>'s SIGTERM gives each child its final
+    /// drain, and its per-child 5s force-kill bound keeps a wedged child from stalling the
+    /// parent's own exit.
+    /// </summary>
+    public static Task KillWatchers(IEnumerable<string> keys) => Task.WhenAll(keys.Select(KillWatcher));
+
     /// <summary>PID-only liveness: the process exists, irrespective of whether it's wedged.</summary>
     static bool PidAlive(string key) {
         var pidFile = GetPidFilePath(key);

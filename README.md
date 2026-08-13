@@ -1452,6 +1452,7 @@ verbatim, exactly like every other agent, with no Cursor/ACP-specific redaction.
 |----------------------|---------|-------------|
 | `KCAP_CODEX_IDLE_MINUTES` | `60` | How long a Codex rollout file may be idle (no new rollout lines and no Codex tool call in flight) before the `kcap watch` background watcher ends the session (`reason: idle_timeout`). Increase for very long thinking/compute turns; decrease for faster cleanup of abandoned sessions. Invalid or non-positive values fall back to the 60-minute default. |
 | `KCAP_CODEX_SUBAGENT_IDLE_MINUTES` | `5` | Idle grace between a Codex collab subagent finishing its turn (its rollout's `task_complete`, no tool call in flight) and the child watcher marking it completed on the server, so the subagent's chat card stops showing "in progress" while the parent session keeps running. The grace absorbs quick same-round re-engagements by the parent; `0` marks completion immediately at turn end. The completion is one-shot — a subagent the parent re-engages after the grace keeps streaming into its transcript but stays marked completed. Invalid or negative values fall back to the 5-minute default. |
+| `KCAP_CODEX_SUBAGENT_REAP_MINUTES` | `360` | How long a Codex collab **subagent** watcher may go idle before it reaps itself (see below). Applies only to subagent watchers — the parent session watcher's idle behavior is tuned by `KCAP_CODEX_IDLE_MINUTES`. Deliberately generous (6h): this is a leak backstop, not an end-of-conversation signal. A subagent with a tool call still in flight is never reaped. Invalid or non-positive values fall back to 360 minutes. |
 | `KCAP_PARENT_DEAD_CEILING_MINUTES` | `360` | Staged recovery ceiling for a watcher whose parent coding-agent PID was already dead at startup (a resolution glitch) and can't be re-resolved. The watcher first periodically re-resolves and re-arms the parent-exit watchdog; only if that keeps failing AND the transcript makes no progress for this long does it post `session-end` (`reason: parent_dead_ceiling`). Deliberately far above the idle timeout so a user parked at a Kiro/OpenCode prompt is never ended prematurely. Invalid or non-positive values fall back to 360 minutes (6h). |
 | `KCAP_CURSOR_IDLE_CEILING_MINUTES` | `60` | How long a Cursor session's transcript watcher may go idle before it exits (AI-1382). Unlike Codex/Antigravity, this exit does NOT itself POST `session-end` — Cursor's end-of-session synthesis stays owned by the `sessionEnd` hook or, as a backstop, a server-side lease-gated sweep; the next hook for that session reactivates a fresh watcher. Invalid or non-positive values fall back to the 60-minute default. |
 | `KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES` | `360` | How long a Claude **subagent** watcher may go idle before it reaps itself (see below). Applies only to subagent watchers — a Claude *session* watcher has no idle ceiling and is unaffected. Deliberately generous (6h): this is a leak backstop, not an end-of-conversation signal. Invalid or non-positive values fall back to 360 minutes. |
@@ -1464,6 +1465,17 @@ life of the session (issue #514). Subagent watchers now also self-reap after
 (a `tool_use` with no matching `tool_result`) is never reaped no matter how long it is quiet, so a
 long build or test run cannot be cut short. Like Cursor's ceiling, this exit posts no
 `session-end` — a subagent watcher never owned that.
+
+**Codex subagent watcher reaping.** Codex collab subagent watchers had no exit path at all (issue
+#550): they relied on the parent session watcher's teardown, which finalized their server-side
+records but never stopped the local processes — so each collab subagent leaked one watcher process
+that reconnected to the server indefinitely. The parent session watcher now stops every child
+watcher it spawned as part of its own exit (each child gets a SIGTERM and runs its final drain),
+and as a backstop for a hard-killed parent, a Codex subagent watcher self-reaps after
+`KCAP_CODEX_SUBAGENT_REAP_MINUTES` of rollout silence. A reaped subagent that the parent later
+re-engages is respawned by the parent's rollout scan as soon as its rollout grows again, resuming
+from the server's frontier so no content is lost. Like the Claude ceiling, the reap exit posts no
+`session-end`.
 
 ### Hosted Pi agents
 

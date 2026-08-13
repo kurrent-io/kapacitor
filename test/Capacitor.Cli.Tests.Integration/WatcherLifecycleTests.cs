@@ -61,4 +61,31 @@ public class WatcherLifecycleTests {
             File.Delete(transcriptPath);
         }
     }
+
+    // #550: a session watcher must stop the child watchers it spawned on its own way out — they
+    // have no parent-pid watchdog and the server's StopWatcher only reaches the session watcher's
+    // connection, so the parent's teardown is the only thing that knows they exist. One live and
+    // one already-dead child in the same batch: both pid files must be gone afterwards (the dead
+    // entry is swept, never an error that aborts the batch).
+    [Test]
+    public async Task KillWatchers_stops_every_tracked_child_and_clears_their_pid_files() {
+        var (liveKey, liveTranscript, livePidFile) = SetUpWatcher();
+        var (deadKey, deadTranscript, deadPidFile) = SetUpWatcher();
+
+        try {
+            await Cli.WatcherManager.SpawnWatcher("http://localhost:0", liveKey, liveTranscript, agentId: null);
+            await AssertPidFileValid(livePidFile);
+
+            // A pid that cannot belong to a live process — exercises the already-exited sweep arm.
+            await File.WriteAllTextAsync(deadPidFile, "99999999");
+
+            await Cli.WatcherManager.KillWatchers([liveKey, deadKey]);
+
+            await Assert.That(File.Exists(livePidFile)).IsFalse();
+            await Assert.That(File.Exists(deadPidFile)).IsFalse();
+        } finally {
+            File.Delete(liveTranscript);
+            File.Delete(deadTranscript);
+        }
+    }
 }
