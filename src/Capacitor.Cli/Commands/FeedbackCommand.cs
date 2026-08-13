@@ -19,9 +19,8 @@ namespace Capacitor.Cli.Commands;
 /// </summary>
 public static class FeedbackCommand {
     /// <summary>
-    /// The pinned success line (spec: no reply promise — a later revision may add one, but this
-    /// exact string is what ships first). Printed to stdout so <c>kcap feedback ... | ...</c> can
-    /// capture it; everything else in this command writes to stderr.
+    /// The pinned success line (post-spike variant: promises email replies). Printed to stdout so
+    /// <c>kcap feedback ... | ...</c> can capture it; everything else in this command writes to stderr.
     /// </summary>
     internal const string SuccessPrefix = "✓ Sent to Kurrent support as ";
 
@@ -119,7 +118,7 @@ public static class FeedbackCommand {
     static async Task<int> ReportResultAsync(HttpResponseMessage resp) {
         if (resp.StatusCode == HttpStatusCode.OK) {
             var success = await resp.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.FeedbackSubmitResponse);
-            await Console.Out.WriteLineAsync($"{SuccessPrefix}{success?.ReporterEmail ?? ""}");
+            await Console.Out.WriteLineAsync($"{SuccessPrefix}{success?.ReporterEmail ?? ""} — replies will reach you by email.");
 
             return 0;
         }

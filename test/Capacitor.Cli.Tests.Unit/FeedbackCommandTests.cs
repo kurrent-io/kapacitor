@@ -135,7 +135,7 @@ public class FeedbackCommandTests : IDisposable {
 
         await Assert.That(exitCode).IsEqualTo(0);
         await Assert.That(stderr).Contains("What's going on? (end with an empty line)");
-        await Assert.That(stdout.Trim()).IsEqualTo("✓ Sent to Kurrent support as someone@example.com");
+        await Assert.That(stdout.Trim()).IsEqualTo("✓ Sent to Kurrent support as someone@example.com — replies will reach you by email.");
 
         var hit = _server.LogEntries.Single(e => e.RequestMessage.Path == "/api/feedback");
         using var doc = JsonDocument.Parse(hit.RequestMessage.Body!);
@@ -235,8 +235,8 @@ public class FeedbackCommandTests : IDisposable {
             FeedbackCommand.HandleCore(client, _server.Urls[0], "bug", "hi"));
 
         await Assert.That(exitCode).IsEqualTo(0);
-        // Byte-exact: the pinned string, including the checkmark glyph, with no reply promise.
-        await Assert.That(stdout.Trim()).IsEqualTo("✓ Sent to Kurrent support as alice@example.com");
+        // Byte-exact: the pinned string, including the checkmark glyph, with the reply promise.
+        await Assert.That(stdout.Trim()).IsEqualTo("✓ Sent to Kurrent support as alice@example.com — replies will reach you by email.");
     }
 
     [Test, NotInParallel]
