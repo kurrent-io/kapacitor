@@ -239,14 +239,6 @@ jobs:
         shell: bash
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Publish CLI AOT binary
-        run: >
-          dotnet publish ${{ env.CLI_PROJECT }}
-          -c Release
-          -r ${{ matrix.rid }}
-          -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }}
-          -o publish/cli/
-
       - name: Publish daemon AOT binary
         run: >
           dotnet publish ${{ env.DAEMON_PROJECT }}
@@ -254,6 +246,23 @@ jobs:
           -r ${{ matrix.rid }}
           -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }}
           -o publish/daemon/
+
+      # AI-1653: when signing lands, sign the daemon BEFORE this step (signing changes the bytes).
+      - name: Compute daemon digest
+        id: daemon-digest
+        shell: bash
+        run: |
+          BIN=publish/daemon/${{ matrix.daemon-binary }}
+          echo "DIGEST=$(openssl dgst -sha256 -r "$BIN" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish CLI AOT binary
+        run: >
+          dotnet publish ${{ env.CLI_PROJECT }}
+          -c Release
+          -r ${{ matrix.rid }}
+          -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }}
+          -p:KcapDaemonDigest=${{ steps.daemon-digest.outputs.DIGEST }}
+          -o publish/cli/
 
       # The daemon's UnixPtyInterop hard-imports libpty_shim on every non-win-x64 RID (macOS
       # ARM64's variadic-ioctl workaround, and every Linux RID's containment shim as of L1-build).
@@ -424,6 +433,19 @@ jobs:
               cp "publish/daemon/libpty_shim.$ext" npm/${{ matrix.npm-package }}/bin/
             fi
           done
+
+      # Guards against the CLI shipping with an embedded digest that doesn't match the daemon
+      # binary actually packaged next to it (e.g. a re-run that repackaged a stale/different
+      # daemon build) — the archive below copies the same bytes, so one assertion here covers
+      # both.
+      - name: Assert packaged daemon matches embedded digest
+        shell: bash
+        run: |
+          PACKED=npm/${{ matrix.npm-package }}/bin/${{ matrix.daemon-binary }}
+          ACTUAL=$(openssl dgst -sha256 -r "$PACKED" | cut -d' ' -f1)
+          if [ "$ACTUAL" != "${{ steps.daemon-digest.outputs.DIGEST }}" ]; then
+            echo "::error::packaged daemon digest mismatch"; exit 1
+          fi
 
       - name: Create release archive
         shell: bash

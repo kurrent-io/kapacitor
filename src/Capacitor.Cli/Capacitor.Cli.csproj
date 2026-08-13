@@ -47,4 +47,41 @@
         <LinkerArg Condition="Exists('/usr/local/opt/openssl@3/lib')" Include="-L/usr/local/opt/openssl@3/lib" />
         <LinkerArg Condition="Exists('/usr/local/opt/brotli/lib')" Include="-L/usr/local/opt/brotli/lib" />
     </ItemGroup>
+
+    <!--
+      Embeds the daemon binary's SHA-256 as a compile-time constant (Capacitor.Cli.DaemonDigest,
+      backed by the GeneratedDigest.Value below) so the CLI can verify it's running alongside the
+      daemon it was released with. Invariant: -p:KcapDaemonDigest=<hex> wins (release passes the
+      digest of the daemon it just published); else -p:KcapDaemonArtifact=<path-to-daemon-binary>
+      is hashed (dev convenience, e.g. a local co-build); else the 64-zeros placeholder, which
+      DaemonDigest treats as unusable and fails every match closed. The KcapDaemonArtifact arm is
+      only attempted when no explicit digest was given, so an explicit digest can never be
+      silently overwritten by a stale/irrelevant local artifact.
+    -->
+    <Target Name="GenerateDaemonDigest" BeforeTargets="CoreCompile">
+        <ItemGroup Condition="'$(KcapDaemonDigest)' == '' And '$(KcapDaemonArtifact)' != '' And Exists('$(KcapDaemonArtifact)')">
+            <KcapDaemonArtifactFile Include="$(KcapDaemonArtifact)" />
+        </ItemGroup>
+
+        <GetFileHash Files="@(KcapDaemonArtifactFile)" Algorithm="SHA256" HashEncoding="hex" Condition="'@(KcapDaemonArtifactFile)' != ''">
+            <Output TaskParameter="Items" ItemName="KcapDaemonArtifactHashed" />
+        </GetFileHash>
+
+        <PropertyGroup>
+            <KcapDaemonDigestValue Condition="'$(KcapDaemonDigest)' != ''">$(KcapDaemonDigest)</KcapDaemonDigestValue>
+            <KcapDaemonDigestValue Condition="'$(KcapDaemonDigestValue)' == '' And '@(KcapDaemonArtifactHashed)' != ''">$([System.String]::Copy('%(KcapDaemonArtifactHashed.FileHash)').ToLowerInvariant())</KcapDaemonDigestValue>
+            <KcapDaemonDigestValue Condition="'$(KcapDaemonDigestValue)' == ''">0000000000000000000000000000000000000000000000000000000000000000</KcapDaemonDigestValue>
+            <KcapDigestFile>$(IntermediateOutputPath)DaemonDigest.g.cs</KcapDigestFile>
+        </PropertyGroup>
+
+        <!-- WriteOnlyWhenDifferent: a no-op rebuild (same digest input) must not touch the
+             generated file's mtime, or every subsequent build would see a changed Compile input
+             and re-run CoreCompile unnecessarily. -->
+        <WriteLinesToFile File="$(KcapDigestFile)" Overwrite="true" WriteOnlyWhenDifferent="true"
+            Lines="namespace Capacitor.Cli%3B internal static class GeneratedDigest { public const string Value = &quot;$(KcapDaemonDigestValue)&quot;%3B }" />
+
+        <ItemGroup>
+            <Compile Include="$(KcapDigestFile)" />
+        </ItemGroup>
+    </Target>
 </Project>
