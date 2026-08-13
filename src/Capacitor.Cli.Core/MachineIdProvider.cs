@@ -10,8 +10,9 @@ public static class MachineIdProvider {
         var config = await AppConfig.LoadProfileConfig(ct);
         if (!string.IsNullOrWhiteSpace(config.MachineId)) return config.MachineId;
 
-        var id = Generate();
-        await AppConfig.SaveProfileConfig(config with { MachineId = id }, ct);
-        return id;
+        var newId  = Generate();
+        var result = await ConfigMutator.MutateAsync(
+            c => c.MachineId is null ? c with { MachineId = newId } : c, ct);
+        return result.MachineId!;
     }
 }

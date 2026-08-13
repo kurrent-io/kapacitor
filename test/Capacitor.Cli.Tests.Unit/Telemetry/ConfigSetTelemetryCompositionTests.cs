@@ -77,7 +77,7 @@ public class ConfigSetTelemetryCompositionTests {
                 ["default"] = new Profile { ServerUrl = "https://sentinel.invalid" }
             }
         };
-        await AppConfig.SaveProfileConfig(seeded);
+        await ConfigMutator.MutateAsync(_ => seeded);
         var before = await File.ReadAllTextAsync(ConfigPath);
 
         var exit = await ConfigCommand.HandleAsync(["config", "set", "telemetry", "off"]);

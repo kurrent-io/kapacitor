@@ -327,7 +327,7 @@ public class TokenServerBindingTests {
         var profiles = new Dictionary<string, Profile> { [active] = new() { ServerUrl = Server } };
         if (extraProfile is not null) profiles[extraProfile] = new() { ServerUrl = Server };
 
-        await AppConfig.SaveProfileConfig(new ProfileConfig { ActiveProfile = active, Profiles = profiles });
+        await ConfigMutator.MutateAsync(_ => new ProfileConfig { ActiveProfile = active, Profiles = profiles });
     }
 
     static async Task WriteLegacyAsync(StoredTokens tokens) {

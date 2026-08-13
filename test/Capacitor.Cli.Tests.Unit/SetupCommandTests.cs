@@ -183,7 +183,7 @@ public class SetupCommandTests {
                 ["acme"] = new() { ServerUrl = "https://a.example", DefaultVisibility = "org_public" }
             }
         };
-        await AppConfig.SaveProfileConfig(cfg);
+        await ConfigMutator.MutateAsync(_ => cfg);
 
         var reloaded = await AppConfig.LoadProfileConfig();
         await Assert.That(reloaded.ActiveProfile).IsEqualTo("acme");

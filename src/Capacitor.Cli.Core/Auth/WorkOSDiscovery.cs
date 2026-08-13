@@ -179,9 +179,7 @@ public static class WorkOSDiscovery {
 
         var username = OAuthLoginFlow.WorkOSDisplayName(auth.User);
 
-        var cfg = await AppConfig.LoadProfileConfig();
-        cfg = TenantDiscovery.MergeProfiles(cfg, tenants, picked);
-        await AppConfig.SaveProfileConfig(cfg);
+        await ConfigMutator.MutateAsync(c => TenantDiscovery.MergeProfiles(c, tenants, picked));
 
         await TokenStore.SaveAsync(
             picked.ProfileName,
