@@ -40,8 +40,21 @@ public static class CliTelemetry {
         _shared = new JsonObject(); Enabled = false; TestSink = null;
     }
 
-    public static void Initialize(string command, string? serverUrl, bool loggedIn) {
+    /// The app-spawned-child marker (spec decision 9): consumed for telemetry suppression and
+    /// REMOVED from the process environment before command dispatch, so nothing this process
+    /// spawns (a detached daemon, hosted children) can observe it. Never touches the user's own
+    /// KCAP_TELEMETRY choice.
+    public const string SpawnNoTelemetryVar = "KCAP_APP_SPAWN_NO_TELEMETRY";
+
+    public static bool ConsumeSpawnMarker(Func<string, string?> get, Action<string> clear) {
+        if (string.IsNullOrEmpty(get(SpawnNoTelemetryVar))) return false;
+        clear(SpawnNoTelemetryVar);
+        return true;
+    }
+
+    public static void Initialize(string command, string? serverUrl, bool loggedIn, bool suppressed = false) {
         try {
+            if (suppressed) return; // app-spawned child: no notice, no device id, no events, _client stays null
             Enabled = TelemetrySettings.Resolve(TelemetryState.PersistedEnabled()).Enabled
                    && CommandEvents.IsReportable(command);
             if (!Enabled) return;

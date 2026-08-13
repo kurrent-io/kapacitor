@@ -112,7 +112,14 @@ if (args.Length >= 4 && command == "config" && args[1] == "set" && args[2] == "t
     TelemetryState.SetEnabled(false);
 }
 
-CliTelemetry.Initialize(command, baseUrl, loggedIn);
+// spec decision 9: an app-spawned CLI child must not emit CLI-labeled telemetry nor consume
+// the one-time privacy notice on an invisible stderr. Consume-and-REMOVE before dispatch so
+// no grandchild (detached daemon, hosted agents) can observe the marker.
+var telemetrySuppressed = CliTelemetry.ConsumeSpawnMarker(
+    Environment.GetEnvironmentVariable,
+    k => Environment.SetEnvironmentVariable(k, null));
+
+CliTelemetry.Initialize(command, baseUrl, loggedIn, telemetrySuppressed);
 
 AppDomain.CurrentDomain.ProcessExit += (_, _) => {
     CliTelemetry.RecordCommand(command, args, Environment.ExitCode, CommandTiming.ElapsedMs(commandStart));
