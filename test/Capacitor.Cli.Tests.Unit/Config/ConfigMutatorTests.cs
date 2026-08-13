@@ -5,7 +5,7 @@ using Capacitor.Cli.Core.Config;
 namespace Capacitor.Cli.Tests.Unit.Config;
 
 /// <summary>
-/// Tests for <see cref="ConfigMutator"/>, the one writer of config.json (AI-1655 decision 10).
+/// Tests for <see cref="ConfigMutator"/>, the one writer of config.json.
 ///
 /// The task brief's original draft pointed each test at its own private temp dir via
 /// <c>KCAP_CONFIG_DIR</c>. That does not work here: <c>AppConfig</c>'s config path (like
@@ -59,7 +59,7 @@ public class ConfigMutatorTests {
         var final = await AppConfig.LoadProfileConfig();
         await Assert.That(final.MachineId).IsEqualTo("one");
         await Assert.That(final.ActiveProfile).IsEqualTo("p2");
-        // no orphaned fixed-name temp file (the pre-AI-1655 SaveProfileConfig always used
+        // no orphaned fixed-name temp file (the old SaveProfileConfig it replaced always used
         // exactly this name, which is what made concurrent writers collide)
         await Assert.That(File.Exists(ConfigPath + ".tmp")).IsFalse();
     }
@@ -78,6 +78,18 @@ public class ConfigMutatorTests {
         var reread = await AppConfig.LoadProfileConfig();
         await Assert.That(reread.Version).IsEqualTo(2);
         await Assert.That(reread.MachineId).IsEqualTo("post-migration");
+    }
+
+    [Test]
+    public async Task MachineIdProvider_heals_a_blank_machine_id_left_by_a_stale_or_broken_writer() {
+        Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
+        await File.WriteAllTextAsync(ConfigPath, """{"version":2,"machine_id":""}""");
+
+        var id = await MachineIdProvider.GetOrCreateAsync();
+
+        await Assert.That(id).Matches("^mach-[0-9a-f]{12}$");
+        var reread = await AppConfig.LoadProfileConfig();
+        await Assert.That(reread.MachineId).IsEqualTo(id);
     }
 
     [Test]

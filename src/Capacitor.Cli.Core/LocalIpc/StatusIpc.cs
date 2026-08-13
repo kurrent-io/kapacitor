@@ -14,7 +14,7 @@ public sealed record DaemonStatusDto(DaemonInfoDto Daemon, List<AgentStatusDto> 
 /// <see cref="ActiveAgents"/> is derived from the SAME materialized agents array it ships
 /// with (Status is "Starting" or "Running"), so count and array can never disagree within
 /// one payload. <see cref="Pid"/>/<see cref="InstanceId"/> are additive trailing members
-/// (AI-1655) identifying the reporting daemon process for client-side correlation — always
+/// identifying the reporting daemon process for client-side correlation — always
 /// populated by a current daemon (see the "every field ALWAYS emitted" rule above); null only
 /// if an old snapshot from before this field existed were ever replayed.
 /// </summary>

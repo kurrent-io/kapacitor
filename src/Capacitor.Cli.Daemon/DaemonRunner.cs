@@ -268,7 +268,7 @@ public static partial class DaemonRunner {
         // itself — a failure here just means that call's own containment swallows the write too.
         try { Directory.CreateDirectory(coverageStateDir); } catch { /* best-effort */ }
 
-        // Task 12 (AI-1655): pre-host boot checks. Both refusal arms return BEFORE the host is built —
+        // Pre-host boot checks. Both refusal arms return BEFORE the host is built —
         // before any ServerConnection/token use of any kind — so a misdirected or un-consented daemon
         // never gets far enough to touch the network or spawn anything. Order matters: the server-
         // expectation check runs FIRST (a server the operator didn't expect must never even reach consent
@@ -898,7 +898,7 @@ public static partial class DaemonRunner {
     };
 
     /// <summary>
-    /// The three boot-local carrier env vars (AI-1655): set by whatever spawned this daemon
+    /// The three boot-local carrier env vars: set by whatever spawned this daemon
     /// (`kcap daemon start`, a service unit, or a self-respawned predecessor), read exactly once at
     /// boot by <see cref="CaptureBootCarriers"/>, and never left in the ambient process environment
     /// afterward. Names are shared with <c>DetachedRespawnStrategy</c>'s re-injection and the PTY/ACP
@@ -929,7 +929,7 @@ public static partial class DaemonRunner {
     }
 
     /// <summary>
-    /// Task 12 (AI-1655): does the resolved <see cref="DaemonConfig.ServerUrl"/> match what the
+    /// Does the resolved <see cref="DaemonConfig.ServerUrl"/> match what the
     /// launcher told this boot to expect (<see cref="DaemonConfig.ExpectedServerUrl"/>, carried in
     /// via <c>KCAP_EXPECT_SERVER_URL</c>)? No expectation at all (null/empty) is trivially
     /// satisfied — this check exists to catch a daemon that resolved a DIFFERENT server than the

@@ -262,7 +262,7 @@ public static class DaemonCommands {
     const string SeedVar = "KCAP_CONSENT_SEED_DEFAULT";
 
     /// <summary>
-    /// Task 15 (AI-1655): gates a detached spawn on the embedded daemon digest, but ONLY when
+    /// Gates a detached spawn on the embedded daemon digest, but ONLY when
     /// <see cref="SeedVar"/> is present in the process env — that directive is set exclusively by
     /// an app-managed start (the desktop supervisor / a self-respawn), never by a bare `kcap daemon
     /// start -d` typed at a terminal, so a manual start is never gated. When gated,

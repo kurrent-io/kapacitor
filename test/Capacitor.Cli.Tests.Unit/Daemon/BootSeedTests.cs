@@ -98,7 +98,7 @@ public class BootSeedTests {
         var store = Store(dir);
         store.BootSeed("prompt");
         await Assert.That(store.Current.Default).IsEqualTo(LaunchConsentDefault.Prompt);
-        // Gate behavior for Prompt + no prompter is pinned by the existing AI-1623 gate tests
-        // (prompt_no_ui → deny); this assertion documents the seed→gate linkage.
+        // Gate behavior for Prompt + no prompter is pinned by the existing launch-consent gate
+        // tests (prompt_no_ui → deny); this assertion documents the seed→gate linkage.
     }
 }

@@ -2,7 +2,7 @@ using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
 
-/// <summary>Task 16 (AI-1655): pure decision-core tests for <see cref="ServiceVerify.EvaluateStartGate"/>.
+/// <summary>Pure decision-core tests for <see cref="ServiceVerify.EvaluateStartGate"/>.
 /// No filesystem, no lock, no manager — every case is driven purely through the function's own
 /// parameters, per the task brief verbatim.</summary>
 public class ServiceVerifyStartGateTests {

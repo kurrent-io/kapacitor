@@ -4,8 +4,8 @@ using System.Text.Json;
 
 namespace Capacitor.Cli.Core.LocalIpc;
 
-/// Identity of the daemon process that answered hello, correlated against the first snapshot
-/// (AI-1655 Task 7). Pid/InstanceId are null when the hello reply predates those fields
+/// Identity of the daemon process that answered hello, correlated against the first snapshot.
+/// Pid/InstanceId are null when the hello reply predates those fields
 /// (pre-slice daemon) — a null pair here is NOT evidence of a mismatch, only of an old daemon;
 /// see RunCycleAsync for the correlation rule that decides whether Connected is even reached.
 public sealed record ConnectedIdentity(int? Pid, string? InstanceId, string DaemonName, string DaemonVersion);
@@ -17,7 +17,7 @@ public abstract record LocalControlEvent {
 
     /// Carries the FIRST validated snapshot: a consumer that gates rendering on Connected can
     /// never observe the connected state while holding only a previous incarnation's data.
-    /// Identity is additive (AI-1655 Task 7) — null only if a caller builds this record without
+    /// Identity is additive — null only if a caller builds this record without
     /// going through RunCycleAsync; the client itself always populates it once it decides to
     /// yield Connected at all (see the hello/snapshot correlation invariant there).
     public sealed record Connected(
@@ -196,7 +196,7 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
                 return CycleOutcome.Failed(r0, daemonVersion);
             }
 
-            // Correlation invariant (AI-1655 Task 7): only when BOTH the hello reply and the
+            // Correlation invariant: only when BOTH the hello reply and the
             // first snapshot's daemon info carry pid AND instance_id, and those pairs disagree,
             // is this classified daemon_incompatible — Connected must never be yielded on a
             // mismatch. Either side lacking the fields (a pre-slice daemon on one leg) infers

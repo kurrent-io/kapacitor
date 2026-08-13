@@ -12,7 +12,7 @@ public sealed record ClientHelloDto(string? ClientName, string? ClientVersion);
 /// empty. STJ leaves a missing reference-typed member at its default rather than throwing, so a
 /// non-nullable declaration here would be a lie a client could NRE on the moment it dereferences an
 /// older daemon's reply. <see cref="Pid"/>/<see cref="InstanceId"/> are additive trailing members
-/// (AI-1655) identifying the replying daemon process for client-side correlation — null on an
+/// identifying the replying daemon process for client-side correlation — null on an
 /// older daemon that predates them.
 /// </summary>
 public sealed record HelloReplyDto(

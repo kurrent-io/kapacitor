@@ -53,7 +53,7 @@ public static class VerifyExit {
     public const int RestoreVerification = 27;
     public const string RestoreVerificationToken = "verify_restore_verification";
 
-    /// <summary>start --verify's pre-mutation consent-directive gate (Task 16, AI-1655) refused to
+    /// <summary>start --verify's pre-mutation consent-directive gate refused to
     /// proceed: the invoking launcher set <c>KCAP_CONSENT_SEED_DEFAULT</c> but the installed unit's
     /// own baked directive, binary digest, or identity evidence didn't satisfy the gate. Fires right
     /// after the fresh query and BEFORE the marker is even written — nothing is touched. The stderr
@@ -140,7 +140,7 @@ sealed class ServiceVerify(
     /// <see cref="_readPlist"/> returns null for both.</summary>
     readonly Func<string, bool> _plistExists = plistExists ?? File.Exists;
 
-    /// <summary>Task 16 (AI-1655) seam: when non-null AND <c>gateEnv(ConsentSeedVar)</c> is
+    /// <summary>The gated start seam: when non-null AND <c>gateEnv(ConsentSeedVar)</c> is
     /// non-empty, <see cref="StartVerifiedAsync"/> runs the pre-mutation gate (Phase A) and the
     /// TOCTOU re-check before bootstrap (Phase B). Null (the default) leaves start completely
     /// behavior-unchanged — the production caller in <c>DaemonCommands</c> passes
@@ -189,14 +189,14 @@ sealed class ServiceVerify(
 
         var pre = manager.Query(serviceId, Remaining(deadline));
 
-        // Task 16 (AI-1655): gated ONLY when the invoking launcher itself carries the consent-seed
+        // Gated ONLY when the invoking launcher itself carries the consent-seed
         // directive — a bare `kcap daemon service start --verify` typed at a terminal never sees
         // this branch. Phase A runs right here (after the fresh query, before ANY write) so a
         // rejected gate leaves absolutely nothing touched — not even the marker.
         var gated = _gateEnv is not null && !string.IsNullOrEmpty(_gateEnv(ConsentSeedVar));
         string? phaseAPlistContent = null;
 
-        // Task 18 (AI-1655): the unit's own baked KCAP_EXPECT_SERVER_URL, captured alongside Phase
+        // The unit's own baked KCAP_EXPECT_SERVER_URL, captured alongside Phase
         // A's gate evaluation and threaded through to the readiness-timeout attribution below —
         // there is no other point in this method that parses the unit's environment.
         string? unitExpectation = null;
@@ -261,13 +261,11 @@ sealed class ServiceVerify(
             if (recheckContent != phaseAPlistContent || !digestStillGood) {
                 ServiceTxnMarker.Write(serviceId,
                     new TxnMarker(1, "start", "gate-drift", DescribeQuery(pre), "unloaded-plist-retained", null));
-                await Rollback(serviceId);
-                Say(VerifyExit.StartGateDriftToken);
-                return VerifyExit.StartGateDrift;
+                return await Rollback(serviceId, VerifyExit.StartGateDrift, VerifyExit.StartGateDriftToken);
             }
         }
 
-        // Task 18 (AI-1655): verified pre-clear before bootstrap, gated paths only — the marker a
+        // Verified pre-clear before bootstrap, gated paths only — the marker a
         // readiness timeout later finds is only trustworthy evidence for THIS attempt once any
         // leftover from a prior one is provably gone. A clear that can't be verified (locked file,
         // undeletable directory sitting at the path) disables coded attribution for this action
@@ -294,6 +292,20 @@ sealed class ServiceVerify(
         while (time.GetUtcNow() < pollDeadline) {
             var (ready, pid) = await IsReadyAsync(serviceId, pollDeadline, requirePid: null);
             if (pid is not null) observedJobPids.Add(pid.Value);
+
+            // IsReadyAsync only reports a pid once hello is well-formed — but a REFUSING daemon
+            // exits before its control socket exists, so hello is NEVER well-formed in exactly the
+            // scenario attribution needs to see. Query the job pid directly whenever IsReadyAsync
+            // couldn't, so a refused boot's pid still lands in observedJobPids. Gated paths only —
+            // the ungated flow never reads this set, so it stays untouched.
+            if (gated && pid is null) {
+                var directRemaining = Remaining(pollDeadline);
+                if (directRemaining > TimeSpan.Zero) {
+                    var directPid = manager.Query(serviceId, directRemaining).JobPid;
+                    if (directPid is not null) observedJobPids.Add(directPid.Value);
+                }
+            }
+
             if (ready) {
                 // Recheck against the ORIGINAL deadline, pinning pid: a job that answered then
                 // respawned under KeepAlive must not bless a crash-looping unit.
@@ -328,7 +340,7 @@ sealed class ServiceVerify(
     }
 
     /// <summary>
-    /// Task 18 (AI-1655): the pure decision core of readiness-timeout boot-refusal attribution. A
+    /// The pure decision core of readiness-timeout boot-refusal attribution. A
     /// marker is trustworthy evidence for THIS attempt only when: it names this same daemon; it
     /// carries no attempt id (an attempt-id-bearing marker is DETACHED evidence for a different
     /// subsystem, not this service verb's own boot — see the daemon-side boot-carrier lifecycle);
@@ -344,7 +356,7 @@ sealed class ServiceVerify(
         && observedJobPids.Contains(evidence.Pid);
 
     /// <summary>
-    /// Task 16 (AI-1655): the pure decision core of the gated start path. Given the environment
+    /// The pure decision core of the gated start path. Given the environment
     /// baked into the installed unit and this invocation's own environment, decides whether a
     /// gated start may proceed. Order of checks (first hit wins): the invocation itself never asked
     /// to be gated → null (pass); the unit lacks the directive the invocation carries →
@@ -481,9 +493,15 @@ sealed class ServiceVerify(
 
     /// <summary>Bootout (plist retained) then verify the restore, polled (bounded by the reserve)
     /// rather than single-shot — <c>bootout</c> can return before the label is gone. Absent → the
-    /// rollback itself is the verified-safe state, marker deleted. Still loaded at reserve expiry →
-    /// marker kept so a resumer can see the transaction never settled.</summary>
-    async Task<int> Rollback(string serviceId) {
+    /// rollback itself is the verified-safe state, marker deleted, and reports
+    /// <paramref name="reasonExit"/>/<paramref name="reasonToken"/> — defaulted to a genuine
+    /// readiness timeout, but a caller rolling back for a DIFFERENT reason (e.g. gated start's
+    /// Phase B drift) overrides both so exactly one verify_* line is ever printed for that failure,
+    /// mirroring <see cref="InstallRollback"/>'s own reasonToken parameter. Still loaded at reserve
+    /// expiry → marker kept so a resumer can see the transaction never settled; that failure path
+    /// always reports its OWN token regardless of the override, since the rollback itself did not
+    /// reach the verified-safe state the override describes.</summary>
+    async Task<int> Rollback(string serviceId, int reasonExit = VerifyExit.ReadinessTimeout, string reasonToken = VerifyExit.ReadinessTimeoutToken) {
         var deadline = time.GetUtcNow() + _rollbackReserve;
 
         manager.Stop(serviceId, Remaining(deadline), out var stopError);
@@ -494,8 +512,8 @@ sealed class ServiceVerify(
             lastProbe = manager.Query(serviceId, Remaining(deadline)).Probe;
             if (lastProbe == LabelProbe.Absent) {
                 ServiceTxnMarker.Delete(serviceId);
-                Say(VerifyExit.ReadinessTimeoutToken);
-                return VerifyExit.ReadinessTimeout;
+                Say(reasonToken);
+                return reasonExit;
             }
 
             if (time.GetUtcNow() >= deadline) break;
@@ -512,7 +530,7 @@ sealed class ServiceVerify(
         return VerifyExit.RestoreVerification;
     }
 
-    /// <summary>Task 17 (AI-1655) seam: the gated install/replace path's digest recheck, shared by
+    /// <summary>The gated install/replace path's digest recheck seam, shared by
     /// the viability arm and both TOCTOU rechecks below. An exception hashing the binary (a race
     /// with a package manager mid-replace, a permissions error) is treated as failure — Task 16's
     /// unreadable-evidence-at-a-recheck-is-drift precedent — never let it escape uncaught.</summary>
@@ -536,7 +554,7 @@ sealed class ServiceVerify(
             return VerifyExit.Contended;
         }
 
-        // Task 17 (AI-1655): gated ONLY when the invoking launcher itself carries the consent-seed
+        // Gated ONLY when the invoking launcher itself carries the consent-seed
         // directive — a bare `kcap daemon service install/replace --verify` typed at a terminal
         // never sees any of this task's checks. Computed once, up front, so the viability arm and
         // both rechecks below share one activation decision (mirrors StartVerifiedAsync's `gated`).

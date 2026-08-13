@@ -5,8 +5,8 @@ using Capacitor.Cli.Core;
 namespace Capacitor.Cli.Services;
 
 /// <summary>
-/// CLI-side duplicated view of the daemon's <c>{stateDir}/boot-refusal.json</c> marker (Task 12,
-/// AI-1655 — written by <c>Capacitor.Cli.Daemon.Services.BootRefusal</c>, NOT referenced here since
+/// CLI-side duplicated view of the daemon's <c>{stateDir}/boot-refusal.json</c> marker —
+/// written by <c>Capacitor.Cli.Daemon.Services.BootRefusal</c>, NOT referenced here since
 /// the CLI does not depend on the daemon project; same duplication precedent as this file's own
 /// duplicated <see cref="VerifyExit"/> tokens). Deliberately omits <c>schema</c>/<c>timestamp</c> —
 /// the reader has no use for either, and a missing member simply doesn't bind rather than failing

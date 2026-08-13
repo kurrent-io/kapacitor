@@ -2,7 +2,7 @@ using Capacitor.Cli.Commands;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
-/// <summary>AI-1655 Task 15: `kcap daemon start -d` gates the spawn on the embedded daemon digest,
+/// <summary>`kcap daemon start -d` gates the spawn on the embedded daemon digest,
 /// but only when the boot carrier (<c>KCAP_CONSENT_SEED_DEFAULT</c>) shows this was an app-managed
 /// start — a manual `kcap daemon start -d` from a terminal carries no directive and is never gated.
 /// Dev/test builds carry <see cref="Capacitor.Cli.DaemonDigest.Placeholder"/>, so

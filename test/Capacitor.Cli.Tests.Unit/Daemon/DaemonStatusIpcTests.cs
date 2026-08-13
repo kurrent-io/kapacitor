@@ -281,7 +281,7 @@ public class DaemonStatusIpcTests {
         });
     }
 
-    [Test] // AI-1655: pid/instance_id identity on the daemon block, first snapshot
+    [Test] // pid/instance_id identity on the daemon block, first snapshot
     [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task First_snapshot_carries_pid_and_instance_id() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path

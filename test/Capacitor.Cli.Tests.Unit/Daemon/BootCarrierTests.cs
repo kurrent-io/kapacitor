@@ -4,7 +4,7 @@ using Capacitor.Cli.Daemon.Services;
 namespace Capacitor.Cli.Tests.Unit.Daemon;
 
 /// <summary>
-/// AI-1655 Task 10: boot-local carrier lifecycle for <c>KCAP_CONSENT_SEED_DEFAULT</c>,
+/// Boot-local carrier lifecycle for <c>KCAP_CONSENT_SEED_DEFAULT</c>,
 /// <c>KCAP_EXPECT_SERVER_URL</c> and <c>KCAP_BOOT_ATTEMPT</c> — captured off ambient env into
 /// <see cref="DaemonConfig"/> and immediately removed so no descendant process (PTY-spawned agent,
 /// ACP child, self-respawned successor) can observe them by inheritance. Re-injection into a

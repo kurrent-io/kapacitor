@@ -3,10 +3,10 @@ using Capacitor.Cli.Core.Config;
 namespace Capacitor.Cli.Tests.Unit.Config;
 
 /// <summary>
-/// Pins the AI-1655 Task 3 outcome: every CLI command that writes <c>config.json</c> now
+/// Pins the config-writer migration outcome: every CLI command that writes <c>config.json</c> now
 /// goes through <see cref="ConfigMutator"/> — there is no more per-command fixed-temp writer
 /// to race against. The compile-time half of that guarantee is that <c>AppConfig.SaveProfileConfig</c>
-/// no longer exists (removed in Task 2) and the private atomic-save helpers in
+/// no longer exists (removed earlier in the migration) and the private atomic-save helpers in
 /// <c>ProfileCommand</c>/<c>UseCommand</c> are gone too (removed here); this test pins the
 /// runtime half: 16 concurrent field-scoped mutations, styled after 16 different commands each
 /// touching their own profile key, all survive instead of colliding on a shared fixed

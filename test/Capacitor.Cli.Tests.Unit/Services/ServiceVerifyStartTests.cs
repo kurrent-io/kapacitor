@@ -376,7 +376,7 @@ public class ServiceVerifyStartTests {
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 
-    // ── Task 16 (AI-1655): gated start — Phase A (exit 28) / Phase B (exit 29) ──
+    // ── gated start — Phase A (exit 28) / Phase B (exit 29) ──
 
     /// <summary>Minimal launchd plist whose <c>&lt;array&gt;</c> (ProgramArguments) and baked
     /// <c>KCAP_CONSENT_SEED_DEFAULT</c> are exactly what <see cref="LaunchdUnit.BinaryFromPlist"/>/

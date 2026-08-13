@@ -8,8 +8,8 @@ using RepoConfigJsonContext = Capacitor.Cli.Core.Config.RepoConfigJsonContext;
 namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
-/// <c>UseCommand.SetProfile</c>'s actual write now goes through <see cref="ConfigMutator"/>
-/// (AI-1655 Task 3), which always targets <see cref="AppConfig.GetConfigPath"/> — a
+/// <c>UseCommand.SetProfile</c>'s actual write now goes through <see cref="ConfigMutator"/>,
+/// which always targets <see cref="AppConfig.GetConfigPath"/> — a
 /// <c>static readonly</c> path pinned once per process (see <c>ConfigDirIsolationTests</c>,
 /// <c>ConfigMutatorTests</c>). So these tests can no longer point <c>configPath</c> at a
 /// private per-test temp dir and expect the mutator to honor it: they seed and assert against

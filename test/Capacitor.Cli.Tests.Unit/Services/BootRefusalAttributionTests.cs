@@ -6,7 +6,7 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
 
-/// <summary>Task 18 (AI-1655): boot-refusal marker attribution in <see cref="ServiceVerify"/>'s
+/// <summary>Boot-refusal marker attribution in <see cref="ServiceVerify"/>'s
 /// gated readiness-timeout path. The pure <see cref="ServiceVerify.Attributable"/> rule is exercised
 /// verbatim per the task brief; the <see cref="FakeServiceManager"/>-driven tests exercise the
 /// verified pre-clear + observed-pid correlation end to end, planting a marker with the daemon's own
@@ -151,7 +151,54 @@ public class BootRefusalAttributionTests {
     }
 
     [Test, NotInParallel]
-    public async Task Precleaer_failure_disables_attribution_but_the_mutation_still_proceeds() {
+    public async Task Readiness_timeout_with_hello_never_well_formed_still_observes_pid_via_direct_query() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        var originalErr = Console.Error;
+        var capturedErr = new StringWriter();
+        try {
+            Console.SetError(capturedErr);
+
+            // Hello NEVER comes back well-formed — exactly the shape of a REFUSING daemon whose
+            // control socket never exists. IsReadyAsync's own Query call therefore never runs; the
+            // job pid can only be observed via the direct per-iteration Query the readiness loop
+            // now also issues when hello never resolves a pid.
+            var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
+            manager.OnStart = id => {
+                var stateDir = Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(id));
+                Directory.CreateDirectory(stateDir);
+                BootRefusal.TryWrite(stateDir,
+                    new DaemonConfig { Name = id, ExpectedServerUrl = "https://s.example", ServerUrl = "https://resolved.example", InstanceId = "inst-1" },
+                    "server_expectation_mismatch");
+            };
+
+            var time = new FakeTimeProvider();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(false, null, null, null)); // never well-formed
+
+            var sut = new ServiceVerify(manager, _ => -1, Hello, time,
+                forwardBudget: TimeSpan.FromSeconds(2),
+                readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                digestMatches: _ => true);
+
+            var task = sut.StartVerifiedAsync(Id);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+
+            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            await Assert.That(lines.Count(l => l == "refusal_reason=server_expectation_mismatch")).IsEqualTo(1);
+            await Assert.That(BootRefusalReader.TryRead(Id)).IsNull(); // consumed after attribution
+        } finally {
+            Console.SetError(originalErr);
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        }
+    }
+
+    [Test, NotInParallel]
+    public async Task Preclear_failure_disables_attribution_but_the_mutation_still_proceeds() {
         var dir = Directory.CreateTempSubdirectory().FullName;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         var originalErr = Console.Error;

@@ -68,7 +68,7 @@
         </GetFileHash>
 
         <PropertyGroup>
-            <KcapDaemonDigestValue Condition="'$(KcapDaemonDigest)' != ''">$(KcapDaemonDigest)</KcapDaemonDigestValue>
+            <KcapDaemonDigestValue Condition="'$(KcapDaemonDigest)' != ''">$([System.String]::Copy('$(KcapDaemonDigest)').ToLowerInvariant())</KcapDaemonDigestValue>
             <KcapDaemonDigestValue Condition="'$(KcapDaemonDigestValue)' == '' And '@(KcapDaemonArtifactHashed)' != ''">$([System.String]::Copy('%(KcapDaemonArtifactHashed.FileHash)').ToLowerInvariant())</KcapDaemonDigestValue>
             <KcapDaemonDigestValue Condition="'$(KcapDaemonDigestValue)' == ''">0000000000000000000000000000000000000000000000000000000000000000</KcapDaemonDigestValue>
             <KcapDigestFile>$(IntermediateOutputPath)DaemonDigest.g.cs</KcapDigestFile>

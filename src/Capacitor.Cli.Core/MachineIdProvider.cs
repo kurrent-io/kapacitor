@@ -12,7 +12,7 @@ public static class MachineIdProvider {
 
         var newId  = Generate();
         var result = await ConfigMutator.MutateAsync(
-            c => c.MachineId is null ? c with { MachineId = newId } : c, ct);
+            c => string.IsNullOrWhiteSpace(c.MachineId) ? c with { MachineId = newId } : c, ct);
         return result.MachineId!;
     }
 }

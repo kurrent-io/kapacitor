@@ -91,7 +91,7 @@ public sealed class UnixPtyProcess : IPtyProcess {
         foreach (var key in PtyEnvScrub.ClaudeSessionVars) env.Remove(key);
         foreach (var key in PtyEnvScrub.HostedAgentVars) env.Remove(key);
         foreach (var key in PtyEnvScrub.DaemonSupervisionVars) env.Remove(key);
-        // Defense in depth (AI-1655): CaptureBootCarriers already clears these from the daemon's
+        // Defense in depth: CaptureBootCarriers already clears these from the daemon's
         // own ambient env at boot, so this loop should normally be a no-op — but a spawned agent
         // must never see the daemon's boot-local consent-seed/expectation/attempt vars either way.
         foreach (var key in DaemonRunner.BootCarriers.All) env.Remove(key);

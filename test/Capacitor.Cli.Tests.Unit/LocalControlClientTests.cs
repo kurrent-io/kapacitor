@@ -134,7 +134,7 @@ public class LocalControlClientTests {
     static string HelloWithVersion(string version, params string[] caps) => JsonSerializer.Serialize(
         new HelloReplyDto(1, version, "m", [.. caps]), HelloIpcJsonContext.Default.HelloReplyDto);
 
-    /// Task 7 (AI-1655): runs one scripted hello→subscribe cycle with the given raw JSON
+    /// Runs one scripted hello→subscribe cycle with the given raw JSON
     /// payloads, collecting events until either Connected or Unreachable is observed —
     /// used by the hello/snapshot identity-correlation tests below.
     static Task<List<LocalControlEvent>> RunScriptedCycleAsync(string helloJson, string statusJson) =>
@@ -631,7 +631,7 @@ public class LocalControlClientTests {
         }
     }
 
-    // ---- Task 7 (AI-1655): hello↔snapshot instance correlation ----
+    // ---- hello↔snapshot instance correlation ----
 
     [Test]
     [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]

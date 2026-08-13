@@ -643,7 +643,7 @@ public class ServiceVerifyInstallTests {
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 
-    /// <summary>Task 17 (AI-1655): the gated viability arm's digest check fires alongside the
+    /// <summary>The gated viability arm's digest check fires alongside the
     /// existing missing-sibling/unusable-profile checks — BEFORE anything on disk is touched (no
     /// query, no marker) — and reports exactly one stderr line naming the reason, not the generic
     /// verify_viability token.</summary>

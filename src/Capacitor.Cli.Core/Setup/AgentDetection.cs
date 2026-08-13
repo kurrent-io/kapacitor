@@ -38,7 +38,7 @@ public sealed record AgentDetectionResult(
 /// <summary>
 /// Detects installed coding-agent CLIs by composing a PATH binary probe with each vendor's
 /// filesystem install-marker check. Mirrors, verbatim, the per-vendor probe composition
-/// <c>SetupCommand</c> ran inline before this moved to Core (AI-1655) — see each arm's comment
+/// <c>SetupCommand</c> ran inline before this moved to Core — see each arm's comment
 /// for why that vendor needs the signals it has.
 /// </summary>
 public static class AgentDetection {

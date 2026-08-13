@@ -247,7 +247,7 @@ jobs:
           -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }}
           -o publish/daemon/
 
-      # AI-1653: when signing lands, sign the daemon BEFORE this step (signing changes the bytes).
+      # When app bundling/signing lands, sign the daemon BEFORE this step (signing changes the bytes).
       - name: Compute daemon digest
         id: daemon-digest
         shell: bash
