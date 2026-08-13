@@ -56,7 +56,7 @@ public class AntigravitySessionStartTests : IDisposable {
         const string dashless = "e80c33bfc10f4d2fb626b0043f488fc0";
         NeutralizeWatcherSpawn(dashless);
 
-        await AppConfig.SaveProfileConfig(new ProfileConfig {
+        await ConfigMutator.MutateAsync(_ => new ProfileConfig {
             ActiveProfile = "work",
             Profiles = new() {
                 ["work"] = new Profile { ServerUrl = _server.Url, DefaultVisibility = "private" }
@@ -101,7 +101,7 @@ public class AntigravitySessionStartTests : IDisposable {
         var excludedDir = Path.Combine(Path.GetTempPath(), "kcap-ag-excluded");
         NeutralizeWatcherSpawn(convId);
 
-        await AppConfig.SaveProfileConfig(new ProfileConfig {
+        await ConfigMutator.MutateAsync(_ => new ProfileConfig {
             ActiveProfile = "work",
             Profiles = new() {
                 ["work"] = new Profile { ServerUrl = _server.Url, ExcludedPaths = [excludedDir] }

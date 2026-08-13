@@ -93,7 +93,7 @@ public class GeminiStderrShadowedOnPostFailureTests : IDisposable {
     }
 
     async Task UseServerProfileAsync() =>
-        await AppConfig.SaveProfileConfig(new ProfileConfig {
+        await ConfigMutator.MutateAsync(_ => new ProfileConfig {
             ActiveProfile = "work",
             Profiles      = new() { ["work"] = new Profile { ServerUrl = _server.Url } }
         });

@@ -59,7 +59,7 @@ public class GeminiSessionStartHandshakeOnPostFailureTests : IDisposable {
             ActiveProfile = "work",
             Profiles      = new() { ["work"] = new Profile { ServerUrl = _server.Url } }
         };
-        await AppConfig.SaveProfileConfig(config);
+        await ConfigMutator.MutateAsync(_ => config);
 
         // A permanent rejection: PostOrSpoolAsync returns Failed only for a genuine non-2xx (transport
         // and auth failures spool instead), which is the one outcome that keeps the non-zero exit.

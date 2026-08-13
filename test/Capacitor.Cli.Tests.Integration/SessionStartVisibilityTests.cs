@@ -56,7 +56,7 @@ public class SessionStartVisibilityTests : IDisposable {
                 }
             }
         };
-        await AppConfig.SaveProfileConfig(config);
+        await ConfigMutator.MutateAsync(_ => config);
 
         _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
@@ -81,7 +81,7 @@ public class SessionStartVisibilityTests : IDisposable {
                 }
             }
         };
-        await AppConfig.SaveProfileConfig(config);
+        await ConfigMutator.MutateAsync(_ => config);
 
         _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
@@ -106,7 +106,7 @@ public class SessionStartVisibilityTests : IDisposable {
                 }
             }
         };
-        await AppConfig.SaveProfileConfig(config);
+        await ConfigMutator.MutateAsync(_ => config);
 
         _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
@@ -131,7 +131,7 @@ public class SessionStartVisibilityTests : IDisposable {
                 }
             }
         };
-        await AppConfig.SaveProfileConfig(config);
+        await ConfigMutator.MutateAsync(_ => config);
 
         _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));

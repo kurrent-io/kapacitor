@@ -46,7 +46,7 @@ public class CodexSessionStartHandshakeOnPostFailureTests : IDisposable {
             ActiveProfile = "work",
             Profiles      = new() { ["work"] = new Profile { ServerUrl = _server.Url } }
         };
-        await AppConfig.SaveProfileConfig(config);
+        await ConfigMutator.MutateAsync(_ => config);
 
         // A permanent rejection: PostOrSpoolAsync returns Failed for a genuine non-2xx (transport and
         // auth failures spool instead), which is exactly the case that used to skip the handshake.
