@@ -20,6 +20,7 @@ public static class CliTelemetry {
     static string?          _orgGroup;
     static JsonObject       _shared = new();
     static bool             _debug;
+    static bool             _suppressedSticky; // Once set true, remains true for process lifetime
 
     /// <summary>Test seam: when set, events are collected here instead of being queued.</summary>
     public static List<TelemetryEvent>? TestSink { get; set; }
@@ -37,24 +38,35 @@ public static class CliTelemetry {
     /// </summary>
     public static void Reset() {
         _client = null; _deviceId = null; _orgGroup = null;
-        _shared = new JsonObject(); Enabled = false; TestSink = null;
+        _shared = new JsonObject(); Enabled = false; TestSink = null; _suppressedSticky = false;
     }
 
+    /// <summary>
     /// The app-spawned-child marker (spec decision 9): consumed for telemetry suppression and
     /// REMOVED from the process environment before command dispatch, so nothing this process
     /// spawns (a detached daemon, hosted children) can observe it. Never touches the user's own
     /// KCAP_TELEMETRY choice.
+    /// </summary>
     public const string SpawnNoTelemetryVar = "KCAP_APP_SPAWN_NO_TELEMETRY";
 
+    /// <summary>
+    /// Consumes the spawn marker from the environment and marks suppression as sticky for this
+    /// process. Sets <see cref="_suppressedSticky"/> so every future Initialize call in this
+    /// process honors suppression regardless of its `suppressed` parameter.
+    /// </summary>
     public static bool ConsumeSpawnMarker(Func<string, string?> get, Action<string> clear) {
         if (string.IsNullOrEmpty(get(SpawnNoTelemetryVar))) return false;
         clear(SpawnNoTelemetryVar);
+        _suppressedSticky = true;
         return true;
     }
 
     public static void Initialize(string command, string? serverUrl, bool loggedIn, bool suppressed = false) {
         try {
-            if (suppressed) return; // app-spawned child: no notice, no device id, no events, _client stays null
+            if (suppressed) {
+                _suppressedSticky = true;
+            }
+            if (_suppressedSticky) return; // app-spawned child: no notice, no device id, no events, _client stays null
             Enabled = TelemetrySettings.Resolve(TelemetryState.PersistedEnabled()).Enabled
                    && CommandEvents.IsReportable(command);
             if (!Enabled) return;
