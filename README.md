@@ -1470,8 +1470,9 @@ long build or test run cannot be cut short. Like Cursor's ceiling, this exit pos
 #550): they relied on the parent session watcher's teardown, which finalized their server-side
 records but never stopped the local processes — so each collab subagent leaked one watcher process
 that reconnected to the server indefinitely. The parent session watcher now stops every child
-watcher it spawned as part of its own exit (each child gets a SIGTERM and runs its final drain),
-and as a backstop for a hard-killed parent, a Codex subagent watcher self-reaps after
+watcher it spawned as part of its own exit (SIGTERM-first on macOS/Linux so each child runs its
+final drain; on Windows the stop is forceful and any undelivered tail is recovered by the
+spool/import paths), and as a backstop for a hard-killed parent, a Codex subagent watcher self-reaps after
 `KCAP_CODEX_SUBAGENT_REAP_MINUTES` of rollout silence. A reaped subagent that the parent later
 re-engages is respawned by the parent's rollout scan as soon as its rollout grows again, resuming
 from the server's frontier so no content is lost. Like the Claude ceiling, the reap exit posts no

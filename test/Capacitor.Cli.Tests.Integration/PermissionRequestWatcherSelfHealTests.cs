@@ -56,8 +56,8 @@ public class PermissionRequestWatcherSelfHealTests {
             await PermissionRequestCommand.TryEnsureWatcher("http://localhost:0", sessionId, node);
 
             await Assert.That(File.Exists(pidFile)).IsTrue();
-            var pidText = await File.ReadAllTextAsync(pidFile);
-            await Assert.That(int.TryParse(pidText.Trim(), out _)).IsTrue();
+            var lines = await File.ReadAllLinesAsync(pidFile);
+            await Assert.That(int.TryParse(lines[0].Trim(), out _)).IsTrue();
         } finally {
             await Cli.WatcherManager.KillWatcher(sessionId);
             File.Delete(transcriptPath);

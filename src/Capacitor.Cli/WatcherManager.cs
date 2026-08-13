@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Capacitor.Cli.Commands;
@@ -7,7 +8,7 @@ using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli;
 
-static class WatcherManager {
+static partial class WatcherManager {
     internal static string GetWatcherDir() {
         var overrideDir = Environment.GetEnvironmentVariable("KCAP_WATCHER_DIR");
 
@@ -162,7 +163,11 @@ static class WatcherManager {
             process.StandardOutput.Close();
             process.StandardError.Close();
 
-            await File.WriteAllTextAsync(GetPidFilePath(key), process.Id.ToString());
+            // Line 2 is this incarnation's start-identity token (daemon pid-file layout) so
+            // KillWatcher can tell the spawned watcher apart from a later recycle of its pid.
+            var token = ProcessStartToken.ForPid(process.Id);
+            await File.WriteAllTextAsync(
+                GetPidFilePath(key), token is null ? process.Id.ToString() : $"{process.Id}\n{token}");
 
             // Task 9: record this instance's start time so a later staleness probe
             // knows whether it's still within the startup grace window — written here (not
@@ -238,10 +243,24 @@ static class WatcherManager {
         }
 
         try {
-            var pidText = (await File.ReadAllTextAsync(pidFile)).Trim();
+            // Line 1 is the pid; line 2 (when present) is the incarnation's ProcessStartToken
+            // written by SpawnWatcher — the same layout as the daemon pid file.
+            var lines = await File.ReadAllLinesAsync(pidFile);
 
-            if (!int.TryParse(pidText, out var pid)) {
+            if (lines.Length == 0 || !int.TryParse(lines[0].Trim(), out var pid)) {
                 File.Delete(pidFile);
+
+                return false;
+            }
+
+            // "Ambiguity never kills" (ProcessStartToken): a conclusive token mismatch means the
+            // watcher died and the OS recycled its pid onto an unrelated process — sweep the
+            // stale file, never signal. A missing/uncomparable token (legacy file, process gone)
+            // falls through to the kill attempt, exactly as before tokens existed.
+            var token = lines.Length > 1 ? lines[1].Trim() : "";
+
+            if (token.Length > 0 && ProcessStartToken.Matches(pid, token) == false) {
+                await Console.Error.WriteLineAsync($"Watcher {key} (PID {pid}) was recycled by another process; sweeping stale pid file");
 
                 return false;
             }
@@ -249,8 +268,12 @@ static class WatcherManager {
             try {
                 var process = Process.GetProcessById(pid);
 
-                // Send SIGTERM
-                process.Kill(entireProcessTree: false);
+                // SIGTERM-first on Unix so the watcher runs its shutdown path (final drain +
+                // undelivered-tail spool) — Process.Kill is SIGKILL there. Windows has no
+                // SIGTERM; the stop is hard and recovery is left to the spool/import paths.
+                if (!TrySignalTerm(pid)) {
+                    process.Kill(entireProcessTree: false);
+                }
 
                 // Wait up to 5 seconds for graceful exit
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -285,15 +308,45 @@ static class WatcherManager {
     }
 
     /// <summary>
-    /// Kills every watcher in <paramref name="keys"/> concurrently (#550): a session watcher
-    /// stops the child watchers it spawned on its own way out — children have no parent-pid
-    /// watchdog (their spawner's ancestry contains no coding agent) and the server's StopWatcher
-    /// only reaches the session watcher's connection, so the parent's teardown is the only thing
-    /// that knows they exist. <see cref="KillWatcher"/>'s SIGTERM gives each child its final
-    /// drain, and its per-child 5s force-kill bound keeps a wedged child from stalling the
-    /// parent's own exit.
+    /// Stops every watcher in <paramref name="keys"/> concurrently (#550, a session watcher's
+    /// teardown of its spawned children). <see cref="KillWatcher"/>'s SIGTERM-first gives each
+    /// child its final drain; its 5s force-kill bound keeps a wedged child from stalling the caller.
     /// </summary>
     public static Task KillWatchers(IEnumerable<string> keys) => Task.WhenAll(keys.Select(KillWatcher));
+
+    /// <summary>
+    /// Retires this watcher's own pid file (+ heartbeat markers) on graceful exit, but only while
+    /// it still names this incarnation — a successor that already overwrote the file is left
+    /// alone. Keeps a later teardown/cleanup from ever acting on this watcher's recycled pid.
+    /// </summary>
+    public static void RemoveOwnPidFile(string key, int ownPid) {
+        try {
+            var lines = File.ReadAllLines(GetPidFilePath(key));
+
+            if (lines.Length == 0 || !int.TryParse(lines[0].Trim(), out var filePid) || filePid != ownPid) return;
+
+            File.Delete(GetPidFilePath(key));
+            DeleteHeartbeatFiles(key);
+        } catch {
+            /* best-effort — a missing/unreadable file means there is nothing to retire */
+        }
+    }
+
+    const int Sigterm = 15;
+
+    [LibraryImport("libc", EntryPoint = "kill", SetLastError = true)]
+    private static partial int sys_kill(int pid, int sig);
+
+    /// <summary>SIGTERM on Unix; false on Windows or when the signal can't be delivered.</summary>
+    static bool TrySignalTerm(int pid) {
+        if (OperatingSystem.IsWindows()) return false;
+
+        try {
+            return sys_kill(pid, Sigterm) == 0;
+        } catch {
+            return false;
+        }
+    }
 
     /// <summary>PID-only liveness: the process exists, irrespective of whether it's wedged.</summary>
     static bool PidAlive(string key) {
@@ -304,9 +357,9 @@ static class WatcherManager {
         }
 
         try {
-            var pidText = File.ReadAllText(pidFile).Trim();
+            var lines = File.ReadAllLines(pidFile);
 
-            if (!int.TryParse(pidText, out var pid)) {
+            if (lines.Length == 0 || !int.TryParse(lines[0].Trim(), out var pid)) {
                 return false;
             }
 

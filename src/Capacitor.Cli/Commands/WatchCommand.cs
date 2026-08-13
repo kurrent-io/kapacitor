@@ -667,10 +667,8 @@ static partial class WatchCommand {
         // re-ensure gate that respawns a reaped child watcher when its subagent re-engages.
         var codexRolloutMtimes = new Dictionary<string, DateTime>(StringComparer.Ordinal);
 
-        // Watcher keys of every child watcher this session watcher spawned (#550). The parent is
-        // the only thing that knows they exist, so it must also stop them on its own exit —
-        // children have no parent-pid watchdog (this process's ancestry has no coding agent) and
-        // the server's StopWatcher only reaches the session watcher's connection.
+        // Every child watcher key this session watcher spawned (#550) — the parent is the only
+        // process that knows they exist, so its teardown must stop them.
         var spawnedChildWatcherKeys = new HashSet<string>(StringComparer.Ordinal);
 
         try {
@@ -872,11 +870,9 @@ static partial class WatchCommand {
             Log($"Failed to signal drain complete: {ex.Message}");
         }
 
-        // #550: stop the child watchers this session watcher spawned — the parent is the only
-        // process that knows they exist, so its teardown is their stop signal on every exit path
-        // (StopWatcher, parent-exit, idle timeout, signals). SIGTERM lets each child run its own
-        // final drain before the parent posts session-end below. A parent killed hard (SIGKILL)
-        // skips this, which is exactly the orphan case the codex-child reap ceiling backstops.
+        // #550: stop spawned child watchers on every parent exit path — SIGTERM-first, so each
+        // runs its final drain before the session-end POST below. A SIGKILLed parent skips this;
+        // that orphan case is what the codex-child reap ceiling backstops.
         if (spawnedChildWatcherKeys.Count > 0) {
             Log($"Stopping {spawnedChildWatcherKeys.Count} spawned child watcher(s)");
             await WatcherManager.KillWatchers(spawnedChildWatcherKeys);
@@ -912,6 +908,11 @@ static partial class WatchCommand {
         if (endReason is not null && agentId is null && state.ThresholdReached && !cursorSuppressesEndPost) {
             await PostSessionEndOnParentExitAsync(baseUrl, sessionId, transcriptPath, cwd, vendor, state.Repository, endReason);
         }
+
+        // Graceful exit: retire this incarnation's pid file so no later teardown/cleanup can act
+        // on a recycled pid (KillWatcher's token guard is the crash-exit backstop).
+        WatcherManager.RemoveOwnPidFile(
+            agentId is null ? sessionId : $"{sessionId}-{agentId}", Environment.ProcessId);
 
         await logWriter.DisposeAsync();
 
@@ -1068,11 +1069,10 @@ static partial class WatchCommand {
     /// still recovers already-spawned children.
     /// </summary>
     /// <summary>
-    /// #550 companion to the codex-child reap ceiling: decides whether a child rollout needs its
-    /// watcher (re-)ensured. Fires on first sight and thereafter only when the rollout's mtime
-    /// advances — so a ceiling-reaped child stays reaped while its rollout is quiet, but is
-    /// re-spawned the moment its subagent re-engages (the fresh watcher resumes from the server
-    /// frontier, so nothing is lost). Records the mtime it fired for. Pure so it's unit-testable.
+    /// #550 companion to the codex-child reap ceiling: fires on first sight of a rollout and
+    /// thereafter only when its mtime advances, recording the mtime it fired for — so a reaped
+    /// child stays reaped while its rollout is quiet but is re-ensured the moment its subagent
+    /// re-engages (the fresh watcher resumes from the server frontier). Pure for testability.
     /// </summary>
     internal static bool ChildRolloutAdvanced(Dictionary<string, DateTime> lastMtimes, string filePath, DateTime currentMtime) {
         if (lastMtimes.TryGetValue(filePath, out var prev) && prev == currentMtime) return false;
@@ -1102,14 +1102,12 @@ static partial class WatchCommand {
         foreach (var sub in subs) {
             if (ct.IsCancellationRequested) return;
 
-            // Evaluate BOTH gates before branching — ChildRolloutAdvanced must record the mtime
-            // even on first sight, or the first re-scan tick would re-fire for an unchanged file.
+            // Both gates evaluate before branching so first sight also records the mtime. An
+            // already-seen rollout that hasn't grown keeps its watcher state as-is — alive and
+            // streaming, or reaped-idle — rather than respawning a reaped child for a finished rollout.
             var advanced = ChildRolloutAdvanced(rolloutMtimes, sub.FilePath, File.GetLastWriteTimeUtc(sub.FilePath));
             var isNew    = seen.Add(sub.FilePath);
 
-            // Already registered and the rollout hasn't grown: whatever watcher state exists is
-            // the intended one (alive and streaming, or reaped-idle) — don't respawn a reaped
-            // child for a rollout that is over.
             if (!isNew && !advanced) continue;
 
             var childAgentId = sub.ChildDashlessId;
@@ -1320,13 +1318,11 @@ static partial class WatchCommand {
             : DefaultClaudeSubagentIdleCeiling;
 
     /// <summary>
-    /// Reap ceiling for a Codex collab CHILD watcher (#550). Codex children are spawned by the
-    /// parent session watcher, whose own ancestry contains no codex process — so the parent-exit
-    /// watchdog never arms — and the server's StopWatcher goes only to the session watcher's
-    /// connection. Without a ceiling a child that outlives its parent's teardown has NO exit
-    /// path at all. Same "leak backstop, not end-of-conversation detector" sizing rationale as
-    /// <see cref="DefaultClaudeSubagentIdleCeiling"/>: a child posts no session-end, so reaping
-    /// late costs nothing while reaping a LIVE subagent drops the rest of its transcript.
+    /// Reap ceiling for a Codex collab CHILD watcher (#550), the backstop for a child orphaned by
+    /// a hard-killed parent (no parent-pid watchdog, and StopWatcher only reaches the session
+    /// watcher). Same sizing rationale as <see cref="DefaultClaudeSubagentIdleCeiling"/>: a leak
+    /// backstop, not an end-of-conversation detector — reaping late costs nothing, reaping a LIVE
+    /// subagent drops the rest of its transcript.
     /// </summary>
     internal static readonly TimeSpan DefaultCodexSubagentReapCeiling = TimeSpan.FromHours(6);
 
@@ -1388,14 +1384,12 @@ static partial class WatchCommand {
             TimeSpan       disconnectedSinceActivity = default
         ) {
         // Which vendors may idle-exit, and in which role:
-        //   codex             — both. Session: the 60-min idle window is the fallback session-end
-        //                       signal (no per-conversation parent-exit hook). CHILD (collab
-        //                       subagent, ScanCodexSubagents): the reap ceiling is a leak
-        //                       backstop (#550) — a child has no parent-pid watchdog (its spawner
-        //                       is the session watcher, whose ancestry has no codex process) and
-        //                       the server's StopWatcher goes only to the session watcher, so
-        //                       without the ceiling a child that outlives the parent's teardown
-        //                       never exits. Its server-side record is finalized by its own live
+        //   codex             — both. Session: the idle window is the fallback session-end signal
+        //                       (no per-conversation parent-exit hook). CHILD: the reap ceiling
+        //                       is a leak backstop (#550) — no parent-pid watchdog, and the
+        //                       server's StopWatcher only reaches the session watcher, so a child
+        //                       that outlives the parent's teardown would otherwise never exit.
+        //                       Server-side finalization stays with the child's own live
         //                       subagent-stop POST or the parent-end teardown, never this exit.
         //   antigravity       — session only; it spawns no child watchers at all.
         //   cursor            — both; no shell hook fires a reliable parent-exit signal either.
