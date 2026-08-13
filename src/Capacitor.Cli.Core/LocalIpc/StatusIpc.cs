@@ -16,7 +16,7 @@ public sealed record DaemonStatusDto(DaemonInfoDto Daemon, List<AgentStatusDto> 
 /// one payload. <see cref="Pid"/>/<see cref="InstanceId"/> are additive trailing members
 /// (AI-1655) identifying the reporting daemon process for client-side correlation — always
 /// populated by a current daemon (see the "every field ALWAYS emitted" rule above); null only
-/// were an old snapshot ever replayed from before this field existed.
+/// if an old snapshot from before this field existed were ever replayed.
 /// </summary>
 public sealed record DaemonInfoDto(
     string Name, string Version, string ServerUrl, string Connection, int MaxAgents, int ActiveAgents,
