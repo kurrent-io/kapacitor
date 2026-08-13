@@ -952,7 +952,7 @@ public static class DaemonCommands {
             // install one whose daemon would exit config-invalid and never satisfy readiness.
             var profileUrlValid = await ServiceInstallViability.PinnedProfileServerUrlValidAsync(env);
             var engine = new ServiceVerify((LaunchdServiceManager)manager, DaemonPidProbe.ValidatedPid, HelloProbe.RunAsync,
-                TimeProvider.System, profileViable: () => profileUrlValid);
+                TimeProvider.System, profileViable: () => profileUrlValid, gateEnv: Environment.GetEnvironmentVariable);
             var exit   = await engine.InstallVerifiedAsync(spec, replace: replace, CapacitorVersion.Current());
             if (exit != VerifyExit.Ok) return exit;
         } else {
@@ -1067,7 +1067,8 @@ public static class DaemonCommands {
     /// acquires the <see cref="ServiceTxnLock"/> itself — no double-acquire here.
     /// </summary>
     static async Task<int> ServiceStartVerified(IServiceManager manager, string id) {
-        var engine = new ServiceVerify((LaunchdServiceManager)manager, DaemonPidProbe.ValidatedPid, HelloProbe.RunAsync, TimeProvider.System);
+        var engine = new ServiceVerify((LaunchdServiceManager)manager, DaemonPidProbe.ValidatedPid, HelloProbe.RunAsync, TimeProvider.System,
+            gateEnv: Environment.GetEnvironmentVariable);
         var exit = await engine.StartVerifiedAsync(id);
 
         // Same closed-stdio tolerance as the engine's own Say: a broken pipe on this purely

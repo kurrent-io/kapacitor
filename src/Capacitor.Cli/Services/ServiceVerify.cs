@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.LocalIpc;
 
 namespace Capacitor.Cli.Services;
@@ -51,7 +52,26 @@ public static class VerifyExit {
     /// transaction wrote (a foreign writer). The marker, and any foreign file, are left alone.</summary>
     public const int RestoreVerification = 27;
     public const string RestoreVerificationToken = "verify_restore_verification";
+
+    /// <summary>start --verify's pre-mutation consent-directive gate (Task 16, AI-1655) refused to
+    /// proceed: the invoking launcher set <c>KCAP_CONSENT_SEED_DEFAULT</c> but the installed unit's
+    /// own baked directive, binary digest, or identity evidence didn't satisfy the gate. Fires right
+    /// after the fresh query and BEFORE the marker is even written — nothing is touched. The stderr
+    /// line <c>start_gate_reason=&lt;reason&gt;</c> names which check failed.</summary>
+    public const int StartGate = 28;
+    public const string StartGateToken = "verify_start_gate";
+
+    /// <summary>The gated start path detected drift between the evidence Phase A gated on and what
+    /// bootstrap was about to act on — the unit's plist content changed, or its digest stopped
+    /// matching, in the window between the gate check and the boot-out/bootstrap it authorizes.
+    /// Rolled back the same way a forward-phase failure is (bootout, plist retained).</summary>
+    public const int StartGateDrift = 29;
+    public const string StartGateDriftToken = "verify_start_gate_drift";
 }
+
+/// <summary>Why <see cref="ServiceVerify.EvaluateStartGate"/> refused a gated start. Reported on
+/// stderr as <c>start_gate_reason=&lt;snake_case&gt;</c> beside <see cref="VerifyExit.StartGateToken"/>.</summary>
+internal enum StartGateReason { DirectiveMissing, DirectiveInvalid, IdentityMismatch, ForeignBinary, PackageInconsistent, EvidenceUnreadable }
 
 /// <summary>
 /// Spec §3.4 transaction engine: viability → marker → mutate → ownership+readiness poll → final
@@ -71,7 +91,9 @@ sealed class ServiceVerify(
     Func<string, string?>? readPlist = null,
     Func<string, bool>? plistExists = null,
     Func<bool>? profileViable = null,
-    Action? onCommitted = null) {
+    Action? onCommitted = null,
+    Func<string, string?>? gateEnv = null,
+    Func<string, bool>? digestMatches = null) {
     static readonly TimeSpan LockWait      = TimeSpan.FromSeconds(10);
     static readonly TimeSpan PollInterval  = TimeSpan.FromMilliseconds(500);
     static readonly TimeSpan KillWait      = TimeSpan.FromSeconds(5);
@@ -118,6 +140,25 @@ sealed class ServiceVerify(
     /// <see cref="_readPlist"/> returns null for both.</summary>
     readonly Func<string, bool> _plistExists = plistExists ?? File.Exists;
 
+    /// <summary>Task 16 (AI-1655) seam: when non-null AND <c>gateEnv(ConsentSeedVar)</c> is
+    /// non-empty, <see cref="StartVerifiedAsync"/> runs the pre-mutation gate (Phase A) and the
+    /// TOCTOU re-check before bootstrap (Phase B). Null (the default) leaves start completely
+    /// behavior-unchanged — the production caller in <c>DaemonCommands</c> passes
+    /// <see cref="Environment.GetEnvironmentVariable(string)"/>.</summary>
+    readonly Func<string, string?>? _gateEnv = gateEnv;
+
+    /// <summary>Digest seam for the gate's foreign/package-inconsistent check and Phase B's
+    /// TOCTOU re-check. Defaults to <see cref="DaemonDigest.Matches"/>; tests that only care about
+    /// the identity half of the gate inject a trivial pass here since the real digest is a
+    /// fail-closed placeholder in dev/test builds.</summary>
+    readonly Func<string, bool> _digestMatches = digestMatches ?? DaemonDigest.Matches;
+
+    const string ConsentSeedVar = "KCAP_CONSENT_SEED_DEFAULT";
+    const string ProfileVar     = "KCAP_PROFILE";
+    const string UrlVar         = "KCAP_URL";
+    const string ExpectVar      = "KCAP_EXPECT_SERVER_URL";
+    const string ConfigDirVar   = "KCAP_CONFIG_DIR";
+
     /// <summary>Closed-stdio tolerance: the npm grandchild shares the GUI's pipes, so a broken pipe
     /// must never abort the transaction.</summary>
     static void Say(string line) {
@@ -147,8 +188,54 @@ sealed class ServiceVerify(
         var deadline = time.GetUtcNow() + _forwardBudget;
 
         var pre = manager.Query(serviceId, Remaining(deadline));
+
+        // Task 16 (AI-1655): gated ONLY when the invoking launcher itself carries the consent-seed
+        // directive — a bare `kcap daemon service start --verify` typed at a terminal never sees
+        // this branch. Phase A runs right here (after the fresh query, before ANY write) so a
+        // rejected gate leaves absolutely nothing touched — not even the marker.
+        var gated = _gateEnv is not null && !string.IsNullOrEmpty(_gateEnv(ConsentSeedVar));
+        string? phaseAPlistContent = null;
+
+        if (gated) {
+            var plistPath = LaunchdUnit.PlistPath(serviceId);
+            phaseAPlistContent = _readPlist(plistPath);
+            var unitEnv = phaseAPlistContent is not null ? LaunchdUnit.EnvFromPlist(phaseAPlistContent) : new Dictionary<string, string>();
+            var unitBinaryPath = phaseAPlistContent is not null ? LaunchdUnit.BinaryFromPlist(phaseAPlistContent) : null;
+
+            if (EvaluateStartGate(unitEnv, unitBinaryPath, ResolveInstallBinaryPath(), _gateEnv!, _digestMatches) is { } reason) {
+                Say($"start_gate_reason={GateReasonToken(reason)}");
+                Say(VerifyExit.StartGateToken);
+                return VerifyExit.StartGate;
+            }
+        }
+
         ServiceTxnMarker.Write(serviceId,
             new TxnMarker(1, "start", "captured", DescribeQuery(pre), "unloaded-plist-retained", null));
+
+        if (gated) {
+            // Phase B: the gated path never kickstarts a loaded label the way the ungated Start()
+            // below would — it boots it out first, then re-reads the plist and re-checks the digest
+            // ONE more time immediately before bootstrap. That closes the TOCTOU window between
+            // Phase A's read and this mutation: anything that changed the evidence in between (a
+            // foreign writer, a swapped binary) must not ride the gate's earlier pass into a start.
+            if (pre.Probe == LabelProbe.Loaded) {
+                manager.Stop(serviceId, Remaining(deadline), out var bootOutError);
+                if (bootOutError is not null) Say($"stop: {bootOutError}");
+            }
+
+            var plistPath        = LaunchdUnit.PlistPath(serviceId);
+            var recheckContent   = _readPlist(plistPath);
+            var recheckBinary    = recheckContent is not null ? LaunchdUnit.BinaryFromPlist(recheckContent) : null;
+            var digestStillGood  = recheckBinary is not null && _digestMatches(recheckBinary);
+
+            if (recheckContent != phaseAPlistContent || !digestStillGood) {
+                ServiceTxnMarker.Write(serviceId,
+                    new TxnMarker(1, "start", "gate-drift", DescribeQuery(pre), "unloaded-plist-retained", null));
+                await Rollback(serviceId);
+                Say(VerifyExit.StartGateDriftToken);
+                return VerifyExit.StartGateDrift;
+            }
+        }
 
         // A false Start doesn't short-circuit — the readiness poll is the source of truth — but the
         // reason is worth surfacing if it never recovers.
@@ -180,6 +267,122 @@ sealed class ServiceVerify(
 
         return await Rollback(serviceId);
     }
+
+    /// <summary>
+    /// Task 16 (AI-1655): the pure decision core of the gated start path. Given the environment
+    /// baked into the installed unit and this invocation's own environment, decides whether a
+    /// gated start may proceed. Order of checks (first hit wins): the invocation itself never asked
+    /// to be gated → null (pass); the unit lacks the directive the invocation carries →
+    /// <see cref="StartGateReason.DirectiveMissing"/>; the unit's directive isn't exactly
+    /// <c>"prompt"</c> → <see cref="StartGateReason.DirectiveInvalid"/>; the unit's baked binary
+    /// doesn't hash-match this CLI build's embedded digest → <see cref="StartGateReason.PackageInconsistent"/>
+    /// (same path as this install's own daemon binary — a broken/stale package, not a hijack) or
+    /// <see cref="StartGateReason.ForeignBinary"/> (a different path entirely); the unit's resolved
+    /// server identity disagrees with itself or with this invocation's expectation →
+    /// <see cref="StartGateReason.IdentityMismatch"/>. Any evidence read that throws (a malformed
+    /// plist fragment, an unreadable config file) reports <see cref="StartGateReason.EvidenceUnreadable"/>
+    /// rather than letting the exception escape — pure and total over its inputs.
+    /// </summary>
+    internal static StartGateReason? EvaluateStartGate(
+            IReadOnlyDictionary<string, string> unitEnv, string? unitBinaryPath,
+            string? installBinaryPath, Func<string, string?> env, Func<string, bool>? digestMatches = null) {
+        if (string.IsNullOrEmpty(env(ConsentSeedVar))) return null; // this invocation never asked to be gated
+
+        if (!unitEnv.TryGetValue(ConsentSeedVar, out var unitDirective) || string.IsNullOrEmpty(unitDirective))
+            return StartGateReason.DirectiveMissing;
+
+        if (unitDirective != "prompt")
+            return StartGateReason.DirectiveInvalid;
+
+        var matches = digestMatches ?? DaemonDigest.Matches;
+
+        try {
+            if (unitBinaryPath is null) return StartGateReason.EvidenceUnreadable;
+
+            if (!matches(unitBinaryPath)) {
+                var samePath = installBinaryPath is not null && string.Equals(
+                    Path.GetFullPath(unitBinaryPath), Path.GetFullPath(installBinaryPath), StringComparison.OrdinalIgnoreCase);
+                return samePath ? StartGateReason.PackageInconsistent : StartGateReason.ForeignBinary;
+            }
+        } catch {
+            return StartGateReason.EvidenceUnreadable;
+        }
+
+        try {
+            return EvaluateIdentity(unitEnv, env);
+        } catch {
+            return StartGateReason.EvidenceUnreadable;
+        }
+    }
+
+    /// <summary>
+    /// Identity half of <see cref="EvaluateStartGate"/>, split out so its own try/catch stays small.
+    /// The unit's effective identity is its baked <c>KCAP_URL</c> (precedence) or, absent that, its
+    /// baked profile's <c>server_url</c> looked up via <see cref="ConfigMutator.LoadPure"/> under the
+    /// unit's own baked <c>KCAP_CONFIG_DIR</c> (or the default config root when it baked none). The
+    /// stale-pin rule: the unit's OWN baked <c>KCAP_EXPECT_SERVER_URL</c>, its resolved identity, and
+    /// this invocation's expected server URL must all agree once present — not just any one pair of
+    /// them — so a unit whose baked expectation no longer matches what it actually resolves to is
+    /// caught even when a fresh invocation's expectation happens to match one side of that split.
+    /// Absent evidence makes no assertion; this is drift detection, not a requirement that every
+    /// field be pinned. Profile identity is compared by exact name, server identity through
+    /// <see cref="AppConfig.NormalizeUrl"/> case-insensitively.
+    /// </summary>
+    static StartGateReason? EvaluateIdentity(IReadOnlyDictionary<string, string> unitEnv, Func<string, string?> env) {
+        unitEnv.TryGetValue(ProfileVar, out var unitProfile);
+        unitEnv.TryGetValue(UrlVar, out var unitUrl);
+        unitEnv.TryGetValue(ExpectVar, out var unitExpect);
+
+        var envProfile = env(ProfileVar);
+        var envExpect  = env(ExpectVar);
+
+        if (!string.IsNullOrEmpty(envProfile) && !string.IsNullOrEmpty(unitProfile)
+            && !string.Equals(envProfile, unitProfile, StringComparison.Ordinal))
+            return StartGateReason.IdentityMismatch;
+
+        var unitResolved = !string.IsNullOrEmpty(unitUrl) ? unitUrl : BakedProfileServerUrl(unitEnv, unitProfile);
+
+        string? canonical = null;
+        foreach (var candidate in new[] { unitResolved, unitExpect, envExpect }) {
+            if (string.IsNullOrEmpty(candidate)) continue;
+            var normalized = AppConfig.NormalizeUrl(candidate);
+            if (canonical is null) { canonical = normalized; continue; }
+            if (!string.Equals(canonical, normalized, StringComparison.OrdinalIgnoreCase))
+                return StartGateReason.IdentityMismatch;
+        }
+
+        return null;
+    }
+
+    /// <summary>The <c>KCAP_URL</c>-absent fallback for <see cref="EvaluateIdentity"/> — mirrors
+    /// <c>DaemonCommands.BakedProfileServerUrl</c> (the same lookup <c>service status --json</c>
+    /// does for its UX-only evidence fields), duplicated here so the pure gate stays self-contained.</summary>
+    static string? BakedProfileServerUrl(IReadOnlyDictionary<string, string> unitEnv, string? profile) {
+        if (string.IsNullOrEmpty(profile)) return null;
+        var configPath = unitEnv.TryGetValue(ConfigDirVar, out var dir) && !string.IsNullOrEmpty(dir)
+            ? Path.Combine(dir, "config.json")
+            : AppConfig.GetConfigPath();
+        var config = ConfigMutator.LoadPure(configPath);
+        return config.Profiles.TryGetValue(profile, out var p) ? p.ServerUrl : null;
+    }
+
+    /// <summary>The daemon binary this CLI build would itself install — mirrors
+    /// <c>DaemonCommands.ResolveDaemonBinary</c> (duplicated rather than shared across the two
+    /// classes, same precedent as this file's already-duplicated verify exit codes).</summary>
+    static string? ResolveInstallBinaryPath() {
+        var ext     = OperatingSystem.IsWindows() ? ".exe" : "";
+        var sibling = Path.Combine(AppContext.BaseDirectory, $"kcap-daemon{ext}");
+        return File.Exists(sibling) ? sibling : null;
+    }
+
+    static string GateReasonToken(StartGateReason reason) => reason switch {
+        StartGateReason.DirectiveMissing     => "directive_missing",
+        StartGateReason.DirectiveInvalid     => "directive_invalid",
+        StartGateReason.IdentityMismatch     => "identity_mismatch",
+        StartGateReason.ForeignBinary        => "foreign_binary",
+        StartGateReason.PackageInconsistent  => "package_inconsistent",
+        _                                    => "evidence_unreadable"
+    };
 
     /// <summary>Ownership + readiness predicate: hello well-formed AND the freshly-queried job pid
     /// matches the validated daemon pid (both non-null). Returns the observed job pid so a caller can

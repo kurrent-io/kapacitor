@@ -375,4 +375,95 @@ public class ServiceVerifyStartTests {
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
+
+    // ── Task 16 (AI-1655): gated start — Phase A (exit 28) / Phase B (exit 29) ──
+
+    /// <summary>Minimal launchd plist whose <c>&lt;array&gt;</c> (ProgramArguments) and baked
+    /// <c>KCAP_CONSENT_SEED_DEFAULT</c> are exactly what <see cref="LaunchdUnit.BinaryFromPlist"/>/
+    /// <see cref="LaunchdUnit.EnvFromPlist"/> read — real launchd never sees this content, only the
+    /// gate's re-parse of it does.</summary>
+    static string MinimalPlist(string binary, string consentSeedDefault) => $"""
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+          <key>Label</key><string>io.kurrent.kcap.daemon.svc-verify</string>
+          <key>ProgramArguments</key><array>
+            <string>{binary}</string>
+          </array>
+          <key>EnvironmentVariables</key><dict>
+            <key>KCAP_CONSENT_SEED_DEFAULT</key><string>{consentSeedDefault}</string>
+          </dict>
+        </dict>
+        </plist>
+        """;
+
+    [Test]
+    public async Task Pre_mutation_gate_failure_returns_28_and_touches_nothing() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            var manager = new FakeServiceManager();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            // The unit bakes nothing (readPlist "sees" no unit) while this invocation carries the
+            // consent-seed directive — Phase A's DirectiveMissing case — so the gate must fire
+            // before the fresh query's under-lock work does anything else.
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: _ => null,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
+
+            var exit = await sut.StartVerifiedAsync(Id);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
+            await Assert.That(manager.Calls.Count).IsEqualTo(1);
+            await Assert.That(manager.Calls.All(c => c == "query")).IsTrue();
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Plist_drift_between_phase_a_and_phase_b_rolls_back_to_29_without_ever_starting() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            // Loaded at the fresh query — the gated path must boot it out (never kickstart it)
+            // before re-checking evidence immediately ahead of bootstrap.
+            var manager = new FakeServiceManager { Started = true };
+            var stopPhases = new List<string?>();
+            manager.OnStop = id => stopPhases.Add(ServiceTxnMarker.Read(id)?.Phase);
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            var reads = 0;
+            string? ReadPlist(string _) {
+                reads++;
+                // Phase A observes a passing unit; the plist a foreign writer swaps in before Phase
+                // B's re-read points at a different binary entirely — content drift, not just a
+                // digest failure (digestMatches is stubbed to pass either way below).
+                return reads == 1 ? MinimalPlist("/bin/kcap-daemon", "prompt") : MinimalPlist("/bin/kcap-daemon-moved", "prompt");
+            }
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: ReadPlist,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                digestMatches: _ => true);
+
+            var exit = await sut.StartVerifiedAsync(Id);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.StartGateDrift);
+            await Assert.That(manager.Calls.Contains("stop")).IsTrue();
+            await Assert.That(manager.StartCalls).IsEqualTo(0);
+            // The boot-out (Phase B, pre-drift-detection) ran under the "captured" phase; the
+            // rollback's own stop (post-drift-detection) ran under "gate-drift" — proving the
+            // marker was written BEFORE Rollback fired, not just that the exit code is 29.
+            await Assert.That(stopPhases.Count).IsEqualTo(2);
+            await Assert.That(stopPhases[0]).IsEqualTo("captured");
+            await Assert.That(stopPhases[1]).IsEqualTo("gate-drift");
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
 }
