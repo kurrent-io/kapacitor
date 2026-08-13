@@ -196,6 +196,11 @@ sealed class ServiceVerify(
         var gated = _gateEnv is not null && !string.IsNullOrEmpty(_gateEnv(ConsentSeedVar));
         string? phaseAPlistContent = null;
 
+        // Task 18 (AI-1655): the unit's own baked KCAP_EXPECT_SERVER_URL, captured alongside Phase
+        // A's gate evaluation and threaded through to the readiness-timeout attribution below —
+        // there is no other point in this method that parses the unit's environment.
+        string? unitExpectation = null;
+
         if (gated) {
             var plistPath = LaunchdUnit.PlistPath(serviceId);
             phaseAPlistContent = _readPlist(plistPath);
@@ -210,6 +215,7 @@ sealed class ServiceVerify(
                 var unitEnv = phaseAPlistContent is not null ? LaunchdUnit.EnvFromPlist(phaseAPlistContent) : new Dictionary<string, string>();
                 var unitBinaryPath = phaseAPlistContent is not null ? LaunchdUnit.BinaryFromPlist(phaseAPlistContent) : null;
                 reason = EvaluateStartGate(unitEnv, unitBinaryPath, ResolveInstallBinaryPath(), _gateEnv!, _digestMatches);
+                unitEnv.TryGetValue(ExpectVar, out unitExpectation);
             } catch {
                 reason = StartGateReason.EvidenceUnreadable;
             }
@@ -261,6 +267,17 @@ sealed class ServiceVerify(
             }
         }
 
+        // Task 18 (AI-1655): verified pre-clear before bootstrap, gated paths only — the marker a
+        // readiness timeout later finds is only trustworthy evidence for THIS attempt once any
+        // leftover from a prior one is provably gone. A clear that can't be verified (locked file,
+        // undeletable directory sitting at the path) disables coded attribution for this action
+        // entirely rather than risk attributing a stale marker; the mutation itself still proceeds.
+        var attributionEnabled = false;
+        if (gated) {
+            attributionEnabled = BootRefusalReader.TryClear(serviceId);
+            if (!attributionEnabled) Say("boot-refusal marker could not be cleared; coded attribution disabled");
+        }
+
         // A false Start doesn't short-circuit — the readiness poll is the source of truth — but the
         // reason is worth surfacing if it never recovers.
         if (!manager.Start(serviceId, Remaining(deadline), out var startError) && startError is not null) Say($"start: {startError}");
@@ -270,17 +287,24 @@ sealed class ServiceVerify(
 
         var pollDeadline = deadline - _confirmReserve;
 
+        // Task 18: every job pid actually observed (owned or not) across this readiness window —
+        // the attribution rule below only trusts a marker whose pid was seen here, never a stale one.
+        var observedJobPids = new HashSet<int>();
+
         while (time.GetUtcNow() < pollDeadline) {
             var (ready, pid) = await IsReadyAsync(serviceId, pollDeadline, requirePid: null);
+            if (pid is not null) observedJobPids.Add(pid.Value);
             if (ready) {
                 // Recheck against the ORIGINAL deadline, pinning pid: a job that answered then
                 // respawned under KeepAlive must not bless a crash-looping unit.
-                var (confirmed, _) = await IsReadyAsync(serviceId, deadline, requirePid: pid);
+                var (confirmed, confirmedPid) = await IsReadyAsync(serviceId, deadline, requirePid: pid);
+                if (confirmedPid is not null) observedJobPids.Add(confirmedPid.Value);
                 if (confirmed) {
                     ServiceTxnMarker.Write(serviceId,
                         new TxnMarker(1, "start", "committed", DescribeQuery(pre), "unloaded-plist-retained", null));
                     onCommitted?.Invoke();
                     ServiceTxnMarker.Delete(serviceId);
+                    if (gated) BootRefusalReader.Consume(serviceId); // hygiene — no refusal to attribute on success
                     return VerifyExit.Ok;
                 }
             }
@@ -289,8 +313,35 @@ sealed class ServiceVerify(
             await Task.Delay(PollInterval, time, CancellationToken.None);
         }
 
-        return await Rollback(serviceId);
+        var rollbackExit = await Rollback(serviceId);
+
+        // Task 18: attribute ONLY on the genuine readiness-timeout exit, ONLY when pre-clear was
+        // verified, and ONLY via the pure Attributable rule — the exit code itself never changes.
+        if (gated && attributionEnabled && rollbackExit == VerifyExit.ReadinessTimeout
+            && BootRefusalReader.TryRead(serviceId) is { } evidence
+            && Attributable(evidence, serviceId, unitExpectation, observedJobPids)) {
+            Say($"refusal_reason={evidence.Token}");
+            BootRefusalReader.Consume(serviceId);
+        }
+
+        return rollbackExit;
     }
+
+    /// <summary>
+    /// Task 18 (AI-1655): the pure decision core of readiness-timeout boot-refusal attribution. A
+    /// marker is trustworthy evidence for THIS attempt only when: it names this same daemon; it
+    /// carries no attempt id (an attempt-id-bearing marker is DETACHED evidence for a different
+    /// subsystem, not this service verb's own boot — see the daemon-side boot-carrier lifecycle);
+    /// its baked server expectation agrees with the unit's own (null == null counts as agreement —
+    /// no expectation configured on either side is not a mismatch); and its pid was positively
+    /// observed as a job pid during THIS readiness window, never a pid merely assumed from a stale
+    /// marker left by a previous incarnation.
+    /// </summary>
+    internal static bool Attributable(BootRefusalEvidence evidence, string daemonName, string? unitExpectation, IReadOnlySet<int> observedJobPids) =>
+        evidence.DaemonName == daemonName
+        && evidence.AttemptId is null
+        && evidence.Expectation == unitExpectation
+        && observedJobPids.Contains(evidence.Pid);
 
     /// <summary>
     /// Task 16 (AI-1655): the pure decision core of the gated start path. Given the environment
