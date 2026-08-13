@@ -91,6 +91,59 @@ public class CommandEventsTests {
         await Assert.That(flags.Length).IsEqualTo(0);
     }
 
+    // Regression: a --message/-m value is free-form user prose, and a message that happens to
+    // start with "--" (e.g. someone pasting a real flag name as part of their bug report) must
+    // never be captured as if it were a flag name in its own right — that would leak the message
+    // text itself into telemetry, defeating the whole point of never capturing message content.
+    [Test]
+    public async Task Message_value_that_looks_like_a_flag_is_never_captured_short_form() {
+        var flags = CommandEvents.Flags(["feedback", "--bug", "-m", "--looks-like-a-flag"]);
+
+        await Assert.That(flags).Contains("--bug");
+        await Assert.That(flags).DoesNotContain("--looks-like-a-flag");
+        // "-m" itself was never captured before this fix either — short flags don't match
+        // FlagShape's "--" prefix requirement — so this isn't a NEW gap introduced by the fix.
+        await Assert.That(flags).DoesNotContain("-m");
+    }
+
+    [Test]
+    public async Task Message_value_that_looks_like_a_flag_is_never_captured_long_form() {
+        var flags = CommandEvents.Flags(["feedback", "--bug", "--message", "--looks-like-a-flag"]);
+
+        // The flag NAME --message is still legitimate metadata and must still be reported —
+        // only the value bound to it is data.
+        await Assert.That(flags).Contains("--bug");
+        await Assert.That(flags).Contains("--message");
+        await Assert.That(flags).DoesNotContain("--looks-like-a-flag");
+        await Assert.That(flags.Length).IsEqualTo(2);
+    }
+
+    // A --message value that does NOT look like a flag must obviously still be excluded (it never
+    // starts with "--", so it was already excluded before this fix) — pinned here so a future
+    // change to the skip mechanism can't accidentally start treating it as a flag some other way.
+    [Test]
+    public async Task Ordinary_message_value_is_still_excluded() {
+        var flags = CommandEvents.Flags(["feedback", "--feedback", "--message", "the app crashed on startup"]);
+
+        await Assert.That(flags).Contains("--feedback");
+        await Assert.That(flags).Contains("--message");
+        await Assert.That(flags.Length).IsEqualTo(2);
+    }
+
+    // Other verbs' flag extraction must be byte-for-byte unchanged by the value-flag skip —
+    // none of their flags are in CommandEvents' ValueFlags set, so this is the same assertion
+    // Flags_are_collected_sorted_and_deduplicated and Flag_values_are_stripped_and_never_reported
+    // already make; repeated here explicitly as the regression check for this fix.
+    [Test]
+    public async Task Unrelated_verbs_flag_extraction_is_unchanged() {
+        var setupFlags = CommandEvents.Flags(["setup", "--no-prompt", "--skip-codex-hooks", "--no-prompt"]);
+        await Assert.That(setupFlags).IsEquivalentTo(["--no-prompt", "--skip-codex-hooks"]);
+
+        var serverUrlFlags = CommandEvents.Flags(
+            ["setup", "--server-url=https://internal.corp.example", "--server-url", "https://internal.corp.example"]);
+        await Assert.That(serverUrlFlags).IsEquivalentTo(["--server-url"]);
+    }
+
     // Shape rule: the pattern cannot express a path, URL, GUID, or email.
     [Test]
     [Arguments("--Bad-Upper")]

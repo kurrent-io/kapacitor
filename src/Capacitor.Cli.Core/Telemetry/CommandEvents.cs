@@ -59,6 +59,20 @@ public static partial class CommandEvents {
 
     const int MaxFlags = 12;
 
+    // Flags whose NEXT argv token is a VALUE, never a candidate flag name — skipped outright by
+    // Flags() below, even when that value happens to itself look like a flag (e.g. a --message
+    // value that starts with "--"). Without this, `kcap feedback --bug -m --looks-like-a-flag`
+    // would report the message text "--looks-like-a-flag" as a captured flag name, leaking
+    // free-form user prose into telemetry.
+    //
+    // Seeded with just -m/--message: the one value-taking flag across the CLI whose value is
+    // ever free-form text a person types, rather than a fixed-vocabulary token (--model,
+    // --visibility, …) or something already excluded by shape (a URL, a path, a session id).
+    // Extend this set if another free-text value flag is ever added.
+    static readonly HashSet<string> ValueFlags = new(StringComparer.Ordinal) {
+        "-m", "--message",
+    };
+
     public static bool IsReportable(string command) => !Denylisted.Contains(command);
 
     /// <summary>
@@ -84,14 +98,33 @@ public static partial class CommandEvents {
     /// ceiling is a GUID token (38 chars: `--` + 36 UUID). Headroom prevents breakage from
     /// minor flag additions; relaxing re-admits GUIDs; tightening silently drops real flags.
     /// </summary>
-    public static string[] Flags(string[] args) =>
-        args.Where(a => a.StartsWith("--", StringComparison.Ordinal))
-            .Select(a => a.Split('=', 2)[0])
+    public static string[] Flags(string[] args) {
+        var candidates = new List<string>();
+
+        for (var i = 0; i < args.Length; i++) {
+            var token = args[i];
+
+            if (token.StartsWith("--", StringComparison.Ordinal)) {
+                candidates.Add(token.Split('=', 2)[0]);
+            }
+
+            // The token bound to a value-taking flag is DATA, not a candidate flag name — skip
+            // it outright so it never reaches the shape/dedup pipeline below, whatever it looks
+            // like. This is a plain array skip, not a lookahead into an already-consumed token:
+            // the loop's own `i++` advances past `token` as usual, and this second `i++` advances
+            // past the value bound to it.
+            if (ValueFlags.Contains(token)) {
+                i++;
+            }
+        }
+
+        return candidates
             .Where(a => FlagShape().IsMatch(a))
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
             .Take(MaxFlags)
             .ToArray();
+    }
 
     [GeneratedRegex(@"^--[a-z][a-z0-9-]{0,34}$")]
     private static partial Regex FlagShape();
