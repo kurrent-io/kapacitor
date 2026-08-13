@@ -54,6 +54,29 @@ public class LaunchdUnitTests {
     }
 
     [Test]
+    public async Task EnvFromPlist_round_trips_what_Plist_writes() {
+        var spec = Spec() with {
+            Environment = new Dictionary<string, string> {
+                ["KCAP_PROFILE"]              = "acme",
+                ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
+                ["KCAP_EXPECT_SERVER_URL"]    = "https://s",
+            },
+        };
+        var xml = LaunchdUnit.Plist(spec);
+        var env = LaunchdUnit.EnvFromPlist(xml);
+
+        await Assert.That(env["KCAP_PROFILE"]).IsEqualTo("acme");
+        await Assert.That(env["KCAP_CONSENT_SEED_DEFAULT"]).IsEqualTo("prompt");
+        await Assert.That(env["KCAP_EXPECT_SERVER_URL"]).IsEqualTo("https://s");
+    }
+
+    [Test]
+    public async Task EnvFromPlist_on_plist_without_env_dict_returns_empty() {
+        var xml = LaunchdUnit.Plist(Spec() with { Environment = new Dictionary<string, string>() });
+        await Assert.That(LaunchdUnit.EnvFromPlist(xml)).IsEmpty();
+    }
+
+    [Test]
     public async Task StatusFromPrint_maps_exit_and_state() {
         await Assert.That(LaunchdUnit.StatusFromPrint(exitCode: 1, stdout: "")).IsEqualTo(ServiceState.NotInstalled);
         await Assert.That(LaunchdUnit.StatusFromPrint(0, "state = running")).IsEqualTo(ServiceState.Running);

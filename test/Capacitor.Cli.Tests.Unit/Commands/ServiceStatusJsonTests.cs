@@ -38,4 +38,42 @@ public class ServiceStatusJsonTests {
         await Assert.That(doc.RootElement.GetProperty("state").GetString()).IsEqualTo("not_installed");
         await Assert.That(doc.RootElement.GetProperty("unit_present").GetBoolean()).IsTrue();
     }
+
+    [Test]
+    public async Task Status_json_carries_unit_fields_snake_cased() {
+        var json = JsonSerializer.Serialize(
+            new ServiceStatusJson("svc", true, "installed", "/b", "/b", null, null, false, false,
+                UnitProfile: "acme", UnitServerUrl: "https://s", UnitExpectedServer: "https://s",
+                UnitConsentSeed: "prompt"),
+            ServiceJsonContext.Default.ServiceStatusJson);
+
+        await Assert.That(json).Contains("\"unit_profile\":\"acme\"");
+        await Assert.That(json).Contains("\"unit_consent_seed\":\"prompt\"");
+        await Assert.That(json).Contains("\"unit_expected_server\":\"https://s\"");
+    }
+
+    [Test]
+    public async Task Render_carries_unit_evidence_when_supplied() {
+        var q = new ServiceQuery(LabelProbe.Loaded, true, ServiceState.Running, "/u/kcap-daemon", 42);
+        var (json, _) = ServiceStatusRender.Render(q, "default", "/i/kcap-daemon", 42, false, false,
+            unitProfile: "acme", unitServerUrl: "https://s", unitExpectedServer: "https://s", unitConsentSeed: "prompt");
+        using var doc = JsonDocument.Parse(json!);
+        var r = doc.RootElement;
+        await Assert.That(r.GetProperty("unit_profile").GetString()).IsEqualTo("acme");
+        await Assert.That(r.GetProperty("unit_server_url").GetString()).IsEqualTo("https://s");
+        await Assert.That(r.GetProperty("unit_expected_server").GetString()).IsEqualTo("https://s");
+        await Assert.That(r.GetProperty("unit_consent_seed").GetString()).IsEqualTo("prompt");
+    }
+
+    [Test]
+    public async Task Render_writes_null_unit_evidence_when_not_supplied() {
+        var q = new ServiceQuery(LabelProbe.Loaded, true, ServiceState.Running, "/u/kcap-daemon", 42);
+        var (json, _) = ServiceStatusRender.Render(q, "default", "/i/kcap-daemon", 42, false, false);
+        using var doc = JsonDocument.Parse(json!);
+        var r = doc.RootElement;
+        await Assert.That(r.GetProperty("unit_profile").ValueKind).IsEqualTo(JsonValueKind.Null);
+        await Assert.That(r.GetProperty("unit_server_url").ValueKind).IsEqualTo(JsonValueKind.Null);
+        await Assert.That(r.GetProperty("unit_expected_server").ValueKind).IsEqualTo(JsonValueKind.Null);
+        await Assert.That(r.GetProperty("unit_consent_seed").ValueKind).IsEqualTo(JsonValueKind.Null);
+    }
 }

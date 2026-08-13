@@ -1083,8 +1083,11 @@ public static class DaemonCommands {
         var daemonPid       = DaemonPidProbe.ValidatedPid(id);
         var txnActive       = ServiceTxnLock.IsHeld(id);
         var txnMarker       = ServiceTxnMarker.Exists(id);
+        var (unitProfile, unitServerUrl, unitExpectedServer, unitConsentSeed) = UnitEnvEvidence(id, query.UnitPresent);
 
-        var (json, exitCode) = ServiceStatusRender.Render(query, id, installBinary, daemonPid, txnMarker, txnActive);
+        var (json, exitCode) = ServiceStatusRender.Render(
+            query, id, installBinary, daemonPid, txnMarker, txnActive,
+            unitProfile, unitServerUrl, unitExpectedServer, unitConsentSeed);
 
         if (json is null) {
             await Console.Error.WriteLineAsync($"Could not determine service status for '{id}' ({manager.Describe()}).");
@@ -1093,6 +1096,49 @@ public static class DaemonCommands {
 
         await Console.Out.WriteLineAsync(json);
         return exitCode;
+    }
+
+    /// <summary>
+    /// UX-evidence-only re-read of the installed unit's baked environment (spec §3): which profile,
+    /// server URL, expectation and consent-seed default it was installed with. Sourced by re-reading the
+    /// plist rather than threading it through <see cref="ServiceQuery"/> so the query type stays a pure
+    /// lifecycle probe. All four are null when no unit is present or the re-read/parse fails for any
+    /// reason (moved/corrupt plist, permissions) — this is evidence for an operator, never load-bearing.
+    /// </summary>
+    static (string? Profile, string? ServerUrl, string? ExpectedServer, string? ConsentSeed)
+            UnitEnvEvidence(string id, bool unitPresent) {
+        if (!unitPresent) return (null, null, null, null);
+
+        try {
+            var env = LaunchdUnit.EnvFromPlist(File.ReadAllText(LaunchdUnit.PlistPath(id)));
+            env.TryGetValue("KCAP_PROFILE", out var profile);
+            env.TryGetValue("KCAP_EXPECT_SERVER_URL", out var expectedServer);
+            env.TryGetValue("KCAP_CONSENT_SEED_DEFAULT", out var consentSeed);
+
+            var serverUrl = env.TryGetValue("KCAP_URL", out var bakedUrl)
+                ? bakedUrl
+                : BakedProfileServerUrl(env, profile);
+
+            return (profile, serverUrl, expectedServer, consentSeed);
+        } catch {
+            return (null, null, null, null);
+        }
+    }
+
+    /// <summary>The <c>KCAP_URL</c>-absent fallback for <see cref="UnitEnvEvidence"/>: the baked
+    /// profile's <c>server_url</c>, read from the baked <c>KCAP_CONFIG_DIR</c> (or the default config
+    /// root when none was baked) — null on any ambiguity (no baked profile) or miss.</summary>
+    static string? BakedProfileServerUrl(IReadOnlyDictionary<string, string> env, string? profile) {
+        if (string.IsNullOrEmpty(profile)) return null;
+        try {
+            var configPath = env.TryGetValue("KCAP_CONFIG_DIR", out var dir) && !string.IsNullOrEmpty(dir)
+                ? Path.Combine(dir, "config.json")
+                : AppConfig.GetConfigPath();
+            var config = ConfigMutator.LoadPure(configPath);
+            return config.Profiles.TryGetValue(profile, out var p) ? p.ServerUrl : null;
+        } catch {
+            return null;
+        }
     }
 
     static int ServiceUsage() {

@@ -12,7 +12,8 @@ static class ServiceEnvironment {
     /// <summary>Variables carried from the installing shell into the service unit. No credentials —
     /// the unit is a file on disk.</summary>
     static readonly string[] Keys =
-        ["PATH", "KCAP_CONFIG_DIR", "KCAP_PROFILE", "KCAP_URL", "KCAP_CLAUDE_PATH", "KCAP_CODEX_PATH"];
+        ["PATH", "KCAP_CONFIG_DIR", "KCAP_PROFILE", "KCAP_URL", "KCAP_CLAUDE_PATH", "KCAP_CODEX_PATH",
+         "KCAP_CONSENT_SEED_DEFAULT", "KCAP_EXPECT_SERVER_URL"];
 
     /// <summary>
     /// The unattended reviewers' opt-OUT switches. Carried on every platform: these are booleans, not

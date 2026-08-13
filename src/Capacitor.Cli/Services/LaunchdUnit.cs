@@ -98,6 +98,33 @@ static class LaunchdUnit {
         return array?.Elements("string").FirstOrDefault()?.Value;
     }
 
+    /// <summary>
+    /// The environment baked into a plist — the read side of the <c>&lt;key&gt;EnvironmentVariables&lt;/key&gt;
+    /// &lt;dict&gt;</c> block <see cref="Plist"/> writes. Returns empty rather than throwing when the block is
+    /// absent or empty; used by <c>daemon service status --json</c> to surface the baked profile/server/consent
+    /// evidence as UX-only fields.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> EnvFromPlist(string plistXml) {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        var topDict = XDocument.Parse(plistXml).Root?.Element("dict");
+        if (topDict is null) return result;
+        XElement? cursor = null;
+        foreach (var el in topDict.Elements()) {
+            if (cursor is not null) {           // cursor was <key>EnvironmentVariables</key>
+                if (el.Name == "dict") {
+                    string? key = null;
+                    foreach (var kv in el.Elements()) {
+                        if (kv.Name == "key") key = kv.Value;
+                        else if (kv.Name == "string" && key is not null) { result[key] = kv.Value; key = null; }
+                    }
+                }
+                break;
+            }
+            if (el.Name == "key" && el.Value == "EnvironmentVariables") cursor = el;
+        }
+        return result;
+    }
+
     // ── command vectors (uid passed in so these stay pure) ──
     public static string[] BootstrapArgs(int uid, string plistPath) => ["bootstrap", $"gui/{uid}", plistPath];
     public static string[] BootoutArgs(int uid, string id)          => ["bootout", $"gui/{uid}/{Label(id)}"];
