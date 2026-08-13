@@ -331,7 +331,14 @@ public static class AppConfig {
                 // `result.Config` holds here — the mutate callback need not (and must not,
                 // to avoid clobbering a concurrent writer) reuse this already-read snapshot.
                 await ConfigMutator.MutateAsync(c => c, ct);
-            } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            } catch (Exception ex) when (ex is not OperationCanceledException) {
+                // Broad on purpose: unlike the pre-ConfigMutator write, this path now also goes
+                // through ConfigFileLock, which can throw TimeoutException (10s lock wait) or a
+                // mutex-open failure that isn't UnauthorizedAccessException — every kcap command
+                // hits this at startup, and the comment above still holds: the in-memory migrated
+                // config must never be dropped just because the best-effort persist couldn't run.
+                // OperationCanceledException is excluded so a caller's own cancellation still
+                // propagates instead of being swallowed as a warning.
                 await Console.Error.WriteLineAsync($"Warning: could not persist migrated config at {ConfigPath}: {ex.Message}");
             }
         }
