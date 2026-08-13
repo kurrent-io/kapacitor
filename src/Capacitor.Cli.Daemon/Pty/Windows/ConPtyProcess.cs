@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Pty;
 using Microsoft.Win32.SafeHandles;
 using static Capacitor.Cli.Daemon.Pty.Windows.ConPtyInterop;
@@ -111,6 +112,13 @@ public sealed class ConPtyProcess : IPtyProcess {
         // Parity with UnixPtyProcess: never leak daemon supervision state into spawned
         // children. Auto-restart is out of scope on Windows.
         foreach (var key in PtyEnvScrub.DaemonSupervisionVars) {
+            env.Remove(key);
+        }
+
+        // Defense in depth (AI-1655): CaptureBootCarriers already clears these from the daemon's
+        // own ambient env at boot, so this loop should normally be a no-op — but a spawned agent
+        // must never see the daemon's boot-local consent-seed/expectation/attempt vars either way.
+        foreach (var key in DaemonRunner.BootCarriers.All) {
             env.Remove(key);
         }
 

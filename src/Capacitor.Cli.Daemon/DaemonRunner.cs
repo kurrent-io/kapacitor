@@ -42,6 +42,12 @@ public static partial class DaemonRunner {
         config.OriginalArgs = args;
         var awaitLock = args.Contains("--await-lock");
 
+        // Boot-local carriers: read off ambient env and IMMEDIATELY remove them, before anything
+        // else reads env or the host builder exists, so no descendant process (PTY-spawned agent,
+        // ACP child, a self-respawned successor's own inheritance from OUR ambient env) can ever
+        // observe them except through the explicit re-injection paths that need them.
+        CaptureBootCarriers(config, Environment.GetEnvironmentVariable, k => Environment.SetEnvironmentVariable(k, null));
+
         // Resolve server URL + active profile. The CLI does this in its own
         // Program.cs, but the daemon is a separate process so its statics start
         // empty. Skips repo discovery (the daemon isn't bound to a working dir);
@@ -841,6 +847,37 @@ public static partial class DaemonRunner {
         "none"                         => LogLevel.None,
         _                              => null
     };
+
+    /// <summary>
+    /// The three boot-local carrier env vars (AI-1655): set by whatever spawned this daemon
+    /// (`kcap daemon start`, a service unit, or a self-respawned predecessor), read exactly once at
+    /// boot by <see cref="CaptureBootCarriers"/>, and never left in the ambient process environment
+    /// afterward. Names are shared with <c>DetachedRespawnStrategy</c>'s re-injection and the PTY/ACP
+    /// scrub lists so every consumer agrees on the literal strings.
+    /// </summary>
+    internal static class BootCarriers {
+        public const string Seed    = "KCAP_CONSENT_SEED_DEFAULT";
+        public const string Expect  = "KCAP_EXPECT_SERVER_URL";
+        public const string Attempt = "KCAP_BOOT_ATTEMPT";
+        public static readonly string[] All = [Seed, Expect, Attempt];
+    }
+
+    /// <summary>
+    /// Reads <see cref="BootCarriers.Seed"/>/<see cref="BootCarriers.Expect"/>/<see cref="BootCarriers.Attempt"/>
+    /// off ambient env into <paramref name="config"/> and immediately clears them via
+    /// <paramref name="clear"/> — called from <see cref="RunAsync"/> right after
+    /// <c>config.OriginalArgs = args;</c>, BEFORE anything else reads env or the host builder
+    /// exists, so no descendant process can observe them by inheritance. <paramref name="get"/>/
+    /// <paramref name="clear"/> are injected so this is testable without touching real process env.
+    /// </summary>
+    internal static void CaptureBootCarriers(DaemonConfig config, Func<string, string?> get, Action<string> clear) {
+        config.ConsentSeedDirective = get(BootCarriers.Seed);
+        config.ExpectedServerUrl    = get(BootCarriers.Expect);
+        config.BootAttemptId        = get(BootCarriers.Attempt);
+        clear(BootCarriers.Seed);
+        clear(BootCarriers.Expect);
+        clear(BootCarriers.Attempt);
+    }
 
     /// <summary>Phase B (D3): parse a seconds-valued env var into a <see cref="TimeSpan"/>
     /// (<c>0</c> → <see cref="TimeSpan.Zero"/>, which disables the bound). Unset/blank/invalid/negative
