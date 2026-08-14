@@ -119,6 +119,21 @@ public class AgentDetectionTests {
     }
 
     [Test]
+    public async Task BinaryOnPath_dedupes_a_repeated_PATH_entry() {
+        if (OperatingSystem.IsWindows()) return;
+
+        var dir    = Directory.CreateTempSubdirectory("kcap-detect-dedupe-").FullName;
+        var claude = Path.Combine(dir, "claude");
+        await File.WriteAllTextAsync(claude, "#!/bin/sh\n");
+        File.SetUnixFileMode(claude, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+
+        // The same directory repeated three times must still be found (and probed only once per
+        // Distinct dir, not once per occurrence).
+        var pathEnv = $"{dir}{Path.PathSeparator}{dir}{Path.PathSeparator}{dir}";
+        await Assert.That(AgentDetection.BinaryOnPath("claude", Inputs(pathEnv: pathEnv))).IsTrue();
+    }
+
+    [Test]
     public async Task BinaryOnPath_skips_empty_path_entries_without_throwing() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -216,7 +231,7 @@ public class AgentDetectionTests {
     }
 
     // ── BinaryOnPath separator is derived from the injected platform, never the host-global
-    // Path.PathSeparator (round-3 review finding #6) — pin both directions purely. ──
+    // Path.PathSeparator — pin both directions purely. ──
 
     [Test]
     public async Task BinaryOnPath_windows_input_splits_on_semicolon_regardless_of_host_platform() {

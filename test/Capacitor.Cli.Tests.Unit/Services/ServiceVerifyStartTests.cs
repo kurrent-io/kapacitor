@@ -18,6 +18,12 @@ public class ServiceVerifyStartTests {
         public int? RunningPid = 4242;
         public string? StopError;
 
+        /// <summary>Reported as <see cref="ServiceQuery.UnitPresent"/> on every <see cref="Query"/>
+        /// call. Defaults true (a plist on disk is the common case every other test scripts around);
+        /// a test simulating a genuinely absent unit sets this false so Phase A's presence check
+        /// sees absence, not just a stubbed null <c>readPlist</c>.</summary>
+        public bool UnitPresent = true;
+
         /// <summary>When set, <see cref="StopError"/> is reported on only the FIRST <see cref="Stop"/>
         /// call and cleared thereafter — for scripting a bootout that fails once (e.g. a foreign
         /// writer momentarily holding the label) but succeeds on Rollback's own re-attempt.</summary>
@@ -54,15 +60,15 @@ public class ServiceVerifyStartTests {
             if (Started && HangQueryClock is not null) HangQueryClock.Advance(timeout);
             if (Stopped) {
                 if (ProbeUnknownAfterStop)
-                    return new ServiceQuery(LabelProbe.Unknown, true, ServiceState.Installed, "/bin/kcap-daemon", null);
+                    return new ServiceQuery(LabelProbe.Unknown, UnitPresent, ServiceState.Installed, "/bin/kcap-daemon", null);
                 if (RemainsLoadedUntilSecondStop && StopCalls < 2)
-                    return new ServiceQuery(LabelProbe.Loaded, true, ServiceState.Running, "/bin/kcap-daemon", RunningPid);
+                    return new ServiceQuery(LabelProbe.Loaded, UnitPresent, ServiceState.Running, "/bin/kcap-daemon", RunningPid);
                 if (!RemainsLoadedAfterStop)
-                    return new ServiceQuery(LabelProbe.Absent, true, ServiceState.Installed, "/bin/kcap-daemon", null);
+                    return new ServiceQuery(LabelProbe.Absent, UnitPresent, ServiceState.Installed, "/bin/kcap-daemon", null);
             }
             if (Started)
-                return new ServiceQuery(LabelProbe.Loaded, true, ServiceState.Running, "/bin/kcap-daemon", RunningPid);
-            return new ServiceQuery(LabelProbe.Absent, true, ServiceState.Installed, "/bin/kcap-daemon", null);
+                return new ServiceQuery(LabelProbe.Loaded, UnitPresent, ServiceState.Running, "/bin/kcap-daemon", RunningPid);
+            return new ServiceQuery(LabelProbe.Absent, UnitPresent, ServiceState.Installed, "/bin/kcap-daemon", null);
         }
 
         public void WriteAndBootstrap(ServiceSpec spec, TimeSpan timeout) { }
@@ -450,12 +456,16 @@ public class ServiceVerifyStartTests {
         _                           => null,
     };
 
-    [Test]
+    [Test, NotInParallel]
     public async Task Pre_mutation_gate_failure_returns_28_and_touches_nothing() {
         var dir = Directory.CreateTempSubdirectory().FullName;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        var originalErr = Console.Error;
+        var capturedErr = new StringWriter();
         try {
-            var manager = new FakeServiceManager();
+            // Genuinely absent unit: UnitPresent false (not just a stubbed null readPlist) so
+            // Phase A's presence check agrees the unit truly isn't there, not merely unreadable.
+            var manager = new FakeServiceManager { UnitPresent = false };
 
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
@@ -467,13 +477,23 @@ public class ServiceVerifyStartTests {
                 readPlist: _ => null,
                 gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
 
+            Console.SetError(capturedErr);
             var exit = await sut.StartVerifiedAsync(Id);
+            Console.SetError(originalErr);
 
             await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
+            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            // Genuine absence is DirectiveMissing, never EvidenceUnreadable — that reason is
+            // reserved for a unit that IS present but couldn't be read (see
+            // ServiceVerifyStartGateProductionPathTests).
+            await Assert.That(lines).Contains("start_gate_reason=directive_missing");
             await Assert.That(manager.Calls.Count).IsEqualTo(1);
             await Assert.That(manager.Calls.All(c => c == "query")).IsTrue();
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        } finally {
+            Console.SetError(originalErr);
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        }
     }
 
     [Test]
@@ -710,14 +730,14 @@ public class ServiceVerifyStartTests {
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 
-    /// <summary>Round-3 review finding #2: after the second (confirming) successful readiness
-    /// probe, the gated path must re-read the plist and re-check the digest ONE more time before
-    /// committing — the same post-readiness recheck install/replace already has — because the
-    /// recheck→exec race Phase B closes only covers the window up to bootstrap, not the window
-    /// between bootstrap and the transaction actually observing readiness. Forced-order regression:
-    /// the readPlist seam returns Phase A's content through Phase B's own recheck AND both
-    /// readiness probes, then a foreign writer's altered content on the FIRST read taken after
-    /// readiness is confirmed — proving the recheck fires post-readiness, not merely pre-bootstrap.</summary>
+    /// <summary>After the second (confirming) successful readiness probe, the gated path must
+    /// re-read the plist and re-check the digest ONE more time before committing — the same
+    /// post-readiness recheck install/replace already has — because the recheck→exec race Phase B
+    /// closes only covers the window up to bootstrap, not the window between bootstrap and the
+    /// transaction actually observing readiness. Forced-order regression: the readPlist seam
+    /// returns Phase A's content through Phase B's own recheck AND both readiness probes, then a
+    /// foreign writer's altered content on the FIRST read taken after readiness is confirmed —
+    /// proving the recheck fires post-readiness, not merely pre-bootstrap.</summary>
     [Test]
     public async Task Post_readiness_recheck_detects_plist_drift_after_confirmed_ready_and_rolls_back_to_29() {
         var dir = Directory.CreateTempSubdirectory().FullName;
@@ -789,9 +809,9 @@ public class ServiceVerifyStartTests {
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 
-    /// <summary>Negative control for finding #2: the UNGATED path (no consent-seed directive
-    /// carried by the invoker) must never run the post-readiness recheck — start behavior for a
-    /// bare terminal invocation is unchanged.</summary>
+    /// <summary>The UNGATED path (no consent-seed directive carried by the invoker) must never run
+    /// the post-readiness recheck — start behavior for a bare terminal invocation is
+    /// unchanged.</summary>
     [Test]
     public async Task Ungated_start_never_runs_the_post_readiness_recheck() {
         var dir = Directory.CreateTempSubdirectory().FullName;

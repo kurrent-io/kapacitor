@@ -88,15 +88,15 @@ static class LaunchdUnit {
     }
 
     /// <summary>
-    /// Walks <paramref name="dict"/>'s OWN top-level elements (never recursing into a nested
-    /// container) pairing each <c>&lt;key&gt;</c> with the single element that immediately follows
-    /// it, and returns the element paired with <paramref name="key"/> — or null when that key never
-    /// appears. A decoy container planted anywhere else under a DIFFERENT key must never be
-    /// returned — only the element PAIRED WITH this exact key is. This file is never hand-edited,
-    /// so a key repeated at this level can only mean a foreign/corrupt writer: throws
-    /// <see cref="InvalidDataException"/> rather than silently picking one, so every caller's
-    /// "unreadable evidence" containment sees it. Callers validate the returned element's own KIND
-    /// (array, dict, ...) themselves — this helper only resolves identity, never a value type.
+    /// Pairs each top-level <c>&lt;key&gt;</c> in <paramref name="dict"/> with the single element
+    /// that immediately follows it (never recursing into a nested container), and returns the
+    /// element paired with <paramref name="key"/>, or null when that key never appears. Requires
+    /// strict key/value alternation: a <c>&lt;key&gt;</c> immediately following another
+    /// <c>&lt;key&gt;</c>, a value with no preceding key, a dangling trailing <c>&lt;key&gt;</c>,
+    /// or a duplicate <paramref name="key"/> all throw <see cref="InvalidDataException"/> rather
+    /// than guessing — this file is never hand-edited, so any of those shapes can only mean a
+    /// foreign/corrupt writer. Callers validate the returned element's own kind (array, dict, ...)
+    /// themselves — this helper only resolves identity, never a value type.
     /// </summary>
     static XElement? TopLevelValue(XElement dict, string key) {
         XElement? result = null;
@@ -104,7 +104,15 @@ static class LaunchdUnit {
         string? pendingKey = null;
 
         foreach (var el in dict.Elements()) {
-            if (el.Name == "key") { pendingKey = el.Value; continue; }
+            if (el.Name == "key") {
+                if (pendingKey is not null)
+                    throw new InvalidDataException($"consecutive <key> nodes ('{pendingKey}', '{el.Value}') in plist");
+                pendingKey = el.Value;
+                continue;
+            }
+
+            if (pendingKey is null)
+                throw new InvalidDataException("value with no preceding key in plist");
 
             if (pendingKey == key) {
                 if (found) throw new InvalidDataException($"duplicate {key} key in plist");
@@ -114,6 +122,9 @@ static class LaunchdUnit {
 
             pendingKey = null;
         }
+
+        if (pendingKey is not null)
+            throw new InvalidDataException($"dangling <key>{pendingKey}</key> with no value in plist");
 
         return result;
     }
@@ -134,17 +145,15 @@ static class LaunchdUnit {
     /// <summary>
     /// The environment baked into a plist — the dict paired with the top-level
     /// <c>&lt;key&gt;EnvironmentVariables&lt;/key&gt;</c> (see <see cref="TopLevelValue"/>), then a
-    /// STRICT walk of that dict's own key/value pairs: used by <c>daemon service status --json</c>
+    /// strict walk of that dict's own key/value pairs: used by <c>daemon service status --json</c>
     /// to surface the baked profile/server/consent evidence as UX-only fields, and by the start
     /// gate to read identity/digest evidence. Returns empty only when the
-    /// <c>EnvironmentVariables</c> block is genuinely absent — every other malformed shape throws
-    /// <see cref="InvalidDataException"/> rather than silently degrading, because this file is
+    /// <c>EnvironmentVariables</c> block is genuinely absent; every other malformed shape — a
+    /// non-<c>dict</c> pairing, a non-<c>string</c> value, consecutive or dangling
+    /// <c>&lt;key&gt;</c> nodes, a value with no preceding key, or a duplicate key — throws
+    /// <see cref="InvalidDataException"/> rather than degrading silently, because this file is
     /// never hand-edited and a gate caller reading identity evidence out of this map must see
-    /// ambiguous evidence as unreadable, never guess: the paired value is not a <c>dict</c>; a
-    /// <c>&lt;key&gt;</c> is followed by another <c>&lt;key&gt;</c> instead of a value (would
-    /// silently overwrite the pending key and dodge duplicate detection); a value element is not a
-    /// <c>&lt;string&gt;</c> (silently skipped previously); a value with no preceding key; a
-    /// dangling trailing <c>&lt;key&gt;</c>; or a duplicate key (silent last-win previously).
+    /// ambiguous evidence as unreadable, never guessed.
     /// </summary>
     public static IReadOnlyDictionary<string, string> EnvFromPlist(string plistXml) {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);

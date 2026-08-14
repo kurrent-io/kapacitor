@@ -169,9 +169,8 @@ public class LaunchdUnitTests {
         await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
     }
 
-    // ── EnvFromPlist: the three malformed keyed-structure shapes finding #3 of the round-3 review
-    // requires to throw rather than silently degrade (empty map / skipped pair / dodged duplicate
-    // detection). ──
+    // ── EnvFromPlist: malformed keyed-structure shapes that must throw rather than silently
+    // degrade (empty map / skipped pair / dodged duplicate detection). ──
 
     [Test]
     public async Task EnvFromPlist_throws_when_EnvironmentVariables_is_paired_with_a_non_dict() {
@@ -190,9 +189,8 @@ public class LaunchdUnitTests {
             </dict>
             </plist>
             """;
-        // Previously silently returned an empty map (the `el.Name == "dict"` guard skipped the
-        // whole block without complaint) — a non-dict pairing is ambiguous/malformed evidence, not
-        // "no env vars", so it must throw.
+        // A non-dict pairing is ambiguous/malformed evidence, not "no env vars" — it must throw
+        // rather than silently return an empty map.
         await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
     }
 
@@ -213,8 +211,8 @@ public class LaunchdUnitTests {
             </dict>
             </plist>
             """;
-        // Previously silently skipped the pair (the `kv.Name == "string"` guard just fell through)
-        // — a relevant key paired with the wrong value type is malformed evidence, not absence.
+        // A relevant key paired with the wrong value type is malformed evidence, not absence — it
+        // must throw rather than silently skip the pair.
         await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
     }
 
@@ -236,10 +234,82 @@ public class LaunchdUnitTests {
             </dict>
             </plist>
             """;
-        // Previously the second <key> silently overwrote the pending key, dropping
-        // KCAP_CONSENT_SEED_DEFAULT entirely without complaint and dodging duplicate-key detection
-        // for whatever the dropped key would otherwise have collided with.
+        // The second <key> must not silently overwrite the pending key — that would drop
+        // KCAP_CONSENT_SEED_DEFAULT entirely and dodge duplicate-key detection for whatever key it
+        // collided with.
         await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
+    }
+
+    // ── TopLevelValue (the shared root-dict walk BinaryFromPlist/EnvFromPlist both use to find
+    // their own top-level key): the same strict key/value alternation as EnvFromPlist's inner walk
+    // above, at the OUTER level. ──
+
+    [Test]
+    public async Task EnvFromPlist_throws_on_two_consecutive_identical_top_level_keys_followed_by_one_value() {
+        const string xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+              <key>Label</key><string>io.kurrent.kcap.daemon.dup</string>
+              <key>ProgramArguments</key><array>
+                <string>/bin/kcap-daemon</string>
+              </array>
+              <key>EnvironmentVariables</key>
+              <key>EnvironmentVariables</key><dict>
+                <key>KCAP_CONSENT_SEED_DEFAULT</key><string>prompt</string>
+              </dict>
+            </dict>
+            </plist>
+            """;
+        // Two consecutive top-level <key> nodes naming the SAME key, followed by only one value,
+        // must still throw — pairing the lone value with whichever key happened to land last would
+        // let this shape masquerade as a single declaration and evade duplicate-key detection.
+        await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
+    }
+
+    [Test]
+    public async Task EnvFromPlist_throws_when_the_EnvironmentVariables_key_is_immediately_followed_by_another_key() {
+        const string xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+              <key>Label</key><string>io.kurrent.kcap.daemon.dup</string>
+              <key>ProgramArguments</key><array>
+                <string>/bin/kcap-daemon</string>
+              </array>
+              <key>EnvironmentVariables</key>
+              <key>Decoy</key><dict>
+                <key>KCAP_CONSENT_SEED_DEFAULT</key><string>prompt</string>
+              </dict>
+            </dict>
+            </plist>
+            """;
+        // The real EnvironmentVariables key is immediately followed by a DIFFERENT key before any
+        // value — pairing the dict with that LATER key instead would make EnvironmentVariables
+        // read as absent (an empty map), the takeover-safe outcome a gate caller must never see
+        // for a plist this malformed.
+        await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
+    }
+
+    [Test]
+    public async Task BinaryFromPlist_throws_on_a_top_level_value_with_no_preceding_key() {
+        const string xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+              <string>orphan value with no preceding key</string>
+              <key>ProgramArguments</key><array>
+                <string>/bin/kcap-daemon</string>
+              </array>
+            </dict>
+            </plist>
+            """;
+        // A top-level value with no preceding <key> at all must throw rather than be silently
+        // ignored (no key can ever match it, so the old walk just skipped it without complaint).
+        await Assert.That(() => LaunchdUnit.BinaryFromPlist(xml)).Throws<InvalidDataException>();
     }
 
     [Test]

@@ -122,6 +122,7 @@ public static class AgentDetection {
         var extensions = i.IsWindows ? WindowsExtensions(i.PathExt) : [""];
 
         return paths.Where(dir => !string.IsNullOrEmpty(dir))
+            .Distinct(StringComparer.Ordinal) // a dir repeated in PATH is probed once, not once per occurrence
             .Any(dir => extensions.Select(ext => Path.Combine(dir, binaryName + ext)).Any(path => IsExecutable(path, i.IsWindows)));
     }
 

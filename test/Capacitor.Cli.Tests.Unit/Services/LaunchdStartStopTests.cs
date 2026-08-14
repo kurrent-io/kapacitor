@@ -212,7 +212,7 @@ public partial class LaunchdStartStopTests {
         });
     }
 
-    // ── Query containment (round-3 review finding #1): round-2's throwing leaf parsers must never
+    // ── Query containment: a malformed on-disk plist (duplicate key, truncated XML) must never
     // escape Query as an uncoded failure — Query is a total, never-throwing probe. See
     // ServiceVerifyStartGateProductionPathTests for the same shape carried through the gate. ──
 
@@ -269,7 +269,7 @@ public partial class LaunchdStartStopTests {
         });
     }
 
-    // ── StartBootstrapOnly budget discipline (round-3 review finding #5) ──
+    // ── StartBootstrapOnly budget discipline ──
 
     [Test]
     public async Task StartBootstrapOnly_shares_one_deadline_across_probe_and_bootstrap_not_two_full_budgets() {

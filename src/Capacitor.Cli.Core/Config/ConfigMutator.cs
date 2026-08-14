@@ -58,9 +58,11 @@ public static class ConfigMutator {
             // DirectoryNotFoundException, though, is ambiguous on this runtime between "the parent
             // chain truly does not exist yet" (genuine absence) and "a path segment exists but is a
             // FILE, not a directory" (a structural misconfiguration that must not be read as
-            // absence). Disambiguate explicitly rather than trust the exception type alone.
-            var parent = Path.GetDirectoryName(path);
-            if (ex is DirectoryNotFoundException && parent is not null && File.Exists(parent)) {
+            // absence). The immediate parent alone isn't enough to tell them apart — a path like
+            // `somefile/child/config.json` needs two levels of walking before it reaches the file
+            // that's actually blocking it — so walk up to the FIRST ancestor that exists at all and
+            // check ITS type.
+            if (ex is DirectoryNotFoundException && FirstExistingAncestorIsFile(path)) {
                 config = new() { Profiles = new() { ["default"] = new() } };
                 return false;
             }
@@ -94,6 +96,21 @@ public static class ConfigMutator {
             config = new() { Profiles = new() { ["default"] = new() } };
             return false;
         }
+    }
+
+    /// Walks up from <paramref name="path"/>'s parent chain to the first ancestor that actually
+    /// exists on disk, and reports whether that ancestor is a FILE — a path segment blocking the
+    /// walk structurally — rather than a directory, where every missing level above is simply
+    /// never-created and therefore genuine absence. Handles any depth of missing directories, not
+    /// just the immediate parent.
+    static bool FirstExistingAncestorIsFile(string path) {
+        var current = Path.GetDirectoryName(path);
+        while (!string.IsNullOrEmpty(current)) {
+            if (File.Exists(current)) return true;
+            if (Directory.Exists(current)) return false;
+            current = Path.GetDirectoryName(current);
+        }
+        return false;
     }
 
     static void Publish(string path, ProfileConfig config) {

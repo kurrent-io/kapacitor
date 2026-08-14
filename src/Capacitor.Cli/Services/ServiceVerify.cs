@@ -215,13 +215,21 @@ sealed class ServiceVerify(
             // own contract. Unreadable evidence is EvidenceUnreadable, same as every other
             // evidence read this gate performs.
             StartGateReason? reason;
-            try {
-                var unitEnv = phaseAPlistContent is not null ? LaunchdUnit.EnvFromPlist(phaseAPlistContent) : new Dictionary<string, string>();
-                var unitBinaryPath = phaseAPlistContent is not null ? LaunchdUnit.BinaryFromPlist(phaseAPlistContent) : null;
-                reason = EvaluateStartGate(unitEnv, unitBinaryPath, UnitIdentity.ResolveDaemonBinary(), _gateEnv!, _digestMatches);
-                unitEnv.TryGetValue(ExpectVar, out unitExpectation);
-            } catch {
+            if (phaseAPlistContent is null && (pre.UnitPresent || _plistExists(plistPath))) {
+                // A null read is ambiguous by itself — genuinely absent AND present-but-unreadable
+                // both read null through _readPlist. A unit the fresh query (or the dedicated
+                // existence seam) says IS present must never fall through to the empty-env path
+                // below, which would misclassify it as the takeover-safe DirectiveMissing.
                 reason = StartGateReason.EvidenceUnreadable;
+            } else {
+                try {
+                    var unitEnv = phaseAPlistContent is not null ? LaunchdUnit.EnvFromPlist(phaseAPlistContent) : new Dictionary<string, string>();
+                    var unitBinaryPath = phaseAPlistContent is not null ? LaunchdUnit.BinaryFromPlist(phaseAPlistContent) : null;
+                    reason = EvaluateStartGate(unitEnv, unitBinaryPath, UnitIdentity.ResolveDaemonBinary(), _gateEnv!, _digestMatches);
+                    unitEnv.TryGetValue(ExpectVar, out unitExpectation);
+                } catch {
+                    reason = StartGateReason.EvidenceUnreadable;
+                }
             }
 
             if (reason is { } r) {
@@ -267,24 +275,13 @@ sealed class ServiceVerify(
                 }
             }
 
-            var plistPath      = LaunchdUnit.PlistPath(serviceId);
-            var recheckContent = _readPlist(plistPath);
-
             // Same XmlException hazard as Phase A's parse, but here escaping is worse: it would
             // abort AFTER the marker write and boot-out, past the point Rollback runs, leaving the
             // service stopped with a stuck marker instead of the guaranteed unloaded-plist-retained
             // outcome. A recheck that can't be parsed/validated is exactly what drift means — the
             // content changed (to something unreadable) or can no longer be confirmed unchanged —
             // so route it into the same drift branch rather than letting it throw.
-            bool digestStillGood;
-            try {
-                var recheckBinary = recheckContent is not null ? LaunchdUnit.BinaryFromPlist(recheckContent) : null;
-                digestStillGood = recheckBinary is not null && _digestMatches(recheckBinary);
-            } catch {
-                digestStillGood = false;
-            }
-
-            if (recheckContent != phaseAPlistContent || !digestStillGood) {
+            if (!RecheckPlistUnchanged(serviceId, phaseAPlistContent)) {
                 ServiceTxnMarker.Write(serviceId,
                     new TxnMarker(1, "start", "gate-drift", DescribeQuery(pre), "unloaded-plist-retained", null));
                 return await Rollback(serviceId, VerifyExit.StartGateDrift, VerifyExit.StartGateDriftToken);
@@ -354,21 +351,10 @@ sealed class ServiceVerify(
                     // bytes AFTER that, but before this commit, must not ride readiness into a
                     // silent commit. Re-read the plist (contained) and compare against Phase A's own
                     // captured content, and re-check the digest one more time.
-                    if (gated) {
-                        var postPlistContent = _readPlist(LaunchdUnit.PlistPath(serviceId));
-                        bool postDigestGood;
-                        try {
-                            var postBinary = postPlistContent is not null ? LaunchdUnit.BinaryFromPlist(postPlistContent) : null;
-                            postDigestGood = postBinary is not null && _digestMatches(postBinary);
-                        } catch {
-                            postDigestGood = false;
-                        }
-
-                        if (postPlistContent != phaseAPlistContent || !postDigestGood) {
-                            ServiceTxnMarker.Write(serviceId,
-                                new TxnMarker(1, "start", "gate-post-readiness-drift", DescribeQuery(pre), "unloaded-plist-retained", null));
-                            return await Rollback(serviceId, VerifyExit.StartGateDrift, VerifyExit.StartGateDriftToken);
-                        }
+                    if (gated && !RecheckPlistUnchanged(serviceId, phaseAPlistContent)) {
+                        ServiceTxnMarker.Write(serviceId,
+                            new TxnMarker(1, "start", "gate-post-readiness-drift", DescribeQuery(pre), "unloaded-plist-retained", null));
+                        return await Rollback(serviceId, VerifyExit.StartGateDrift, VerifyExit.StartGateDriftToken);
                     }
 
                     ServiceTxnMarker.Write(serviceId,
@@ -387,6 +373,27 @@ sealed class ServiceVerify(
         var rollbackExit = await Rollback(serviceId);
 
         return AttributeReadinessTimeout(serviceId, rollbackExit, gated, attributionEnabled, unitExpectation, observedJobPids);
+    }
+
+    /// <summary>
+    /// The gated start path's shared TOCTOU-recheck shape, used by both Phase B's pre-bootstrap
+    /// recheck and the post-readiness recheck: re-read the plist, parse its baked binary path and
+    /// re-check the digest (both contained — an unreadable/malformed re-read IS drift, never an
+    /// escaping exception), then compare the freshly re-read content against Phase A's own
+    /// captured <paramref name="phaseAPlistContent"/>. False means drift; the caller still owns
+    /// its own stage-specific marker phase and rollback call.
+    /// </summary>
+    bool RecheckPlistUnchanged(string serviceId, string? phaseAPlistContent) {
+        var content = _readPlist(LaunchdUnit.PlistPath(serviceId));
+        bool digestGood;
+        try {
+            var binary = content is not null ? LaunchdUnit.BinaryFromPlist(content) : null;
+            digestGood = binary is not null && _digestMatches(binary);
+        } catch {
+            digestGood = false;
+        }
+
+        return content == phaseAPlistContent && digestGood;
     }
 
     /// <summary>
