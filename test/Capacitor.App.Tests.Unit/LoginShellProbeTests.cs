@@ -23,6 +23,21 @@ public class LoginShellProbeTests {
     static LoginShellProbe Probe(FakeProcessRunner runner, string? shell = "/bin/bash") =>
         new(runner, name => name == "SHELL" ? shell : null);
 
+    readonly List<string> _tempDirs = [];
+
+    string NewTempDir() {
+        var dir = Directory.CreateTempSubdirectory("kcap-loginshell-").FullName;
+        _tempDirs.Add(dir);
+        return dir;
+    }
+
+    [After(Test)]
+    public void CleanupTempDirs() {
+        foreach (var dir in _tempDirs) {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
     // --- Parse ---
 
     [Test]
@@ -341,5 +356,147 @@ public class LoginShellProbeTests {
         await probe.KcapOnPathAsync(CancellationToken.None);
 
         await Assert.That(runner.Calls).HasCount().EqualTo(2);
+    }
+
+    // --- KcapPathAsync ---
+
+    [Test]
+    public async Task KcapPathAsync_absolute_existing_file_is_returned_verbatim() {
+        var dir = NewTempDir();
+        var target = Path.Combine(dir, "kcap");
+        File.WriteAllText(target, "cli");
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, Wrap(target), "", false));
+        var probe = Probe(runner);
+
+        await Assert.That(await probe.KcapPathAsync(CancellationToken.None)).IsEqualTo(target);
+    }
+
+    [Test]
+    public async Task KcapPathAsync_absolute_path_with_spaces_is_returned() {
+        var dir = NewTempDir();
+        var target = Path.Combine(dir, "kcap cli");
+        File.WriteAllText(target, "cli");
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, Wrap(target), "", false));
+        var probe = Probe(runner);
+
+        await Assert.That(await probe.KcapPathAsync(CancellationToken.None)).IsEqualTo(target);
+    }
+
+    [Test]
+    public async Task KcapPathAsync_relative_path_is_null() {
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, Wrap("bin/kcap"), "", false));
+        var probe = Probe(runner);
+
+        await Assert.That(await probe.KcapPathAsync(CancellationToken.None)).IsNull();
+    }
+
+    [Test]
+    public async Task KcapPathAsync_bare_word_is_null() {
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, Wrap("kcap"), "", false));
+        var probe = Probe(runner);
+
+        await Assert.That(await probe.KcapPathAsync(CancellationToken.None)).IsNull();
+    }
+
+    [Test]
+    public async Task KcapPathAsync_alias_output_is_null() {
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, Wrap("alias kcap='/usr/local/bin/kcap'"), "", false));
+        var probe = Probe(runner);
+
+        await Assert.That(await probe.KcapPathAsync(CancellationToken.None)).IsNull();
+    }
+
+    [Test]
+    public async Task KcapPathAsync_multiline_function_definition_is_null() {
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, Wrap("kcap () \n{ \n    command kcap \"$@\"\n}"), "", false));
+        var probe = Probe(runner);
+
+        await Assert.That(await probe.KcapPathAsync(CancellationToken.None)).IsNull();
+    }
+
+    [Test]
+    public async Task KcapPathAsync_missing_file_is_null() {
+        var missing = Path.Combine(NewTempDir(), "kcap");
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, Wrap(missing), "", false));
+        var probe = Probe(runner);
+
+        await Assert.That(await probe.KcapPathAsync(CancellationToken.None)).IsNull();
+    }
+
+    [Test]
+    public async Task KcapPathAsync_directory_is_null() {
+        var dir = NewTempDir();
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, Wrap(dir), "", false));
+        var probe = Probe(runner);
+
+        await Assert.That(await probe.KcapPathAsync(CancellationToken.None)).IsNull();
+    }
+
+    [Test]
+    public async Task KcapPathAsync_result_is_cached() {
+        var dir = NewTempDir();
+        var target = Path.Combine(dir, "kcap");
+        File.WriteAllText(target, "cli");
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, Wrap(target), "", false));
+        var probe = Probe(runner);
+
+        await probe.KcapPathAsync(CancellationToken.None);
+        await probe.KcapPathAsync(CancellationToken.None);
+
+        await Assert.That(runner.Calls).HasCount().EqualTo(1);
+    }
+
+    [Test]
+    public async Task KcapPathAsync_forceRefresh_bypasses_and_repopulates_the_cache() {
+        var dir = NewTempDir();
+        var target = Path.Combine(dir, "kcap");
+        File.WriteAllText(target, "cli");
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, Wrap("kcap"), "", false)); // bare word -> null
+        runner.Enqueue(new ProcessResult(0, Wrap(target), "", false));
+        var probe = Probe(runner);
+
+        var cached = await probe.KcapPathAsync(CancellationToken.None);
+        await Assert.That(cached).IsNull();
+        await Assert.That(runner.Calls).HasCount().EqualTo(1);
+
+        var fresh = await probe.KcapPathAsync(CancellationToken.None, forceRefresh: true);
+        await Assert.That(fresh).IsEqualTo(target);
+        await Assert.That(runner.Calls).HasCount().EqualTo(2); // a real second runner invocation
+
+        // Repopulated: a later non-forced call reads the fresh value without re-running.
+        var second = await probe.KcapPathAsync(CancellationToken.None);
+        await Assert.That(second).IsEqualTo(target);
+        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+    }
+
+    [Test]
+    public async Task KcapPathAsync_process_start_failure_is_not_cached_and_retries() {
+        var dir = NewTempDir();
+        var target = Path.Combine(dir, "kcap");
+        File.WriteAllText(target, "cli");
+        var runner = new FakeProcessRunner();
+        runner.EnqueueThrow(new InvalidOperationException("boom"));
+        runner.EnqueueThrow(new InvalidOperationException("boom again"));
+        var probe = Probe(runner);
+
+        var first = await probe.KcapPathAsync(CancellationToken.None);
+        await Assert.That(first).IsNull();
+        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+
+        runner.Enqueue(new ProcessResult(0, Wrap(target), "", false));
+        var second = await probe.KcapPathAsync(CancellationToken.None);
+
+        await Assert.That(second).IsEqualTo(target);
+        await Assert.That(runner.Calls).HasCount().EqualTo(3);
     }
 }

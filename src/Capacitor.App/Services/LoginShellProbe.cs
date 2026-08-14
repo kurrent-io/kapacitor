@@ -15,6 +15,14 @@ public interface ILoginShellProbe {
     /// changed the filesystem (e.g. a fresh symlink install) needs a real re-probe, not the
     /// pre-change cached answer.
     Task<bool?> KcapOnPathAsync(CancellationToken ct, bool forceRefresh = false);
+
+    /// Validated `command -v kcap` output, or null (fail closed) when it isn't an absolute,
+    /// fully-qualified path to an existing regular file — an alias, a function definition, a
+    /// relative path, or a bare word all resolve to null, never a fabricated pin. Symlinks are not
+    /// resolved; that is left to invocation time. Cached independently of the other two probes,
+    /// with the same retry-on-process-start-failure and <paramref name="forceRefresh"/> rules as
+    /// KcapOnPathAsync.
+    Task<string?> KcapPathAsync(CancellationToken ct, bool forceRefresh = false);
 }
 
 public sealed class LoginShellProbe(IProcessRunner runner, Func<string, string?> getEnv) : ILoginShellProbe {
@@ -26,6 +34,7 @@ public sealed class LoginShellProbe(IProcessRunner runner, Func<string, string?>
     // actually asked, so TerminalPathAsync/KcapOnPathAsync must not memoize it.
     Task<(string? Value, bool Cacheable)>? _terminalPath;
     Task<(bool? Value, bool Cacheable)>? _kcapOnPath;
+    Task<(string? Value, bool Cacheable)>? _kcapPath;
 
     public async Task<string?> TerminalPathAsync(CancellationToken ct) {
         var task = _terminalPath ??= RunScript($"printf '{Sentinel}%s{Sentinel}' \"$PATH\"");
@@ -53,6 +62,33 @@ public sealed class LoginShellProbe(IProcessRunner runner, Func<string, string?>
             _ => null,
         };
         return (value, cacheable);
+    }
+
+    public async Task<string?> KcapPathAsync(CancellationToken ct, bool forceRefresh = false) {
+        if (forceRefresh) _kcapPath = null; // discard any cached answer — repopulated below
+        var task = _kcapPath ??= ProbeKcapPath();
+        var (value, cacheable) = await task.WaitAsync(ct).ConfigureAwait(false);
+        if (!cacheable) _kcapPath = null;
+        return value;
+    }
+
+    async Task<(string? Value, bool Cacheable)> ProbeKcapPath() {
+        // $(...) captures `command -v kcap` raw (alias line, function body, path, or nothing on
+        // a nonzero exit) without letting its own exit code flip the enclosing script's — the
+        // trailing printf always exits 0, so "not found" is a determined (cacheable) outcome.
+        var (raw, cacheable) = await RunScript($"out=$(command -v kcap 2>/dev/null); printf '{Sentinel}%s{Sentinel}' \"$out\"")
+            .ConfigureAwait(false);
+        return (ValidateKcapPath(raw), cacheable);
+    }
+
+    // Fail closed: only an absolute, fully-qualified path to an existing regular file is a pin —
+    // aliases, function definitions, relative paths, and bare words all resolve to null. Symlinks
+    // are deliberately left unresolved here.
+    static string? ValidateKcapPath(string? raw) {
+        if (raw is null) return null;
+        var firstLine = raw.Split('\n', 2)[0].TrimEnd('\r');
+        if (!Path.IsPathRooted(firstLine) || !Path.IsPathFullyQualified(firstLine)) return null;
+        return File.Exists(firstLine) ? firstLine : null;
     }
 
     // One primitive for both questions: -lic (login + interactive) first, -lc (login only) on a
