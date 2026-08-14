@@ -302,14 +302,9 @@ sealed class ServiceVerify(
             if (!attributionEnabled) Say("boot-refusal marker could not be cleared; coded attribution disabled");
         }
 
-        // The gated path uses the bootstrap-only seam instead of the generic Start: StartCore's own
-        // Loaded-probe branch would silently KICKSTART a stale definition if a foreign writer
-        // re-loaded the label in the window between the confirmed-absent wait above and this call —
-        // exactly the race this gate exists to close. A bootstrap-only failure (including "the label
-        // turned out Loaded") is therefore fatal here, not a soft warning: the label state is no
-        // longer what Phase B proved, so roll back via the coded bootout-unknown exit instead of
-        // bootstrapping onto unverified ground. The ungated path keeps the soft-warning Start(),
-        // whose readiness poll — not the call's own return value — is the source of truth.
+        // Bootstrap-only (see IVerifyServiceManager.StartBootstrapOnly): any failure — including a
+        // Loaded probe — rolls back via BootoutUnknown rather than falling through to the ungated
+        // Start() below, whose own readiness poll is normally the source of truth.
         if (gated) {
             if (!manager.StartBootstrapOnly(serviceId, Remaining(deadline), out var bootstrapOnlyError)) {
                 Say($"start: {bootstrapOnlyError}");
@@ -353,6 +348,29 @@ sealed class ServiceVerify(
                 var (confirmed, confirmedPid) = await IsReadyAsync(serviceId, deadline, requirePid: pid);
                 if (confirmedPid is not null) observedJobPids.Add(confirmedPid.Value);
                 if (confirmed) {
+                    // Post-readiness recheck (spec §3, mirrors install/replace's own final recheck):
+                    // Phase B's pre-bootstrap recheck only bounds the recheck→exec race up to the
+                    // moment bootstrap started — a foreign writer swapping the plist or the binary
+                    // bytes AFTER that, but before this commit, must not ride readiness into a
+                    // silent commit. Re-read the plist (contained) and compare against Phase A's own
+                    // captured content, and re-check the digest one more time.
+                    if (gated) {
+                        var postPlistContent = _readPlist(LaunchdUnit.PlistPath(serviceId));
+                        bool postDigestGood;
+                        try {
+                            var postBinary = postPlistContent is not null ? LaunchdUnit.BinaryFromPlist(postPlistContent) : null;
+                            postDigestGood = postBinary is not null && _digestMatches(postBinary);
+                        } catch {
+                            postDigestGood = false;
+                        }
+
+                        if (postPlistContent != phaseAPlistContent || !postDigestGood) {
+                            ServiceTxnMarker.Write(serviceId,
+                                new TxnMarker(1, "start", "gate-post-readiness-drift", DescribeQuery(pre), "unloaded-plist-retained", null));
+                            return await Rollback(serviceId, VerifyExit.StartGateDrift, VerifyExit.StartGateDriftToken);
+                        }
+                    }
+
                     ServiceTxnMarker.Write(serviceId,
                         new TxnMarker(1, "start", "committed", DescribeQuery(pre), "unloaded-plist-retained", null));
                     onCommitted?.Invoke();

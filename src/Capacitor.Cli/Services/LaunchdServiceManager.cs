@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace Capacitor.Cli.Services;
@@ -48,7 +49,7 @@ sealed partial class LaunchdServiceManager(
     public ServiceStatus Status(string serviceId) {
         var path = LaunchdUnit.PlistPath(serviceId);
         if (!File.Exists(path)) return new ServiceStatus(ServiceState.NotInstalled, null);
-        var bin = LaunchdUnit.BinaryFromPlist(File.ReadAllText(path)); // ProgramArguments[0], not the Label
+        var bin = ReadBinaryPathSafe(path); // ProgramArguments[0], not the Label
         var (code, stdout, _) = _runProcess("launchctl", LaunchdUnit.PrintArgs(Uid(), serviceId));
         return new ServiceStatus(LaunchdUnit.StatusFromPrint(code, stdout), bin);
     }
@@ -59,13 +60,24 @@ sealed partial class LaunchdServiceManager(
     ServiceQuery QueryCore(string serviceId, TimeSpan? timeout) {
         var path        = LaunchdUnit.PlistPath(serviceId);
         var unitPresent = File.Exists(path);
-        var bin         = unitPresent ? LaunchdUnit.BinaryFromPlist(File.ReadAllText(path)) : null;
+        var bin         = unitPresent ? ReadBinaryPathSafe(path) : null;
         var (code, stdout, stderr, timedOut) = RunCtl(timeout, LaunchdUnit.PrintArgs(Uid(), serviceId));
         // A killed-on-timeout print told us nothing about the label — never let its kill exit code
         // masquerade as a real classification; report Unknown so nothing destructive follows.
         var probe = timedOut ? LabelProbe.Unknown : LaunchdUnit.ClassifyPrint(code, stdout, stderr);
         var state = probe == LabelProbe.Loaded ? LaunchdUnit.StatusFromPrint(code, stdout) : ServiceState.NotInstalled;
         return new ServiceQuery(probe, unitPresent, state, bin, probe == LabelProbe.Loaded ? LaunchdUnit.PidFromPrint(stdout) : null);
+    }
+
+    /// <summary>Total plist-evidence read: <c>File.ReadAllText</c> + <see cref="LaunchdUnit.BinaryFromPlist"/>
+    /// together, contained so that ANY failure — an I/O error, malformed XML, a duplicate
+    /// <c>ProgramArguments</c> key — yields null rather than escaping. <see cref="Query(string)"/>
+    /// and <see cref="Status"/> are total, never-throwing probes; the gate's own contained Phase-A
+    /// parse (<c>ServiceVerify</c>'s <c>_readPlist</c> path) remains the sole authority for coded
+    /// evidence classification (malformed → <c>evidence_unreadable</c>).</summary>
+    static string? ReadBinaryPathSafe(string path) {
+        try { return LaunchdUnit.BinaryFromPlist(File.ReadAllText(path)); }
+        catch { return null; }
     }
 
     public void Install(ServiceSpec spec, bool startNow) {
@@ -163,14 +175,13 @@ sealed partial class LaunchdServiceManager(
         return true;
     }
 
-    /// <summary>
-    /// The gated start path's bootstrap-only verb (verify-only, no legacy no-timeout overload):
-    /// re-probes the label immediately before acting, and ONLY bootstraps when it reads Absent —
-    /// unlike <see cref="StartCore"/>, a Loaded probe here is a FAILURE, never a kickstart. This is
-    /// the re-check that closes the race between the gate's own confirmed-absent wait and this call:
-    /// a foreign writer that loaded the label in that window must not get silently kickstarted.
-    /// </summary>
+    /// <summary>launchd implementation of <see cref="IVerifyServiceManager.StartBootstrapOnly"/>:
+    /// re-probes the label immediately before acting. Both launchctl calls share ONE deadline —
+    /// the probe gets the full <paramref name="timeout"/>, and the bootstrap gets only what's left
+    /// of it — rather than each getting the full budget (which would let the pair invade up to 2x
+    /// the caller's forward remainder, including its separately reserved rollback budget).</summary>
     public bool StartBootstrapOnly(string serviceId, TimeSpan timeout, out string? error) {
+        var sw = Stopwatch.StartNew();
         var (probeExit, probeOut, probeErr, probeTimedOut) = RunCtl(timeout, LaunchdUnit.PrintArgs(Uid(), serviceId));
         var probe = probeTimedOut ? LabelProbe.Unknown : LaunchdUnit.ClassifyPrint(probeExit, probeOut, probeErr);
 
@@ -179,7 +190,13 @@ sealed partial class LaunchdServiceManager(
             return false;
         }
 
-        var (bootstrapExit, _, bootstrapErr, bootstrapTimedOut) = RunCtl(timeout, LaunchdUnit.BootstrapArgs(Uid(), LaunchdUnit.PlistPath(serviceId)));
+        var remaining = timeout - sw.Elapsed;
+        if (remaining <= TimeSpan.Zero) {
+            error = "launchctl bootstrap timed out and was terminated";
+            return false;
+        }
+
+        var (bootstrapExit, _, bootstrapErr, bootstrapTimedOut) = RunCtl(remaining, LaunchdUnit.BootstrapArgs(Uid(), LaunchdUnit.PlistPath(serviceId)));
         if (bootstrapTimedOut) { error = "launchctl bootstrap timed out and was terminated"; return false; }
         if (bootstrapExit != 0) {
             error = $"launchctl bootstrap failed (exit {bootstrapExit}): {bootstrapErr.Trim()}";

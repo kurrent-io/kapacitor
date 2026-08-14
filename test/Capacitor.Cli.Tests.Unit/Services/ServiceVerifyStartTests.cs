@@ -710,6 +710,110 @@ public class ServiceVerifyStartTests {
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 
+    /// <summary>Round-3 review finding #2: after the second (confirming) successful readiness
+    /// probe, the gated path must re-read the plist and re-check the digest ONE more time before
+    /// committing — the same post-readiness recheck install/replace already has — because the
+    /// recheck→exec race Phase B closes only covers the window up to bootstrap, not the window
+    /// between bootstrap and the transaction actually observing readiness. Forced-order regression:
+    /// the readPlist seam returns Phase A's content through Phase B's own recheck AND both
+    /// readiness probes, then a foreign writer's altered content on the FIRST read taken after
+    /// readiness is confirmed — proving the recheck fires post-readiness, not merely pre-bootstrap.</summary>
+    [Test]
+    public async Task Post_readiness_recheck_detects_plist_drift_after_confirmed_ready_and_rolls_back_to_29() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            var manager = new FakeServiceManager();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            var reads = 0;
+            string? ReadPlist(string _) {
+                reads++;
+                // Phase A (read 1) and Phase B's own pre-bootstrap recheck (read 2) both see the
+                // same passing content — readiness is then genuinely, twice confirmed. A foreign
+                // writer swaps the plist only AFTER that, so the post-readiness recheck (read 3)
+                // must be what catches it.
+                return reads <= 2
+                    ? MinimalPlist("/bin/kcap-daemon", "prompt", GatedServerUrl)
+                    : MinimalPlist("/bin/kcap-daemon-moved", "prompt", GatedServerUrl);
+            }
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: ReadPlist,
+                gateEnv: GatedEnvWithIdentity(),
+                digestMatches: _ => true);
+
+            var exit = await sut.StartVerifiedAsync(Id);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.StartGateDrift);
+            // Bootstrap DID run — this is a post-mutation catch, unlike the Phase A/B drift tests
+            // above, which never start at all.
+            await Assert.That(manager.StartCalls).IsEqualTo(1);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+            await Assert.That(reads).IsGreaterThanOrEqualTo(3);
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    /// <summary>The post-readiness recheck also re-verifies the digest, independent of plist
+    /// content drift — a swapped binary at the SAME baked path must still roll back to 29.</summary>
+    [Test]
+    public async Task Post_readiness_recheck_detects_digest_drift_after_confirmed_ready_and_rolls_back_to_29() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            var manager = new FakeServiceManager();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            var digestChecks = 0;
+            bool DigestMatches(string _) {
+                digestChecks++;
+                // Passes for Phase A and Phase B's pre-bootstrap recheck; fails from the third
+                // check onward — the post-readiness recheck.
+                return digestChecks <= 2;
+            }
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", GatedServerUrl),
+                gateEnv: GatedEnvWithIdentity(),
+                digestMatches: DigestMatches);
+
+            var exit = await sut.StartVerifiedAsync(Id);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.StartGateDrift);
+            await Assert.That(manager.StartCalls).IsEqualTo(1);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    /// <summary>Negative control for finding #2: the UNGATED path (no consent-seed directive
+    /// carried by the invoker) must never run the post-readiness recheck — start behavior for a
+    /// bare terminal invocation is unchanged.</summary>
+    [Test]
+    public async Task Ungated_start_never_runs_the_post_readiness_recheck() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            var manager = new FakeServiceManager();
+            var readPlistCalls = 0;
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: _ => { readPlistCalls++; return MinimalPlist("/bin/kcap-daemon", "prompt", GatedServerUrl); });
+            // no gateEnv — ungated
+
+            var exit = await sut.StartVerifiedAsync(Id);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+            await Assert.That(readPlistCalls).IsEqualTo(0);
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
     [Test]
     public async Task Bootstrap_only_never_kickstarts_a_label_that_turned_loaded_just_before_it() {
         var dir = Directory.CreateTempSubdirectory().FullName;

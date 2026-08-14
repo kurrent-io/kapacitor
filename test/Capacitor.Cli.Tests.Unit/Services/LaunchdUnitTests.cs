@@ -169,6 +169,79 @@ public class LaunchdUnitTests {
         await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
     }
 
+    // ── EnvFromPlist: the three malformed keyed-structure shapes finding #3 of the round-3 review
+    // requires to throw rather than silently degrade (empty map / skipped pair / dodged duplicate
+    // detection). ──
+
+    [Test]
+    public async Task EnvFromPlist_throws_when_EnvironmentVariables_is_paired_with_a_non_dict() {
+        const string xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+              <key>Label</key><string>io.kurrent.kcap.daemon.bad</string>
+              <key>ProgramArguments</key><array>
+                <string>/bin/kcap-daemon</string>
+              </array>
+              <key>EnvironmentVariables</key><array>
+                <string>not a dict at all</string>
+              </array>
+            </dict>
+            </plist>
+            """;
+        // Previously silently returned an empty map (the `el.Name == "dict"` guard skipped the
+        // whole block without complaint) — a non-dict pairing is ambiguous/malformed evidence, not
+        // "no env vars", so it must throw.
+        await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
+    }
+
+    [Test]
+    public async Task EnvFromPlist_throws_when_a_key_is_paired_with_a_non_string_value() {
+        const string xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+              <key>Label</key><string>io.kurrent.kcap.daemon.bad</string>
+              <key>ProgramArguments</key><array>
+                <string>/bin/kcap-daemon</string>
+              </array>
+              <key>EnvironmentVariables</key><dict>
+                <key>KCAP_CONSENT_SEED_DEFAULT</key><integer>1</integer>
+              </dict>
+            </dict>
+            </plist>
+            """;
+        // Previously silently skipped the pair (the `kv.Name == "string"` guard just fell through)
+        // — a relevant key paired with the wrong value type is malformed evidence, not absence.
+        await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
+    }
+
+    [Test]
+    public async Task EnvFromPlist_throws_on_consecutive_key_nodes_rather_than_silently_overwriting() {
+        const string xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+              <key>Label</key><string>io.kurrent.kcap.daemon.bad</string>
+              <key>ProgramArguments</key><array>
+                <string>/bin/kcap-daemon</string>
+              </array>
+              <key>EnvironmentVariables</key><dict>
+                <key>KCAP_CONSENT_SEED_DEFAULT</key>
+                <key>KCAP_PROFILE</key><string>work</string>
+              </dict>
+            </dict>
+            </plist>
+            """;
+        // Previously the second <key> silently overwrote the pending key, dropping
+        // KCAP_CONSENT_SEED_DEFAULT entirely without complaint and dodging duplicate-key detection
+        // for whatever the dropped key would otherwise have collided with.
+        await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
+    }
+
     [Test]
     public async Task StatusFromPrint_maps_exit_and_state() {
         await Assert.That(LaunchdUnit.StatusFromPrint(exitCode: 1, stdout: "")).IsEqualTo(ServiceState.NotInstalled);

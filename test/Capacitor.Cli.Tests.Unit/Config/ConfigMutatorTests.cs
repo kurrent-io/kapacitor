@@ -154,6 +154,39 @@ public class ConfigMutatorTests {
         await Assert.That(config.Profiles.ContainsKey("default")).IsTrue();
     }
 
+    /// <summary>Round-3 review finding #4: <c>Directory.Exists</c>/<c>File.Exists</c> both return
+    /// false on a permission-denied path, which would silently degrade "inaccessible" into
+    /// "absent, defaults are fine". The simplest deterministic way to force a non-not-found I/O
+    /// failure (without relying on platform-specific permission bits) is to make the config path's
+    /// PARENT a plain file rather than a directory — opening through it fails structurally, not
+    /// because anything is missing.</summary>
+    [Test]
+    public async Task TryLoadPure_parent_replaced_by_a_file_is_failure_not_absence() {
+        var root = Directory.CreateTempSubdirectory("kcap-trypure-").FullName;
+        var parentAsFile = Path.Combine(root, "not-a-directory");
+        await File.WriteAllTextAsync(parentAsFile, "i am a file, not a directory");
+        var path = Path.Combine(parentAsFile, "config.json");
+
+        var ok = ConfigMutator.TryLoadPure(path, out var config);
+
+        await Assert.That(ok).IsFalse();
+        await Assert.That(config.Profiles.ContainsKey("default")).IsTrue(); // still a usable default out param
+    }
+
+    /// <summary>Positive control for the fix above: a path whose parent chain genuinely does not
+    /// exist yet (nothing has ever been created there) must still read as absence, not failure —
+    /// the disambiguation must not turn every missing ancestor directory into a false failure.</summary>
+    [Test]
+    public async Task TryLoadPure_missing_parent_directory_is_still_absence() {
+        var root = Directory.CreateTempSubdirectory("kcap-trypure-").FullName;
+        var path = Path.Combine(root, "never-created", "config.json");
+
+        var ok = ConfigMutator.TryLoadPure(path, out var config);
+
+        await Assert.That(ok).IsTrue();
+        await Assert.That(config.Profiles.ContainsKey("default")).IsTrue();
+    }
+
     [Test]
     public async Task TryLoadPure_valid_file_is_success() {
         var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-trypure-").FullName, "config.json");

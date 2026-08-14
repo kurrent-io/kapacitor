@@ -114,7 +114,11 @@ public static class AgentDetection {
     public static bool BinaryOnPath(string binaryName, AgentDetectionInputs i) {
         if (string.IsNullOrEmpty(i.PathEnv)) return false;
 
-        var paths      = i.PathEnv.Split(Path.PathSeparator);
+        // Derived from the injected platform, never the host-global Path.PathSeparator: a test
+        // simulating Windows PATHEXT/separator behavior on a non-Windows host (or vice versa) must
+        // get the SEPARATOR that platform actually uses, not whatever the test runner's own OS is.
+        var separator  = i.IsWindows ? ';' : ':';
+        var paths      = i.PathEnv.Split(separator);
         var extensions = i.IsWindows ? WindowsExtensions(i.PathExt) : [""];
 
         return paths.Where(dir => !string.IsNullOrEmpty(dir))

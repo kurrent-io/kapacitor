@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Capacitor.Cli.Core; // JsonElement IsObject extension
 
 namespace Capacitor.Cli.Core.Config;
 
@@ -44,23 +45,32 @@ public static class ConfigMutator {
     /// silently treat it the same as absence (e.g. a gated identity check) use this instead of
     /// <see cref="LoadPure"/>.
     public static bool TryLoadPure(string path, out ProfileConfig config) {
-        // A directory sitting at the config path is NOT absence — File.Exists alone would say
-        // false and this would silently fall through to "nothing configured yet" for what is
-        // actually an unreadable/misconfigured location.
-        if (Directory.Exists(path)) {
-            config = new() { Profiles = new() { ["default"] = new() } };
-            return false;
-        }
-
-        if (!File.Exists(path)) {
-            config = new() { Profiles = new() { ["default"] = new() } };
-            return true;
-        }
-
+        // Attempt the read directly rather than probing Directory.Exists/File.Exists first: BOTH
+        // return false on a permission-denied path (or an unreadable ancestor directory), which
+        // would silently degrade "inaccessible" into "absent, defaults are fine" — exactly wrong
+        // for a caller (the start gate) that must fail closed on unreadable evidence rather than
+        // proceed as though nothing were configured.
         string json;
         try {
             json = File.ReadAllText(path);
-        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+        } catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) {
+            // FileNotFoundException is unambiguous (the file itself is absent). A
+            // DirectoryNotFoundException, though, is ambiguous on this runtime between "the parent
+            // chain truly does not exist yet" (genuine absence) and "a path segment exists but is a
+            // FILE, not a directory" (a structural misconfiguration that must not be read as
+            // absence). Disambiguate explicitly rather than trust the exception type alone.
+            var parent = Path.GetDirectoryName(path);
+            if (ex is DirectoryNotFoundException && parent is not null && File.Exists(parent)) {
+                config = new() { Profiles = new() { ["default"] = new() } };
+                return false;
+            }
+
+            config = new() { Profiles = new() { ["default"] = new() } };
+            return true;
+        } catch {
+            // A directory sitting at the config path (UnauthorizedAccessException on read), a
+            // permission error, or any other I/O failure — unreadable EVIDENCE, never silently
+            // folded into absence.
             config = new() { Profiles = new() { ["default"] = new() } };
             return false;
         }
@@ -71,7 +81,7 @@ public static class ConfigMutator {
         // contract.
         try {
             using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object) throw new JsonException("config root is not a JSON object");
+            if (!doc.RootElement.IsObject) throw new JsonException("config root is not a JSON object");
         } catch (JsonException) {
             config = new() { Profiles = new() { ["default"] = new() } };
             return false;

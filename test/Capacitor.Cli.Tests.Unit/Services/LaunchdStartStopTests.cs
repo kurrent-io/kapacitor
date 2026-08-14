@@ -212,6 +212,111 @@ public partial class LaunchdStartStopTests {
         });
     }
 
+    // ── Query containment (round-3 review finding #1): round-2's throwing leaf parsers must never
+    // escape Query as an uncoded failure — Query is a total, never-throwing probe. See
+    // ServiceVerifyStartGateProductionPathTests for the same shape carried through the gate. ──
+
+    [Test]
+    public async Task Query_does_not_throw_on_a_duplicate_ProgramArguments_key_plist_and_reports_null_binary_path() {
+        Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");
+
+        await WithHome(async path => {
+            const string duplicateKeyPlist = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+                <plist version="1.0">
+                <dict>
+                  <key>Label</key><string>io.kurrent.kcap.daemon.test</string>
+                  <key>ProgramArguments</key><array>
+                    <string>/bin/kcap-daemon</string>
+                  </array>
+                  <key>ProgramArguments</key><array>
+                    <string>/bin/evil-daemon</string>
+                  </array>
+                </dict>
+                </plist>
+                """;
+            File.WriteAllText(path, duplicateKeyPlist);
+
+            var mgr = new LaunchdServiceManager(runProcess: (_, args) =>
+                args[0] == "print"
+                    ? (113, "", "Could not find service \"io.kurrent.kcap.daemon.test\" in domain for user gui: 501")
+                    : (0, "", ""));
+
+            var query = mgr.Query("test");
+
+            await Assert.That(query.BinaryPath).IsNull();
+            await Assert.That(query.UnitPresent).IsTrue();
+            await Assert.That(query.Probe).IsEqualTo(LabelProbe.Absent);
+        });
+    }
+
+    [Test]
+    public async Task Status_does_not_throw_on_a_malformed_plist_and_reports_null_binary_path() {
+        Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");
+
+        await WithHome(async path => {
+            File.WriteAllText(path, "<plist version=\"1.0\"><dict><key>Truncated");
+
+            var mgr = new LaunchdServiceManager(runProcess: (_, args) =>
+                args[0] == "print"
+                    ? (113, "", "Could not find service \"io.kurrent.kcap.daemon.test\" in domain for user gui: 501")
+                    : (0, "", ""));
+
+            var status = mgr.Status("test");
+
+            await Assert.That(status.BinaryPath).IsNull();
+        });
+    }
+
+    // ── StartBootstrapOnly budget discipline (round-3 review finding #5) ──
+
+    [Test]
+    public async Task StartBootstrapOnly_shares_one_deadline_across_probe_and_bootstrap_not_two_full_budgets() {
+        Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");
+
+        await WithHome(async _ => {
+            var timeouts = new List<TimeSpan>();
+            var mgr = new LaunchdServiceManager(runBounded: (_, args, timeout) => {
+                timeouts.Add(timeout);
+                if (args[0] == "print") {
+                    Thread.Sleep(50); // consume a real, measurable slice of the shared budget
+                    return (113, "", "Could not find service \"io.kurrent.kcap.daemon.test\" in domain for user gui: 501", false);
+                }
+                return (0, "", "", false);
+            });
+
+            var ok = mgr.StartBootstrapOnly("test", TimeSpan.FromSeconds(5), out var error);
+
+            await Assert.That(ok).IsTrue();
+            await Assert.That(error).IsNull();
+            await Assert.That(timeouts.Count).IsEqualTo(2);
+            // The probe gets the full budget; the bootstrap call must get only what's LEFT of it —
+            // never another full 5s, which would let the pair invade up to 2x the caller's forward
+            // remainder (including the separately reserved rollback budget).
+            await Assert.That(timeouts[0]).IsEqualTo(TimeSpan.FromSeconds(5));
+            await Assert.That(timeouts[1]).IsLessThan(TimeSpan.FromSeconds(5));
+        });
+    }
+
+    [Test]
+    public async Task StartBootstrapOnly_reports_timeout_when_the_probe_alone_exhausts_the_budget() {
+        Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");
+
+        await WithHome(async _ => {
+            var mgr = new LaunchdServiceManager(runBounded: (_, args, timeout) =>
+                args[0] == "print"
+                    ? (113, "", "Could not find service \"io.kurrent.kcap.daemon.test\" in domain for user gui: 501", true) // timed out
+                    : (0, "", "", false));
+
+            var ok = mgr.StartBootstrapOnly("test", TimeSpan.FromSeconds(5), out var error);
+
+            // A timed-out print reports Unknown, not Absent — bootstrap must never run.
+            await Assert.That(ok).IsFalse();
+            await Assert.That(error).IsNotNull();
+        });
+    }
+
     [Test]
     public async Task Start_probe_unknown_fails_without_issuing_bootstrap_or_kickstart() {
         Skip.When(OperatingSystem.IsWindows(), "Uid() P/Invokes libc's getuid, POSIX-only");
