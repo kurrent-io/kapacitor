@@ -48,7 +48,11 @@ public class AcpServerConnectionTests {
         /// and transient-failure-then-recover cases. Absent/zero entries always succeed.</summary>
         public Dictionary<string, int> FailSessionStartedRemaining { get; } = [];
 
-        internal override Task InvokeAcpSessionStartedRawAsync(
+        /// <summary>agent ids whose raw AcpSessionStarted invoke should return
+        /// <see cref="AcpBindOutcome.Rejected"/> (a server stand-down, NOT a thrown transport failure).</summary>
+        public HashSet<string> RejectSessionStarted { get; } = [];
+
+        internal override Task<AcpBindOutcome> InvokeAcpSessionStartedRawAsync(
                 string agentId, string vendor, string acpSessionId, string? cwd, string? model,
                 IReadOnlyDictionary<string, string>? metadata, CancellationToken ct
             ) {
@@ -58,10 +62,10 @@ public class AcpServerConnectionTests {
             if (FailSessionStartedRemaining.TryGetValue(agentId, out var remaining) && remaining > 0) {
                 FailSessionStartedRemaining[agentId] = remaining - 1;
 
-                return Task.FromException(new InvalidOperationException($"simulated AcpSessionStarted failure for {agentId}"));
+                return Task.FromException<AcpBindOutcome>(new InvalidOperationException($"simulated AcpSessionStarted failure for {agentId}"));
             }
 
-            return Task.CompletedTask;
+            return Task.FromResult(RejectSessionStarted.Contains(agentId) ? AcpBindOutcome.Rejected : AcpBindOutcome.Bound);
         }
 
         internal override Task<AcpBatchAck> InvokeAcpSessionEventsRawAsync(
@@ -256,6 +260,85 @@ public class AcpServerConnectionTests {
 
         await Assert.That(conn.SessionStartedCalls.Count(c => c.AgentId == "agentB")).IsEqualTo(1);
         await Assert.That(conn.SessionStartedCalls.Count(c => c.AgentId == "agentA")).IsEqualTo(ServerConnection.AcpRebindMaxAttempts);
+    }
+
+    // ── reconnect re-bind stand-down on a server Rejected outcome ────────────────────────
+
+    /// <summary>
+    /// a <see cref="AcpBindOutcome.Rejected"/> outcome is a terminal stand-down, NOT a
+    /// transient failure — the server declined a stale/foreign/conflicting binding. It must be
+    /// invoked exactly ONCE (no 3× retry storm) and the binding unregistered so a later reconnect
+    /// never replays it.
+    /// </summary>
+    [Test]
+    public async Task ReBindAcpSessionsAsync_stands_down_without_retrying_on_a_Rejected_outcome() {
+        var conn = new TestServerConnection();
+        conn.AcpRebindRetryDelay = TimeSpan.FromMilliseconds(5);
+
+        conn.RegisterAcpBinding("agentA", new AcpBindInfo("cursor", "sess-a", "/wt-a", null));
+        conn.RejectSessionStarted.Add("agentA");
+
+        await conn.ReBindAcpSessionsAsync().WaitAsync(HangGuard);
+
+        // Exactly one attempt — no retry storm.
+        await Assert.That(conn.SessionStartedCalls.Count(c => c.AgentId == "agentA")).IsEqualTo(1);
+
+        // Unregistered: a later reconnect replays nothing for agentA.
+        var callsBefore = conn.SessionStartedCalls.Count;
+        await conn.ReBindAcpSessionsAsync().WaitAsync(HangGuard);
+        await Assert.That(conn.SessionStartedCalls.Count).IsEqualTo(callsBefore);
+    }
+
+    /// <summary>
+    /// belt-and-braces: a binding whose agent is no longer hosted as live (per
+    /// <see cref="ServerConnection.GetLiveAgentIds"/>) is not replayed at all — it is skipped and
+    /// unregistered, so the server is never asked to bind a gone agent.
+    /// </summary>
+    [Test]
+    public async Task ReBindAcpSessionsAsync_skips_and_unregisters_a_binding_whose_agent_is_not_live() {
+        var conn = new TestServerConnection { GetLiveAgentIds = () => ["agentLive"] };
+
+        conn.RegisterAcpBinding("agentGone", new AcpBindInfo("cursor", "sess-gone", "/wt", null));
+        conn.RegisterAcpBinding("agentLive", new AcpBindInfo("cursor", "sess-live", "/wt", null));
+
+        await conn.ReBindAcpSessionsAsync().WaitAsync(HangGuard);
+
+        // The gone agent was never re-bound; the live one was.
+        await Assert.That(conn.SessionStartedCalls.Count(c => c.AgentId == "agentGone")).IsEqualTo(0);
+        await Assert.That(conn.SessionStartedCalls.Count(c => c.AgentId == "agentLive")).IsEqualTo(1);
+
+        // agentGone's stale binding was unregistered — a later reconnect (even without the live gate)
+        // never replays it.
+        conn.GetLiveAgentIds = null;
+        var callsBefore = conn.SessionStartedCalls.Count;
+        await conn.ReBindAcpSessionsAsync().WaitAsync(HangGuard);
+        await Assert.That(conn.SessionStartedCalls.Count(c => c.AgentId == "agentGone")).IsEqualTo(0);
+        await Assert.That(conn.SessionStartedCalls.Count).IsEqualTo(callsBefore + 1); // only agentLive replayed
+    }
+
+    /// <summary>
+    /// an INITIAL bind that the server declines surfaces as a local
+    /// <c>AcpBindRejectedException</c> (never a <c>HubException</c>), so the launch path's existing
+    /// "bind threw ⇒ don't register / don't start a forwarder" catch handles it unchanged.
+    /// </summary>
+    [Test]
+    public async Task AcpSessionStartedAsync_throws_AcpBindRejectedException_on_a_Rejected_initial_bind() {
+        var conn = new TestServerConnection { Ready = true };
+        conn.RejectSessionStarted.Add("agent1");
+
+        await Assert.That(async () => await conn.AcpSessionStartedAsync("agent1", "cursor", "sess-1", "/wt", "model-x", null))
+            .Throws<AcpBindRejectedException>();
+    }
+
+    /// <summary>
+    /// mixed-version invariant: <see cref="AcpBindOutcome.Bound"/> must be the zero value, so
+    /// an OLD server whose hub method still returns void decodes to <c>default</c> == Bound (legacy
+    /// success) on a new daemon.
+    /// </summary>
+    [Test]
+    public async Task AcpBindOutcome_default_is_Bound() {
+        await Assert.That(default(AcpBindOutcome)).IsEqualTo(AcpBindOutcome.Bound);
+        await Assert.That((int)AcpBindOutcome.Bound).IsEqualTo(0);
     }
 
     // ── Reconnect re-bind ordering (design spec §2.3) ────────────────────────────────────────────

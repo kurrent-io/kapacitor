@@ -163,6 +163,64 @@ public class AcpTranscriptForwarderTests {
         await Assert.That(callCount).IsEqualTo(2); // never retried/resent once terminal
     }
 
+    // ── server rejection ack terminalizes the forwarder ────────────────────
+
+    /// <summary>
+    /// the server returns the canonical rejection ack for a stale/foreign/unbound binding.
+    /// The forwarder must stop on the very first such ack — via the explicit <see cref="AcpBatchAck.Rejected"/>
+    /// flag — without retrying.
+    /// </summary>
+    [Test]
+    public async Task Rejected_ack_stops_the_loop_on_the_first_ack() {
+        var channel = NewChannel();
+        channel.Writer.TryWrite(NewTextEnvelope("a")); // seq 1 (never completed — a still-looping forwarder would hang)
+
+        var callCount = 0;
+
+        Task<AcpBatchAck> Send(AcpEventEnvelope[] batch, CancellationToken _) {
+            callCount++;
+
+            return Task.FromResult(new AcpBatchAck(-1, -1, ExpectedNextSeq: null, Rejected: true));
+        }
+
+        var forwarder = NewForwarder(Send, channel.Reader);
+
+        await forwarder.RunAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(forwarder.IsTerminal).IsTrue();
+        await Assert.That(forwarder.UnackedCount).IsEqualTo(0);
+        await Assert.That(callCount).IsEqualTo(1); // stopped immediately, no retry
+    }
+
+    /// <summary>
+    /// old-daemon compatibility: even an un-upgraded forwarder shape (one that ignores the new
+    /// <see cref="AcpBatchAck.Rejected"/> flag) stops on the canonical rejection ack, because
+    /// <see cref="AcpBatchAck.AcceptedSeq"/> == -1 is below any real highest-sent seq and trips the
+    /// existing terminal-drop path.
+    /// </summary>
+    [Test]
+    public async Task Rejection_ack_minus_one_stops_via_terminal_drop_even_ignoring_the_Rejected_flag() {
+        var channel = NewChannel();
+        channel.Writer.TryWrite(NewTextEnvelope("a")); // seq 1
+
+        var callCount = 0;
+
+        Task<AcpBatchAck> Send(AcpEventEnvelope[] batch, CancellationToken _) {
+            callCount++;
+
+            // Rejected deliberately left at its default false — proves the AcceptedSeq == -1 sentinel
+            // alone drives the terminal-drop stop path.
+            return Task.FromResult(new AcpBatchAck(-1, -1));
+        }
+
+        var forwarder = NewForwarder(Send, channel.Reader);
+
+        await forwarder.RunAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(forwarder.IsTerminal).IsTrue();
+        await Assert.That(callCount).IsEqualTo(1);
+    }
+
     // ── Hot-loop guard: stalled gap → terminal ─────────────────────────────────────
 
     [Test]

@@ -2353,7 +2353,7 @@ public partial class AgentOrchestratorVendorTests {
         /// <paramref name="ct"/> so the test controls exactly when the "late bind" resolves.</summary>
         public TaskCompletionSource? PendingAcpBindGate { get; set; }
 
-        internal override async Task InvokeAcpSessionStartedRawAsync(
+        internal override async Task<AcpBindOutcome> InvokeAcpSessionStartedRawAsync(
                 string agentId, string vendor, string acpSessionId, string? cwd, string? model,
                 IReadOnlyDictionary<string, string>? metadata, CancellationToken ct
             ) {
@@ -2366,6 +2366,8 @@ public partial class AgentOrchestratorVendorTests {
                 PendingAcpBindGate = null;
                 await gate.Task;
             }
+
+            return AcpBindOutcome.Bound;
         }
 
         internal override async Task<AcpBatchAck> InvokeAcpSessionEventsRawAsync(

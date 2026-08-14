@@ -1048,13 +1048,37 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// <see cref="UnregisterAcpBinding"/> removes it so a LATER reconnect doesn't replay it either.
     /// </summary>
     internal async Task ReBindAcpSessionsAsync() {
+        // belt-and-braces: never replay a binding whose agent the daemon no longer hosts as
+        // live. _acpBindings is maintained independently of the live-agent set, so a stale entry to a
+        // gone agent is exactly the binding the server now rejects. GetLiveAgentIds is the same source
+        // the reconnect survivor set uses; when it isn't wired (tests) we skip the pre-filter.
+        var live = GetLiveAgentIds is { } getLive ? new HashSet<string>(getLive(), StringComparer.Ordinal) : null;
+
         foreach (var (agentId, bind) in _acpBindings) {
-            var rebound = false;
+            if (live is not null && !live.Contains(agentId)) {
+                LogAcpRebindSkippedNotLive(agentId, bind.AcpSessionId);
+                UnregisterAcpBinding(agentId);
+
+                continue;
+            }
+
+            var settled = false; // the invoke returned an OUTCOME (Bound or Rejected): stop, don't give up
 
             for (var attempt = 1; attempt <= AcpRebindMaxAttempts; attempt++) {
                 try {
-                    await InvokeAcpSessionStartedRawAsync(agentId, bind.Vendor, bind.AcpSessionId, bind.Cwd, bind.Model, bind.Metadata, _ct);
-                    rebound = true;
+                    var outcome = await InvokeAcpSessionStartedRawAsync(agentId, bind.Vendor, bind.AcpSessionId, bind.Cwd, bind.Model, bind.Metadata, _ct);
+
+                    // a Rejected outcome is a terminal stand-down, not a transient failure —
+                    // the server declined a stale/foreign/conflicting binding. Drop the binding (so a
+                    // later reconnect doesn't replay it) and move on WITHOUT retrying; the agent's
+                    // forwarder terminalizes independently on the matching AcpSessionEvents rejection
+                    // ack. An old server (void return) decodes as Bound, preserving today's behaviour.
+                    if (outcome == AcpBindOutcome.Rejected) {
+                        LogAcpRebindRejected(agentId, bind.AcpSessionId);
+                        UnregisterAcpBinding(agentId);
+                    }
+
+                    settled = true;
 
                     break;
                 } catch (Exception ex) {
@@ -1070,7 +1094,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                 }
             }
 
-            if (!rebound) {
+            if (!settled) {
                 LogAcpRebindGivingUp(agentId, bind.AcpSessionId, AcpRebindMaxAttempts);
                 UnregisterAcpBinding(agentId);
             }
@@ -1086,7 +1110,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// class's own <see cref="ReBindAcpSessionsAsync"/> reconnect path) may invoke the underlying hub
     /// method again freely — a redundant re-bind is harmless even if the two race.
     /// </summary>
-    public virtual Task AcpSessionStartedAsync(
+    public virtual async Task AcpSessionStartedAsync(
             string                               agentId,
             string                               vendor,
             string                               acpSessionId,
@@ -1094,13 +1118,22 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
             string?                              model,
             IReadOnlyDictionary<string, string>? metadata,
             CancellationToken                    ct = default
-        ) => ConnectionRetry.InvokeWithConnectionRetryAsync(
+        ) {
+        var outcome = await ConnectionRetry.InvokeWithConnectionRetryAsync(
             () => InvokeAcpSessionStartedRawAsync(agentId, vendor, acpSessionId, cwd, model, metadata, ct),
             () => IsReady,
             AcpRetryPollInterval,
             attempt => LogAcpSessionStartedRetry(agentId, attempt),
             ct
-        );
+        ).ConfigureAwait(false);
+
+        // an INITIAL bind that the server declines (stale/foreign/conflict) must NOT register
+        // a binding or start a forwarder. Surface it as a local exception (never a HubException) so the
+        // launch path's existing "bind threw ⇒ don't register" catch handles it unchanged. Reason-
+        // agnostic: any Rejected origin maps here. An old server's void return decodes to Bound.
+        if (outcome == AcpBindOutcome.Rejected)
+            throw new AcpBindRejectedException(agentId, acpSessionId);
+    }
 
     /// <summary>
     /// Forwards a batch of ACP transcript envelopes to the server's <c>AcpSessionEvents</c> hub
@@ -1130,7 +1163,11 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// <see cref="ReBindAcpSessionsAsync"/> (ungated, see its remarks) share one call site, and so
     /// unit tests can capture/verify the exact payload without a live hub connection.
     /// </summary>
-    internal virtual Task InvokeAcpSessionStartedRawAsync(
+    /// returns the server's <see cref="AcpBindOutcome"/>. An OLD server whose hub method is
+    /// still <c>void</c> completes with no result, which <c>InvokeAsync&lt;AcpBindOutcome&gt;</c> decodes
+    /// to <c>default</c> == <see cref="AcpBindOutcome.Bound"/> — legacy success, preserving today's
+    /// behaviour against an un-upgraded server.
+    internal virtual Task<AcpBindOutcome> InvokeAcpSessionStartedRawAsync(
             string                               agentId,
             string                               vendor,
             string                               acpSessionId,
@@ -1138,7 +1175,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
             string?                              model,
             IReadOnlyDictionary<string, string>? metadata,
             CancellationToken                    ct
-        ) => _hub.InvokeAsync("AcpSessionStarted", agentId, vendor, acpSessionId, cwd, model, metadata, cancellationToken: ct);
+        ) => _hub.InvokeAsync<AcpBindOutcome>("AcpSessionStarted", agentId, vendor, acpSessionId, cwd, model, metadata, cancellationToken: ct);
 
     /// <summary>
     /// The actual <c>AcpSessionEvents</c> hub invocation, isolated into its own <c>virtual</c> method
@@ -1384,6 +1421,12 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     [LoggerMessage(Level = LogLevel.Warning, Message = "Reconnect re-bind of ACP session {AcpSessionId} for agent {AgentId} failed after {MaxAttempts} attempts — unregistering the binding so it isn't replayed forever")]
     partial void LogAcpRebindGivingUp(string agentId, string acpSessionId, int maxAttempts);
 
+    [LoggerMessage(Level = LogLevel.Information, Message = "Reconnect re-bind of ACP session {AcpSessionId} for agent {AgentId} was rejected by the server (stale/foreign/conflicting binding) — standing down and unregistering the binding")]
+    partial void LogAcpRebindRejected(string agentId, string acpSessionId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Skipping reconnect re-bind of ACP session {AcpSessionId} for agent {AgentId} — the agent is no longer hosted as live; unregistering the stale binding")]
+    partial void LogAcpRebindSkippedNotLive(string agentId, string acpSessionId);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to post agent run event, retrying in {Delay}s")]
     partial void LogEventPostFailed(Exception ex, double delay);
 
@@ -1449,3 +1492,17 @@ internal sealed record AcpBindInfo(
     string?                              Model,
     IReadOnlyDictionary<string, string>? Metadata = null
 );
+
+/// <summary>
+/// thrown by <see cref="ServerConnection.AcpSessionStartedAsync"/> when the server declines
+/// an INITIAL bind (a stale/foreign/conflicting binding, surfaced as <see cref="AcpBindOutcome.Rejected"/>).
+/// A LOCAL exception, never a <c>HubException</c>, so the launch path's existing "bind threw ⇒ do not
+/// register a binding / do not start a forwarder" catch handles it unchanged. The reconnect path
+/// (<see cref="ServerConnection.ReBindAcpSessionsAsync"/>) reads the outcome directly and never throws
+/// this.
+/// </summary>
+internal sealed class AcpBindRejectedException(string agentId, string acpSessionId)
+    : Exception($"Server rejected the ACP bind for agent {agentId} (session {acpSessionId})") {
+    public string AgentId      { get; } = agentId;
+    public string AcpSessionId { get; } = acpSessionId;
+}

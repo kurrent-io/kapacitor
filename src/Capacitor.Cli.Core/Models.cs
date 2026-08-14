@@ -1072,6 +1072,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(AcpEventEnvelope))]
 [JsonSerializable(typeof(AcpEventEnvelope[]))]
 [JsonSerializable(typeof(AcpBatchAck))]
+[JsonSerializable(typeof(AcpBindOutcome))]
 [JsonSerializable(typeof(TranscriptBatchAck))]
 // The AcpSessionStarted hub method's optional metadata argument. Registered as its own root type
 // (not just nested inside another JsonSerializable graph) because SignalR's JsonHubProtocol
@@ -1291,8 +1292,23 @@ public readonly record struct AcpEventEnvelope(
 /// (resend from <see cref="ExpectedNextSeq"/> on a gap; a terminal-drop ack
 /// has <see cref="AcceptedSeq"/> below the daemon's max-sent seq AND a null
 /// <see cref="ExpectedNextSeq"/>).
+/// <para>
+/// <see cref="Rejected"/> is set on a stale-binding rejection (missing agent, foreign
+/// connection, or unbound/terminal session). The server returns the canonical rejection ack
+/// <c>(-1, -1, null, true)</c> instead of throwing; the forwarder terminalizes on it. An old daemon
+/// (no <see cref="Rejected"/> field) still stops because <see cref="AcceptedSeq"/> == -1 is below any
+/// real max-sent seq, which trips the terminal-drop path above.
+/// </para>
 /// </summary>
-public readonly record struct AcpBatchAck(long AcceptedSeq, long PersistedSeq, long? ExpectedNextSeq = null);
+public readonly record struct AcpBatchAck(long AcceptedSeq, long PersistedSeq, long? ExpectedNextSeq = null, bool Rejected = false);
+
+/// <summary>
+/// outcome of the server's <c>AcpSessionStarted</c> hub method — a field-for-field mirror of
+/// the server-side <c>Capacitor.Server.Core.Acp.AcpBindOutcome</c>. <see cref="Bound"/> is <c>0</c> so
+/// an OLD server's void return decodes to it (legacy success). <see cref="Rejected"/> means the server
+/// declined a stale/foreign/conflicting binding; the daemon stands down without a retry storm.
+/// </summary>
+public enum AcpBindOutcome { Bound = 0, Rejected = 1 }
 
 /// <summary>
 /// Ack returned from the server's <c>SendTranscriptBatchAcked</c> hub method (D3).
