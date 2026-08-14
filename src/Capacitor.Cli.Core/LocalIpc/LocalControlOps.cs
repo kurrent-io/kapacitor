@@ -18,6 +18,7 @@ public interface ILocalControlOps {
     Task<StopAgentResult>  StopAgentAsync(string agentId, bool force, CancellationToken ct);
     Task<ConsentPolicyDto> GetConsentPolicyAsync(CancellationToken ct);
     Task<ConsentAckDto>    PutConsentPolicyAsync(ConsentPolicyDto policy, CancellationToken ct);
+    Task<ConsentAckDto>    PutConsentPolicyV2Async(ConsentPolicyPutV2Dto put, CancellationToken ct);
     Task<ConsentAckDto>    ResolveConsentAsync(ConsentResolveDto resolve, CancellationToken ct);
 }
 
@@ -80,6 +81,21 @@ public sealed class LocalControlOps(string daemonName, TimeProvider? time = null
                 throw new LocalControlOpsException(DaemonRejected, reply.Text);
             default:
                 throw new LocalControlOpsException(UnexpectedReply, $"unexpected daemon response to consent rules put ({reply.Type})");
+        }
+    }
+
+    public async Task<ConsentAckDto> PutConsentPolicyV2Async(ConsentPolicyPutV2Dto put, CancellationToken ct) {
+        var json = JsonSerializer.Serialize(put, ConsentIpcJsonContext.Default.ConsentPolicyPutV2Dto);
+        var reply = await ExchangeAsync(LocalFrame.ConsentJson(FrameType.ConsentRulesPutV2, json), ConsentReplyTimeout, ct);
+        switch (reply.Type) {
+            case FrameType.ConsentAck:
+                var ack = DeserializeOrThrow(reply.Text, ConsentIpcJsonContext.Default.ConsentAckDto, "malformed consent ack reply");
+                if (ack is null) throw new LocalControlOpsException(UnexpectedReply, "malformed consent ack reply");
+                return ack; // Ok=false (e.g. identity_mismatch) returned as-is — not an exception
+            case FrameType.Error:
+                throw new LocalControlOpsException(DaemonRejected, reply.Text);
+            default:
+                throw new LocalControlOpsException(UnexpectedReply, $"unexpected daemon response to consent rules put v2 ({reply.Type})");
         }
     }
 
