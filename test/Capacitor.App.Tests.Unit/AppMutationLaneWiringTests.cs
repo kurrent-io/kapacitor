@@ -5,60 +5,132 @@ using AppUnderTest = Capacitor.App.App;
 namespace Capacitor.App.Tests.Unit;
 
 /// Task 10: the composition-root helpers wiring the mutation lane into App.axaml.cs — the
-/// outcome-channel presentation routing, the cliOverride null-remap, and the shutdown
-/// quiesce composition. Plain TUnit, no Avalonia session needed (these are pure/async functions
-/// over interfaces and fakes — FakeLifecycleSurface/FakeKcapCli/FakeLoginShellProbe are shared
-/// from DaemonLifecycleControllerTests.cs, same namespace).
+/// outcome-channel presentation routing, the cliOverride absolute-pin resolution, and the
+/// shutdown quiesce composition. Plain TUnit, no Avalonia session needed (these are pure/async
+/// functions over interfaces and fakes — FakeLifecycleSurface/FakeKcapCli/FakeLoginShellProbe are
+/// shared from DaemonLifecycleControllerTests.cs, same namespace).
 public class AppMutationLaneWiringTests {
-    // ---- ResolveCliOverride's testable core ----
+    static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null, string what = "condition") {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
+        while (!condition()) {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException($"Timed out waiting for: {what}");
+            await Task.Delay(10);
+        }
+    }
+
+    static MutationRequest Req(MutationVerb verb = MutationVerb.StartVerified) =>
+        new(verb, "default", "https://kcap.example.com:443", "daemon-a");
+
+    static OutcomeEnvelope Envelope(MutationOutcome outcome, MutationVerb verb = MutationVerb.StartVerified) =>
+        new(Req(verb), outcome);
+
+    // A tripwire for "must not be called" assertions — round-1 review C-1's Decline case, and
+    // every non-Takeover branch, must never re-mutate.
+    static Task<MutationOutcome> NeverRunMutation(MutationRequest request, CancellationToken ct) =>
+        throw new InvalidOperationException("runMutation must not be called");
+
+    static Func<CancellationToken, Task<string?>> FixedTerminalPath(string? path) => _ => Task.FromResult(path);
+
+    // ---- ResolveCliOverrideCore (round-1 review M-4) ----
 
     [Test]
-    public async Task MapBareKcapToNull_maps_the_unset_fallback_to_null() {
-        await Assert.That(AppUnderTest.MapBareKcapToNull("kcap")).IsNull();
+    public async Task ResolveCliOverrideCore_no_override_is_null() {
+        await Assert.That(AppUnderTest.ResolveCliOverrideCore(null, _ => true, p => p)).IsNull();
     }
 
     [Test]
-    public async Task MapBareKcapToNull_passes_a_real_override_through_verbatim() {
-        await Assert.That(AppUnderTest.MapBareKcapToNull("/opt/kcap/kcap")).IsEqualTo("/opt/kcap/kcap");
+    public async Task ResolveCliOverrideCore_empty_override_is_null() {
+        await Assert.That(AppUnderTest.ResolveCliOverrideCore("", _ => true, p => p)).IsNull();
     }
 
     [Test]
-    public async Task MapBareKcapToNull_passes_a_broken_override_null_through() {
-        // CliResolver.ResolvePath already reports a broken override as null — must stay null, not "kcap".
-        await Assert.That(AppUnderTest.MapBareKcapToNull(null)).IsNull();
+    public async Task ResolveCliOverrideCore_existing_override_is_absolute_pinned() {
+        var result = AppUnderTest.ResolveCliOverrideCore("./bin/kcap", _ => true, p => $"/abs/{p}");
+        await Assert.That(result).IsEqualTo("/abs/./bin/kcap");
     }
 
-    // ---- PresentOutcomeAsync / ClassifyForPresentation ----
+    [Test]
+    public async Task ResolveCliOverrideCore_broken_override_is_null_fail_closed() {
+        await Assert.That(AppUnderTest.ResolveCliOverrideCore("/opt/kcap/kcap", _ => false, p => p)).IsNull();
+    }
 
-    static OutcomeEnvelope Envelope(MutationOutcome outcome) =>
-        new(new MutationRequest(MutationVerb.StartVerified, "default", "https://kcap.example.com:443", "daemon-a"), outcome);
+    // The whole point of M-4: a real override whose value happens to equal the OLD no-override
+    // sentinel string ("kcap") must still resolve as a real, absolute-pinned override — not be
+    // silently treated as "no override set" via a string-compare ambiguity.
+    [Test]
+    public async Task ResolveCliOverrideCore_override_literally_named_kcap_is_not_confused_with_the_old_sentinel() {
+        var result = AppUnderTest.ResolveCliOverrideCore("kcap", _ => true, p => $"/abs/{p}");
+        await Assert.That(result).IsEqualTo("/abs/kcap");
+    }
+
+    // ---- PresentOutcomeAsync: Takeover (round-1 review C-1 / C-2) ----
 
     [Test]
-    public async Task Takeover_surface_shows_the_dialog_and_names_the_token() {
+    public async Task Takeover_accept_issues_exactly_one_Replace_request_at_the_envelopes_own_identity() {
+        var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(true) };
+        var envelope = Envelope(new MutationOutcome.Failed(28, "foreign_binary", RecoverySurface.Takeover));
+        var seen = new List<MutationRequest>();
+        Task<MutationOutcome> RunMutation(MutationRequest r, CancellationToken ct) {
+            seen.Add(r);
+            return Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
+        }
+
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, RunMutation, FixedTerminalPath("/usr/bin:/bin"), () => "1.2.3", CancellationToken.None);
+
+        await Assert.That(seen.Count).IsEqualTo(1);
+        await Assert.That(seen[0].Verb).IsEqualTo(MutationVerb.Replace);
+        await Assert.That(seen[0].Profile).IsEqualTo(envelope.Request.Profile);
+        await Assert.That(seen[0].CanonicalServer).IsEqualTo(envelope.Request.CanonicalServer);
+        await Assert.That(seen[0].DaemonName).IsEqualTo(envelope.Request.DaemonName);
+        await Assert.That(surface.Prompts.Count).IsEqualTo(1);
+        await Assert.That(surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindTakeover);
+        await Assert.That(surface.Prompts[0].CliVersion).IsEqualTo("1.2.3");
+        await Assert.That(surface.Prompts[0].PathDegraded).IsFalse();
+        await Assert.That(surface.Prompts[0].Disclosure).IsEqualTo(DaemonLifecycleController.TakeoverDisclosure);
+        await Assert.That(surface.StatusMessages).IsEmpty(); // accept never writes Status — the dialog IS the presentation
+    }
+
+    [Test]
+    public async Task Takeover_accept_discloses_PathDegraded_true_and_null_CliVersion_when_unavailable() {
         var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(true) };
         var envelope = Envelope(new MutationOutcome.Failed(28, "foreign_binary", RecoverySurface.Takeover));
 
-        await AppUnderTest.PresentOutcomeAsync(surface, envelope, CancellationToken.None);
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded()),
+            FixedTerminalPath(null), () => null, CancellationToken.None);
 
-        await Assert.That(surface.Prompts.Count).IsEqualTo(1);
-        await Assert.That(surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindTakeover);
-        await Assert.That(surface.Prompts[0].Disclosure).IsEqualTo(DaemonLifecycleController.TakeoverDisclosure);
+        await Assert.That(surface.Prompts[0].PathDegraded).IsTrue();
+        await Assert.That(surface.Prompts[0].CliVersion).IsNull();
+    }
+
+    [Test]
+    public async Task Takeover_decline_issues_no_request_and_exactly_one_status_line_naming_the_token() {
+        var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(false) };
+        var envelope = Envelope(new MutationOutcome.Failed(28, "foreign_binary", RecoverySurface.Takeover));
+
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => "1.2.3", CancellationToken.None);
+
         await Assert.That(surface.StatusMessages.Count).IsEqualTo(1);
         await Assert.That(surface.StatusMessages[0]).Contains("foreign_binary");
         await Assert.That(surface.AttentionMessages).IsEmpty();
     }
 
+    // ---- PresentOutcomeAsync: Reinstall/Attention/Storage (round-1 review C-2b) ----
+
     [Test]
-    public async Task Reinstall_surface_is_a_status_line_naming_the_token_no_dialog() {
+    public async Task Reinstall_surface_is_an_attention_line_naming_the_token_no_dialog_no_status() {
         var surface = new FakeLifecycleSurface();
         var envelope = Envelope(new MutationOutcome.Failed(28, "package_inconsistent", RecoverySurface.Reinstall));
 
-        await AppUnderTest.PresentOutcomeAsync(surface, envelope, CancellationToken.None);
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
         await Assert.That(surface.Prompts).IsEmpty();
-        await Assert.That(surface.StatusMessages.Count).IsEqualTo(1);
-        await Assert.That(surface.StatusMessages[0]).Contains("package_inconsistent");
-        await Assert.That(surface.AttentionMessages).IsEmpty();
+        await Assert.That(surface.StatusMessages).IsEmpty(); // moved OFF the status slot per C-2
+        await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
+        await Assert.That(surface.AttentionMessages[0]).Contains("package_inconsistent");
     }
 
     [Test]
@@ -66,7 +138,8 @@ public class AppMutationLaneWiringTests {
         var surface = new FakeLifecycleSurface();
         var envelope = Envelope(new MutationOutcome.Failed(1, "internal_error", RecoverySurface.Attention));
 
-        await AppUnderTest.PresentOutcomeAsync(surface, envelope, CancellationToken.None);
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
         await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
         await Assert.That(surface.AttentionMessages[0]).Contains("internal_error");
@@ -79,7 +152,8 @@ public class AppMutationLaneWiringTests {
         var surface = new FakeLifecycleSurface();
         var envelope = Envelope(new MutationOutcome.Refused("consent_seed_unwritable", RecoverySurface.Storage));
 
-        await AppUnderTest.PresentOutcomeAsync(surface, envelope, CancellationToken.None);
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
         await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
         await Assert.That(surface.AttentionMessages[0]).Contains("consent_seed_unwritable");
@@ -90,7 +164,8 @@ public class AppMutationLaneWiringTests {
         var surface = new FakeLifecycleSurface();
         var envelope = Envelope(new MutationOutcome.AttentionSkew("ownership_mismatch"));
 
-        await AppUnderTest.PresentOutcomeAsync(surface, envelope, CancellationToken.None);
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
         await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
         await Assert.That(surface.AttentionMessages[0]).Contains("ownership_mismatch");
@@ -101,22 +176,27 @@ public class AppMutationLaneWiringTests {
         var surface = new FakeLifecycleSurface();
         var envelope = Envelope(new MutationOutcome.AttentionRepair("stale_txn_marker"));
 
-        await AppUnderTest.PresentOutcomeAsync(surface, envelope, CancellationToken.None);
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
         await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
         await Assert.That(surface.AttentionMessages[0]).Contains("stale_txn_marker");
     }
 
+    // round-1 review I-3: UnconfirmedNoAttach IS actionable — one attention presentation naming
+    // the verb (Succeeded/SucceededAfterTimeout still never reach the channel at all).
     [Test]
-    public async Task UnconfirmedNoAttach_is_never_presented() {
+    public async Task UnconfirmedNoAttach_is_presented_once_naming_the_verb() {
         var surface = new FakeLifecycleSurface();
-        var envelope = Envelope(new MutationOutcome.UnconfirmedNoAttach());
+        var envelope = Envelope(new MutationOutcome.UnconfirmedNoAttach(), MutationVerb.DetachedStart);
 
-        await AppUnderTest.PresentOutcomeAsync(surface, envelope, CancellationToken.None);
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
+        await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
+        await Assert.That(surface.AttentionMessages[0]).Contains("DetachedStart");
         await Assert.That(surface.Prompts).IsEmpty();
         await Assert.That(surface.StatusMessages).IsEmpty();
-        await Assert.That(surface.AttentionMessages).IsEmpty();
     }
 
     [Test]
@@ -124,7 +204,8 @@ public class AppMutationLaneWiringTests {
         var surface = new FakeLifecycleSurface();
         var envelope = Envelope(new MutationOutcome.Failed(24, null, RecoverySurface.Attention));
 
-        await AppUnderTest.PresentOutcomeAsync(surface, envelope, CancellationToken.None);
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
         await Assert.That(surface.AttentionMessages[0]).Contains("verify_readiness_timeout");
     }
@@ -149,6 +230,42 @@ public class AppMutationLaneWiringTests {
 
         var (surface2, _) = AppUnderTest.ClassifyForPresentation(new MutationOutcome.SucceededAfterTimeout());
         await Assert.That(surface2).IsEqualTo(RecoverySurface.None);
+    }
+
+    // ---- ConsumeMutationOutcomesAsync (round-1 review I-1) ----
+
+    /// Throws on its FIRST Attention call only, then behaves normally — simulates a presentation
+    /// failure for exactly one envelope.
+    sealed class ThrowOnceOnAttentionSurface(ILifecycleSurface inner) : ILifecycleSurface {
+        bool _thrown;
+        public void Status(string message) => inner.Status(message);
+        public void Attention(string message) {
+            if (!_thrown) { _thrown = true; throw new InvalidOperationException("boom"); }
+            inner.Attention(message);
+        }
+        public Task<bool> ConfirmAsync(LifecyclePrompt prompt, CancellationToken ct) => inner.ConfirmAsync(prompt, ct);
+    }
+
+    [Test]
+    public async Task ConsumeMutationOutcomesAsync_a_presentation_failure_does_not_kill_the_consumer() {
+        var inner = new FakeLifecycleSurface();
+        var surface = new ThrowOnceOnAttentionSurface(inner);
+        var channel = new OutcomeChannel();
+        using var cts = new CancellationTokenSource();
+
+        var consumerTask = AppUnderTest.ConsumeMutationOutcomesAsync(
+            channel, surface, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, cts.Token);
+
+        channel.Enqueue(new OutcomeEnvelope(Req(), new MutationOutcome.Failed(1, "boom1", RecoverySurface.Attention)));
+        channel.Enqueue(new OutcomeEnvelope(Req(), new MutationOutcome.Failed(2, "boom2", RecoverySurface.Attention)));
+
+        await WaitUntilAsync(() => inner.AttentionMessages.Count == 1, what: "the second envelope's presentation");
+        await Assert.That(inner.AttentionMessages[0]).Contains("boom2"); // first envelope's presentation threw and was skipped, not fatal
+
+        cts.Cancel();
+        // The loop's own outer catch swallows shutdown's OperationCanceledException by design
+        // (draining just stops) — the task completes normally, never faulted/canceled.
+        await consumerTask.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     // ---- QuiesceLifecycleAndLaneAsync (shutdown composition) ----
@@ -188,5 +305,57 @@ public class AppMutationLaneWiringTests {
         gate.SetResult("9.9.9");
         await quiesced.WaitAsync(TimeSpan.FromSeconds(5));
         await runTask.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // ---- round-1 review I-2: composed real-lane + real-consumer wiring ----
+
+    // This is the test that would have caught C-2's double presentation: a REAL DaemonMutationLane
+    // and a REAL ConsumeMutationOutcomesAsync loop, driving a REAL DaemonLifecycleController's
+    // startup matrix through a fake executor whose install exits with a Takeover-routed coded
+    // failure. Asserts exactly ONE presentation (the takeover dialog, declined -> its one status
+    // line) and that the controller itself made zero direct Attention calls and wrote no OTHER
+    // status line.
+    [Test]
+    public async Task Composed_real_lane_and_consumer_present_exactly_once_and_controller_makes_no_surface_call() {
+        var channel = new OutcomeChannel();
+        var client = new FakeDaemonClientService();
+        var cli = new FakeKcapCli {
+            StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(
+                new ServiceSnapshot("default", false, "not_installed", null, "/opt/kcap/kcapd", null, null, false, false)),
+            InstallVerifiedBehavior = (_, _) => Task.FromResult(new ProcessResult(28, "", "start_gate_reason=foreign_binary", false)),
+        };
+        var probe = new FakeLoginShellProbe();
+        var tempDir = Directory.CreateTempSubdirectory("kcap-composed-").FullName;
+        var store = new AppStateStore(Path.Combine(tempDir, "app-state.json"));
+        var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(false) }; // decline
+
+        try {
+            await using var lane = new DaemonMutationLane(
+                probe, channel, () => "/opt/kcap/bin/kcap",
+                (_, _) => cli,
+                _ => new NeverObservation(),
+                TimeProvider.System);
+
+            await using var controller = new DaemonLifecycleController(
+                client, cli, probe, store, surface, () => Task.FromResult<string?>("default"), TimeProvider.System,
+                "https://kcap.example.com:443", lane.RunAsync);
+
+            using var consumerCts = new CancellationTokenSource();
+            var consumerTask = AppUnderTest.ConsumeMutationOutcomesAsync(
+                channel, surface, lane.RunAsync, probe.TerminalPathAsync, () => controller.CliVersion, consumerCts.Token);
+
+            controller.Start();
+            client.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+
+            await WaitUntilAsync(() => surface.Prompts.Count == 1, what: "the takeover dialog");
+            await Assert.That(surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindTakeover);
+            await Assert.That(surface.StatusMessages.Count).IsEqualTo(1); // the decline's one status line — not doubled
+            await Assert.That(surface.AttentionMessages).IsEmpty(); // the controller made ZERO direct surface calls
+
+            consumerCts.Cancel();
+            await consumerTask.WaitAsync(TimeSpan.FromSeconds(5)); // swallowed by design — completes normally
+        } finally {
+            try { Directory.Delete(tempDir, recursive: true); } catch { /* best-effort test cleanup */ }
+        }
     }
 }

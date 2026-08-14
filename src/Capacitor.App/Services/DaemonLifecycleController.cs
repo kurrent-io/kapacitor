@@ -378,32 +378,29 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         return null;
     }
 
-    /// Routes execution through the lane at this action's pinned identity; per the single-
-    /// presentation rule, updates only caller STATE (reattach kick, a coded-failure status line) —
-    /// actionable presentation is the channel consumer's job alone, never `_surface.Attention`
-    /// here. Returns whether the mutation itself succeeded.
+    /// Routes execution through the lane at this action's pinned identity. Two DISTINCT surfaces
+    /// (round-1 review C-2): a guard refusal (`MutationRequestFactory` rejecting BEFORE the lane
+    /// is ever touched) never reaches the outcome channel, so the controller is its sole
+    /// presenter — one `_surface.Status` line. Everything that DOES reach the lane is a different
+    /// story: on success this only kicks the reattach (caller state); on any other outcome, the
+    /// lane already enqueued it onto the channel (Deliver enqueues every non-success outcome), so
+    /// this makes NO surface call at all — a second call here would double-present. Returns
+    /// whether the mutation itself succeeded.
     async Task<bool> RunLaneMutationAsync(MutationVerb verb, CancellationToken ct) {
         var profileName = await _resolveProfileName().ConfigureAwait(false);
         var refusal = MutationRequestFactory.TryBuild(verb, profileName, _canonicalServer, _client.DaemonName, out var request);
-        var outcome = refusal ?? await _runMutation(request!, ct).ConfigureAwait(false);
-
-        switch (outcome) {
-            case MutationOutcome.Succeeded:
-            case MutationOutcome.SucceededAfterTimeout:
-                _ = _client.RestartLoopAsync(); // kick reattach after a lane-confirmed mutation
-                return true;
-            case MutationOutcome.Failed(var exitCode, var reason, _):
-                _surface.Status(reason is null ? VerifyExitCodes.Token(exitCode) : $"{VerifyExitCodes.Token(exitCode)}: {reason}");
-                return false;
-            case MutationOutcome.Refused(var reason, _):
-                _surface.Status($"kcap: {reason}");
-                return false;
-            default:
-                // AttentionSkew/AttentionRepair/UnconfirmedNoAttach: the lane already enqueued
-                // these onto the outcome channel (Deliver enqueues every non-success outcome) —
-                // no local surface call, or the composition-root consumer's presentation doubles up.
-                return false;
+        if (refusal is MutationOutcome.Refused(var guardReason, _)) {
+            _surface.Status($"kcap: {guardReason}");
+            return false;
         }
+
+        var outcome = await _runMutation(request!, ct).ConfigureAwait(false);
+        if (outcome is MutationOutcome.Succeeded or MutationOutcome.SucceededAfterTimeout) {
+            _ = _client.RestartLoopAsync(); // kick reattach after a lane-confirmed mutation
+            return true;
+        }
+
+        return false;
     }
 
     /// §4.3: runs on every Connected (paired with the latest known snapshot version) and every
@@ -456,9 +453,8 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
             // The retract runs BEFORE the mutation (acceptance itself invalidates the decline
             // claim), not after: RunLaneMutationAsync doesn't catch around the lane call, so an
             // install that throws (shutdown mid-spawn, a process/IO fault, or a lane-lifetime
-            // cancellation) would skip a
-            // post-mutation retract entirely and leave an accepted pair mislabeled "declined" on
-            // disk. "Declined" must mean the user declined, full stop.
+            // cancellation) would skip a post-mutation retract entirely and leave an accepted pair
+            // mislabeled "declined" on disk. "Declined" must mean the user declined, full stop.
             var (outcome, succeeded) = await ConfirmAndTakeoverAsync(
                 prompt, revalidate: fresh => ClassifyTakeover(fresh) == kind,
                 onAcceptedNotStale: () => RetractDeclineAsync(pairKey), _lifetime.Token).ConfigureAwait(false);

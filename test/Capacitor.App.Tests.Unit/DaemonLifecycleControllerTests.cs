@@ -440,8 +440,13 @@ public class DaemonLifecycleControllerTests {
         await Assert.That(h.Client.RestartCount).IsEqualTo(0);
     }
 
+    // Round-1 review C-2: a Refused outcome that reached the LANE (as opposed to the guard
+    // refusing before ever touching it — see No_canonical_server_refuses_without_ever_calling_the_lane
+    // above) was already enqueued onto the outcome channel by the lane's own Deliver — the
+    // controller must make NO surface call of its own, or the composition-root consumer's
+    // presentation doubles up.
     [Test]
-    public async Task Refused_outcome_surfaces_the_honest_reason_as_status_text_only() {
+    public async Task Refused_outcome_from_the_lane_produces_no_controller_surface_call() {
         await using var h = new Harness();
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
         h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.Refused("cli_below_floor", RecoverySurface.Attention));
@@ -449,9 +454,11 @@ public class DaemonLifecycleControllerTests {
 
         h.PushUnreachable();
 
-        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the refusal status line");
-        await Assert.That(h.Surface.StatusMessages[0]).Contains("cli_below_floor");
-        await Assert.That(h.Surface.AttentionMessages).IsEmpty(); // channel-only, never a direct Attention
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the lane request");
+        await h.Controller.PhaseClosed;
+        await Task.Delay(50); // give a wrongly-firing Status/Attention every chance to appear
+        await Assert.That(h.Surface.StatusMessages).IsEmpty();
+        await Assert.That(h.Surface.AttentionMessages).IsEmpty();
     }
 
     // ---- UX confirmation ----
@@ -493,8 +500,12 @@ public class DaemonLifecycleControllerTests {
 
     // ---- coded failure ----
 
+    // Round-1 review C-2: a Failed outcome from the lane is presented ONLY by the composition-root
+    // consumer now (see AppMutationLaneWiringTests.PresentOutcomeAsync's Attention/Reinstall/
+    // Takeover coverage for the actual message content) — the controller itself makes no surface
+    // call, but the once-per-run arm still holds (no retry on a second daemon_unreachable).
     [Test]
-    public async Task Coded_failure_surfaces_the_verify_token_once() {
+    public async Task Failed_outcome_from_the_lane_produces_no_controller_surface_call_but_counts_the_run_once() {
         await using var h = new Harness();
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
         h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.Failed(24, "gave_up_waiting", RecoverySurface.Attention));
@@ -502,28 +513,15 @@ public class DaemonLifecycleControllerTests {
 
         h.PushUnreachable();
 
-        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the coded-failure status line");
-        await Assert.That(h.Surface.StatusMessages[0]).Contains("verify_readiness_timeout"); // VerifyExitCodes.Token(24)
-        await Assert.That(h.Surface.StatusMessages[0]).Contains("gave_up_waiting");
-        await Assert.That(h.Surface.AttentionMessages).IsEmpty(); // single-presentation: never also an Attention
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the lane request");
+        await h.Controller.PhaseClosed;
+        await Task.Delay(50); // give a wrongly-firing Status/Attention every chance to appear
+        await Assert.That(h.Surface.StatusMessages).IsEmpty();
+        await Assert.That(h.Surface.AttentionMessages).IsEmpty();
 
         h.PushUnreachable(); // once-per-run: no retry
         await Task.Delay(50);
         await Assert.That(h.Lane.Requests.Count).IsEqualTo(1);
-        await Assert.That(h.Surface.StatusMessages.Count).IsEqualTo(1);
-    }
-
-    [Test]
-    public async Task Coded_failure_with_no_reason_token_still_surfaces_the_exit_code_token() {
-        await using var h = new Harness();
-        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
-        h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.Failed(21, null, RecoverySurface.Attention));
-        h.Start();
-
-        h.PushUnreachable();
-
-        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the coded-failure status line");
-        await Assert.That(h.Surface.StatusMessages[0]).Contains("verify_viability"); // VerifyExitCodes.Token(21)
     }
 
     // ---- version caching ----
@@ -1077,11 +1075,14 @@ public class DaemonLifecycleControllerTests {
         await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
 
         h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+        // Lane.Behavior resolves immediately (Task.FromResult), and the retract is fully awaited
+        // BEFORE the mutation call (see the comment on the retract-before-mutation ordering
+        // above) — by the time the lane records the request, the retract has already landed.
         await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the takeover request attempt");
-        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the coded-failure status line");
 
         var afterFailure = await h.Store.LoadAsync();
         await Assert.That((afterFailure.DeclinedTakeoverPairs ?? []).Contains("0.9|1.0.0")).IsFalse();
+        await Assert.That(h.Surface.StatusMessages).IsEmpty(); // channel-only now (round-1 review C-2)
 
         // The run flag cleared too — a fresh trigger (a different pair, since this run's CLI
         // version hasn't changed) still gets an offer.

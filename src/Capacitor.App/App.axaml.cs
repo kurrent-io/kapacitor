@@ -136,7 +136,7 @@ public partial class App : Application {
             // spec subscribe-before-pump: the controller's attach subscription must be live
             // BEFORE service.Start() begins pumping, or the startup phase could miss the very
             // first terminal outcome it hinges on (DaemonLifecycleController.Start's own comment).
-            var (lifecycle, shimOffer, lifecycleSurface) =
+            var (lifecycle, shimOffer, lifecycleSurface, lifecycleProbe) =
                 BuildLifecycleController(service, lifecycleStatus.OnNext, lifecycleAttention.OnNext, lane.RunAsync);
             lifecycle.Start();
             _lifecycle = lifecycle;
@@ -148,8 +148,11 @@ public partial class App : Application {
 
             // The composition-root outcome consumer: shares lifecycle's own ILifecycleSurface, so
             // a lane-executed mutation's dialog reuses its serialized gate rather than a competing
-            // one. Starts immediately — Plan C adds the wizard TransferConsumer handoff.
-            _ = ConsumeMutationOutcomesAsync(channel, lifecycleSurface, _shutdown.Token);
+            // one; also shares its probe (disclosure) and CliVersion (dialog text) and the lane
+            // itself (a Takeover accept re-mutates through it). Starts immediately — Plan C adds
+            // the wizard TransferConsumer handoff.
+            _ = ConsumeMutationOutcomesAsync(
+                channel, lifecycleSurface, lane.RunAsync, lifecycleProbe.TerminalPathAsync, () => lifecycle.CliVersion, _shutdown.Token);
 
             service.Start();
             _service = service;
@@ -359,16 +362,17 @@ public partial class App : Application {
     // spec composition: wires the daemon-service CLI facade (decision 1: everything through the
     // CLI), the login-shell PATH probe, and the persisted decline-memory store. A broken
     // KCAP_APP_CLI_PATH override (CliResolver.ResolvePath returning null) is treated as "no CLI"
-    // here — unlike CreateDefaultAsync's own lenient `daemon start -d` fallback above, the
-    // lifecycle features must never silently point at the wrong binary.
+    // here — the lifecycle features must never silently point at the wrong binary.
     //
     // Task 24: also builds ShimOfferCoordinator here (not a separate method) — it shares
     // cliPath/probe/store/surface with the lifecycle controller rather than re-resolving them.
     // Task 10: `runMutation` (the lane's RunAsync) and the resolved canonical server are threaded
     // through so the controller's own mutating branches route execution through the ONE lane
     // instead of calling IKcapCli mutation methods directly; `cli` below is kept for read-only
-    // VersionAsync/ServiceStatusAsync only.
-    (DaemonLifecycleController Lifecycle, ShimOfferCoordinator ShimOffer, ILifecycleSurface Surface) BuildLifecycleController(
+    // VersionAsync/ServiceStatusAsync only. `Probe` is returned too so the composition-root
+    // outcome consumer can compute a takeover dialog's PathDegraded disclosure from the SAME
+    // probe instance the controller's own preconditions use.
+    (DaemonLifecycleController Lifecycle, ShimOfferCoordinator ShimOffer, ILifecycleSurface Surface, ILoginShellProbe Probe) BuildLifecycleController(
             DaemonClientService service, Action<string> setLifecycleStatus, Action<string> setLifecycleAttention,
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
         var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists);
@@ -394,7 +398,7 @@ public partial class App : Application {
         var shimOffer = new ShimOfferCoordinator(
             lifecycle.PhaseClosed, probe, new PathShimInstaller(runner, probe), store, surface, shimTarget, _shutdown.Token);
 
-        return (lifecycle, shimOffer, surface);
+        return (lifecycle, shimOffer, surface, probe);
     }
 
     static string? ValidProfileName(ResolvedProfile? profile) =>
@@ -402,55 +406,88 @@ public partial class App : Application {
             ? profile.ProfileName
             : null;
 
-    // Task 10: the lane's cliOverride seam. CliResolver.ResolvePath's own bare-"kcap"
-    // fallback (no KCAP_APP_CLI_PATH override set) pins nothing — it's PATH resolution deferred to
-    // spawn time — so it is remapped to null here, letting the lane's own shell-probe path answer
-    // instead. An override that IS set still passes through verbatim, including a broken one
-    // (fileExists=false), which ResolvePath already reports as null — fail closed, never a silent
-    // fallback to PATH.
+    // The lane's cliOverride seam. Unlike CreateDefaultAsync's shared CliResolver.ResolvePath
+    // (whose no-override answer is the bare string "kcap", a PATH-resolution-at-spawn-time
+    // sentinel), the lane needs an unambiguous absolute pin or nothing — string-comparing
+    // ResolvePath's return against "kcap" could, in principle, misfire on a real override whose
+    // resolved value is also exactly "kcap" (round-1 review M-4). Reads KCAP_APP_CLI_PATH
+    // directly instead: set + exists → an absolute pin (Path.GetFullPath); set + missing → null
+    // (fail closed, never a silent PATH fallback); truly absent → null (the lane's own
+    // shell-probe path answers instead).
     static string? ResolveCliOverride() =>
-        MapBareKcapToNull(CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists));
+        ResolveCliOverrideCore(Environment.GetEnvironmentVariable("KCAP_APP_CLI_PATH"), File.Exists, Path.GetFullPath);
 
-    // Split out of ResolveCliOverride so a test can drive the remapping without touching the real
-    // environment (CliResolverTests already covers ResolvePath's own override/no-override/broken
-    // cases exhaustively).
-    internal static string? MapBareKcapToNull(string? resolved) => resolved == "kcap" ? null : resolved;
+    // Split out so a test can drive it without touching the real environment.
+    internal static string? ResolveCliOverrideCore(string? overrideEnv, Func<string, bool> fileExists, Func<string, string> getFullPath) {
+        if (string.IsNullOrEmpty(overrideEnv)) return null;
+        return fileExists(overrideEnv) ? getFullPath(overrideEnv) : null;
+    }
 
     // Drains every non-success outcome the lane enqueues and presents it through the SAME
-    // ILifecycleSurface the controller uses for its own dialogs (single-presentation rule).
-    static async Task ConsumeMutationOutcomesAsync(OutcomeChannel channel, ILifecycleSurface surface, CancellationToken ct) {
+    // ILifecycleSurface the controller uses for its own dialogs (single-presentation rule). A
+    // presentation failure for ONE envelope is caught and logged INSIDE the loop (round-1 review
+    // I-1) so it can never brick every presentation after it — only a shutdown cancellation ends
+    // the loop.
+    internal static async Task ConsumeMutationOutcomesAsync(
+            OutcomeChannel channel, ILifecycleSurface surface,
+            Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation,
+            Func<CancellationToken, Task<string?>> terminalPathAsync, Func<string?> cliVersion, CancellationToken ct) {
         try {
             await foreach (var lease in channel.ConsumeAsync(ct)) {
                 try {
-                    await PresentOutcomeAsync(surface, lease.Envelope, ct).ConfigureAwait(false);
+                    await PresentOutcomeAsync(surface, lease.Envelope, runMutation, terminalPathAsync, cliVersion, ct).ConfigureAwait(false);
+                } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                    throw; // shutdown — let the outer catch end the whole loop, not just this envelope
+                } catch (Exception ex) {
+                    Console.Error.WriteLine($"kcap app failed to present a mutation outcome: {ex}");
                 } finally {
-                    lease.Ack(); // presented (or a presentation failure was logged below) — never redelivered
+                    lease.Ack(); // presented, logged-and-skipped, or shutting down — never redelivered
                 }
             }
         } catch (OperationCanceledException) {
             // shutdown — draining stops; anything still queued is simply not presented
-        } catch (Exception ex) {
-            Console.Error.WriteLine($"kcap app outcome-channel consumer failed unexpectedly: {ex}");
         }
     }
 
-    // Takeover reuses the controller's own gated ConfirmAsync dialog; Reinstall/Attention/Storage
-    // are a status/attention line naming the coded token; UnconfirmedNoAttach and any success case
-    // are non-actionable here (the caller already surfaced local state) and are skipped.
-    internal static async Task PresentOutcomeAsync(ILifecycleSurface surface, OutcomeEnvelope envelope, CancellationToken ct) {
-        var (recoverySurface, token) = ClassifyForPresentation(envelope.Outcome);
-        if (recoverySurface == RecoverySurface.None) return;
+    // Takeover reuses the controller's own gated ConfirmAsync dialog — accept re-mutates via
+    // Replace at the ENVELOPE's own identity (never freshly resolved: a takeover targets the
+    // identity that failed) and is state-only (any follow-up actionable outcome re-arrives on its
+    // own envelope — that loop is the design); decline is the ONE exception to "never
+    // surface.Status for Takeover" — one line naming the token, nothing else (round-1 review C-1).
+    // Reinstall/Attention/Storage are an attention line naming the coded token (round-1 review
+    // C-2: Reinstall moved off the status slot — the controller's own guard-refusal status line is
+    // now the ONLY status-slot writer for a mutation outcome). UnconfirmedNoAttach is actionable
+    // (round-1 review I-3) — one attention line naming the verb; any success case never reaches
+    // here at all (the lane's Deliver only enqueues non-success outcomes).
+    internal static async Task PresentOutcomeAsync(
+            ILifecycleSurface surface, OutcomeEnvelope envelope,
+            Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation,
+            Func<CancellationToken, Task<string?>> terminalPathAsync, Func<string?> cliVersion, CancellationToken ct) {
+        if (envelope.Outcome is MutationOutcome.UnconfirmedNoAttach) {
+            surface.Attention($"{envelope.Request.Verb} started, not yet confirmed — check status.");
+            return;
+        }
 
-        var named = token ?? "unspecified";
+        var (recoverySurface, token) = ClassifyForPresentation(envelope.Outcome);
+        if (recoverySurface == RecoverySurface.None) return; // success cases only — never enqueued anyway
+
+        // Refused/Failed always resolve a non-null token (Failed falls back to the exit-code
+        // token) and AttentionSkew/AttentionRepair's own detail is never null either — every
+        // branch below that reaches this point has a real token to name.
+        var named = token!;
         switch (recoverySurface) {
             case RecoverySurface.Takeover:
-                surface.Status($"kcap needs to replace the daemon service to continue ({named}).");
-                await surface.ConfirmAsync(
-                        new LifecyclePrompt(LifecyclePrompt.KindTakeover, null, null, false, DaemonLifecycleController.TakeoverDisclosure), ct)
-                    .ConfigureAwait(false);
+                var pathDegraded = await terminalPathAsync(ct).ConfigureAwait(false) is null;
+                var prompt = new LifecyclePrompt(
+                    LifecyclePrompt.KindTakeover, null, cliVersion(), pathDegraded, DaemonLifecycleController.TakeoverDisclosure);
+                var accepted = await surface.ConfirmAsync(prompt, ct).ConfigureAwait(false);
+                if (accepted)
+                    _ = await runMutation(envelope.Request with { Verb = MutationVerb.Replace }, ct).ConfigureAwait(false);
+                else
+                    surface.Status($"kcap needs to replace the daemon service to continue ({named}) — declined.");
                 break;
             case RecoverySurface.Reinstall:
-                surface.Status($"kcap needs to be reinstalled to continue ({named}).");
+                surface.Attention($"kcap needs to be reinstalled to continue ({named}).");
                 break;
             case RecoverySurface.Attention:
             case RecoverySurface.Storage:
@@ -459,12 +496,16 @@ public partial class App : Application {
         }
     }
 
+    // Succeeded/SucceededAfterTimeout are the only cases still landing on the None catch-all —
+    // they're never enqueued onto the channel at all, so this is unreachable in production;
+    // UnconfirmedNoAttach is handled by PresentOutcomeAsync BEFORE this classification runs
+    // (round-1 review I-3 — it is actionable, not skipped).
     internal static (RecoverySurface Surface, string? Token) ClassifyForPresentation(MutationOutcome outcome) => outcome switch {
         MutationOutcome.Refused(var reason, var surface)                => (surface, reason),
         MutationOutcome.Failed(var exitCode, var reason, var surface)   => (surface, reason ?? VerifyExitCodes.Token(exitCode)),
         MutationOutcome.AttentionSkew(var detail)                       => (RecoverySurface.Attention, detail),
         MutationOutcome.AttentionRepair(var detail)                     => (RecoverySurface.Attention, detail),
-        _ => (RecoverySurface.None, null), // UnconfirmedNoAttach, and any success case (never enqueued anyway)
+        _ => (RecoverySurface.None, null),
     };
 
     Task<bool> ConfirmLifecyclePromptAsync(LifecyclePrompt prompt, CancellationToken ct) =>
