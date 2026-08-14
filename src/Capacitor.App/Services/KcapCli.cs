@@ -44,9 +44,11 @@ public interface IKcapCli {
 
     Task<ProcessResult> ServiceInstallVerifiedAsync(bool replace, CancellationToken ct);
 
-    /// `daemon start -d --name <name>`; AbandonWait, uncapped — a detached daemon must outlive an
-    /// abandoned wait.
+    /// `daemon start -d --name <name>`, bounded + ProcessOnly-kill; delegates with a fresh boot-attempt id.
     Task<ProcessResult> DetachedStartAsync(CancellationToken ct);
+
+    /// Same call, stamped with a boot-attempt id for the daemon's own boot-carrier correlation.
+    Task<ProcessResult> DetachedStartAsync(string bootAttemptId, CancellationToken ct);
 }
 
 public sealed class KcapCli : IKcapCli {
@@ -60,22 +62,33 @@ public sealed class KcapCli : IKcapCli {
     // Same tier as VersionTimeout — also a read-only query — so a hung `launchctl print` can
     // never block the §3.2 per-mutation gate forever once the lifecycle controller polls this.
     static readonly TimeSpan StatusTimeout = TimeSpan.FromSeconds(10);
+    // Above MutationTimeout's 60s — bounds the wrapper without killing a still-forking detach (ProcessOnly).
+    static readonly TimeSpan DetachedStartTimeout = TimeSpan.FromSeconds(75);
+
+    // Overlay variable names every app-initiated spawn carries — the lane and KcapCliTests reference these.
+    public const string SpawnNoTelemetryVar   = "KCAP_APP_SPAWN_NO_TELEMETRY";
+    public const string ConsentSeedDefaultVar = "KCAP_CONSENT_SEED_DEFAULT";
+    public const string ExpectServerUrlVar    = "KCAP_EXPECT_SERVER_URL";
+    public const string BootAttemptVar        = "KCAP_BOOT_ATTEMPT";
 
     readonly IProcessRunner _runner;
     readonly string _daemonName;
     readonly string _profileName;
+    // Bound once at construction (one KcapCli per owned action); null is fine until a mutation runs.
+    readonly string? _canonicalServer;
     // Lazy, not a static ctor value: the terminal PATH is only known once the async probe has run,
     // and the probe itself caches — so resolving it per install call is cheap and always current.
     readonly Func<CancellationToken, Task<string?>>? _terminalPathAsync;
 
     public KcapCli(
             IProcessRunner runner, string? cliPath, string daemonName, string profileName,
-            Func<CancellationToken, Task<string?>>? terminalPathAsync) {
+            Func<CancellationToken, Task<string?>>? terminalPathAsync, string? canonicalServer = null) {
         _runner            = runner;
         CliPath            = cliPath;
         _daemonName        = daemonName;
         _profileName       = profileName;
         _terminalPathAsync = terminalPathAsync;
+        _canonicalServer   = canonicalServer;
     }
 
     public string? CliPath { get; }
@@ -110,30 +123,43 @@ public sealed class KcapCli : IKcapCli {
         }
     }
 
-    public Task<ProcessResult> ServiceStartVerifiedAsync(CancellationToken ct) =>
-        CliPath is not { } cliPath
+    public Task<ProcessResult> ServiceStartVerifiedAsync(CancellationToken ct) {
+        var env = MutationEnv(); // throws before any spawn if the instance carries no server
+        return CliPath is not { } cliPath
             ? NoCliResult()
             : Run(cliPath, ["daemon", "service", "start", "--name", _daemonName, "--verify"],
-                new RunOptions(EnvOverlay: Env(), Timeout: MutationTimeout), ct);
+                new RunOptions(EnvOverlay: env, Timeout: MutationTimeout), ct);
+    }
 
     // The interface's `replace` is the only per-call knob; the profile is pinned once at
     // construction (spec decision 7) and reused verbatim for both the `--profile` flag and the
     // KCAP_PROFILE overlay below, so the two can never disagree.
     public async Task<ProcessResult> ServiceInstallVerifiedAsync(bool replace, CancellationToken ct) {
+        var mutation = MutationEnv(); // throws before any spawn if the instance carries no server
         if (CliPath is not { } cliPath) return await NoCliResult().ConfigureAwait(false);
 
         List<string> args = ["daemon", "service", "install", "--name", _daemonName, "--profile", _profileName, "--verify"];
         if (replace) args.Add("--replace");
 
-        var env = await EnvWithTerminalPathAsync(ct).ConfigureAwait(false);
+        var env = await EnvWithTerminalPathAsync(mutation, ct).ConfigureAwait(false);
         return await Run(cliPath, args.ToArray(), new RunOptions(EnvOverlay: env, Timeout: MutationTimeout), ct).ConfigureAwait(false);
     }
 
     public Task<ProcessResult> DetachedStartAsync(CancellationToken ct) =>
-        CliPath is not { } cliPath
+        DetachedStartAsync(Guid.NewGuid().ToString("N"), ct);
+
+    public Task<ProcessResult> DetachedStartAsync(string bootAttemptId, CancellationToken ct) {
+        var env = MutationEnv(); // throws before any spawn if the instance carries no server
+        env[BootAttemptVar] = bootAttemptId;
+
+        return CliPath is not { } cliPath
             ? NoCliResult()
             : Run(cliPath, ["daemon", "start", "-d", "--name", _daemonName],
-                new RunOptions(EnvOverlay: Env(), CancelMode: CancelMode.AbandonWait), ct);
+                new RunOptions(
+                    EnvOverlay: env, Timeout: DetachedStartTimeout,
+                    CancelMode: CancelMode.AbandonWait, TimeoutKill: TimeoutKillScope.ProcessOnly),
+                ct);
+    }
 
     // Deterministic exit 127 ("command not found") rather than throwing on a null CliPath — a
     // broken KCAP_APP_CLI_PATH must degrade the same way every other no-CLI case does, not crash
@@ -143,8 +169,22 @@ public sealed class KcapCli : IKcapCli {
     Task<ProcessResult> Run(string cliPath, string[] args, RunOptions options, CancellationToken ct) =>
         _runner.RunAsync(cliPath, args, options, ct);
 
-    // Every child carries the pinned profile.
-    Dictionary<string, string> Env() => new() { ["KCAP_PROFILE"] = _profileName };
+    // Every child carries the pinned profile and the app-spawn telemetry-suppression marker.
+    Dictionary<string, string> Env() => new() {
+        ["KCAP_PROFILE"]      = _profileName,
+        [SpawnNoTelemetryVar] = "1",
+    };
+
+    // Null canonicalServer here is a construction bug (mutations are action-scoped) — fail loudly, don't spawn.
+    Dictionary<string, string> MutationEnv() {
+        if (_canonicalServer is not { } server)
+            throw new InvalidOperationException("KcapCli: mutation spawn requires a non-null canonicalServer.");
+
+        var env = Env();
+        env[ConsentSeedDefaultVar] = "prompt";
+        env[ExpectServerUrlVar]    = server;
+        return env;
+    }
 
     // PATH overlaid ONLY here (spec decision 7): install is the sole unit-writing mutation, so it's
     // the only call that needs the terminal's PATH baked into the launchd unit. Start-verify
@@ -152,8 +192,7 @@ public sealed class KcapCli : IKcapCli {
     // Resolved lazily against the mutation's own token, never a detached one; an unknown probe
     // result (null) leaves PATH out rather than overlaying a value that isn't actually the user's —
     // ServiceEnvironment.Capture then honestly bakes whatever the app itself inherited.
-    async Task<Dictionary<string, string>> EnvWithTerminalPathAsync(CancellationToken ct) {
-        var env = Env();
+    async Task<Dictionary<string, string>> EnvWithTerminalPathAsync(Dictionary<string, string> env, CancellationToken ct) {
         var terminalPath = _terminalPathAsync is null ? null : await _terminalPathAsync(ct).ConfigureAwait(false);
         if (terminalPath is not null) env["PATH"] = terminalPath;
 

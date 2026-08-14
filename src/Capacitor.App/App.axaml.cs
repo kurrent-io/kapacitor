@@ -10,6 +10,7 @@ using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.App.Views;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.LocalIpc;
 
@@ -320,7 +321,9 @@ public partial class App : Application {
         var probe   = new LoginShellProbe(runner, Environment.GetEnvironmentVariable);
         // Shared with the probe above (not re-resolved) — decision 7's PATH overlay on `install`
         // must reflect the SAME probe outcome that the controller's preconditions/PathDegraded see.
-        var cli     = new KcapCli(runner, cliPath, service.DaemonName, profile?.ProfileName ?? "default", probe.TerminalPathAsync);
+        // canonicalServer: passed ahead of Task 10's per-action KcapCli so that rewiring needs no signature change here.
+        var cli     = new KcapCli(runner, cliPath, service.DaemonName, profile?.ProfileName ?? "default", probe.TerminalPathAsync,
+            canonicalServer: ServerIdentity.Canonicalize(profile?.ServerUrl));
         var store   = new AppStateStore(PathHelpers.ConfigPath("app-state.json"));
         var surface = new LifecycleSurface(setLifecycleStatus, setLifecycleAttention, ConfirmLifecyclePromptAsync);
 

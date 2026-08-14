@@ -18,8 +18,10 @@ public class KcapCliTests {
         }
     }
 
-    static KcapCli MakeCli(FakeProcessRunner runner, string? terminalPath = null) =>
-        new(runner, "kcap", "daemon-a", "work", _ => Task.FromResult(terminalPath));
+    const string CanonicalServer = "https://cap.example.com:443";
+
+    static KcapCli MakeCli(FakeProcessRunner runner, string? terminalPath = null, string? canonicalServer = CanonicalServer) =>
+        new(runner, "kcap", "daemon-a", "work", _ => Task.FromResult(terminalPath), canonicalServer);
 
     [Test]
     public async Task CliPath_reflects_the_constructor_value() {
@@ -152,7 +154,7 @@ public class KcapCliTests {
     }
 
     [Test]
-    public async Task DetachedStartAsync_argv_uses_abandon_wait_and_no_timeout() {
+    public async Task DetachedStartAsync_argv_uses_abandon_wait_and_a_bounded_process_only_timeout() {
         var runner = new FakeProcessRunner();
         var cli = MakeCli(runner);
 
@@ -161,7 +163,165 @@ public class KcapCliTests {
         await Assert.That(runner.SeenArgs).IsEquivalentTo(
             ["daemon", "start", "-d", "--name", "daemon-a"], CollectionOrdering.Matching);
         await Assert.That(runner.SeenOptions!.CancelMode).IsEqualTo(CancelMode.AbandonWait);
-        await Assert.That(runner.SeenOptions!.Timeout).IsNull();
+        await Assert.That(runner.SeenOptions!.Timeout).IsEqualTo(TimeSpan.FromSeconds(75));
+        await Assert.That(runner.SeenOptions!.TimeoutKill).IsEqualTo(TimeoutKillScope.ProcessOnly);
+    }
+
+    [Test]
+    public async Task DetachedStartAsync_parameterless_stamps_a_fresh_guid_boot_attempt_id() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+
+        await cli.DetachedStartAsync(CancellationToken.None);
+
+        var seen = runner.SeenOptions!.EnvOverlay![KcapCli.BootAttemptVar];
+        await Assert.That(Guid.TryParseExact(seen, "N", out _)).IsTrue();
+    }
+
+    [Test]
+    public async Task DetachedStartAsync_with_boot_attempt_id_stamps_it_verbatim() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+
+        await cli.DetachedStartAsync("boot-attempt-123", CancellationToken.None);
+
+        await Assert.That(runner.SeenArgs).IsEquivalentTo(
+            ["daemon", "start", "-d", "--name", "daemon-a"], CollectionOrdering.Matching);
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.BootAttemptVar]).IsEqualTo("boot-attempt-123");
+        await Assert.That(runner.SeenOptions!.Timeout).IsEqualTo(TimeSpan.FromSeconds(75));
+        await Assert.That(runner.SeenOptions!.TimeoutKill).IsEqualTo(TimeoutKillScope.ProcessOnly);
+        await Assert.That(runner.SeenOptions!.CancelMode).IsEqualTo(CancelMode.AbandonWait);
+    }
+
+    [Test]
+    public async Task DetachedStartAsync_with_null_CliPath_returns_exit_127_without_calling_the_runner_overload() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCliWithNullPath(runner);
+
+        var result = await cli.DetachedStartAsync("boot-attempt-123", CancellationToken.None);
+
+        await Assert.That(result.ExitCode).IsEqualTo(127);
+        await Assert.That(runner.SeenFileName).IsNull();
+    }
+
+    // Every spawn (read-only or mutating) carries the telemetry-suppression marker — Plan A's
+    // Program.cs consumes and removes it before dispatch.
+    [Test]
+    public async Task Every_call_carries_the_app_spawn_no_telemetry_marker() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+
+        await cli.VersionAsync(CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.SpawnNoTelemetryVar]).IsEqualTo("1");
+
+        await cli.ServiceStatusAsync(CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.SpawnNoTelemetryVar]).IsEqualTo("1");
+
+        await cli.ServiceStartVerifiedAsync(CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.SpawnNoTelemetryVar]).IsEqualTo("1");
+
+        await cli.ServiceInstallVerifiedAsync(replace: false, CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.SpawnNoTelemetryVar]).IsEqualTo("1");
+
+        await cli.DetachedStartAsync(CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.SpawnNoTelemetryVar]).IsEqualTo("1");
+    }
+
+    [Test]
+    public async Task Mutation_calls_carry_the_consent_seed_and_server_expectation_overlays() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+
+        await cli.ServiceStartVerifiedAsync(CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.ConsentSeedDefaultVar]).IsEqualTo("prompt");
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.ExpectServerUrlVar]).IsEqualTo(CanonicalServer);
+
+        await cli.ServiceInstallVerifiedAsync(replace: false, CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.ConsentSeedDefaultVar]).IsEqualTo("prompt");
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.ExpectServerUrlVar]).IsEqualTo(CanonicalServer);
+
+        await cli.DetachedStartAsync(CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.ConsentSeedDefaultVar]).IsEqualTo("prompt");
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.ExpectServerUrlVar]).IsEqualTo(CanonicalServer);
+    }
+
+    [Test]
+    public async Task Status_and_version_calls_never_carry_the_seed_or_expectation_overlays() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+
+        await cli.VersionAsync(CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey(KcapCli.ConsentSeedDefaultVar)).IsFalse();
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey(KcapCli.ExpectServerUrlVar)).IsFalse();
+
+        await cli.ServiceStatusAsync(CancellationToken.None);
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey(KcapCli.ConsentSeedDefaultVar)).IsFalse();
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey(KcapCli.ExpectServerUrlVar)).IsFalse();
+    }
+
+    // Mutations are action-scoped (the lane always binds a server); a null canonicalServer here is
+    // a construction bug, so it throws before touching the runner at all — never a degraded result.
+    [Test]
+    public async Task ServiceStartVerifiedAsync_with_null_canonicalServer_throws_before_any_spawn() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner, canonicalServer: null);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => cli.ServiceStartVerifiedAsync(CancellationToken.None));
+        await Assert.That(runner.SeenFileName).IsNull();
+    }
+
+    [Test]
+    public async Task ServiceInstallVerifiedAsync_with_null_canonicalServer_throws_before_any_spawn() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner, canonicalServer: null);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => cli.ServiceInstallVerifiedAsync(replace: false, CancellationToken.None));
+        await Assert.That(runner.SeenFileName).IsNull();
+    }
+
+    [Test]
+    public async Task DetachedStartAsync_with_null_canonicalServer_throws_before_any_spawn() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner, canonicalServer: null);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => cli.DetachedStartAsync(CancellationToken.None));
+        await Assert.That(runner.SeenFileName).IsNull();
+    }
+
+    [Test]
+    public async Task DetachedStartAsync_with_boot_attempt_id_and_null_canonicalServer_throws_before_any_spawn() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner, canonicalServer: null);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => cli.DetachedStartAsync("boot-attempt-123", CancellationToken.None));
+        await Assert.That(runner.SeenFileName).IsNull();
+    }
+
+    // The overlay is additive-only over the documented keys — it must never carry the user's own
+    // KCAP_TELEMETRY choice (or anything else ambient) onto a child spawn.
+    [Test]
+    public async Task Read_only_overlay_carries_only_the_documented_keys() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+
+        await cli.VersionAsync(CancellationToken.None);
+
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.Keys).IsEquivalentTo(
+            ["KCAP_PROFILE", KcapCli.SpawnNoTelemetryVar], CollectionOrdering.Any);
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey("KCAP_TELEMETRY")).IsFalse();
+    }
+
+    [Test]
+    public async Task Mutation_overlay_carries_only_the_documented_keys() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+
+        await cli.ServiceStartVerifiedAsync(CancellationToken.None);
+
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.Keys).IsEquivalentTo(
+            ["KCAP_PROFILE", KcapCli.SpawnNoTelemetryVar, KcapCli.ConsentSeedDefaultVar, KcapCli.ExpectServerUrlVar],
+            CollectionOrdering.Any);
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey("KCAP_TELEMETRY")).IsFalse();
     }
 
     [Test]
@@ -231,7 +391,7 @@ public class KcapCliTests {
     [Test]
     public async Task ServiceInstallVerifiedAsync_with_no_resolver_omits_path_overlay() {
         var runner = new FakeProcessRunner();
-        var cli = new KcapCli(runner, "kcap", "daemon-a", "work", terminalPathAsync: null);
+        var cli = new KcapCli(runner, "kcap", "daemon-a", "work", terminalPathAsync: null, CanonicalServer);
 
         await cli.ServiceInstallVerifiedAsync(replace: false, CancellationToken.None);
 
@@ -247,7 +407,7 @@ public class KcapCliTests {
         var cli = new KcapCli(runner, "kcap", "daemon-a", "work", ct => {
             seenToken = ct;
             return Task.FromResult<string?>("/usr/bin:/bin");
-        });
+        }, CanonicalServer);
         using var cts = new CancellationTokenSource();
 
         await cli.ServiceInstallVerifiedAsync(replace: false, cts.Token);
@@ -269,7 +429,7 @@ public class KcapCliTests {
     // throw via a null-forgiving `CliPath!` — the app treats null CliPath as "no CLI", so every
     // call must degrade the same honest way instead of crashing whichever caller hits it.
     static KcapCli MakeCliWithNullPath(FakeProcessRunner runner) =>
-        new(runner, null, "daemon-a", "work", _ => Task.FromResult<string?>(null));
+        new(runner, null, "daemon-a", "work", _ => Task.FromResult<string?>(null), CanonicalServer);
 
     [Test]
     public async Task VersionAsync_with_null_CliPath_returns_null_without_calling_the_runner() {

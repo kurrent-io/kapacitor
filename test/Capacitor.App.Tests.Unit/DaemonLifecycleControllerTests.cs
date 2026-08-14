@@ -1318,6 +1318,13 @@ sealed class FakeKcapCli : IKcapCli {
         DetachedStartCallCount++;
         return DetachedStartBehavior(ct);
     }
+
+    public string? LastBootAttemptId;
+    public Task<ProcessResult> DetachedStartAsync(string bootAttemptId, CancellationToken ct) {
+        DetachedStartCallCount++;
+        LastBootAttemptId = bootAttemptId;
+        return DetachedStartBehavior(ct);
+    }
 }
 
 /// Scripted ILoginShellProbe — the controller only ever calls TerminalPathAsync (the install
