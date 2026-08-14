@@ -15,7 +15,7 @@ sealed class FakeDaemonClientService : IDaemonClientService {
     public IObservable<AttachStatus> Status => StatusSubject;
     public IObservable<DaemonStatusDto> Snapshots => SnapshotsSubject;
     public SourceCache<AgentStatusDto, string> Agents { get; } = new(a => a.Id);
-    public string DaemonName => "daemon-a";
+    public string DaemonName { get; set; } = "daemon-a";
 
     public int RestartCount;
     public Task RestartLoopAsync() {
@@ -32,12 +32,13 @@ sealed class FakeDaemonClientService : IDaemonClientService {
 
     public static DaemonStatusDto Snap(
             string daemon = "daemon-a", string version = "1.2.3", string serverUrl = "http://localhost:9999",
-            string connection = "connected", int active = 0, int max = 5) {
+            string connection = "connected", int active = 0, int max = 5, int? pid = null, string? instanceId = null) {
         var agents = Enumerable.Range(0, active).Select(i => new AgentStatusDto(
             Id: $"a{i}", Kind: "agent", Vendor: "claude", RepoPath: null, Status: "Running",
             FlowRunId: null, FlowRole: null, Requester: null, CreatedAt: DateTime.UtcNow, Model: null,
             RequesterDisplay: null
         )).ToList();
-        return new DaemonStatusDto(new DaemonInfoDto(daemon, version, serverUrl, connection, max, active), agents);
+        return new DaemonStatusDto(
+            new DaemonInfoDto(daemon, version, serverUrl, connection, max, active, pid, instanceId), agents);
     }
 }

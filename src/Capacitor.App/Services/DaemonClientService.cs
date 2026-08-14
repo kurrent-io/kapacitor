@@ -58,10 +58,10 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
             case LocalControlEvent.Connecting:
                 _status.OnNext(new(AttachState.Connecting, null, null));
                 break;
-            case LocalControlEvent.Connected(var caps, var first, _):
+            case LocalControlEvent.Connected(var caps, var first, var identity):
                 _snapshots.OnNext(first);
                 Agents.EditDiff(first.Agents, EqualityComparer<AgentStatusDto>.Default);
-                _status.OnNext(new(AttachState.Connected, null, caps));
+                _status.OnNext(new(AttachState.Connected, null, caps, null, identity));
                 break;
             case LocalControlEvent.Status(var snap):
                 _snapshots.OnNext(snap);

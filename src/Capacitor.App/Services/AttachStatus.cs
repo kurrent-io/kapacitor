@@ -1,3 +1,5 @@
+using Capacitor.Cli.Core.LocalIpc;
+
 namespace Capacitor.App.Services;
 
 /// App-side attach state, projected from Capacitor.Cli.Core.LocalIpc.LocalControlEvent.
@@ -7,9 +9,11 @@ public enum AttachState { Connecting, Connected, Unreachable }
 /// state/reason observables that can tear are forbidden. Capabilities are null on every
 /// non-connected state — never retained from a previous incarnation. DaemonVersion carries the
 /// hello reply's version on Unreachable (spec decision 6); it is null on Connecting/Connected —
-/// Connected's version arrives via snapshots, not attach status.
+/// Connected's version arrives via snapshots, not attach status. Identity carries Connected's
+/// hello-derived ConnectedIdentity; null on every non-Connected state.
 public sealed record AttachStatus(
-    AttachState State, string? Reason, IReadOnlyList<string>? Capabilities, string? DaemonVersion = null);
+    AttachState State, string? Reason, IReadOnlyList<string>? Capabilities, string? DaemonVersion = null,
+    ConnectedIdentity? Identity = null);
 
 /// Outcome of a `kcap daemon start -d --name <name>` spawn attempt.
 public sealed record StartDaemonResult(bool Ok, string? Message);

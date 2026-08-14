@@ -133,6 +133,25 @@ public class DaemonClientServiceTests {
         await Assert.That(seen[3]).IsEqualTo(new AttachStatus(AttachState.Connecting, null, null));
     }
 
+    [Test] // Connected's hello-derived identity threads verbatim into AttachStatus
+    public async Task Connected_identity_threads_into_attach_status() {
+        var script = new Script();
+        await using var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
+        svc.Start();
+
+        var seen = new List<AttachStatus>();
+        using var sub = svc.Status.Subscribe(seen.Add);
+        await WaitUntilAsync(() => seen.Count >= 1, what: "initial Connecting status");
+
+        var caps = new List<string> { "status/1" };
+        var snap = Snap("daemon-a", "a1");
+        var identity = new ConnectedIdentity(4242, "inst-xyz", "daemon-a", "1.2.3");
+        script.Feed(new LocalControlEvent.Connected(caps, snap, identity));
+        await WaitUntilAsync(() => seen.Count >= 2, what: "Connected status after Connected event");
+
+        await Assert.That(seen[1]).IsEqualTo(new AttachStatus(AttachState.Connected, null, caps, null, identity));
+    }
+
     [Test] // spec decision 6: hello DaemonVersion propagates Unreachable → AttachStatus
     public async Task Unreachable_daemon_version_propagates_into_attach_status() {
         var script = new Script();
