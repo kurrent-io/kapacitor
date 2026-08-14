@@ -473,7 +473,7 @@ public partial class App : Application {
             Func<CancellationToken, Task<string?>> terminalPathAsync, Func<string?> cliVersion, CancellationToken ct,
             HashSet<(MutationRequest Request, string Token)>? declinedTakeoverPairs = null) {
         if (envelope.Outcome is MutationOutcome.UnconfirmedNoAttach) {
-            surface.Attention($"{VerbDisplay(envelope.Request.Verb)} started, not yet confirmed — check status.");
+            surface.Attention($"The daemon {VerbDisplay(envelope.Request.Verb)} is not yet confirmed — check status.");
             return;
         }
 
