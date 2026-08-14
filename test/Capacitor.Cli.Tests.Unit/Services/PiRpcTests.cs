@@ -19,7 +19,7 @@ public class PiRpcTests {
         await Assert.That(frame!.Kind).IsEqualTo(PiRpcFrameKind.Response);
         await Assert.That(frame.Type).IsEqualTo("response");
         await Assert.That(frame.Id).IsEqualTo("abc-1");
-        await Assert.That(frame.Success).IsEqualTo(true);
+        await Assert.That(frame.Success).IsTrue();
     }
 
     [Test]
@@ -30,7 +30,7 @@ public class PiRpcTests {
         await Assert.That(frame).IsNotNull();
         await Assert.That(frame!.Kind).IsEqualTo(PiRpcFrameKind.Response);
         await Assert.That(frame.Id).IsEqualTo("abc-2");
-        await Assert.That(frame.Success).IsEqualTo(false);
+        await Assert.That(frame.Success).IsFalse();
         await Assert.That(frame.Root.Str("error")).IsEqualTo("boom");
     }
 
@@ -177,7 +177,7 @@ public class PiRpcTests {
         await Assert.That(envelopes.Count).IsEqualTo(1);
         await Assert.That(envelopes[0].Kind).IsEqualTo(AcpEventKind.ToolResult);
         await Assert.That(envelopes[0].ToolCallId).IsEqualTo("call_123");
-        await Assert.That(envelopes[0].ToolIsError).IsEqualTo(false);
+        await Assert.That(envelopes[0].ToolIsError).IsFalse();
         await Assert.That(envelopes[0].ToolResult).IsEqualTo("total 48\ndrwxr-xr-x");
     }
 
@@ -218,7 +218,7 @@ public class PiRpcTests {
         await Assert.That(envelopes.Count).IsEqualTo(1);
         await Assert.That(envelopes[0].Kind).IsEqualTo(AcpEventKind.ToolResult);
         await Assert.That(envelopes[0].ToolCallId).IsEqualTo("call_456");
-        await Assert.That(envelopes[0].ToolIsError).IsEqualTo(true);
+        await Assert.That(envelopes[0].ToolIsError).IsTrue();
         await Assert.That(envelopes[0].ToolResult).IsEqualTo("command not found");
     }
 

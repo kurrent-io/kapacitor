@@ -15,7 +15,9 @@ public class SequencedSettlementWireTests {
         await Assert.That(json).Contains("\"marker_scan_state\":\"complete\"");
 
         // The zero value (missing field) is the conservative default.
+#pragma warning disable TUnitAssertions0005
         await Assert.That(default(MarkerScanState)).IsEqualTo(MarkerScanState.Pending);
+#pragma warning restore TUnitAssertions0005
     }
 
     [Test]

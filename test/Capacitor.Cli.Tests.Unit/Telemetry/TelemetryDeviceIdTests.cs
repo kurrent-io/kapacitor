@@ -112,7 +112,7 @@ public class TelemetryDeviceIdTests {
         TelemetryState.SetEnabled(false);
 
         await Assert.That(TelemetryDeviceId.ReadPersisted()).IsNull();
-        await Assert.That(TelemetryState.PersistedEnabled()).IsEqualTo((bool?)false);
+        await Assert.That(TelemetryState.PersistedEnabled()).IsFalse();
     }
 
     // Re-enabling must not resurrect the discarded id — GetOrCreate mints a fresh one, which is the

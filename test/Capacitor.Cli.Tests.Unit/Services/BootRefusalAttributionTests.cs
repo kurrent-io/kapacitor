@@ -4,6 +4,7 @@ using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Services;
 using Microsoft.Extensions.Time.Testing;
 
+using Capacitor.Tests.Helpers;
 namespace Capacitor.Cli.Tests.Unit.Services;
 
 /// <summary>Boot-refusal marker attribution in <see cref="ServiceVerify"/>'s
@@ -160,10 +161,8 @@ public class BootRefusalAttributionTests {
     public async Task Readiness_timeout_with_matching_marker_attributes_exactly_once_and_consumes_it() {
         var dir = Directory.CreateTempSubdirectory().FullName;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
+        using var capture = ConsoleOutput.StartErrorCapture();
         try {
-            Console.SetError(capturedErr);
 
             // The observed job pid IS this test process's own pid, matching what BootRefusal.TryWrite
             // (the daemon's real writer) stamps onto the marker — no need to fake a pid.
@@ -194,11 +193,10 @@ public class BootRefusalAttributionTests {
 
             await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
 
-            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
             await Assert.That(lines.Count(l => l == "refusal_reason=server_expectation_mismatch")).IsEqualTo(1);
             await Assert.That(BootRefusalReader.TryRead(Id)).IsNull(); // consumed after attribution
         } finally {
-            Console.SetError(originalErr);
             DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
@@ -207,10 +205,8 @@ public class BootRefusalAttributionTests {
     public async Task Readiness_timeout_with_hello_never_well_formed_still_observes_pid_via_direct_query() {
         var dir = Directory.CreateTempSubdirectory().FullName;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
+        using var capture = ConsoleOutput.StartErrorCapture();
         try {
-            Console.SetError(capturedErr);
 
             // Hello NEVER comes back well-formed — exactly the shape of a REFUSING daemon whose
             // control socket never exists. IsReadyAsync's own Query call therefore never runs; the
@@ -241,11 +237,10 @@ public class BootRefusalAttributionTests {
 
             await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
 
-            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
             await Assert.That(lines.Count(l => l == "refusal_reason=server_expectation_mismatch")).IsEqualTo(1);
             await Assert.That(BootRefusalReader.TryRead(Id)).IsNull(); // consumed after attribution
         } finally {
-            Console.SetError(originalErr);
             DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
@@ -254,10 +249,8 @@ public class BootRefusalAttributionTests {
     public async Task Preclear_failure_disables_attribution_but_the_mutation_still_proceeds() {
         var dir = Directory.CreateTempSubdirectory().FullName;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
+        using var capture = ConsoleOutput.StartErrorCapture();
         try {
-            Console.SetError(capturedErr);
 
             // A directory sitting AT the marker path can never be removed via File.Delete — the
             // verified pre-clear must fail, log its notice, and disable coded attribution without
@@ -280,11 +273,10 @@ public class BootRefusalAttributionTests {
             // verified success despite the marker never having been cleared.
             await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
 
-            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
             await Assert.That(lines.Any(l => l == "boot-refusal marker could not be cleared; coded attribution disabled")).IsTrue();
             await Assert.That(lines.Any(l => l.StartsWith("refusal_reason=", StringComparison.Ordinal))).IsFalse();
         } finally {
-            Console.SetError(originalErr);
             DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }

@@ -26,6 +26,7 @@ public class FrameCodecConsentTests {
 
     [Test]
     public async Task Consent_frame_values_are_stable_wire_bytes() {
+#pragma warning disable TUnitAssertions0005
         await Assert.That((byte)FrameType.ConsentSubscribe).IsEqualTo((byte)11);
         await Assert.That((byte)FrameType.ConsentResolve).IsEqualTo((byte)12);
         await Assert.That((byte)FrameType.ConsentRulesGet).IsEqualTo((byte)13);
@@ -33,5 +34,6 @@ public class FrameCodecConsentTests {
         await Assert.That((byte)FrameType.ConsentPending).IsEqualTo((byte)72);
         await Assert.That((byte)FrameType.ConsentRules).IsEqualTo((byte)73);
         await Assert.That((byte)FrameType.ConsentAck).IsEqualTo((byte)74);
+#pragma warning restore TUnitAssertions0005
     }
 }

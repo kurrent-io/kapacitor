@@ -1,8 +1,9 @@
 using System.Text.Json;
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Tests.Helpers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -116,22 +117,16 @@ public class GeminiSessionStartHandshakeOnPostFailureTests : IDisposable {
               }
               """;
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
-        Console.SetOut(stdoutWriter);
+        using var capture = ConsoleOutput.StartCapture();
 
-        try {
-            // An unauthenticated client is deliberate: the stub needs no bearer, and the default factory
-            // would drag real credential resolution into a test about the failed-POST path.
-            var exit = await GeminiHookCommand.Handle(
-                _server.Url!, new StringReader(payload),
-                memoryClientFactory: (_, _) => Task.FromResult(new HttpClient()),
-                memoryStoreFactory:  () => new SessionStartMemoryLeaseStore(_memoryRoot));
+        // An unauthenticated client is deliberate: the stub needs no bearer, and the default factory
+        // would drag real credential resolution into a test about the failed-POST path.
+        var exit = await GeminiHookCommand.Handle(
+            _server.Url!, new StringReader(payload),
+            memoryClientFactory: (_, _) => Task.FromResult(new HttpClient()),
+            memoryStoreFactory:  () => new SessionStartMemoryLeaseStore(_memoryRoot));
 
-            return (exit, stdoutWriter.ToString());
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        return (exit, capture.GetCapturedOutput());
     }
 
     static string AdditionalContextOf(string stdout) {

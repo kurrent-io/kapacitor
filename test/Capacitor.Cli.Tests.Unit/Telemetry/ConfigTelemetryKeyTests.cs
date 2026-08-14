@@ -27,7 +27,7 @@ public class ConfigTelemetryKeyTests {
         FreshState();
 
         await Assert.That(ConfigCommand.TryApplyTelemetry("telemetry", value)).IsTrue();
-        await Assert.That(TelemetryState.PersistedEnabled()).IsEqualTo((bool?)false);
+        await Assert.That(TelemetryState.PersistedEnabled()).IsFalse();
     }
 
     [Test]
@@ -39,7 +39,7 @@ public class ConfigTelemetryKeyTests {
         FreshState();
 
         await Assert.That(ConfigCommand.TryApplyTelemetry("telemetry", value)).IsTrue();
-        await Assert.That(TelemetryState.PersistedEnabled()).IsEqualTo((bool?)true);
+        await Assert.That(TelemetryState.PersistedEnabled()).IsTrue();
     }
 
     [Test]

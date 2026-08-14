@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core; using Capacitor.Cli.Core.Auth;
+using Capacitor.Tests.Helpers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -111,20 +112,14 @@ public class AgentHookPosterTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/stop/codex").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(401));
 
-        var originalError = Console.Error;
-        var captured = new StringWriter { NewLine = "\n" };
+        using var capture = ConsoleOutput.StartErrorCapture("\n");
         HookPostOutcome outcome;
 
-        try {
-            Console.SetError(captured);
-            outcome = await AgentHookPoster.PostAsync(
-                Factory(AuthStatus.Ok), _server.Url!, "stop/codex", "{}", "codex-hook");
-        } finally {
-            Console.SetError(originalError);
-        }
+        outcome = await AgentHookPoster.PostAsync(
+            Factory(AuthStatus.Ok), _server.Url!, "stop/codex", "{}", "codex-hook");
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Failed);
-        await Assert.That(captured.ToString().Trim()).IsEqualTo(
+        await Assert.That(capture.GetCapturedError().Trim()).IsEqualTo(
             AuthRejectionNotice.VendorStderrLine("codex-hook", "stop/codex", 401));
     }
 

@@ -1,7 +1,8 @@
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core;
+using Capacitor.Tests.Helpers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -104,9 +105,7 @@ public class CodexSessionStartVisibilityTests : IDisposable {
               }
               """;
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
-        Console.SetOut(stdoutWriter);
+        using var capture = ConsoleOutput.StartCapture();
 
         try {
             var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
@@ -117,7 +116,7 @@ public class CodexSessionStartVisibilityTests : IDisposable {
             await Assert.That(requests.Count).IsEqualTo(0);
 
             // Codex's SessionStart parser rejects empty stdout.
-            var doc = System.Text.Json.JsonDocument.Parse(stdoutWriter.ToString());
+            var doc = System.Text.Json.JsonDocument.Parse(capture.GetCapturedOutput());
             await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
 
             // Subsequent Stop on the same session must take the disabled-session
@@ -125,7 +124,6 @@ public class CodexSessionStartVisibilityTests : IDisposable {
             // per-turn Stop hooks stay cheap for excluded sessions.
             await Assert.That(DisabledSessions.IsDisabled(excludedSessionId)).IsTrue();
         } finally {
-            Console.SetOut(originalOut);
             DisabledSessions.RemoveMarker(excludedSessionId);
         }
     }

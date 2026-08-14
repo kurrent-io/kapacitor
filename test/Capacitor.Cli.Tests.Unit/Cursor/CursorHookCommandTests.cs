@@ -1,10 +1,11 @@
 using System.Net;
-using System.Text;
 using System.Text.Json.Nodes;
+using System.Text;
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Tests.Helpers;
 
 namespace Capacitor.Cli.Tests.Unit.Cursor;
 
@@ -90,17 +91,11 @@ public class CursorHookCommandTests {
     [Test, NotInParallel]
     public async Task server_rejected_credential_names_kcap_login_on_stderr() {
         using var fx = new Fixture(postStatus: HttpStatusCode.Unauthorized);
-        var originalError = Console.Error;
-        var captured = new StringWriter { NewLine = "\n" };
+        using var capture = ConsoleOutput.StartErrorCapture("\n");
 
-        try {
-            Console.SetError(captured);
-            await fx.HandleAsync($$"""{"hook_event_name":"sessionEnd","session_id":"{{Sid}}"}""");
-        } finally {
-            Console.SetError(originalError);
-        }
+        await fx.HandleAsync($$"""{"hook_event_name":"sessionEnd","session_id":"{{Sid}}"}""");
 
-        await Assert.That(captured.ToString()).Contains("kcap login");
+        await Assert.That(capture.GetCapturedError()).Contains("kcap login");
     }
 
     /// <summary>Non-vacuous control: a non-401 failure keeps the bare status line, so the test
@@ -108,17 +103,11 @@ public class CursorHookCommandTests {
     [Test, NotInParallel]
     public async Task server_error_does_not_name_kcap_login_on_stderr() {
         using var fx = new Fixture(postStatus: HttpStatusCode.InternalServerError);
-        var originalError = Console.Error;
-        var captured = new StringWriter { NewLine = "\n" };
+        using var capture = ConsoleOutput.StartErrorCapture("\n");
 
-        try {
-            Console.SetError(captured);
-            await fx.HandleAsync($$"""{"hook_event_name":"sessionEnd","session_id":"{{Sid}}"}""");
-        } finally {
-            Console.SetError(originalError);
-        }
+        await fx.HandleAsync($$"""{"hook_event_name":"sessionEnd","session_id":"{{Sid}}"}""");
 
-        await Assert.That(captured.ToString()).DoesNotContain("kcap login");
+        await Assert.That(capture.GetCapturedError()).DoesNotContain("kcap login");
     }
 
     [Test]
@@ -466,31 +455,19 @@ public class CursorHookCommandTests {
     [Test, NotInParallel]
     public async Task SessionStart_emits_empty_object() {
         using var fx = new Fixture();
-        var originalOut = Console.Out;
-        var stdoutWriter = new StringWriter();
-        try {
-            Console.SetOut(stdoutWriter);
-            var exit = await fx.HandleAsync("""{"hook_event_name":"sessionStart","session_id":"abc"}""");
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("{}\n");
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        using var capture = ConsoleOutput.StartCapture();
+        var exit = await fx.HandleAsync("""{"hook_event_name":"sessionStart","session_id":"abc"}""");
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
     }
 
     [Test, NotInParallel]
     public async Task NonSessionStart_emits_nothing() {
         using var fx = new Fixture();
-        var originalOut = Console.Out;
-        var stdoutWriter = new StringWriter();
-        try {
-            Console.SetOut(stdoutWriter);
-            var exit = await fx.HandleAsync("""{"hook_event_name":"postToolUse","session_id":"abc","tool_name":"Bash"}""");
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("");
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        using var capture = ConsoleOutput.StartCapture();
+        var exit = await fx.HandleAsync("""{"hook_event_name":"postToolUse","session_id":"abc","tool_name":"Bash"}""");
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo("");
     }
 
     [Test, NotInParallel]
@@ -502,18 +479,12 @@ public class CursorHookCommandTests {
         // persisted it) without needing a real sibling transcript to correlate against.
         CursorLiveSubagentLinker.SaveLink(childId, parentId, "task");
 
-        var originalOut = Console.Out;
-        var stdoutWriter = new StringWriter();
-        try {
-            Console.SetOut(stdoutWriter);
-            var exit = await fx.HandleAsync($$"""{"hook_event_name":"sessionStart","session_id":"{{childId}}"}""");
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("{}\n");
-            // A linked child must short-circuit to {} before any orchestrator work.
-            await Assert.That(fx.MemoryIndexRequested).IsFalse();
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        using var capture = ConsoleOutput.StartCapture();
+        var exit = await fx.HandleAsync($$"""{"hook_event_name":"sessionStart","session_id":"{{childId}}"}""");
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
+        // A linked child must short-circuit to {} before any orchestrator work.
+        await Assert.That(fx.MemoryIndexRequested).IsFalse();
     }
 
     // Review finding 1: these two guarantees must hold at the level the SINGLE
@@ -528,27 +499,21 @@ public class CursorHookCommandTests {
     // while the abandoned HandleCore kept running and could still write late).
     [Test, NotInParallel]
     public async Task HardCap_before_resolve_emits_nothing() {
-        var originalOut = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        try {
-            Console.SetOut(stdoutWriter);
-            using var fx = new Fixture();
-            // Never resolves within the cap regardless of cancellation — proves the single
-            // deadline race genuinely abandons the inner work rather than relying on it
-            // noticing. clientFactory/spoolFactory stand in for real auth/spool setup so the
-            // test stays hermetic while still exercising the REAL entry point's cap+emit logic.
-            var exit = await CursorHookCommand.HandleInternal(
-                "http://localhost", new NeverCompletingReader(), TimeSpan.FromMilliseconds(50),
-                clientFactory: _ => Task.FromResult((fx.Client, AuthStatus.Ok)),
-                spoolFactory: () => fx.Spool);
-            sw.Stop();
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("");
-            await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(2));
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        using var fx = new Fixture();
+        // Never resolves within the cap regardless of cancellation — proves the single
+        // deadline race genuinely abandons the inner work rather than relying on it
+        // noticing. clientFactory/spoolFactory stand in for real auth/spool setup so the
+        // test stays hermetic while still exercising the REAL entry point's cap+emit logic.
+        var exit = await CursorHookCommand.HandleInternal(
+            "http://localhost", new NeverCompletingReader(), TimeSpan.FromMilliseconds(50),
+            clientFactory: _ => Task.FromResult((fx.Client, AuthStatus.Ok)),
+            spoolFactory: () => fx.Spool);
+        sw.Stop();
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo("");
+        await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(2));
     }
 
     // Qodo #2: on the deadline branch, HandleCore must deterministically Cancel() its own
@@ -562,63 +527,51 @@ public class CursorHookCommandTests {
     // so a prompt, observed cancellation is the only way this test can pass.
     [Test, NotInParallel]
     public async Task HandleCore_deadline_win_cancels_the_abandoned_inners_token() {
-        var originalOut = Console.Out;
-        var stdoutWriter = new StringWriter();
-        try {
-            Console.SetOut(stdoutWriter);
-            using var fx = new Fixture();
-            var reader = new CancelObservingReader();
+        using var capture = ConsoleOutput.StartCapture();
+        using var fx = new Fixture();
+        var reader = new CancelObservingReader();
 
-            var exit = await CursorHookCommand.HandleCore(
-                fx.Client, "http://localhost", reader, fx.Spool, TimeSpan.FromMilliseconds(30));
+        var exit = await CursorHookCommand.HandleCore(
+            fx.Client, "http://localhost", reader, fx.Spool, TimeSpan.FromMilliseconds(30));
 
-            await Assert.That(exit).IsEqualTo(0);
-            // The read never resolved (no hook_event_name was ever parsed), so there is
-            // nothing to emit.
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("");
+        await Assert.That(exit).IsEqualTo(0);
+        // The read never resolved (no hook_event_name was ever parsed), so there is
+        // nothing to emit.
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo("");
 
-            // The abandoned reader's ReadToEndAsync only ever completes by observing its
-            // CancellationToken fire. Give it a generous window relative to the 30ms budget —
-            // this asserts the cancellation was actually delivered promptly by HandleCore's
-            // explicit Cancel(), not "eventually, whenever the internal timer happens to tick".
-            var won = await Task.WhenAny(reader.Cancelled.Task, Task.Delay(TimeSpan.FromSeconds(2)));
-            await Assert.That(won).IsEqualTo(reader.Cancelled.Task);
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        // The abandoned reader's ReadToEndAsync only ever completes by observing its
+        // CancellationToken fire. Give it a generous window relative to the 30ms budget —
+        // this asserts the cancellation was actually delivered promptly by HandleCore's
+        // explicit Cancel(), not "eventually, whenever the internal timer happens to tick".
+        var won = await Task.WhenAny(reader.Cancelled.Task, Task.Delay(TimeSpan.FromSeconds(2)));
+        await Assert.That(won).IsEqualTo(reader.Cancelled.Task);
     }
 
     [Test, NotInParallel]
     public async Task HardCap_after_resolve_sessionStart_emits_empty_once() {
-        var originalOut = Console.Out;
-        var stdoutWriter = new StringWriter();
-        try {
-            Console.SetOut(stdoutWriter);
-            using var fx = new Fixture();
-            // sessionStart resolves instantly (fast JSON parse) but the live POST hangs well
-            // past the 50ms dispatcher deadline.
-            fx.HoldOnPost = TimeSpan.FromMilliseconds(300);
+        using var capture = ConsoleOutput.StartCapture();
+        using var fx = new Fixture();
+        // sessionStart resolves instantly (fast JSON parse) but the live POST hangs well
+        // past the 50ms dispatcher deadline.
+        fx.HoldOnPost = TimeSpan.FromMilliseconds(300);
 
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            var exit = await CursorHookCommand.HandleInternal(
-                "http://localhost",
-                new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
-                TimeSpan.FromMilliseconds(50),
-                clientFactory: _ => Task.FromResult((fx.Client, AuthStatus.Ok)),
-                spoolFactory: () => fx.Spool);
-            sw.Stop();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var exit = await CursorHookCommand.HandleInternal(
+            "http://localhost",
+            new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
+            TimeSpan.FromMilliseconds(50),
+            clientFactory: _ => Task.FromResult((fx.Client, AuthStatus.Ok)),
+            spoolFactory: () => fx.Spool);
+        sw.Stop();
 
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("{}\n");
-            await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(1));
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
+        await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(1));
 
-            // Let the orphaned inner work actually finish in the background, then re-assert
-            // stdout is unchanged — the abandoned inner must never get a second/late write.
-            await Task.Delay(TimeSpan.FromMilliseconds(500));
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("{}\n");
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        // Let the orphaned inner work actually finish in the background, then re-assert
+        // stdout is unchanged — the abandoned inner must never get a second/late write.
+        await Task.Delay(TimeSpan.FromMilliseconds(500));
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
     }
 
     // Review finding 1: the single cap must ALSO cover client/auth setup itself — the
@@ -628,33 +581,27 @@ public class CursorHookCommandTests {
     // produce a late write even once it eventually "completes" in the background.
     [Test, NotInParallel]
     public async Task HardCap_during_client_setup_emits_nothing_and_no_late_write() {
-        var originalOut = Console.Out;
-        var stdoutWriter = new StringWriter();
-        try {
-            Console.SetOut(stdoutWriter);
-            using var fx = new Fixture();
-            var neverAuths = new TaskCompletionSource<(HttpClient, AuthStatus)>();
+        using var capture = ConsoleOutput.StartCapture();
+        using var fx = new Fixture();
+        var neverAuths = new TaskCompletionSource<(HttpClient, AuthStatus)>();
 
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            var exit = await CursorHookCommand.HandleInternal(
-                "http://localhost",
-                new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
-                TimeSpan.FromMilliseconds(50),
-                clientFactory: _ => neverAuths.Task,
-                spoolFactory: () => fx.Spool);
-            sw.Stop();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var exit = await CursorHookCommand.HandleInternal(
+            "http://localhost",
+            new StringReader("""{"hook_event_name":"sessionStart","session_id":"abc"}"""),
+            TimeSpan.FromMilliseconds(50),
+            clientFactory: _ => neverAuths.Task,
+            spoolFactory: () => fx.Spool);
+        sw.Stop();
 
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("");
-            await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(1));
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo("");
+        await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(1));
 
-            // Even if the abandoned auth call eventually resolves in the background, HandleCore
-            // is never invoked for this attempt — there must be no late write.
-            await Task.Delay(TimeSpan.FromMilliseconds(200));
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("");
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        // Even if the abandoned auth call eventually resolves in the background, HandleCore
+        // is never invoked for this attempt — there must be no late write.
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo("");
     }
 
     // Task 3: the shared memory orchestrator wired in for a top-level (non-child)
@@ -666,35 +613,29 @@ public class CursorHookCommandTests {
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
         var sid = Guid.NewGuid().ToString("N");
 
-        var originalOut = Console.Out;
-        var stdoutWriter = new StringWriter();
-        try {
-            Console.SetOut(stdoutWriter);
-            // A generous budget (well beyond the production 2s) — recording-critical work here
-            // is a handful of in-memory/fake-HTTP steps that normally finish in well under a
-            // millisecond, but memBudget = budgetTotal - elapsed - HookBudget.Safety(1.5s) leaves
-            // only ~0.5s of margin at the production 2s default; under heavy CI/full-suite CPU
-            // contention that margin can occasionally be exhausted by scheduling delays alone,
-            // which would make this assert on the WRONG thing (a legitimate no-budget skip, not
-            // a bug). This test is about the fragment/lifecycle wiring, not the budget math
-            // (NoBudget_skips_provider owns that), so give it comfortable headroom.
-            // A real non-repo workspace root (system temp) is required now that an absent root
-            // skips injection; forward-slashed so it's valid JSON on Windows too.
-            var ws = Path.GetTempPath().Replace('\\', '/').TrimEnd('/');
-            var exit = await fx.HandleAsync(
-                $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","workspace_roots":["{{ws}}"]}""",
-                budgetTotal: TimeSpan.FromSeconds(5));
-            await Assert.That(exit).IsEqualTo(0);
+        using var capture = ConsoleOutput.StartCapture();
+        // A generous budget (well beyond the production 2s) — recording-critical work here
+        // is a handful of in-memory/fake-HTTP steps that normally finish in well under a
+        // millisecond, but memBudget = budgetTotal - elapsed - HookBudget.Safety(1.5s) leaves
+        // only ~0.5s of margin at the production 2s default; under heavy CI/full-suite CPU
+        // contention that margin can occasionally be exhausted by scheduling delays alone,
+        // which would make this assert on the WRONG thing (a legitimate no-budget skip, not
+        // a bug). This test is about the fragment/lifecycle wiring, not the budget math
+        // (NoBudget_skips_provider owns that), so give it comfortable headroom.
+        // A real non-repo workspace root (system temp) is required now that an absent root
+        // skips injection; forward-slashed so it's valid JSON on Windows too.
+        var ws = Path.GetTempPath().Replace('\\', '/').TrimEnd('/');
+        var exit = await fx.HandleAsync(
+            $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","workspace_roots":["{{ws}}"]}""",
+            budgetTotal: TimeSpan.FromSeconds(5));
+        await Assert.That(exit).IsEqualTo(0);
 
-            var stdout = stdoutWriter.ToString();
-            await Assert.That(stdout).StartsWith("""{"additional_context":""");
-            await Assert.That(stdout).EndsWith("\"}\n");
-            var node = JsonNode.Parse(stdout)!;
-            var fragment = node["additional_context"]!.GetValue<string>();
-            await Assert.That(fragment).Contains("Team memory");
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        var stdout = capture.GetCapturedOutput();
+        await Assert.That(stdout).StartsWith("""{"additional_context":""");
+        await Assert.That(stdout).EndsWith("\"}\n");
+        var node = JsonNode.Parse(stdout)!;
+        var fragment = node["additional_context"]!.GetValue<string>();
+        await Assert.That(fragment).Contains("Team memory");
     }
 
     // Qodo #1: mutates both process-global Console.Out AND AppConfig's resolved state
@@ -715,18 +656,15 @@ public class CursorHookCommandTests {
         var originalResolved  = AppConfig.ResolvedProfile;
         AppConfig.SetResolvedState("http://localhost", "default", new Profile { DisableMemoryIndex = true });
 
-        var originalOut = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
         try {
-            Console.SetOut(stdoutWriter);
             var sid = Guid.NewGuid().ToString("N");
             var exit = await fx.HandleAsync($$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}"}""");
 
             await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("{}\n");
+            await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
             await Assert.That(fx.MemoryIndexRequested).IsFalse();
         } finally {
-            Console.SetOut(originalOut);
             // Restore exactly what was resolved before this test ran. A null original
             // (AppConfig never touched yet in this process) has no public "unset" to restore
             // to, so it falls back to the same fresh default this test always used pre-fix.
@@ -743,23 +681,17 @@ public class CursorHookCommandTests {
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
         var sid = Guid.NewGuid().ToString("N");
 
-        var originalOut = Console.Out;
-        var stdoutWriter = new StringWriter();
-        try {
-            Console.SetOut(stdoutWriter);
-            // 500ms total is comfortably below HookBudget.Safety (1.5s), so
-            // memBudget = budgetTotal - elapsed - Safety is guaranteed negative regardless
-            // of how fast recording actually completes — no artificial per-POST delay needed.
-            var exit = await fx.HandleAsync(
-                $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}"}""",
-                budgetTotal: TimeSpan.FromMilliseconds(500));
+        using var capture = ConsoleOutput.StartCapture();
+        // 500ms total is comfortably below HookBudget.Safety (1.5s), so
+        // memBudget = budgetTotal - elapsed - Safety is guaranteed negative regardless
+        // of how fast recording actually completes — no artificial per-POST delay needed.
+        var exit = await fx.HandleAsync(
+            $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}"}""",
+            budgetTotal: TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("{}\n");
-            await Assert.That(fx.MemoryIndexRequested).IsFalse();
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
+        await Assert.That(fx.MemoryIndexRequested).IsFalse();
     }
 
     // ---------------------------------------------------------------------------------
@@ -779,13 +711,9 @@ public class CursorHookCommandTests {
         // The REAL shape: transcript_path is JSON null at sessionStart.
         var payload = $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","transcript_path":null,"workspace_roots":["{{ws}}"]}""";
 
-        var originalOut = Console.Out;
-        try {
-            Console.SetOut(new StringWriter());
+        using (ConsoleOutput.StartCapture()) {
             var exit = await fx.HandleAsync(payload, budgetTotal: TimeSpan.FromSeconds(5));
             await Assert.That(exit).IsEqualTo(0);
-        } finally {
-            Console.SetOut(originalOut);
         }
 
         // No link was persisted, so nothing classified this session as a subagent child. Note
@@ -813,10 +741,7 @@ public class CursorHookCommandTests {
         var ws  = Path.GetTempPath().Replace('\\', '/').TrimEnd('/');
         const string body = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
 
-        var originalOut = Console.Out;
-        try {
-            Console.SetOut(new StringWriter());
-
+        using (ConsoleOutput.StartCapture()) {
             // Positive control FIRST. Without it this test could pass vacuously in an
             // environment where memory injection is disabled outright.
             using var starting = new Fixture();
@@ -834,8 +759,6 @@ public class CursorHookCommandTests {
                 $$"""{"hook_event_name":"postToolUse","session_id":"{{Guid.NewGuid():N}}","workspace_roots":["{{ws}}"]}""",
                 budgetTotal: TimeSpan.FromSeconds(5));
             await Assert.That(other.MemoryIndexRequested).IsFalse();
-        } finally {
-            Console.SetOut(originalOut);
         }
 
         // NOTE what this does and does not establish. It pins the ORCHESTRATOR CALL-SITE GUARD,
@@ -854,23 +777,18 @@ public class CursorHookCommandTests {
         var ws = Path.GetTempPath().Replace('\\', '/').TrimEnd('/');
         var payload = $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","workspace_roots":["{{ws}}"]}""";
 
-        var originalOut = Console.Out;
-        var first = new StringWriter();
-        var second = new StringWriter();
-        try {
-            Console.SetOut(first);
+        using (var first = ConsoleOutput.StartCapture()) {
             // Generous budget — see Ready_fragment_emitted's comment on the tight ~0.5s margin
             // at the production 2s default under heavy CI/full-suite CPU contention.
             var exit1 = await fx.HandleAsync(payload, budgetTotal: TimeSpan.FromSeconds(5));
             await Assert.That(exit1).IsEqualTo(0);
-            await Assert.That(first.ToString()).Contains("additional_context");
+            await Assert.That(first.GetCapturedOutput()).Contains("additional_context");
+        }
 
-            Console.SetOut(second);
+        using (var second = ConsoleOutput.StartCapture()) {
             var exit2 = await fx.HandleAsync(payload, budgetTotal: TimeSpan.FromSeconds(5));
             await Assert.That(exit2).IsEqualTo(0);
-            await Assert.That(second.ToString()).IsEqualTo("{}\n");
-        } finally {
-            Console.SetOut(originalOut);
+            await Assert.That(second.GetCapturedOutput()).IsEqualTo("{}\n");
         }
     }
 
@@ -881,11 +799,9 @@ public class CursorHookCommandTests {
         // scope resolver's Directory.GetCurrentDirectory() fallback would derive THIS repo's scope
         // and fetch its (unrelated) memories into the Cursor session. The guard must prevent any fetch.
         var repoDir = MakeTempRepoWithRemote("https://github.com/example/leak-check.git");
-        var originalOut = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
         try {
             Environment.CurrentDirectory = repoDir;
-            Console.SetOut(stdoutWriter);
             using var fx = new Fixture();
             fx.MemoryIndexBody = "[]"; // decoy — never fetched because the guard short-circuits first
             var sid = Guid.NewGuid().ToString("N");
@@ -900,9 +816,8 @@ public class CursorHookCommandTests {
             // The guard means the provider is NEVER called when no authoritative workspace root is
             // supplied — so the process cwd's repo memories can never leak — and the response is {}.
             await Assert.That(fx.MemoryIndexRequested).IsFalse();
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("{}\n");
+            await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
         } finally {
-            Console.SetOut(originalOut);
             Environment.CurrentDirectory = originalCwd;
             try { Directory.Delete(repoDir, recursive: true); } catch { }
         }
@@ -938,16 +853,10 @@ public class CursorHookCommandTests {
         using var fx = new Fixture();
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
 
-        var originalOut = Console.Out;
-        var stdoutWriter = new StringWriter();
-        try {
-            Console.SetOut(stdoutWriter);
-            var exit = await fx.HandleAsync("""{"hook_event_name":"sessionStart","session_id":"not-a-guid"}""");
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("{}\n");
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        using var capture = ConsoleOutput.StartCapture();
+        var exit = await fx.HandleAsync("""{"hook_event_name":"sessionStart","session_id":"not-a-guid"}""");
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
     }
 
     [Test, NotInParallel]
@@ -1014,27 +923,21 @@ public class CursorHookCommandTests {
 
         var storeBuilt = false;
 
-        var originalOut = Console.Out;
-        var stdoutWriter = new StringWriter();
-        try {
-            Console.SetOut(stdoutWriter);
-            var exit = await CursorHookCommand.HandleCore(
-                fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(15),
-                memoryStoreFactory: () => {
-                    storeBuilt = true;
-                    return new SessionStartMemoryLeaseStore(fx.MemoryStoreRoot, new ManualTimeProvider());
-                },
-                memoryBudgetOverride: TimeSpan.Zero);
+        using var capture = ConsoleOutput.StartCapture();
+        var exit = await CursorHookCommand.HandleCore(
+            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(15),
+            memoryStoreFactory: () => {
+                storeBuilt = true;
+                return new SessionStartMemoryLeaseStore(fx.MemoryStoreRoot, new ManualTimeProvider());
+            },
+            memoryBudgetOverride: TimeSpan.Zero);
 
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(fx.MemoryIndexRequested).IsFalse();
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo("{}\n");
-            // Pins THIS guard specifically: the provider would also decline a zero budget, but only
-            // the orchestration guard returns before the store is built.
-            await Assert.That(storeBuilt).IsFalse();
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(fx.MemoryIndexRequested).IsFalse();
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
+        // Pins THIS guard specifically: the provider would also decline a zero budget, but only
+        // the orchestration guard returns before the store is built.
+        await Assert.That(storeBuilt).IsFalse();
     }
 
     // Task 1: the fixture must be able to serve GET /api/memories/index

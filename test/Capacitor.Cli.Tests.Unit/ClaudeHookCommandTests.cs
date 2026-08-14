@@ -1,9 +1,10 @@
 using System.Net;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core; using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core; using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Tests.Helpers;
 
 namespace Capacitor.Cli.Tests.Unit;
 
@@ -343,15 +344,9 @@ public class ClaudeHookCommandTests {
     /// the captured bytes are platform-independent), restoring the original writer even if
     /// <paramref name="action"/> throws.</summary>
     static async Task<(int Exit, string Stdout)> RunCapturingStdoutAsync(Func<Task<int>> action) {
-        var originalOut = Console.Out;
-        var writer = new StringWriter { NewLine = "\n" };
-        try {
-            Console.SetOut(writer);
-            var exit = await action();
-            return (exit, writer.ToString());
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        using var capture = ConsoleOutput.StartCapture("\n");
+        var exit = await action();
+        return (exit, capture.GetCapturedOutput());
     }
 
     // the session-start payload gains a best-effort workspace_root (the git repo root

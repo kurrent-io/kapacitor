@@ -154,7 +154,7 @@ public class ProcessStartTokenTests {
         var token = ProcessStartToken.ForCurrent();
 
         await Assert.That(token).IsNotNull();
-        await Assert.That(ProcessStartToken.Matches(Environment.ProcessId, token!)).IsEqualTo(true);
+        await Assert.That(ProcessStartToken.Matches(Environment.ProcessId, token!)).IsTrue();
     }
 
     [Test]
@@ -165,7 +165,7 @@ public class ProcessStartTokenTests {
         var lastSep = token.LastIndexOf(':');
         var wrong   = token[..(lastSep + 1)] + "999999999999";
 
-        await Assert.That(ProcessStartToken.Matches(Environment.ProcessId, wrong)).IsEqualTo(false);
+        await Assert.That(ProcessStartToken.Matches(Environment.ProcessId, wrong)).IsFalse();
     }
 
     /// <summary>

@@ -1,7 +1,8 @@
 using System.Text.Json;
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core;
+using Capacitor.Tests.Helpers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -103,21 +104,11 @@ public class GeminiStderrShadowedOnPostFailureTests : IDisposable {
         stdout.Trim() is { Length: > 0 } o ? o : stderr.Trim();
 
     async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(string payload) {
-        var originalOut = Console.Out;
-        var originalErr = Console.Error;
-        var stdout      = new StringWriter();
-        var stderr      = new StringWriter();
+        using var capture = ConsoleOutput.StartFullCapture();
 
-        Console.SetOut(stdout);
-        Console.SetError(stderr);
 
-        try {
-            var exit = await GeminiHookCommand.Handle(_server.Url!, new StringReader(payload));
+        var exit = await GeminiHookCommand.Handle(_server.Url!, new StringReader(payload));
 
-            return (exit, stdout.ToString(), stderr.ToString());
-        } finally {
-            Console.SetOut(originalOut);
-            Console.SetError(originalErr);
-        }
+        return (exit, capture.GetCapturedOutput(), capture.GetCapturedError());
     }
 }

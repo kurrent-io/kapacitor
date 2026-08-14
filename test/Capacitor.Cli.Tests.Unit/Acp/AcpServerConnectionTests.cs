@@ -310,7 +310,7 @@ public class AcpServerConnectionTests {
                 reRegisterAgents: conn.ReRegisterAgentsAndAcpBindingsAsync)
             .WaitAsync(HangGuard);
 
-        await Assert.That(readyDuringRebind).IsEqualTo(false);
+        await Assert.That(readyDuringRebind).IsFalse();
         await Assert.That(gate.IsReady(HubConnectionState.Connected)).IsTrue();
     }
 }

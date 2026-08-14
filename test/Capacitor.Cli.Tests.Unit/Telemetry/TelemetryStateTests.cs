@@ -37,10 +37,10 @@ public class TelemetryStateTests {
         TelemetryState.PathOverride = NewTempPath();
 
         TelemetryState.SetEnabled(false);
-        await Assert.That(TelemetryState.PersistedEnabled()).IsEqualTo((bool?)false);
+        await Assert.That(TelemetryState.PersistedEnabled()).IsFalse();
 
         TelemetryState.SetEnabled(true);
-        await Assert.That(TelemetryState.PersistedEnabled()).IsEqualTo((bool?)true);
+        await Assert.That(TelemetryState.PersistedEnabled()).IsTrue();
     }
 
     [Test]
@@ -60,7 +60,7 @@ public class TelemetryStateTests {
         TelemetryState.MarkNoticeShown();
 
         var state = TelemetryState.Read();
-        await Assert.That(state.Enabled).IsEqualTo((bool?)true);
+        await Assert.That(state.Enabled).IsTrue();
         await Assert.That(state.NoticeShown).IsTrue();
     }
 

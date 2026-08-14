@@ -1,5 +1,6 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Services;
+using Capacitor.Tests.Helpers;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
@@ -463,8 +464,6 @@ public class ServiceVerifyStartTests {
         bool unitPresent, string expectedReason) {
         var dir = Directory.CreateTempSubdirectory().FullName;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
         try {
             var manager = new FakeServiceManager { UnitPresent = unitPresent };
 
@@ -476,18 +475,21 @@ public class ServiceVerifyStartTests {
                 plistExists: _ => false,
                 gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
 
-            Console.SetError(capturedErr);
-            var exit = await sut.StartVerifiedAsync(Id);
-            Console.SetError(originalErr);
+            int    exit;
+            string capturedErr;
+
+            using (var capture = ConsoleOutput.StartErrorCapture()) {
+                exit        = await sut.StartVerifiedAsync(Id);
+                capturedErr = capture.GetCapturedError();
+            }
 
             await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
-            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            var lines = capturedErr.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
             await Assert.That(lines).Contains($"start_gate_reason={expectedReason}");
             await Assert.That(manager.Calls.Count).IsEqualTo(1);
             await Assert.That(manager.Calls.All(c => c == "query")).IsTrue();
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally {
-            Console.SetError(originalErr);
             DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }

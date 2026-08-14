@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Tests.Helpers;
 
 namespace Capacitor.Cli.Tests.Unit.Import;
 
@@ -171,16 +172,10 @@ public class ImportMissingCwdsReportTests {
     }
 
     static string Capture(Action<ImportCommand.ImportDisplay> render) {
-        var sw      = new StringWriter();
-        var prevOut = Console.Out;
-        Console.SetOut(sw);
-        try {
-            render(new() { Tty = false });
-        } finally {
-            Console.SetOut(prevOut);
-        }
+        using var capture = ConsoleOutput.StartCapture();
+        render(new() { Tty = false });
         // Normalize CRLF→LF so line-anchored assertions (e.g. Contains("…\n"))
         // hold on Windows, where the writer emits Environment.NewLine.
-        return sw.ToString().Replace("\r\n", "\n");
+        return capture.GetCapturedOutput().Replace("\r\n", "\n");
     }
 }

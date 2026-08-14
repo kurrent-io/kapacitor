@@ -3,15 +3,6 @@
          has to be imported by hand or none of its settings reach the test projects. -->
     <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
     <PropertyGroup>
-        <!-- Temporary triage list, same deal as the root one: TUnit's own analyzers only ever fire
-             here, so their backlog is exempted here rather than repo-wide. -->
-        <WarningsNotAsErrors>
-            $(WarningsNotAsErrors);
-            TUnit0055<!-- Overwriting the Console writer can break TUnit logging -->;
-            TUnit0301<!-- Tuple parameter uses reflection and is not AOT-compatible -->;
-            TUnitAssertions0005<!-- Assert.That(...) used with a constant value -->;
-            TUnitAssertions0015<!-- Use .IsFalse() instead of .IsEqualTo(false) -->;
-        </WarningsNotAsErrors>
         <!-- High/critical advisories are errors under src/. Here they are not: a test-only package
              ships to nobody, so a fresh advisory is a bump to schedule, not a build to stop. -->
         <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1903;NU1904</WarningsNotAsErrors>

@@ -450,7 +450,7 @@ public class LaunchConsentIpcTests {
             var pending1 = await FirstPendingFrom(subscriber, ct);
             var okAck = await ResolveAsync(h, ResolveJson("a1", "allow", saveRule: true, pending1.PromptId), requireEcho: true, ct);
             await Assert.That(okAck.Ok).IsTrue();
-            await Assert.That(okAck.RuleSaved).IsEqualTo(true);
+            await Assert.That(okAck.RuleSaved).IsTrue();
             await decideTask1;
 
             // (2) save_rule + NO pending → the rule is still persisted (save-before-resolve is
@@ -458,7 +458,7 @@ public class LaunchConsentIpcTests {
             // particular launch still being live), Ok=false, RuleSaved=true.
             var nopAck = await ResolveAsync(h, ResolveJson("ghost", "allow", saveRule: true, "p-x"), requireEcho: true, ct);
             await Assert.That(nopAck.Ok).IsFalse();
-            await Assert.That(nopAck.RuleSaved).IsEqualTo(true);
+            await Assert.That(nopAck.RuleSaved).IsTrue();
             await Assert.That(StoreRules(h).Any(r => r.Requester == "github:1")).IsTrue(); // persisted despite Ok=false
 
             // (3) save_rule rejected by the store (invalid action) → RuleSaved=false on BOTH the
@@ -468,13 +468,13 @@ public class LaunchConsentIpcTests {
             var rejectedButLiveAck = await ResolveAsync(
                 h, ResolveJson("a1", "allow", saveRule: true, pending3.PromptId, action: "bogus"), requireEcho: true, ct);
             await Assert.That(rejectedButLiveAck.Ok).IsTrue(); // the resolution itself still applies
-            await Assert.That(rejectedButLiveAck.RuleSaved).IsEqualTo(false);
+            await Assert.That(rejectedButLiveAck.RuleSaved).IsFalse();
             await decideTask3;
 
             var rejectedNoPendingAck = await ResolveAsync(
                 h, ResolveJson("ghost2", "allow", saveRule: true, "p-y", action: "bogus"), requireEcho: true, ct);
             await Assert.That(rejectedNoPendingAck.Ok).IsFalse();
-            await Assert.That(rejectedNoPendingAck.RuleSaved).IsEqualTo(false);
+            await Assert.That(rejectedNoPendingAck.RuleSaved).IsFalse();
 
             // (4) no save_rule → RuleSaved=null.
             var decideTask4 = h.Gate.DecideAsync("a1", input, ct);

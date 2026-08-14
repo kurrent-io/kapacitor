@@ -1,5 +1,6 @@
 using System.Text;
 using Capacitor.Cli.Commands;
+using Capacitor.Tests.Helpers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -24,15 +25,9 @@ public class ValidatePlanCommandTests : IDisposable {
     public void Dispose() => _server.Stop();
 
     static async Task<string> CaptureStdoutAsync(Func<Task> action) {
-        var original = Console.Out;
-        var sw       = new StringWriter();
-        Console.SetOut(sw);
-        try {
-            await action();
-        } finally {
-            Console.SetOut(original);
-        }
-        return sw.ToString();
+        using var capture = ConsoleOutput.StartCapture();
+        await action();
+        return capture.GetCapturedOutput();
     }
 
     static string RecapJson(string extraEntries = "") => $$"""

@@ -1,6 +1,7 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.SessionStartMemory;
+using Capacitor.Tests.Helpers;
 
 namespace Capacitor.Cli.Tests.Unit;
 
@@ -143,18 +144,12 @@ public class GeminiSessionStartMemoryTests {
     }
 
     static async Task<string> CaptureHandleStdout(string payload) {
-        var original = Console.Out;
-        var sw = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
 
-        try {
-            Console.SetOut(sw);
-            // baseUrl is unreachable on purpose: these paths must return before any network work.
-            await GeminiHookCommand.Handle("http://127.0.0.1:1", new StringReader(payload));
-        } finally {
-            Console.SetOut(original);
-        }
+        // baseUrl is unreachable on purpose: these paths must return before any network work.
+        await GeminiHookCommand.Handle("http://127.0.0.1:1", new StringReader(payload));
 
-        return sw.ToString();
+        return capture.GetCapturedOutput();
     }
 
     // ── source → lifecycle mapping ────────────────────────────────────────────

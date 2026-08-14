@@ -1,5 +1,6 @@
-using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Services;
+using Capacitor.Cli.Daemon;
+using Capacitor.Tests.Helpers;
 
 namespace Capacitor.Cli.Tests.Unit.Daemon;
 
@@ -80,15 +81,11 @@ public class BootRefusalTests {
     public async Task RunBootChecksAsync_empty_expected_server_url_refuses_as_mismatch() {
         var dir = Directory.CreateTempSubdirectory("bootcheck-").FullName;
         var config = new DaemonConfig { Name = "d-empty-expect", ServerUrl = "https://s", ExpectedServerUrl = "" };
-        var originalErr = Console.Error;
-        var captured = new StringWriter();
-        try {
-            Console.SetError(captured);
-            var exit = await DaemonRunner.RunBootChecksAsync(config, dir);
+        using var capture = ConsoleOutput.StartErrorCapture();
+        var exit = await DaemonRunner.RunBootChecksAsync(config, dir);
 
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(captured.ToString()).Contains("server_expectation_mismatch");
-        } finally { Console.SetError(originalErr); }
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(capture.GetCapturedError()).Contains("server_expectation_mismatch");
     }
 
     [Test]
@@ -108,15 +105,11 @@ public class BootRefusalTests {
         // Empty is a deliberate refusal under the exact-value contract, not absence — the seed path
         // must activate on it (BootSeed("") itself already classifies RefusedInvalidDirective).
         var config = new DaemonConfig { Name = "d-empty", ServerUrl = "https://s", ConsentSeedDirective = "" };
-        var originalErr = Console.Error;
-        var captured = new StringWriter();
-        try {
-            Console.SetError(captured);
-            var exit = await DaemonRunner.RunBootChecksAsync(config, dir);
+        using var capture = ConsoleOutput.StartErrorCapture();
+        var exit = await DaemonRunner.RunBootChecksAsync(config, dir);
 
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(captured.ToString()).Contains("consent_seed_invalid");
-        } finally { Console.SetError(originalErr); }
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(capture.GetCapturedError()).Contains("consent_seed_invalid");
     }
 
     [Test, NotInParallel]
@@ -129,14 +122,10 @@ public class BootRefusalTests {
         var stateDirAsFile = Path.Combine(parent, "state-is-a-file");
         await File.WriteAllTextAsync(stateDirAsFile, "not a directory");
         var config = new DaemonConfig { Name = "d-unwritable", ServerUrl = "https://s", ConsentSeedDirective = "prompt" };
-        var originalErr = Console.Error;
-        var captured = new StringWriter();
-        try {
-            Console.SetError(captured);
-            var exit = await DaemonRunner.RunBootChecksAsync(config, stateDirAsFile);
+        using var capture = ConsoleOutput.StartErrorCapture();
+        var exit = await DaemonRunner.RunBootChecksAsync(config, stateDirAsFile);
 
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(captured.ToString()).Contains("consent_seed_unwritable");
-        } finally { Console.SetError(originalErr); }
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(capture.GetCapturedError()).Contains("consent_seed_unwritable");
     }
 }

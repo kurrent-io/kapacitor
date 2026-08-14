@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Tests.Helpers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -88,11 +89,9 @@ public class RoutedPrivatizeMembershipTests : IDisposable {
     }
 
     static async Task<string> CaptureStdoutAsync(Func<Task> action) {
-        var original = Console.Out;
-        var sw       = new StringWriter();
-        Console.SetOut(sw);
-        try { await action(); } finally { Console.SetOut(original); }
-        return sw.ToString();
+        using var capture = ConsoleOutput.StartCapture();
+        await action();
+        return capture.GetCapturedOutput();
     }
 
     static bool LineMatches(string text, string label, int value) =>

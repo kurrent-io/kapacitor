@@ -5,6 +5,7 @@
         <IsPackable>false</IsPackable>
     </PropertyGroup>
     <ItemGroup>
+        <ProjectReference Include="..\Capacitor.Tests.Helpers\Capacitor.Tests.Helpers.csproj" />
         <ProjectReference Include="..\..\src\Capacitor.App\Capacitor.App.csproj" />
     </ItemGroup>
     <ItemGroup>

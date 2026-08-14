@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Capacitor.Cli.Commands;
+using Capacitor.Tests.Helpers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -18,8 +19,15 @@ public class CodexHookCommandTests : IDisposable {
 
     public void Dispose() => _server.Stop();
 
+    void StubNoAuthRequired() =>
+        _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithBody("""{"provider":"None"}"""));
+
     [Test]
     public async Task SessionStart_posts_to_session_start_codex_with_normalized_session_id() {
+        StubNoAuthRequired();
         _server.Given(Request.Create().WithPath("/hooks/session-start/codex").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
@@ -62,6 +70,7 @@ public class CodexHookCommandTests : IDisposable {
     // Globally sequential: captures Console.Out for the duration.
     [Test, NotInParallel]
     public async Task Stop_posts_to_hooks_stop_and_emits_continue_json() {
+        StubNoAuthRequired();
         _server.Given(Request.Create().WithPath("/hooks/stop").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
         _server.Given(Request.Create().WithPath("/hooks/session-end/codex").UsingPost())
@@ -76,37 +85,31 @@ public class CodexHookCommandTests : IDisposable {
                       }
                       """;
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
 
-        try {
-            Console.SetOut(stdoutWriter);
 
-            var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
-            await Assert.That(exit).IsEqualTo(0);
+        var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
+        await Assert.That(exit).IsEqualTo(0);
 
-            // Stop now POSTs /hooks/stop exactly once, carrying the full payload.
-            var stopRequests = _server.FindLogEntries(Request.Create().WithPath("/hooks/stop").UsingPost());
-            await Assert.That(stopRequests.Count).IsEqualTo(1);
-            var body = JsonDocument.Parse(stopRequests[0].RequestMessage.Body!).RootElement;
-            await Assert.That(body.GetProperty("session_id").GetString()).IsEqualTo("abc");
-            await Assert.That(body.GetProperty("transcript_path").GetString()).IsEqualTo("/tmp/rollout.jsonl");
-            await Assert.That(body.GetProperty("cwd").GetString()).IsEqualTo("/tmp");
-            await Assert.That(body.GetProperty("hook_event_name").GetString()).IsEqualTo("Stop");
+        // Stop now POSTs /hooks/stop exactly once, carrying the full payload.
+        var stopRequests = _server.FindLogEntries(Request.Create().WithPath("/hooks/stop").UsingPost());
+        await Assert.That(stopRequests.Count).IsEqualTo(1);
+        var body = JsonDocument.Parse(stopRequests[0].RequestMessage.Body!).RootElement;
+        await Assert.That(body.GetProperty("session_id").GetString()).IsEqualTo("abc");
+        await Assert.That(body.GetProperty("transcript_path").GetString()).IsEqualTo("/tmp/rollout.jsonl");
+        await Assert.That(body.GetProperty("cwd").GetString()).IsEqualTo("/tmp");
+        await Assert.That(body.GetProperty("hook_event_name").GetString()).IsEqualTo("Stop");
 
-            // Must NOT POST session-end.
-            var endRequests = _server.FindLogEntries(Request.Create().WithPath("/hooks/session-end/codex").UsingPost());
-            await Assert.That(endRequests.Count).IsEqualTo(0);
+        // Must NOT POST session-end.
+        var endRequests = _server.FindLogEntries(Request.Create().WithPath("/hooks/session-end/codex").UsingPost());
+        await Assert.That(endRequests.Count).IsEqualTo(0);
 
-            // Invariant: valid JSON object on stdout, no chatter.
-            var stdout = stdoutWriter.ToString();
-            var doc    = JsonDocument.Parse(stdout);
-            await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
-            await Assert.That(stdout.Contains("Watcher ")).IsFalse();
-            await Assert.That(stdout.Contains("Spawned")).IsFalse();
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        // Invariant: valid JSON object on stdout, no chatter.
+        var stdout = capture.GetCapturedOutput();
+        var doc    = JsonDocument.Parse(stdout);
+        await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
+        await Assert.That(stdout.Contains("Watcher ")).IsFalse();
+        await Assert.That(stdout.Contains("Spawned")).IsFalse();
     }
 
     // The POST is best-effort: a slow/unreachable server must never hang the hook
@@ -126,21 +129,15 @@ public class CodexHookCommandTests : IDisposable {
                       }
                       """;
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
         var sw           = System.Diagnostics.Stopwatch.StartNew();
 
-        try {
-            Console.SetOut(stdoutWriter);
-            var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
-            sw.Stop();
-            await Assert.That(exit).IsEqualTo(0);
+        var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
+        sw.Stop();
+        await Assert.That(exit).IsEqualTo(0);
 
-            var doc = JsonDocument.Parse(stdoutWriter.ToString());
-            await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        var doc = JsonDocument.Parse(capture.GetCapturedOutput());
+        await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
 
         // 2s POST cap + slack for CI jitter.
         await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
@@ -165,21 +162,15 @@ public class CodexHookCommandTests : IDisposable {
                       }
                       """;
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
         var sw           = System.Diagnostics.Stopwatch.StartNew();
 
-        try {
-            Console.SetOut(stdoutWriter);
-            var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
-            sw.Stop();
-            await Assert.That(exit).IsEqualTo(0);
+        var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
+        sw.Stop();
+        await Assert.That(exit).IsEqualTo(0);
 
-            var doc = JsonDocument.Parse(stdoutWriter.ToString());
-            await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        var doc = JsonDocument.Parse(capture.GetCapturedOutput());
+        await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
 
         await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
     }
@@ -200,21 +191,15 @@ public class CodexHookCommandTests : IDisposable {
                       }
                       """;
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
 
-        try {
-            Console.SetOut(stdoutWriter);
-            // Scheme-less URL → IsAcceptableUrl is false → PostBestEffortAsync returns
-            // before CreateClientWithAuthStatusAsync/EnsureAbsolute can Environment.Exit.
-            var exit = await CodexHookCommand.Handle("localhost:5108", new StringReader(payload));
-            await Assert.That(exit).IsEqualTo(0);
+        // Scheme-less URL → IsAcceptableUrl is false → PostBestEffortAsync returns
+        // before CreateClientWithAuthStatusAsync/EnsureAbsolute can Environment.Exit.
+        var exit = await CodexHookCommand.Handle("localhost:5108", new StringReader(payload));
+        await Assert.That(exit).IsEqualTo(0);
 
-            var doc = JsonDocument.Parse(stdoutWriter.ToString());
-            await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        var doc = JsonDocument.Parse(capture.GetCapturedOutput());
+        await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
     }
 
     // Globally sequential alongside Stop_is_turn_end_no_op_and_does_not_post_session_end —
@@ -231,6 +216,7 @@ public class CodexHookCommandTests : IDisposable {
         var previousEnv = Environment.GetEnvironmentVariable("KCAP_DAEMON_URL");
         Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", null);
 
+        StubNoAuthRequired();
         _server.Given(Request.Create().WithPath("/hooks/permission-record").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
@@ -245,11 +231,9 @@ public class CodexHookCommandTests : IDisposable {
                       }
                       """;
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
 
         try {
-            Console.SetOut(stdoutWriter);
 
             var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
 
@@ -257,14 +241,13 @@ public class CodexHookCommandTests : IDisposable {
 
             // stdout must NOT carry a hook decision — Codex falls back to its
             // own approval prompt when hookSpecificOutput.decision is absent.
-            var stdout = stdoutWriter.ToString();
+            var stdout = capture.GetCapturedOutput();
             var doc    = JsonDocument.Parse(stdout);
 
             var hasDecision = doc.RootElement.TryGetProperty("hookSpecificOutput", out var hso)
              && hso.TryGetProperty("decision", out _);
             await Assert.That(hasDecision).IsFalse();
         } finally {
-            Console.SetOut(originalOut);
             Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", previousEnv);
         }
 
@@ -297,18 +280,12 @@ public class CodexHookCommandTests : IDisposable {
                       }
                       """;
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
         var sw           = System.Diagnostics.Stopwatch.StartNew();
 
-        try {
-            Console.SetOut(stdoutWriter);
-            var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
-            sw.Stop();
-            await Assert.That(exit).IsEqualTo(0);
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
+        sw.Stop();
+        await Assert.That(exit).IsEqualTo(0);
 
         // 2 s HTTP timeout + a generous slack for build/CI jitter.
         await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
@@ -344,18 +321,12 @@ public class CodexHookCommandTests : IDisposable {
                       }
                       """;
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
         var sw           = System.Diagnostics.Stopwatch.StartNew();
 
-        try {
-            Console.SetOut(stdoutWriter);
-            var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
-            sw.Stop();
-            await Assert.That(exit).IsEqualTo(0);
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
+        sw.Stop();
+        await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
     }
@@ -477,12 +448,9 @@ public class CodexHookCommandTests : IDisposable {
 
         DisabledSessions.Mark(sessionId);
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
 
         try {
-            Console.SetOut(stdoutWriter);
-
             var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
 
             await Assert.That(exit).IsEqualTo(0);
@@ -492,11 +460,10 @@ public class CodexHookCommandTests : IDisposable {
             await Assert.That(_server.LogEntries.Count).IsEqualTo(0);
 
             // Codex's Stop parser still expects valid JSON on stdout.
-            var stdout = stdoutWriter.ToString();
+            var stdout = capture.GetCapturedOutput();
             var doc    = JsonDocument.Parse(stdout);
             await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
         } finally {
-            Console.SetOut(originalOut);
             DisabledSessions.RemoveMarker(sessionId);
         }
     }
@@ -524,9 +491,7 @@ public class CodexHookCommandTests : IDisposable {
         var previousEnv = Environment.GetEnvironmentVariable("KCAP_DAEMON_URL");
         Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", $"http://127.0.0.1:{bridge.Ports[0]}/{token}");
 
-        var stdoutCapture = new StringWriter();
-        var originalOut   = Console.Out;
-        Console.SetOut(stdoutCapture);
+        using var capture = ConsoleOutput.StartCapture();
 
         try {
             var exit = await CodexHookCommand.Handle(
@@ -535,9 +500,8 @@ public class CodexHookCommandTests : IDisposable {
             );
 
             await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(stdoutCapture.ToString()).Contains("\"behavior\":\"allow\"");
+            await Assert.That(capture.GetCapturedOutput()).Contains("\"behavior\":\"allow\"");
         } finally {
-            Console.SetOut(originalOut);
             Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", previousEnv);
         }
     }
@@ -553,9 +517,7 @@ public class CodexHookCommandTests : IDisposable {
         var previousEnv = Environment.GetEnvironmentVariable("KCAP_DAEMON_URL");
         Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", $"http://127.0.0.1:{bridge.Ports[0]}/{token}");
 
-        var stdoutCapture = new StringWriter();
-        var originalOut   = Console.Out;
-        Console.SetOut(stdoutCapture);
+        using var capture = ConsoleOutput.StartCapture();
 
         try {
             var exit = await CodexHookCommand.Handle(
@@ -564,9 +526,8 @@ public class CodexHookCommandTests : IDisposable {
             );
 
             await Assert.That(exit).IsEqualTo(1);
-            await Assert.That(stdoutCapture.ToString()).Contains("\"behavior\":\"deny\"");
+            await Assert.That(capture.GetCapturedOutput()).Contains("\"behavior\":\"deny\"");
         } finally {
-            Console.SetOut(originalOut);
             Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", previousEnv);
         }
     }
@@ -577,9 +538,7 @@ public class CodexHookCommandTests : IDisposable {
         var previousEnv = Environment.GetEnvironmentVariable("KCAP_DAEMON_URL");
         Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", "http://127.0.0.1:1/abc");
 
-        var stdoutCapture = new StringWriter();
-        var originalOut   = Console.Out;
-        Console.SetOut(stdoutCapture);
+        using var capture = ConsoleOutput.StartCapture();
 
         try {
             var exit = await CodexHookCommand.Handle(
@@ -588,9 +547,8 @@ public class CodexHookCommandTests : IDisposable {
             );
 
             await Assert.That(exit).IsEqualTo(1);
-            await Assert.That(stdoutCapture.ToString()).Contains("\"behavior\":\"deny\"");
+            await Assert.That(capture.GetCapturedOutput()).Contains("\"behavior\":\"deny\"");
         } finally {
-            Console.SetOut(originalOut);
             Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", previousEnv);
         }
     }
@@ -602,9 +560,7 @@ public class CodexHookCommandTests : IDisposable {
         // Non-loopback host should be rejected by DaemonBridgeUrl.TryParseLoopback
         Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", $"http://example.com:{bridge.Ports[0]}/abc");
 
-        var stdoutCapture = new StringWriter();
-        var originalOut   = Console.Out;
-        Console.SetOut(stdoutCapture);
+        using var capture = ConsoleOutput.StartCapture();
 
         try {
             var exit = await CodexHookCommand.Handle(
@@ -613,10 +569,9 @@ public class CodexHookCommandTests : IDisposable {
             );
 
             await Assert.That(exit).IsEqualTo(1);
-            await Assert.That(stdoutCapture.ToString()).Contains("\"behavior\":\"deny\"");
+            await Assert.That(capture.GetCapturedOutput()).Contains("\"behavior\":\"deny\"");
             await Assert.That(bridge.LogEntries.Count).IsEqualTo(0);
         } finally {
-            Console.SetOut(originalOut);
             Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", previousEnv);
         }
     }
@@ -627,9 +582,7 @@ public class CodexHookCommandTests : IDisposable {
         var       previousEnv = Environment.GetEnvironmentVariable("KCAP_DAEMON_URL");
         Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", $"https://127.0.0.1:{bridge.Ports[0]}/abc");
 
-        var stdoutCapture = new StringWriter();
-        var originalOut   = Console.Out;
-        Console.SetOut(stdoutCapture);
+        using var capture = ConsoleOutput.StartCapture();
 
         try {
             var exit = await CodexHookCommand.Handle(
@@ -638,10 +591,9 @@ public class CodexHookCommandTests : IDisposable {
             );
 
             await Assert.That(exit).IsEqualTo(1);
-            await Assert.That(stdoutCapture.ToString()).Contains("\"behavior\":\"deny\"");
+            await Assert.That(capture.GetCapturedOutput()).Contains("\"behavior\":\"deny\"");
             await Assert.That(bridge.LogEntries.Count).IsEqualTo(0);
         } finally {
-            Console.SetOut(originalOut);
             Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", previousEnv);
         }
     }
@@ -665,9 +617,7 @@ public class CodexHookCommandTests : IDisposable {
         var previousEnv = Environment.GetEnvironmentVariable("KCAP_DAEMON_URL");
         Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", $"http://127.0.0.1:{bridge.Ports[0]}/{token}");
 
-        var stdoutCapture = new StringWriter();
-        var originalOut   = Console.Out;
-        Console.SetOut(stdoutCapture);
+        using var capture = ConsoleOutput.StartCapture();
 
         try {
             await CodexHookCommand.Handle(
@@ -678,7 +628,6 @@ public class CodexHookCommandTests : IDisposable {
             await Assert.That(server.LogEntries.Count).IsEqualTo(0); // server NOT touched
             await Assert.That(bridge.LogEntries.Count).IsEqualTo(1);
         } finally {
-            Console.SetOut(originalOut);
             Environment.SetEnvironmentVariable("KCAP_DAEMON_URL", previousEnv);
         }
     }
@@ -694,24 +643,20 @@ public class CodexHookCommandTests : IDisposable {
         var previousSkip = Environment.GetEnvironmentVariable("KCAP_SKIP");
         Environment.SetEnvironmentVariable("KCAP_SKIP", "1");
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
 
         try {
-            Console.SetOut(stdoutWriter);
-
             var exit = await CodexHookCommand.Handle(
                 _server.Url!,
                 new StringReader("""{"hook_event_name":"SessionStart","session_id":"abc","cwd":"/tmp","transcript_path":"/tmp/r.jsonl"}"""));
 
             await Assert.That(exit).IsEqualTo(0);
 
-            var doc = JsonDocument.Parse(stdoutWriter.ToString());
+            var doc = JsonDocument.Parse(capture.GetCapturedOutput());
             await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
 
             await Assert.That(_server.LogEntries.Count).IsEqualTo(0);
         } finally {
-            Console.SetOut(originalOut);
             Environment.SetEnvironmentVariable("KCAP_SKIP", previousSkip);
         }
     }
@@ -721,24 +666,20 @@ public class CodexHookCommandTests : IDisposable {
         var previousSkip = Environment.GetEnvironmentVariable("KCAP_SKIP");
         Environment.SetEnvironmentVariable("KCAP_SKIP", "1");
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
 
         try {
-            Console.SetOut(stdoutWriter);
-
             var exit = await CodexHookCommand.Handle(
                 _server.Url!,
                 new StringReader("""{"hook_event_name":"Stop","session_id":"abc","cwd":"/tmp","transcript_path":"/tmp/r.jsonl"}"""));
 
             await Assert.That(exit).IsEqualTo(0);
 
-            var doc = JsonDocument.Parse(stdoutWriter.ToString());
+            var doc = JsonDocument.Parse(capture.GetCapturedOutput());
             await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
 
             await Assert.That(_server.LogEntries.Count).IsEqualTo(0);
         } finally {
-            Console.SetOut(originalOut);
             Environment.SetEnvironmentVariable("KCAP_SKIP", previousSkip);
         }
     }
@@ -751,24 +692,20 @@ public class CodexHookCommandTests : IDisposable {
         var previousSkip = Environment.GetEnvironmentVariable("KCAP_SKIP");
         Environment.SetEnvironmentVariable("KCAP_SKIP", "1");
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
 
         try {
-            Console.SetOut(stdoutWriter);
-
             var exit = await CodexHookCommand.Handle(
                 _server.Url!,
                 new StringReader("""{"hook_event_name":"PermissionRequest","session_id":"abc","tool_name":"shell"}"""));
 
             await Assert.That(exit).IsEqualTo(0);
 
-            var doc = JsonDocument.Parse(stdoutWriter.ToString());
+            var doc = JsonDocument.Parse(capture.GetCapturedOutput());
             await Assert.That(doc.RootElement.ValueKind).IsEqualTo(JsonValueKind.Object);
 
             await Assert.That(_server.LogEntries.Count).IsEqualTo(0);
         } finally {
-            Console.SetOut(originalOut);
             Environment.SetEnvironmentVariable("KCAP_SKIP", previousSkip);
         }
     }
@@ -780,21 +717,17 @@ public class CodexHookCommandTests : IDisposable {
         var previousSkip = Environment.GetEnvironmentVariable("KCAP_SKIP");
         Environment.SetEnvironmentVariable("KCAP_SKIP", "1");
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
+        using var capture = ConsoleOutput.StartCapture();
 
         try {
-            Console.SetOut(stdoutWriter);
-
             var exit = await CodexHookCommand.Handle(
                 _server.Url!,
                 new StringReader("""{"hook_event_name":"PreToolUse","session_id":"abc","tool_name":"shell"}"""));
 
             await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(stdoutWriter.ToString()).IsEqualTo(string.Empty);
+            await Assert.That(capture.GetCapturedOutput()).IsEqualTo(string.Empty);
             await Assert.That(_server.LogEntries.Count).IsEqualTo(0);
         } finally {
-            Console.SetOut(originalOut);
             Environment.SetEnvironmentVariable("KCAP_SKIP", previousSkip);
         }
     }

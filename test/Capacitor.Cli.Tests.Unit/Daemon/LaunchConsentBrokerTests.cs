@@ -38,7 +38,7 @@ public class LaunchConsentBrokerTests {
         var delivered = await reader.ReadAsync(new CancellationTokenSource(5000).Token);
         await Assert.That(delivered.RequestId).IsEqualTo("a1");
         await Assert.That(broker.TryResolve("a1", allow: true)).IsTrue();
-        await Assert.That(await pending).IsEqualTo(true);
+        await Assert.That(await pending).IsTrue();
         await Assert.That(broker.TryResolve("a1", allow: true)).IsFalse(); // already resolved
         await Assert.That(reader.TryRead(out _)).IsFalse(); // no duplicate item queued
     }
@@ -78,12 +78,12 @@ public class LaunchConsentBrokerTests {
 
         var promptA = broker.PromptAsync(Req("dup-id"), TimeSpan.FromSeconds(30), TimeProvider.System, CancellationToken.None);
         await Assert.That(broker.TryResolve("dup-id", allow: true)).IsTrue();
-        await Assert.That(await promptA).IsEqualTo(true);
+        await Assert.That(await promptA).IsTrue();
 
         var promptB = broker.PromptAsync(Req("dup-id"), TimeSpan.FromSeconds(30), TimeProvider.System, CancellationToken.None);
         await Assert.That(broker.PendingSnapshot().Any(r => r.RequestId == "dup-id")).IsTrue();
         await Assert.That(broker.TryResolve("dup-id", allow: true)).IsTrue();
-        await Assert.That(await promptB).IsEqualTo(true);
+        await Assert.That(await promptB).IsTrue();
     }
 
     [Test]
@@ -96,7 +96,7 @@ public class LaunchConsentBrokerTests {
         var replayed = await lateReader.ReadAsync(new CancellationTokenSource(5000).Token);
         await Assert.That(replayed.RequestId).IsEqualTo("a2");
         broker.TryResolve("a2", false);
-        await Assert.That(await pending).IsEqualTo(false);
+        await Assert.That(await pending).IsFalse();
     }
 
     // ══ WaitForSubscriberAsync — the generational waiter state machine (spec §3.2). All timing

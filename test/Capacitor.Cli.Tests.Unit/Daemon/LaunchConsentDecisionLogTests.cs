@@ -37,8 +37,7 @@ public class LaunchConsentDecisionLogTests {
     [Test]
     public async Task Unwritable_directory_never_throws() {
         var log = new LaunchConsentDecisionLog("/nonexistent/deeply/nested", NullLogger.Instance);
-        log.Record(Rec());
-        await Assert.That(true).IsTrue();
+        await Assert.That(() => log.Record(Rec())).ThrowsNothing();
     }
 
     [Test]

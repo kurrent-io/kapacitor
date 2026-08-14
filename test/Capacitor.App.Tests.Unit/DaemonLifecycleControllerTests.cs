@@ -121,7 +121,7 @@ public class DaemonLifecycleControllerTests {
         h.PushUnreachable();
 
         await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "service install --verify");
-        await Assert.That(h.Cli.LastInstallReplace).IsNotNull().And.IsEqualTo(false);
+        await Assert.That(h.Cli.LastInstallReplace).IsNotNull().And.IsFalse();
         await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
         await Assert.That(h.Surface.AttentionMessages).IsEmpty();
     }
@@ -656,7 +656,7 @@ public class DaemonLifecycleControllerTests {
 
         var startTask = h.Controller.StartActionAsync(CancellationToken.None);
         await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the repair install");
-        await Assert.That(h.Cli.LastInstallReplace).IsNotNull().And.IsEqualTo(true);
+        await Assert.That(h.Cli.LastInstallReplace).IsNotNull().And.IsTrue();
         await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
         await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(0);
 
@@ -907,7 +907,7 @@ public class DaemonLifecycleControllerTests {
         h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
 
         await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the takeover install");
-        await Assert.That(h.Cli.LastInstallReplace).IsNotNull().And.IsEqualTo(true);
+        await Assert.That(h.Cli.LastInstallReplace).IsNotNull().And.IsTrue();
         await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
         await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(0);
     }

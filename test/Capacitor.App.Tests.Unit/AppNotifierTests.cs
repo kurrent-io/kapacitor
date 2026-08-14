@@ -1,4 +1,5 @@
 using Capacitor.App.Services;
+using Capacitor.Tests.Helpers;
 using TUnit.Assertions.Enums;
 
 namespace Capacitor.App.Tests.Unit;
@@ -21,19 +22,13 @@ public class AppNotifierTests {
         var received = new List<string>();
         using var subscription = notifier.Messages.Subscribe(received.Add);
 
-        var originalError = Console.Error;
-        var stderrWriter = new StringWriter();
-        try {
-            Console.SetError(stderrWriter);
-            notifier.Notify("first");
-            notifier.Notify("second");
-        } finally {
-            Console.SetError(originalError);
-        }
+        using var capture = ConsoleOutput.StartErrorCapture();
+        notifier.Notify("first");
+        notifier.Notify("second");
 
         await Assert.That(received).IsEquivalentTo(["first", "second"], CollectionOrdering.Matching);
 
-        var stderrLines = stderrWriter.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        var stderrLines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
         await Assert.That(stderrLines).IsEquivalentTo(["kcap: first", "kcap: second"], CollectionOrdering.Matching);
     }
 }
