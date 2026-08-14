@@ -98,6 +98,18 @@ public static class ConfigMutator {
         var tmp = path + ".tmp-" + Guid.NewGuid().ToString("N")[..8];
         File.WriteAllBytes(tmp,
             JsonSerializer.SerializeToUtf8Bytes(config, ProfileConfigJsonContextIndented.Default.ProfileConfig));
-        File.Move(tmp, path, overwrite: true);
+        // Windows denies replace-into-place while any reader holds the destination without
+        // FILE_SHARE_DELETE; readers are short-lived, so retry briefly before surfacing.
+        for (var attempt = 0; ; attempt++) {
+            try {
+                File.Move(tmp, path, overwrite: true);
+                return;
+            } catch (Exception e) when (e is UnauthorizedAccessException or IOException && attempt < 49) {
+                Thread.Sleep(20);
+            } catch {
+                try { File.Delete(tmp); } catch { /* best effort */ }
+                throw;
+            }
+        }
     }
 }

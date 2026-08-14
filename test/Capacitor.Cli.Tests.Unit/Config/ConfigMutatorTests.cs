@@ -65,6 +65,26 @@ public class ConfigMutatorTests {
     }
 
     [Test]
+    public async Task Mutate_survives_a_transient_reader_holding_the_destination() {
+        await ConfigMutator.MutateAsync(c => c with { MachineId = "before" });
+
+        // Share-read only (no FILE_SHARE_DELETE): on Windows this blocks the replace-into-place
+        // until released, exercising Publish's retry; on Unix rename is unaffected.
+        var reader = new FileStream(ConfigPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        try {
+            var mutate = ConfigMutator.MutateAsync(c => c with { MachineId = "after" });
+            await Task.Delay(100);
+            reader.Dispose();
+            await mutate;
+        } finally {
+            reader.Dispose();
+        }
+
+        var final = await AppConfig.LoadProfileConfig();
+        await Assert.That(final.MachineId).IsEqualTo("after");
+    }
+
+    [Test]
     public async Task Legacy_v1_config_is_migrated_in_memory_and_persisted_through_the_mutation() {
         // minimal v1 flat config (no "version"/"profiles" — ConfigMigration's v1 shape)
         Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
