@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace Capacitor.App.Services.Mutation;
 
 /// The per-verb classification seam Task 9b implements; kept separate so the lane's control flow never has to change to swap it.
@@ -8,7 +10,6 @@ internal delegate Task<MutationOutcome> MutationClassifier(
 /// The app-lifetime singleton every daemon mutation runs through: one owned action at a time,
 /// identical concurrent requests coalesce, a different request queues FIFO for its own fresh probe.
 public sealed class DaemonMutationLane : IAsyncDisposable {
-    readonly IProcessRunner _runner;
     readonly ILoginShellProbe _shellProbe;
     readonly OutcomeChannel _channel;
     readonly Func<string?> _cliOverride;
@@ -21,6 +22,7 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
     ActionSlot? _owned;
     readonly List<ActionSlot> _queue = [];
     TaskCompletionSource _quiescent = CompletedSignal();
+    bool _disposed;
 
     // Atomic slot: an owned action reads this ONCE at start and never again for its own lifetime.
     volatile IDaemonObservation? _liveAdapter;
@@ -29,10 +31,9 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
     internal MutationClassifier Classify { get; set; } = ClassifyPlaceholder;
 
     public DaemonMutationLane(
-            IProcessRunner runner, ILoginShellProbe shellProbe, OutcomeChannel channel,
+            ILoginShellProbe shellProbe, OutcomeChannel channel,
             Func<string?> cliOverride, Func<MutationRequest, string?, IKcapCli> executorFactory,
             Func<MutationRequest, IDaemonObservation> oneShotFactory, TimeProvider time) {
-        _runner          = runner;
         _shellProbe      = shellProbe;
         _channel         = channel;
         _cliOverride     = cliOverride;
@@ -65,15 +66,27 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
     }
 
     public async ValueTask DisposeAsync() {
-        Task<MutationOutcome>? owned;
-        lock (_gate) { owned = _owned?.Completion.Task; }
+        Task<MutationOutcome>? ownedTask;
+        lock (_gate) {
+            if (_disposed) return; // idempotent: a second call must not re-cancel/re-dispose the lifetime token
+            _disposed = true;
+
+            ownedTask = _owned?.Completion.Task;
+
+            // Cancel every queued waiter up front: shutdown is not an actionable outcome (nothing
+            // enqueued to the channel), and draining now means the owned action's own finish has
+            // nothing left to admit once it completes.
+            foreach (var queued in _queue) queued.Completion.TrySetCanceled(_lifetime.Token);
+            _queue.Clear();
+        }
 
         _lifetime.Cancel();
 
-        if (owned is not null) {
-            try { await owned.ConfigureAwait(false); } catch { /* terminal disposition already lives on the slot's own TCS */ }
+        if (ownedTask is not null) {
+            try { await ownedTask.ConfigureAwait(false); } catch { /* terminal disposition already lives on the slot's own TCS */ }
         }
-        _lifetime.Dispose();
+
+        _lifetime.Dispose(); // only after the drain + owned-action await — no other path can still touch the token
     }
 
     // --- admission / coalescing ---
@@ -108,22 +121,35 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
     void StartAction(ActionSlot slot) => _ = RunOwnedAsync(slot);
 
     async Task RunOwnedAsync(ActionSlot slot) {
+        MutationOutcome? outcome = null;
+        OperationCanceledException? cancelled = null;
+        Exception? fault = null;
         try {
-            var outcome = await ExecuteActionAsync(slot.Request, _lifetime.Token).ConfigureAwait(false);
-            Deliver(slot, outcome);
+            outcome = await ExecuteActionAsync(slot.Request, _lifetime.Token).ConfigureAwait(false);
         } catch (OperationCanceledException oce) {
-            slot.Completion.TrySetCanceled(oce.CancellationToken);
+            cancelled = oce;
         } catch (Exception ex) {
-            slot.Completion.TrySetException(ex);
-        } finally {
-            FinishAndAdmitNext(slot);
+            fault = ex;
         }
+
+        // Detach BEFORE resolving the outcome below: closes the window where a fresh RunAsync for
+        // the SAME request could coalesce onto a slot whose result is already decided.
+        var next = DetachAndAdmitNext(slot);
+
+        if (outcome is not null) Deliver(slot, outcome);
+        else if (cancelled is not null) DeliverCancelled(slot, cancelled);
+        else DeliverFaulted(slot, fault!);
+
+        // Recursive by construction when actions settle synchronously (fakes, or an already-exited
+        // real child) — bounded by queue depth, which stays small in practice; real I/O never does this.
+        if (next is not null) StartAction(next);
     }
 
-    void FinishAndAdmitNext(ActionSlot finished) {
+    ActionSlot? DetachAndAdmitNext(ActionSlot finished) {
         ActionSlot? next = null;
         lock (_gate) {
-            if (ReferenceEquals(_owned, finished)) _owned = null;
+            Debug.Assert(ReferenceEquals(_owned, finished), "DetachAndAdmitNext: the finishing action must still be the owned slot.");
+            _owned = null;
             if (_queue.Count > 0) {
                 next = _queue[0];
                 _queue.RemoveAt(0);
@@ -132,24 +158,43 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
                 _quiescent.TrySetResult(); // busy -> idle
             }
         }
-        if (next is not null) StartAction(next);
+        return next;
     }
 
     void Deliver(ActionSlot slot, MutationOutcome outcome) {
         var isSuccess = outcome is MutationOutcome.Succeeded or MutationOutcome.SucceededAfterTimeout;
         if (!isSuccess) {
             _channel.Enqueue(new OutcomeEnvelope(slot.Request, outcome));
-        } else {
-            bool waiterless;
-            lock (_gate) { waiterless = slot.WaiterCount <= 0; }
-            if (waiterless) LogWaiterlessSuccess(slot.Request, outcome);
+            slot.Completion.TrySetResult(outcome);
+            return;
         }
+        slot.Completion.TrySetResult(outcome); // resolve waiters FIRST, then decide waiterless — narrows the detach race
+        bool waiterless;
+        lock (_gate) { waiterless = slot.WaiterCount <= 0; }
+        if (waiterless) LogWaiterlessSuccess(slot.Request, outcome);
+    }
+
+    // Lane-lifetime cancellation (Dispose) is not an actionable outcome: never enqueued, only logged when nobody is left to observe it directly.
+    void DeliverCancelled(ActionSlot slot, OperationCanceledException oce) {
+        slot.Completion.TrySetCanceled(oce.CancellationToken);
+        bool waiterless;
+        lock (_gate) { waiterless = slot.WaiterCount <= 0; }
+        if (waiterless) LogWaiterlessCancellation(slot.Request);
+    }
+
+    // An unexpected exception during a mutation attempt is actionable evidence, not a fabricated exception surfaced to waiters.
+    void DeliverFaulted(ActionSlot slot, Exception ex) {
+        LogUnexpectedFault(slot.Request, ex);
+        var outcome = new MutationOutcome.Failed(-1, ex.GetType().Name, RecoverySurface.Attention);
+        _channel.Enqueue(new OutcomeEnvelope(slot.Request, outcome));
         slot.Completion.TrySetResult(outcome);
     }
 
     // --- the owned action itself ---
 
     async Task<MutationOutcome> ExecuteActionAsync(MutationRequest request, CancellationToken ct) {
+        ct.ThrowIfCancellationRequested(); // a disposed lane's cancelled token must stop admission before any spawn
+
         var pinnedPath = _cliOverride() ?? await _shellProbe.KcapPathAsync(ct, forceRefresh: false).ConfigureAwait(false);
         if (pinnedPath is null) return new MutationOutcome.Refused("cli_not_found", RecoverySurface.Attention);
 
@@ -160,6 +205,10 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         var observation = await PinObservationAsync(request, ct).ConfigureAwait(false);
 
         var attemptId = request.Verb == MutationVerb.DetachedStart ? Guid.NewGuid().ToString("N") : null;
+
+        // The runner starts the child before consulting ct, and an already-exited child's own wait
+        // can return normally under a cancelled token — this is the last gate before a real spawn.
+        ct.ThrowIfCancellationRequested();
         var result = await Dispatch(executor, request, attemptId, ct).ConfigureAwait(false);
 
         return await Classify(request, result, executor, observation, attemptId, ct).ConfigureAwait(false);
@@ -194,6 +243,16 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         Console.Error.WriteLine(
             $"DaemonMutationLane: waiterless {outcome.GetType().Name} verb={request.Verb} profile={request.Profile} " +
             $"server={request.CanonicalServer} daemon={request.DaemonName}");
+
+    static void LogWaiterlessCancellation(MutationRequest request) =>
+        Console.Error.WriteLine(
+            $"DaemonMutationLane: waiterless cancellation (lane lifetime cancel — no envelope) verb={request.Verb} " +
+            $"profile={request.Profile} server={request.CanonicalServer} daemon={request.DaemonName}");
+
+    static void LogUnexpectedFault(MutationRequest request, Exception ex) =>
+        Console.Error.WriteLine(
+            $"DaemonMutationLane: unexpected {ex.GetType().Name} during a mutation attempt verb={request.Verb} " +
+            $"profile={request.Profile} server={request.CanonicalServer} daemon={request.DaemonName}: {ex.Message}");
 
     static TaskCompletionSource CompletedSignal() {
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

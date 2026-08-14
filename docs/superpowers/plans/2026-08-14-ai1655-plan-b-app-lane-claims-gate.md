@@ -457,7 +457,7 @@ thread `Connected.Identity` into the published `AttachStatus`.
 ```csharp
 public sealed class DaemonMutationLane : IAsyncDisposable {
     public DaemonMutationLane(
-        IProcessRunner runner, ILoginShellProbe shellProbe, OutcomeChannel channel,
+        ILoginShellProbe shellProbe, OutcomeChannel channel,
         Func<string?> cliOverride,                       // () => CliResolver override result (absolute or null)
         Func<MutationRequest, string?, IKcapCli> executorFactory,  // (request, pinnedPath) => action-scoped KcapCli
         Func<MutationRequest, IDaemonObservation> oneShotFactory,
