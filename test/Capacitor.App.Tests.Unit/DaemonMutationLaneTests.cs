@@ -1138,18 +1138,23 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ---- CRITICAL 1 (round 1): DetachedStart shares the SAME evidence predicate as the service-verb
-    // ladder — a legacy/below-floor/pid-less daemon must never read as Succeeded just because it's
-    // reachable and identity-consistent. Regression tests for the three reviewer-executed counterexamples. ----
+    // ---- CRITICAL 1 (round 1) / IMPORTANT (round 2): DetachedStart shares the SAME evidence
+    // predicate as the service-verb ladder — a legacy/below-floor/pid-less daemon must never read
+    // as Succeeded just because it's reachable and identity-consistent. Round 2: the loop no longer
+    // fails fast on the first bad poll (a transient mid-boot shape must not misfire) — it polls
+    // through and only decides at window expiry, so these are now persistent-leg-through-expiry
+    // tests, driven by FakeTimeProvider rather than resolving on the first poll. ----
 
     [Test]
-    public async Task DetachedStart_exit_zero_with_missing_consent_capability_yields_AttentionSkew_not_Succeeded() {
+    public async Task DetachedStart_persistent_missing_consent_capability_through_expiry_yields_AttentionSkew() {
+        var time = new FakeTimeProvider();
         var cli = new FakeKcapCli { DetachedStartBehavior = _ => Task.FromResult(new ProcessResult(0, "", "", false)) };
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
         var noCapabilities = MatchingEvidence() with { Capabilities = [] };
-        var lane = MakeLane(factory, oneShotFactory: _ => new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(noCapabilities) });
+        var lane = MakeLane(factory, oneShotFactory: _ => new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(noCapabilities) }, time: time);
 
-        var outcome = await lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
+        var task = lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
+        var outcome = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
         await Assert.That(outcome).IsEqualTo(new MutationOutcome.AttentionSkew("missing_capability_consent_3"));
 
@@ -1157,13 +1162,15 @@ public class DaemonMutationLaneTests {
     }
 
     [Test]
-    public async Task DetachedStart_exit_zero_with_below_floor_daemon_version_yields_AttentionSkew_not_Succeeded() {
+    public async Task DetachedStart_persistent_below_floor_daemon_version_through_expiry_yields_AttentionSkew() {
+        var time = new FakeTimeProvider();
         var cli = new FakeKcapCli { DetachedStartBehavior = _ => Task.FromResult(new ProcessResult(0, "", "", false)) };
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
         var oldVersion = MatchingEvidence() with { DaemonVersion = "0.1.0" };
-        var lane = MakeLane(factory, oneShotFactory: _ => new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(oldVersion) });
+        var lane = MakeLane(factory, oneShotFactory: _ => new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(oldVersion) }, time: time);
 
-        var outcome = await lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
+        var task = lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
+        var outcome = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
         await Assert.That(outcome).IsEqualTo(new MutationOutcome.AttentionSkew("daemon_below_floor"));
 
@@ -1171,19 +1178,85 @@ public class DaemonMutationLaneTests {
     }
 
     [Test]
-    public async Task DetachedStart_exit_zero_with_preslice_evidence_yields_AttentionSkew_not_Succeeded() {
+    public async Task DetachedStart_persistent_preslice_evidence_through_expiry_yields_AttentionSkew() {
         // IdentityConsistent is deliberately (wrongly) true here — the structural pid/instance check
         // must fire regardless of what the observation's own IdentityConsistent flag claims.
+        var time = new FakeTimeProvider();
         var cli = new FakeKcapCli { DetachedStartBehavior = _ => Task.FromResult(new ProcessResult(0, "", "", false)) };
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
         var preslice = new ObservedEvidence(true, ["consent/3"], "1.0.0", "https://cap.example.test", "daemon-a", null, null, true);
-        var lane = MakeLane(factory, oneShotFactory: _ => new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(preslice) });
+        var lane = MakeLane(factory, oneShotFactory: _ => new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(preslice) }, time: time);
 
-        var outcome = await lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
+        var task = lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
+        var outcome = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
         await Assert.That(outcome).IsEqualTo(new MutationOutcome.AttentionSkew("pre_slice_evidence"));
 
         await lane.DisposeAsync();
+    }
+
+    // ---- IMPORTANT (round 2): a transient, non-full, non-unreachable evidence shape (the two-dial
+    // probe's genuine mid-boot reading — hello answered, snapshot not yet subscribed) must be
+    // polled THROUGH, never fail-fast — whether it eventually resolves to full evidence or is caught
+    // by a marker arriving mid-window. ----
+
+    static ObservedEvidence MidBootEvidence() =>
+        // Hello answered (capabilities/version/pid/instance present) but the snapshot dial isn't up
+        // yet — ServerUrl/DaemonName/IdentityConsistent all read as "no snapshot", exactly what
+        // OneShotObservation produces when LocalControlProbe's two dials answer out of step.
+        new(true, ["consent/3"], "1.0.0", null, null, 111, "inst-1", false);
+
+    [Test]
+    public async Task DetachedStart_transient_mid_boot_shape_then_full_evidence_is_Succeeded() {
+        var time = new FakeTimeProvider();
+        var cli = new FakeKcapCli { DetachedStartBehavior = _ => Task.FromResult(new ProcessResult(0, "", "", false)) };
+        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
+        var pollCount = 0;
+        var observation = new ScriptedObservation {
+            Behavior = (_, _) => {
+                pollCount++;
+                return Task.FromResult<ObservedEvidence?>(pollCount <= 2 ? MidBootEvidence() : MatchingEvidence());
+            },
+        };
+        var lane = MakeLane(factory, oneShotFactory: _ => observation, time: time);
+
+        var task = lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
+        var outcome = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
+        await Assert.That(pollCount).IsGreaterThanOrEqualTo(3);
+
+        await lane.DisposeAsync();
+    }
+
+    [Test, NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task DetachedStart_transient_mid_boot_shape_with_a_marker_arriving_after_the_first_poll_is_Refused() {
+        var dir = Directory.CreateTempSubdirectory("dml-marker-").FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        var time = new FakeTimeProvider();
+        var cli = new FakeKcapCli { DetachedStartBehavior = _ => Task.FromResult(new ProcessResult(0, "", "", false)) };
+        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
+        var pollCount = 0;
+        var observation = new ScriptedObservation {
+            Behavior = (_, _) => {
+                pollCount++;
+                if (pollCount == 2) PlantMarker("daemon-a", MarkerJson("daemon-a", cli.LastBootAttemptId!)); // planted as a side effect of the 2nd observe call
+                return Task.FromResult<ObservedEvidence?>(MidBootEvidence());
+            },
+        };
+        var lane = MakeLane(factory, oneShotFactory: _ => observation, time: time);
+        try {
+            var task = lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
+            var outcome = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(outcome).IsEqualTo(new MutationOutcome.Refused("server_expectation_mismatch", RecoverySurface.Takeover));
+            await Assert.That(File.Exists(BootRefusalMarker.MarkerPath("daemon-a"))).IsFalse(); // consumed
+            await Assert.That(pollCount).IsEqualTo(2); // caught by the NEXT iteration's marker-first check — no 3rd observe call
+
+            await lane.DisposeAsync();
+        } finally {
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        }
     }
 
     // ---- TEST GAP (round 1): the loop actually re-observes, not just waits out a single check ----

@@ -365,31 +365,40 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         return new MutationOutcome.Failed(result.ExitCode, null, RecoverySurface.Attention);
     }
 
-    // Polls the pinned observation for up to DetachedConfirmWindow: full evidence wins via
-    // onFullEvidence; an attributed boot-refusal marker wins Refused; window expiry with neither is
-    // UnconfirmedNoAttach; any OTHER (non-unreachable) evidence defect is an immediate, definite
-    // AttentionSkew — never worth waiting out. Entirely TimeProvider-driven so tests never wait for
-    // real time. `attemptId` is null only via direct test injection through the Classify seam — a
-    // real DetachedStart action always carries one; a null one must never attribute a marker,
-    // since a null-attempt marker belongs to a service-verb refusal, not this action.
+    // Polls the pinned observation for up to DetachedConfirmWindow: full evidence at ANY poll wins
+    // immediately via onFullEvidence; an attributed boot-refusal marker wins Refused. A non-full,
+    // non-unreachable leg (e.g. the two-dial probe's transient mid-boot shape — hello answered,
+    // snapshot not yet subscribed — reads as a server/name mismatch) does NOT fail fast: it is only
+    // ever a snapshot of ONE poll, so the loop keeps polling through it, remembering the LAST
+    // observed leg. Only at window expiry does that last leg decide the outcome: "unreachable" (or
+    // no evidence ever observed) → UnconfirmedNoAttach; any other leg, still true at expiry →
+    // AttentionSkew(leg). Entirely TimeProvider-driven so tests never wait for real time.
+    // `attemptId` is null only via direct test injection through the Classify seam — a real
+    // DetachedStart action always carries one; a null one must never attribute a marker, since a
+    // null-attempt marker belongs to a service-verb refusal, not this action.
     async Task<MutationOutcome> AwaitDetachedConfirmationAsync(
             MutationRequest request, IDaemonObservation observation, string? attemptId,
             Func<MutationOutcome> onFullEvidence, CancellationToken ct) {
         var deadline = _time.GetUtcNow() + DetachedConfirmWindow;
+        var lastLeg = UnreachableLeg;
         while (true) {
             // Marker-first: a refusing daemon never attaches, so checking the marker before evidence
             // can never produce a false Refused, while evidence-first could let a pre-existing
-            // same-name daemon mask a real refusal.
+            // same-name daemon (or, here, a transient mid-boot evidence shape) mask a real refusal —
+            // checked fresh every iteration, so a refusal arriving mid-window is caught on the next poll.
             if (attemptId is not null && BootRefusalMarker.TryAttribute(request.DaemonName, attemptId) is { } refusal)
                 return new MutationOutcome.Refused(refusal.Token, ReasonRouting.ForBootRefusal(refusal.Token));
 
             var evidence = await observation.ObserveAsync(request, ct).ConfigureAwait(false);
             var leg = EvidenceFailureLeg(evidence, request);
             if (leg is null) return onFullEvidence();
-            if (leg != UnreachableLeg) return new MutationOutcome.AttentionSkew(leg);
+            lastLeg = leg;
 
             var remaining = deadline - _time.GetUtcNow();
-            if (remaining <= TimeSpan.Zero) return new MutationOutcome.UnconfirmedNoAttach();
+            if (remaining <= TimeSpan.Zero)
+                return lastLeg == UnreachableLeg
+                    ? new MutationOutcome.UnconfirmedNoAttach()
+                    : new MutationOutcome.AttentionSkew(lastLeg);
 
             var wait = remaining < DetachedPollInterval ? remaining : DetachedPollInterval;
             await Task.Delay(wait, _time, ct).ConfigureAwait(false);

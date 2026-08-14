@@ -18,7 +18,7 @@ internal static class VerifyExitCodes {
     public const int RestoreVerification = 27;
     public const int StartGate           = 28;
     public const int StartGateDrift      = 29;
-    public const int DigestGate          = 43;
+    public const int DigestGate          = 43; // not a VerifyExit code (DaemonCommands' own digest gate) — deliberately absent from Token()'s map below
 
     public static string Token(int exitCode) => exitCode switch {
         Contended           => "verify_contended",
