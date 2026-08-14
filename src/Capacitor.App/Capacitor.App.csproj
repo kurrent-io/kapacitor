@@ -5,6 +5,8 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <IsPackable>false</IsPackable>
+        <!-- ConsentFlipClaims' directory-fsync barrier uses LibraryImport, which requires this. -->
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <!-- This is an unbundled `dotnet run` executable, so macOS shows the binary name (not an
              app-bundle display name) on dock hover — give it a human-friendly one. RootNamespace
              stays Capacitor.App: only the output/assembly identity changes here. -->
