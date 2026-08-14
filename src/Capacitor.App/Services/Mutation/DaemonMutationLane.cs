@@ -14,15 +14,11 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
     // Named so DeliverFaulted's outcome is self-explanatory instead of a bare magic number.
     internal const int UnexpectedExitCode = -1;
 
-    // Duplicated exit-code family from Capacitor.Cli.Services.VerifyExit / DaemonCommands' digest
-    // gate — same duplication precedent as VerifyExitCodes in DaemonLifecycleController.cs.
-    internal const int ReadinessTimeoutExit = 24;
-    internal const int StartGateExit        = 28;
-    internal const int StartGateDriftExit   = 29;
-    internal const int DigestGateExit       = 43;
-
-    // The capability a positive service-verb success requires the observed daemon to advertise.
+    // The capability a positive service-verb/DetachedStart success requires the observed daemon to advertise.
     const string ConsentCapability = "consent/3";
+
+    // The one EvidenceFailureLeg sentinel that means "not yet confirmable" rather than "a definite problem".
+    const string UnreachableLeg = "unreachable";
 
     internal static readonly TimeSpan DetachedConfirmWindow = TimeSpan.FromSeconds(10);
     internal static readonly TimeSpan DetachedPollInterval  = TimeSpan.FromSeconds(1);
@@ -266,29 +262,33 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
             MutationRequest request, ProcessResult result, IKcapCli executor, IDaemonObservation observation,
             string? attemptId, CancellationToken ct) =>
         request.Verb == MutationVerb.DetachedStart
-            ? ClassifyDetachedStartAsync(request, result, observation, attemptId!, ct)
+            ? ClassifyDetachedStartAsync(request, result, observation, attemptId, ct)
             : ClassifyServiceVerbAsync(request, result, executor, observation, ct);
 
     // Install/Replace/StartVerified: the CLI's own ServiceVerify transaction engine already
     // performed its readiness poll — exit code alone routes every non-success case.
     static async Task<MutationOutcome> ClassifyServiceVerbAsync(
             MutationRequest request, ProcessResult result, IKcapCli executor, IDaemonObservation observation, CancellationToken ct) {
+        // A forced kill's exit code is not a verify outcome (the transaction may have already
+        // committed) — never read as a success OR a coded failure; SucceededAfterTimeout is detached-only.
+        if (result.TimedOut) return new MutationOutcome.UnconfirmedNoAttach();
+
         if (result.ExitCode == 0) return await ClassifyServiceSuccessAsync(request, executor, observation, ct).ConfigureAwait(false);
 
-        if (result.ExitCode == StartGateExit) {
+        if (result.ExitCode == VerifyExitCodes.StartGate) {
             var token = ReasonLine.TrySingle(result.Stderr, "start_gate_reason=");
             return token is null
-                ? new MutationOutcome.Failed(StartGateExit, null, RecoverySurface.Attention)
-                : new MutationOutcome.Failed(StartGateExit, token, ReasonRouting.ForStartGate(token));
+                ? new MutationOutcome.Failed(VerifyExitCodes.StartGate, null, RecoverySurface.Attention)
+                : new MutationOutcome.Failed(VerifyExitCodes.StartGate, token, ReasonRouting.ForStartGate(token));
         }
 
-        if (result.ExitCode == StartGateDriftExit) {
+        if (result.ExitCode == VerifyExitCodes.StartGateDrift) {
             // Drift is never auto-retried — always Attention, regardless of whether a reason line happens to be present.
             var token = ReasonLine.TrySingle(result.Stderr, "start_gate_reason=");
-            return new MutationOutcome.Failed(StartGateDriftExit, token, RecoverySurface.Attention);
+            return new MutationOutcome.Failed(VerifyExitCodes.StartGateDrift, token, RecoverySurface.Attention);
         }
 
-        if (result.ExitCode == ReadinessTimeoutExit) {
+        if (result.ExitCode == VerifyExitCodes.ReadinessTimeout) {
             var token = ReasonLine.TrySingle(result.Stderr, "refusal_reason=");
             return token is null
                 ? new MutationOutcome.UnconfirmedNoAttach()
@@ -305,45 +305,47 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         var evidence  = await observation.ObserveAsync(request, ct).ConfigureAwait(false);
         var ownership = await executor.ServiceStatusAsync(ct).ConfigureAwait(false);
 
-        if (evidence is not { Reachable: true })
+        // Ownership-derived repair/skew signals are evaluated regardless of evidence reachability —
+        // a stale marker or an orphaned unit is worth flagging even when the daemon can't be reached.
+        if (ownership is not null && OwnershipRepairLeg(ownership) is { } repairLeg)
+            return new MutationOutcome.AttentionRepair(repairLeg);
+
+        var evidenceLeg = EvidenceFailureLeg(evidence, request);
+        if (evidenceLeg == UnreachableLeg)
             // No independent evidence either way vs. a recorded owner with nothing to show for it are different signals.
             return ownership?.DaemonPid is null
                 ? new MutationOutcome.UnconfirmedNoAttach()
                 : new MutationOutcome.AttentionSkew("unreachable_with_recorded_owner");
-
-        if (!ServerIdentity.Matches(evidence.ServerUrl, request.CanonicalServer) || evidence.DaemonName != request.DaemonName)
-            return new MutationOutcome.AttentionSkew("server_or_name_mismatch");
-
-        if (evidence.Pid is null || evidence.InstanceId is null)
-            return new MutationOutcome.AttentionSkew("pre_slice_evidence");
-
-        if (!evidence.IdentityConsistent)
-            return new MutationOutcome.AttentionSkew("identity_inconsistent");
-
-        if (evidence.Capabilities is null || !evidence.Capabilities.Contains(ConsentCapability))
-            return new MutationOutcome.AttentionSkew("missing_capability_consent_3");
-
-        if (!KcapCliCompatibility.Satisfies(evidence.DaemonVersion))
-            return new MutationOutcome.AttentionSkew("daemon_below_floor");
+        if (evidenceLeg is not null)
+            return new MutationOutcome.AttentionSkew(evidenceLeg);
 
         if (ownership is null)
             return new MutationOutcome.AttentionSkew("ownership_unknown");
 
-        if (ownership.TxnMarker && !ownership.TxnActive)
-            return new MutationOutcome.AttentionRepair("stale_txn_marker");
-
         if (ownership.JobPid is null || ownership.DaemonPid is null || ownership.JobPid != ownership.DaemonPid)
             return new MutationOutcome.AttentionSkew("ownership_mismatch");
 
-        if (ownership.DaemonPid != evidence.Pid) // same-instance rule: the ownership read must describe THIS observed daemon
-            return new MutationOutcome.AttentionSkew("instance_pid_mismatch");
+        if (ownership.DaemonPid != evidence!.Pid) // evidenceLeg == null guarantees evidence is non-null and fully valid here
+            return new MutationOutcome.AttentionSkew("instance_pid_mismatch"); // same-instance rule
 
         return new MutationOutcome.Succeeded();
     }
 
+    // Mirrors DaemonLifecycleController.Reconcile's two orphan-unit predicates plus the stale-marker
+    // check — pure signals from ONE ServiceStatusAsync read, independent of any evidence.
+    static string? OwnershipRepairLeg(ServiceSnapshot ownership) {
+        if (ownership.TxnMarker && !ownership.TxnActive) return "stale_txn_marker";
+
+        var state = ServiceStateClassifier.Parse(ownership.State);
+        if (state == ServiceState.Running && ownership.DaemonPid is null) return "running_without_daemon_pid";
+        if (ownership.UnitPresent && state == ServiceState.NotInstalled && ownership.DaemonPid is not null) return "daemon_running_outside_service";
+
+        return null;
+    }
+
     // DetachedStart has no CLI-side verify engine — the lane itself confirms via a bounded post-spawn observation window.
     async Task<MutationOutcome> ClassifyDetachedStartAsync(
-            MutationRequest request, ProcessResult result, IDaemonObservation observation, string attemptId, CancellationToken ct) {
+            MutationRequest request, ProcessResult result, IDaemonObservation observation, string? attemptId, CancellationToken ct) {
         // A forced process-only kill after the wrapper's own bound makes the exit code meaningless — only evidence counts.
         if (result.TimedOut)
             return await AwaitDetachedConfirmationAsync(
@@ -353,29 +355,38 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
             return await AwaitDetachedConfirmationAsync(
                 request, observation, attemptId, static () => new MutationOutcome.Succeeded(), ct).ConfigureAwait(false);
 
-        if (result.ExitCode == DigestGateExit) {
+        if (result.ExitCode == VerifyExitCodes.DigestGate) {
             var token = ReasonLine.TrySingle(result.Stderr, "daemon_start_reason=");
             return token is null
-                ? new MutationOutcome.Failed(DigestGateExit, null, RecoverySurface.Attention)
-                : new MutationOutcome.Failed(DigestGateExit, token, ReasonRouting.ForDaemonStart(token));
+                ? new MutationOutcome.Failed(VerifyExitCodes.DigestGate, null, RecoverySurface.Attention)
+                : new MutationOutcome.Failed(VerifyExitCodes.DigestGate, token, ReasonRouting.ForDaemonStart(token));
         }
 
         return new MutationOutcome.Failed(result.ExitCode, null, RecoverySurface.Attention);
     }
 
     // Polls the pinned observation for up to DetachedConfirmWindow: full evidence wins via
-    // onFullEvidence, an attributed boot-refusal marker wins Refused, and window expiry with
-    // neither is UnconfirmedNoAttach. Entirely TimeProvider-driven so tests never wait for real time.
+    // onFullEvidence; an attributed boot-refusal marker wins Refused; window expiry with neither is
+    // UnconfirmedNoAttach; any OTHER (non-unreachable) evidence defect is an immediate, definite
+    // AttentionSkew — never worth waiting out. Entirely TimeProvider-driven so tests never wait for
+    // real time. `attemptId` is null only via direct test injection through the Classify seam — a
+    // real DetachedStart action always carries one; a null one must never attribute a marker,
+    // since a null-attempt marker belongs to a service-verb refusal, not this action.
     async Task<MutationOutcome> AwaitDetachedConfirmationAsync(
-            MutationRequest request, IDaemonObservation observation, string attemptId,
+            MutationRequest request, IDaemonObservation observation, string? attemptId,
             Func<MutationOutcome> onFullEvidence, CancellationToken ct) {
         var deadline = _time.GetUtcNow() + DetachedConfirmWindow;
         while (true) {
-            var evidence = await observation.ObserveAsync(request, ct).ConfigureAwait(false);
-            if (IsFullEvidence(evidence, request)) return onFullEvidence();
-
-            if (BootRefusalMarker.TryAttribute(request.DaemonName, attemptId) is { } refusal)
+            // Marker-first: a refusing daemon never attaches, so checking the marker before evidence
+            // can never produce a false Refused, while evidence-first could let a pre-existing
+            // same-name daemon mask a real refusal.
+            if (attemptId is not null && BootRefusalMarker.TryAttribute(request.DaemonName, attemptId) is { } refusal)
                 return new MutationOutcome.Refused(refusal.Token, ReasonRouting.ForBootRefusal(refusal.Token));
+
+            var evidence = await observation.ObserveAsync(request, ct).ConfigureAwait(false);
+            var leg = EvidenceFailureLeg(evidence, request);
+            if (leg is null) return onFullEvidence();
+            if (leg != UnreachableLeg) return new MutationOutcome.AttentionSkew(leg);
 
             var remaining = deadline - _time.GetUtcNow();
             if (remaining <= TimeSpan.Zero) return new MutationOutcome.UnconfirmedNoAttach();
@@ -385,10 +396,26 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         }
     }
 
-    static bool IsFullEvidence(ObservedEvidence? evidence, MutationRequest request) =>
-        evidence is { Reachable: true, IdentityConsistent: true }
-        && ServerIdentity.Matches(evidence.ServerUrl, request.CanonicalServer)
-        && evidence.DaemonName == request.DaemonName;
+    // The ONE evidence check both service-verb success and DetachedStart confirmation rely on —
+    // returns the name of the first failing leg, or null once evidence is fully positive. Structural:
+    // pid/instance presence is checked directly, never inferred from the observation's own
+    // IdentityConsistent flag (which a broken/legacy adapter could report true without backing it).
+    static string? EvidenceFailureLeg(ObservedEvidence? evidence, MutationRequest request) {
+        if (evidence is not { Reachable: true }) return UnreachableLeg;
+
+        if (!ServerIdentity.Matches(evidence.ServerUrl, request.CanonicalServer) || evidence.DaemonName != request.DaemonName)
+            return "server_or_name_mismatch";
+
+        if (evidence.Pid is null || evidence.InstanceId is null) return "pre_slice_evidence";
+
+        if (!evidence.IdentityConsistent) return "identity_inconsistent";
+
+        if (evidence.Capabilities is null || !evidence.Capabilities.Contains(ConsentCapability)) return "missing_capability_consent_3";
+
+        if (!KcapCliCompatibility.Satisfies(evidence.DaemonVersion)) return "daemon_below_floor";
+
+        return null;
+    }
 
     static void LogWaiterlessSuccess(MutationRequest request, MutationOutcome outcome) =>
         Console.Error.WriteLine(

@@ -3,9 +3,10 @@ using Capacitor.Cli.Core.LocalIpc;
 namespace Capacitor.App.Services;
 
 /// Mirrors Capacitor.Cli.Services.VerifyExit (source of truth:
-/// src/Capacitor.Cli/Services/ServiceVerify.cs). The app never references the CLI project, so
-/// the coded exits are duplicated here deliberately.
-static class VerifyExitCodes {
+/// src/Capacitor.Cli/Services/ServiceVerify.cs) plus DaemonCommands' detached-start digest gate. The
+/// app never references the CLI project, so the coded exits are duplicated here deliberately — the
+/// one shared home for every coded daemon-mutation exit, reused by DaemonMutationLane's classifier.
+internal static class VerifyExitCodes {
     public const int Ok                  = 0;
     public const int Contended           = 20;
     public const int Viability           = 21;
@@ -15,6 +16,9 @@ static class VerifyExitCodes {
     public const int HelloValidation     = 25;
     public const int RollbackBudget      = 26;
     public const int RestoreVerification = 27;
+    public const int StartGate           = 28;
+    public const int StartGateDrift      = 29;
+    public const int DigestGate          = 43;
 
     public static string Token(int exitCode) => exitCode switch {
         Contended           => "verify_contended",
@@ -25,6 +29,8 @@ static class VerifyExitCodes {
         HelloValidation     => "verify_hello_validation",
         RollbackBudget      => "verify_rollback_budget",
         RestoreVerification => "verify_restore_verification",
+        StartGate           => "verify_start_gate",
+        StartGateDrift      => "verify_start_gate_drift",
         _                   => $"verify_unknown_{exitCode}",
     };
 }
