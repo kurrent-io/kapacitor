@@ -64,18 +64,22 @@ public static class OpenCodePaths {
 
     /// <summary>Pure variant of <see cref="ConfigDir"/> for fully-injected callers (e.g.
     /// <see cref="Setup.AgentDetection"/>) — a null override means "not set", never falls back to
-    /// a real <c>OPENCODE_CONFIG_DIR</c>/<c>XDG_CONFIG_HOME</c> process-env read.</summary>
+    /// a real <c>OPENCODE_CONFIG_DIR</c>/<c>XDG_CONFIG_HOME</c> process-env read; <paramref name="home"/>
+    /// is taken as-is, never falling back to a real user-profile read either — the caller is
+    /// expected to have already resolved a concrete value
+    /// (<see cref="Setup.AgentDetectionInputs.Home"/>).</summary>
     public static string ConfigDirPure(string? home, string? configDir, string? xdgConfigHome) {
         if (!string.IsNullOrWhiteSpace(configDir)) return configDir;
         if (!string.IsNullOrEmpty(xdgConfigHome)) return Path.Combine(xdgConfigHome, "opencode");
-        return Path.Combine(home ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "opencode");
+        return Path.Combine(home ?? "", ".config", "opencode");
     }
 
     /// <summary>Pure variant of <see cref="DataDir"/> — never falls back to a real
-    /// <c>XDG_DATA_HOME</c> process-env read.</summary>
+    /// <c>XDG_DATA_HOME</c> process-env read, nor to a real user-profile read for
+    /// <paramref name="home"/>.</summary>
     public static string DataDirPure(string? home, string? xdgDataHome) {
         if (!string.IsNullOrEmpty(xdgDataHome)) return Path.Combine(xdgDataHome, "opencode");
-        return Path.Combine(home ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", "opencode");
+        return Path.Combine(home ?? "", ".local", "share", "opencode");
     }
 
     /// <summary>Pure variant of <see cref="IsInstalled"/> — never falls back to the real process

@@ -1,4 +1,3 @@
-using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.LocalIpc;
@@ -143,7 +142,8 @@ sealed class ServiceVerify(
     readonly Func<string, bool> _plistExists = plistExists ?? File.Exists;
 
     /// <summary>The gated start seam: when non-null AND <c>gateEnv(ConsentSeedVar)</c> is
-    /// non-empty, <see cref="StartVerifiedAsync"/> runs the pre-mutation gate (Phase A) and the
+    /// PRESENT — any value, including empty, under the exact-value contract —
+    /// <see cref="StartVerifiedAsync"/> runs the pre-mutation gate (Phase A) and the
     /// TOCTOU re-check before bootstrap (Phase B). Null (the default) leaves start completely
     /// behavior-unchanged — the production caller in <c>DaemonCommands</c> passes
     /// <see cref="Environment.GetEnvironmentVariable(string)"/>.</summary>
@@ -218,7 +218,7 @@ sealed class ServiceVerify(
             try {
                 var unitEnv = phaseAPlistContent is not null ? LaunchdUnit.EnvFromPlist(phaseAPlistContent) : new Dictionary<string, string>();
                 var unitBinaryPath = phaseAPlistContent is not null ? LaunchdUnit.BinaryFromPlist(phaseAPlistContent) : null;
-                reason = EvaluateStartGate(unitEnv, unitBinaryPath, DaemonCommands.ResolveDaemonBinary(), _gateEnv!, _digestMatches);
+                reason = EvaluateStartGate(unitEnv, unitBinaryPath, UnitIdentity.ResolveDaemonBinary(), _gateEnv!, _digestMatches);
                 unitEnv.TryGetValue(ExpectVar, out unitExpectation);
             } catch {
                 reason = StartGateReason.EvidenceUnreadable;
@@ -302,9 +302,24 @@ sealed class ServiceVerify(
             if (!attributionEnabled) Say("boot-refusal marker could not be cleared; coded attribution disabled");
         }
 
-        // A false Start doesn't short-circuit — the readiness poll is the source of truth — but the
-        // reason is worth surfacing if it never recovers.
-        if (!manager.Start(serviceId, Remaining(deadline), out var startError) && startError is not null) Say($"start: {startError}");
+        // The gated path uses the bootstrap-only seam instead of the generic Start: StartCore's own
+        // Loaded-probe branch would silently KICKSTART a stale definition if a foreign writer
+        // re-loaded the label in the window between the confirmed-absent wait above and this call —
+        // exactly the race this gate exists to close. A bootstrap-only failure (including "the label
+        // turned out Loaded") is therefore fatal here, not a soft warning: the label state is no
+        // longer what Phase B proved, so roll back via the coded bootout-unknown exit instead of
+        // bootstrapping onto unverified ground. The ungated path keeps the soft-warning Start(),
+        // whose readiness poll — not the call's own return value — is the source of truth.
+        if (gated) {
+            if (!manager.StartBootstrapOnly(serviceId, Remaining(deadline), out var bootstrapOnlyError)) {
+                Say($"start: {bootstrapOnlyError}");
+                ServiceTxnMarker.Write(serviceId,
+                    new TxnMarker(1, "start", "gate-bootstrap-only-failed", DescribeQuery(pre), "unloaded-plist-retained", null));
+                return await Rollback(serviceId, VerifyExit.BootoutUnknown, VerifyExit.BootoutUnknownToken);
+            }
+        } else if (!manager.Start(serviceId, Remaining(deadline), out var startError) && startError is not null) {
+            Say($"start: {startError}");
+        }
 
         ServiceTxnMarker.Write(serviceId,
             new TxnMarker(1, "start", "bootstrapped", DescribeQuery(pre), "unloaded-plist-retained", null));
@@ -381,16 +396,24 @@ sealed class ServiceVerify(
     /// marker is trustworthy evidence for THIS attempt only when: it names this same daemon; it
     /// carries no attempt id (an attempt-id-bearing marker is DETACHED evidence for a different
     /// subsystem, not this service verb's own boot — see the daemon-side boot-carrier lifecycle);
-    /// its baked server expectation agrees with the unit's own (null == null counts as agreement —
-    /// no expectation configured on either side is not a mismatch); and its pid was positively
-    /// observed as a job pid during THIS readiness window, never a pid merely assumed from a stale
-    /// marker left by a previous incarnation.
+    /// its baked server expectation agrees with the unit's own (see <see cref="ExpectationsAgree"/>);
+    /// and its pid was positively observed as a job pid during THIS readiness window, never a pid
+    /// merely assumed from a stale marker left by a previous incarnation.
     /// </summary>
     internal static bool Attributable(BootRefusalEvidence evidence, string daemonName, string? unitExpectation, IReadOnlySet<int> observedJobPids) =>
         evidence.DaemonName == daemonName
         && evidence.AttemptId is null
-        && ServerIdentity.Matches(evidence.Expectation, unitExpectation)
+        && ExpectationsAgree(evidence.Expectation, unitExpectation)
         && observedJobPids.Contains(evidence.Pid);
+
+    /// <summary>Whether two expectation values agree for attribution purposes. Both genuinely UNSET
+    /// (null) is agreement — no expectation configured on either side is not a mismatch. A
+    /// present-but-empty value on EITHER side is a deliberate-but-invalid value under the same
+    /// exact-value contract used everywhere else in this gate, so it can never trivially agree with
+    /// anything, including another empty value — only a null/null pair is absence. Otherwise both
+    /// sides are canonicalized and compared through <see cref="ServerIdentity.Matches"/>.</summary>
+    internal static bool ExpectationsAgree(string? a, string? b) =>
+        (a is null && b is null) || (!string.IsNullOrEmpty(a) && !string.IsNullOrEmpty(b) && ServerIdentity.Matches(a, b));
 
     /// <summary>
     /// The pure decision core of the gated start path. Given the environment
@@ -417,7 +440,11 @@ sealed class ServiceVerify(
         // refusal, not absence — reported the same way an invalid UNIT directive is below.
         if (invokingDirective != "prompt") return StartGateReason.DirectiveInvalid;
 
-        if (!unitEnv.TryGetValue(ConsentSeedVar, out var unitDirective) || string.IsNullOrEmpty(unitDirective))
+        // Key absent → DirectiveMissing (the unit never baked one at all). Key present with any
+        // value other than "prompt" — INCLUDING empty — → DirectiveInvalid: a present-but-empty
+        // value is a deliberate (if broken) value, not absence, same exact-value contract as the
+        // invoking side above.
+        if (!unitEnv.TryGetValue(ConsentSeedVar, out var unitDirective))
             return StartGateReason.DirectiveMissing;
 
         if (unitDirective != "prompt")
@@ -456,8 +483,8 @@ sealed class ServiceVerify(
         string.Equals(Path.GetFullPath(unitBinaryPath), Path.GetFullPath(installBinaryPath), comparison);
 
     /// <summary>
-    /// Identity half of <see cref="EvaluateStartGate"/>, split out so its own try/catch stays small.
-    /// The unit's effective identity is its baked <c>KCAP_URL</c> (precedence) or, absent that, its
+    /// Identity half of <see cref="EvaluateStartGate"/>. The unit's effective identity is its
+    /// baked <c>KCAP_URL</c> (precedence) or, absent that, its
     /// baked profile's <c>server_url</c> looked up via <see cref="ConfigMutator.TryLoadPure"/> under
     /// the unit's own baked <c>KCAP_CONFIG_DIR</c> (or the default config root when it baked none).
     /// Fail-closed on absent required evidence (spec §3.4(b)): a gated launch is always app-managed,
@@ -506,7 +533,7 @@ sealed class ServiceVerify(
     /// <summary>The <c>KCAP_URL</c>-absent fallback for <see cref="EvaluateIdentity"/> — the
     /// config-path resolution itself is shared with <c>DaemonCommands.BakedProfileServerUrl</c>
     /// (the same lookup <c>service status --json</c> does for its UX-only evidence fields) via
-    /// <see cref="DaemonCommands.ConfigPathFromUnitEnv"/>; the failure contract on top is NOT
+    /// <see cref="UnitIdentity.ConfigPathFromUnitEnv"/>; the failure contract on top is NOT
     /// shared and must not be: this uses <see cref="ConfigMutator.TryLoadPure"/> rather than
     /// <c>LoadPure</c>, because a config file that exists but cannot be read/parsed (a directory
     /// sitting at the path, a permissions error) is unreadable EVIDENCE for a pre-mutation gate —
@@ -515,7 +542,7 @@ sealed class ServiceVerify(
     /// profile gets. <c>DaemonCommands</c>' UX-only counterpart fails soft to null instead.</summary>
     static string? BakedProfileServerUrl(IReadOnlyDictionary<string, string> unitEnv, string? profile) {
         if (string.IsNullOrEmpty(profile)) return null;
-        var configPath = DaemonCommands.ConfigPathFromUnitEnv(unitEnv);
+        var configPath = UnitIdentity.ConfigPathFromUnitEnv(unitEnv);
 
         if (!ConfigMutator.TryLoadPure(configPath, out var config))
             throw new InvalidDataException($"unreadable config at '{configPath}'");

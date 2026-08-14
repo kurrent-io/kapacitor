@@ -318,7 +318,7 @@ public static partial class DaemonRunner {
 
         // The owner consent gate — policy store + append-only decision log share the
         // per-daemon state root with the coverage journal above; the prompter is null until
-        // Task 6 registers the broker (a Prompt-default policy then denies with "prompt_no_ui").
+        // the broker below registers itself (a Prompt-default policy then denies with "prompt_no_ui").
         // TimeProvider.System drives the gate's monotonic deadline discipline (spec §3.2) — a
         // real singleton in production, swapped for a FakeTimeProvider in tests.
         builder.Services.AddSingleton(TimeProvider.System);
@@ -334,13 +334,13 @@ public static partial class DaemonRunner {
         builder.Services.AddSingleton(sp => new LaunchConsentGate(
             sp.GetRequiredService<LaunchConsentStore>(),
             sp.GetRequiredService<LaunchConsentDecisionLog>(),
-            sp.GetService<ILaunchConsentPrompter>(),   // null until Task 6 registers the broker
+            sp.GetService<ILaunchConsentPrompter>(),   // null until the broker below registers itself
             sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<ILogger<LaunchConsentGate>>()));
         builder.Services.AddSingleton<LaunchConsentBroker>();
         builder.Services.AddSingleton<ILaunchConsentPrompter>(sp => sp.GetRequiredService<LaunchConsentBroker>());
-        // Task 7: local-socket consent frames — the same broker instance the gate above prompts
-        // through, so a subscriber connected via ConsentSubscribe sees the gate's own pending requests.
+        // Local-socket consent frames — the same broker instance the gate above prompts through, so
+        // a subscriber connected via ConsentSubscribe sees the gate's own pending requests.
         builder.Services.AddSingleton<LaunchConsentIpc>();
 
         // The DaemonStatus push: ONE notifier singleton shared by ServerConnection (pulses on hub
@@ -701,10 +701,10 @@ public static partial class DaemonRunner {
     }
 
     /// <summary>
-    /// Pre-host boot checks, extracted out of <see cref="RunAsync"/> so it is directly testable
-    /// without a live host. Order matters: the server-expectation check runs FIRST (a server the
-    /// operator didn't expect must never even reach consent classification), then the consent-seed
-    /// directive. A directive is ABSENT only when <paramref name="config"/>'s
+    /// Pre-host boot checks, callable without a live host. Order matters: the server-expectation
+    /// check runs FIRST (a server the operator didn't expect must never even reach consent
+    /// classification), then the consent-seed directive. A directive is ABSENT only when
+    /// <paramref name="config"/>'s
     /// <see cref="DaemonConfig.ConsentSeedDirective"/> is null — an empty string is a deliberate
     /// refusal under the exact-value contract, and <c>BootSeed("")</c> already classifies it
     /// <see cref="SeedOutcome.RefusedInvalidDirective"/>, so activating on "is not null" reaches
@@ -957,14 +957,16 @@ public static partial class DaemonRunner {
     /// <summary>
     /// Does the resolved <see cref="DaemonConfig.ServerUrl"/> match what the
     /// launcher told this boot to expect (<see cref="DaemonConfig.ExpectedServerUrl"/>, carried in
-    /// via <c>KCAP_EXPECT_SERVER_URL</c>)? No expectation at all (null/empty) is trivially
-    /// satisfied — this check exists to catch a daemon that resolved a DIFFERENT server than the
-    /// one it was launched to point at, not to require an expectation be set. Otherwise compared
-    /// through <see cref="ServerIdentity.Matches"/> — scheme/host normalized, default ports
-    /// converged, path case preserved.
+    /// via <c>KCAP_EXPECT_SERVER_URL</c>)? Only a genuinely NULL expectation is absence and
+    /// trivially satisfied — this check exists to catch a daemon that resolved a DIFFERENT server
+    /// than the one it was launched to point at, not to require an expectation be set. A
+    /// present-but-empty (or otherwise non-canonicalizable) expectation is a deliberate value, same
+    /// exact-value contract as the consent-seed directive, so it must MISMATCH rather than be
+    /// silently skipped. Otherwise compared through <see cref="ServerIdentity.Matches"/> —
+    /// scheme/host normalized, default ports converged, path case preserved.
     /// </summary>
     internal static bool ExpectationSatisfied(string? expected, string resolved) =>
-        string.IsNullOrEmpty(expected) || ServerIdentity.Matches(expected, resolved);
+        expected is null || (!string.IsNullOrEmpty(expected) && ServerIdentity.Matches(expected, resolved));
 
     /// <summary>Phase B (D3): parse a seconds-valued env var into a <see cref="TimeSpan"/>
     /// (<c>0</c> → <see cref="TimeSpan.Zero"/>, which disables the bound). Unset/blank/invalid/negative

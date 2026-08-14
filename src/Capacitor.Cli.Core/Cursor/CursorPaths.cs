@@ -34,19 +34,26 @@ public sealed record CursorPaths(string UserDir, string WorkspaceStorageDir) {
         platform ??= OperatingSystem.IsMacOS()   ? OsPlatform.MacOs
                   :  OperatingSystem.IsWindows() ? OsPlatform.Windows
                   :                                OsPlatform.Linux;
+        appData  ??= OperatingSystem.IsWindows() ? Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) : null;
 
+        return IsInstalledPure(home, platform.Value, appData);
+    }
+
+    /// <summary>Pure variant of <see cref="IsInstalled"/> for fully-injected callers (e.g.
+    /// <see cref="Setup.AgentDetection"/>) — <paramref name="platform"/>/<paramref name="appData"/>
+    /// are concrete inputs, never resolved via <see cref="OperatingSystem"/> or
+    /// <see cref="Environment.GetFolderPath(Environment.SpecialFolder)"/> internally.</summary>
+    public static bool IsInstalledPure(string home, OsPlatform platform, string? appData) {
         // Universal: ~/.cursor/ (settings + hooks.json land here on every OS).
         if (Directory.Exists(Path.Combine(home, ".cursor"))) return true;
 
         // Per-OS Electron user dir.
         var perOs = platform switch {
             OsPlatform.MacOs   => Path.Combine(home, "Library", "Application Support", "Cursor", "User"),
-            OsPlatform.Windows => Path.Combine(
-                appData ?? Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "Cursor", "User"),
+            OsPlatform.Windows => appData is null ? null : Path.Combine(appData, "Cursor", "User"),
             _                  => Path.Combine(home, ".config", "Cursor", "User")
         };
-        return Directory.Exists(perOs);
+        return perOs is not null && Directory.Exists(perOs);
     }
 
     /// <summary>Path to <c>~/.cursor/hooks.json</c> — same on every OS.</summary>

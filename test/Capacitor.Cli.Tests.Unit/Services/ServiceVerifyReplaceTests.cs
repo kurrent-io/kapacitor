@@ -70,6 +70,7 @@ public class ServiceVerifyReplaceTests {
         }
 
         public bool Start(string serviceId, TimeSpan timeout, out string? error) { error = null; return true; }
+        public bool StartBootstrapOnly(string serviceId, TimeSpan timeout, out string? error) => Start(serviceId, timeout, out error);
         public bool Stop(string serviceId, TimeSpan timeout, out string? error) { error = null; return true; }
     }
 
@@ -468,6 +469,7 @@ public class ServiceVerifyReplaceTests {
         public void WriteAndBootstrap(ServiceSpec spec, TimeSpan timeout) => DestructiveCalls++;
         public bool Uninstall(string serviceId, TimeSpan timeout, out string? error) { DestructiveCalls++; error = null; return true; }
         public bool Start(string serviceId, TimeSpan timeout, out string? error) { DestructiveCalls++; error = null; return true; }
+        public bool StartBootstrapOnly(string serviceId, TimeSpan timeout, out string? error) => Start(serviceId, timeout, out error);
         public bool Stop(string serviceId, TimeSpan timeout, out string? error) { DestructiveCalls++; error = null; return true; }
     }
 
@@ -510,6 +512,7 @@ public class ServiceVerifyReplaceTests {
         }
 
         public bool Start(string serviceId, TimeSpan timeout, out string? error) { error = null; return true; }
+        public bool StartBootstrapOnly(string serviceId, TimeSpan timeout, out string? error) => Start(serviceId, timeout, out error);
         public bool Stop(string serviceId, TimeSpan timeout, out string? error) { error = null; return true; }
     }
 }

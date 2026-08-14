@@ -43,6 +43,17 @@ public class ServiceVerifyStartGateTests {
         await Assert.That(r).IsEqualTo(StartGateReason.DirectiveInvalid);
     }
 
+    // A present-but-empty unit directive is a deliberate (if broken) value, not absence — it must
+    // classify as DirectiveInvalid, the same bucket a wrong value gets, never DirectiveMissing
+    // (which is reserved for the key being entirely absent from the unit).
+    [Test]
+    public async Task Unit_directive_present_but_empty_is_directive_invalid_not_missing() {
+        var unit = new Dictionary<string, string> { ["KCAP_CONSENT_SEED_DEFAULT"] = "" };
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b",
+            k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
+        await Assert.That(r).IsEqualTo(StartGateReason.DirectiveInvalid);
+    }
+
     [Test]
     public async Task Digest_mismatch_at_canonical_sibling_is_package_inconsistent_elsewhere_foreign() {
         // placeholder digest in test builds → Matches() false for any file:
@@ -112,6 +123,25 @@ public class ServiceVerifyStartGateTests {
             _ => null };
         var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
         await Assert.That(r).IsNull();
+    }
+
+    // A present-but-empty baked unit expectation is a deliberate value, not absence — it must
+    // MISMATCH rather than be silently skipped the way a null/missing value never would be either.
+    [Test]
+    public async Task Unit_baked_empty_expectation_is_identity_mismatch() {
+        var unit = new Dictionary<string, string> {
+            ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
+            ["KCAP_PROFILE"] = "a",
+            ["KCAP_URL"] = "https://s.example",
+            ["KCAP_EXPECT_SERVER_URL"] = "",
+        };
+        string? Env(string k) => k switch {
+            "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
+            "KCAP_PROFILE" => "a",
+            "KCAP_EXPECT_SERVER_URL" => "https://s.example",
+            _ => null };
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        await Assert.That(r).IsEqualTo(StartGateReason.IdentityMismatch);
     }
 
     [Test]
@@ -210,4 +240,29 @@ public class ServiceVerifyStartGateTests {
         await Assert.That(r).IsEqualTo(StartGateReason.EvidenceUnreadable);
     }
 
+    /// <summary>A malformed (unparseable) config.json is unreadable EVIDENCE for the gate — same
+    /// bucket as the directory-in-place-of-file case above — never silently treated as an
+    /// unconfigured profile (identity_mismatch). Pins <c>ConfigMutator.TryLoadPure</c>'s hardened
+    /// contract: malformed content is now a genuine failure, not degrade-to-defaults.</summary>
+    [Test]
+    public async Task Malformed_config_file_is_evidence_unreadable() {
+        var configDir = Directory.CreateTempSubdirectory("kcap-gate-cfg-").FullName;
+        File.WriteAllText(Path.Combine(configDir, "config.json"), "{not json");
+
+        var unit = new Dictionary<string, string> {
+            ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
+            ["KCAP_PROFILE"] = "work",
+            ["KCAP_CONFIG_DIR"] = configDir,
+            ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
+            // no KCAP_URL — forces the BakedProfileServerUrl fallback that reads config.json
+        };
+        string? Env(string k) => k switch {
+            "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
+            "KCAP_PROFILE" => "work",
+            "KCAP_EXPECT_SERVER_URL" => "https://s.example",
+            _ => null };
+
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        await Assert.That(r).IsEqualTo(StartGateReason.EvidenceUnreadable);
+    }
 }

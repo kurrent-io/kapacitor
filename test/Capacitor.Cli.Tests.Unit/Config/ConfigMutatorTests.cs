@@ -115,19 +115,42 @@ public class ConfigMutatorTests {
         await Assert.That(config.Profiles.ContainsKey("default")).IsTrue(); // still a usable default out param
     }
 
-    /// <summary>Malformed top-level JSON is NOT a TryLoadPure failure — <see cref="ConfigMigration.MigrateIfNeeded"/>
-    /// already treats an unparseable document as v1-absent and returns a fresh default (pre-existing,
-    /// deliberate degrade-gracefully behavior this fix does not change). TryLoadPure's failure signal
-    /// is reserved for what <c>MigrateIfNeeded</c> cannot itself absorb: I/O-level unreadability (a
-    /// directory sitting at the path, a permissions error).</summary>
+    /// <summary>Malformed top-level JSON IS a TryLoadPure failure, even though
+    /// <see cref="ConfigMigration.MigrateIfNeeded"/> itself absorbs an unparseable document into a
+    /// silent fresh default for <see cref="ConfigMutator.LoadPure"/>'s own soft contract. TryLoadPure
+    /// validates the document itself before delegating, so a gated identity check sees this as
+    /// unreadable evidence rather than "nothing configured yet".</summary>
     [Test]
-    public async Task TryLoadPure_malformed_json_degrades_to_success_with_defaults_like_LoadPure_always_has() {
+    public async Task TryLoadPure_malformed_json_is_failure_not_absence() {
         var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-trypure-").FullName, "config.json");
         await File.WriteAllTextAsync(path, "{not json");
 
         var ok = ConfigMutator.TryLoadPure(path, out var config);
 
-        await Assert.That(ok).IsTrue();
+        await Assert.That(ok).IsFalse();
+        await Assert.That(config.Profiles.ContainsKey("default")).IsTrue(); // still a usable default out param
+    }
+
+    [Test]
+    public async Task TryLoadPure_non_object_root_is_failure_not_absence() {
+        var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-trypure-").FullName, "config.json");
+        await File.WriteAllTextAsync(path, "[1,2,3]");
+
+        var ok = ConfigMutator.TryLoadPure(path, out var config);
+
+        await Assert.That(ok).IsFalse();
+        await Assert.That(config.Profiles.ContainsKey("default")).IsTrue();
+    }
+
+    [Test]
+    public async Task LoadPure_still_degrades_malformed_json_to_defaults() {
+        // LoadPure discards TryLoadPure's bool — its own soft contract (always usable defaults) is
+        // unchanged by the TryLoadPure hardening above.
+        var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-trypure-").FullName, "config.json");
+        await File.WriteAllTextAsync(path, "{not json");
+
+        var config = ConfigMutator.LoadPure(path);
+
         await Assert.That(config.Profiles.ContainsKey("default")).IsTrue();
     }
 

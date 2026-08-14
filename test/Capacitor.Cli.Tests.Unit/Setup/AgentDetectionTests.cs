@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core.Cursor;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Tests.Unit.Setup;
@@ -6,7 +7,6 @@ public class AgentDetectionTests {
     static AgentDetectionInputs Inputs(string? pathEnv = null, string? home = null,
             Dictionary<string, string?>? env = null) =>
         new(pathEnv, PathExt: null, IsWindows: false, Home: home,
-            Env: k => env?.GetValueOrDefault(k),
             KiroHome: env?.GetValueOrDefault("KIRO_HOME"),
             PiAgentDir: env?.GetValueOrDefault("PI_CODING_AGENT_DIR"),
             OpenCodeConfigDir: env?.GetValueOrDefault("OPENCODE_CONFIG_DIR"),
@@ -95,6 +95,23 @@ public class AgentDetectionTests {
         await Assert.That(r.Cursor.Detected).IsFalse();
     }
 
+    /// <summary>Cursor's per-OS Electron user dir is resolved purely from the injected
+    /// <see cref="AgentDetectionInputs.Platform"/>/<see cref="AgentDetectionInputs.AppData"/> —
+    /// Detect() must never consult <c>OperatingSystem.IsWindows()</c> or
+    /// <c>Environment.GetFolderPath</c> itself, so a Windows AppData layout is detectable from a
+    /// non-Windows test host purely through injected inputs.</summary>
+    [Test]
+    public async Task Cursor_windows_install_signal_is_resolved_from_injected_platform_and_appdata() {
+        var appData = Directory.CreateTempSubdirectory("kcap-cursor-appdata-").FullName;
+        Directory.CreateDirectory(Path.Combine(appData, "Cursor", "User"));
+
+        var inputs = new AgentDetectionInputs(PathEnv: "", PathExt: null, IsWindows: false, Home: "/nonexistent",
+            Platform: OsPlatform.Windows, AppData: appData);
+
+        var r = AgentDetection.Detect(inputs);
+        await Assert.That(r.Cursor.InstallSignalFound).IsTrue();
+    }
+
     [Test]
     public async Task BinaryOnPath_returns_false_when_path_env_is_null_or_empty() {
         await Assert.That(AgentDetection.BinaryOnPath("claude", Inputs(pathEnv: null))).IsFalse();
@@ -120,64 +137,42 @@ public class AgentDetectionTests {
         await File.WriteAllTextAsync(Path.Combine(dir, "claude.CMD"), "@echo off\n");
 
         var winInputs = new AgentDetectionInputs(
-            PathEnv: dir, PathExt: ".EXE;.CMD", IsWindows: true, Home: "/nonexistent",
-            Env: _ => null);
+            PathEnv: dir, PathExt: ".EXE;.CMD", IsWindows: true, Home: "/nonexistent");
 
         await Assert.That(AgentDetection.BinaryOnPath("claude", winInputs)).IsTrue();
         await Assert.That(AgentDetection.BinaryOnPath("nope", winInputs)).IsFalse();
     }
 
-    // ── genuine purity: an injected null override must behave as UNSET, never fall through to a
-    // real process-env read underneath — one test per previously-leaky vendor. ──
+    // ── genuine purity: an injected null override must behave as UNSET. These no longer mutate
+    // real process env at all (the spec's zero-process-env-mutation rule) — the pure helpers
+    // Detect() calls take the override as a concrete parameter with no internal env fallback, so
+    // "override omitted" is provably equivalent to "unset" without touching global state, and no
+    // NotInParallel is needed since nothing shared is mutated. ──
 
     [Test]
-    [NotInParallel("HomeEnvVarMutation")]
-    public async Task Kiro_injected_null_override_wins_over_a_set_process_env_var() {
-        var leaky = Directory.CreateTempSubdirectory("kcap-kiro-leak-").FullName;
-        var original = Environment.GetEnvironmentVariable("KIRO_HOME");
-        try {
-            Environment.SetEnvironmentVariable("KIRO_HOME", leaky);
-            // No KIRO_HOME override injected (env: null) — Detect must never consult the real
-            // process env underneath, so this reads as not-installed despite the leaky var.
-            var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent"));
-            await Assert.That(r.Kiro.InstallSignalFound).IsFalse();
-        } finally { Environment.SetEnvironmentVariable("KIRO_HOME", original); }
+    public async Task Kiro_home_signal_stays_unset_without_an_injected_override() {
+        var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent"));
+        await Assert.That(r.Kiro.InstallSignalFound).IsFalse();
     }
 
     [Test]
-    [NotInParallel("HomeEnvVarMutation")]
-    public async Task Pi_injected_null_override_wins_over_a_set_process_env_var() {
-        var leaky = Directory.CreateTempSubdirectory("kcap-pi-leak-").FullName;
-        var original = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR");
-        try {
-            Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", leaky);
-            var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent"));
-            await Assert.That(r.Pi.InstallSignalFound).IsFalse();
-        } finally { Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", original); }
+    public async Task Pi_home_signal_stays_unset_without_an_injected_override() {
+        var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent"));
+        await Assert.That(r.Pi.InstallSignalFound).IsFalse();
     }
 
     [Test]
-    [NotInParallel("HomeEnvVarMutation")]
-    public async Task OpenCode_injected_null_override_wins_over_a_set_process_env_var() {
-        var leaky = Directory.CreateTempSubdirectory("kcap-oc-leak-").FullName;
-        var original = Environment.GetEnvironmentVariable("OPENCODE_CONFIG_DIR");
-        try {
-            Environment.SetEnvironmentVariable("OPENCODE_CONFIG_DIR", leaky);
-            var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent"));
-            await Assert.That(r.OpenCode.InstallSignalFound).IsFalse();
-        } finally { Environment.SetEnvironmentVariable("OPENCODE_CONFIG_DIR", original); }
+    public async Task OpenCode_honors_an_injected_override_without_touching_real_env() {
+        var dir = Directory.CreateTempSubdirectory("kcap-oc-").FullName;
+        var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent",
+            env: new() { ["OPENCODE_CONFIG_DIR"] = dir }));
+        await Assert.That(r.OpenCode.InstallSignalFound).IsTrue();
     }
 
     [Test]
-    [NotInParallel("HomeEnvVarMutation")]
-    public async Task Copilot_injected_null_override_wins_over_a_set_process_env_var() {
-        var leaky = Directory.CreateTempSubdirectory("kcap-copilot-leak-").FullName;
-        var original = Environment.GetEnvironmentVariable("COPILOT_HOME");
-        try {
-            Environment.SetEnvironmentVariable("COPILOT_HOME", leaky);
-            var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent"));
-            await Assert.That(r.Copilot.InstallSignalFound).IsFalse();
-        } finally { Environment.SetEnvironmentVariable("COPILOT_HOME", original); }
+    public async Task Copilot_home_signal_stays_unset_without_an_injected_override() {
+        var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent"));
+        await Assert.That(r.Copilot.InstallSignalFound).IsFalse();
     }
 
     // Positive counterpart: an injected override (not the real env) is what actually gets used.

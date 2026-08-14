@@ -54,10 +54,24 @@ public class BootRefusalAttributionTests {
         await Assert.That(ServiceVerify.Attributable(e, "d1", "https://s.example", new HashSet<int> { 4242 })).IsTrue();
     }
 
+    // A present-but-empty expectation on one side is a deliberate value, never a trivial agreement
+    // with genuine absence (null) on the other — only a null/null pair is absence.
     [Test]
-    public async Task Null_versus_empty_expectation_still_attributes() {
+    public async Task Null_versus_empty_expectation_never_attributes() {
         var e = new BootRefusalEvidence("d1", "consent_seed_unwritable", null, "https://t", 4242, "i", null);
-        await Assert.That(ServiceVerify.Attributable(e, "d1", "", new HashSet<int> { 4242 })).IsTrue();
+        await Assert.That(ServiceVerify.Attributable(e, "d1", "", new HashSet<int> { 4242 })).IsFalse();
+    }
+
+    [Test]
+    public async Task Both_null_expectation_still_attributes() {
+        var e = new BootRefusalEvidence("d1", "consent_seed_unwritable", null, "https://t", 4242, "i", null);
+        await Assert.That(ServiceVerify.Attributable(e, "d1", null, new HashSet<int> { 4242 })).IsTrue();
+    }
+
+    [Test]
+    public async Task Both_empty_expectation_never_attributes() {
+        var e = new BootRefusalEvidence("d1", "consent_seed_unwritable", "", "https://t", 4242, "i", null);
+        await Assert.That(ServiceVerify.Attributable(e, "d1", "", new HashSet<int> { 4242 })).IsFalse();
     }
 
     [Test]
@@ -94,6 +108,9 @@ public class BootRefusalAttributionTests {
             error = null;
             return true;
         }
+
+        public bool StartBootstrapOnly(string serviceId, TimeSpan timeout, out string? error) =>
+            Start(serviceId, timeout, out error);
 
         public bool Stop(string serviceId, TimeSpan timeout, out string? error) {
             Stopped = true;

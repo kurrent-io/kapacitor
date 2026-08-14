@@ -45,11 +45,12 @@ public static class GeminiPaths {
     /// <summary>Pure variant of <see cref="Root"/> for fully-injected callers (e.g.
     /// <see cref="Setup.AgentDetection"/>, and <see cref="Antigravity.AntigravityPaths"/>'s own
     /// pure arm, which shares this root) — <paramref name="geminiCliHome"/> null means "not set",
-    /// never falls back to a real <c>GEMINI_CLI_HOME</c> process-env read.</summary>
+    /// never falls back to a real <c>GEMINI_CLI_HOME</c> process-env read; <paramref name="home"/>
+    /// is taken as-is, never falling back to a real user-profile read either — the caller is
+    /// expected to have already resolved a concrete value
+    /// (<see cref="Setup.AgentDetectionInputs.Home"/>).</summary>
     public static string RootPure(string? home, string? geminiCliHome) {
-        var baseDir = !string.IsNullOrWhiteSpace(geminiCliHome)
-            ? geminiCliHome
-            : home ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var baseDir = !string.IsNullOrWhiteSpace(geminiCliHome) ? geminiCliHome : home ?? "";
         return Path.Combine(baseDir, ".gemini");
     }
 

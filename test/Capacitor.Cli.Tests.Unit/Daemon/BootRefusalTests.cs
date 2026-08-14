@@ -47,6 +47,13 @@ public class BootRefusalTests {
         await Assert.That(DaemonRunner.ExpectationSatisfied(null, "https://b.example")).IsTrue(); // no expectation
     }
 
+    // A present-but-empty expectation is a deliberate value under the exact-value contract, not
+    // absence — only a genuinely null expectation is absence. Empty must MISMATCH.
+    [Test]
+    public async Task Empty_expectation_is_present_and_mismatches() {
+        await Assert.That(DaemonRunner.ExpectationSatisfied("", "https://b.example")).IsFalse();
+    }
+
     // Pins the fix for a real gap: on a brand-new daemon name, nothing had created stateDir before
     // an expectation-mismatch refusal fired (LaunchConsentStore's ctor — the only prior creator —
     // never runs on that arm). DaemonRunner.RunAsync's boot-check block now best-effort-creates
@@ -69,6 +76,21 @@ public class BootRefusalTests {
     }
 
     // ── RunBootChecksAsync: the extracted, directly-testable pre-host boot-check block ──
+
+    [Test, NotInParallel]
+    public async Task RunBootChecksAsync_empty_expected_server_url_refuses_as_mismatch() {
+        var dir = Directory.CreateTempSubdirectory("bootcheck-").FullName;
+        var config = new DaemonConfig { Name = "d-empty-expect", ServerUrl = "https://s", ExpectedServerUrl = "" };
+        var originalErr = Console.Error;
+        var captured = new StringWriter();
+        try {
+            Console.SetError(captured);
+            var exit = await DaemonRunner.RunBootChecksAsync(config, dir);
+
+            await Assert.That(exit).IsEqualTo(0);
+            await Assert.That(captured.ToString()).Contains("server_expectation_mismatch");
+        } finally { Console.SetError(originalErr); }
+    }
 
     [Test]
     public async Task RunBootChecksAsync_null_directive_is_truly_absent_and_proceeds() {

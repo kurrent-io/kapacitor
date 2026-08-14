@@ -13,17 +13,18 @@ namespace Capacitor.Cli.Core.Setup;
 /// tests never need to mutate process-wide PATH/HOME/env state. Every per-vendor override
 /// (<see cref="KiroHome"/>, <see cref="PiAgentDir"/>, <see cref="OpenCodeConfigDir"/>,
 /// <see cref="XdgConfigHome"/>, <see cref="XdgDataHome"/>, <see cref="GeminiCliHome"/>,
-/// <see cref="CopilotHome"/>) is its OWN resolved value here — <see cref="Detect"/> reads these,
-/// never <see cref="Env"/>, and passes them into each vendor's no-fallback <c>*Pure</c> helper, so
-/// a null override is genuinely UNSET rather than a request to fall through to the real process
-/// environment underneath. <see cref="Env"/> itself stays for callers that still want a generic
-/// lookup (e.g. binary-name overrides consulted elsewhere); <see cref="Detect"/> no longer uses it.
+/// <see cref="CopilotHome"/>, <see cref="Platform"/>, <see cref="AppData"/>) is its OWN resolved
+/// value here — <see cref="Detect"/> passes each straight into a vendor's no-fallback <c>*Pure</c>
+/// helper, so a null override is genuinely UNSET rather than a request to fall through to the real
+/// process environment or OS globals underneath. <see cref="Home"/> is resolved to a concrete
+/// non-null value by <see cref="FromEnvironment"/>, and every helper's pure core takes it as-is —
+/// none of them re-derives it from a real user-profile read.
 /// </summary>
 public sealed record AgentDetectionInputs(
-    string? PathEnv, string? PathExt, bool IsWindows, string? Home, Func<string, string?> Env,
+    string? PathEnv, string? PathExt, bool IsWindows, string? Home,
     string? KiroHome = null, string? PiAgentDir = null, string? OpenCodeConfigDir = null,
     string? XdgConfigHome = null, string? XdgDataHome = null, string? GeminiCliHome = null,
-    string? CopilotHome = null);
+    string? CopilotHome = null, OsPlatform Platform = OsPlatform.Linux, string? AppData = null);
 
 /// <summary>
 /// One vendor's two independent detection signals: a PATH binary probe and a filesystem
@@ -49,14 +50,16 @@ public sealed record AgentDetectionResult(
 public static class AgentDetection {
     public static AgentDetectionResult Detect(AgentDetectionInputs i) {
         bool Bin(string name) => BinaryOnPath(name, i);
-        var home = i.Home;
+        var home = i.Home ?? "";
 
         return new(
             // Claude/Codex: PATH probe only — no on-disk install marker is checked today.
             Claude: new(Bin("claude"), false),
             Codex:  new(Bin("codex"), false),
-            // Cursor: config-dir presence only (design, Q7) — no PATH probe exists for it.
-            Cursor: new(false, CursorPaths.IsInstalled(home)),
+            // Cursor: config-dir presence only (design, Q7) — no PATH probe exists for it. Pure:
+            // platform/appData are concrete inputs, never OperatingSystem.* or
+            // Environment.GetFolderPath resolved internally.
+            Cursor: new(false, CursorPaths.IsInstalledPure(home, i.Platform, i.AppData)),
             // Dir presence covers users who launch Copilot through an IDE wrapper; the PATH
             // probe covers fresh installs that haven't run yet (no ~/.copilot until first launch).
             // Pure: never falls back to a real COPILOT_HOME process-env read — i.CopilotHome null
@@ -91,14 +94,17 @@ public static class AgentDetection {
         PathExt:   Environment.GetEnvironmentVariable("PATHEXT"),
         IsWindows: OperatingSystem.IsWindows(),
         Home:      PathHelpers.HomeDirectory,
-        Env:       Environment.GetEnvironmentVariable,
         KiroHome:          Environment.GetEnvironmentVariable("KIRO_HOME"),
         PiAgentDir:        Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR"),
         OpenCodeConfigDir: Environment.GetEnvironmentVariable("OPENCODE_CONFIG_DIR"),
         XdgConfigHome:     Environment.GetEnvironmentVariable("XDG_CONFIG_HOME"),
         XdgDataHome:       Environment.GetEnvironmentVariable("XDG_DATA_HOME"),
         GeminiCliHome:     Environment.GetEnvironmentVariable("GEMINI_CLI_HOME"),
-        CopilotHome:       Environment.GetEnvironmentVariable("COPILOT_HOME"));
+        CopilotHome:       Environment.GetEnvironmentVariable("COPILOT_HOME"),
+        Platform: OperatingSystem.IsMacOS()   ? OsPlatform.MacOs
+                : OperatingSystem.IsWindows() ? OsPlatform.Windows
+                :                               OsPlatform.Linux,
+        AppData: OperatingSystem.IsWindows() ? Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) : null);
 
     /// <summary>
     /// Probes <paramref name="i"/>'s PATH for <paramref name="binaryName"/>. Returns false on a

@@ -13,7 +13,7 @@ internal enum SeedOutcome { Seeded, Respected, Rewritten, Quarantined, RefusedIn
 internal sealed record SeedResult(SeedOutcome Outcome, string? RefusalToken);
 
 /// Owns {stateDir}/consent.json. The running daemon is the SINGLE writer — the CLI and the
-/// desktop app mutate it only via the local socket (Task 7). Corrupt/missing file degrades to
+/// desktop app mutate it only via the local socket. Corrupt/missing file degrades to
 /// LaunchConsentPolicy.UpgradeSafe: consent must never brick a daemon boot.
 internal sealed partial class LaunchConsentStore {
     static readonly string[] ValidKinds = ["agent", "review", "review-flow"];

@@ -97,7 +97,7 @@ public static class DaemonCommands {
     }
 
     static async Task<int> SpawnForegroundAsync(string name, string[] args) {
-        var daemonPath = ResolveDaemonBinary();
+        var daemonPath = UnitIdentity.ResolveDaemonBinary();
 
         if (daemonPath is null) {
             await Console.Error.WriteLineAsync(DaemonNotFoundMessage());
@@ -166,7 +166,7 @@ public static class DaemonCommands {
             return 1;
         }
 
-        var daemonPath = ResolveDaemonBinary();
+        var daemonPath = UnitIdentity.ResolveDaemonBinary();
 
         if (daemonPath is null) {
             Console.Error.WriteLine(DaemonNotFoundMessage());
@@ -930,7 +930,7 @@ public static class DaemonCommands {
             return 1;
         }
 
-        var daemonPath = ResolveDaemonBinary();
+        var daemonPath = UnitIdentity.ResolveDaemonBinary();
         if (daemonPath is null) { await Console.Error.WriteLineAsync(DaemonNotFoundMessage()); return 1; }
 
         var profileName = ExtractFlagValue(args, "--profile") ?? AppConfig.ResolvedProfile?.ProfileName;
@@ -1003,7 +1003,7 @@ public static class DaemonCommands {
 
     /// <summary>Plain install under the per-label service lock, matching stop/start/uninstall:
     /// null lock → the same coded-contention message, exit 1, without calling <c>Install</c>. Internal so
-    /// the lock-contention path is testable without <c>ResolveDaemonBinary</c> in the loop.</summary>
+    /// the lock-contention path is testable without <see cref="UnitIdentity.ResolveDaemonBinary"/> in the loop.</summary>
     internal static async Task<int> ServiceInstallPlain(IServiceManager manager, ServiceSpec spec, bool startNow) {
         using var txn = ServiceTxnLock.TryAcquire(spec.ServiceId, TimeSpan.FromSeconds(10));
 
@@ -1111,7 +1111,7 @@ public static class DaemonCommands {
 
     static async Task<int> ServiceStatusJson(IServiceManager manager, string id) {
         var query           = manager.Query(id);
-        var installBinary   = ResolveDaemonBinary();
+        var installBinary   = UnitIdentity.ResolveDaemonBinary();
         var daemonPid       = DaemonPidProbe.ValidatedPid(id);
         var txnActive       = ServiceTxnLock.IsHeld(id);
         var txnMarker       = ServiceTxnMarker.Exists(id);
@@ -1163,22 +1163,12 @@ public static class DaemonCommands {
     static string? BakedProfileServerUrl(IReadOnlyDictionary<string, string> env, string? profile) {
         if (string.IsNullOrEmpty(profile)) return null;
         try {
-            var config = ConfigMutator.LoadPure(ConfigPathFromUnitEnv(env));
+            var config = ConfigMutator.LoadPure(UnitIdentity.ConfigPathFromUnitEnv(env));
             return config.Profiles.TryGetValue(profile, out var p) ? p.ServerUrl : null;
         } catch {
             return null;
         }
     }
-
-    /// <summary>Shared with <c>ServiceVerify.BakedProfileServerUrl</c> (the gate's own lookup):
-    /// config.json path for a baked <c>KCAP_CONFIG_DIR</c>, or the default config root when the
-    /// unit baked none. Each caller wraps this in its own failure contract — this class fails
-    /// soft to null (UX-only evidence), the gate fails closed to
-    /// <c>StartGateReason.EvidenceUnreadable</c> — so only the path resolution itself is shared.</summary>
-    internal static string ConfigPathFromUnitEnv(IReadOnlyDictionary<string, string> unitEnv) =>
-        unitEnv.TryGetValue("KCAP_CONFIG_DIR", out var dir) && !string.IsNullOrEmpty(dir)
-            ? Path.Combine(dir, "config.json")
-            : AppConfig.GetConfigPath();
 
     static int ServiceUsage() {
         Console.Error.WriteLine("Usage: kcap daemon service <install|uninstall|start|stop|status> [--name N]");
@@ -1221,19 +1211,6 @@ public static class DaemonCommands {
             var note = bad ? "  ⚠ binary missing — re-run `kcap daemon service install`" : "";
             await Console.Out.WriteLineAsync($"  {sid,-20}  {st.State}{note}");
         }
-    }
-
-    /// <summary>
-    /// Resolve the kcap-daemon executable shipped alongside this binary. Internal so
-    /// <see cref="DaemonPidProbe"/>'s moved-in <c>IsOurDaemon</c> can reuse it for the
-    /// process-image-name fallback rather than duplicating the lookup.
-    /// </summary>
-    internal static string? ResolveDaemonBinary() {
-        var dir     = AppContext.BaseDirectory;
-        var ext     = OperatingSystem.IsWindows() ? ".exe" : "";
-        var sibling = Path.Combine(dir, $"kcap-daemon{ext}");
-
-        return File.Exists(sibling) ? sibling : null;
     }
 
     static string DaemonNotFoundMessage() =>

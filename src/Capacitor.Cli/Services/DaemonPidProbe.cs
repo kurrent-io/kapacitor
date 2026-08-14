@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Services;
@@ -71,7 +70,7 @@ public static class DaemonPidProbe {
 
             // No token, unreadable, or a legacy/foreign scheme we can't compare:
             // best-effort match by process image name.
-            var daemonPath = DaemonCommands.ResolveDaemonBinary();
+            var daemonPath = UnitIdentity.ResolveDaemonBinary();
 
             var ourName = daemonPath is not null
                 ? Path.GetFileNameWithoutExtension(daemonPath)

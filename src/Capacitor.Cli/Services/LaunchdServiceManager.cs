@@ -164,6 +164,33 @@ sealed partial class LaunchdServiceManager(
     }
 
     /// <summary>
+    /// The gated start path's bootstrap-only verb (verify-only, no legacy no-timeout overload):
+    /// re-probes the label immediately before acting, and ONLY bootstraps when it reads Absent —
+    /// unlike <see cref="StartCore"/>, a Loaded probe here is a FAILURE, never a kickstart. This is
+    /// the re-check that closes the race between the gate's own confirmed-absent wait and this call:
+    /// a foreign writer that loaded the label in that window must not get silently kickstarted.
+    /// </summary>
+    public bool StartBootstrapOnly(string serviceId, TimeSpan timeout, out string? error) {
+        var (probeExit, probeOut, probeErr, probeTimedOut) = RunCtl(timeout, LaunchdUnit.PrintArgs(Uid(), serviceId));
+        var probe = probeTimedOut ? LabelProbe.Unknown : LaunchdUnit.ClassifyPrint(probeExit, probeOut, probeErr);
+
+        if (probe != LabelProbe.Absent) {
+            error = $"cannot bootstrap-only '{serviceId}': launchctl print shows the label {probe} — refusing to kickstart";
+            return false;
+        }
+
+        var (bootstrapExit, _, bootstrapErr, bootstrapTimedOut) = RunCtl(timeout, LaunchdUnit.BootstrapArgs(Uid(), LaunchdUnit.PlistPath(serviceId)));
+        if (bootstrapTimedOut) { error = "launchctl bootstrap timed out and was terminated"; return false; }
+        if (bootstrapExit != 0) {
+            error = $"launchctl bootstrap failed (exit {bootstrapExit}): {bootstrapErr.Trim()}";
+            return false;
+        }
+
+        error = null;
+        return true;
+    }
+
+    /// <summary>
     /// Same benign-absence re-query rule as <see cref="Uninstall(string, out string?)"/>, but the plist is
     /// never deleted — stopping unloads the label, it does not remove the service.
     /// </summary>

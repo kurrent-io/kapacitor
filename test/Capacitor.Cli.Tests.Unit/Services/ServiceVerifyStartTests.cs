@@ -33,6 +33,11 @@ public class ServiceVerifyStartTests {
         public Action<string>? OnStart;
         public Action<string>? OnStop;
 
+        /// <summary>Scripts a foreign writer that loads the label in the window right before the
+        /// gated path's bootstrap-only call — <see cref="StartBootstrapOnly"/> must refuse rather
+        /// than fall back to a kickstart the way the generic <see cref="Start"/> would.</summary>
+        public bool LoadedBeforeBootstrapOnly;
+
         /// <summary>When set, a post-start Query blocks for its whole timeout (a hung
         /// <c>launchctl print</c>) by advancing this clock — so a test can prove the readiness step
         /// never hands the Query a second full budget after a late hello already burned the first.</summary>
@@ -70,6 +75,18 @@ public class ServiceVerifyStartTests {
 
         public bool Start(string serviceId, TimeSpan timeout, out string? error) {
             Calls.Add("start");
+            OnStart?.Invoke(serviceId);
+            Started = true;
+            error = null;
+            return true;
+        }
+
+        public bool StartBootstrapOnly(string serviceId, TimeSpan timeout, out string? error) {
+            Calls.Add("start");
+            if (LoadedBeforeBootstrapOnly) {
+                error = "cannot bootstrap-only: label unexpectedly Loaded";
+                return false;
+            }
             OnStart?.Invoke(serviceId);
             Started = true;
             error = null;
@@ -689,6 +706,33 @@ public class ServiceVerifyStartTests {
             // Two Stop calls: Phase B's own boot-out (whose lying success exit is what this test
             // pins), then Rollback's re-attempt, which is the one that actually confirms Absent.
             await Assert.That(manager.StopCalls).IsEqualTo(2);
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Bootstrap_only_never_kickstarts_a_label_that_turned_loaded_just_before_it() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            // Pre-mutation query sees Absent (no Phase B boot-out needed), but a foreign writer
+            // loads the label in the window right before the gate's own bootstrap-only call —
+            // manager.StartBootstrapOnly must refuse rather than silently kickstart it the way the
+            // generic Start() would.
+            var manager = new FakeServiceManager { LoadedBeforeBootstrapOnly = true };
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", GatedServerUrl),
+                gateEnv: GatedEnvWithIdentity(),
+                digestMatches: _ => true);
+
+            var exit = await sut.StartVerifiedAsync(Id);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.BootoutUnknown);
+            await Assert.That(manager.Started).IsFalse();
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }

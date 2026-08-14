@@ -26,13 +26,14 @@ public static class CopilotPaths {
 
     /// <summary>Pure variant of <see cref="Root"/> for fully-injected callers (e.g.
     /// <see cref="Setup.AgentDetection"/>) — <paramref name="copilotHome"/> null means "not set",
-    /// never falls back to a real <c>COPILOT_HOME</c> process-env read.</summary>
+    /// never falls back to a real <c>COPILOT_HOME</c> process-env read; <paramref name="home"/> is
+    /// taken as-is, never falling back to a real user-profile read either — the caller is expected
+    /// to have already resolved a concrete value (<see cref="Setup.AgentDetectionInputs.Home"/>).</summary>
     public static string RootPure(string? home, string? copilotHome) =>
-        !string.IsNullOrEmpty(copilotHome) ? copilotHome
-            : Path.Combine(home ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".copilot");
+        !string.IsNullOrEmpty(copilotHome) ? copilotHome : Path.Combine(home ?? "", ".copilot");
 
     /// <summary>Pure variant of <see cref="IsInstalled"/> — never falls back to the real process
-    /// environment for <c>COPILOT_HOME</c>.</summary>
+    /// environment for <c>COPILOT_HOME</c> or the real user profile for <c>home</c>.</summary>
     public static bool IsInstalledPure(string? home, string? copilotHome) =>
         Directory.Exists(RootPure(home, copilotHome));
 

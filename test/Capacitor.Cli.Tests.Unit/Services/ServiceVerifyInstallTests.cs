@@ -79,6 +79,7 @@ public class ServiceVerifyInstallTests {
         }
 
         public bool Start(string serviceId, TimeSpan timeout, out string? error) { error = null; return true; }
+        public bool StartBootstrapOnly(string serviceId, TimeSpan timeout, out string? error) => Start(serviceId, timeout, out error);
         public bool Stop(string serviceId, TimeSpan timeout, out string? error) { error = null; return true; }
     }
 

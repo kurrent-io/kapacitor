@@ -73,5 +73,11 @@ interface IVerifyServiceManager {
     void         WriteAndBootstrap(ServiceSpec spec, TimeSpan timeout);
     bool         Uninstall(string serviceId, TimeSpan timeout, out string? error);
     bool         Start(string serviceId, TimeSpan timeout, out string? error);
+    /// <summary>Bootstrap-only start for the gated start path: activate the ALREADY-WRITTEN unit
+    /// without the generic <see cref="Start"/>'s Loaded→kickstart branch. If the label turns out
+    /// Loaded (a foreign writer raced the gate's own confirmed-absent check), this must fail rather
+    /// than kickstart it — kickstarting an unverified loaded definition is exactly what the gate
+    /// exists to prevent.</summary>
+    bool         StartBootstrapOnly(string serviceId, TimeSpan timeout, out string? error);
     bool         Stop(string serviceId, TimeSpan timeout, out string? error);
 }

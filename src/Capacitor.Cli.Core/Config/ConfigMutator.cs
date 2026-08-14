@@ -36,8 +36,12 @@ public static class ConfigMutator {
     /// Same pure load as <see cref="LoadPure"/>, but distinguishes genuine ABSENCE (no file —
     /// success, default config) from an UNREADABLE/malformed file (read/parse failure — false, with
     /// the same default config as an out param callers that don't care about the distinction can
-    /// still use). Callers that must fail closed on corruption rather than silently treat it the
-    /// same as "nothing configured yet" (e.g. a gated identity check) use this instead of
+    /// still use). Malformed JSON (unparseable, or a non-object root) is unreadable here — it is
+    /// deliberately NOT delegated straight to <see cref="ConfigMigration.MigrateIfNeeded"/>, which
+    /// absorbs exactly that shape into a silent <c>FreshDefault</c> for <see cref="LoadPure"/>'s own
+    /// soft contract; that absorption would otherwise make a gated identity check see malformed
+    /// evidence as "nothing configured yet". Callers that must fail closed on corruption rather than
+    /// silently treat it the same as absence (e.g. a gated identity check) use this instead of
     /// <see cref="LoadPure"/>.
     public static bool TryLoadPure(string path, out ProfileConfig config) {
         // A directory sitting at the config path is NOT absence — File.Exists alone would say
@@ -57,6 +61,18 @@ public static class ConfigMutator {
         try {
             json = File.ReadAllText(path);
         } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            config = new() { Profiles = new() { ["default"] = new() } };
+            return false;
+        }
+
+        // Validate the document itself BEFORE handing it to migration: MigrateIfNeeded treats an
+        // unparseable document, or one whose root isn't a JSON object, as v1-absent and silently
+        // returns a fresh default — correct for LoadPure, wrong for this method's fail-closed
+        // contract.
+        try {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) throw new JsonException("config root is not a JSON object");
+        } catch (JsonException) {
             config = new() { Profiles = new() { ["default"] = new() } };
             return false;
         }
