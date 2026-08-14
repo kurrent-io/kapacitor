@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Capacitor.Cli.Core; // JsonElement IsObject extension
 
 namespace Capacitor.Cli.Core.Config;
 
