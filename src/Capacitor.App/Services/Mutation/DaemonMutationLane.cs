@@ -1,8 +1,9 @@
 using System.Diagnostics;
+using Capacitor.Cli.Core.Auth;
 
 namespace Capacitor.App.Services.Mutation;
 
-/// The per-verb classification seam Task 9b implements; kept separate so the lane's control flow never has to change to swap it.
+/// The per-verb classification seam the lane's control flow delegates into — kept separate so control flow never has to change when classification rules change.
 internal delegate Task<MutationOutcome> MutationClassifier(
     MutationRequest request, ProcessResult result, IKcapCli executor, IDaemonObservation observation,
     string? attemptId, CancellationToken ct);
@@ -10,6 +11,22 @@ internal delegate Task<MutationOutcome> MutationClassifier(
 /// The app-lifetime singleton every daemon mutation runs through: one owned action at a time,
 /// identical concurrent requests coalesce, a different request queues FIFO for its own fresh probe.
 public sealed class DaemonMutationLane : IAsyncDisposable {
+    // Named so DeliverFaulted's outcome is self-explanatory instead of a bare magic number.
+    internal const int UnexpectedExitCode = -1;
+
+    // Duplicated exit-code family from Capacitor.Cli.Services.VerifyExit / DaemonCommands' digest
+    // gate — same duplication precedent as VerifyExitCodes in DaemonLifecycleController.cs.
+    internal const int ReadinessTimeoutExit = 24;
+    internal const int StartGateExit        = 28;
+    internal const int StartGateDriftExit   = 29;
+    internal const int DigestGateExit       = 43;
+
+    // The capability a positive service-verb success requires the observed daemon to advertise.
+    const string ConsentCapability = "consent/3";
+
+    internal static readonly TimeSpan DetachedConfirmWindow = TimeSpan.FromSeconds(10);
+    internal static readonly TimeSpan DetachedPollInterval  = TimeSpan.FromSeconds(1);
+
     readonly ILoginShellProbe _shellProbe;
     readonly OutcomeChannel _channel;
     readonly Func<string?> _cliOverride;
@@ -17,6 +34,9 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
     readonly Func<MutationRequest, IDaemonObservation> _oneShotFactory;
     readonly TimeProvider _time;
     readonly CancellationTokenSource _lifetime = new();
+    // Captured once, before any dispose: _lifetime.Token throws ObjectDisposedException once the
+    // source itself is disposed, but a token value obtained earlier stays safely readable/storable.
+    readonly CancellationToken _lifetimeToken;
 
     readonly object _gate = new();
     ActionSlot? _owned;
@@ -27,8 +47,8 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
     // Atomic slot: an owned action reads this ONCE at start and never again for its own lifetime.
     volatile IDaemonObservation? _liveAdapter;
 
-    // Injectable seam: 9a wires the placeholder below, Task 9b swaps in the real classifier.
-    internal MutationClassifier Classify { get; set; } = ClassifyPlaceholder;
+    // Injectable seam: defaults to the real per-verb classifier below; tests override to pin/observe without running full classification.
+    internal MutationClassifier Classify { get; set; }
 
     public DaemonMutationLane(
             ILoginShellProbe shellProbe, OutcomeChannel channel,
@@ -40,6 +60,8 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         _executorFactory = executorFactory;
         _oneShotFactory  = oneShotFactory;
         _time            = time;
+        _lifetimeToken   = _lifetime.Token;
+        Classify         = ClassifyOutcomeAsync;
     }
 
     public void SetLiveAdapter(IDaemonObservation? live) => _liveAdapter = live;
@@ -95,6 +117,13 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         ActionSlot slot;
         ActionSlot? toStart = null;
         lock (_gate) {
+            if (_disposed) {
+                // A disposed lane never spawns: resolve cancelled immediately, nothing owned/queued, nothing enqueued.
+                var refused = new ActionSlot(request) { WaiterCount = 1 };
+                refused.Completion.TrySetCanceled(_lifetimeToken);
+                return refused;
+            }
+
             var existing = _owned is { } owned && owned.Request == request ? owned : _queue.Find(s => s.Request == request);
             if (existing is not null) {
                 existing.WaiterCount++;
@@ -182,10 +211,10 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         if (waiterless) LogWaiterlessCancellation(slot.Request);
     }
 
-    // An unexpected exception during a mutation attempt is actionable evidence, not a fabricated exception surfaced to waiters.
+    // An unexpected exception during a mutation attempt is actionable evidence, not a fabricated exception surfaced to waiters — the exception itself stays in the log line only.
     void DeliverFaulted(ActionSlot slot, Exception ex) {
         LogUnexpectedFault(slot.Request, ex);
-        var outcome = new MutationOutcome.Failed(-1, ex.GetType().Name, RecoverySurface.Attention);
+        var outcome = new MutationOutcome.Failed(UnexpectedExitCode, "internal_error", RecoverySurface.Attention);
         _channel.Enqueue(new OutcomeEnvelope(slot.Request, outcome));
         slot.Completion.TrySetResult(outcome);
     }
@@ -231,13 +260,135 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         return _oneShotFactory(request);
     }
 
-    // Task 9b replaces this placeholder classification.
-    static Task<MutationOutcome> ClassifyPlaceholder(
+    // --- classification (spec §3/§4) ---
+
+    Task<MutationOutcome> ClassifyOutcomeAsync(
             MutationRequest request, ProcessResult result, IKcapCli executor, IDaemonObservation observation,
             string? attemptId, CancellationToken ct) =>
-        Task.FromResult<MutationOutcome>(result.ExitCode == 0
-            ? new MutationOutcome.Succeeded()
-            : new MutationOutcome.Failed(result.ExitCode, null, RecoverySurface.Attention));
+        request.Verb == MutationVerb.DetachedStart
+            ? ClassifyDetachedStartAsync(request, result, observation, attemptId!, ct)
+            : ClassifyServiceVerbAsync(request, result, executor, observation, ct);
+
+    // Install/Replace/StartVerified: the CLI's own ServiceVerify transaction engine already
+    // performed its readiness poll — exit code alone routes every non-success case.
+    static async Task<MutationOutcome> ClassifyServiceVerbAsync(
+            MutationRequest request, ProcessResult result, IKcapCli executor, IDaemonObservation observation, CancellationToken ct) {
+        if (result.ExitCode == 0) return await ClassifyServiceSuccessAsync(request, executor, observation, ct).ConfigureAwait(false);
+
+        if (result.ExitCode == StartGateExit) {
+            var token = ReasonLine.TrySingle(result.Stderr, "start_gate_reason=");
+            return token is null
+                ? new MutationOutcome.Failed(StartGateExit, null, RecoverySurface.Attention)
+                : new MutationOutcome.Failed(StartGateExit, token, ReasonRouting.ForStartGate(token));
+        }
+
+        if (result.ExitCode == StartGateDriftExit) {
+            // Drift is never auto-retried — always Attention, regardless of whether a reason line happens to be present.
+            var token = ReasonLine.TrySingle(result.Stderr, "start_gate_reason=");
+            return new MutationOutcome.Failed(StartGateDriftExit, token, RecoverySurface.Attention);
+        }
+
+        if (result.ExitCode == ReadinessTimeoutExit) {
+            var token = ReasonLine.TrySingle(result.Stderr, "refusal_reason=");
+            return token is null
+                ? new MutationOutcome.UnconfirmedNoAttach()
+                : new MutationOutcome.Refused(token, ReasonRouting.ForBootRefusal(token));
+        }
+
+        return new MutationOutcome.Failed(result.ExitCode, null, RecoverySurface.Attention);
+    }
+
+    // Positive evidence only (spec §6): every leg below must independently hold for Succeeded — any
+    // gap degrades to AttentionSkew/AttentionRepair/UnconfirmedNoAttach, never a guessed success.
+    static async Task<MutationOutcome> ClassifyServiceSuccessAsync(
+            MutationRequest request, IKcapCli executor, IDaemonObservation observation, CancellationToken ct) {
+        var evidence  = await observation.ObserveAsync(request, ct).ConfigureAwait(false);
+        var ownership = await executor.ServiceStatusAsync(ct).ConfigureAwait(false);
+
+        if (evidence is not { Reachable: true })
+            // No independent evidence either way vs. a recorded owner with nothing to show for it are different signals.
+            return ownership?.DaemonPid is null
+                ? new MutationOutcome.UnconfirmedNoAttach()
+                : new MutationOutcome.AttentionSkew("unreachable_with_recorded_owner");
+
+        if (!ServerIdentity.Matches(evidence.ServerUrl, request.CanonicalServer) || evidence.DaemonName != request.DaemonName)
+            return new MutationOutcome.AttentionSkew("server_or_name_mismatch");
+
+        if (evidence.Pid is null || evidence.InstanceId is null)
+            return new MutationOutcome.AttentionSkew("pre_slice_evidence");
+
+        if (!evidence.IdentityConsistent)
+            return new MutationOutcome.AttentionSkew("identity_inconsistent");
+
+        if (evidence.Capabilities is null || !evidence.Capabilities.Contains(ConsentCapability))
+            return new MutationOutcome.AttentionSkew("missing_capability_consent_3");
+
+        if (!KcapCliCompatibility.Satisfies(evidence.DaemonVersion))
+            return new MutationOutcome.AttentionSkew("daemon_below_floor");
+
+        if (ownership is null)
+            return new MutationOutcome.AttentionSkew("ownership_unknown");
+
+        if (ownership.TxnMarker && !ownership.TxnActive)
+            return new MutationOutcome.AttentionRepair("stale_txn_marker");
+
+        if (ownership.JobPid is null || ownership.DaemonPid is null || ownership.JobPid != ownership.DaemonPid)
+            return new MutationOutcome.AttentionSkew("ownership_mismatch");
+
+        if (ownership.DaemonPid != evidence.Pid) // same-instance rule: the ownership read must describe THIS observed daemon
+            return new MutationOutcome.AttentionSkew("instance_pid_mismatch");
+
+        return new MutationOutcome.Succeeded();
+    }
+
+    // DetachedStart has no CLI-side verify engine — the lane itself confirms via a bounded post-spawn observation window.
+    async Task<MutationOutcome> ClassifyDetachedStartAsync(
+            MutationRequest request, ProcessResult result, IDaemonObservation observation, string attemptId, CancellationToken ct) {
+        // A forced process-only kill after the wrapper's own bound makes the exit code meaningless — only evidence counts.
+        if (result.TimedOut)
+            return await AwaitDetachedConfirmationAsync(
+                request, observation, attemptId, static () => new MutationOutcome.SucceededAfterTimeout(), ct).ConfigureAwait(false);
+
+        if (result.ExitCode == 0)
+            return await AwaitDetachedConfirmationAsync(
+                request, observation, attemptId, static () => new MutationOutcome.Succeeded(), ct).ConfigureAwait(false);
+
+        if (result.ExitCode == DigestGateExit) {
+            var token = ReasonLine.TrySingle(result.Stderr, "daemon_start_reason=");
+            return token is null
+                ? new MutationOutcome.Failed(DigestGateExit, null, RecoverySurface.Attention)
+                : new MutationOutcome.Failed(DigestGateExit, token, ReasonRouting.ForDaemonStart(token));
+        }
+
+        return new MutationOutcome.Failed(result.ExitCode, null, RecoverySurface.Attention);
+    }
+
+    // Polls the pinned observation for up to DetachedConfirmWindow: full evidence wins via
+    // onFullEvidence, an attributed boot-refusal marker wins Refused, and window expiry with
+    // neither is UnconfirmedNoAttach. Entirely TimeProvider-driven so tests never wait for real time.
+    async Task<MutationOutcome> AwaitDetachedConfirmationAsync(
+            MutationRequest request, IDaemonObservation observation, string attemptId,
+            Func<MutationOutcome> onFullEvidence, CancellationToken ct) {
+        var deadline = _time.GetUtcNow() + DetachedConfirmWindow;
+        while (true) {
+            var evidence = await observation.ObserveAsync(request, ct).ConfigureAwait(false);
+            if (IsFullEvidence(evidence, request)) return onFullEvidence();
+
+            if (BootRefusalMarker.TryAttribute(request.DaemonName, attemptId) is { } refusal)
+                return new MutationOutcome.Refused(refusal.Token, ReasonRouting.ForBootRefusal(refusal.Token));
+
+            var remaining = deadline - _time.GetUtcNow();
+            if (remaining <= TimeSpan.Zero) return new MutationOutcome.UnconfirmedNoAttach();
+
+            var wait = remaining < DetachedPollInterval ? remaining : DetachedPollInterval;
+            await Task.Delay(wait, _time, ct).ConfigureAwait(false);
+        }
+    }
+
+    static bool IsFullEvidence(ObservedEvidence? evidence, MutationRequest request) =>
+        evidence is { Reachable: true, IdentityConsistent: true }
+        && ServerIdentity.Matches(evidence.ServerUrl, request.CanonicalServer)
+        && evidence.DaemonName == request.DaemonName;
 
     static void LogWaiterlessSuccess(MutationRequest request, MutationOutcome outcome) =>
         Console.Error.WriteLine(
