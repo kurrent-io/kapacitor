@@ -47,6 +47,7 @@ public sealed class OutcomeChannel {
         }
     }
 
+    /// An un-enumerated result still holds the exclusivity slot until it is enumerated (and ends) or its ct is cancelled.
     public IAsyncEnumerable<OutcomeLease> ConsumeAsync(CancellationToken ct) {
         Session session;
         lock (_gate) {
@@ -106,6 +107,8 @@ public sealed class OutcomeChannel {
                         if (!entry.Requeued) {
                             entry.Requeued = true;
                             _queue.AddFirst(entry);
+                        } else {
+                            LogSecondAbandonment(entry.Envelope); // already used its one requeue: consumed-with-log, never silent
                         }
                     }
                 }
@@ -118,12 +121,23 @@ public sealed class OutcomeChannel {
         lock (_gate) {
             if (entry.ActiveLeaseToken != token) return; // stale: this lease was already resolved
             entry.ActiveLeaseToken = 0;
-            if (requeue && !entry.Requeued) {
+            if (!requeue) return; // Ack: consumed, done
+            if (!entry.Requeued) {
                 entry.Requeued = true;
                 _queue.AddFirst(entry);
                 Wake();
+            } else {
+                LogSecondAbandonment(entry.Envelope); // already used its one requeue: consumed-with-log, never silent
             }
         }
+    }
+
+    // requeue-exactly-once is exhausted here by design; log so a second abandonment is never a silent drop.
+    static void LogSecondAbandonment(OutcomeEnvelope envelope) {
+        var r = envelope.Request;
+        Console.Error.WriteLine(
+            $"OutcomeChannel: envelope consumed after second abandonment (requeue-exactly-once exhausted) " +
+            $"verb={r.Verb} profile={r.Profile} server={r.CanonicalServer} daemon={r.DaemonName} outcome={envelope.Outcome.GetType().Name}");
     }
 
     void Wake() { // caller must hold _gate

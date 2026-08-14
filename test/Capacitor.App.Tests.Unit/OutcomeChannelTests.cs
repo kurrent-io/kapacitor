@@ -121,8 +121,8 @@ public class OutcomeChannelTests {
         await enumeratorB.DisposeAsync();
     }
 
-    [Test]
-    public async Task CancelLease_a_second_time_after_redelivery_does_not_requeue_again() {
+    [Test, NotInParallel]
+    public async Task CancelLease_a_second_time_after_redelivery_is_consumed_with_a_logged_warning_not_silently_dropped() {
         var channel = new OutcomeChannel();
         var env = Env("double-cancel");
         channel.Enqueue(env);
@@ -138,9 +138,19 @@ public class OutcomeChannelTests {
         var enumeratorB = channel.ConsumeAsync(ctsB.Token).GetAsyncEnumerator();
         await Assert.That(await BoundedMoveNext(enumeratorB)).IsTrue();
         await Assert.That(enumeratorB.Current.Envelope).IsEqualTo(env);
-        enumeratorB.Current.CancelLease(); // second cancel of the SAME envelope: must not requeue again
+
+        var originalError = Console.Error;
+        var stderrWriter = new StringWriter();
+        try {
+            Console.SetError(stderrWriter);
+            enumeratorB.Current.CancelLease(); // second cancel of the SAME envelope: consumed-with-log, must not requeue again
+        } finally {
+            Console.SetError(originalError);
+        }
         channel.TransferConsumer();
         await enumeratorB.DisposeAsync();
+
+        await Assert.That(stderrWriter.ToString()).Contains("double-cancel"); // never a silent drop
 
         using var ctsC = new CancellationTokenSource();
         var enumeratorC = channel.ConsumeAsync(ctsC.Token).GetAsyncEnumerator();
@@ -149,6 +159,137 @@ public class OutcomeChannelTests {
         await Assert.That(async () => await moveNextC.AsTask().WaitAsync(Bounded))
             .Throws<OperationCanceledException>(); // lost, not redelivered a second time
         await enumeratorC.DisposeAsync();
+
+        // channel remains functional afterward: a fresh envelope still enqueues, delivers, and acks normally.
+        var env2 = Env("after-double-cancel");
+        channel.Enqueue(env2);
+        using var ctsD = new CancellationTokenSource();
+        var enumeratorD = channel.ConsumeAsync(ctsD.Token).GetAsyncEnumerator();
+        await Assert.That(await BoundedMoveNext(enumeratorD)).IsTrue();
+        await Assert.That(enumeratorD.Current.Envelope).IsEqualTo(env2);
+        enumeratorD.Current.Ack();
+        await enumeratorD.DisposeAsync();
+    }
+
+    [Test, NotInParallel]
+    public async Task Teardown_after_redelivery_with_the_lease_still_outstanding_is_consumed_with_a_logged_warning() {
+        var channel = new OutcomeChannel();
+        var env = Env("implicit-double-abandon");
+        channel.Enqueue(env);
+
+        using var ctsA = new CancellationTokenSource();
+        var enumeratorA = channel.ConsumeAsync(ctsA.Token).GetAsyncEnumerator();
+        await Assert.That(await BoundedMoveNext(enumeratorA)).IsTrue();
+        enumeratorA.Current.CancelLease(); // first abandonment (explicit): uses the one guaranteed requeue
+        channel.TransferConsumer();
+        await enumeratorA.DisposeAsync();
+
+        using var ctsB = new CancellationTokenSource();
+        var enumeratorB = channel.ConsumeAsync(ctsB.Token).GetAsyncEnumerator();
+        await Assert.That(await BoundedMoveNext(enumeratorB)).IsTrue();
+        await Assert.That(enumeratorB.Current.Envelope).IsEqualTo(env);
+        // deliberately neither Ack nor CancelLease — tear B down via ct with the redelivered lease still outstanding
+
+        var originalError = Console.Error;
+        var stderrWriter = new StringWriter();
+        var moveNextB2 = enumeratorB.MoveNextAsync();
+        try {
+            Console.SetError(stderrWriter);
+            await ctsB.CancelAsync();
+            await Assert.That(async () => await moveNextB2.AsTask().WaitAsync(Bounded))
+                .Throws<OperationCanceledException>();
+        } finally {
+            Console.SetError(originalError);
+        }
+        await enumeratorB.DisposeAsync();
+
+        await Assert.That(stderrWriter.ToString()).Contains("implicit-double-abandon"); // second abandonment logged, not silent
+
+        using var ctsC = new CancellationTokenSource();
+        var enumeratorC = channel.ConsumeAsync(ctsC.Token).GetAsyncEnumerator();
+        var moveNextC = enumeratorC.MoveNextAsync();
+        await ctsC.CancelAsync();
+        await Assert.That(async () => await moveNextC.AsTask().WaitAsync(Bounded))
+            .Throws<OperationCanceledException>(); // next consumer sees an empty queue
+        await enumeratorC.DisposeAsync();
+
+        // channel remains functional afterward.
+        var env2 = Env("after-implicit-double-abandon");
+        channel.Enqueue(env2);
+        using var ctsD = new CancellationTokenSource();
+        var enumeratorD = channel.ConsumeAsync(ctsD.Token).GetAsyncEnumerator();
+        await Assert.That(await BoundedMoveNext(enumeratorD)).IsTrue();
+        await Assert.That(enumeratorD.Current.Envelope).IsEqualTo(env2);
+        enumeratorD.Current.Ack();
+        await enumeratorD.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Teardown_with_two_outstanding_leases_requeues_both_in_original_FIFO_order() {
+        var channel = new OutcomeChannel();
+        var envA = Env("multi-a");
+        var envB = Env("multi-b");
+        channel.Enqueue(envA);
+        channel.Enqueue(envB);
+
+        using var cts1 = new CancellationTokenSource();
+        var enumerator1 = channel.ConsumeAsync(cts1.Token).GetAsyncEnumerator();
+        await Assert.That(await BoundedMoveNext(enumerator1)).IsTrue();
+        await Assert.That(enumerator1.Current.Envelope).IsEqualTo(envA); // dequeued first, left outstanding
+        await Assert.That(await BoundedMoveNext(enumerator1)).IsTrue();
+        await Assert.That(enumerator1.Current.Envelope).IsEqualTo(envB); // dequeued second, left outstanding too
+
+        var moveNextAgain = enumerator1.MoveNextAsync(); // queue now empty: suspends
+        await cts1.CancelAsync();
+        await Assert.That(async () => await moveNextAgain.AsTask().WaitAsync(Bounded))
+            .Throws<OperationCanceledException>();
+        await enumerator1.DisposeAsync();
+
+        using var cts2 = new CancellationTokenSource();
+        var enumerator2 = channel.ConsumeAsync(cts2.Token).GetAsyncEnumerator();
+        await Assert.That(await BoundedMoveNext(enumerator2)).IsTrue();
+        await Assert.That(enumerator2.Current.Envelope).IsEqualTo(envA); // FIFO preserved: A before B
+        enumerator2.Current.Ack();
+        await Assert.That(await BoundedMoveNext(enumerator2)).IsTrue();
+        await Assert.That(enumerator2.Current.Envelope).IsEqualTo(envB);
+        enumerator2.Current.Ack();
+        await enumerator2.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Teardown_with_one_acked_and_one_outstanding_lease_redelivers_only_the_outstanding_one() {
+        var channel = new OutcomeChannel();
+        var envA = Env("ack-a");
+        var envB = Env("leave-b");
+        channel.Enqueue(envA);
+        channel.Enqueue(envB);
+
+        using var cts1 = new CancellationTokenSource();
+        var enumerator1 = channel.ConsumeAsync(cts1.Token).GetAsyncEnumerator();
+        await Assert.That(await BoundedMoveNext(enumerator1)).IsTrue();
+        await Assert.That(enumerator1.Current.Envelope).IsEqualTo(envA);
+        enumerator1.Current.Ack(); // A resolved before teardown
+
+        await Assert.That(await BoundedMoveNext(enumerator1)).IsTrue();
+        await Assert.That(enumerator1.Current.Envelope).IsEqualTo(envB); // B left outstanding
+
+        var moveNextAgain = enumerator1.MoveNextAsync();
+        await cts1.CancelAsync();
+        await Assert.That(async () => await moveNextAgain.AsTask().WaitAsync(Bounded))
+            .Throws<OperationCanceledException>();
+        await enumerator1.DisposeAsync();
+
+        using var cts2 = new CancellationTokenSource();
+        var enumerator2 = channel.ConsumeAsync(cts2.Token).GetAsyncEnumerator();
+        await Assert.That(await BoundedMoveNext(enumerator2)).IsTrue();
+        await Assert.That(enumerator2.Current.Envelope).IsEqualTo(envB); // only B redelivered
+        enumerator2.Current.Ack();
+
+        var moveNextC = enumerator2.MoveNextAsync();
+        await cts2.CancelAsync();
+        await Assert.That(async () => await moveNextC.AsTask().WaitAsync(Bounded))
+            .Throws<OperationCanceledException>(); // A never resurfaces — it was already acked, not outstanding
+        await enumerator2.DisposeAsync();
     }
 
     [Test]
