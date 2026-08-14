@@ -141,13 +141,6 @@ sealed class ServiceVerify(
     /// <see cref="_readPlist"/> returns null for both.</summary>
     readonly Func<string, bool> _plistExists = plistExists ?? File.Exists;
 
-    /// <summary>Phase A's own discriminated read (see <see cref="LaunchdUnit.PlistRead"/>): the
-    /// real default opens the file directly rather than composing <see cref="_readPlist"/> with
-    /// <see cref="_plistExists"/> — both are File.Exists-based and read a directory-at-path (or an
-    /// inaccessible ancestor) as absent, which would otherwise let Phase A evaluate an empty env
-    /// and reach the takeover-safe DirectiveMissing instead of EvidenceUnreadable. Tests that stub
-    /// the older readPlist/plistExists pair get an equivalent discriminator synthesized from
-    /// those, so none of that existing seam shape needs to change.</summary>
     readonly Func<string, (LaunchdUnit.PlistRead Status, string? Content)> _phaseAPlistRead =
         readPlist is null && plistExists is null
             ? (path => { var status = LaunchdUnit.TryReadPlist(path, out var content); return (status, content); })
@@ -227,11 +220,6 @@ sealed class ServiceVerify(
             var (readStatus, content) = _phaseAPlistRead(plistPath);
             phaseAPlistContent = content;
 
-            // Unreadable is coded directly from the discriminated read — never inferred from a
-            // null content plus a separate presence check, which is exactly what let a
-            // directory-at-path evade classification. A malformed/truncated-but-present plist
-            // (the foreign-writer race Phase B also defends against) must not let the parse below
-            // escape as an uncoded exit 1, so it lands here too.
             StartGateReason? reason;
             if (readStatus == LaunchdUnit.PlistRead.Unreadable) {
                 reason = StartGateReason.EvidenceUnreadable;

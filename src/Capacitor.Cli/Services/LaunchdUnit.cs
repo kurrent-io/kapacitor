@@ -87,37 +87,25 @@ static class LaunchdUnit {
             : null;
     }
 
-    /// <summary>Outcome of <see cref="TryReadPlist"/> — kept distinct from a bare null so a
-    /// caller can never conflate genuine absence with present-but-unreadable evidence.</summary>
+    /// <summary>Distinguishes genuine absence from present-but-unreadable evidence.</summary>
     internal enum PlistRead { Absent, Ok, Unreadable }
 
-    /// <summary>Total, discriminated plist read: opens the file directly rather than probing
-    /// <c>File.Exists</c> first, because <c>File.Exists</c> reads a DIRECTORY at the path as
-    /// absent (it only follows through to files) — a caller gating on that flag alone would
-    /// misclassify a directory-at-path as genuine absence. Only the two not-found exceptions are
-    /// <see cref="PlistRead.Absent"/>; anything else (permission denial, a directory opened as a
-    /// file, any other I/O failure) is <see cref="PlistRead.Unreadable"/>.</summary>
+    /// <summary>Discriminated read: a not-found blocked by structural evidence (a link at the exact
+    /// path, or a file/link ancestor) is <see cref="PlistRead.Unreadable"/>, never <see cref="PlistRead.Absent"/>.</summary>
     internal static PlistRead TryReadPlist(string path, out string? content) {
         try {
             content = File.ReadAllText(path);
             return PlistRead.Ok;
         } catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) {
             content = null;
-            return PlistRead.Absent;
+            return PathEvidence.PathBlockedByFileOrLink(path) ? PlistRead.Unreadable : PlistRead.Absent;
         } catch {
             content = null;
             return PlistRead.Unreadable;
         }
     }
 
-    /// <summary>Strict key/value walk shared by <see cref="TopLevelValue"/> and
-    /// <see cref="EnvFromPlist"/>'s inner walk: yields each (key, value) pair in
-    /// <paramref name="dict"/>'s direct children. A <c>&lt;key&gt;</c> immediately following
-    /// another <c>&lt;key&gt;</c>, a value with no preceding key, or a dangling trailing
-    /// <c>&lt;key&gt;</c> all throw <see cref="InvalidDataException"/> — this file is never
-    /// hand-edited, so any of those shapes can only mean a foreign/corrupt writer. Callers own
-    /// duplicate-key and value-type validation, since the two levels enforce those differently.
-    /// </summary>
+    /// <summary>Strict key/value walk: throws on any malformed key/value alternation.</summary>
     static IEnumerable<(string Key, XElement Value)> KeyedElements(XElement dict, string context) {
         string? pendingKey = null;
         foreach (var el in dict.Elements()) {

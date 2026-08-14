@@ -54,10 +54,9 @@ public static class ConfigMutator {
         try {
             json = File.ReadAllText(path);
         } catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) {
-            // DirectoryNotFoundException is ambiguous between "the parent chain genuinely doesn't
-            // exist yet" and "a path segment exists but blocks the walk" (a file, or a dangling
-            // symlink) — walk up to the first ancestor that exists at all and check its type.
-            if (ex is DirectoryNotFoundException && FirstExistingAncestorIsFile(path)) {
+            // A link at the exact path (dangling included), or a file/link ancestor, is
+            // structural evidence — unreadable, not absence.
+            if (PathEvidence.PathBlockedByFileOrLink(path)) {
                 config = FreshDefault();
                 return false;
             }
@@ -94,29 +93,6 @@ public static class ConfigMutator {
     }
 
     static ProfileConfig FreshDefault() => new() { Profiles = new() { ["default"] = new() } };
-
-    /// Walks up from <paramref name="path"/>'s parent chain to the first ancestor that exists —
-    /// as a directory, a file, or a dangling symlink — and reports whether it blocks the walk
-    /// structurally (file or dangling link) rather than being a genuine, simply never-created
-    /// directory level.
-    static bool FirstExistingAncestorIsFile(string path) {
-        var current = Path.GetDirectoryName(path);
-        while (!string.IsNullOrEmpty(current)) {
-            if (File.Exists(current)) return true;
-            if (Directory.Exists(current)) return false;
-            if (IsLink(current)) return true; // reached only when dangling — Exists above catches a live link
-            current = Path.GetDirectoryName(current);
-        }
-        return false;
-    }
-
-    /// <summary>Whether <paramref name="path"/> is itself a symlink, regardless of whether its
-    /// target exists — File.Exists/Directory.Exists both FOLLOW links, so a dangling one reads as
-    /// pure absence and the walk above would otherwise skip straight past it.</summary>
-    static bool IsLink(string path) {
-        try { return File.ResolveLinkTarget(path, returnFinalTarget: false) is not null; }
-        catch { return false; }
-    }
 
     static void Publish(string path, ProfileConfig config) {
         var tmp = path + ".tmp-" + Guid.NewGuid().ToString("N")[..8];

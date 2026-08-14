@@ -33,58 +33,82 @@ public class ServiceVerifyStartGateProductionPathTests {
         </plist>
         """;
 
-    static (int ExitCode, string StdOut, string StdErr) PrintNotFound(string[] args) =>
-        args[0] == "print"
-            ? (113, "", "Could not find service \"io.kurrent.kcap.daemon.prodpath\" in domain for user gui: 501")
-            : (0, "", "");
+    /// <summary>HOME/lock-dir isolation, the stubbed launchctl manager/hello pair, and stderr
+    /// capture shared by every test in this file — each test arranges only its own on-disk evidence
+    /// shape (a malformed plist, stripped permissions, a directory, a dangling symlink, ...) before
+    /// calling <see cref="RunStartVerifiedAsync"/>.</summary>
+    sealed class ProdPathFixture : IDisposable {
+        readonly string? _originalHome;
+        readonly string _home;
+        readonly TextWriter _originalErr = Console.Error;
+
+        public string PlistPath => LaunchdUnit.PlistPath(Id);
+
+        public LaunchdServiceManager Manager { get; } = new(
+            runProcess: (_, args) => PrintNotFound(args),
+            runBounded: (_, args, _) => {
+                var (code, stdout, stderr) = PrintNotFound(args);
+                return (code, stdout, stderr, false);
+            });
+
+        public ProdPathFixture() {
+            _originalHome = Environment.GetEnvironmentVariable("HOME");
+            _home = Directory.CreateTempSubdirectory("kcap-prodpath-home-").FullName;
+            Environment.SetEnvironmentVariable("HOME", _home);
+
+            var lockDir = Directory.CreateTempSubdirectory("kcap-prodpath-lock-").FullName;
+            DaemonLockPaths.OverrideDirectoryForTesting(lockDir);
+        }
+
+        static (int ExitCode, string StdOut, string StdErr) PrintNotFound(string[] args) =>
+            args[0] == "print"
+                ? (113, "", $"Could not find service \"{LaunchdUnit.Label(Id)}\" in domain for user gui: 501")
+                : (0, "", "");
+
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+        public async Task<(int Exit, string[] StdErrLines)> RunStartVerifiedAsync() {
+            var sut = new ServiceVerify(Manager, _ => 4242, Hello, TimeProvider.System,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
+
+            var capturedErr = new StringWriter();
+            Console.SetError(capturedErr);
+            int exit;
+            try {
+                exit = await sut.StartVerifiedAsync(Id);
+            } finally {
+                Console.SetError(_originalErr);
+            }
+
+            return (exit, capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries));
+        }
+
+        public void Dispose() {
+            Console.SetError(_originalErr);
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+            Environment.SetEnvironmentVariable("HOME", _originalHome);
+            try { Directory.Delete(_home, recursive: true); } catch { /* best effort */ }
+        }
+    }
 
     [Test]
     public async Task Malformed_unit_on_disk_is_contained_through_the_real_manager_and_reaches_exit_28() {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-        var home = Directory.CreateTempSubdirectory("kcap-prodpath-home-").FullName;
-        Environment.SetEnvironmentVariable("HOME", home);
+        using var fx = new ProdPathFixture();
+        Directory.CreateDirectory(LaunchdUnit.AgentsDir());
+        File.WriteAllText(fx.PlistPath, DuplicateKeyPlist);
 
-        var lockDir = Directory.CreateTempSubdirectory("kcap-prodpath-lock-").FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(lockDir);
+        // The `service status --json` style call: Query must NOT throw on this exact malformed
+        // unit — only report unreadable binary evidence.
+        var query = fx.Manager.Query(Id);
+        await Assert.That(query.BinaryPath).IsNull();
+        await Assert.That(query.UnitPresent).IsTrue();
 
-        try {
-            Directory.CreateDirectory(LaunchdUnit.AgentsDir());
-            File.WriteAllText(LaunchdUnit.PlistPath(Id), DuplicateKeyPlist);
+        var (exit, _) = await fx.RunStartVerifiedAsync();
 
-            // Both launchctl seams stubbed (Query is called with and without a timeout across this
-            // test) so no real launchctl process is ever invoked — this test proves the FILE-parsing
-            // containment, not launchd interaction.
-            var manager = new LaunchdServiceManager(
-                runProcess: (_, args) => PrintNotFound(args),
-                runBounded: (_, args, _) => {
-                    var (code, stdout, stderr) = PrintNotFound(args);
-                    return (code, stdout, stderr, false);
-                });
-
-            // The `service status --json` style call: Query must NOT throw on this exact malformed
-            // unit — only report unreadable binary evidence.
-            var query = manager.Query(Id);
-            await Assert.That(query.BinaryPath).IsNull();
-            await Assert.That(query.UnitPresent).IsTrue();
-
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
-
-            // Default readPlist (real File.ReadAllText) and the real manager — the gate's own
-            // contained Phase-A parse is the sole authority for coded evidence classification.
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
-
-            var exit = await sut.StartVerifiedAsync(Id);
-
-            await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-            try { Directory.Delete(home, recursive: true); } catch { /* best effort */ }
-        }
+        await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
     }
 
     /// <summary>A unit that IS present but whose plist cannot be read must classify as
@@ -95,53 +119,23 @@ public class ServiceVerifyStartGateProductionPathTests {
     public async Task Present_but_unreadable_unit_is_evidence_unreadable_not_directive_missing() {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution and Unix file modes are POSIX-only");
 
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-        var home = Directory.CreateTempSubdirectory("kcap-prodpath-home-").FullName;
-        Environment.SetEnvironmentVariable("HOME", home);
-
-        var lockDir = Directory.CreateTempSubdirectory("kcap-prodpath-lock-").FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(lockDir);
-
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
+        using var fx = new ProdPathFixture();
+        Directory.CreateDirectory(LaunchdUnit.AgentsDir());
+        File.WriteAllText(fx.PlistPath, DuplicateKeyPlist); // content is irrelevant — the read never succeeds
+        File.SetUnixFileMode(fx.PlistPath, UnixFileMode.None);
 
         try {
-            Directory.CreateDirectory(LaunchdUnit.AgentsDir());
-            var plistPath = LaunchdUnit.PlistPath(Id);
-            File.WriteAllText(plistPath, DuplicateKeyPlist); // content is irrelevant — the read never succeeds
-            File.SetUnixFileMode(plistPath, UnixFileMode.None);
-
-            var manager = new LaunchdServiceManager(
-                runProcess: (_, args) => PrintNotFound(args),
-                runBounded: (_, args, _) => {
-                    var (code, stdout, stderr) = PrintNotFound(args);
-                    return (code, stdout, stderr, false);
-                });
-
             // The unit-level presence signal Query reports must stay true — File.Exists sees the
             // file regardless of its permission bits.
-            var query = manager.Query(Id);
+            var query = fx.Manager.Query(Id);
             await Assert.That(query.UnitPresent).IsTrue();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
-
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
-
-            Console.SetError(capturedErr);
-            var exit = await sut.StartVerifiedAsync(Id);
-            Console.SetError(originalErr);
+            var (exit, lines) = await fx.RunStartVerifiedAsync();
 
             await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
-            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
             await Assert.That(lines).Contains("start_gate_reason=evidence_unreadable");
         } finally {
-            Console.SetError(originalErr);
-            try { File.SetUnixFileMode(LaunchdUnit.PlistPath(Id), UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch { /* best effort */ }
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-            try { Directory.Delete(home, recursive: true); } catch { /* best effort */ }
+            try { File.SetUnixFileMode(fx.PlistPath, UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch { /* best effort */ }
         }
     }
 
@@ -153,50 +147,55 @@ public class ServiceVerifyStartGateProductionPathTests {
     public async Task Directory_at_plist_path_is_evidence_unreadable_not_directive_missing() {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-        var home = Directory.CreateTempSubdirectory("kcap-prodpath-home-").FullName;
-        Environment.SetEnvironmentVariable("HOME", home);
+        using var fx = new ProdPathFixture();
+        Directory.CreateDirectory(LaunchdUnit.AgentsDir());
+        Directory.CreateDirectory(fx.PlistPath); // a DIRECTORY sits at the plist path, not a file
 
-        var lockDir = Directory.CreateTempSubdirectory("kcap-prodpath-lock-").FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(lockDir);
+        // The unit-level presence signal Query reports must stay true even though
+        // File.Exists itself would say otherwise for a directory.
+        var query = fx.Manager.Query(Id);
+        await Assert.That(query.UnitPresent).IsTrue();
 
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
+        var (exit, lines) = await fx.RunStartVerifiedAsync();
 
-        try {
-            Directory.CreateDirectory(LaunchdUnit.AgentsDir());
-            Directory.CreateDirectory(LaunchdUnit.PlistPath(Id)); // a DIRECTORY sits at the plist path, not a file
+        await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
+        await Assert.That(lines).Contains("start_gate_reason=evidence_unreadable");
+    }
 
-            var manager = new LaunchdServiceManager(
-                runProcess: (_, args) => PrintNotFound(args),
-                runBounded: (_, args, _) => {
-                    var (code, stdout, stderr) = PrintNotFound(args);
-                    return (code, stdout, stderr, false);
-                });
+    /// <summary>A dangling symlink AT the plist path — <c>File.Exists</c> reads it as absent (it
+    /// follows through to the missing target), but the open raises <see cref="FileNotFoundException"/>
+    /// with structural link evidence right at the path. Must classify <c>evidence_unreadable</c>,
+    /// never <c>directive_missing</c>.</summary>
+    [Test, NotInParallel]
+    public async Task Dangling_symlink_at_plist_path_is_evidence_unreadable_not_directive_missing() {
+        Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
-            // The unit-level presence signal Query reports must stay true even though
-            // File.Exists itself would say otherwise for a directory.
-            var query = manager.Query(Id);
-            await Assert.That(query.UnitPresent).IsTrue();
+        using var fx = new ProdPathFixture();
+        Directory.CreateDirectory(LaunchdUnit.AgentsDir());
+        File.CreateSymbolicLink(fx.PlistPath, Path.Combine(LaunchdUnit.AgentsDir(), "never-created-target"));
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+        var (exit, lines) = await fx.RunStartVerifiedAsync();
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
+        await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
+        await Assert.That(lines).Contains("start_gate_reason=evidence_unreadable");
+    }
 
-            Console.SetError(capturedErr);
-            var exit = await sut.StartVerifiedAsync(Id);
-            Console.SetError(originalErr);
+    /// <summary>A dangling symlink standing in for an ANCESTOR directory of the plist path (here,
+    /// <c>~/Library</c> itself) raises <see cref="DirectoryNotFoundException"/> rather than
+    /// <see cref="FileNotFoundException"/> — must still classify <c>evidence_unreadable</c>, never
+    /// <c>directive_missing</c>.</summary>
+    [Test, NotInParallel]
+    public async Task Dangling_symlink_ancestor_of_plist_path_is_evidence_unreadable_not_directive_missing() {
+        Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
-            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
-            await Assert.That(lines).Contains("start_gate_reason=evidence_unreadable");
-        } finally {
-            Console.SetError(originalErr);
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-            try { Directory.Delete(home, recursive: true); } catch { /* best effort */ }
-        }
+        using var fx = new ProdPathFixture();
+        var home = PathHelpers.HomeDirectory;
+        var library = Path.Combine(home, "Library");
+        File.CreateSymbolicLink(library, Path.Combine(home, "never-created-target"));
+
+        var (exit, lines) = await fx.RunStartVerifiedAsync();
+
+        await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
+        await Assert.That(lines).Contains("start_gate_reason=evidence_unreadable");
     }
 }

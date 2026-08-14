@@ -306,6 +306,18 @@ public class LaunchdUnitTests {
         await Assert.That(() => LaunchdUnit.BinaryFromPlist(xml)).Throws<InvalidDataException>();
     }
 
+    /// <summary>A genuinely never-created parent chain must still classify as Absent — link/file
+    /// evidence detection must not turn every missing directory level into Unreadable.</summary>
+    [Test]
+    public async Task TryReadPlist_missing_parent_directories_is_still_absent() {
+        var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-plist-").FullName, "never-created", "sub", "x.plist");
+
+        var status = LaunchdUnit.TryReadPlist(path, out var content);
+
+        await Assert.That(status).IsEqualTo(LaunchdUnit.PlistRead.Absent);
+        await Assert.That(content).IsNull();
+    }
+
     [Test]
     public async Task StatusFromPrint_maps_exit_and_state() {
         await Assert.That(LaunchdUnit.StatusFromPrint(exitCode: 1, stdout: "")).IsEqualTo(ServiceState.NotInstalled);

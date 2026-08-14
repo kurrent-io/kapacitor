@@ -202,6 +202,23 @@ public class ConfigMutatorTests {
         await Assert.That(config.Profiles.ContainsKey("default")).IsTrue(); // still a usable default out param
     }
 
+    /// <summary>A dangling symlink AT the exact config path (not an ancestor) raises
+    /// <see cref="FileNotFoundException"/>, not <see cref="DirectoryNotFoundException"/> — must still
+    /// classify as unreadable, never the takeover-safe "nothing configured yet".</summary>
+    [Test]
+    public async Task TryLoadPure_dangling_symlink_at_exact_path_is_failure_not_absence() {
+        Skip.When(OperatingSystem.IsWindows(), "symlink creation needs elevated privilege on Windows CI");
+
+        var root = Directory.CreateTempSubdirectory("kcap-trypure-").FullName;
+        var path = Path.Combine(root, "config.json");
+        File.CreateSymbolicLink(path, Path.Combine(root, "never-created-target"));
+
+        var ok = ConfigMutator.TryLoadPure(path, out var config);
+
+        await Assert.That(ok).IsFalse();
+        await Assert.That(config.Profiles.ContainsKey("default")).IsTrue(); // still a usable default out param
+    }
+
     /// <summary>A genuinely never-created parent chain must still read as absence — disambiguating
     /// a blocked ancestor must not turn every missing directory level into a false failure.</summary>
     [Test]

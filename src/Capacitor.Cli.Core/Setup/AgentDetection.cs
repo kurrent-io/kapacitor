@@ -114,24 +114,18 @@ public static class AgentDetection {
     public static bool BinaryOnPath(string binaryName, AgentDetectionInputs i) =>
         BinaryOnPath(binaryName, i, IsExecutable);
 
-    /// <summary>Counting/stubbing seam for <see cref="BinaryOnPath(string, AgentDetectionInputs)"/>:
-    /// lets a test observe exactly which candidate paths get probed, so PATH-entry dedup is pinned
-    /// by call count rather than only by the boolean result.</summary>
+    /// <summary>Stubbing seam for <see cref="BinaryOnPath(string, AgentDetectionInputs)"/>; separator/
+    /// extensions/comparer are all derived from <paramref name="i"/>'s platform, never the host's.</summary>
     internal static bool BinaryOnPath(string binaryName, AgentDetectionInputs i, Func<string, bool, bool> isExecutable) {
         if (string.IsNullOrEmpty(i.PathEnv)) return false;
 
-        // Both derived from the injected platform, never the host-global Path.PathSeparator/
-        // OS-comparer: a test simulating Windows behavior on a non-Windows host (or vice versa)
-        // must get what that platform actually uses. Windows PATH entries are case-insensitive
-        // identity (two case-variant dirs are the SAME entry, probed once); Unix PATH entries are
-        // case-sensitive (case-variant dirs are genuinely distinct, each probed).
         var separator  = i.IsWindows ? ';' : ':';
         var paths      = i.PathEnv.Split(separator);
         var extensions = i.IsWindows ? WindowsExtensions(i.PathExt) : [""];
         var comparer   = i.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
         return paths.Where(dir => !string.IsNullOrEmpty(dir))
-            .Distinct(comparer) // a dir repeated in PATH (by platform identity) is probed once, not once per occurrence
+            .Distinct(comparer)
             .Any(dir => extensions.Select(ext => Path.Combine(dir, binaryName + ext)).Any(path => isExecutable(path, i.IsWindows)));
     }
 
