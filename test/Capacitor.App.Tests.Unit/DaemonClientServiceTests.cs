@@ -1,6 +1,8 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Capacitor.App.Services;
+using Capacitor.App.Services.Mutation;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.LocalIpc;
 using TUnit.Assertions.Enums;
 
@@ -47,19 +49,26 @@ public class DaemonClientServiceTests {
         }
     }
 
-    sealed class FakeProcessRunner : IProcessRunner {
-        public string? SeenFileName;
-        public string[]? SeenArgs;
-        public RunOptions? SeenOptions;
-        public Func<CancellationToken, Task<ProcessResult>>? Behavior;
+    /// Scripted stand-in for the lane's RunAsync as injected via DaemonClientService's ctor
+    /// (Task 10: the service no longer owns a process runner at all — every
+    /// StartDaemonAsync call goes through exactly this seam).
+    sealed class FakeStartDaemon {
+        public int CallCount;
+        public CancellationToken? SeenCt;
+        public Func<CancellationToken, Task<MutationOutcome>> Behavior =
+            _ => Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
 
-        public Task<ProcessResult> RunAsync(string fileName, string[] args, RunOptions options, CancellationToken ct) {
-            SeenFileName = fileName;
-            SeenArgs     = args;
-            SeenOptions  = options;
-            return (Behavior ?? (_ => Task.FromResult(new ProcessResult(0, "", "", false))))(ct);
+        public Task<MutationOutcome> InvokeAsync(CancellationToken ct) {
+            CallCount++;
+            SeenCt = ct;
+            return Behavior(ct);
         }
     }
+
+    // Filler for tests that never call StartDaemonAsync at all — a benign default that would
+    // fail loudly (wrong outcome type surfacing) rather than silently if it ever were.
+    static Func<CancellationToken, Task<MutationOutcome>> NoOpStart() =>
+        _ => Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
 
     static DaemonStatusDto Snap(string daemon, params string[] ids) {
         var agents = ids.Select(id => new AgentStatusDto(
@@ -91,7 +100,7 @@ public class DaemonClientServiceTests {
     [Test]
     public async Task Initial_status_replays_connecting() {
         var script = new Script();
-        await using var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
+        await using var svc = new DaemonClientService("daemon-a", script.Run, NoOpStart());
         svc.Start();
         await Task.Delay(20); // let the loop actually start before subscribing "late"
 
@@ -105,7 +114,7 @@ public class DaemonClientServiceTests {
     [Test]
     public async Task Event_mapping_is_complete_and_atomic() {
         var script = new Script();
-        await using var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
+        await using var svc = new DaemonClientService("daemon-a", script.Run, NoOpStart());
         svc.Start();
 
         var seen = new List<AttachStatus>();
@@ -136,7 +145,7 @@ public class DaemonClientServiceTests {
     [Test] // Connected's hello-derived identity threads verbatim into AttachStatus
     public async Task Connected_identity_threads_into_attach_status() {
         var script = new Script();
-        await using var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
+        await using var svc = new DaemonClientService("daemon-a", script.Run, NoOpStart());
         svc.Start();
 
         var seen = new List<AttachStatus>();
@@ -155,7 +164,7 @@ public class DaemonClientServiceTests {
     [Test] // spec decision 6: hello DaemonVersion propagates Unreachable → AttachStatus
     public async Task Unreachable_daemon_version_propagates_into_attach_status() {
         var script = new Script();
-        await using var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
+        await using var svc = new DaemonClientService("daemon-a", script.Run, NoOpStart());
         svc.Start();
 
         var seen = new List<AttachStatus>();
@@ -171,7 +180,7 @@ public class DaemonClientServiceTests {
     [Test]
     public async Task No_stale_reconnect() {
         var script = new Script();
-        await using var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
+        await using var svc = new DaemonClientService("daemon-a", script.Run, NoOpStart());
         svc.Start();
 
         // Captures (status, latest Snapshots value, current Agents keys) all read SYNCHRONOUSLY
@@ -247,7 +256,7 @@ public class DaemonClientServiceTests {
         // Not `await using` — DisposeAsync is called explicitly below as the assertion under
         // test, so a second implicit call at scope exit is avoided rather than relied upon to
         // be idempotent.
-        var svc = new DaemonClientService("daemon-a", FaultingThenNormalRun, new FakeProcessRunner(), "kcap");
+        var svc = new DaemonClientService("daemon-a", FaultingThenNormalRun, NoOpStart());
         svc.Start();
 
         // Let the faulting first enumeration run to completion (fault contained, no crash).
@@ -274,7 +283,7 @@ public class DaemonClientServiceTests {
     [Test]
     public async Task Snapshots_is_empty_until_first_and_cache_diffs() {
         var script = new Script();
-        await using var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
+        await using var svc = new DaemonClientService("daemon-a", script.Run, NoOpStart());
         svc.Start();
 
         var snapshots = new List<DaemonStatusDto>();
@@ -303,7 +312,7 @@ public class DaemonClientServiceTests {
     [Test]
     public async Task Cache_retained_on_disconnect() {
         var script = new Script();
-        await using var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
+        await using var svc = new DaemonClientService("daemon-a", script.Run, NoOpStart());
         svc.Start();
 
         var statuses = new List<AttachStatus>();
@@ -328,7 +337,7 @@ public class DaemonClientServiceTests {
     [Test]
     public async Task RestartLoop_is_single_flight() {
         var script = new Script();
-        await using var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
+        await using var svc = new DaemonClientService("daemon-a", script.Run, NoOpStart());
         svc.Start();
         await WaitUntilAsync(() => script.LiveEnumerations >= 1, what: "first enumeration to start");
 
@@ -348,10 +357,10 @@ public class DaemonClientServiceTests {
     }
 
     [Test]
-    public async Task StartDaemon_success_argv_and_restart_kick() {
+    public async Task StartDaemon_success_kicks_restart_no_direct_spawn() {
         var script = new Script();
-        var runner = new FakeProcessRunner { Behavior = _ => Task.FromResult(new ProcessResult(0, "", "", false)) };
-        await using var svc = new DaemonClientService("daemon-a", script.Run, runner, "/opt/kcap");
+        var fakeStart = new FakeStartDaemon { Behavior = _ => Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded()) };
+        await using var svc = new DaemonClientService("daemon-a", script.Run, fakeStart.InvokeAsync);
         svc.Start();
         await WaitUntilAsync(() => script.LiveEnumerations >= 1, what: "enumeration to start");
         var startCountBefore = script.StartCount;
@@ -360,54 +369,133 @@ public class DaemonClientServiceTests {
 
         await Assert.That(result.Ok).IsTrue();
         await Assert.That(result.Message).IsNull();
-        await Assert.That(runner.SeenFileName).IsEqualTo("/opt/kcap");
-        await Assert.That(runner.SeenArgs)
-            .IsEquivalentTo(["daemon", "start", "-d", "--name", "daemon-a"], CollectionOrdering.Matching);
+        // Task 10: the service owns no process runner at all any more — the ONLY way it
+        // can start a daemon is through the injected delegate, exercised exactly once here.
+        await Assert.That(fakeStart.CallCount).IsEqualTo(1);
 
-        // Exit 0 immediately kicks RestartLoopAsync — a NEW enumeration begins without a
-        // manual restart call and without waiting for backoff (StartCount strictly increases,
-        // not just LiveEnumerations dipping and recovering, which would be racy to observe).
+        // A Succeeded outcome immediately kicks RestartLoopAsync — a NEW enumeration begins
+        // without a manual restart call and without waiting for backoff (StartCount strictly
+        // increases, not just LiveEnumerations dipping and recovering, which would be racy).
         await WaitUntilAsync(() => script.StartCount > startCountBefore, TimeSpan.FromSeconds(2), what: "restart kick after successful start");
         await WaitUntilAsync(() => script.LiveEnumerations == 1, what: "single live enumeration after restart kick");
         await Assert.That(script.PeakLiveEnumerations).IsLessThanOrEqualTo(1);
+    }
+
+    // Keep RestartLoopAsync kick on success outcomes INCLUDING SucceededAfterTimeout — the same
+    // rule as the plain Succeeded case above, pinned separately since the two are classified
+    // differently by the lane.
+    [Test]
+    public async Task StartDaemon_succeeded_after_timeout_also_kicks_restart() {
+        var script = new Script();
+        var fakeStart = new FakeStartDaemon { Behavior = _ => Task.FromResult<MutationOutcome>(new MutationOutcome.SucceededAfterTimeout()) };
+        await using var svc = new DaemonClientService("daemon-a", script.Run, fakeStart.InvokeAsync);
+        svc.Start();
+        await WaitUntilAsync(() => script.LiveEnumerations >= 1, what: "enumeration to start");
+        var startCountBefore = script.StartCount;
+
+        var result = await svc.StartDaemonAsync(CancellationToken.None);
+
+        await Assert.That(result.Ok).IsTrue();
+        await WaitUntilAsync(() => script.StartCount > startCountBefore, TimeSpan.FromSeconds(2), what: "restart kick after SucceededAfterTimeout");
+    }
+
+    // Refused("cli_not_found") is the one outcome that must surface the OLD honest "not found"
+    // wording verbatim, not the raw coded token — StartDaemonResult.Message is user-facing text.
+    [Test]
+    public async Task StartDaemon_refused_cli_not_found_surfaces_the_honest_message() {
+        var script = new Script();
+        var fakeStart = new FakeStartDaemon {
+            Behavior = _ => Task.FromResult<MutationOutcome>(new MutationOutcome.Refused("cli_not_found", RecoverySurface.Attention))
+        };
+        await using var svc = new DaemonClientService("daemon-a", script.Run, fakeStart.InvokeAsync);
+
+        var result = await svc.StartDaemonAsync(CancellationToken.None);
+
+        await Assert.That(result.Ok).IsFalse();
+        await Assert.That(result.Message).IsEqualTo("kcap CLI not found");
     }
 
     [Test]
     public async Task StartDaemon_failures_produce_messages() {
         var script = new Script();
 
-        var throwingRunner = new FakeProcessRunner {
-            Behavior = _ => throw new InvalidOperationException("spawn failed")
+        var refused = new FakeStartDaemon {
+            Behavior = _ => Task.FromResult<MutationOutcome>(new MutationOutcome.Refused("no_server_configured", RecoverySurface.Attention))
         };
-        await using (var svc1 = new DaemonClientService("daemon-a", script.Run, throwingRunner, "kcap")) {
+        await using (var svc1 = new DaemonClientService("daemon-a", script.Run, refused.InvokeAsync)) {
             var r1 = await svc1.StartDaemonAsync(CancellationToken.None);
             await Assert.That(r1.Ok).IsFalse();
-            await Assert.That(string.IsNullOrWhiteSpace(r1.Message)).IsFalse();
+            await Assert.That(r1.Message).IsEqualTo("no_server_configured");
         }
 
-        var nonZeroWithStderr = new FakeProcessRunner {
-            Behavior = _ => Task.FromResult(new ProcessResult(1, "", "boom: could not bind socket", false))
+        var failedWithReason = new FakeStartDaemon {
+            Behavior = _ => Task.FromResult<MutationOutcome>(new MutationOutcome.Failed(43, "package_inconsistent", RecoverySurface.Reinstall))
         };
-        await using (var svc2 = new DaemonClientService("daemon-b", script.Run, nonZeroWithStderr, "kcap")) {
+        await using (var svc2 = new DaemonClientService("daemon-b", script.Run, failedWithReason.InvokeAsync)) {
             var r2 = await svc2.StartDaemonAsync(CancellationToken.None);
             await Assert.That(r2.Ok).IsFalse();
-            await Assert.That(string.IsNullOrWhiteSpace(r2.Message)).IsFalse();
+            await Assert.That(r2.Message).IsEqualTo("package_inconsistent");
         }
 
-        var nonZeroEmptyStderr = new FakeProcessRunner {
-            Behavior = _ => Task.FromResult(new ProcessResult(1, "", "", false))
+        var failedNoReason = new FakeStartDaemon {
+            Behavior = _ => Task.FromResult<MutationOutcome>(new MutationOutcome.Failed(1, null, RecoverySurface.Attention))
         };
-        await using (var svc3 = new DaemonClientService("daemon-c", script.Run, nonZeroEmptyStderr, "kcap")) {
+        await using (var svc3 = new DaemonClientService("daemon-c", script.Run, failedNoReason.InvokeAsync)) {
             var r3 = await svc3.StartDaemonAsync(CancellationToken.None);
             await Assert.That(r3.Ok).IsFalse();
-            await Assert.That(string.IsNullOrWhiteSpace(r3.Message)).IsFalse();
+            await Assert.That(r3.Message).IsEqualTo("kcap daemon start exited with code 1");
         }
+    }
+
+    // Task 10: DaemonClientService.BuildStartDaemon is the extracted request-building seam
+    // CreateDefaultAsync wires to the real AppConfig.ResolvedProfile — this drives it directly
+    // against a scripted profile resolver, proving the main-window Start path produces a
+    // DetachedStart MutationRequest through the lane rather than any direct process spawn.
+    [Test]
+    public async Task BuildStartDaemon_produces_a_detached_start_request_at_the_resolved_identity() {
+        MutationRequest? seen = null;
+        Task<MutationOutcome> RunMutation(MutationRequest request, CancellationToken ct) {
+            seen = request;
+            return Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
+        }
+
+        var profile = new ResolvedProfile("https://kcap.example.com", "default", null, null);
+        var start = DaemonClientService.BuildStartDaemon("daemon-a", () => profile, RunMutation);
+
+        var outcome = await start(CancellationToken.None);
+
+        await Assert.That(outcome).IsTypeOf<MutationOutcome.Succeeded>();
+        await Assert.That(seen).IsNotNull();
+        await Assert.That(seen!.Verb).IsEqualTo(MutationVerb.DetachedStart);
+        await Assert.That(seen.Profile).IsEqualTo("default");
+        await Assert.That(seen.CanonicalServer).IsEqualTo("https://kcap.example.com:443");
+        await Assert.That(seen.DaemonName).IsEqualTo("daemon-a");
+    }
+
+    // Binding ruling 1: a fresh/broken machine (no resolvable canonical server) must refuse
+    // WITHOUT ever calling runMutation — the guard lives at the request-building boundary, not
+    // inside the lane.
+    [Test]
+    public async Task BuildStartDaemon_no_server_configured_refuses_without_calling_runMutation() {
+        var runMutationCalls = 0;
+        Task<MutationOutcome> RunMutation(MutationRequest request, CancellationToken ct) {
+            runMutationCalls++;
+            return Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
+        }
+
+        var start = DaemonClientService.BuildStartDaemon("daemon-a", () => null, RunMutation);
+
+        var outcome = await start(CancellationToken.None);
+
+        await Assert.That(runMutationCalls).IsEqualTo(0);
+        await Assert.That(outcome).IsTypeOf<MutationOutcome.Refused>();
+        await Assert.That(((MutationOutcome.Refused)outcome).Reason).IsEqualTo("no_server_configured");
     }
 
     [Test]
     public async Task Dispose_ends_the_loop_and_disposes_subjects() {
         var script = new Script();
-        var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
+        var svc = new DaemonClientService("daemon-a", script.Run, NoOpStart());
         svc.Start();
         await WaitUntilAsync(() => script.LiveEnumerations >= 1, what: "enumeration to start");
 
@@ -439,7 +527,10 @@ public class DaemonClientServiceTests {
         var startCts = new CancellationTokenSource();
         var runnerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var runner = new FakeProcessRunner {
+        // Mirrors DaemonMutationLane.RunAsync's real contract: a waiter's own ct abandons ITS
+        // wait (rethrown as OperationCanceledException carrying that same ct) without touching
+        // whatever the owned action is doing — this fake reproduces exactly that shape.
+        var fakeStart = new FakeStartDaemon {
             Behavior = async ct => {
                 runnerEntered.TrySetResult();
                 var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -449,7 +540,7 @@ public class DaemonClientServiceTests {
             }
         };
 
-        var svc = new DaemonClientService("daemon-a", script.Run, runner, "kcap");
+        var svc = new DaemonClientService("daemon-a", script.Run, fakeStart.InvokeAsync);
         svc.Start();
         await WaitUntilAsync(() => script.LiveEnumerations >= 1, what: "enumeration to start");
 

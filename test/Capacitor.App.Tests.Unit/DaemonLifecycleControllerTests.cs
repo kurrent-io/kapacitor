@@ -1,4 +1,5 @@
 using Capacitor.App.Services;
+using Capacitor.App.Services.Mutation;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.App.Tests.Unit;
@@ -7,8 +8,12 @@ namespace Capacitor.App.Tests.Unit;
 /// clock-dependent wait goes through FakeTimeProvider (never Task.Delay-based ordering);
 /// settling between an event push and its effect is driven by WaitUntilAsync polling on the
 /// fakes' call counters (PauseControllerTests/ConsentServiceTests idiom).
+///
+/// Task 10: every mutating branch now routes through a fake lane (FakeMutationLane)
+/// instead of calling IKcapCli's mutation methods directly — FakeKcapCli's
+/// StartVerified/InstallVerified/DetachedStart call counts are kept as a belt-and-braces
+/// regression guard (they must stay 0 everywhere) alongside the new Lane.Requests assertions.
 public class DaemonLifecycleControllerTests {
-    static readonly TimeSpan ConfirmWindow         = DaemonLifecycleController.ConfirmWindow;
     static readonly TimeSpan TxnActiveRequeryDelay = DaemonLifecycleController.TxnActiveRequeryDelay;
 
     static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null, string what = "condition") {
@@ -25,9 +30,6 @@ public class DaemonLifecycleControllerTests {
             bool txnActive = false) =>
         new("default", unitPresent, state, binaryPath, installBinaryPath, jobPid, daemonPid, txnMarker, txnActive);
 
-    static ProcessResult Ok(string stdout = "") => new(0, stdout, "", false);
-    static ProcessResult Failed(int exitCode, string stderr) => new(exitCode, "", stderr, false);
-
     // ---- startup matrix rows (§4.2) ----
 
     [Test]
@@ -40,8 +42,7 @@ public class DaemonLifecycleControllerTests {
 
         await WaitUntilAsync(() => h.Cli.StatusCallCount == 1, what: "the matrix status query");
         await h.Controller.PhaseClosed;
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
         await Assert.That(h.Surface.AttentionMessages).IsEmpty();
     }
 
@@ -53,9 +54,12 @@ public class DaemonLifecycleControllerTests {
 
         h.PushUnreachable();
 
-        await WaitUntilAsync(() => h.Cli.StartVerifiedCallCount == 1, what: "service start --verify");
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the lane's service start --verify request");
+        await Assert.That(h.Lane.Requests[0].Verb).IsEqualTo(MutationVerb.StartVerified);
         await Assert.That(h.Surface.AttentionMessages).IsEmpty();
+        // Never IKcapCli directly — the lane is the ONLY caller of these now.
+        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
     }
 
     [Test]
@@ -68,8 +72,7 @@ public class DaemonLifecycleControllerTests {
 
         await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "the coexistence attention");
         await h.Controller.PhaseClosed;
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     [Test]
@@ -82,8 +85,7 @@ public class DaemonLifecycleControllerTests {
 
         await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "the orphan-label attention");
         await h.Controller.PhaseClosed;
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     [Test]
@@ -94,8 +96,8 @@ public class DaemonLifecycleControllerTests {
 
         h.PushUnreachable();
 
-        await WaitUntilAsync(() => h.Cli.StartVerifiedCallCount == 1, what: "service start --verify (bootstrap)");
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the lane's service start --verify request (bootstrap)");
+        await Assert.That(h.Lane.Requests[0].Verb).IsEqualTo(MutationVerb.StartVerified);
         await Assert.That(h.Surface.AttentionMessages).IsEmpty();
     }
 
@@ -108,8 +110,7 @@ public class DaemonLifecycleControllerTests {
         h.PushUnreachable();
 
         await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "the coexistence attention");
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     [Test]
@@ -120,9 +121,8 @@ public class DaemonLifecycleControllerTests {
 
         h.PushUnreachable();
 
-        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "service install --verify");
-        await Assert.That(h.Cli.LastInstallReplace).IsNotNull().And.IsEqualTo(false);
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the lane's service install --verify request");
+        await Assert.That(h.Lane.Requests[0].Verb).IsEqualTo(MutationVerb.Install); // never Replace on the silent-install row
         await Assert.That(h.Surface.AttentionMessages).IsEmpty();
     }
 
@@ -137,8 +137,7 @@ public class DaemonLifecycleControllerTests {
         h.PushUnreachable();
 
         await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the honest unrecognized-state line");
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
         await Assert.That(h.Surface.AttentionMessages).IsEmpty();
     }
 
@@ -152,8 +151,7 @@ public class DaemonLifecycleControllerTests {
         h.PushUnreachable();
 
         await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the honest no-profile line");
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     [Test]
@@ -169,8 +167,7 @@ public class DaemonLifecycleControllerTests {
         await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the honest PATH-unknown line");
         await h.Controller.PhaseClosed;
         await Assert.That(beforePhaseClosed).IsFalse();
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     [Test]
@@ -182,8 +179,8 @@ public class DaemonLifecycleControllerTests {
 
         h.PushUnreachable();
 
-        await WaitUntilAsync(() => h.Cli.StartVerifiedCallCount == 1, what: "service start --verify despite unknown PATH");
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the lane request despite unknown PATH");
+        await Assert.That(h.Lane.Requests[0].Verb).IsEqualTo(MutationVerb.StartVerified);
     }
 
     [Test]
@@ -195,8 +192,7 @@ public class DaemonLifecycleControllerTests {
         h.PushUnreachable();
 
         await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the honest no-install-binary line");
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     // ---- txn_active defers the startup matrix (spec §6: wait and re-query, never mutate into a held flock) ----
@@ -213,13 +209,14 @@ public class DaemonLifecycleControllerTests {
 
         h.PushUnreachable();
         await WaitUntilAsync(() => h.Cli.StatusCallCount == 1, what: "the initial matrix query");
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0); // deferred — not mutated into the held flock
+        await Assert.That(h.Lane.Requests).IsEmpty(); // deferred — not mutated into the held flock
 
         await WaitUntilAsync(() => h.Time.TimersCreated >= 1, what: "the txn-active requery timer to be armed");
         h.Clock.Advance(TxnActiveRequeryDelay);
 
         await WaitUntilAsync(() => h.Cli.StatusCallCount == 2, what: "the one bounded requery");
-        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the matrix proceeding once the flock cleared");
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the matrix proceeding once the flock cleared");
+        await Assert.That(h.Lane.Requests[0].Verb).IsEqualTo(MutationVerb.Install);
     }
 
     [Test]
@@ -235,8 +232,7 @@ public class DaemonLifecycleControllerTests {
 
         await WaitUntilAsync(() => h.Cli.StatusCallCount == 2, what: "the one bounded requery");
         await h.Controller.PhaseClosed;
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     // ---- a racing (meaningfully different) event forces one re-evaluation instead of silence ----
@@ -284,8 +280,7 @@ public class DaemonLifecycleControllerTests {
         await Task.Delay(50); // a negative: give a would-be matrix run every chance to fire
 
         await Assert.That(h.Cli.StatusCallCount).IsEqualTo(1);
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     [Test]
@@ -303,8 +298,7 @@ public class DaemonLifecycleControllerTests {
         await Task.Delay(50);
 
         await Assert.That(h.Cli.StatusCallCount).IsEqualTo(1);
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     // ---- once-per-run arm ----
@@ -374,47 +368,127 @@ public class DaemonLifecycleControllerTests {
         await Assert.That(h.Cli.StatusCallCount).IsEqualTo(2);
     }
 
-    // ---- UX confirmation ----
+    // ---- Task 10: routing through the lane ----
 
     [Test]
-    public async Task Successful_mutation_with_fresh_connected_within_window_no_status_message() {
+    public async Task Auto_start_routes_through_the_lane_with_the_pinned_identity() {
         await using var h = new Harness();
+        h.Client.DaemonName = "daemon-xyz";
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
-        var release = new TaskCompletionSource<ProcessResult>();
-        h.Cli.StartVerifiedBehavior = _ => release.Task;
         h.Start();
 
         h.PushUnreachable();
-        await WaitUntilAsync(() => h.Cli.StartVerifiedCallCount == 1, what: "the start-verify call to begin");
 
-        // A Connected racing the still-in-flight CLI call must still count as "after the
-        // mutation began" — the confirm waiter is armed before `mutate` runs.
-        h.PushConnected();
-        release.SetResult(Ok());
-
-        await WaitUntilAsync(() => h.Client.RestartCount >= 1, what: "the post-mutation reattach kick");
-        await h.Controller.PhaseClosed;
-        await Task.Delay(50); // give a wrongly-firing retry message every chance to appear
-        await Assert.That(h.Surface.StatusMessages).IsEmpty();
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the lane StartVerified request");
+        var request = h.Lane.Requests[0];
+        await Assert.That(request.Verb).IsEqualTo(MutationVerb.StartVerified);
+        await Assert.That(request.Profile).IsEqualTo("default");
+        await Assert.That(request.CanonicalServer).IsEqualTo(h.CanonicalServer);
+        await Assert.That(request.DaemonName).IsEqualTo("daemon-xyz");
+        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0); // never IKcapCli directly
     }
 
     [Test]
-    public async Task Successful_mutation_without_fresh_connected_times_out_to_retrying_status() {
-        await using var h = new Harness();
+    public async Task No_canonical_server_refuses_without_ever_calling_the_lane() {
+        await using var h = new Harness(canonicalServer: null);
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
-        h.Cli.StartVerifiedBehavior = _ => Task.FromResult(Ok());
         h.Start();
 
         h.PushUnreachable();
-        await WaitUntilAsync(() => h.Cli.StartVerifiedCallCount == 1, what: "the start-verify call");
-        await WaitUntilAsync(() => h.Time.TimersCreated >= 1, what: "the confirm-window timer to be armed");
-        h.Clock.Advance(ConfirmWindow);
 
-        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the retrying status line");
-        await Assert.That(h.Surface.StatusMessages[0]).Contains("retrying");
-        // No rollback call exists on IKcapCli at all — assert no other call happened.
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(0);
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the no-server status line");
+        await Assert.That(h.Lane.Requests).IsEmpty(); // the guard runs BEFORE the lane is ever touched
+        await Assert.That(h.Surface.StatusMessages[0]).Contains("no_server_configured");
+    }
+
+    // Single-presentation rule: an outcome the lane already routes to the outcome channel
+    // (AttentionSkew, here) must never ALSO be raised directly by the controller.
+    [Test]
+    public async Task AttentionSkew_outcome_does_not_raise_the_controllers_direct_attention_surface() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.AttentionSkew("ownership_mismatch"));
+        h.Start();
+
+        h.PushUnreachable();
+
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the lane request");
+        await h.Controller.PhaseClosed;
+        await Task.Delay(50); // give a wrongly-firing Attention/Status every chance to appear
+        await Assert.That(h.Surface.AttentionMessages).IsEmpty();
+        await Assert.That(h.Surface.StatusMessages).IsEmpty();
+        await Assert.That(h.Client.RestartCount).IsEqualTo(0); // not a success outcome — no reattach kick
+    }
+
+    // An UnconfirmedNoAttach outcome (the lane's TimedOut classification, spec §3.6) supersedes
+    // the controller's former confirm-window/timeout handling entirely — no local surface call at
+    // all, channel-only, same as every other non-success outcome.
+    [Test]
+    public async Task UnconfirmedNoAttach_outcome_produces_no_controller_surface_call_or_reattach_kick() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.UnconfirmedNoAttach());
+        h.Start();
+
+        h.PushUnreachable();
+
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the lane request");
+        await h.Controller.PhaseClosed;
+        await Task.Delay(50);
+        await Assert.That(h.Surface.StatusMessages).IsEmpty();
+        await Assert.That(h.Surface.AttentionMessages).IsEmpty();
+        await Assert.That(h.Client.RestartCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Refused_outcome_surfaces_the_honest_reason_as_status_text_only() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.Refused("cli_below_floor", RecoverySurface.Attention));
+        h.Start();
+
+        h.PushUnreachable();
+
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the refusal status line");
+        await Assert.That(h.Surface.StatusMessages[0]).Contains("cli_below_floor");
+        await Assert.That(h.Surface.AttentionMessages).IsEmpty(); // channel-only, never a direct Attention
+    }
+
+    // ---- UX confirmation ----
+
+    [Test]
+    public async Task Successful_mutation_kicks_restart_no_status_message() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        var release = new TaskCompletionSource<MutationOutcome>();
+        h.Lane.Behavior = (_, _) => release.Task;
+        h.Start();
+
+        h.PushUnreachable();
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the lane request to begin");
+        await Assert.That(h.Lane.Requests[0].Verb).IsEqualTo(MutationVerb.StartVerified);
+
+        release.SetResult(new MutationOutcome.Succeeded());
+
+        await WaitUntilAsync(() => h.Client.RestartCount >= 1, what: "the post-mutation reattach kick");
+        await h.Controller.PhaseClosed;
+        await Task.Delay(50); // give a wrongly-firing message every chance to appear
+        await Assert.That(h.Surface.StatusMessages).IsEmpty();
+        await Assert.That(h.Surface.AttentionMessages).IsEmpty();
+    }
+
+    [Test]
+    public async Task SucceededAfterTimeout_also_kicks_restart_no_status_message() {
+        await using var h = new Harness();
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
+        h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.SucceededAfterTimeout());
+        h.Start();
+
+        h.PushUnreachable();
+
+        await WaitUntilAsync(() => h.Client.RestartCount >= 1, what: "the post-mutation reattach kick");
+        await h.Controller.PhaseClosed;
+        await Assert.That(h.Surface.StatusMessages).IsEmpty();
     }
 
     // ---- coded failure ----
@@ -423,75 +497,33 @@ public class DaemonLifecycleControllerTests {
     public async Task Coded_failure_surfaces_the_verify_token_once() {
         await using var h = new Harness();
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
-        h.Cli.StartVerifiedBehavior = _ => Task.FromResult(Failed(24, "verify_readiness_timeout: gave up waiting"));
+        h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.Failed(24, "gave_up_waiting", RecoverySurface.Attention));
         h.Start();
 
         h.PushUnreachable();
 
         await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the coded-failure status line");
-        await Assert.That(h.Surface.StatusMessages[0]).Contains("verify_readiness_timeout");
+        await Assert.That(h.Surface.StatusMessages[0]).Contains("verify_readiness_timeout"); // VerifyExitCodes.Token(24)
+        await Assert.That(h.Surface.StatusMessages[0]).Contains("gave_up_waiting");
+        await Assert.That(h.Surface.AttentionMessages).IsEmpty(); // single-presentation: never also an Attention
 
         h.PushUnreachable(); // once-per-run: no retry
         await Task.Delay(50);
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(1);
+        await Assert.That(h.Lane.Requests.Count).IsEqualTo(1);
         await Assert.That(h.Surface.StatusMessages.Count).IsEqualTo(1);
     }
 
-    // ---- Finding 8: forced-kill timeout is never read as a verify outcome (spec §3.6) ----
-
     [Test]
-    public async Task TimedOut_mutation_reQueries_status_and_raises_attention_not_a_status_line() {
-        await using var h = new Harness();
-        var statusCalls = 0;
-        h.Cli.StatusBehavior = _ => {
-            statusCalls++;
-            // First call is the matrix's own classification query (Row5: nothing installed →
-            // install). Second is RunVerifiedMutationAsync's post-timeout re-query.
-            return Task.FromResult<ServiceSnapshot?>(statusCalls == 1 ? Snap() : Snap(txnMarker: true, txnActive: true));
-        };
-        // ExitCode 0 here is deliberate: a killed tree's exit code must never be trusted as Ok.
-        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromResult(new ProcessResult(0, "", "killed", true));
-        h.Start();
-
-        h.PushUnreachable();
-
-        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the install attempt");
-        await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "the timeout attention");
-        await Assert.That(h.Surface.AttentionMessages[0]).Contains("txn_marker=True");
-        await Assert.That(h.Surface.AttentionMessages[0]).Contains("txn_active=True");
-        await Assert.That(h.Surface.StatusMessages).IsEmpty(); // never a plain exit-code Status line
-        await Assert.That(statusCalls).IsEqualTo(2);
-    }
-
-    [Test]
-    public async Task TimedOut_mutation_never_kicks_reattach_or_waits_for_confirmation() {
+    public async Task Coded_failure_with_no_reason_token_still_surfaces_the_exit_code_token() {
         await using var h = new Harness();
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
-        h.Cli.StartVerifiedBehavior = _ => Task.FromResult(new ProcessResult(0, "", "killed", true));
+        h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.Failed(21, null, RecoverySurface.Attention));
         h.Start();
 
         h.PushUnreachable();
 
-        await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "the timeout attention");
-        await h.Controller.PhaseClosed;
-        await Assert.That(h.Client.RestartCount).IsEqualTo(0);
-    }
-
-    [Test]
-    public async Task TimedOut_mutation_status_reQuery_failure_still_raises_attention() {
-        await using var h = new Harness();
-        var statusCalls = 0;
-        h.Cli.StatusBehavior = _ => {
-            statusCalls++;
-            return Task.FromResult<ServiceSnapshot?>(statusCalls == 1 ? Snap() : null);
-        };
-        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromResult(new ProcessResult(1, "", "killed", true));
-        h.Start();
-
-        h.PushUnreachable();
-
-        await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "the timeout attention despite an unreadable re-query");
-        await Assert.That(h.Surface.StatusMessages).IsEmpty();
+        await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the coded-failure status line");
+        await Assert.That(h.Surface.StatusMessages[0]).Contains("verify_viability"); // VerifyExitCodes.Token(21)
     }
 
     // ---- version caching ----
@@ -512,21 +544,18 @@ public class DaemonLifecycleControllerTests {
     public async Task QuiescedAsync_waits_for_an_in_flight_mutation() {
         await using var h = new Harness();
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
-        var release = new TaskCompletionSource<ProcessResult>();
-        h.Cli.StartVerifiedBehavior = _ => release.Task;
+        var release = new TaskCompletionSource<MutationOutcome>();
+        h.Lane.Behavior = (_, _) => release.Task;
         h.Start();
 
         h.PushUnreachable();
-        await WaitUntilAsync(() => h.Cli.StartVerifiedCallCount == 1, what: "the in-flight mutation");
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the in-flight mutation");
 
         var quiesced = h.Controller.QuiescedAsync();
         await Task.Delay(50);
         await Assert.That(quiesced.IsCompleted).IsFalse();
 
-        // A coded failure skips the confirm-wait entirely (no fake-clock advance needed here —
-        // that phase is covered by the UX-confirmation tests above) so the gate releases as soon
-        // as the CLI child itself finishes.
-        release.SetResult(Failed(24, "verify_readiness_timeout"));
+        release.SetResult(new MutationOutcome.Failed(24, "verify_readiness_timeout", RecoverySurface.Attention));
         await quiesced;
     }
 
@@ -552,8 +581,7 @@ public class DaemonLifecycleControllerTests {
         await h.Controller.StartActionAsync(CancellationToken.None);
 
         await Assert.That(h.Client.RestartCount).IsEqualTo(1);
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     [Test]
@@ -564,27 +592,27 @@ public class DaemonLifecycleControllerTests {
 
         await h.Controller.StartActionAsync(CancellationToken.None);
 
-        await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(1);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests.Count).IsEqualTo(1);
+        await Assert.That(h.Lane.Requests[0].Verb).IsEqualTo(MutationVerb.DetachedStart);
+        // Task 10: DetachedStart from Start now shares the SAME success handling as every other
+        // verb (a strict improvement — it used to be a bare, result-discarding CLI call).
+        await Assert.That(h.Client.RestartCount).IsEqualTo(1);
     }
 
     [Test]
     public async Task StartAction_loaded_plist_present_pid_null_starts_verified() {
         await using var h = new Harness();
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
-        var release = new TaskCompletionSource<ProcessResult>();
-        h.Cli.StartVerifiedBehavior = _ => release.Task;
+        var release = new TaskCompletionSource<MutationOutcome>();
+        h.Lane.Behavior = (_, _) => release.Task;
         h.Start();
 
         var startTask = h.Controller.StartActionAsync(CancellationToken.None);
-        await WaitUntilAsync(() => h.Cli.StartVerifiedCallCount == 1, what: "service start --verify");
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the lane StartVerified request");
+        await Assert.That(h.Lane.Requests[0].Verb).IsEqualTo(MutationVerb.StartVerified);
         await Assert.That(h.Surface.Prompts).IsEmpty();
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
 
-        // A coded failure skips the confirm-wait entirely (the UX-confirmation tests above already
-        // cover that phase) so this call — and the test — can complete without a clock advance.
-        release.SetResult(Failed(21, "verify_viability"));
+        release.SetResult(new MutationOutcome.Failed(21, "verify_viability", RecoverySurface.Attention));
         await startTask;
     }
 
@@ -598,7 +626,7 @@ public class DaemonLifecycleControllerTests {
 
         await Assert.That(h.Surface.Prompts.Count).IsEqualTo(1);
         await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindRepair);
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     [Test]
@@ -611,23 +639,23 @@ public class DaemonLifecycleControllerTests {
 
         await Assert.That(h.Surface.Prompts.Count).IsEqualTo(1);
         await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindRepair);
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     [Test]
     public async Task StartAction_no_label_plist_present_pid_null_starts_verified_bootstrap() {
         await using var h = new Harness();
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "not_installed"));
-        var release = new TaskCompletionSource<ProcessResult>();
-        h.Cli.StartVerifiedBehavior = _ => release.Task;
+        var release = new TaskCompletionSource<MutationOutcome>();
+        h.Lane.Behavior = (_, _) => release.Task;
         h.Start();
 
         var startTask = h.Controller.StartActionAsync(CancellationToken.None);
-        await WaitUntilAsync(() => h.Cli.StartVerifiedCallCount == 1, what: "service start --verify (bootstrap)");
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the lane StartVerified request (bootstrap)");
+        await Assert.That(h.Lane.Requests[0].Verb).IsEqualTo(MutationVerb.StartVerified);
         await Assert.That(h.Surface.Prompts).IsEmpty();
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
 
-        release.SetResult(Failed(21, "verify_viability"));
+        release.SetResult(new MutationOutcome.Failed(21, "verify_viability", RecoverySurface.Attention));
         await startTask;
     }
 
@@ -641,26 +669,23 @@ public class DaemonLifecycleControllerTests {
 
         await Assert.That(h.Surface.Prompts.Count).IsEqualTo(1);
         await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindRepair);
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     [Test]
-    public async Task StartAction_repair_accept_calls_install_verified_replace_true_same_helper_as_takeover() {
+    public async Task StartAction_repair_accept_calls_replace_same_helper_as_takeover() {
         await using var h = new Harness();
         h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed", daemonPid: 555));
-        var release = new TaskCompletionSource<ProcessResult>();
-        h.Cli.InstallVerifiedBehavior = (_, _) => release.Task;
+        var release = new TaskCompletionSource<MutationOutcome>();
+        h.Lane.Behavior = (_, _) => release.Task;
         h.Start();
 
         var startTask = h.Controller.StartActionAsync(CancellationToken.None);
-        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the repair install");
-        await Assert.That(h.Cli.LastInstallReplace).IsNotNull().And.IsEqualTo(true);
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(0);
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the repair request");
+        await Assert.That(h.Lane.Requests[0].Verb).IsEqualTo(MutationVerb.Replace);
 
-        release.SetResult(Failed(21, "verify_viability"));
+        release.SetResult(new MutationOutcome.Failed(21, "verify_viability", RecoverySurface.Attention));
         await startTask;
     }
 
@@ -673,7 +698,7 @@ public class DaemonLifecycleControllerTests {
 
         await h.Controller.StartActionAsync(CancellationToken.None);
 
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
     [Test]
@@ -685,9 +710,7 @@ public class DaemonLifecycleControllerTests {
         await h.Controller.StartActionAsync(CancellationToken.None);
 
         await Assert.That(h.Surface.StatusMessages.Count).IsEqualTo(1);
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
         await Assert.That(h.Client.RestartCount).IsEqualTo(0);
     }
 
@@ -701,9 +724,7 @@ public class DaemonLifecycleControllerTests {
         await h.Controller.StartActionAsync(CancellationToken.None);
 
         await Assert.That(h.Surface.StatusMessages.Count).IsEqualTo(1);
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
         await Assert.That(h.Client.RestartCount).IsEqualTo(0);
     }
 
@@ -725,13 +746,13 @@ public class DaemonLifecycleControllerTests {
     [Test]
     public async Task StartAction_racing_auto_install_awaits_the_gate_then_reQueries_fresh_evidence() {
         await using var h = new Harness();
-        var install = new TaskCompletionSource<ProcessResult>();
+        var install = new TaskCompletionSource<MutationOutcome>();
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap()); // nothing at all — the install row
-        h.Cli.InstallVerifiedBehavior = (_, _) => install.Task;
+        h.Lane.Behavior = (_, _) => install.Task;
         h.Start();
 
         h.PushUnreachable(); // claims the arm, starts the startup matrix, blocks on the install call
-        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the startup install to begin (holding the gate)");
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the startup install to begin (holding the gate)");
         var statusCallsBeforeStart = h.Cli.StatusCallCount;
 
         var startTask = h.Controller.StartActionAsync(CancellationToken.None);
@@ -739,10 +760,7 @@ public class DaemonLifecycleControllerTests {
         await Assert.That(startTask.IsCompleted).IsFalse();
         await Assert.That(h.Cli.StatusCallCount).IsEqualTo(statusCallsBeforeStart); // no re-query yet — still blocked
 
-        // A coded failure skips RunVerifiedMutationAsync's confirm-wait entirely (no fake-clock
-        // advance needed — that phase is covered by the UX-confirmation tests), so the gate
-        // releases as soon as this CLI child finishes.
-        install.SetResult(Failed(21, "verify_viability"));
+        install.SetResult(new MutationOutcome.Failed(21, "verify_viability", RecoverySurface.Attention));
         await startTask;
 
         await Assert.That(h.Cli.StatusCallCount).IsGreaterThan(statusCallsBeforeStart); // a fresh query after the gate cleared
@@ -752,18 +770,18 @@ public class DaemonLifecycleControllerTests {
     public async Task QuiescedAsync_waits_for_a_startAction_mutation() {
         await using var h = new Harness();
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
-        var release = new TaskCompletionSource<ProcessResult>();
-        h.Cli.StartVerifiedBehavior = _ => release.Task;
+        var release = new TaskCompletionSource<MutationOutcome>();
+        h.Lane.Behavior = (_, _) => release.Task;
         h.Start();
 
         var startTask = h.Controller.StartActionAsync(CancellationToken.None);
-        await WaitUntilAsync(() => h.Cli.StartVerifiedCallCount == 1, what: "the Start-triggered mutation");
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the Start-triggered mutation");
 
         var quiesced = h.Controller.QuiescedAsync();
         await Task.Delay(50);
         await Assert.That(quiesced.IsCompleted).IsFalse();
 
-        release.SetResult(Failed(24, "verify_readiness_timeout"));
+        release.SetResult(new MutationOutcome.Failed(24, "verify_readiness_timeout", RecoverySurface.Attention));
         await quiesced;
         await startTask;
     }
@@ -852,7 +870,7 @@ public class DaemonLifecycleControllerTests {
     public async Task Skew_daemon_unreachable_never_prompts() {
         await using var h = new Harness();
         // state:"running" is a no-mutation matrix row (Row1) — a mutating row would block this
-        // test's PhaseClosed wait on the fake-clock confirm window, which nothing here advances.
+        // test's PhaseClosed wait on the lane, which nothing here resolves.
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(state: "running", jobPid: 1, daemonPid: 1));
         h.Start();
         await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
@@ -896,20 +914,18 @@ public class DaemonLifecycleControllerTests {
     }
 
     [Test]
-    public async Task Skew_accept_calls_install_verified_replace_true_and_nothing_else() {
+    public async Task Skew_accept_calls_replace_and_nothing_else() {
         await using var h = new Harness();
         h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
-        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromResult(Ok());
+        h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
         h.Start();
         await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
 
         h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
 
-        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the takeover install");
-        await Assert.That(h.Cli.LastInstallReplace).IsNotNull().And.IsEqualTo(true);
-        await Assert.That(h.Cli.StartVerifiedCallCount).IsEqualTo(0);
-        await Assert.That(h.Cli.DetachedStartCallCount).IsEqualTo(0);
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the takeover request");
+        await Assert.That(h.Lane.Requests[0].Verb).IsEqualTo(MutationVerb.Replace);
     }
 
     [Test]
@@ -931,7 +947,8 @@ public class DaemonLifecycleControllerTests {
         var client2  = new FakeDaemonClientService();
         var cli2     = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed")) };
         await using var controller2 = new DaemonLifecycleController(
-            client2, cli2, new FakeLoginShellProbe(), h.Store, surface2, () => Task.FromResult<string?>("default"), h.Time);
+            client2, cli2, new FakeLoginShellProbe(), h.Store, surface2, () => Task.FromResult<string?>("default"), h.Time,
+            h.CanonicalServer, new FakeMutationLane().RunAsync);
         controller2.Start();
         await WaitUntilAsync(() => cli2.VersionCallCount == 1, what: "controller2's version cache");
 
@@ -960,7 +977,7 @@ public class DaemonLifecycleControllerTests {
         confirmTcs.SetResult(true); // the user accepts what is now a stale offer
 
         await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the stale-consent abort status");
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
 
         // A stale accept was never a real decline — the claim-before-show pair is retracted...
         var afterAbort = await h.Store.LoadAsync();
@@ -1006,7 +1023,7 @@ public class DaemonLifecycleControllerTests {
         confirmTcs.SetResult(true); // accept — generation is unchanged
 
         await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the reclassification abort status");
-        await Assert.That(h.Cli.InstallVerifiedCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
 
         // Never a real decline — the claim is retracted and the run flag cleared, same as the
         // generation-based stale-consent path.
@@ -1020,9 +1037,9 @@ public class DaemonLifecycleControllerTests {
     }
 
     // Unchanged evidence between show and accept proceeds — the counterpart to the reclassification
-    // abort above. Distinct from Skew_accept_calls_install_verified_replace_true_and_nothing_else:
-    // this one asserts the revalidation query itself ran (a StatusCallCount delta of 2) rather than
-    // just the eventual install call.
+    // abort above. Distinct from Skew_accept_calls_replace_and_nothing_else: this one asserts the
+    // revalidation query itself ran (a StatusCallCount delta of 2) rather than just the eventual
+    // lane request.
     [Test]
     public async Task Skew_accept_with_unchanged_status_revalidates_then_proceeds() {
         await using var h = new Harness();
@@ -1031,7 +1048,7 @@ public class DaemonLifecycleControllerTests {
         var noMutationRow = Snap(state: "running", jobPid: 1, daemonPid: 1);
         var next = noMutationRow;
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(next);
-        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromResult(Ok());
+        h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
         h.Start();
         await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
 
@@ -1045,10 +1062,9 @@ public class DaemonLifecycleControllerTests {
         next = installedSnap;
         h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
 
-        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the takeover install");
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the takeover request");
+        await Assert.That(h.Lane.Requests[0].Verb).IsEqualTo(MutationVerb.Replace);
         await Assert.That(h.Cli.StatusCallCount - statusCallsBeforeSkew).IsEqualTo(2); // the dialog query + the in-gate revalidation
-
-        h.PushConnected(); // let the mutation's confirm-wait resolve so disposal doesn't wait on it
     }
 
     [Test]
@@ -1056,12 +1072,12 @@ public class DaemonLifecycleControllerTests {
         await using var h = new Harness();
         h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
-        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromResult(Failed(21, "verify_viability: nope"));
+        h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.Failed(21, "verify_viability_nope", RecoverySurface.Attention));
         h.Start();
         await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
 
         h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
-        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the takeover install attempt");
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the takeover request attempt");
         await WaitUntilAsync(() => h.Surface.StatusMessages.Count == 1, what: "the coded-failure status line");
 
         var afterFailure = await h.Store.LoadAsync();
@@ -1099,20 +1115,16 @@ public class DaemonLifecycleControllerTests {
         await using var h = new Harness();
         h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
-        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromResult(Ok());
+        h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
         h.Start();
         await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
 
         h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
-        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the takeover install");
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the takeover request");
 
         await WaitUntilAsync(
             () => !(h.Store.LoadAsync().GetAwaiter().GetResult().DeclinedTakeoverPairs ?? []).Contains("0.9|1.0.0"),
             what: "the claim retracted on acceptance");
-
-        // Let the mutation actually resolve (it awaits a fresh Connected or the never-advanced
-        // fake-clock confirm window otherwise) so disposal doesn't wait on it.
-        h.PushConnected();
     }
 
     [Test]
@@ -1120,15 +1132,15 @@ public class DaemonLifecycleControllerTests {
         await using var h = new Harness();
         h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
-        // Simulates a shutdown mid-spawn or a process/IO fault — RunVerifiedMutationAsync does
-        // not catch around the CLI call, so this propagates out of RunSkewCheckAsync's mutation
-        // step entirely.
-        h.Cli.InstallVerifiedBehavior = (_, _) => Task.FromException<ProcessResult>(new OperationCanceledException("shutdown mid-install"));
+        // Simulates a shutdown mid-spawn or a lane-lifetime cancellation — RunLaneMutationAsync
+        // does not catch around the lane call, so this propagates out of RunSkewCheckAsync's
+        // mutation step entirely.
+        h.Lane.Behavior = (_, _) => Task.FromException<MutationOutcome>(new OperationCanceledException("shutdown mid-install"));
         h.Start();
         await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
 
         h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
-        await WaitUntilAsync(() => h.Cli.InstallVerifiedCallCount == 1, what: "the takeover install attempt");
+        await WaitUntilAsync(() => h.Lane.Requests.Count == 1, what: "the takeover request attempt");
 
         await WaitUntilAsync(
             () => !(h.Store.LoadAsync().GetAwaiter().GetResult().DeclinedTakeoverPairs ?? []).Contains("0.9|1.0.0"),
@@ -1140,7 +1152,8 @@ public class DaemonLifecycleControllerTests {
         var client2  = new FakeDaemonClientService();
         var cli2     = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed")) };
         await using var controller2 = new DaemonLifecycleController(
-            client2, cli2, new FakeLoginShellProbe(), h.Store, surface2, () => Task.FromResult<string?>("default"), h.Time);
+            client2, cli2, new FakeLoginShellProbe(), h.Store, surface2, () => Task.FromResult<string?>("default"), h.Time,
+            h.CanonicalServer, new FakeMutationLane().RunAsync);
         controller2.Start();
         await WaitUntilAsync(() => cli2.VersionCallCount == 1, what: "controller2's version cache");
 
@@ -1235,6 +1248,22 @@ public class DaemonLifecycleControllerTests {
 
     // ---- harness ----
 
+    /// Records every MutationRequest the controller hands to `_runMutation` and lets a test
+    /// script an outcome per request (blanket Behavior, TCS-friendly) — the fake lane seam Task
+    /// 10's controller tests drive instead of a raw IKcapCli mutation call. Defaults to an
+    /// immediate Succeeded so tests that don't care about the mutation's own outcome (most of the
+    /// "no mutation happens" tests never even call this) aren't forced to script one.
+    sealed class FakeMutationLane {
+        public readonly List<MutationRequest> Requests = [];
+        public Func<MutationRequest, CancellationToken, Task<MutationOutcome>> Behavior =
+            (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
+
+        public Task<MutationOutcome> RunAsync(MutationRequest request, CancellationToken ct) {
+            Requests.Add(request);
+            return Behavior(request, ct);
+        }
+    }
+
     sealed class Harness : IAsyncDisposable {
         public readonly FakeDaemonClientService Client = new();
         public readonly FakeKcapCli Cli = new();
@@ -1244,15 +1273,19 @@ public class DaemonLifecycleControllerTests {
         public readonly TimerCountingTimeProvider Time;
         public readonly string TempDir = Directory.CreateTempSubdirectory("kcap-lifecycle-").FullName;
         public readonly AppStateStore Store;
+        public readonly FakeMutationLane Lane = new();
         public readonly DaemonLifecycleController Controller;
+        public readonly string? CanonicalServer;
 
         public string? ProfileName = "default";
 
-        public Harness() {
+        public Harness(string? canonicalServer = "https://kcap.example.com:443") {
+            CanonicalServer = canonicalServer;
             Time  = new TimerCountingTimeProvider(Clock);
             Store = new AppStateStore(Path.Combine(TempDir, "app-state.json"));
             Controller = new DaemonLifecycleController(
-                Client, Cli, Probe, Store, Surface, () => Task.FromResult<string?>(ProfileName), Time);
+                Client, Cli, Probe, Store, Surface, () => Task.FromResult<string?>(ProfileName), Time,
+                CanonicalServer, Lane.RunAsync);
         }
 
         public void Start() => Controller.Start();
@@ -1277,7 +1310,10 @@ public class DaemonLifecycleControllerTests {
 
 /// Scripted IKcapCli — every member is a settable behavior func plus a call counter, so tests
 /// can drive both immediate results and TaskCompletionSource-controlled hangs (the once-per-run
-/// arm test) without touching a real process.
+/// arm test) without touching a real process. Task 10: StartVerified/InstallVerified/
+/// DetachedStart are no longer called by the controller AT ALL (routed through the lane instead)
+/// — their counters stay wired up purely as a regression tripwire (every controller test asserts
+/// they remain 0).
 sealed class FakeKcapCli : IKcapCli {
     public string? CliPath { get; set; } = "/opt/kcap/bin/kcap";
 

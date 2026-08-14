@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Capacitor.App.Services;
+using Capacitor.App.Services.Mutation;
 using Capacitor.App.ViewModels;
 using Capacitor.App.Views;
 using Capacitor.Cli.Core.LocalIpc;
@@ -190,11 +191,6 @@ public class AppStartupTests {
         await Assert.That(result).IsTrue();
     }
 
-    sealed class NullProcessRunner : IProcessRunner {
-        public Task<ProcessResult> RunAsync(string fileName, string[] args, RunOptions options, CancellationToken ct) =>
-            Task.FromResult(new ProcessResult(0, "", "", false));
-    }
-
     /// Minimal stand-in for LocalControlClient.RunAsync: yields Connecting once, then sits
     /// forever until its ct is cancelled (RestartLoopAsync/DisposeAsync's normal teardown path)
     /// — enough to prove a DaemonClientService actually has a LIVE loop to dispose.
@@ -233,7 +229,7 @@ public class AppStartupTests {
     [NotInParallel("AvaloniaSession")]
     public async Task HandleStartupFailureAsync_disposes_the_live_service_before_showing_the_error_window() {
         var runClient = new ForeverRunClient();
-        var service = new DaemonClientService("daemon-a", runClient.Run, new NullProcessRunner(), "kcap");
+        var service = new DaemonClientService("daemon-a", runClient.Run, _ => Task.FromResult<MutationOutcome>(new MutationOutcome.Refused("cli_not_found", RecoverySurface.Attention)));
         service.Start();
         await WaitUntilAsync(() => runClient.LiveEnumerations >= 1);
 
@@ -257,6 +253,37 @@ public class AppStartupTests {
         await service.DisposeAsync();
     }
 
+    sealed class NeverObservation : IDaemonObservation {
+        public Task<ObservedEvidence?> ObserveAsync(MutationRequest request, CancellationToken ct) => Task.FromResult<ObservedEvidence?>(null);
+    }
+
+    /// Task 10: the lane is disposed too during startup-failure cleanup (last, after
+    /// lifecycle/service — see HandleStartupFailureAsync's own ordering comment) — a disposed
+    /// lane cancels every subsequent RunAsync immediately, the observable proof this step ran.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task HandleStartupFailureAsync_disposes_the_lane() {
+        var lane = new DaemonMutationLane(
+            new FakeLoginShellProbe(), new OutcomeChannel(), () => null,
+            (_, pinnedPath) => new FakeKcapCli { CliPath = pinnedPath },
+            _ => new NeverObservation(), TimeProvider.System);
+
+        var (modeAfterShow, mainWindowAssigned) = await AvaloniaSession.DispatchAsync(async () => {
+            var (desktop, fake) = FakeClassicDesktopLifetime.Create();
+            await AppUnderTest.HandleStartupFailureAsync(
+                desktop, new InvalidOperationException("boom"), service: null, new CancellationTokenSource(), [],
+                lifecycle: null, lane: lane);
+            Dispatcher.UIThread.RunJobs();
+            return (fake.ShutdownMode, fake.MainWindow is not null);
+        });
+
+        await Assert.That(modeAfterShow).IsEqualTo(ShutdownMode.OnExplicitShutdown);
+        await Assert.That(mainWindowAssigned).IsTrue();
+
+        var request = new MutationRequest(MutationVerb.StartVerified, "default", "https://kcap.example.com:443", "daemon-a");
+        await Assert.ThrowsAsync<OperationCanceledException>(() => lane.RunAsync(request, CancellationToken.None));
+    }
+
     /// Regression coverage for a P2 bug found in re-review: TryShutdown() in the DEFERRED
     /// shutdown path (OnShutdownRequested -> DisposeAndShutdownAsync — e.g. Cmd+Q while the
     /// startup-error window is still up) used to be called with no exit code, defaulting to 0 —
@@ -269,7 +296,7 @@ public class AppStartupTests {
     [Test]
     public async Task DisposeAndConfirmShutdownAsync_disposes_then_confirms_then_carries_the_exit_code() {
         var runClient = new ForeverRunClient();
-        var service = new DaemonClientService("daemon-a", runClient.Run, new NullProcessRunner(), "kcap");
+        var service = new DaemonClientService("daemon-a", runClient.Run, _ => Task.FromResult<MutationOutcome>(new MutationOutcome.Refused("cli_not_found", RecoverySurface.Attention)));
         service.Start();
         await WaitUntilAsync(() => runClient.LiveEnumerations >= 1);
 
@@ -294,7 +321,7 @@ public class AppStartupTests {
     [Test]
     public async Task DisposeAndConfirmShutdownAsync_normal_shutdown_carries_exit_code_zero() {
         var runClient = new ForeverRunClient();
-        var service = new DaemonClientService("daemon-a", runClient.Run, new NullProcessRunner(), "kcap");
+        var service = new DaemonClientService("daemon-a", runClient.Run, _ => Task.FromResult<MutationOutcome>(new MutationOutcome.Refused("cli_not_found", RecoverySurface.Attention)));
         service.Start();
         await WaitUntilAsync(() => runClient.LiveEnumerations >= 1);
 
