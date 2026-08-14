@@ -33,11 +33,6 @@ public class ServiceVerifyStartGateProductionPathTests {
         </plist>
         """;
 
-    /// <summary>Adds the stderr capture and gated <see cref="RunStartVerifiedAsync"/> helper this
-    /// file's tests need on top of the shared <see cref="ProdPathFixture"/> (HOME/lock-dir isolation
-    /// and the stubbed launchctl manager) — each test arranges only its own on-disk evidence shape
-    /// (a malformed plist, stripped permissions, a directory, a dangling symlink, ...) before
-    /// calling it.</summary>
     sealed class Fixture : IDisposable {
         readonly ProdPathFixture _core = new(Id);
         readonly TextWriter _originalErr = Console.Error;

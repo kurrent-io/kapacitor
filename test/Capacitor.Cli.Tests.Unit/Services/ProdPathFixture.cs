@@ -3,10 +3,7 @@ using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
 
-/// <summary>HOME/lock-dir isolation and a stubbed launchd manager (every <c>launchctl print</c>
-/// reports the unit not found) shared by the real-<see cref="LaunchdServiceManager"/> production-path
-/// suites — each test arranges only its own on-disk plist evidence before touching
-/// <see cref="Manager"/> or <see cref="PlistPath"/>.</summary>
+/// <summary>Shared HOME/lock-dir isolation for the production-path suites.</summary>
 sealed class ProdPathFixture : IDisposable {
     readonly string _id;
     readonly string? _originalHome;
@@ -47,5 +44,6 @@ sealed class ProdPathFixture : IDisposable {
         DaemonLockPaths.OverrideDirectoryForTesting(null);
         Environment.SetEnvironmentVariable("HOME", _originalHome);
         try { Directory.Delete(_home, recursive: true); } catch { /* best effort */ }
+        try { Directory.Delete(_lockDir, recursive: true); } catch { /* best effort */ }
     }
 }
