@@ -1,4 +1,12 @@
 <Solution>
+  <Folder Name="/files/">
+    <File Path=".editorconfig" />
+    <File Path="CLAUDE.md" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="nuget.config" />
+    <File Path="README.md" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src\Capacitor.App\Capacitor.App.csproj" />
     <Project Path="src\Capacitor.Cli.Core\Capacitor.Cli.Core.csproj" />
@@ -6,6 +14,7 @@
     <Project Path="src\Capacitor.Cli\Capacitor.Cli.csproj" />
   </Folder>
   <Folder Name="/test/">
+    <File Path="test\Directory.Build.props" />
     <Project Path="test\Capacitor.App.Tests.Unit\Capacitor.App.Tests.Unit.csproj" />
     <Project Path="test\Capacitor.Cli.Tests.Integration\Capacitor.Cli.Tests.Integration.csproj" />
     <Project Path="test\Capacitor.Cli.Tests.Unit\Capacitor.Cli.Tests.Unit.csproj" />

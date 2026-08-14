@@ -4,8 +4,6 @@
         <TargetFramework>net10.0</TargetFramework>
         <AssemblyName>kcap-daemon</AssemblyName>
 
-        <ImplicitUsings>enable</ImplicitUsings>
-        <Nullable>enable</Nullable>
         <PublishAot>true</PublishAot>
         <PublishTrimmed>true</PublishTrimmed>
         <InvariantGlobalization>true</InvariantGlobalization>

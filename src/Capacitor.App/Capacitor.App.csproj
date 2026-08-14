@@ -2,8 +2,6 @@
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
         <OutputType>WinExe</OutputType>
-        <ImplicitUsings>enable</ImplicitUsings>
-        <Nullable>enable</Nullable>
         <IsPackable>false</IsPackable>
         <!-- This is an unbundled `dotnet run` executable, so macOS shows the binary name (not an
              app-bundle display name) on dock hover — give it a human-friendly one. RootNamespace

@@ -1,20 +1,44 @@
 root = true
+# Remove the line above if you want to inherit .editorconfig settings from higher directories
 
 [*]
-
+charset = utf-8
+end_of_line = lf
 indent_style = space
-max_line_length = 200
-brace_style = end_of_line
+indent_size = 4
+insert_final_newline = true
 trim_trailing_whitespace = true
+max_line_length = 200
 
+; IntelliJ properties
+ij_any_block_brace_style = end_of_line
+
+; Editor behaviour, not language formatting
+resharper_apply_auto_detected_rules = false
+resharper_autodetect_indent_settings = true
+resharper_use_indent_from_vs = false
+resharper_show_autodetect_configure_formatting_tip = false
+
+; The SDK writes solution files two-space
+[*.slnx]
+indent_size = 2
+
+[*.{json,yml,yaml}]
+indent_size = 2
+
+; =============================================================================
+; C# — every C#/.NET formatting, naming, style and analyzer rule lives here
+; =============================================================================
+[*.cs]
+
+; --- Formatting ---
+
+brace_style = end_of_line
 int_align_variables = true
 int_align_assignments = true
 int_align_switch_expressions = true
-
-# IntelliJ IDEA properties
-ij_any_block_brace_style = end_of_line
-
-# Microsoft .NET properties
+object_creation_when_type_evident = target_typed
+object_creation_when_type_not_evident = target_typed
 csharp_indent_braces = false
 csharp_new_line_before_else = false
 csharp_new_line_before_open_brace = none
@@ -37,8 +61,8 @@ csharp_accessor_owner_body = expression_body
 csharp_namespace_body = file_scoped
 csharp_use_heuristics_for_body_style = false
 csharp_force_attribute_style = separate
-csharp_object_creation_when_type_evident = tartget_typed
-csharp_object_creation_when_type_not_evident = tartget_typed
+csharp_object_creation_when_type_evident = target_typed
+csharp_object_creation_when_type_not_evident = target_typed
 csharp_default_value_when_type_evident = default_literal
 csharp_default_value_when_type_not_evident = default_literal
 csharp_null_checking_pattern_style = not_null_pattern
@@ -85,6 +109,9 @@ csharp_max_formal_parameters_on_line = 5
 csharp_place_constructor_initializer_on_same_line = false
 csharp_place_simple_initializer_on_single_line = true
 csharp_max_initializer_elements_on_line = 0
+
+; --- Naming ---
+
 dotnet_naming_rule.parameters_rule.import_to_resharper = as_predefined
 dotnet_naming_rule.parameters_rule.resharper_style = aaBb, __ + aaBb
 dotnet_naming_rule.parameters_rule.severity = warning
@@ -122,20 +149,21 @@ dotnet_naming_symbols.private_static_readonly_symbols.applicable_kinds = field
 dotnet_naming_symbols.private_static_readonly_symbols.required_modifiers = static,readonly
 dotnet_naming_symbols.types_and_namespaces_symbols.applicable_accessibilities = *
 dotnet_naming_symbols.types_and_namespaces_symbols.applicable_kinds = namespace,class,struct,enum,delegate
+
+; --- .NET style ---
+
 dotnet_style_parentheses_in_arithmetic_binary_operators = never_if_unnecessary:none
 dotnet_style_parentheses_in_other_binary_operators = always_for_clarity:none
 dotnet_style_parentheses_in_relational_binary_operators = never_if_unnecessary:none
 dotnet_style_predefined_type_for_locals_parameters_members = true:suggestion
 dotnet_style_predefined_type_for_member_access = true:suggestion
 dotnet_style_require_accessibility_modifiers = never:suggestion
-object_creation_when_type_evident = target_typed
-object_creation_when_type_not_evident = target_typed
+
+; --- ReSharper properties ---
 
 resharper_max_attribute_length_for_same_line = 80
 resharper_nested_ternary_style = expanded
 resharper_outdent_binary_ops = true
-
-# ReSharper properties
 resharper_braces_for_ifelse = required
 resharper_instance_members_qualify_declared_in = base_class
 resharper_redundant_using_directive_highlighting = error
@@ -143,8 +171,6 @@ resharper_align_linq_query = true
 resharper_align_multiline_binary_expressions_chain = false
 resharper_align_multiline_expression_braces = true
 resharper_align_ternary = none
-resharper_apply_auto_detected_rules = false
-resharper_autodetect_indent_settings = true
 resharper_blank_lines_after_control_transfer_statements = 1
 resharper_blank_lines_around_auto_property = 0
 resharper_blank_lines_around_property = 0
@@ -158,9 +184,6 @@ resharper_braces_for_foreach = required_for_multiline
 resharper_braces_for_lock = required_for_multiline
 resharper_braces_for_using = required_for_multiline
 resharper_braces_for_while = required_for_multiline
-resharper_cpp_brace_style = end_of_line
-resharper_cpp_remove_blank_lines_near_braces_in_code = false
-resharper_cpp_remove_blank_lines_near_braces_in_declarations = false
 resharper_csharp_empty_block_style = together
 resharper_csharp_indent_method_decl_pars = outside_and_inside
 resharper_csharp_insert_final_newline = true
@@ -175,9 +198,6 @@ resharper_csharp_wrap_before_first_type_parameter_constraint = true
 resharper_csharp_wrap_before_invocation_rpar = true
 resharper_csharp_wrap_extends_list_style = chop_if_long
 resharper_csharp_wrap_parameters_style = chop_if_long
-resharper_formatter_off_tag = @formatter:off
-resharper_formatter_on_tag = @formatter:on
-resharper_formatter_tags_enabled = true
 resharper_indent_nested_usings_stmt = true
 resharper_int_align_assignments = true
 resharper_int_align_binary_expressions = true
@@ -201,22 +221,10 @@ resharper_place_simple_accessorholder_on_single_line = true
 resharper_place_simple_case_statement_on_same_line = true
 resharper_place_simple_embedded_block_on_same_line = false
 resharper_place_simple_enum_on_single_line = true
-resharper_show_autodetect_configure_formatting_tip = false
 resharper_simple_case_statement_style = line_break
 resharper_simple_embedded_statement_style = line_break
-resharper_space_after_ptr_in_data_member = false
-resharper_space_after_ptr_in_method = false
-resharper_space_after_ref_in_data_member = false
-resharper_space_after_ref_in_method = false
-resharper_space_before_ptr_in_abstract_decl = true
-resharper_space_before_ptr_in_data_member = true
-resharper_space_before_ptr_in_method = true
-resharper_space_before_ref_in_abstract_decl = true
-resharper_space_before_ref_in_data_member = true
-resharper_space_before_ref_in_method = true
 resharper_use_continuous_line_indent_in_expression_braces = true
 resharper_use_continuous_line_indent_in_method_pars = true
-resharper_use_indent_from_vs = false
 resharper_wrap_after_expression_lbrace = false
 resharper_wrap_before_arrow_with_expressions = true
 resharper_wrap_before_expression_rbrace = false
@@ -226,7 +234,8 @@ resharper_wrap_chained_method_calls = chop_if_long
 resharper_wrap_lines = true
 resharper_wrap_linq_expressions = chop_always
 
-# ReSharper inspection severities
+; --- ReSharper inspection severities ---
+
 resharper_arrange_local_function_body_highlighting = suggestion
 resharper_arrange_this_qualifier_highlighting = none
 resharper_built_in_type_reference_style_for_member_access_highlighting = hint
@@ -248,80 +257,38 @@ resharper_suggest_var_or_type_built_in_types_highlighting = hint
 resharper_suggest_var_or_type_elsewhere_highlighting = hint
 resharper_suggest_var_or_type_simple_types_highlighting = hint
 resharper_template_is_not_compile_time_constant_problem_highlighting = hint
-resharper_web_config_module_not_resolved_highlighting = warning
-resharper_web_config_type_not_resolved_highlighting = warning
-resharper_web_config_wrong_module_highlighting = warning
-
-[*.{appxmanifest,asax,ascx,aspx,axaml,build,c,c++,cc,cginc,compute,cp,cpp,cppm,cs,cshtml,cu,cuh,cxx,dtd,fs,fsi,fsscript,fsx,fx,fxh,h,hh,hlsl,hlsli,hlslinc,hpp,hxx,inc,inl,ino,ipp,ixx,master,ml,mli,mpp,mq4,mq5,mqh,nuspec,paml,razor,resw,resx,skin,tpp,usf,ush,vb,xaml,xamlx,xoml,xsd}]
-indent_style = space
-indent_size = 4
-tab_width = 4
-
-; --- Roslynator Rules ---
-
-; Resource can be disposed asynchronously
-dotnet_diagnostic.rcs1261.severity = warning
-; File contains no code
-dotnet_diagnostic.rcs1093.severity = error
-; Unused parameter
-dotnet_diagnostic.rcs1163.severity = warning
-; Unused type parameter
-dotnet_diagnostic.rcs1164.severity = warning
-; Unused 'this' parameter
-dotnet_diagnostic.rcs1175.severity = warning
-; Remove unused member declaration
-dotnet_diagnostic.rcs1213.severity = warning
 
 ; --- IDE Rules ---
 
-; Remove unnecessary usings
-dotnet_diagnostic.ide0005.severity = error
-; Use pattern matching
-dotnet_diagnostic.ide0020.severity = warning
-; Use coalesce expression (non-nullable)
-dotnet_diagnostic.ide0029.severity = warning
-; Use coalesce expression (nullable)
-dotnet_diagnostic.ide0030.severity = warning
-; Use null propagation
-dotnet_diagnostic.ide0031.severity = warning
-; Remove unreachable code
-dotnet_diagnostic.ide0035.severity = warning
-; Order modifiers
-dotnet_diagnostic.ide0036.severity = warning
-; Use pattern matching
-dotnet_diagnostic.ide0038.severity = warning
-; Format string contains invalid placeholder
-dotnet_diagnostic.ide0043.severity = warning
-; Make field readonly
-dotnet_diagnostic.ide0044.severity = warning
-; Remove unused private members
-dotnet_diagnostic.ide0051.severity = warning
-; Unnecessary assignment
-dotnet_diagnostic.ide0059.severity = warning
-; Make local function static
-dotnet_diagnostic.ide0062.severity = warning
-; Convert to file-scoped namespace
-dotnet_diagnostic.ide0161.severity = warning
-; Remove unnecessary lambda expression
-dotnet_diagnostic.ide0200.severity = warning
+dotnet_diagnostic.ide0005.severity = error   ; Remove unnecessary usings
+dotnet_diagnostic.ide0020.severity = warning ; Use pattern matching
+dotnet_diagnostic.ide0029.severity = warning ; Use coalesce expression (non-nullable)
+dotnet_diagnostic.ide0030.severity = warning ; Use coalesce expression (nullable)
+dotnet_diagnostic.ide0031.severity = warning ; Use null propagation
+dotnet_diagnostic.ide0035.severity = warning ; Remove unreachable code
+dotnet_diagnostic.ide0036.severity = warning ; Order modifiers
+dotnet_diagnostic.ide0038.severity = warning ; Use pattern matching
+dotnet_diagnostic.ide0043.severity = warning ; Format string contains invalid placeholder
+dotnet_diagnostic.ide0044.severity = warning ; Make field readonly
+dotnet_diagnostic.ide0051.severity = warning ; Remove unused private members
+dotnet_diagnostic.ide0059.severity = warning ; Unnecessary assignment
+dotnet_diagnostic.ide0062.severity = warning ; Make local function static
+dotnet_diagnostic.ide0161.severity = warning ; Convert to file-scoped namespace
+dotnet_diagnostic.ide0200.severity = warning ; Remove unnecessary lambda expression
 
 ; --- Compiler Warnings ---
+dotnet_diagnostic.cs0162.severity = warning ; Unreachable code detected
+dotnet_diagnostic.cs0169.severity = warning ; Field is never used
+dotnet_diagnostic.cs4014.severity = error   ; Not awaited async call
 
-; Unreachable code detected
-dotnet_diagnostic.cs0162.severity = warning
-; Field is never used
-dotnet_diagnostic.cs0169.severity = warning
-
-; --- Microsoft Code Analysis (CA) Rules ---
-
-; Performance
-dotnet_diagnostic.ca1822.severity = warning
-dotnet_code_quality.ca1822.api_surface = private, internal
-dotnet_diagnostic.ca1825.severity = warning
-dotnet_diagnostic.ca1826.severity = warning
-dotnet_diagnostic.ca1827.severity = warning
-dotnet_diagnostic.ca1828.severity = warning
-dotnet_diagnostic.ca1829.severity = warning
+; --- Code Analysis Rules ---
+dotnet_diagnostic.ca1801.severity = warning
+dotnet_diagnostic.ca1802.severity = warning
+dotnet_diagnostic.ca1805.severity = warning
+dotnet_diagnostic.ca1810.severity = warning
+dotnet_diagnostic.ca1811.severity = warning
+dotnet_diagnostic.ca1821.severity = warning
+dotnet_diagnostic.ca1823.severity = warning
 dotnet_diagnostic.ca1830.severity = warning
 dotnet_diagnostic.ca1831.severity = warning
 dotnet_diagnostic.ca1832.severity = warning
@@ -340,6 +307,7 @@ dotnet_diagnostic.ca1844.severity = warning
 dotnet_diagnostic.ca1845.severity = warning
 dotnet_diagnostic.ca1846.severity = warning
 dotnet_diagnostic.ca1847.severity = warning
+dotnet_diagnostic.ca1848.severity = suggestion ; Use the LoggerMessage delegates
 dotnet_diagnostic.ca1852.severity = warning
 dotnet_diagnostic.ca1854.severity = warning
 dotnet_diagnostic.ca1855.severity = warning
@@ -347,16 +315,6 @@ dotnet_diagnostic.ca1856.severity = error
 dotnet_diagnostic.ca1857.severity = warning
 dotnet_diagnostic.ca1858.severity = warning
 
-; Unused code
-dotnet_diagnostic.ca1801.severity = warning
-dotnet_diagnostic.ca1811.severity = warning
-dotnet_diagnostic.ca1823.severity = warning
-dotnet_diagnostic.ca1802.severity = warning
-dotnet_diagnostic.ca1805.severity = warning
-dotnet_diagnostic.ca1810.severity = warning
-dotnet_diagnostic.ca1821.severity = warning
-
-; Correctness
 dotnet_diagnostic.ca1018.severity = warning
 dotnet_diagnostic.ca1047.severity = warning
 dotnet_diagnostic.ca1507.severity = warning
@@ -379,3 +337,21 @@ dotnet_diagnostic.ca2208.severity = warning
 dotnet_diagnostic.ca2245.severity = warning
 dotnet_diagnostic.ca2246.severity = warning
 dotnet_diagnostic.ca2249.severity = warning
+
+; =============================================================================
+; Native PTY shim
+; =============================================================================
+[*.{c,h}]
+resharper_cpp_brace_style = end_of_line
+resharper_cpp_remove_blank_lines_near_braces_in_code = false
+resharper_cpp_remove_blank_lines_near_braces_in_declarations = false
+resharper_space_after_ptr_in_data_member = false
+resharper_space_after_ptr_in_method = false
+resharper_space_after_ref_in_data_member = false
+resharper_space_after_ref_in_method = false
+resharper_space_before_ptr_in_abstract_decl = true
+resharper_space_before_ptr_in_data_member = true
+resharper_space_before_ptr_in_method = true
+resharper_space_before_ref_in_abstract_decl = true
+resharper_space_before_ref_in_data_member = true
+resharper_space_before_ref_in_method = true
