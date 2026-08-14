@@ -47,8 +47,7 @@ public class ReasonLineTests {
         await Assert.That(ReasonLine.TrySingle(stderr, Prefix)).IsEqualTo("identity_mismatch");
     }
 
-    // Pinned decision: a matching-prefix line with an empty token is conflicting evidence, not
-    // absent evidence — it fails closed to null rather than falling through to "zero matches".
+    // An empty-token match is conflicting evidence, not absence — fails closed to null.
     [Test]
     public async Task Single_matching_line_with_an_empty_token_returns_null() {
         var stderr = $"{Prefix}\n";

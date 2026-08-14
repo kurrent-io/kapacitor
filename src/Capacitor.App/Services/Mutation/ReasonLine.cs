@@ -2,8 +2,7 @@ namespace Capacitor.App.Services.Mutation;
 
 /// Extracts a single machine-readable reason token from daemon/CLI stderr.
 public static class ReasonLine {
-    // Exactly one line starting with `prefix` (after trimming \r) with a non-empty token wins;
-    // zero matches, 2+ matches, or a matching line with an empty token all fail closed to null.
+    // Exactly one matching line with a non-empty token wins; anything else fails closed to null.
     public static string? TrySingle(string stderr, string prefix) {
         string? token = null;
         var matchCount = 0;
