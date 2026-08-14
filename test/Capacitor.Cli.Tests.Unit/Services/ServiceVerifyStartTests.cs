@@ -454,58 +454,19 @@ public class ServiceVerifyStartTests {
         _                           => null,
     };
 
+    // Contradictory evidence (query saw the unit; the read didn't) must classify
+    // evidence_unreadable, never directive_missing — that's reserved for genuine agreed-absence.
     [Test, NotInParallel]
-    public async Task Pre_mutation_gate_failure_returns_28_and_touches_nothing() {
+    [Arguments(false, "directive_missing")]   // query and read agree the unit is absent
+    [Arguments(true, "evidence_unreadable")]  // query saw the unit but the read reports absent
+    public async Task Phase_a_absence_evidence_disambiguates_directive_missing_from_evidence_unreadable(
+        bool unitPresent, string expectedReason) {
         var dir = Directory.CreateTempSubdirectory().FullName;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         var originalErr = Console.Error;
         var capturedErr = new StringWriter();
         try {
-            // Genuinely absent unit: readPlist returns null and plistExists is left at its
-            // (unstubbed) default false, so Phase A's discriminator reads Absent, not Unreadable.
-            var manager = new FakeServiceManager { UnitPresent = false };
-
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
-
-            // The unit bakes nothing (readPlist "sees" no unit) while this invocation carries the
-            // consent-seed directive — Phase A's DirectiveMissing case — so the gate must fire
-            // before the fresh query's under-lock work does anything else.
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
-                readPlist: _ => null,
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
-
-            Console.SetError(capturedErr);
-            var exit = await sut.StartVerifiedAsync(Id);
-            Console.SetError(originalErr);
-
-            await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
-            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
-            // Genuine absence is DirectiveMissing, never EvidenceUnreadable — that reason is
-            // reserved for a unit that IS present but couldn't be read (see
-            // ServiceVerifyStartGateProductionPathTests).
-            await Assert.That(lines).Contains("start_gate_reason=directive_missing");
-            await Assert.That(manager.Calls.Count).IsEqualTo(1);
-            await Assert.That(manager.Calls.All(c => c == "query")).IsTrue();
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally {
-            Console.SetError(originalErr);
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
-    }
-
-    /// <summary>The forced-order race the sibling test above does NOT cover: the fresh query
-    /// observed the unit present, but the plist read seam reports genuine absence (a lock-unaware
-    /// writer deleted it in the window between the two). Contradictory evidence must never fall
-    /// through to the agreeing-absence case's takeover-safe directive_missing.</summary>
-    [Test, NotInParallel]
-    public async Task Query_sees_the_unit_but_the_read_does_not_is_evidence_unreadable_not_directive_missing() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
-        try {
-            var manager = new FakeServiceManager { UnitPresent = true };
+            var manager = new FakeServiceManager { UnitPresent = unitPresent };
 
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
@@ -521,7 +482,7 @@ public class ServiceVerifyStartTests {
 
             await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
             var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
-            await Assert.That(lines).Contains("start_gate_reason=evidence_unreadable");
+            await Assert.That(lines).Contains($"start_gate_reason={expectedReason}");
             await Assert.That(manager.Calls.Count).IsEqualTo(1);
             await Assert.That(manager.Calls.All(c => c == "query")).IsTrue();
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();

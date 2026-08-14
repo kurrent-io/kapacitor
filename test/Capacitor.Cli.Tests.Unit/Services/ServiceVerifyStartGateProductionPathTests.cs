@@ -33,37 +33,17 @@ public class ServiceVerifyStartGateProductionPathTests {
         </plist>
         """;
 
-    /// <summary>HOME/lock-dir isolation, the stubbed launchctl manager/hello pair, and stderr
-    /// capture shared by every test in this file — each test arranges only its own on-disk evidence
-    /// shape (a malformed plist, stripped permissions, a directory, a dangling symlink, ...) before
-    /// calling <see cref="RunStartVerifiedAsync"/>.</summary>
-    sealed class ProdPathFixture : IDisposable {
-        readonly string? _originalHome;
-        readonly string _home;
+    /// <summary>Adds the stderr capture and gated <see cref="RunStartVerifiedAsync"/> helper this
+    /// file's tests need on top of the shared <see cref="ProdPathFixture"/> (HOME/lock-dir isolation
+    /// and the stubbed launchctl manager) — each test arranges only its own on-disk evidence shape
+    /// (a malformed plist, stripped permissions, a directory, a dangling symlink, ...) before
+    /// calling it.</summary>
+    sealed class Fixture : IDisposable {
+        readonly ProdPathFixture _core = new(Id);
         readonly TextWriter _originalErr = Console.Error;
 
-        public string PlistPath => LaunchdUnit.PlistPath(Id);
-
-        public LaunchdServiceManager Manager { get; } = new(
-            runProcess: (_, args) => PrintNotFound(args),
-            runBounded: (_, args, _) => {
-                var (code, stdout, stderr) = PrintNotFound(args);
-                return (code, stdout, stderr, false);
-            });
-
-        public ProdPathFixture() {
-            _originalHome = Environment.GetEnvironmentVariable("HOME");
-            _home = Directory.CreateTempSubdirectory("kcap-prodpath-home-").FullName;
-            Environment.SetEnvironmentVariable("HOME", _home);
-
-            var lockDir = Directory.CreateTempSubdirectory("kcap-prodpath-lock-").FullName;
-            DaemonLockPaths.OverrideDirectoryForTesting(lockDir);
-        }
-
-        static (int ExitCode, string StdOut, string StdErr) PrintNotFound(string[] args) =>
-            args[0] == "print"
-                ? (113, "", $"Could not find service \"{LaunchdUnit.Label(Id)}\" in domain for user gui: 501")
-                : (0, "", "");
+        public string PlistPath => _core.PlistPath;
+        public LaunchdServiceManager Manager => _core.Manager;
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
@@ -86,9 +66,7 @@ public class ServiceVerifyStartGateProductionPathTests {
 
         public void Dispose() {
             Console.SetError(_originalErr);
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-            Environment.SetEnvironmentVariable("HOME", _originalHome);
-            try { Directory.Delete(_home, recursive: true); } catch { /* best effort */ }
+            _core.Dispose();
         }
     }
 
@@ -96,7 +74,7 @@ public class ServiceVerifyStartGateProductionPathTests {
     public async Task Malformed_unit_on_disk_is_contained_through_the_real_manager_and_reaches_exit_28() {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
-        using var fx = new ProdPathFixture();
+        using var fx = new Fixture();
         Directory.CreateDirectory(LaunchdUnit.AgentsDir());
         File.WriteAllText(fx.PlistPath, DuplicateKeyPlist);
 
@@ -119,7 +97,7 @@ public class ServiceVerifyStartGateProductionPathTests {
     public async Task Present_but_unreadable_unit_is_evidence_unreadable_not_directive_missing() {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution and Unix file modes are POSIX-only");
 
-        using var fx = new ProdPathFixture();
+        using var fx = new Fixture();
         Directory.CreateDirectory(LaunchdUnit.AgentsDir());
         File.WriteAllText(fx.PlistPath, DuplicateKeyPlist); // content is irrelevant — the read never succeeds
         File.SetUnixFileMode(fx.PlistPath, UnixFileMode.None);
@@ -147,7 +125,7 @@ public class ServiceVerifyStartGateProductionPathTests {
     public async Task Directory_at_plist_path_is_evidence_unreadable_not_directive_missing() {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
-        using var fx = new ProdPathFixture();
+        using var fx = new Fixture();
         Directory.CreateDirectory(LaunchdUnit.AgentsDir());
         Directory.CreateDirectory(fx.PlistPath); // a DIRECTORY sits at the plist path, not a file
 
@@ -170,7 +148,7 @@ public class ServiceVerifyStartGateProductionPathTests {
     public async Task Dangling_symlink_at_plist_path_is_evidence_unreadable_not_directive_missing() {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
-        using var fx = new ProdPathFixture();
+        using var fx = new Fixture();
         Directory.CreateDirectory(LaunchdUnit.AgentsDir());
         File.CreateSymbolicLink(fx.PlistPath, Path.Combine(LaunchdUnit.AgentsDir(), "never-created-target"));
 
@@ -188,7 +166,7 @@ public class ServiceVerifyStartGateProductionPathTests {
     public async Task Dangling_symlink_ancestor_of_plist_path_is_evidence_unreadable_not_directive_missing() {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
-        using var fx = new ProdPathFixture();
+        using var fx = new Fixture();
         var home = PathHelpers.HomeDirectory;
         var library = Path.Combine(home, "Library");
         File.CreateSymbolicLink(library, Path.Combine(home, "never-created-target"));
