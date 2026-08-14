@@ -54,26 +54,21 @@ public static class ConfigMutator {
         try {
             json = File.ReadAllText(path);
         } catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) {
-            // FileNotFoundException is unambiguous (the file itself is absent). A
-            // DirectoryNotFoundException, though, is ambiguous on this runtime between "the parent
-            // chain truly does not exist yet" (genuine absence) and "a path segment exists but is a
-            // FILE, not a directory" (a structural misconfiguration that must not be read as
-            // absence). The immediate parent alone isn't enough to tell them apart — a path like
-            // `somefile/child/config.json` needs two levels of walking before it reaches the file
-            // that's actually blocking it — so walk up to the FIRST ancestor that exists at all and
-            // check ITS type.
+            // DirectoryNotFoundException is ambiguous between "the parent chain genuinely doesn't
+            // exist yet" and "a path segment exists but blocks the walk" (a file, or a dangling
+            // symlink) — walk up to the first ancestor that exists at all and check its type.
             if (ex is DirectoryNotFoundException && FirstExistingAncestorIsFile(path)) {
-                config = new() { Profiles = new() { ["default"] = new() } };
+                config = FreshDefault();
                 return false;
             }
 
-            config = new() { Profiles = new() { ["default"] = new() } };
+            config = FreshDefault();
             return true;
         } catch {
             // A directory sitting at the config path (UnauthorizedAccessException on read), a
             // permission error, or any other I/O failure — unreadable EVIDENCE, never silently
             // folded into absence.
-            config = new() { Profiles = new() { ["default"] = new() } };
+            config = FreshDefault();
             return false;
         }
 
@@ -85,7 +80,7 @@ public static class ConfigMutator {
             using var doc = JsonDocument.Parse(json);
             if (!doc.RootElement.IsObject) throw new JsonException("config root is not a JSON object");
         } catch (JsonException) {
-            config = new() { Profiles = new() { ["default"] = new() } };
+            config = FreshDefault();
             return false;
         }
 
@@ -93,24 +88,34 @@ public static class ConfigMutator {
             config = ConfigMigration.MigrateIfNeeded(json).Config;
             return true;
         } catch (JsonException) {
-            config = new() { Profiles = new() { ["default"] = new() } };
+            config = FreshDefault();
             return false;
         }
     }
 
-    /// Walks up from <paramref name="path"/>'s parent chain to the first ancestor that actually
-    /// exists on disk, and reports whether that ancestor is a FILE — a path segment blocking the
-    /// walk structurally — rather than a directory, where every missing level above is simply
-    /// never-created and therefore genuine absence. Handles any depth of missing directories, not
-    /// just the immediate parent.
+    static ProfileConfig FreshDefault() => new() { Profiles = new() { ["default"] = new() } };
+
+    /// Walks up from <paramref name="path"/>'s parent chain to the first ancestor that exists —
+    /// as a directory, a file, or a dangling symlink — and reports whether it blocks the walk
+    /// structurally (file or dangling link) rather than being a genuine, simply never-created
+    /// directory level.
     static bool FirstExistingAncestorIsFile(string path) {
         var current = Path.GetDirectoryName(path);
         while (!string.IsNullOrEmpty(current)) {
             if (File.Exists(current)) return true;
             if (Directory.Exists(current)) return false;
+            if (IsLink(current)) return true; // reached only when dangling — Exists above catches a live link
             current = Path.GetDirectoryName(current);
         }
         return false;
+    }
+
+    /// <summary>Whether <paramref name="path"/> is itself a symlink, regardless of whether its
+    /// target exists — File.Exists/Directory.Exists both FOLLOW links, so a dangling one reads as
+    /// pure absence and the walk above would otherwise skip straight past it.</summary>
+    static bool IsLink(string path) {
+        try { return File.ResolveLinkTarget(path, returnFinalTarget: false) is not null; }
+        catch { return false; }
     }
 
     static void Publish(string path, ProfileConfig config) {

@@ -240,9 +240,8 @@ public class LaunchdUnitTests {
         await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
     }
 
-    // ── TopLevelValue (the shared root-dict walk BinaryFromPlist/EnvFromPlist both use to find
-    // their own top-level key): the same strict key/value alternation as EnvFromPlist's inner walk
-    // above, at the OUTER level. ──
+    // ── TopLevelValue: the same strict key/value alternation as EnvFromPlist's inner walk above,
+    // enforced at the OUTER (top-level dict) level. ──
 
     [Test]
     public async Task EnvFromPlist_throws_on_two_consecutive_identical_top_level_keys_followed_by_one_value() {
@@ -262,9 +261,8 @@ public class LaunchdUnitTests {
             </dict>
             </plist>
             """;
-        // Two consecutive top-level <key> nodes naming the SAME key, followed by only one value,
-        // must still throw — pairing the lone value with whichever key happened to land last would
-        // let this shape masquerade as a single declaration and evade duplicate-key detection.
+        // Must still throw — pairing the lone value with whichever key landed last would evade
+        // duplicate-key detection.
         await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
     }
 
@@ -286,10 +284,8 @@ public class LaunchdUnitTests {
             </dict>
             </plist>
             """;
-        // The real EnvironmentVariables key is immediately followed by a DIFFERENT key before any
-        // value — pairing the dict with that LATER key instead would make EnvironmentVariables
-        // read as absent (an empty map), the takeover-safe outcome a gate caller must never see
-        // for a plist this malformed.
+        // Pairing the dict with the LATER key instead would make EnvironmentVariables read as
+        // absent — the takeover-safe outcome a gate caller must never see for a malformed plist.
         await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
     }
 
@@ -307,8 +303,6 @@ public class LaunchdUnitTests {
             </dict>
             </plist>
             """;
-        // A top-level value with no preceding <key> at all must throw rather than be silently
-        // ignored (no key can ever match it, so the old walk just skipped it without complaint).
         await Assert.That(() => LaunchdUnit.BinaryFromPlist(xml)).Throws<InvalidDataException>();
     }
 

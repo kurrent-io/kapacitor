@@ -87,45 +87,69 @@ static class LaunchdUnit {
             : null;
     }
 
-    /// <summary>
-    /// Pairs each top-level <c>&lt;key&gt;</c> in <paramref name="dict"/> with the single element
-    /// that immediately follows it (never recursing into a nested container), and returns the
-    /// element paired with <paramref name="key"/>, or null when that key never appears. Requires
-    /// strict key/value alternation: a <c>&lt;key&gt;</c> immediately following another
-    /// <c>&lt;key&gt;</c>, a value with no preceding key, a dangling trailing <c>&lt;key&gt;</c>,
-    /// or a duplicate <paramref name="key"/> all throw <see cref="InvalidDataException"/> rather
-    /// than guessing — this file is never hand-edited, so any of those shapes can only mean a
-    /// foreign/corrupt writer. Callers validate the returned element's own kind (array, dict, ...)
-    /// themselves — this helper only resolves identity, never a value type.
-    /// </summary>
-    static XElement? TopLevelValue(XElement dict, string key) {
-        XElement? result = null;
-        var found = false;
-        string? pendingKey = null;
+    /// <summary>Outcome of <see cref="TryReadPlist"/> — kept distinct from a bare null so a
+    /// caller can never conflate genuine absence with present-but-unreadable evidence.</summary>
+    internal enum PlistRead { Absent, Ok, Unreadable }
 
+    /// <summary>Total, discriminated plist read: opens the file directly rather than probing
+    /// <c>File.Exists</c> first, because <c>File.Exists</c> reads a DIRECTORY at the path as
+    /// absent (it only follows through to files) — a caller gating on that flag alone would
+    /// misclassify a directory-at-path as genuine absence. Only the two not-found exceptions are
+    /// <see cref="PlistRead.Absent"/>; anything else (permission denial, a directory opened as a
+    /// file, any other I/O failure) is <see cref="PlistRead.Unreadable"/>.</summary>
+    internal static PlistRead TryReadPlist(string path, out string? content) {
+        try {
+            content = File.ReadAllText(path);
+            return PlistRead.Ok;
+        } catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) {
+            content = null;
+            return PlistRead.Absent;
+        } catch {
+            content = null;
+            return PlistRead.Unreadable;
+        }
+    }
+
+    /// <summary>Strict key/value walk shared by <see cref="TopLevelValue"/> and
+    /// <see cref="EnvFromPlist"/>'s inner walk: yields each (key, value) pair in
+    /// <paramref name="dict"/>'s direct children. A <c>&lt;key&gt;</c> immediately following
+    /// another <c>&lt;key&gt;</c>, a value with no preceding key, or a dangling trailing
+    /// <c>&lt;key&gt;</c> all throw <see cref="InvalidDataException"/> — this file is never
+    /// hand-edited, so any of those shapes can only mean a foreign/corrupt writer. Callers own
+    /// duplicate-key and value-type validation, since the two levels enforce those differently.
+    /// </summary>
+    static IEnumerable<(string Key, XElement Value)> KeyedElements(XElement dict, string context) {
+        string? pendingKey = null;
         foreach (var el in dict.Elements()) {
             if (el.Name == "key") {
                 if (pendingKey is not null)
-                    throw new InvalidDataException($"consecutive <key> nodes ('{pendingKey}', '{el.Value}') in plist");
+                    throw new InvalidDataException($"{context}consecutive <key> nodes ('{pendingKey}', '{el.Value}') in plist");
                 pendingKey = el.Value;
                 continue;
             }
 
             if (pendingKey is null)
-                throw new InvalidDataException("value with no preceding key in plist");
+                throw new InvalidDataException($"{context}value with no preceding key in plist");
 
-            if (pendingKey == key) {
-                if (found) throw new InvalidDataException($"duplicate {key} key in plist");
-                found  = true;
-                result = el;
-            }
-
+            yield return (pendingKey, el);
             pendingKey = null;
         }
 
         if (pendingKey is not null)
-            throw new InvalidDataException($"dangling <key>{pendingKey}</key> with no value in plist");
+            throw new InvalidDataException($"{context}dangling <key>{pendingKey}</key> with no value in plist");
+    }
 
+    /// <summary>The element paired with the top-level <c>&lt;key&gt;</c> named
+    /// <paramref name="key"/>, or null when that key never appears; a duplicate throws.</summary>
+    static XElement? TopLevelValue(XElement dict, string key) {
+        XElement? result = null;
+        var found = false;
+        foreach (var (k, value) in KeyedElements(dict, "")) {
+            if (k != key) continue;
+            if (found) throw new InvalidDataException($"duplicate {key} key in plist");
+            found  = true;
+            result = value;
+        }
         return result;
     }
 
@@ -144,16 +168,11 @@ static class LaunchdUnit {
 
     /// <summary>
     /// The environment baked into a plist — the dict paired with the top-level
-    /// <c>&lt;key&gt;EnvironmentVariables&lt;/key&gt;</c> (see <see cref="TopLevelValue"/>), then a
-    /// strict walk of that dict's own key/value pairs: used by <c>daemon service status --json</c>
-    /// to surface the baked profile/server/consent evidence as UX-only fields, and by the start
-    /// gate to read identity/digest evidence. Returns empty only when the
-    /// <c>EnvironmentVariables</c> block is genuinely absent; every other malformed shape — a
-    /// non-<c>dict</c> pairing, a non-<c>string</c> value, consecutive or dangling
-    /// <c>&lt;key&gt;</c> nodes, a value with no preceding key, or a duplicate key — throws
-    /// <see cref="InvalidDataException"/> rather than degrading silently, because this file is
-    /// never hand-edited and a gate caller reading identity evidence out of this map must see
-    /// ambiguous evidence as unreadable, never guessed.
+    /// <c>EnvironmentVariables</c> key, walked strictly (see <see cref="KeyedElements"/>). Empty
+    /// only when the block is genuinely absent; any other malformed shape throws
+    /// <see cref="InvalidDataException"/> rather than degrading silently — this file is never
+    /// hand-edited, so a gate caller reading identity evidence here must see ambiguous evidence
+    /// as unreadable, never guessed.
     /// </summary>
     public static IReadOnlyDictionary<string, string> EnvFromPlist(string plistXml) {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -166,30 +185,12 @@ static class LaunchdUnit {
         if (envDict.Name != "dict")
             throw new InvalidDataException("EnvironmentVariables is not a dict in plist");
 
-        string? pendingKey = null;
-        foreach (var kv in envDict.Elements()) {
-            if (kv.Name == "key") {
-                if (pendingKey is not null)
-                    throw new InvalidDataException(
-                        $"EnvironmentVariables has consecutive <key> nodes ('{pendingKey}', '{kv.Value}') in plist");
-                pendingKey = kv.Value;
-                continue;
-            }
-
-            if (pendingKey is null)
-                throw new InvalidDataException("EnvironmentVariables has a value with no preceding key in plist");
-
-            if (kv.Name != "string")
-                throw new InvalidDataException($"EnvironmentVariables key '{pendingKey}' is paired with a non-string value in plist");
-
-            if (!result.TryAdd(pendingKey, kv.Value))
-                throw new InvalidDataException($"duplicate EnvironmentVariables key '{pendingKey}' in plist");
-
-            pendingKey = null;
+        foreach (var (key, value) in KeyedElements(envDict, "EnvironmentVariables has ")) {
+            if (value.Name != "string")
+                throw new InvalidDataException($"EnvironmentVariables key '{key}' is paired with a non-string value in plist");
+            if (!result.TryAdd(key, value.Value))
+                throw new InvalidDataException($"duplicate EnvironmentVariables key '{key}' in plist");
         }
-
-        if (pendingKey is not null)
-            throw new InvalidDataException($"EnvironmentVariables ends on a dangling <key>{pendingKey}</key> with no value in plist");
 
         return result;
     }

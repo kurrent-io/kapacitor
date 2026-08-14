@@ -134,6 +134,53 @@ public class AgentDetectionTests {
     }
 
     [Test]
+    public async Task BinaryOnPath_windows_dedupes_case_variant_directories() {
+        var probed = new List<string>();
+        bool CountingProbe(string path, bool isWindows) { probed.Add(path); return false; }
+
+        var winInputs = new AgentDetectionInputs(
+            PathEnv: @"C:\Tools;c:\tools;C:\TOOLS", PathExt: ".EXE", IsWindows: true, Home: "/nonexistent");
+
+        AgentDetection.BinaryOnPath("claude", winInputs, CountingProbe);
+
+        // Three case-variant spellings of the same directory collapse to ONE probed candidate
+        // (one extension × one deduped dir) under Windows' case-insensitive PATH identity.
+        await Assert.That(probed.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task BinaryOnPath_unix_dedupes_same_case_duplicate_directories() {
+        if (OperatingSystem.IsWindows()) return;
+
+        var probed = new List<string>();
+        bool CountingProbe(string path, bool isWindows) { probed.Add(path); return false; }
+
+        var inputs = new AgentDetectionInputs(
+            PathEnv: "/usr/bin:/usr/bin:/usr/bin", PathExt: null, IsWindows: false, Home: "/nonexistent");
+
+        AgentDetection.BinaryOnPath("claude", inputs, CountingProbe);
+
+        await Assert.That(probed.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task BinaryOnPath_unix_probes_case_variant_directories_separately() {
+        if (OperatingSystem.IsWindows()) return;
+
+        var probed = new List<string>();
+        bool CountingProbe(string path, bool isWindows) { probed.Add(path); return false; }
+
+        var inputs = new AgentDetectionInputs(
+            PathEnv: "/usr/bin:/USR/BIN", PathExt: null, IsWindows: false, Home: "/nonexistent");
+
+        AgentDetection.BinaryOnPath("claude", inputs, CountingProbe);
+
+        // Unix PATH identity is case-sensitive — these are two genuinely distinct directories,
+        // each probed once, unlike Windows' case-insensitive dedup above.
+        await Assert.That(probed.Count).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task BinaryOnPath_skips_empty_path_entries_without_throwing() {
         if (OperatingSystem.IsWindows()) return;
 

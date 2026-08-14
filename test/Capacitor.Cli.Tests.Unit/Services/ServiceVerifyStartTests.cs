@@ -19,9 +19,7 @@ public class ServiceVerifyStartTests {
         public string? StopError;
 
         /// <summary>Reported as <see cref="ServiceQuery.UnitPresent"/> on every <see cref="Query"/>
-        /// call. Defaults true (a plist on disk is the common case every other test scripts around);
-        /// a test simulating a genuinely absent unit sets this false so Phase A's presence check
-        /// sees absence, not just a stubbed null <c>readPlist</c>.</summary>
+        /// call. Defaults true; a genuinely-absent-unit test sets this false.</summary>
         public bool UnitPresent = true;
 
         /// <summary>When set, <see cref="StopError"/> is reported on only the FIRST <see cref="Stop"/>
@@ -463,8 +461,8 @@ public class ServiceVerifyStartTests {
         var originalErr = Console.Error;
         var capturedErr = new StringWriter();
         try {
-            // Genuinely absent unit: UnitPresent false (not just a stubbed null readPlist) so
-            // Phase A's presence check agrees the unit truly isn't there, not merely unreadable.
+            // Genuinely absent unit: readPlist returns null and plistExists is left at its
+            // (unstubbed) default false, so Phase A's discriminator reads Absent, not Unreadable.
             var manager = new FakeServiceManager { UnitPresent = false };
 
             Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
@@ -730,14 +728,9 @@ public class ServiceVerifyStartTests {
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 
-    /// <summary>After the second (confirming) successful readiness probe, the gated path must
-    /// re-read the plist and re-check the digest ONE more time before committing — the same
-    /// post-readiness recheck install/replace already has — because the recheck→exec race Phase B
-    /// closes only covers the window up to bootstrap, not the window between bootstrap and the
-    /// transaction actually observing readiness. Forced-order regression: the readPlist seam
-    /// returns Phase A's content through Phase B's own recheck AND both readiness probes, then a
-    /// foreign writer's altered content on the FIRST read taken after readiness is confirmed —
-    /// proving the recheck fires post-readiness, not merely pre-bootstrap.</summary>
+    /// <summary>The gated path re-checks the plist/digest once more after readiness is confirmed,
+    /// not just pre-bootstrap: content only drifts on the FIRST read taken after both readiness
+    /// probes already saw matching content.</summary>
     [Test]
     public async Task Post_readiness_recheck_detects_plist_drift_after_confirmed_ready_and_rolls_back_to_29() {
         var dir = Directory.CreateTempSubdirectory().FullName;

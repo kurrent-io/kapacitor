@@ -3,15 +3,10 @@ using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
 
-/// <summary>
-/// <c>LaunchdServiceManager.Query</c> must never let a malformed on-disk unit (truncated XML, a
-/// duplicate <c>ProgramArguments</c> key, a present-but-unreadable file) escape as an uncoded
-/// failure — both before the start gate's own <c>gated</c> determination, and post-mutation. <see
-/// cref="ServiceVerifyStartTests"/> pins the leaf-parser-throws contract and the gate's own
-/// contained Phase-A re-parse via a stubbed <c>readPlist</c> seam on a Fake manager; this class
-/// proves the same containment end to end through the REAL <see cref="LaunchdServiceManager"/> and
-/// its default, unstubbed plist read.
-/// </summary>
+/// <summary>Proves <see cref="LaunchdServiceManager"/>'s default, unstubbed plist read never lets
+/// a malformed or unreadable on-disk unit escape the start gate as an uncoded failure — end to end
+/// through the REAL manager, complementing <see cref="ServiceVerifyStartTests"/>'s stubbed-seam
+/// coverage of the same contract.</summary>
 [NotInParallel(["HomeEnvVarMutation", nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting"])]
 public class ServiceVerifyStartGateProductionPathTests {
     const string Id = "prodpath";
@@ -94,11 +89,8 @@ public class ServiceVerifyStartGateProductionPathTests {
 
     /// <summary>A unit that IS present but whose plist cannot be read must classify as
     /// <c>evidence_unreadable</c>, never the takeover-safe <c>directive_missing</c> a genuinely
-    /// absent unit gets — the two are indistinguishable from <c>_readPlist</c>'s null return alone,
-    /// so the gate must consult presence separately. Driven through the real, unstubbed
-    /// <c>File.ReadAllText</c>-backed <c>_readPlist</c>: a real plist file with its read
-    /// permission stripped is present (<c>File.Exists</c> ignores permission bits) but throws on
-    /// read.</summary>
+    /// absent unit gets. Here: a real plist file with its read permission stripped —
+    /// <c>File.Exists</c> still reports it present, but the open throws.</summary>
     [Test, NotInParallel]
     public async Task Present_but_unreadable_unit_is_evidence_unreadable_not_directive_missing() {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution and Unix file modes are POSIX-only");
@@ -147,6 +139,61 @@ public class ServiceVerifyStartGateProductionPathTests {
         } finally {
             Console.SetError(originalErr);
             try { File.SetUnixFileMode(LaunchdUnit.PlistPath(Id), UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch { /* best effort */ }
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            try { Directory.Delete(home, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>A DIRECTORY at the plist path is present by every real signal but unreadable as
+    /// content. <c>File.Exists</c> (which the presence check used to compose on) reads a
+    /// directory as ABSENT — it only follows through to files — so this must still classify
+    /// <c>evidence_unreadable</c>, never the takeover-safe <c>directive_missing</c>.</summary>
+    [Test, NotInParallel]
+    public async Task Directory_at_plist_path_is_evidence_unreadable_not_directive_missing() {
+        Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
+
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var home = Directory.CreateTempSubdirectory("kcap-prodpath-home-").FullName;
+        Environment.SetEnvironmentVariable("HOME", home);
+
+        var lockDir = Directory.CreateTempSubdirectory("kcap-prodpath-lock-").FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(lockDir);
+
+        var originalErr = Console.Error;
+        var capturedErr = new StringWriter();
+
+        try {
+            Directory.CreateDirectory(LaunchdUnit.AgentsDir());
+            Directory.CreateDirectory(LaunchdUnit.PlistPath(Id)); // a DIRECTORY sits at the plist path, not a file
+
+            var manager = new LaunchdServiceManager(
+                runProcess: (_, args) => PrintNotFound(args),
+                runBounded: (_, args, _) => {
+                    var (code, stdout, stderr) = PrintNotFound(args);
+                    return (code, stdout, stderr, false);
+                });
+
+            // The unit-level presence signal Query reports must stay true even though
+            // File.Exists itself would say otherwise for a directory.
+            var query = manager.Query(Id);
+            await Assert.That(query.UnitPresent).IsTrue();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
+
+            Console.SetError(capturedErr);
+            var exit = await sut.StartVerifiedAsync(Id);
+            Console.SetError(originalErr);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
+            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            await Assert.That(lines).Contains("start_gate_reason=evidence_unreadable");
+        } finally {
+            Console.SetError(originalErr);
             DaemonLockPaths.OverrideDirectoryForTesting(null);
             Environment.SetEnvironmentVariable("HOME", originalHome);
             try { Directory.Delete(home, recursive: true); } catch { /* best effort */ }

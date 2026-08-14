@@ -154,12 +154,8 @@ public class ConfigMutatorTests {
         await Assert.That(config.Profiles.ContainsKey("default")).IsTrue();
     }
 
-    /// <summary><c>Directory.Exists</c>/<c>File.Exists</c> both return false on a
-    /// permission-denied path, which would silently degrade "inaccessible" into "absent, defaults
-    /// are fine". The simplest deterministic way to force a non-not-found I/O failure (without
-    /// relying on platform-specific permission bits) is to make the config path's PARENT a plain
-    /// file rather than a directory — opening through it fails structurally, not because anything
-    /// is missing.</summary>
+    /// <summary>A non-not-found I/O failure, forced deterministically: the config path's PARENT
+    /// is a plain file rather than a directory, so opening through it fails structurally.</summary>
     [Test]
     public async Task TryLoadPure_parent_replaced_by_a_file_is_failure_not_absence() {
         var root = Directory.CreateTempSubdirectory("kcap-trypure-").FullName;
@@ -173,9 +169,8 @@ public class ConfigMutatorTests {
         await Assert.That(config.Profiles.ContainsKey("default")).IsTrue(); // still a usable default out param
     }
 
-    /// <summary>The immediate parent alone isn't enough to disambiguate: a path nested TWO levels
-    /// under a planted file (<c>file/child/config.json</c>) needs the ancestor walk to climb past
-    /// the never-created <c>child</c> directory to reach the file actually blocking it.</summary>
+    /// <summary>The immediate parent alone isn't enough: a path nested TWO levels under a
+    /// planted file needs the ancestor walk to climb past the never-created child directory.</summary>
     [Test]
     public async Task TryLoadPure_grandparent_replaced_by_a_file_is_failure_not_absence() {
         var root = Directory.CreateTempSubdirectory("kcap-trypure-").FullName;
@@ -189,10 +184,26 @@ public class ConfigMutatorTests {
         await Assert.That(config.Profiles.ContainsKey("default")).IsTrue(); // still a usable default out param
     }
 
-    /// <summary>A path whose parent chain genuinely does not exist yet (nothing has ever been
-    /// created there) must still read as absence, not failure — disambiguating a blocked ancestor
-    /// from a missing one must not turn every missing directory level into a false
-    /// failure.</summary>
+    /// <summary>A dangling symlink segment (<c>File.Exists</c>/<c>Directory.Exists</c> both read
+    /// it as absent, since they follow to the missing target) must not let the ancestor walk skip
+    /// past it to a real directory further up.</summary>
+    [Test]
+    public async Task TryLoadPure_dangling_symlink_ancestor_is_failure_not_absence() {
+        Skip.When(OperatingSystem.IsWindows(), "symlink creation needs elevated privilege on Windows CI");
+
+        var root = Directory.CreateTempSubdirectory("kcap-trypure-").FullName;
+        var link = Path.Combine(root, "danglink");
+        Directory.CreateSymbolicLink(link, Path.Combine(root, "never-created-target"));
+        var path = Path.Combine(link, "config.json");
+
+        var ok = ConfigMutator.TryLoadPure(path, out var config);
+
+        await Assert.That(ok).IsFalse();
+        await Assert.That(config.Profiles.ContainsKey("default")).IsTrue(); // still a usable default out param
+    }
+
+    /// <summary>A genuinely never-created parent chain must still read as absence — disambiguating
+    /// a blocked ancestor must not turn every missing directory level into a false failure.</summary>
     [Test]
     public async Task TryLoadPure_missing_parent_directory_is_still_absence() {
         var root = Directory.CreateTempSubdirectory("kcap-trypure-").FullName;

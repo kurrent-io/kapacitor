@@ -111,19 +111,28 @@ public static class AgentDetection {
     /// null/empty PATH. On Unix, requires at least one of the user/group/other execute bits; on
     /// Windows, walks PATHEXT (defaulting to .EXE/.CMD/.BAT) and accepts any file that exists.
     /// </summary>
-    public static bool BinaryOnPath(string binaryName, AgentDetectionInputs i) {
+    public static bool BinaryOnPath(string binaryName, AgentDetectionInputs i) =>
+        BinaryOnPath(binaryName, i, IsExecutable);
+
+    /// <summary>Counting/stubbing seam for <see cref="BinaryOnPath(string, AgentDetectionInputs)"/>:
+    /// lets a test observe exactly which candidate paths get probed, so PATH-entry dedup is pinned
+    /// by call count rather than only by the boolean result.</summary>
+    internal static bool BinaryOnPath(string binaryName, AgentDetectionInputs i, Func<string, bool, bool> isExecutable) {
         if (string.IsNullOrEmpty(i.PathEnv)) return false;
 
-        // Derived from the injected platform, never the host-global Path.PathSeparator: a test
-        // simulating Windows PATHEXT/separator behavior on a non-Windows host (or vice versa) must
-        // get the SEPARATOR that platform actually uses, not whatever the test runner's own OS is.
+        // Both derived from the injected platform, never the host-global Path.PathSeparator/
+        // OS-comparer: a test simulating Windows behavior on a non-Windows host (or vice versa)
+        // must get what that platform actually uses. Windows PATH entries are case-insensitive
+        // identity (two case-variant dirs are the SAME entry, probed once); Unix PATH entries are
+        // case-sensitive (case-variant dirs are genuinely distinct, each probed).
         var separator  = i.IsWindows ? ';' : ':';
         var paths      = i.PathEnv.Split(separator);
         var extensions = i.IsWindows ? WindowsExtensions(i.PathExt) : [""];
+        var comparer   = i.IsWindows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
         return paths.Where(dir => !string.IsNullOrEmpty(dir))
-            .Distinct(StringComparer.Ordinal) // a dir repeated in PATH is probed once, not once per occurrence
-            .Any(dir => extensions.Select(ext => Path.Combine(dir, binaryName + ext)).Any(path => IsExecutable(path, i.IsWindows)));
+            .Distinct(comparer) // a dir repeated in PATH (by platform identity) is probed once, not once per occurrence
+            .Any(dir => extensions.Select(ext => Path.Combine(dir, binaryName + ext)).Any(path => isExecutable(path, i.IsWindows)));
     }
 
     /// <summary>Convenience overload for CLI call sites that only need a single-binary current-

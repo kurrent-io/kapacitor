@@ -58,8 +58,10 @@ sealed partial class LaunchdServiceManager(
     public ServiceQuery Query(string serviceId, TimeSpan t)     => QueryCore(serviceId, t);
 
     ServiceQuery QueryCore(string serviceId, TimeSpan? timeout) {
-        var path        = LaunchdUnit.PlistPath(serviceId);
-        var unitPresent = File.Exists(path);
+        var path = LaunchdUnit.PlistPath(serviceId);
+        // File.Exists alone reads a DIRECTORY at the path (or an inaccessible ancestor) as
+        // absent — open directly so presence and unreadable-but-present are never conflated.
+        var unitPresent = LaunchdUnit.TryReadPlist(path, out _) != LaunchdUnit.PlistRead.Absent;
         var bin         = unitPresent ? ReadBinaryPathSafe(path) : null;
         var (code, stdout, stderr, timedOut) = RunCtl(timeout, LaunchdUnit.PrintArgs(Uid(), serviceId));
         // A killed-on-timeout print told us nothing about the label — never let its kill exit code

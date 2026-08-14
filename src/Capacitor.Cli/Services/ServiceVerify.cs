@@ -141,6 +141,23 @@ sealed class ServiceVerify(
     /// <see cref="_readPlist"/> returns null for both.</summary>
     readonly Func<string, bool> _plistExists = plistExists ?? File.Exists;
 
+    /// <summary>Phase A's own discriminated read (see <see cref="LaunchdUnit.PlistRead"/>): the
+    /// real default opens the file directly rather than composing <see cref="_readPlist"/> with
+    /// <see cref="_plistExists"/> — both are File.Exists-based and read a directory-at-path (or an
+    /// inaccessible ancestor) as absent, which would otherwise let Phase A evaluate an empty env
+    /// and reach the takeover-safe DirectiveMissing instead of EvidenceUnreadable. Tests that stub
+    /// the older readPlist/plistExists pair get an equivalent discriminator synthesized from
+    /// those, so none of that existing seam shape needs to change.</summary>
+    readonly Func<string, (LaunchdUnit.PlistRead Status, string? Content)> _phaseAPlistRead =
+        readPlist is null && plistExists is null
+            ? (path => { var status = LaunchdUnit.TryReadPlist(path, out var content); return (status, content); })
+            : (path => {
+                var content = readPlist?.Invoke(path);
+                if (content is not null) return (LaunchdUnit.PlistRead.Ok, content);
+                var exists = plistExists?.Invoke(path) ?? false;
+                return (exists ? LaunchdUnit.PlistRead.Unreadable : LaunchdUnit.PlistRead.Absent, null);
+            });
+
     /// <summary>The gated start seam: when non-null AND <c>gateEnv(ConsentSeedVar)</c> is
     /// PRESENT — any value, including empty, under the exact-value contract —
     /// <see cref="StartVerifiedAsync"/> runs the pre-mutation gate (Phase A) and the
@@ -207,24 +224,21 @@ sealed class ServiceVerify(
 
         if (gated) {
             var plistPath = LaunchdUnit.PlistPath(serviceId);
-            phaseAPlistContent = _readPlist(plistPath);
+            var (readStatus, content) = _phaseAPlistRead(plistPath);
+            phaseAPlistContent = content;
 
-            // A malformed/truncated plist (exactly the foreign-writer race Phase B defends
-            // against, caught here instead) must not let XDocument.Parse's XmlException escape
-            // this method — that would abort to a generic, uncoded exit 1 instead of the gate's
-            // own contract. Unreadable evidence is EvidenceUnreadable, same as every other
-            // evidence read this gate performs.
+            // Unreadable is coded directly from the discriminated read — never inferred from a
+            // null content plus a separate presence check, which is exactly what let a
+            // directory-at-path evade classification. A malformed/truncated-but-present plist
+            // (the foreign-writer race Phase B also defends against) must not let the parse below
+            // escape as an uncoded exit 1, so it lands here too.
             StartGateReason? reason;
-            if (phaseAPlistContent is null && (pre.UnitPresent || _plistExists(plistPath))) {
-                // A null read is ambiguous by itself — genuinely absent AND present-but-unreadable
-                // both read null through _readPlist. A unit the fresh query (or the dedicated
-                // existence seam) says IS present must never fall through to the empty-env path
-                // below, which would misclassify it as the takeover-safe DirectiveMissing.
+            if (readStatus == LaunchdUnit.PlistRead.Unreadable) {
                 reason = StartGateReason.EvidenceUnreadable;
             } else {
                 try {
-                    var unitEnv = phaseAPlistContent is not null ? LaunchdUnit.EnvFromPlist(phaseAPlistContent) : new Dictionary<string, string>();
-                    var unitBinaryPath = phaseAPlistContent is not null ? LaunchdUnit.BinaryFromPlist(phaseAPlistContent) : null;
+                    var unitEnv = content is not null ? LaunchdUnit.EnvFromPlist(content) : new Dictionary<string, string>();
+                    var unitBinaryPath = content is not null ? LaunchdUnit.BinaryFromPlist(content) : null;
                     reason = EvaluateStartGate(unitEnv, unitBinaryPath, UnitIdentity.ResolveDaemonBinary(), _gateEnv!, _digestMatches);
                     unitEnv.TryGetValue(ExpectVar, out unitExpectation);
                 } catch {
@@ -375,14 +389,10 @@ sealed class ServiceVerify(
         return AttributeReadinessTimeout(serviceId, rollbackExit, gated, attributionEnabled, unitExpectation, observedJobPids);
     }
 
-    /// <summary>
-    /// The gated start path's shared TOCTOU-recheck shape, used by both Phase B's pre-bootstrap
-    /// recheck and the post-readiness recheck: re-read the plist, parse its baked binary path and
-    /// re-check the digest (both contained — an unreadable/malformed re-read IS drift, never an
-    /// escaping exception), then compare the freshly re-read content against Phase A's own
-    /// captured <paramref name="phaseAPlistContent"/>. False means drift; the caller still owns
-    /// its own stage-specific marker phase and rollback call.
-    /// </summary>
+    /// <summary>Re-reads the plist and re-checks the digest (both contained — never an escaping
+    /// exception), comparing against Phase A's captured <paramref name="phaseAPlistContent"/>;
+    /// false means drift. Shared by Phase B's pre-bootstrap and post-readiness rechecks — callers
+    /// own their own marker phase and rollback call.</summary>
     bool RecheckPlistUnchanged(string serviceId, string? phaseAPlistContent) {
         var content = _readPlist(LaunchdUnit.PlistPath(serviceId));
         bool digestGood;
