@@ -131,17 +131,17 @@ sealed class ServiceVerify(
     /// tests; the command wires the real resolution.</summary>
     readonly Func<bool> _profileViable = profileViable ?? (() => true);
 
-    /// <summary>Install-only seam for the on-disk plist read (final recheck + rollback's foreign-file
-    /// guard). Real launchd needs HOME to compute the path, so tests inject this directly.</summary>
+    /// <summary>Install-only seam for the on-disk plist read (Phase B's pre/post-readiness recheck
+    /// and install's final on-disk fingerprint recheck). Real launchd needs HOME to compute the
+    /// path, so tests inject this directly.</summary>
     readonly Func<string, string?> _readPlist = readPlist ?? (path => {
         try { return File.Exists(path) ? File.ReadAllText(path) : null; } catch { return null; }
     });
 
-    /// <summary>Entry-recovery-only seam: distinguishes "absent" from "present but unreadable" when
-    /// <see cref="_readPlist"/> returns null for both.</summary>
-    readonly Func<string, bool> _plistExists = plistExists ?? File.Exists;
-
-    readonly Func<string, (LaunchdUnit.PlistRead Status, string? Content)> _phaseAPlistRead =
+    /// <summary>Discriminated read shared by Phase A, marker recovery, and install rollback: unlike
+    /// <see cref="_readPlist"/> composed with a separate exists check, a structural obstruction (a
+    /// directory, a dangling symlink) can never be misread as confirmed absence.</summary>
+    readonly Func<string, (LaunchdUnit.PlistRead Status, string? Content)> _discriminatedPlistRead =
         readPlist is null && plistExists is null
             ? (path => { var status = LaunchdUnit.TryReadPlist(path, out var content); return (status, content); })
             : (path => {
@@ -217,11 +217,13 @@ sealed class ServiceVerify(
 
         if (gated) {
             var plistPath = LaunchdUnit.PlistPath(serviceId);
-            var (readStatus, content) = _phaseAPlistRead(plistPath);
+            var (readStatus, content) = _discriminatedPlistRead(plistPath);
             phaseAPlistContent = content;
 
             StartGateReason? reason;
-            if (readStatus == LaunchdUnit.PlistRead.Unreadable) {
+            // A fresh query that saw the unit but a read that didn't is contradictory evidence, not
+            // genuine absence — only agreement on absence may pass through to directive_missing.
+            if (readStatus == LaunchdUnit.PlistRead.Unreadable || (readStatus == LaunchdUnit.PlistRead.Absent && pre.UnitPresent)) {
                 reason = StartGateReason.EvidenceUnreadable;
             } else {
                 try {
@@ -860,19 +862,18 @@ sealed class ServiceVerify(
             return null;
         }
 
-        var onDisk = _readPlist(onDiskPath);
-        if (onDisk is null) {
-            if (_plistExists(onDiskPath)) {
-                // Present but unreadable is NOT absent — the file exists and was never fingerprint-
-                // compared, so never guess it's our own gone residue.
-                Say(VerifyExit.RestoreVerificationToken);
-                return VerifyExit.RestoreVerification;
-            }
+        var (status, onDisk) = _discriminatedPlistRead(onDiskPath);
+        if (status == LaunchdUnit.PlistRead.Unreadable) {
+            // Present but unreadable is NOT absent — never guess it's our own gone residue.
+            Say(VerifyExit.RestoreVerificationToken);
+            return VerifyExit.RestoreVerification;
+        }
+        if (status == LaunchdUnit.PlistRead.Absent) {
             ServiceTxnMarker.Delete(serviceId); // confirmed absent — residue already gone
             return null;
         }
 
-        if (ServiceTxnMarker.Fingerprint(onDisk) != leftover.PlistFingerprint) {
+        if (ServiceTxnMarker.Fingerprint(onDisk!) != leftover.PlistFingerprint) {
             // A foreign writer touched the file after the death — surface, never pave.
             Say(VerifyExit.RestoreVerificationToken);
             return VerifyExit.RestoreVerification;
@@ -1037,18 +1038,14 @@ sealed class ServiceVerify(
     /// is label-absent AND file-gone (unlike start, which retains the plist), bounded by the reserve. A
     /// foreign plist (fingerprint mismatch) is never touched — checked before the uninstall.</summary>
     async Task<int> InstallRollback(string serviceId, string plistPath, string fingerprint, int reasonExit, string reasonToken) {
-        // Never uninstall what we can't verify is ours. A null read is either genuine absence OR a
-        // present-but-unreadable file (a lock-unaware writer replaced ours between bootstrap and
-        // rollback): only the confirmed-absent case (read null AND the file does not exist) may be
-        // cleared. Present-but-unreadable, and readable-but-foreign, both surface untouched — the
-        // same fail-closed rule RecoverLeftoverMarker applies at entry.
-        var onDisk = _readPlist(plistPath);
-        if (onDisk is null) {
-            if (_plistExists(plistPath)) {
-                Say(VerifyExit.RestoreVerificationToken);
-                return VerifyExit.RestoreVerification;
-            }
-        } else if (ServiceTxnMarker.Fingerprint(onDisk) != fingerprint) {
+        // Never uninstall what we can't verify is ours — unreadable-but-present and readable-but-
+        // foreign both surface untouched, the same fail-closed rule RecoverLeftoverMarker applies.
+        var (status, onDisk) = _discriminatedPlistRead(plistPath);
+        if (status == LaunchdUnit.PlistRead.Unreadable) {
+            Say(VerifyExit.RestoreVerificationToken);
+            return VerifyExit.RestoreVerification;
+        }
+        if (status == LaunchdUnit.PlistRead.Ok && ServiceTxnMarker.Fingerprint(onDisk!) != fingerprint) {
             Say(VerifyExit.RestoreVerificationToken);
             return VerifyExit.RestoreVerification;
         }

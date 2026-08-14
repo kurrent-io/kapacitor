@@ -494,6 +494,43 @@ public class ServiceVerifyStartTests {
         }
     }
 
+    /// <summary>The forced-order race the sibling test above does NOT cover: the fresh query
+    /// observed the unit present, but the plist read seam reports genuine absence (a lock-unaware
+    /// writer deleted it in the window between the two). Contradictory evidence must never fall
+    /// through to the agreeing-absence case's takeover-safe directive_missing.</summary>
+    [Test, NotInParallel]
+    public async Task Query_sees_the_unit_but_the_read_does_not_is_evidence_unreadable_not_directive_missing() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        var originalErr = Console.Error;
+        var capturedErr = new StringWriter();
+        try {
+            var manager = new FakeServiceManager { UnitPresent = true };
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: _ => null,
+                plistExists: _ => false,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
+
+            Console.SetError(capturedErr);
+            var exit = await sut.StartVerifiedAsync(Id);
+            Console.SetError(originalErr);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
+            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            await Assert.That(lines).Contains("start_gate_reason=evidence_unreadable");
+            await Assert.That(manager.Calls.Count).IsEqualTo(1);
+            await Assert.That(manager.Calls.All(c => c == "query")).IsTrue();
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally {
+            Console.SetError(originalErr);
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        }
+    }
+
     [Test]
     public async Task Plist_drift_between_phase_a_and_phase_b_rolls_back_to_29_without_ever_starting() {
         var dir = Directory.CreateTempSubdirectory().FullName;
