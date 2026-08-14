@@ -17,7 +17,7 @@ public sealed record ProcessResult(int ExitCode, string Stdout, string Stderr, b
 
 public sealed record RunOptions(
     IReadOnlyDictionary<string, string>? EnvOverlay = null, // adds/overrides; rest of env untouched
-    TimeSpan? Timeout = null,                                // internal deadline: kills the tree + awaits on expiry
+    TimeSpan? Timeout = null,                                // internal deadline: kills per TimeoutKill scope + awaits on expiry
     CancelMode CancelMode = CancelMode.AbandonWait,
     TimeoutKillScope TimeoutKill = TimeoutKillScope.Tree);
 

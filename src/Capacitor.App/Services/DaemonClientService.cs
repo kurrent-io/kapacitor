@@ -172,7 +172,7 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
 
     /// Production IProcessRunner: wraps System.Diagnostics.Process with stdout/stderr capture, an
     /// env overlay, an internal timeout, and a per-call cancel mode. `RunOptions.Timeout` is an
-    /// internal deadline distinct from `ct`: on expiry the tree is killed and awaited, and the
+    /// internal deadline distinct from `ct`: on expiry the process (or tree, per `RunOptions.TimeoutKill`) is killed and awaited, and the
     /// result comes back with TimedOut=true rather than throwing. `ct` cancellation behaves per
     /// `RunOptions.CancelMode`: AbandonWait abandons the WAIT only (a detached `daemon start -d`
     /// keeps running) and still throws OperationCanceledException; KillTree kills the tree and
