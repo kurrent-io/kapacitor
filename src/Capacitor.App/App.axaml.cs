@@ -427,15 +427,20 @@ public partial class App : Application {
     // ILifecycleSurface the controller uses for its own dialogs (single-presentation rule). A
     // presentation failure for ONE envelope is caught and logged INSIDE the loop (round-1 review
     // I-1) so it can never brick every presentation after it — only a shutdown cancellation ends
-    // the loop.
+    // the loop. Owns the per-run Takeover decline memory (round-2 review R2-2): one HashSet per
+    // call ("per run"), never persisted — the controller's own persisted DeclinedTakeoverPairs is
+    // a separate concern entirely.
     internal static async Task ConsumeMutationOutcomesAsync(
             OutcomeChannel channel, ILifecycleSurface surface,
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation,
             Func<CancellationToken, Task<string?>> terminalPathAsync, Func<string?> cliVersion, CancellationToken ct) {
+        var declinedTakeoverPairs = new HashSet<(MutationRequest Request, string Token)>();
         try {
             await foreach (var lease in channel.ConsumeAsync(ct)) {
                 try {
-                    await PresentOutcomeAsync(surface, lease.Envelope, runMutation, terminalPathAsync, cliVersion, ct).ConfigureAwait(false);
+                    await PresentOutcomeAsync(
+                            surface, lease.Envelope, runMutation, terminalPathAsync, cliVersion, ct, declinedTakeoverPairs)
+                        .ConfigureAwait(false);
                 } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                     throw; // shutdown — let the outer catch end the whole loop, not just this envelope
                 } catch (Exception ex) {
@@ -459,12 +464,16 @@ public partial class App : Application {
     // now the ONLY status-slot writer for a mutation outcome). UnconfirmedNoAttach is actionable
     // (round-1 review I-3) — one attention line naming the verb; any success case never reaches
     // here at all (the lane's Deliver only enqueues non-success outcomes).
+    // `declinedTakeoverPairs` defaults to a fresh (empty) set so every existing direct call site
+    // keeps working unchanged — only ConsumeMutationOutcomesAsync's loop threads one shared
+    // instance across the whole run.
     internal static async Task PresentOutcomeAsync(
             ILifecycleSurface surface, OutcomeEnvelope envelope,
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation,
-            Func<CancellationToken, Task<string?>> terminalPathAsync, Func<string?> cliVersion, CancellationToken ct) {
+            Func<CancellationToken, Task<string?>> terminalPathAsync, Func<string?> cliVersion, CancellationToken ct,
+            HashSet<(MutationRequest Request, string Token)>? declinedTakeoverPairs = null) {
         if (envelope.Outcome is MutationOutcome.UnconfirmedNoAttach) {
-            surface.Attention($"{envelope.Request.Verb} started, not yet confirmed — check status.");
+            surface.Attention($"{VerbDisplay(envelope.Request.Verb)} started, not yet confirmed — check status.");
             return;
         }
 
@@ -476,16 +485,35 @@ public partial class App : Application {
         // branch below that reaches this point has a real token to name.
         var named = token!;
         switch (recoverySurface) {
-            case RecoverySurface.Takeover:
+            case RecoverySurface.Takeover: {
+                var declined = declinedTakeoverPairs ?? [];
+                var pairKey = (envelope.Request, named);
+                if (declined.Contains(pairKey)) {
+                    // round-2 review R2-2: a persistent failure the user already declined once
+                    // this run is downgraded to a one-line attention presentation — still
+                    // exactly-once per envelope, just never a re-dialog for the SAME pair.
+                    surface.Attention($"kcap needs to replace the daemon service to continue ({named}).");
+                    break;
+                }
+
                 var pathDegraded = await terminalPathAsync(ct).ConfigureAwait(false) is null;
                 var prompt = new LifecyclePrompt(
                     LifecyclePrompt.KindTakeover, null, cliVersion(), pathDegraded, DaemonLifecycleController.TakeoverDisclosure);
                 var accepted = await surface.ConfirmAsync(prompt, ct).ConfigureAwait(false);
-                if (accepted)
+                if (accepted) {
+                    // round-2 review R2-1 (adjudicated, deferred to Plan C): no app-side evidence
+                    // revalidation before re-mutating — a stale Accept can only fail coded (28/29,
+                    // under the CLI's own per-label transaction lock, the designed guard for
+                    // exactly this staleness) and re-arrives as a fresh channel outcome; richer
+                    // accept-time UX (incl. any advisory revalidation) is the wizard consumer's to
+                    // own.
                     _ = await runMutation(envelope.Request with { Verb = MutationVerb.Replace }, ct).ConfigureAwait(false);
-                else
+                } else {
+                    declined.Add(pairKey); // Accept never records here — an accepting user wants the retry loop
                     surface.Status($"kcap needs to replace the daemon service to continue ({named}) — declined.");
+                }
                 break;
+            }
             case RecoverySurface.Reinstall:
                 surface.Attention($"kcap needs to be reinstalled to continue ({named}).");
                 break;
@@ -495,6 +523,16 @@ public partial class App : Application {
                 break;
         }
     }
+
+    // round-2 review R2-3: a small display map instead of MutationVerb.ToString() for
+    // user-facing copy.
+    static string VerbDisplay(MutationVerb verb) => verb switch {
+        MutationVerb.Install       => "install",
+        MutationVerb.Replace       => "replace",
+        MutationVerb.StartVerified => "verified start",
+        MutationVerb.DetachedStart => "daemon start",
+        _                          => verb.ToString(),
+    };
 
     // Succeeded/SucceededAfterTimeout are the only cases still landing on the None catch-all —
     // they're never enqueued onto the channel at all, so this is unreachable in production;

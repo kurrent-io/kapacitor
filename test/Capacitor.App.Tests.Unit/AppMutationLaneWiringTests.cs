@@ -184,7 +184,8 @@ public class AppMutationLaneWiringTests {
     }
 
     // round-1 review I-3: UnconfirmedNoAttach IS actionable — one attention presentation naming
-    // the verb (Succeeded/SucceededAfterTimeout still never reach the channel at all).
+    // the verb (Succeeded/SucceededAfterTimeout still never reach the channel at all). round-2
+    // review R2-3: the verb is rendered through a small display map, not MutationVerb.ToString().
     [Test]
     public async Task UnconfirmedNoAttach_is_presented_once_naming_the_verb() {
         var surface = new FakeLifecycleSurface();
@@ -194,9 +195,24 @@ public class AppMutationLaneWiringTests {
             surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
 
         await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
-        await Assert.That(surface.AttentionMessages[0]).Contains("DetachedStart");
+        await Assert.That(surface.AttentionMessages[0]).Contains("daemon start");
         await Assert.That(surface.Prompts).IsEmpty();
         await Assert.That(surface.StatusMessages).IsEmpty();
+    }
+
+    [Test]
+    [Arguments(MutationVerb.Install, "install")]
+    [Arguments(MutationVerb.Replace, "replace")]
+    [Arguments(MutationVerb.StartVerified, "verified start")]
+    [Arguments(MutationVerb.DetachedStart, "daemon start")]
+    public async Task UnconfirmedNoAttach_names_every_verb_via_the_display_map(MutationVerb verb, string expectedDisplay) {
+        var surface = new FakeLifecycleSurface();
+        var envelope = Envelope(new MutationOutcome.UnconfirmedNoAttach(), verb);
+
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
+
+        await Assert.That(surface.AttentionMessages[0]).Contains(expectedDisplay);
     }
 
     [Test]
@@ -265,6 +281,97 @@ public class AppMutationLaneWiringTests {
         cts.Cancel();
         // The loop's own outer catch swallows shutdown's OperationCanceledException by design
         // (draining just stops) — the task completes normally, never faulted/canceled.
+        await consumerTask.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // ---- ConsumeMutationOutcomesAsync: per-run Takeover decline memory (round-2 review R2-2) ----
+
+    [Test]
+    public async Task Decline_then_same_pair_rearrival_is_downgraded_to_one_attention_line_not_a_second_prompt() {
+        var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(false) };
+        var channel = new OutcomeChannel();
+        using var cts = new CancellationTokenSource();
+
+        var consumerTask = AppUnderTest.ConsumeMutationOutcomesAsync(
+            channel, surface, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, cts.Token);
+
+        var envelope = Envelope(new MutationOutcome.Failed(28, "foreign_binary", RecoverySurface.Takeover));
+        channel.Enqueue(envelope);
+        await WaitUntilAsync(() => surface.Prompts.Count == 1, what: "the first takeover dialog");
+        await WaitUntilAsync(() => surface.StatusMessages.Count == 1, what: "the decline status line");
+
+        channel.Enqueue(envelope); // the SAME (request, token) pair re-arrives
+        await WaitUntilAsync(() => surface.AttentionMessages.Count == 1, what: "the downgraded attention presentation");
+        await Assert.That(surface.Prompts.Count).IsEqualTo(1); // no second dialog
+        await Assert.That(surface.AttentionMessages[0]).Contains("foreign_binary");
+
+        cts.Cancel();
+        await consumerTask.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
+    public async Task Decline_then_a_different_reason_token_still_prompts() {
+        var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(false) };
+        var channel = new OutcomeChannel();
+        using var cts = new CancellationTokenSource();
+
+        var consumerTask = AppUnderTest.ConsumeMutationOutcomesAsync(
+            channel, surface, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, cts.Token);
+
+        channel.Enqueue(Envelope(new MutationOutcome.Failed(28, "foreign_binary", RecoverySurface.Takeover)));
+        await WaitUntilAsync(() => surface.Prompts.Count == 1, what: "the first takeover dialog");
+
+        channel.Enqueue(Envelope(new MutationOutcome.Failed(28, "identity_mismatch", RecoverySurface.Takeover))); // a different token
+        await WaitUntilAsync(() => surface.Prompts.Count == 2, what: "a fresh dialog for a different token");
+
+        cts.Cancel();
+        await consumerTask.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
+    public async Task Decline_then_a_different_request_identity_still_prompts() {
+        var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(false) };
+        var channel = new OutcomeChannel();
+        using var cts = new CancellationTokenSource();
+
+        var consumerTask = AppUnderTest.ConsumeMutationOutcomesAsync(
+            channel, surface, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, cts.Token);
+
+        channel.Enqueue(new OutcomeEnvelope(Req(), new MutationOutcome.Failed(28, "foreign_binary", RecoverySurface.Takeover)));
+        await WaitUntilAsync(() => surface.Prompts.Count == 1, what: "the first takeover dialog");
+
+        // Same token, a DIFFERENT daemon identity — must still prompt.
+        var otherIdentity = new MutationRequest(MutationVerb.StartVerified, "default", "https://kcap.example.com:443", "daemon-b");
+        channel.Enqueue(new OutcomeEnvelope(otherIdentity, new MutationOutcome.Failed(28, "foreign_binary", RecoverySurface.Takeover)));
+        await WaitUntilAsync(() => surface.Prompts.Count == 2, what: "a fresh dialog for a different identity");
+
+        cts.Cancel();
+        await consumerTask.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
+    public async Task Accept_does_not_record_decline_memory_same_pair_rearrival_still_prompts() {
+        var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(true) };
+        var channel = new OutcomeChannel();
+        using var cts = new CancellationTokenSource();
+        var runCount = 0;
+        Task<MutationOutcome> RunMutation(MutationRequest r, CancellationToken ct) {
+            runCount++;
+            return Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
+        }
+
+        var consumerTask = AppUnderTest.ConsumeMutationOutcomesAsync(
+            channel, surface, RunMutation, FixedTerminalPath("/usr/bin"), () => null, cts.Token);
+
+        var envelope = Envelope(new MutationOutcome.Failed(28, "foreign_binary", RecoverySurface.Takeover));
+        channel.Enqueue(envelope);
+        await WaitUntilAsync(() => surface.Prompts.Count == 1, what: "the first takeover dialog");
+        await WaitUntilAsync(() => runCount == 1, what: "the accept re-mutation");
+
+        channel.Enqueue(envelope); // SAME pair — accept never records memory, so this still prompts
+        await WaitUntilAsync(() => surface.Prompts.Count == 2, what: "a fresh dialog since accept never records memory");
+
+        cts.Cancel();
         await consumerTask.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
@@ -349,7 +456,7 @@ public class AppMutationLaneWiringTests {
 
             await WaitUntilAsync(() => surface.Prompts.Count == 1, what: "the takeover dialog");
             await Assert.That(surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindTakeover);
-            await Assert.That(surface.StatusMessages.Count).IsEqualTo(1); // the decline's one status line — not doubled
+            await WaitUntilAsync(() => surface.StatusMessages.Count == 1, what: "the decline's one status line");
             await Assert.That(surface.AttentionMessages).IsEmpty(); // the controller made ZERO direct surface calls
 
             consumerCts.Cancel();
@@ -357,5 +464,50 @@ public class AppMutationLaneWiringTests {
         } finally {
             try { Directory.Delete(tempDir, recursive: true); } catch { /* best-effort test cleanup */ }
         }
+    }
+
+    // round-2 review R2-4: the accept-variant composed test — a REAL DaemonMutationLane, a REAL
+    // OutcomeChannel, and a REAL ConsumeMutationOutcomesAsync loop; no controller needed (the test
+    // drives the FIRST lane.RunAsync call itself, exactly as DaemonLifecycleController or
+    // DaemonClientService would). The executor's install exits 28/foreign_binary; the surface
+    // fake accepts the takeover dialog; the executor's SUBSEQUENT replace call exits 0 ("returns
+    // success" at the process level). Asserts the second lane request is genuinely Replace at the
+    // SAME identity and that accepting never shows a second dialog (covers accept-through-the-
+    // real-lane, including its own re-entry into RunAsync).
+    [Test]
+    public async Task Composed_accept_re_enters_the_real_lane_as_replace_with_no_second_prompt() {
+        var channel = new OutcomeChannel();
+        var cli = new FakeKcapCli {
+            StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(
+                new ServiceSnapshot("default", false, "not_installed", null, "/opt/kcap/kcapd", null, null, false, false)),
+            InstallVerifiedBehavior = (replace, _) => Task.FromResult(replace
+                ? new ProcessResult(0, "", "", false)
+                : new ProcessResult(28, "", "start_gate_reason=foreign_binary", false)),
+        };
+        var probe = new FakeLoginShellProbe();
+        var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(true) }; // accept
+
+        await using var lane = new DaemonMutationLane(
+            probe, channel, () => "/opt/kcap/bin/kcap",
+            (_, _) => cli,
+            _ => new NeverObservation(),
+            TimeProvider.System);
+
+        using var consumerCts = new CancellationTokenSource();
+        var consumerTask = AppUnderTest.ConsumeMutationOutcomesAsync(
+            channel, surface, lane.RunAsync, probe.TerminalPathAsync, () => "1.2.3", consumerCts.Token);
+
+        var initialRequest = new MutationRequest(MutationVerb.Install, "default", "https://kcap.example.com:443", "daemon-a");
+        var firstOutcome = await lane.RunAsync(initialRequest, CancellationToken.None);
+        await Assert.That(firstOutcome).IsTypeOf<MutationOutcome.Failed>();
+
+        await WaitUntilAsync(() => surface.Prompts.Count == 1, what: "the takeover dialog");
+        await WaitUntilAsync(() => cli.InstallVerifiedCallCount == 2, what: "the accept's replace call through the SAME real lane");
+        await Assert.That(cli.LastInstallReplace).IsTrue();
+        await Assert.That(surface.Prompts.Count).IsEqualTo(1); // no second dialog
+        await Assert.That(surface.StatusMessages).IsEmpty(); // accept never writes Status
+
+        consumerCts.Cancel();
+        await consumerTask.WaitAsync(TimeSpan.FromSeconds(5));
     }
 }
