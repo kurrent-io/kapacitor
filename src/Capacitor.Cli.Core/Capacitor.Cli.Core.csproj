@@ -15,6 +15,7 @@
         <InternalsVisibleTo Include="kcap-daemon" />
         <InternalsVisibleTo Include="Capacitor.Cli.Tests.Unit" />
         <InternalsVisibleTo Include="Capacitor.Cli.Tests.Integration" />
+        <InternalsVisibleTo Include="Capacitor.App.Tests.Unit" />
         <!-- Used when referenced as a submodule from the server repo -->
         <InternalsVisibleTo Include="Capacitor.Server.TestHelpers" />
         <InternalsVisibleTo Include="Capacitor.Server.Tests" />
