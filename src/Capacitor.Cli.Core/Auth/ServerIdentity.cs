@@ -63,4 +63,23 @@ public static class ServerIdentity {
 
         return a is not null && b is not null && string.Equals(a, b, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// The one identity comparison every boot/gate/consent-IPC identity check should use instead
+    /// of an ad-hoc <c>TrimEnd('/')</c> + <c>OrdinalIgnoreCase</c> compare. Both sides null/empty is
+    /// agreement (no expectation configured on either side); exactly one empty is a mismatch —
+    /// unlike <see cref="Canonicalize"/>'s callers that treat an absent expectation as trivially
+    /// satisfied, THAT short-circuit belongs at the call site, not here. Otherwise both sides are
+    /// canonicalized (scheme/host normalized, default ports converged, path case preserved) and
+    /// compared ordinally.
+    /// </summary>
+    public static bool Matches(string? a, string? b) {
+        if (string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b)) return true;
+        if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+
+        var ca = Canonicalize(a);
+        var cb = Canonicalize(b);
+
+        return ca is not null && cb is not null && string.Equals(ca, cb, StringComparison.Ordinal);
+    }
 }

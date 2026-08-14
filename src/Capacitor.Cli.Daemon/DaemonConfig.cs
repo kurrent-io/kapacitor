@@ -362,14 +362,15 @@ public class DaemonConfig {
     /// Raw value of <c>KCAP_CONSENT_SEED_DEFAULT</c>, captured off ambient env at boot by
     /// <see cref="DaemonRunner.CaptureBootCarriers"/> and immediately removed from the process
     /// environment so no descendant (PTY-spawned agent, ACP child) can observe it by inheritance.
-    /// Unvalidated here — Task 11 classifies/validates this directive.
+    /// Unvalidated here — <see cref="DaemonRunner.RunBootChecksAsync"/> classifies/validates this
+    /// directive via <c>LaunchConsentStore.BootSeed</c>.
     /// </summary>
     public string? ConsentSeedDirective { get; set; }
 
     /// <summary>
     /// Raw value of <c>KCAP_EXPECT_SERVER_URL</c>, captured/removed the same way as
-    /// <see cref="ConsentSeedDirective"/>. Unvalidated here — Task 12 checks it against the
-    /// resolved <see cref="ServerUrl"/>.
+    /// <see cref="ConsentSeedDirective"/>. Unvalidated here — <see cref="DaemonRunner.RunBootChecksAsync"/>
+    /// checks it against the resolved <see cref="ServerUrl"/>.
     /// </summary>
     public string? ExpectedServerUrl { get; set; }
 

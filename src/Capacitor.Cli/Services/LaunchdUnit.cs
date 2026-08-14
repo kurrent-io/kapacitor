@@ -102,7 +102,10 @@ static class LaunchdUnit {
     /// The environment baked into a plist — the read side of the <c>&lt;key&gt;EnvironmentVariables&lt;/key&gt;
     /// &lt;dict&gt;</c> block <see cref="Plist"/> writes. Returns empty rather than throwing when the block is
     /// absent or empty; used by <c>daemon service status --json</c> to surface the baked profile/server/consent
-    /// evidence as UX-only fields.
+    /// evidence as UX-only fields. A DUPLICATE key throws <see cref="InvalidDataException"/> rather than
+    /// silently last-win — this file is never hand-edited, so two entries for the same name means a
+    /// foreign/corrupt writer, and the gate callers that read identity evidence out of this map must see
+    /// that as unreadable, not silently pick whichever value happened to land last.
     /// </summary>
     public static IReadOnlyDictionary<string, string> EnvFromPlist(string plistXml) {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -115,7 +118,11 @@ static class LaunchdUnit {
                     string? key = null;
                     foreach (var kv in el.Elements()) {
                         if (kv.Name == "key") key = kv.Value;
-                        else if (kv.Name == "string" && key is not null) { result[key] = kv.Value; key = null; }
+                        else if (kv.Name == "string" && key is not null) {
+                            if (!result.TryAdd(key, kv.Value))
+                                throw new InvalidDataException($"duplicate EnvironmentVariables key '{key}' in plist");
+                            key = null;
+                        }
                     }
                 }
                 break;

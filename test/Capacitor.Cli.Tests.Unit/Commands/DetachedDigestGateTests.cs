@@ -16,6 +16,15 @@ public class DetachedDigestGateTests {
     }
 
     [Test]
+    public async Task Empty_directive_value_still_activates_the_gate() {
+        // Exact-value contract: an empty (present-but-blank) invoking value is a deliberate
+        // refusal, not absence — the digest gate must still activate for it, same as "prompt".
+        var exit = DaemonCommands.DetachedDigestGate("/nonexistent",
+            k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "" : null);
+        await Assert.That(exit).IsEqualTo(43);
+    }
+
+    [Test]
     public async Task Directive_with_placeholder_digest_fails_closed_exit_43() {
         // dev/test builds carry the placeholder → Matches() is false → gate refuses
         var exit = DaemonCommands.DetachedDigestGate("/nonexistent",

@@ -57,8 +57,29 @@ public static class OpenCodePaths {
     /// <summary>
     /// Detection by OpenCode's config or data dir presence — OpenCode creates one
     /// on first run. The binary name <c>opencode</c> can also be probed by callers
-    /// via <c>AgentDetector.IsInstalled("opencode")</c>.
+    /// via <c>AgentDetection.BinaryOnPath("opencode")</c>.
     /// </summary>
     public static bool IsInstalled(string? home = null, string? configDir = null, string? xdgConfigHome = null, string? xdgDataHome = null) =>
         Directory.Exists(ConfigDir(home, configDir, xdgConfigHome)) || Directory.Exists(DataDir(home, xdgDataHome));
+
+    /// <summary>Pure variant of <see cref="ConfigDir"/> for fully-injected callers (e.g.
+    /// <see cref="Setup.AgentDetection"/>) — a null override means "not set", never falls back to
+    /// a real <c>OPENCODE_CONFIG_DIR</c>/<c>XDG_CONFIG_HOME</c> process-env read.</summary>
+    public static string ConfigDirPure(string? home, string? configDir, string? xdgConfigHome) {
+        if (!string.IsNullOrWhiteSpace(configDir)) return configDir;
+        if (!string.IsNullOrEmpty(xdgConfigHome)) return Path.Combine(xdgConfigHome, "opencode");
+        return Path.Combine(home ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "opencode");
+    }
+
+    /// <summary>Pure variant of <see cref="DataDir"/> — never falls back to a real
+    /// <c>XDG_DATA_HOME</c> process-env read.</summary>
+    public static string DataDirPure(string? home, string? xdgDataHome) {
+        if (!string.IsNullOrEmpty(xdgDataHome)) return Path.Combine(xdgDataHome, "opencode");
+        return Path.Combine(home ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", "opencode");
+    }
+
+    /// <summary>Pure variant of <see cref="IsInstalled"/> — never falls back to the real process
+    /// environment for any of its overrides.</summary>
+    public static bool IsInstalledPure(string? home, string? configDir, string? xdgConfigHome, string? xdgDataHome) =>
+        Directory.Exists(ConfigDirPure(home, configDir, xdgConfigHome)) || Directory.Exists(DataDirPure(home, xdgDataHome));
 }

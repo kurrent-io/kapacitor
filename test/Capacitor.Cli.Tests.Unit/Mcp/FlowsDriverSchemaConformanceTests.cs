@@ -262,8 +262,8 @@ public class FlowsDriverSchemaConformanceTests {
     }
 
     // Each arm seeds "installed but stale" so `--if-installed` takes the refresh branch and registers
-    // MCP, mirroring each harness's own PluginCommand*Tests. That branch also skips the AgentDetector
-    // "kcap on PATH" precheck, which a bare install would fail in CI.
+    // MCP, mirroring each harness's own PluginCommand*Tests. That branch also skips the
+    // AgentDetection "kcap on PATH" precheck, which a bare install would fail in CI.
     static readonly Arm[] Arms = [
         new("Cursor", "--cursor",
             env => {

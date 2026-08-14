@@ -6,7 +6,7 @@ namespace Capacitor.Cli.Daemon.Services;
 /// <summary>
 /// Contents of the <c>{stateDir}/boot-refusal.json</c> marker a daemon leaves behind when it
 /// refuses to start: either the server-expectation check
-/// (<see cref="DaemonRunner.ExpectationSatisfied"/>) or a Task 11 consent-seed classification
+/// (<see cref="DaemonRunner.ExpectationSatisfied"/>) or the consent-seed classification
 /// (<c>LaunchConsentStore.BootSeed</c>) came back Refused. <see cref="Expectation"/>/
 /// <see cref="Resolved"/> mirror <c>config.ExpectedServerUrl</c>/<c>config.ServerUrl</c> at write
 /// time regardless of which check actually fired — a consent-seed refusal still carries a

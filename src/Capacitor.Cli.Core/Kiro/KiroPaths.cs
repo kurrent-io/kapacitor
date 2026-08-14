@@ -72,9 +72,20 @@ public static class KiroPaths {
 
     /// <summary>
     /// Detection: the config tree exists. The binary name (<c>kiro</c> /
-    /// <c>kiro-cli</c>) is also probed by callers via <c>AgentDetector.IsInstalled</c>;
+    /// <c>kiro-cli</c>) is also probed by callers via <c>AgentDetection.BinaryOnPath</c>;
     /// OR the two for the widest coverage.
     /// </summary>
     public static bool IsInstalled(string? home = null, string? kiroHome = null) =>
         Directory.Exists(ConfigRoot(home, kiroHome));
+
+    /// <summary>Pure variant of <see cref="ConfigRoot"/> for fully-injected callers (e.g.
+    /// <see cref="Setup.AgentDetection"/>) — <paramref name="kiroHome"/> null means "not set",
+    /// never falls back to a real <c>KIRO_HOME</c> process-env read.</summary>
+    public static string ConfigRootPure(string? home, string? kiroHome) =>
+        !string.IsNullOrEmpty(kiroHome) ? kiroHome : Path.Combine(home ?? PathHelpers.HomeDirectory, ".kiro");
+
+    /// <summary>Pure variant of <see cref="IsInstalled"/> — never falls back to the real process
+    /// environment for <c>KIRO_HOME</c>.</summary>
+    public static bool IsInstalledPure(string? home, string? kiroHome) =>
+        Directory.Exists(ConfigRootPure(home, kiroHome));
 }

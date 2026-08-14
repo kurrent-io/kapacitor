@@ -10,15 +10,20 @@ namespace Capacitor.Cli.Core.Setup;
 
 /// <summary>
 /// Everything <see cref="AgentDetection"/> reads, injected instead of touched directly, so
-/// tests never need to mutate process-wide PATH/HOME/env state. <see cref="Env"/> covers the
-/// per-vendor overrides each <c>*Paths</c> type accepts as a pure parameter: <c>KIRO_HOME</c>,
-/// <c>OPENCODE_CONFIG_DIR</c>, <c>XDG_CONFIG_HOME</c>, <c>XDG_DATA_HOME</c>,
-/// <c>GEMINI_CLI_HOME</c>, <c>PI_CODING_AGENT_DIR</c>. Copilot is the one exception:
-/// <c>CopilotPaths.IsInstalled()</c> has no override parameter and reads <c>COPILOT_HOME</c>
-/// from the real environment internally (sanctioned — see its arm below).
+/// tests never need to mutate process-wide PATH/HOME/env state. Every per-vendor override
+/// (<see cref="KiroHome"/>, <see cref="PiAgentDir"/>, <see cref="OpenCodeConfigDir"/>,
+/// <see cref="XdgConfigHome"/>, <see cref="XdgDataHome"/>, <see cref="GeminiCliHome"/>,
+/// <see cref="CopilotHome"/>) is its OWN resolved value here — <see cref="Detect"/> reads these,
+/// never <see cref="Env"/>, and passes them into each vendor's no-fallback <c>*Pure</c> helper, so
+/// a null override is genuinely UNSET rather than a request to fall through to the real process
+/// environment underneath. <see cref="Env"/> itself stays for callers that still want a generic
+/// lookup (e.g. binary-name overrides consulted elsewhere); <see cref="Detect"/> no longer uses it.
 /// </summary>
 public sealed record AgentDetectionInputs(
-    string? PathEnv, string? PathExt, bool IsWindows, string? Home, Func<string, string?> Env);
+    string? PathEnv, string? PathExt, bool IsWindows, string? Home, Func<string, string?> Env,
+    string? KiroHome = null, string? PiAgentDir = null, string? OpenCodeConfigDir = null,
+    string? XdgConfigHome = null, string? XdgDataHome = null, string? GeminiCliHome = null,
+    string? CopilotHome = null);
 
 /// <summary>
 /// One vendor's two independent detection signals: a PATH binary probe and a filesystem
@@ -44,8 +49,7 @@ public sealed record AgentDetectionResult(
 public static class AgentDetection {
     public static AgentDetectionResult Detect(AgentDetectionInputs i) {
         bool Bin(string name) => BinaryOnPath(name, i);
-        var home          = i.Home;
-        var geminiCliHome = i.Env("GEMINI_CLI_HOME");
+        var home = i.Home;
 
         return new(
             // Claude/Codex: PATH probe only — no on-disk install marker is checked today.
@@ -55,38 +59,46 @@ public static class AgentDetection {
             Cursor: new(false, CursorPaths.IsInstalled(home)),
             // Dir presence covers users who launch Copilot through an IDE wrapper; the PATH
             // probe covers fresh installs that haven't run yet (no ~/.copilot until first launch).
-            // CopilotPaths.IsInstalled() has no override parameter — it reads COPILOT_HOME from
-            // the real environment internally, unlike every other vendor's pure IsInstalled arm.
-            Copilot: new(Bin("copilot"), CopilotPaths.IsInstalled()),
+            // Pure: never falls back to a real COPILOT_HOME process-env read — i.CopilotHome null
+            // means genuinely unset, not "go check the real environment".
+            Copilot: new(Bin("copilot"), CopilotPaths.IsInstalledPure(home, i.CopilotHome)),
             // Dir presence covers IDE-launched Gemini; the PATH probe covers a fresh install
             // that hasn't created ~/.gemini yet.
-            Gemini: new(Bin("gemini"), GeminiPaths.IsInstalled(home, geminiCliHome)),
+            Gemini: new(Bin("gemini"), GeminiPaths.IsInstalledPure(home, i.GeminiCliHome)),
             // Same dual signal for Kiro: the ~/.kiro tree or the conversation DB covers
             // IDE-launched users; the PATH probe (kiro / kiro-cli) covers fresh CLI installs.
-            Kiro: new(Bin("kiro") || Bin("kiro-cli"), KiroPaths.IsInstalled(home, i.Env("KIRO_HOME"))),
+            Kiro: new(Bin("kiro") || Bin("kiro-cli"), KiroPaths.IsInstalledPure(home, i.KiroHome)),
             // Pi keeps state under ~/.pi/agent (relocatable via PI_CODING_AGENT_DIR); the PATH
             // probe covers fresh installs that haven't created it yet.
-            Pi: new(Bin("pi"), PiPaths.IsInstalled(home, i.Env("PI_CODING_AGENT_DIR"))),
+            Pi: new(Bin("pi"), PiPaths.IsInstalledPure(home, i.PiAgentDir)),
             // OpenCode keeps config under ~/.config/opencode + data under
             // ~/.local/share/opencode; the PATH probe covers fresh installs.
             OpenCode: new(Bin("opencode"),
-                OpenCodePaths.IsInstalled(home, i.Env("OPENCODE_CONFIG_DIR"), i.Env("XDG_CONFIG_HOME"), i.Env("XDG_DATA_HOME"))),
+                OpenCodePaths.IsInstalledPure(home, i.OpenCodeConfigDir, i.XdgConfigHome, i.XdgDataHome)),
             // Antigravity is one vendor over two surfaces: the GUI (state under
             // ~/.gemini/antigravity) and the `agy` CLI (state under ~/.gemini/antigravity-cli).
             // IsInstalled covers either root; the PATH probes cover a fresh install that has
             // not created a root yet — and the CLI binary is `agy`, not `antigravity`, so both
             // names must be probed or an agy-only machine goes undetected.
-            Antigravity: new(Bin("antigravity") || Bin("agy"), AntigravityPaths.IsInstalled(home, geminiCliHome)));
+            Antigravity: new(Bin("antigravity") || Bin("agy"), AntigravityPaths.IsInstalledPure(home, i.GeminiCliHome)));
     }
 
     /// <summary>Current-process defaults: real PATH/PATHEXT/HOME/env, matching what the CLI
-    /// binary actually sees when it runs.</summary>
+    /// binary actually sees when it runs. Every per-vendor override is resolved HERE, once, into
+    /// its own concrete value — <see cref="Detect"/> never re-reads process env underneath.</summary>
     public static AgentDetectionInputs FromEnvironment() => new(
         PathEnv:   Environment.GetEnvironmentVariable("PATH"),
         PathExt:   Environment.GetEnvironmentVariable("PATHEXT"),
         IsWindows: OperatingSystem.IsWindows(),
         Home:      PathHelpers.HomeDirectory,
-        Env:       Environment.GetEnvironmentVariable);
+        Env:       Environment.GetEnvironmentVariable,
+        KiroHome:          Environment.GetEnvironmentVariable("KIRO_HOME"),
+        PiAgentDir:        Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR"),
+        OpenCodeConfigDir: Environment.GetEnvironmentVariable("OPENCODE_CONFIG_DIR"),
+        XdgConfigHome:     Environment.GetEnvironmentVariable("XDG_CONFIG_HOME"),
+        XdgDataHome:       Environment.GetEnvironmentVariable("XDG_DATA_HOME"),
+        GeminiCliHome:     Environment.GetEnvironmentVariable("GEMINI_CLI_HOME"),
+        CopilotHome:       Environment.GetEnvironmentVariable("COPILOT_HOME"));
 
     /// <summary>
     /// Probes <paramref name="i"/>'s PATH for <paramref name="binaryName"/>. Returns false on a
@@ -102,6 +114,11 @@ public static class AgentDetection {
         return paths.Where(dir => !string.IsNullOrEmpty(dir))
             .Any(dir => extensions.Select(ext => Path.Combine(dir, binaryName + ext)).Any(path => IsExecutable(path, i.IsWindows)));
     }
+
+    /// <summary>Convenience overload for CLI call sites that only need a single-binary current-
+    /// process PATH probe (e.g. "is kcap on PATH") — <see cref="FromEnvironment"/> plus
+    /// <see cref="BinaryOnPath(string, AgentDetectionInputs)"/> in one call.</summary>
+    public static bool BinaryOnPath(string binaryName) => BinaryOnPath(binaryName, FromEnvironment());
 
     static string[] WindowsExtensions(string? pathExt) {
         var raw = string.IsNullOrEmpty(pathExt) ? ".EXE;.CMD;.BAT" : pathExt;

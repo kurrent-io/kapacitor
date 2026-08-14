@@ -67,4 +67,55 @@ public class BootRefusalTests {
         await Assert.That(r).IsNotNull();
         await Assert.That(r!.Token).IsEqualTo("server_expectation_mismatch");
     }
+
+    // ── RunBootChecksAsync: the extracted, directly-testable pre-host boot-check block ──
+
+    [Test]
+    public async Task RunBootChecksAsync_null_directive_is_truly_absent_and_proceeds() {
+        var dir = Directory.CreateTempSubdirectory("bootcheck-").FullName;
+        var config = new DaemonConfig { Name = "d-absent", ServerUrl = "https://s", ConsentSeedDirective = null };
+
+        var exit = await DaemonRunner.RunBootChecksAsync(config, dir);
+
+        await Assert.That(exit).IsNull();
+        await Assert.That(File.Exists(Path.Combine(dir, "consent.json"))).IsFalse(); // never seeded
+    }
+
+    [Test, NotInParallel]
+    public async Task RunBootChecksAsync_empty_directive_activates_the_seed_path_and_refuses_invalid() {
+        var dir = Directory.CreateTempSubdirectory("bootcheck-").FullName;
+        // Empty is a deliberate refusal under the exact-value contract, not absence — the seed path
+        // must activate on it (BootSeed("") itself already classifies RefusedInvalidDirective).
+        var config = new DaemonConfig { Name = "d-empty", ServerUrl = "https://s", ConsentSeedDirective = "" };
+        var originalErr = Console.Error;
+        var captured = new StringWriter();
+        try {
+            Console.SetError(captured);
+            var exit = await DaemonRunner.RunBootChecksAsync(config, dir);
+
+            await Assert.That(exit).IsEqualTo(0);
+            await Assert.That(captured.ToString()).Contains("consent_seed_invalid");
+        } finally { Console.SetError(originalErr); }
+    }
+
+    [Test, NotInParallel]
+    public async Task RunBootChecksAsync_unwritable_state_dir_with_directive_yields_coded_refusal_not_a_throw() {
+        // A file sitting exactly where the state directory belongs makes the seed path fail
+        // (whether LaunchConsentStore's own ctor throws directly, or construction succeeds but
+        // Persist()'s own I/O against the bogus path fails) — either way this must land as the
+        // coded consent_seed_unwritable refusal, never an uncoded crash that respins under KeepAlive.
+        var parent = Directory.CreateTempSubdirectory("bootcheck-").FullName;
+        var stateDirAsFile = Path.Combine(parent, "state-is-a-file");
+        await File.WriteAllTextAsync(stateDirAsFile, "not a directory");
+        var config = new DaemonConfig { Name = "d-unwritable", ServerUrl = "https://s", ConsentSeedDirective = "prompt" };
+        var originalErr = Console.Error;
+        var captured = new StringWriter();
+        try {
+            Console.SetError(captured);
+            var exit = await DaemonRunner.RunBootChecksAsync(config, stateDirAsFile);
+
+            await Assert.That(exit).IsEqualTo(0);
+            await Assert.That(captured.ToString()).Contains("consent_seed_unwritable");
+        } finally { Console.SetError(originalErr); }
+    }
 }

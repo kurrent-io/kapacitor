@@ -109,7 +109,10 @@ public class BootRefusalAttributionTests {
     }
 
     /// <summary>Minimal launchd plist carrying the consent-seed directive and (optionally) a baked
-    /// server expectation — mirrors <c>ServiceVerifyStartTests.MinimalPlist</c>.</summary>
+    /// server expectation — mirrors <c>ServiceVerifyStartTests.MinimalPlist</c>. The identity gate
+    /// now fails closed on an unresolvable unit server (spec §3.4(b)), so this also bakes
+    /// <c>KCAP_URL</c> whenever <paramref name="expectServerUrl"/> is supplied — otherwise the unit
+    /// would have no resolvable identity for Phase A to agree with.</summary>
     static string MinimalPlist(string binary, string consentSeedDefault, string? expectServerUrl) => $"""
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -121,11 +124,20 @@ public class BootRefusalAttributionTests {
           </array>
           <key>EnvironmentVariables</key><dict>
             <key>KCAP_CONSENT_SEED_DEFAULT</key><string>{consentSeedDefault}</string>
-            {(expectServerUrl is not null ? $"<key>KCAP_EXPECT_SERVER_URL</key><string>{expectServerUrl}</string>" : "")}
+            {(expectServerUrl is not null ? $"<key>KCAP_URL</key><string>{expectServerUrl}</string><key>KCAP_EXPECT_SERVER_URL</key><string>{expectServerUrl}</string>" : "")}
           </dict>
         </dict>
         </plist>
         """;
+
+    /// <summary>Invoking env for a gated test that needs Phase A's identity check to pass — both
+    /// <c>KCAP_PROFILE</c> and <c>KCAP_EXPECT_SERVER_URL</c> are now required (fail-closed).</summary>
+    static Func<string, string?> GatedEnvWithIdentity(string expectServerUrl) => k => k switch {
+        "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
+        "KCAP_PROFILE"              => "default",
+        "KCAP_EXPECT_SERVER_URL"    => expectServerUrl,
+        _                           => null,
+    };
 
     [Test, NotInParallel]
     public async Task Readiness_timeout_with_matching_marker_attributes_exactly_once_and_consumes_it() {
@@ -157,7 +169,7 @@ public class BootRefusalAttributionTests {
             var sut = new ServiceVerify(manager, _ => -1, Hello, time,
                 forwardBudget: TimeSpan.FromSeconds(2),
                 readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                gateEnv: GatedEnvWithIdentity("https://s.example"),
                 digestMatches: _ => true);
 
             var task = sut.StartVerifiedAsync(Id);
@@ -204,7 +216,7 @@ public class BootRefusalAttributionTests {
             var sut = new ServiceVerify(manager, _ => -1, Hello, time,
                 forwardBudget: TimeSpan.FromSeconds(2),
                 readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                gateEnv: GatedEnvWithIdentity("https://s.example"),
                 digestMatches: _ => true);
 
             var task = sut.StartVerifiedAsync(Id);
@@ -241,8 +253,8 @@ public class BootRefusalAttributionTests {
                 Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
-                readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", null),
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
+                gateEnv: GatedEnvWithIdentity("https://s.example"),
                 digestMatches: _ => true);
 
             var exit = await sut.StartVerifiedAsync(Id);

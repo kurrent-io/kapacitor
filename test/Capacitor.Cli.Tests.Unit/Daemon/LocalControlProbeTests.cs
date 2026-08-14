@@ -132,7 +132,7 @@ public class LocalControlProbeTests {
         await Assert.That(r.Hello).IsNull();
     }
 
-    // ---- review fix: a reachable peer answering well-formed-but-structurally-degenerate JSON ----
+    // ---- a reachable peer answering well-formed-but-structurally-degenerate JSON ----
 
     delegate Task ConnScript(NetworkStream s, CancellationToken ct);
 
@@ -213,6 +213,54 @@ public class LocalControlProbeTests {
             await Assert.That(r.Hello).IsNotNull();
             await Assert.That(r.Snapshot).IsNull();
             await Assert.That(r.IdentityConsistent).IsFalse();
+        } finally {
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+            try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
+        }
+    }
+
+    /// <summary>Fail-closed (spec §4): a hello carrying no pid/instance_id (an older daemon that
+    /// predates those fields, per <see cref="HelloReplyDto"/>'s own doc comment) must never default
+    /// to "consistent" just because one side has nothing to disagree with — both sides must
+    /// carry BOTH ids and agree, or the two dials cannot be proven to have landed on the same
+    /// process.</summary>
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Hello_without_ids_is_never_consistent_even_with_a_valid_snapshot() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        var sockDir = Directory.CreateTempSubdirectory("kcap-probe-noids-");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        try {
+            var name = "probe-noids";
+            var helloJson = JsonSerializer.Serialize(
+                new HelloReplyDto(1, "0.1.0", name, ["status/1"], Pid: null, InstanceId: null),
+                HelloIpcJsonContext.Default.HelloReplyDto);
+            var snapshotJson = JsonSerializer.Serialize(
+                new DaemonStatusDto(
+                    new DaemonInfoDto("probe-noids", "1.0.0", "https://s", "connected", 5, 0, Pid: 999, InstanceId: "inst-real"),
+                    []),
+                StatusIpcJsonContext.Default.DaemonStatusDto);
+
+            ConnScript helloThen = async (s, ct) => {
+                var f = await FrameCodec.ReadAsync(s, ct);
+                if (f?.Type == FrameType.Hello)
+                    await FrameCodec.WriteAsync(s, LocalFrame.HelloJson(FrameType.HelloReply, helloJson), ct);
+            };
+            ConnScript subscribeValid = async (s, ct) => {
+                var f = await FrameCodec.ReadAsync(s, ct);
+                if (f?.Type == FrameType.StatusSubscribe)
+                    await FrameCodec.WriteAsync(s, LocalFrame.StatusJson(FrameType.DaemonStatus, snapshotJson), ct);
+            };
+
+            await using var server = new ScriptedServer(LocalSocketPaths.Socket(name), helloThen, subscribeValid);
+
+            var r = await LocalControlProbe.ProbeAsync(name, TimeSpan.FromSeconds(5));
+
+            await Assert.That(r.Reachable).IsTrue();
+            await Assert.That(r.Hello).IsNotNull();
+            await Assert.That(r.Snapshot).IsNotNull(); // the snapshot itself is perfectly valid...
+            await Assert.That(r.IdentityConsistent).IsFalse(); // ...but consistency still fails closed
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
             try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }

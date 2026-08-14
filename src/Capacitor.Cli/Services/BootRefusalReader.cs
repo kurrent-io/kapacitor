@@ -18,7 +18,7 @@ public sealed record BootRefusalEvidence(
 
 /// <summary>
 /// Read-side-only access to the daemon's boot-refusal marker, used by <see cref="ServiceVerify"/>'s
-/// gated readiness-timeout path (Task 18) to attribute a service-verb timeout to a specific boot
+/// gated readiness-timeout path to attribute a service-verb timeout to a specific boot
 /// refusal the daemon itself observed. The CLI never writes this marker — only reads, verified-clears
 /// (so a later read is trustworthy fresh evidence), and best-effort consumes it after attribution.
 /// </summary>

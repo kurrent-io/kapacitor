@@ -6,7 +6,14 @@ public class AgentDetectionTests {
     static AgentDetectionInputs Inputs(string? pathEnv = null, string? home = null,
             Dictionary<string, string?>? env = null) =>
         new(pathEnv, PathExt: null, IsWindows: false, Home: home,
-            Env: k => env?.GetValueOrDefault(k));
+            Env: k => env?.GetValueOrDefault(k),
+            KiroHome: env?.GetValueOrDefault("KIRO_HOME"),
+            PiAgentDir: env?.GetValueOrDefault("PI_CODING_AGENT_DIR"),
+            OpenCodeConfigDir: env?.GetValueOrDefault("OPENCODE_CONFIG_DIR"),
+            XdgConfigHome: env?.GetValueOrDefault("XDG_CONFIG_HOME"),
+            XdgDataHome: env?.GetValueOrDefault("XDG_DATA_HOME"),
+            GeminiCliHome: env?.GetValueOrDefault("GEMINI_CLI_HOME"),
+            CopilotHome: env?.GetValueOrDefault("COPILOT_HOME"));
 
     [Test]
     public async Task Binary_probe_walks_injected_path_with_execute_bit() {
@@ -120,11 +127,121 @@ public class AgentDetectionTests {
         await Assert.That(AgentDetection.BinaryOnPath("nope", winInputs)).IsFalse();
     }
 
+    // ── genuine purity: an injected null override must behave as UNSET, never fall through to a
+    // real process-env read underneath — one test per previously-leaky vendor. ──
+
+    [Test]
+    [NotInParallel("HomeEnvVarMutation")]
+    public async Task Kiro_injected_null_override_wins_over_a_set_process_env_var() {
+        var leaky = Directory.CreateTempSubdirectory("kcap-kiro-leak-").FullName;
+        var original = Environment.GetEnvironmentVariable("KIRO_HOME");
+        try {
+            Environment.SetEnvironmentVariable("KIRO_HOME", leaky);
+            // No KIRO_HOME override injected (env: null) — Detect must never consult the real
+            // process env underneath, so this reads as not-installed despite the leaky var.
+            var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent"));
+            await Assert.That(r.Kiro.InstallSignalFound).IsFalse();
+        } finally { Environment.SetEnvironmentVariable("KIRO_HOME", original); }
+    }
+
+    [Test]
+    [NotInParallel("HomeEnvVarMutation")]
+    public async Task Pi_injected_null_override_wins_over_a_set_process_env_var() {
+        var leaky = Directory.CreateTempSubdirectory("kcap-pi-leak-").FullName;
+        var original = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR");
+        try {
+            Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", leaky);
+            var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent"));
+            await Assert.That(r.Pi.InstallSignalFound).IsFalse();
+        } finally { Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", original); }
+    }
+
+    [Test]
+    [NotInParallel("HomeEnvVarMutation")]
+    public async Task OpenCode_injected_null_override_wins_over_a_set_process_env_var() {
+        var leaky = Directory.CreateTempSubdirectory("kcap-oc-leak-").FullName;
+        var original = Environment.GetEnvironmentVariable("OPENCODE_CONFIG_DIR");
+        try {
+            Environment.SetEnvironmentVariable("OPENCODE_CONFIG_DIR", leaky);
+            var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent"));
+            await Assert.That(r.OpenCode.InstallSignalFound).IsFalse();
+        } finally { Environment.SetEnvironmentVariable("OPENCODE_CONFIG_DIR", original); }
+    }
+
+    [Test]
+    [NotInParallel("HomeEnvVarMutation")]
+    public async Task Copilot_injected_null_override_wins_over_a_set_process_env_var() {
+        var leaky = Directory.CreateTempSubdirectory("kcap-copilot-leak-").FullName;
+        var original = Environment.GetEnvironmentVariable("COPILOT_HOME");
+        try {
+            Environment.SetEnvironmentVariable("COPILOT_HOME", leaky);
+            var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent"));
+            await Assert.That(r.Copilot.InstallSignalFound).IsFalse();
+        } finally { Environment.SetEnvironmentVariable("COPILOT_HOME", original); }
+    }
+
+    // Positive counterpart: an injected override (not the real env) is what actually gets used.
+    [Test]
+    public async Task Copilot_honors_an_injected_override_without_touching_real_env() {
+        var dir = Directory.CreateTempSubdirectory("kcap-copilot-").FullName;
+        var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent",
+            env: new() { ["COPILOT_HOME"] = dir }));
+        await Assert.That(r.Copilot.InstallSignalFound).IsTrue();
+    }
+
     [Test]
     public async Task FromEnvironment_reads_the_real_process_PATH() {
         // Not asserting a specific outcome (depends on the host machine) — just that it
         // doesn't throw and produces a usable inputs record wired to the live process env.
         var inputs = AgentDetection.FromEnvironment();
         await Assert.That(inputs.IsWindows).IsEqualTo(OperatingSystem.IsWindows());
+    }
+
+    // ── BinaryOnPath(string): the single-arg convenience overload (FromEnvironment() + the pure
+    // walk), against the REAL process environment — what call sites moved off AgentDetector to. ──
+
+    [Test, NotInParallel("PATH_env_mutation")]
+    public async Task BinaryOnPath_single_arg_returns_false_when_path_env_is_empty() {
+        var original = Environment.GetEnvironmentVariable("PATH");
+        Environment.SetEnvironmentVariable("PATH", "");
+        try {
+            await Assert.That(AgentDetection.BinaryOnPath("anything-at-all")).IsFalse();
+        } finally {
+            Environment.SetEnvironmentVariable("PATH", original);
+        }
+    }
+
+    [Test, NotInParallel("PATH_env_mutation")]
+    public async Task BinaryOnPath_single_arg_returns_false_when_path_env_is_null() {
+        var original = Environment.GetEnvironmentVariable("PATH");
+        Environment.SetEnvironmentVariable("PATH", null);
+        try {
+            await Assert.That(AgentDetection.BinaryOnPath("anything-at-all")).IsFalse();
+        } finally {
+            Environment.SetEnvironmentVariable("PATH", original);
+        }
+    }
+
+    [Test, NotInParallel("PATH_env_mutation")]
+    public async Task BinaryOnPath_single_arg_unix_requires_any_execute_bit() {
+        if (OperatingSystem.IsWindows()) return; // Unix-only
+
+        var tmp     = Directory.CreateTempSubdirectory("kcap-agentprobe-").FullName;
+        var exec    = Path.Combine(tmp, "agentprobe-exec");
+        var nonExec = Path.Combine(tmp, "agentprobe-nonexec");
+
+        await File.WriteAllTextAsync(exec, "#!/bin/sh\nexit 0\n");
+        await File.WriteAllTextAsync(nonExec, "not executable");
+        File.SetUnixFileMode(exec,    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);   // 0700
+        File.SetUnixFileMode(nonExec, UnixFileMode.UserRead | UnixFileMode.UserWrite);                              // 0600
+
+        var original = Environment.GetEnvironmentVariable("PATH");
+        Environment.SetEnvironmentVariable("PATH", tmp);
+        try {
+            await Assert.That(AgentDetection.BinaryOnPath("agentprobe-exec")).IsTrue();
+            await Assert.That(AgentDetection.BinaryOnPath("agentprobe-nonexec")).IsFalse();
+        } finally {
+            Environment.SetEnvironmentVariable("PATH", original);
+        }
     }
 }

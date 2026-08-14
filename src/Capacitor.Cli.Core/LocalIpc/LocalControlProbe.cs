@@ -58,8 +58,13 @@ public static class LocalControlProbe {
             if (!DaemonStatusValidator.IsValid(snapshot)) return new ProbeResult(true, hello, null, false);
             var daemonInfo = snapshot!.Daemon;
 
-            var consistent = hello.Pid is null || daemonInfo.Pid is null
-                || (hello.Pid == daemonInfo.Pid && hello.InstanceId == daemonInfo.InstanceId);
+            // Fail closed (spec §4): consistent ONLY when BOTH sides carry BOTH pid and
+            // instance_id and they agree — any absent field on either side means the two dials
+            // might have landed on different daemon processes, so it must never default to
+            // "consistent" just because one side happened not to report an id.
+            var consistent = hello.Pid is not null && daemonInfo.Pid is not null
+                && hello.InstanceId is not null && daemonInfo.InstanceId is not null
+                && hello.Pid == daemonInfo.Pid && hello.InstanceId == daemonInfo.InstanceId;
             return new ProbeResult(true, hello, snapshot, consistent);
         } catch (Exception ex) when (IsProbeFailure(ex, ct)) {
             return new ProbeResult(true, hello, null, false);

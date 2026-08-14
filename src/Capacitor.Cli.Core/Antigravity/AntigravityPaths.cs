@@ -167,4 +167,20 @@ public static class AntigravityPaths {
     public static bool IsInstalled(string? home = null, string? geminiCliHome = null)
         => Directory.Exists(Root(home, geminiCliHome))
         || Directory.Exists(CliConfigRoot(home, geminiCliHome));
+
+    /// <summary>Pure variant of <see cref="Root"/> for fully-injected callers (e.g.
+    /// <see cref="Setup.AgentDetection"/>) — built on <see cref="GeminiPaths.RootPure"/>, never
+    /// falls back to a real <c>GEMINI_CLI_HOME</c> process-env read.</summary>
+    public static string RootPure(string? home, string? geminiCliHome)
+        => Path.Combine(GeminiPaths.RootPure(home, geminiCliHome), "antigravity");
+
+    /// <summary>Pure variant of <see cref="CliConfigRoot"/> — see <see cref="RootPure"/>.</summary>
+    public static string CliConfigRootPure(string? home, string? geminiCliHome)
+        => Path.Combine(GeminiPaths.RootPure(home, geminiCliHome), "antigravity-cli");
+
+    /// <summary>Pure variant of <see cref="IsInstalled"/> — never falls back to the real process
+    /// environment for <c>GEMINI_CLI_HOME</c>.</summary>
+    public static bool IsInstalledPure(string? home, string? geminiCliHome)
+        => Directory.Exists(RootPure(home, geminiCliHome))
+        || Directory.Exists(CliConfigRootPure(home, geminiCliHome));
 }

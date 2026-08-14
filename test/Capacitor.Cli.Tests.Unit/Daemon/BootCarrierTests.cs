@@ -32,6 +32,23 @@ public class BootCarrierTests {
         await Assert.That(env["OTHER"]).IsEqualTo("kept");
     }
 
+    /// <summary>Exact-value contract: a set-but-EMPTY seed directive must read back as <c>""</c>,
+    /// not null — collapsing it to null would make an empty directive indistinguishable from one
+    /// never set at all, defeating BootSeed's own <c>""</c> → RefusedInvalidDirective classification.
+    /// Uses the injectable dictionary seam (not real process env) so this is not sensitive to a
+    /// platform's own set-but-empty-vs-unset quirks.</summary>
+    [Test]
+    public async Task Capture_preserves_a_set_but_empty_seed_directive_as_empty_not_null() {
+        var env = new Dictionary<string, string?> {
+            [DaemonRunner.BootCarriers.Seed] = "",
+        };
+        var config = new DaemonConfig();
+        DaemonRunner.CaptureBootCarriers(config, k => env.GetValueOrDefault(k), k => env.Remove(k));
+
+        await Assert.That(config.ConsentSeedDirective).IsEqualTo("");
+        await Assert.That(config.ConsentSeedDirective).IsNotNull();
+    }
+
     [Test]
     public async Task Respawn_successor_env_reinjects_seed_and_expectation_but_not_attempt() {
         var config = new DaemonConfig {

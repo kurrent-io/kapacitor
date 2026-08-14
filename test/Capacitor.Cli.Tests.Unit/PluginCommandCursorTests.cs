@@ -40,7 +40,7 @@ public class PluginCommandCursorTests {
     // a temp home instead of the real machine's ~/.cursor — mirrors
     // PluginCommandCodexInstallIntegrationTests.TestEnv. The `--if-installed`
     // refresh branch is used (pre-marker hooks.json seeded) rather than a bare
-    // `install --cursor`, so the AgentDetector "kcap on PATH" precheck (which
+    // `install --cursor`, so the AgentDetection "kcap on PATH" precheck (which
     // only runs on the non-refresh path) never comes into play.
     [Test]
     public async Task install_cursor_registers_mcp_servers_preserving_user_entries() {

@@ -12,6 +12,7 @@ using Capacitor.Cli.Core.Instructions;
 using Capacitor.Cli.Core.Mcp;
 using Capacitor.Cli.Core.OpenCode;
 using Capacitor.Cli.Core.Pi;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Commands;
 
@@ -685,7 +686,7 @@ public static class PluginCommand {
             // find it. Skip the precheck on the postinstall (--if-installed) path so
             // an in-flight npm install doesn't fail just because the new symlink
             // isn't on the child process's PATH yet.
-            case false when !AgentDetector.IsInstalled("kcap"):
+            case false when !AgentDetection.BinaryOnPath("kcap"):
                 await env.Stderr.WriteLineAsync(
                     "Cannot install Cursor hooks: 'kcap' is not on PATH. "
                   + "Re-install kcap via npm: npm install -g @kurrent/kcap"
@@ -850,7 +851,7 @@ public static class PluginCommand {
         // Fresh install needs kcap on PATH: both extensions shell out to the bare
         // `kcap` command (ingest → `kcap hook --pi`; bridge → `kcap mcp <name>`), so
         // pi must find kcap on PATH. Skipped on the postinstall (--if-installed) path.
-        if (!refreshOnly && !AgentDetector.IsInstalled("kcap")) {
+        if (!refreshOnly && !AgentDetection.BinaryOnPath("kcap")) {
             await env.Stderr.WriteLineAsync(
                 "Cannot install the Pi extension: 'kcap' is not on PATH. "
               + "Re-install kcap via npm: npm install -g @kurrent/kcap"
@@ -997,7 +998,7 @@ public static class PluginCommand {
 
         // Fresh install needs kcap on PATH: the plugin shells out to the bare `kcap hook --opencode`
         // command, so OpenCode must find kcap on PATH. Skipped on the --if-installed (postinstall) path.
-        if (!refreshOnly && !AgentDetector.IsInstalled("kcap")) {
+        if (!refreshOnly && !AgentDetection.BinaryOnPath("kcap")) {
             await env.Stderr.WriteLineAsync(
                 "Cannot install the OpenCode plugin: 'kcap' is not on PATH. "
               + "Re-install kcap via npm: npm install -g @kurrent/kcap"
@@ -1140,7 +1141,7 @@ public static class PluginCommand {
 
         // Fresh install needs kcap on PATH: hooks.json runs the bare `kcap hook --antigravity`
         // command. Skipped on the --if-installed (postinstall) refresh path.
-        if (!refreshOnly && !AgentDetector.IsInstalled("kcap")) {
+        if (!refreshOnly && !AgentDetection.BinaryOnPath("kcap")) {
             await env.Stderr.WriteLineAsync(
                 "Cannot install Antigravity hooks: 'kcap' is not on PATH. "
               + "Re-install kcap via npm: npm install -g @kurrent/kcap"
@@ -1328,7 +1329,7 @@ public static class PluginCommand {
 
         // Fresh install needs kcap on PATH: kcap.json writes the bare `kcap hook --copilot` command,
         // so Copilot must find kcap on PATH. Skipped on the --if-installed (postinstall) path.
-        if (!refreshOnly && !AgentDetector.IsInstalled("kcap")) {
+        if (!refreshOnly && !AgentDetection.BinaryOnPath("kcap")) {
             await env.Stderr.WriteLineAsync(
                 "Cannot install Copilot hooks: 'kcap' is not on PATH. "
               + "Re-install kcap via npm: npm install -g @kurrent/kcap"
@@ -1544,7 +1545,7 @@ public static class PluginCommand {
         }
 
         // Fresh install needs kcap on PATH: the agent + the MCP servers run the bare `kcap` command.
-        if (!refreshOnly && !AgentDetector.IsInstalled("kcap")) {
+        if (!refreshOnly && !AgentDetection.BinaryOnPath("kcap")) {
             await env.Stderr.WriteLineAsync(
                 "Cannot install Kiro hooks: 'kcap' is not on PATH. "
               + "Re-install kcap via npm: npm install -g @kurrent/kcap"
@@ -1722,7 +1723,7 @@ public static class PluginCommand {
             // Clone the current default into kcap's Kiro agent (kiro-cli writes it to
             // the global agents dir, preserving tools/prompt). Skipped if kcap exists.
             if (!File.Exists(agentJsonPath)) {
-                if (!AgentDetector.IsInstalled(KiroBinary)) return false;
+                if (!AgentDetection.BinaryOnPath(KiroBinary)) return false;
                 if (RunKiroCli("agent", "create", KiroAgentName, "--from", recordedDefault) != 0 || !File.Exists(agentJsonPath))
                     return false;
             }
@@ -1901,7 +1902,7 @@ public static class PluginCommand {
 
         // Fresh install needs kcap on PATH: settings.json writes the bare `kcap hook --gemini`
         // command, so Gemini must find kcap on PATH. Skipped on the --if-installed (postinstall) path.
-        if (!refreshOnly && !AgentDetector.IsInstalled("kcap")) {
+        if (!refreshOnly && !AgentDetection.BinaryOnPath("kcap")) {
             await env.Stderr.WriteLineAsync(
                 "Cannot install Gemini hooks: 'kcap' is not on PATH. "
               + "Re-install kcap via npm: npm install -g @kurrent/kcap"

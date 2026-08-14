@@ -1,4 +1,6 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Daemon;
+using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Services;
 using Microsoft.Extensions.Time.Testing;
 
@@ -677,7 +679,7 @@ public class ServiceVerifyInstallTests {
         }
     }
 
-    /// <summary>Task 17: the pre-bootstrap TOCTOU recheck. Viability's digest check passes (call 1)
+    /// <summary>The pre-bootstrap TOCTOU recheck. Viability's digest check passes (call 1)
     /// but the recheck immediately before WriteAndBootstrap fails (call 2) — the transaction must
     /// roll back through the existing InstallRollback machinery to exit 29 without ever calling
     /// WriteAndBootstrap, leaving no unit on disk.</summary>
@@ -706,7 +708,7 @@ public class ServiceVerifyInstallTests {
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 
-    /// <summary>Task 17 happy path: a gated install whose digest passes at every checkpoint (viability,
+    /// <summary>A gated install whose digest passes at every checkpoint (viability,
     /// pre-bootstrap, post-readiness) must still commit exactly like the ungated path.</summary>
     [Test]
     public async Task Gated_install_with_passing_digest_throughout_still_commits() {
@@ -729,10 +731,9 @@ public class ServiceVerifyInstallTests {
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 
-    /// <summary>Task 17: the gate is truly INACTIVE without the invoking env's consent-seed
+    /// <summary>The gate is truly INACTIVE without the invoking env's consent-seed
     /// directive — a digestMatches that always fails must have zero effect when no gateEnv seam is
-    /// wired at all, matching how a plain `kcap daemon service install --verify` from a terminal
-    /// behaves before this task.</summary>
+    /// wired at all, matching a plain `kcap daemon service install --verify` from a terminal.</summary>
     [Test]
     public async Task Ungated_install_with_failing_digest_still_commits_gate_truly_inactive() {
         var (dir, daemonPath) = SetUpViableInstall();
@@ -753,7 +754,7 @@ public class ServiceVerifyInstallTests {
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }
 
-    /// <summary>Task 17 review fix (Important 1): the viability arm's digest check must fire for
+    /// <summary>The viability arm's digest check must fire for
     /// <c>--replace</c> too, and — crucially — BEFORE <c>ApplyReplaceMatrixAsync</c>'s ownership
     /// matrix ever runs. A loaded, owned label (with a live validated pid) gives that matrix real
     /// bootout/kill work to do if it were ever reached, so an empty <see cref="FakeServiceManager.Calls"/>
@@ -795,7 +796,7 @@ public class ServiceVerifyInstallTests {
         }
     }
 
-    /// <summary>Task 17 review fix (Important 2): exercises the THIRD checkpoint — the
+    /// <summary>Exercises the THIRD checkpoint — the
     /// post-readiness recheck joined onto the final on-disk fingerprint recheck — in isolation.
     /// digestMatches passes viability (call 1) and the pre-bootstrap recheck (call 2), so
     /// WriteAndBootstrap DOES run this time (unlike the pre-bootstrap-drift test), then fails only
@@ -848,5 +849,100 @@ public class ServiceVerifyInstallTests {
             await Assert.That(manager.UninstallCalls).IsEqualTo(1);
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    // ── gated install readiness-timeout refusal attribution (mirrors StartVerifiedAsync's) ──
+
+    [Test, NotInParallel]
+    public async Task Gated_install_readiness_timeout_with_matching_marker_attributes_refusal_reason() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        var originalErr = Console.Error;
+        var capturedErr = new StringWriter();
+        try {
+            Console.SetError(capturedErr);
+
+            // The observed job pid IS this test process's own pid, matching what BootRefusal.TryWrite
+            // (the daemon's real writer) stamps onto the marker — planted from OnWriteAndBootstrap,
+            // simulating the daemon starting (and refusing) right after this transaction spawns it.
+            var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
+            manager.OnWriteAndBootstrap = id => {
+                var stateDir = Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(id));
+                Directory.CreateDirectory(stateDir);
+                BootRefusal.TryWrite(stateDir,
+                    new DaemonConfig { Name = id, ExpectedServerUrl = "https://s.example", ServerUrl = "https://resolved.example", InstanceId = "inst-1" },
+                    "server_expectation_mismatch");
+            };
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+
+            var time = new FakeTimeProvider();
+            var spec = Spec(daemonPath) with {
+                Environment = new Dictionary<string, string> { ["KCAP_EXPECT_SERVER_URL"] = "https://s.example" },
+            };
+
+            // Ownership never matches (validated pid always disagrees with the observed job pid), so
+            // readiness never settles and the forward budget genuinely rolls back to a timeout.
+            var sut = new ServiceVerify(manager, _ => -1, Hello, time,
+                forwardBudget: TimeSpan.FromSeconds(2),
+                readPlist: OwnPlist,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                digestMatches: _ => true);
+
+            var task = sut.InstallVerifiedAsync(spec, replace: false, ExpectedVersion);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            await Assert.That(lines.Count(l => l == "refusal_reason=server_expectation_mismatch")).IsEqualTo(1);
+        } finally {
+            Console.SetError(originalErr);
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        }
+    }
+
+    [Test, NotInParallel]
+    public async Task Gated_install_readiness_timeout_with_a_foreign_marker_reports_no_refusal_reason() {
+        var (dir, daemonPath) = SetUpViableInstall();
+        var originalErr = Console.Error;
+        var capturedErr = new StringWriter();
+        try {
+            Console.SetError(capturedErr);
+
+            // Same shape as the matching-marker test, but the marker names a DIFFERENT daemon —
+            // residue from an unrelated service. Attributable must reject it on name alone.
+            var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
+            manager.OnWriteAndBootstrap = id => {
+                var stateDir = Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(id));
+                Directory.CreateDirectory(stateDir);
+                BootRefusal.TryWrite(stateDir,
+                    new DaemonConfig { Name = "some-other-daemon", ExpectedServerUrl = "https://s.example", ServerUrl = "https://resolved.example", InstanceId = "inst-1" },
+                    "server_expectation_mismatch");
+            };
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+
+            var time = new FakeTimeProvider();
+            var spec = Spec(daemonPath) with {
+                Environment = new Dictionary<string, string> { ["KCAP_EXPECT_SERVER_URL"] = "https://s.example" },
+            };
+
+            var sut = new ServiceVerify(manager, _ => -1, Hello, time,
+                forwardBudget: TimeSpan.FromSeconds(2),
+                readPlist: OwnPlist,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                digestMatches: _ => true);
+
+            var task = sut.InstallVerifiedAsync(spec, replace: false, ExpectedVersion);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            await Assert.That(lines.Any(l => l.StartsWith("refusal_reason=", StringComparison.Ordinal))).IsFalse();
+        } finally {
+            Console.SetError(originalErr);
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        }
     }
 }

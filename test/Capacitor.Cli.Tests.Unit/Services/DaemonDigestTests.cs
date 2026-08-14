@@ -3,7 +3,7 @@ using Capacitor.Cli;
 namespace Capacitor.Cli.Tests.Unit.Services;
 
 /// <summary>Covers the runtime accessor only (<see cref="DaemonDigest"/>) — the build-time
-/// generation of <c>GeneratedDigest.Value</c> is exercised by Task 14's local build
+/// generation of <c>GeneratedDigest.Value</c> is exercised by local build
 /// verification (placeholder vs. -p:KcapDaemonDigest), not by this unit suite.</summary>
 public class DaemonDigestTests {
     [Test]

@@ -12,6 +12,21 @@ public class ServiceVerifyStartGateTests {
         await Assert.That(r).IsNull();
     }
 
+    // Exact-value contract (spec): an empty invoking directive is a deliberate refusal, not
+    // absence — only a truly-null env value passes the gate through untouched.
+    [Test]
+    [Arguments("")]
+    [Arguments("allow")]
+    [Arguments("deny")]
+    [Arguments("Prompt")]
+    public async Task Non_prompt_invoking_directive_including_empty_is_directive_invalid_before_touching_the_unit(string invoking) {
+        // The unit env is never even consulted — if it were, the empty dict below would report
+        // DirectiveMissing instead, so DirectiveInvalid here proves the invoking-side check fires first.
+        var r = ServiceVerify.EvaluateStartGate(new Dictionary<string, string>(), "/b", "/b",
+            k => k == "KCAP_CONSENT_SEED_DEFAULT" ? invoking : null);
+        await Assert.That(r).IsEqualTo(StartGateReason.DirectiveInvalid);
+    }
+
     [Test]
     public async Task Missing_unit_directive_is_directive_missing() {
         var r = ServiceVerify.EvaluateStartGate(
@@ -79,4 +94,120 @@ public class ServiceVerifyStartGateTests {
         var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
         await Assert.That(r).IsEqualTo(StartGateReason.IdentityMismatch);
     }
+
+    // ── fail-closed on absent required identity evidence (spec §3.4(b)) ──
+
+    [Test]
+    public async Task Fully_matching_identity_passes() {
+        var unit = new Dictionary<string, string> {
+            ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
+            ["KCAP_PROFILE"] = "a",
+            ["KCAP_URL"] = "https://s.example",
+            ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
+        };
+        string? Env(string k) => k switch {
+            "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
+            "KCAP_PROFILE" => "a",
+            "KCAP_EXPECT_SERVER_URL" => "https://s.example",
+            _ => null };
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        await Assert.That(r).IsNull();
+    }
+
+    [Test]
+    public async Task Unit_missing_baked_expectation_is_identity_mismatch() {
+        // The unit resolves a server (KCAP_URL) and the invoking env carries a full expectation,
+        // but the unit itself never baked KCAP_EXPECT_SERVER_URL — absent required evidence must
+        // fail closed, not be silently skipped as "no assertion to make".
+        var unit = new Dictionary<string, string> {
+            ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
+            ["KCAP_PROFILE"] = "a",
+            ["KCAP_URL"] = "https://s.example",
+        };
+        string? Env(string k) => k switch {
+            "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
+            "KCAP_PROFILE" => "a",
+            "KCAP_EXPECT_SERVER_URL" => "https://s.example",
+            _ => null };
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        await Assert.That(r).IsEqualTo(StartGateReason.IdentityMismatch);
+    }
+
+    [Test]
+    public async Task Invoking_env_missing_profile_is_identity_mismatch() {
+        var unit = new Dictionary<string, string> {
+            ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
+            ["KCAP_PROFILE"] = "a",
+            ["KCAP_URL"] = "https://s.example",
+            ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
+        };
+        string? Env(string k) => k switch {
+            "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
+            "KCAP_EXPECT_SERVER_URL" => "https://s.example",
+            // no KCAP_PROFILE at all
+            _ => null };
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        await Assert.That(r).IsEqualTo(StartGateReason.IdentityMismatch);
+    }
+
+    [Test]
+    public async Task Invoking_env_missing_expectation_is_identity_mismatch() {
+        var unit = new Dictionary<string, string> {
+            ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
+            ["KCAP_PROFILE"] = "a",
+            ["KCAP_URL"] = "https://s.example",
+            ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
+        };
+        string? Env(string k) => k switch {
+            "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
+            "KCAP_PROFILE" => "a",
+            // no KCAP_EXPECT_SERVER_URL at all
+            _ => null };
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        await Assert.That(r).IsEqualTo(StartGateReason.IdentityMismatch);
+    }
+
+    [Test]
+    public async Task Unresolvable_unit_server_is_identity_mismatch() {
+        // The unit bakes an expectation and NO KCAP_URL and NO KCAP_PROFILE — there is genuinely
+        // nothing to resolve its own identity from, so it must fail closed rather than let a
+        // three-way comparison with only two live candidates silently pass.
+        var unit = new Dictionary<string, string> {
+            ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
+            ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
+        };
+        string? Env(string k) => k switch {
+            "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
+            "KCAP_PROFILE" => "a",
+            "KCAP_EXPECT_SERVER_URL" => "https://s.example",
+            _ => null };
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        await Assert.That(r).IsEqualTo(StartGateReason.IdentityMismatch);
+    }
+
+    [Test]
+    public async Task Unreadable_config_directory_in_place_of_file_is_evidence_unreadable() {
+        var configDir = Directory.CreateTempSubdirectory("kcap-gate-cfg-").FullName;
+        // A directory sitting exactly where config.json belongs: File.Exists alone reads as
+        // absent, but this must surface as unreadable EVIDENCE (28/evidence_unreadable), never
+        // silently treated the same as an unconfigured profile (which would be identity_mismatch).
+        Directory.CreateDirectory(Path.Combine(configDir, "config.json"));
+
+        var unit = new Dictionary<string, string> {
+            ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
+            ["KCAP_PROFILE"] = "work",
+            ["KCAP_CONFIG_DIR"] = configDir,
+            ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
+            // no KCAP_URL — forces the BakedProfileServerUrl fallback that reads config.json
+        };
+        string? Env(string k) => k switch {
+            "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
+            "KCAP_PROFILE" => "work",
+            "KCAP_EXPECT_SERVER_URL" => "https://s.example",
+            _ => null };
+
+        var r = ServiceVerify.EvaluateStartGate(unit, "/b", "/b", Env, digestMatches: _ => true);
+        await Assert.That(r).IsEqualTo(StartGateReason.EvidenceUnreadable);
+    }
+
 }

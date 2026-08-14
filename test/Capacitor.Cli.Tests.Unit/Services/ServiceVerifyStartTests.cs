@@ -22,6 +22,14 @@ public class ServiceVerifyStartTests {
         /// call and cleared thereafter — for scripting a bootout that fails once (e.g. a foreign
         /// writer momentarily holding the label) but succeeds on Rollback's own re-attempt.</summary>
         public bool StopErrorOnceOnly;
+
+        /// <summary>When set, a Stop() that reports SUCCESS (no <see cref="StopError"/>) still shows
+        /// the label as Loaded on every Query() until a SECOND Stop() call happens — scripting a
+        /// bootout whose exit code lied about the label being synchronously gone. Distinct from
+        /// <see cref="RemainsLoadedAfterStop"/> (which never confirms Absent at all): this confirms
+        /// on Rollback's own re-attempted bootout, so a test can assert the gate's confirm-loop times
+        /// out and rolls back to a result Rollback itself then successfully reaches.</summary>
+        public bool RemainsLoadedUntilSecondStop;
         public Action<string>? OnStart;
         public Action<string>? OnStop;
 
@@ -42,6 +50,8 @@ public class ServiceVerifyStartTests {
             if (Stopped) {
                 if (ProbeUnknownAfterStop)
                     return new ServiceQuery(LabelProbe.Unknown, true, ServiceState.Installed, "/bin/kcap-daemon", null);
+                if (RemainsLoadedUntilSecondStop && StopCalls < 2)
+                    return new ServiceQuery(LabelProbe.Loaded, true, ServiceState.Running, "/bin/kcap-daemon", RunningPid);
                 if (!RemainsLoadedAfterStop)
                     return new ServiceQuery(LabelProbe.Absent, true, ServiceState.Installed, "/bin/kcap-daemon", null);
             }
@@ -384,11 +394,19 @@ public class ServiceVerifyStartTests {
 
     // ── gated start — Phase A (exit 28) / Phase B (exit 29) ──
 
+    /// <summary>Test identity shared by every gated test below that needs the identity check to
+    /// PASS (Phase A) so it can exercise something past it — the digest/drift/bootout machinery.</summary>
+    const string GatedServerUrl = "https://s.example";
+
     /// <summary>Minimal launchd plist whose <c>&lt;array&gt;</c> (ProgramArguments) and baked
     /// <c>KCAP_CONSENT_SEED_DEFAULT</c> are exactly what <see cref="LaunchdUnit.BinaryFromPlist"/>/
     /// <see cref="LaunchdUnit.EnvFromPlist"/> read — real launchd never sees this content, only the
-    /// gate's re-parse of it does.</summary>
-    static string MinimalPlist(string binary, string consentSeedDefault) => $"""
+    /// gate's re-parse of it does. <paramref name="expectServerUrl"/>, when non-null, bakes BOTH
+    /// <c>KCAP_URL</c> and <c>KCAP_EXPECT_SERVER_URL</c> with that value — the identity gate now
+    /// fails closed on either being absent (spec §3.4(b)), so any test that needs Phase A's identity
+    /// check to PASS must supply one (matching the invoking <c>gateEnv</c>'s own
+    /// <c>KCAP_EXPECT_SERVER_URL</c>/<c>KCAP_PROFILE</c>).</summary>
+    static string MinimalPlist(string binary, string consentSeedDefault, string? expectServerUrl = null) => $"""
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0">
@@ -399,10 +417,21 @@ public class ServiceVerifyStartTests {
           </array>
           <key>EnvironmentVariables</key><dict>
             <key>KCAP_CONSENT_SEED_DEFAULT</key><string>{consentSeedDefault}</string>
+            {(expectServerUrl is not null ? $"<key>KCAP_URL</key><string>{expectServerUrl}</string><key>KCAP_EXPECT_SERVER_URL</key><string>{expectServerUrl}</string>" : "")}
           </dict>
         </dict>
         </plist>
         """;
+
+    /// <summary>Invoking env for a gated test that needs Phase A's identity check to pass: the
+    /// consent-seed directive plus a profile/expectation matching <see cref="MinimalPlist"/>'s
+    /// <paramref name="expectServerUrl"/> — both now required (fail-closed) by the identity gate.</summary>
+    static Func<string, string?> GatedEnvWithIdentity(string expectServerUrl = GatedServerUrl) => k => k switch {
+        "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
+        "KCAP_PROFILE"              => "default",
+        "KCAP_EXPECT_SERVER_URL"    => expectServerUrl,
+        _                           => null,
+    };
 
     [Test]
     public async Task Pre_mutation_gate_failure_returns_28_and_touches_nothing() {
@@ -447,15 +476,18 @@ public class ServiceVerifyStartTests {
             var reads = 0;
             string? ReadPlist(string _) {
                 reads++;
-                // Phase A observes a passing unit; the plist a foreign writer swaps in before Phase
-                // B's re-read points at a different binary entirely — content drift, not just a
-                // digest failure (digestMatches is stubbed to pass either way below).
-                return reads == 1 ? MinimalPlist("/bin/kcap-daemon", "prompt") : MinimalPlist("/bin/kcap-daemon-moved", "prompt");
+                // Phase A observes a passing unit (identity matching GatedEnvWithIdentity so Phase A
+                // clears); the plist a foreign writer swaps in before Phase B's re-read points at a
+                // different binary entirely — content drift, not just a digest failure (digestMatches
+                // is stubbed to pass either way below).
+                return reads == 1
+                    ? MinimalPlist("/bin/kcap-daemon", "prompt", GatedServerUrl)
+                    : MinimalPlist("/bin/kcap-daemon-moved", "prompt", GatedServerUrl);
             }
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
                 readPlist: ReadPlist,
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                gateEnv: GatedEnvWithIdentity(),
                 digestMatches: _ => true);
 
             var exit = await sut.StartVerifiedAsync(Id);
@@ -501,6 +533,50 @@ public class ServiceVerifyStartTests {
     }
 
     [Test]
+    public async Task Duplicate_key_plist_at_phase_a_is_evidence_unreadable_and_touches_nothing() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            var manager = new FakeServiceManager();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            // A duplicate EnvironmentVariables key — never written by LaunchdUnit.Plist itself, so
+            // this can only be a foreign/corrupt writer. LaunchdUnit.EnvFromPlist throws
+            // InvalidDataException rather than last-win; that must land as EvidenceUnreadable (28),
+            // not escape StartVerifiedAsync to a generic, uncoded exit 1.
+            const string duplicateKeyPlist = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+                <plist version="1.0">
+                <dict>
+                  <key>Label</key><string>io.kurrent.kcap.daemon.svc-verify</string>
+                  <key>ProgramArguments</key><array>
+                    <string>/bin/kcap-daemon</string>
+                  </array>
+                  <key>EnvironmentVariables</key><dict>
+                    <key>KCAP_CONSENT_SEED_DEFAULT</key><string>prompt</string>
+                    <key>KCAP_CONSENT_SEED_DEFAULT</key><string>allow</string>
+                  </dict>
+                </dict>
+                </plist>
+                """;
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: _ => duplicateKeyPlist,
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
+
+            var exit = await sut.StartVerifiedAsync(Id);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
+            await Assert.That(manager.Calls.Count).IsEqualTo(1);
+            await Assert.That(manager.Calls.All(c => c == "query")).IsTrue();
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
     public async Task Garbage_plist_at_phase_b_recheck_is_treated_as_drift_and_rolls_back() {
         var dir = Directory.CreateTempSubdirectory().FullName;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
@@ -515,17 +591,18 @@ public class ServiceVerifyStartTests {
             var reads = 0;
             string? ReadPlist(string _) {
                 reads++;
-                // Phase A reads a valid, passing plist; a foreign writer replaces it with
-                // unparseable garbage before Phase B's re-read — the parse itself must not escape
-                // StartVerifiedAsync (it would skip Rollback entirely, since this happens AFTER the
-                // "captured" marker write and the boot-out Stop, leaving the service stopped with a
-                // stuck marker instead of the guaranteed unloaded-plist-retained outcome).
-                return reads == 1 ? MinimalPlist("/bin/kcap-daemon", "prompt") : "not even xml, let alone a plist";
+                // Phase A reads a valid, passing plist (identity matching GatedEnvWithIdentity so
+                // Phase A clears); a foreign writer replaces it with unparseable garbage before Phase
+                // B's re-read — the parse itself must not escape StartVerifiedAsync (it would skip
+                // Rollback entirely, since this happens AFTER the "captured" marker write and the
+                // boot-out Stop, leaving the service stopped with a stuck marker instead of the
+                // guaranteed unloaded-plist-retained outcome).
+                return reads == 1 ? MinimalPlist("/bin/kcap-daemon", "prompt", GatedServerUrl) : "not even xml, let alone a plist";
             }
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
                 readPlist: ReadPlist,
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                gateEnv: GatedEnvWithIdentity(),
                 digestMatches: _ => true);
 
             var exit = await sut.StartVerifiedAsync(Id);
@@ -562,8 +639,8 @@ public class ServiceVerifyStartTests {
                 Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
-                readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt"),
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", GatedServerUrl),
+                gateEnv: GatedEnvWithIdentity(),
                 digestMatches: _ => true);
 
             var exit = await sut.StartVerifiedAsync(Id);
@@ -577,6 +654,41 @@ public class ServiceVerifyStartTests {
             await Assert.That(stopPhases.Count).IsEqualTo(2);
             await Assert.That(stopPhases[0]).IsEqualTo("captured");
             await Assert.That(stopPhases[1]).IsEqualTo("gate-bootout-failed");
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Bootstrap_only_after_confirmed_bootout_a_lying_success_exit_still_rolls_back() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            // Stop() reports SUCCESS (no error) — the launchctl exit code alone — but the label is
+            // still Loaded on every query until Rollback's own re-attempted bootout. Bootstrapping
+            // on an unconfirmed bootout would silently kickstart the stale still-loaded definition,
+            // so the gate must roll back to BootoutUnknown instead, with zero start calls, even
+            // though Stop() never reported an error at all.
+            var manager = new FakeServiceManager { Started = true, RemainsLoadedUntilSecondStop = true };
+            var time = new FakeTimeProvider();
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
+                forwardBudget: TimeSpan.FromSeconds(2), rollbackReserve: TimeSpan.FromSeconds(2),
+                readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", GatedServerUrl),
+                gateEnv: GatedEnvWithIdentity(),
+                digestMatches: _ => true);
+
+            var task = sut.StartVerifiedAsync(Id);
+            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.BootoutUnknown);
+            await Assert.That(manager.StartCalls).IsEqualTo(0);
+            await Assert.That(manager.Calls.Contains("start")).IsFalse();
+            // Two Stop calls: Phase B's own boot-out (whose lying success exit is what this test
+            // pins), then Rollback's re-attempt, which is the one that actually confirms Absent.
+            await Assert.That(manager.StopCalls).IsEqualTo(2);
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }

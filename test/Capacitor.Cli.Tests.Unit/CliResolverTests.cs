@@ -83,7 +83,7 @@ public class CliResolverTests {
     }
 
     /// <summary>
-    /// The Unix exec-bit check (mirrors <c>AgentDetector.IsExecutable</c>)
+    /// The Unix exec-bit check (mirrors <c>AgentDetection.IsExecutable</c>)
     /// applies to PATH-resolved candidates too, not just absolute paths.
     /// </summary>
     [Test, NotInParallel]

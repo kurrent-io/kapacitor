@@ -64,6 +64,58 @@ public class BootSeedTests {
         await Assert.That(r.Outcome).IsEqualTo(SeedOutcome.Quarantined);
     }
 
+    // ── malformed-rule matrix: a recognized `default` with a structurally bad rules array must
+    // never count as Respected — ToPolicy silently drops the bad rule, so "allow" + one bogus rule
+    // would otherwise land as an effective zero-rule allow indistinguishable from the pre-consent
+    // factory default. Quarantine + reseed instead, same as any other malformed file. ──
+
+    [Test]
+    public async Task Allow_with_bogus_rule_action_is_a_silent_allow_arm_and_gets_quarantined() {
+        var dir = Directory.CreateTempSubdirectory("seed-").FullName;
+        await File.WriteAllTextAsync(PolicyPath(dir), """{"default":"allow","rules":[{"action":"bogus"}]}""");
+        var r = Store(dir).BootSeed("prompt");
+        await Assert.That(r.Outcome).IsEqualTo(SeedOutcome.Quarantined);
+        await Assert.That(await File.ReadAllTextAsync(PolicyPath(dir))).Contains("\"prompt\"");
+    }
+
+    [Test]
+    public async Task Allow_with_a_null_rule_element_is_quarantined_not_thrown() {
+        var dir = Directory.CreateTempSubdirectory("seed-").FullName;
+        await File.WriteAllTextAsync(PolicyPath(dir), """{"default":"allow","rules":[null]}""");
+        var r = Store(dir).BootSeed("prompt");
+        await Assert.That(r.Outcome).IsEqualTo(SeedOutcome.Quarantined);
+    }
+
+    [Test]
+    public async Task Allow_with_invalid_rule_kind_is_quarantined() {
+        var dir = Directory.CreateTempSubdirectory("seed-").FullName;
+        await File.WriteAllTextAsync(PolicyPath(dir),
+            """{"default":"allow","rules":[{"action":"allow","kind":"not-a-real-kind"}]}""");
+        var r = Store(dir).BootSeed("prompt");
+        await Assert.That(r.Outcome).IsEqualTo(SeedOutcome.Quarantined);
+    }
+
+    [Test]
+    public async Task Deny_default_with_a_null_rule_element_is_quarantined_not_respected() {
+        // Without the rules check, "deny" would classify Respected untouched — but the real store's
+        // later Load() would NRE inside ToPolicy on the null element and fall back to
+        // LaunchConsentPolicy.UpgradeSafe (Allow), inverting the operator's deny default. Catching
+        // it here means the file is reseeded to a clean prompt default before that ever happens.
+        var dir = Directory.CreateTempSubdirectory("seed-").FullName;
+        await File.WriteAllTextAsync(PolicyPath(dir), """{"default":"deny","rules":[null]}""");
+        var r = Store(dir).BootSeed("prompt");
+        await Assert.That(r.Outcome).IsEqualTo(SeedOutcome.Quarantined);
+    }
+
+    [Test]
+    public async Task Allow_with_valid_rules_including_a_recognized_kind_is_still_respected() {
+        var dir = Directory.CreateTempSubdirectory("seed-").FullName;
+        await File.WriteAllTextAsync(PolicyPath(dir),
+            """{"default":"allow","rules":[{"action":"allow","kind":"review"}]}""");
+        var r = Store(dir).BootSeed("prompt");
+        await Assert.That(r.Outcome).IsEqualTo(SeedOutcome.Respected);
+    }
+
     [Test]
     [Arguments("")] [Arguments("allow")] [Arguments("deny")] [Arguments("Prompt")] [Arguments("bogus")]
     public async Task Non_literal_prompt_directives_refuse(string directive) {
@@ -85,7 +137,7 @@ public class BootSeedTests {
         await Assert.That(r.Outcome).IsEqualTo(SeedOutcome.Respected);
     }
 
-    // Task 12 linkage: pins the seed->gate handoff without a live DaemonRunner.RunAsync/server
+    // Pins the seed->gate handoff without a live DaemonRunner.RunAsync/server
     // round trip. A "prompt" boot seed on an absent file classifies Seeded and persists a
     // Prompt-default policy (asserted above by other tests); this test documents that the SAME
     // store, read back into a gate with no prompter (no UI attached), then denies an immediate

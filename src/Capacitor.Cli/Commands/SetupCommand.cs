@@ -315,7 +315,7 @@ public static class SetupCommand {
             InstallCursorHooks:     PluginCommand.InstallCursorHooks,
             InstallCopilotHooks:    PluginCommand.InstallCopilotHooks,
             InstallGeminiHooks:     PluginCommand.InstallGeminiHooks,
-            CapacitorOnPath:        () => AgentDetector.IsInstalled("kcap"),
+            CapacitorOnPath:        () => AgentDetection.BinaryOnPath("kcap"),
             InstallAgentSkills:     AgentsSkillsInstaller.Install,
             CleanLegacyCodexSkills: legacyDir => AgentsSkillsInstaller.CleanLegacyCodexSkills(legacyDir).RemovedAny,
             InstallKiroHooks:       PluginCommand.InstallKiroHooks,

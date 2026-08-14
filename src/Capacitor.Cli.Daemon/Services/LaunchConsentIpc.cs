@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.LocalIpc;
 using Microsoft.Extensions.Logging;
 
@@ -137,16 +138,13 @@ internal sealed class LaunchConsentIpc(
             await WriteAck(stream, new ConsentAckDto(false, "malformed policy payload", null), ct);
             return;
         }
-        if (dto.ExpectedName != config.Name
-                || !string.Equals(NormalizeUrl(dto.ExpectedServerUrl), NormalizeUrl(config.ServerUrl), StringComparison.OrdinalIgnoreCase)) {
+        if (dto.ExpectedName != config.Name || !ServerIdentity.Matches(dto.ExpectedServerUrl, config.ServerUrl)) {
             await WriteAck(stream, new ConsentAckDto(false, "identity_mismatch", null), ct);
             return;
         }
         var v1Json = JsonSerializer.Serialize(dto.Policy, ConsentIpcJsonContext.Default.ConsentPolicyDto);
         await HandleRulesPutAsync(v1Json, stream, ct);
     }
-
-    static string NormalizeUrl(string u) => u.TrimEnd('/');
 
     static ConsentPendingDto ToDto(LaunchConsentPromptRequest r) =>
         new(r.RequestId, r.Requester, r.Kind, r.RepoPath, r.Vendor, r.RequestedAt, r.TimeoutSeconds, r.RequesterDisplay, r.PromptId);

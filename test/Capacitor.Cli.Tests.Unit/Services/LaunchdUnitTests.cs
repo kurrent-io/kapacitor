@@ -76,6 +76,31 @@ public class LaunchdUnitTests {
         await Assert.That(LaunchdUnit.EnvFromPlist(xml)).IsEmpty();
     }
 
+    /// <summary>This file is never hand-edited by <see cref="LaunchdUnit.Plist"/> — a duplicate
+    /// key can only mean a foreign/corrupt writer. Last-win would let a gate caller silently trust
+    /// whichever value happened to land last; throwing forces every caller's existing "unreadable
+    /// evidence" containment to see it instead.</summary>
+    [Test]
+    public async Task EnvFromPlist_throws_on_a_duplicate_key_rather_than_last_win() {
+        const string xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+              <key>Label</key><string>io.kurrent.kcap.daemon.dup</string>
+              <key>ProgramArguments</key><array>
+                <string>/bin/kcap-daemon</string>
+              </array>
+              <key>EnvironmentVariables</key><dict>
+                <key>KCAP_CONSENT_SEED_DEFAULT</key><string>prompt</string>
+                <key>KCAP_CONSENT_SEED_DEFAULT</key><string>allow</string>
+              </dict>
+            </dict>
+            </plist>
+            """;
+        await Assert.That(() => LaunchdUnit.EnvFromPlist(xml)).Throws<InvalidDataException>();
+    }
+
     [Test]
     public async Task StatusFromPrint_maps_exit_and_state() {
         await Assert.That(LaunchdUnit.StatusFromPrint(exitCode: 1, stdout: "")).IsEqualTo(ServiceState.NotInstalled);

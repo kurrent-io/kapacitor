@@ -29,20 +29,44 @@ public static class ConfigMutator {
     /// LoadProfileConfig persisted the v1→v2 migration during load, which under this API
     /// would recursively acquire the same thread-affine mutex).
     public static ProfileConfig LoadPure(string path) {
-        if (!File.Exists(path))
-            return new() { Profiles = new() { ["default"] = new() } };
+        TryLoadPure(path, out var config);
+        return config;
+    }
+
+    /// Same pure load as <see cref="LoadPure"/>, but distinguishes genuine ABSENCE (no file —
+    /// success, default config) from an UNREADABLE/malformed file (read/parse failure — false, with
+    /// the same default config as an out param callers that don't care about the distinction can
+    /// still use). Callers that must fail closed on corruption rather than silently treat it the
+    /// same as "nothing configured yet" (e.g. a gated identity check) use this instead of
+    /// <see cref="LoadPure"/>.
+    public static bool TryLoadPure(string path, out ProfileConfig config) {
+        // A directory sitting at the config path is NOT absence — File.Exists alone would say
+        // false and this would silently fall through to "nothing configured yet" for what is
+        // actually an unreadable/misconfigured location.
+        if (Directory.Exists(path)) {
+            config = new() { Profiles = new() { ["default"] = new() } };
+            return false;
+        }
+
+        if (!File.Exists(path)) {
+            config = new() { Profiles = new() { ["default"] = new() } };
+            return true;
+        }
 
         string json;
         try {
             json = File.ReadAllText(path);
         } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
-            return new() { Profiles = new() { ["default"] = new() } };
+            config = new() { Profiles = new() { ["default"] = new() } };
+            return false;
         }
 
         try {
-            return ConfigMigration.MigrateIfNeeded(json).Config;
+            config = ConfigMigration.MigrateIfNeeded(json).Config;
+            return true;
         } catch (JsonException) {
-            return new() { Profiles = new() { ["default"] = new() } };
+            config = new() { Profiles = new() { ["default"] = new() } };
+            return false;
         }
     }
 

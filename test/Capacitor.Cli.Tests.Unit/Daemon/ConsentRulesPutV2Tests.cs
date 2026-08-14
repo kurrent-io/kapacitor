@@ -43,7 +43,7 @@ public class ConsentRulesPutV2Tests {
 
     sealed record Harness(LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection, DaemonConfig Config, string SockPath);
 
-    static async Task<Harness> StartAsync(string daemonName, CancellationToken ct) {
+    static async Task<Harness> StartAsync(string daemonName, CancellationToken ct, string serverUrl = "http://127.0.0.1:1") {
         var stateDir = Directory.CreateTempSubdirectory("kcap-putv2-ipc-state-").FullName;
         var store       = new LaunchConsentStore(stateDir, NullLogger.Instance);
         var broker      = new LaunchConsentBroker();
@@ -52,7 +52,7 @@ public class ConsentRulesPutV2Tests {
 
         var config = new DaemonConfig {
             Name         = daemonName,
-            ServerUrl    = "http://127.0.0.1:1",
+            ServerUrl    = serverUrl,
             StateDir     = stateDir,
             WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-putv2-ipc-wt-" + Guid.NewGuid().ToString("N")[..8]),
         };
@@ -92,14 +92,14 @@ public class ConsentRulesPutV2Tests {
     /// LocalControlHelloTests's RunAsync. Each [Test] still carries its own
     /// [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")] + Windows guard,
     /// since those must be visible on the test method itself.
-    static async Task RunAsync(string daemonName, Func<Harness, CancellationToken, Task> body) {
+    static async Task RunAsync(string daemonName, Func<Harness, CancellationToken, Task> body, string serverUrl = "http://127.0.0.1:1") {
         var sockDir = Directory.CreateTempSubdirectory("kcap-putv2-sock-");
         DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         Harness? h = null;
         try {
-            h = await StartAsync(daemonName, cts.Token);
+            h = await StartAsync(daemonName, cts.Token, serverUrl);
             await Assert.That(File.Exists(h.SockPath)).IsTrue();
             await body(h, cts.Token);
         } finally {
@@ -165,6 +165,63 @@ public class ConsentRulesPutV2Tests {
             await Assert.That(ack.Error).IsEqualTo("identity_mismatch");
             await Assert.That(ReadConsentFile(h)).IsEqualTo(before);
         });
+    }
+
+    // ── ServerIdentity.Matches canonicalization: host-case/trailing-slash keep matching, default
+    // ports converge, but a path-case difference is still a real mismatch. ──
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task V2_put_with_trailing_slash_and_host_case_difference_still_matches() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("putv2-caseslash", async (h, ct) => {
+            var dto = new ConsentPolicyPutV2Dto("putv2-caseslash", "HTTP://127.0.0.1:1/",
+                new ConsentPolicyDto("prompt", 45, []));
+            var json = JsonSerializer.Serialize(dto, ConsentIpcJsonContext.Default.ConsentPolicyPutV2Dto);
+            await using var s = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(s, LocalFrame.ConsentJson(FrameType.ConsentRulesPutV2, json), ct);
+            var ack = await ReadAck(s, ct);
+
+            await Assert.That(ack.Ok).IsTrue();
+        }, serverUrl: "http://127.0.0.1:1");
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task V2_put_with_default_port_equivalence_matches() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("putv2-defaultport", async (h, ct) => {
+            var dto = new ConsentPolicyPutV2Dto("putv2-defaultport", "https://x.example:443",
+                new ConsentPolicyDto("prompt", 45, []));
+            var json = JsonSerializer.Serialize(dto, ConsentIpcJsonContext.Default.ConsentPolicyPutV2Dto);
+            await using var s = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(s, LocalFrame.ConsentJson(FrameType.ConsentRulesPutV2, json), ct);
+            var ack = await ReadAck(s, ct);
+
+            await Assert.That(ack.Ok).IsTrue();
+        }, serverUrl: "https://x.example");
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task V2_put_with_path_case_difference_is_identity_mismatch() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("putv2-pathcase", async (h, ct) => {
+            var before = ReadConsentFile(h);
+            var dto = new ConsentPolicyPutV2Dto("putv2-pathcase", "https://x.example/tenant",
+                new ConsentPolicyDto("prompt", 45, []));
+            var json = JsonSerializer.Serialize(dto, ConsentIpcJsonContext.Default.ConsentPolicyPutV2Dto);
+            await using var s = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(s, LocalFrame.ConsentJson(FrameType.ConsentRulesPutV2, json), ct);
+            var ack = await ReadAck(s, ct);
+
+            await Assert.That(ack.Ok).IsFalse();
+            await Assert.That(ack.Error).IsEqualTo("identity_mismatch");
+            await Assert.That(ReadConsentFile(h)).IsEqualTo(before);
+        }, serverUrl: "https://x.example/Tenant");
     }
 
     [Test]

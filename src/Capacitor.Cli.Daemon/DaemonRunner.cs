@@ -7,6 +7,7 @@ using Capacitor.Cli.Daemon.Pty.Unix;
 using Capacitor.Cli.Daemon.Pty.Windows;
 using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -268,38 +269,10 @@ public static partial class DaemonRunner {
         // itself — a failure here just means that call's own containment swallows the write too.
         try { Directory.CreateDirectory(coverageStateDir); } catch { /* best-effort */ }
 
-        // Pre-host boot checks. Both refusal arms return BEFORE the host is built —
-        // before any ServerConnection/token use of any kind — so a misdirected or un-consented daemon
-        // never gets far enough to touch the network or spawn anything. Order matters: the server-
-        // expectation check runs FIRST (a server the operator didn't expect must never even reach consent
-        // classification), then the Task 11 consent-seed directive. A passing boot (both checks green, or
-        // no directives at all) clears any refusal marker a PRIOR failed attempt left behind — otherwise
-        // `kcap daemon status` (or a desktop supervisor) would keep reporting a refusal that no longer
-        // applies.
-        if (!ExpectationSatisfied(config.ExpectedServerUrl, config.ServerUrl)) {
-            BootRefusal.TryWrite(coverageStateDir, config, "server_expectation_mismatch");
-            await Console.Error.WriteLineAsync("kcap-daemon: refusing to start: server_expectation_mismatch");
-
-            return 0;
-        }
-
-        // A THROWAWAY store, used only for this boot-time classification — deliberately NOT the
-        // instance handed to DI below (see the DI registration's own comment for why: reusing it would
-        // silence LaunchConsentStore's diagnostics, via a NullLogger, for the daemon's entire lifetime).
-        // Constructed only when a directive is present; its ctor's file load is otherwise redundant
-        // with the DI factory's own construction.
-        if (!string.IsNullOrEmpty(config.ConsentSeedDirective)) {
-            var seed = new LaunchConsentStore(coverageStateDir, NullLogger.Instance).BootSeed(config.ConsentSeedDirective);
-
-            if (seed.Outcome is SeedOutcome.RefusedInvalidDirective or SeedOutcome.RefusedUnwritable) {
-                BootRefusal.TryWrite(coverageStateDir, config, seed.RefusalToken!);
-                await Console.Error.WriteLineAsync($"kcap-daemon: refusing to start: {seed.RefusalToken}");
-
-                return 0;
-            }
-        }
-
-        BootRefusal.TryDelete(coverageStateDir);   // passing boot clears leftovers (hygiene)
+        // Pre-host boot checks — see RunBootChecksAsync. Both refusal arms return BEFORE the host is
+        // built, before any ServerConnection/token use of any kind, so a misdirected or un-consented
+        // daemon never gets far enough to touch the network or spawn anything.
+        if (await RunBootChecksAsync(config, coverageStateDir) is { } bootCheckExit) return bootCheckExit;
 
         // Phase B2-b (sequenced-settlement design): pin the per-boot epoch here, before any service is
         // built, so the epoch advertised on DaemonConnect and the orchestrator's own _daemonEpoch (which
@@ -728,6 +701,59 @@ public static partial class DaemonRunner {
     }
 
     /// <summary>
+    /// Pre-host boot checks, extracted out of <see cref="RunAsync"/> so it is directly testable
+    /// without a live host. Order matters: the server-expectation check runs FIRST (a server the
+    /// operator didn't expect must never even reach consent classification), then the consent-seed
+    /// directive. A directive is ABSENT only when <paramref name="config"/>'s
+    /// <see cref="DaemonConfig.ConsentSeedDirective"/> is null — an empty string is a deliberate
+    /// refusal under the exact-value contract, and <c>BootSeed("")</c> already classifies it
+    /// <see cref="SeedOutcome.RefusedInvalidDirective"/>, so activating on "is not null" reaches
+    /// that path rather than silently treating an empty directive as no directive at all.
+    /// <see cref="LaunchConsentStore"/>'s own constructor can throw (e.g. a file sitting where the
+    /// state directory belongs) — that must land as the same coded refusal as any other
+    /// unwritable-state-dir condition, never an uncoded crash that respins under KeepAlive. A
+    /// passing boot (both checks green, or no directive at all) clears any refusal marker a PRIOR
+    /// failed attempt left behind — otherwise `kcap daemon status` (or a desktop supervisor) would
+    /// keep reporting a refusal that no longer applies. Returns the process exit code on refusal,
+    /// or null to proceed to host construction.
+    /// </summary>
+    internal static async Task<int?> RunBootChecksAsync(DaemonConfig config, string stateDir) {
+        if (!ExpectationSatisfied(config.ExpectedServerUrl, config.ServerUrl)) {
+            BootRefusal.TryWrite(stateDir, config, "server_expectation_mismatch");
+            await Console.Error.WriteLineAsync("kcap-daemon: refusing to start: server_expectation_mismatch");
+
+            return 0;
+        }
+
+        if (config.ConsentSeedDirective is not null) {
+            // A THROWAWAY store, used only for this boot-time classification — deliberately NOT the
+            // instance handed to DI below (see the DI registration's own comment for why: reusing it
+            // would silence LaunchConsentStore's diagnostics, via a NullLogger, for the daemon's
+            // entire lifetime).
+            SeedResult seed;
+            try {
+                seed = new LaunchConsentStore(stateDir, NullLogger.Instance).BootSeed(config.ConsentSeedDirective);
+            } catch {
+                BootRefusal.TryWrite(stateDir, config, "consent_seed_unwritable");
+                await Console.Error.WriteLineAsync("kcap-daemon: refusing to start: consent_seed_unwritable");
+
+                return 0;
+            }
+
+            if (seed.Outcome is SeedOutcome.RefusedInvalidDirective or SeedOutcome.RefusedUnwritable) {
+                BootRefusal.TryWrite(stateDir, config, seed.RefusalToken!);
+                await Console.Error.WriteLineAsync($"kcap-daemon: refusing to start: {seed.RefusalToken}");
+
+                return 0;
+            }
+        }
+
+        BootRefusal.TryDelete(stateDir);   // passing boot clears leftovers (hygiene)
+
+        return null;
+    }
+
+    /// <summary>
     /// Disposes the host so its ServiceProvider — and therefore every registered
     /// <see cref="IDisposable"/> singleton (e.g. <see cref="UnixSpawnerThread"/>) — is released.
     /// <see cref="IHost"/> only surfaces <see cref="IDisposable"/>, but the concrete host built by
@@ -933,13 +959,12 @@ public static partial class DaemonRunner {
     /// launcher told this boot to expect (<see cref="DaemonConfig.ExpectedServerUrl"/>, carried in
     /// via <c>KCAP_EXPECT_SERVER_URL</c>)? No expectation at all (null/empty) is trivially
     /// satisfied — this check exists to catch a daemon that resolved a DIFFERENT server than the
-    /// one it was launched to point at, not to require an expectation be set. Compares through
-    /// <see cref="AppConfig.NormalizeUrl"/> (trailing-slash-insensitive) case-insensitively, since
-    /// a URL's host/scheme are not case-sensitive.
+    /// one it was launched to point at, not to require an expectation be set. Otherwise compared
+    /// through <see cref="ServerIdentity.Matches"/> — scheme/host normalized, default ports
+    /// converged, path case preserved.
     /// </summary>
     internal static bool ExpectationSatisfied(string? expected, string resolved) =>
-        string.IsNullOrEmpty(expected)
-        || string.Equals(AppConfig.NormalizeUrl(expected), AppConfig.NormalizeUrl(resolved), StringComparison.OrdinalIgnoreCase);
+        string.IsNullOrEmpty(expected) || ServerIdentity.Matches(expected, resolved);
 
     /// <summary>Phase B (D3): parse a seconds-valued env var into a <see cref="TimeSpan"/>
     /// (<c>0</c> → <see cref="TimeSpan.Zero"/>, which disables the bound). Unset/blank/invalid/negative

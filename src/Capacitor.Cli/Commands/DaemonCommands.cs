@@ -263,16 +263,20 @@ public static class DaemonCommands {
 
     /// <summary>
     /// Gates a detached spawn on the embedded daemon digest, but ONLY when
-    /// <see cref="SeedVar"/> is present in the process env — that directive is set exclusively by
-    /// an app-managed start (the desktop supervisor / a self-respawn), never by a bare `kcap daemon
-    /// start -d` typed at a terminal, so a manual start is never gated. When gated,
-    /// <see cref="DaemonDigest.Matches"/> false (including the fail-closed dev/test placeholder)
-    /// means the sibling daemon binary doesn't match what this CLI build shipped with — refuse
-    /// before spawning anything, on stdout/stderr/exit-code contract the app-side caller parses.
-    /// <paramref name="env"/> is injected so this is testable without touching real process env.
+    /// <see cref="SeedVar"/> is PRESENT (<c>is not null</c> — the exact-value contract: an empty
+    /// value still activates, it is a deliberate refusal, not absence) in the process env — that
+    /// directive is set exclusively by an app-managed start (the desktop supervisor / a
+    /// self-respawn), never by a bare `kcap daemon start -d` typed at a terminal, so a manual start
+    /// is never gated. This gate's only job is the digest; an empty/invalid directive value is not
+    /// separately checked here — the daemon child refuses it itself (<c>consent_seed_invalid</c>,
+    /// exit 0) once it actually boots. When gated, <see cref="DaemonDigest.Matches"/> false
+    /// (including the fail-closed dev/test placeholder) means the sibling daemon binary doesn't
+    /// match what this CLI build shipped with — refuse before spawning anything, on
+    /// stdout/stderr/exit-code contract the app-side caller parses. <paramref name="env"/> is
+    /// injected so this is testable without touching real process env.
     /// </summary>
     internal static int? DetachedDigestGate(string daemonPath, Func<string, string?> env) {
-        if (string.IsNullOrEmpty(env(SeedVar))) return null; // manual start: no gate
+        if (env(SeedVar) is null) return null; // manual start: no gate
 
         if (DaemonDigest.Matches(daemonPath)) return null;
 
@@ -1159,15 +1163,22 @@ public static class DaemonCommands {
     static string? BakedProfileServerUrl(IReadOnlyDictionary<string, string> env, string? profile) {
         if (string.IsNullOrEmpty(profile)) return null;
         try {
-            var configPath = env.TryGetValue("KCAP_CONFIG_DIR", out var dir) && !string.IsNullOrEmpty(dir)
-                ? Path.Combine(dir, "config.json")
-                : AppConfig.GetConfigPath();
-            var config = ConfigMutator.LoadPure(configPath);
+            var config = ConfigMutator.LoadPure(ConfigPathFromUnitEnv(env));
             return config.Profiles.TryGetValue(profile, out var p) ? p.ServerUrl : null;
         } catch {
             return null;
         }
     }
+
+    /// <summary>Shared with <c>ServiceVerify.BakedProfileServerUrl</c> (the gate's own lookup):
+    /// config.json path for a baked <c>KCAP_CONFIG_DIR</c>, or the default config root when the
+    /// unit baked none. Each caller wraps this in its own failure contract — this class fails
+    /// soft to null (UX-only evidence), the gate fails closed to
+    /// <c>StartGateReason.EvidenceUnreadable</c> — so only the path resolution itself is shared.</summary>
+    internal static string ConfigPathFromUnitEnv(IReadOnlyDictionary<string, string> unitEnv) =>
+        unitEnv.TryGetValue("KCAP_CONFIG_DIR", out var dir) && !string.IsNullOrEmpty(dir)
+            ? Path.Combine(dir, "config.json")
+            : AppConfig.GetConfigPath();
 
     static int ServiceUsage() {
         Console.Error.WriteLine("Usage: kcap daemon service <install|uninstall|start|stop|status> [--name N]");

@@ -30,11 +30,33 @@ public static class GeminiPaths {
     /// markers Gemini CLI creates that Antigravity does not: <c>settings.json</c>,
     /// <c>projects.json</c>, or the <c>tmp/</c> chat-recording dir. The binary name
     /// <c>gemini</c> is too generic to be the only signal, so callers that want a
-    /// PATH probe OR this with <c>AgentDetector.IsInstalled("gemini")</c>
+    /// PATH probe OR this with <c>AgentDetection.BinaryOnPath("gemini")</c>
     /// (a fresh install whose markers aren't written yet is still caught there).
     /// </summary>
     public static bool IsInstalled(string? home = null, string? geminiCliHome = null) {
         var root = Root(home, geminiCliHome);
+        if (!Directory.Exists(root)) return false;
+
+        return File.Exists(Path.Combine(root, "settings.json"))
+            || File.Exists(Path.Combine(root, "projects.json"))
+            || Directory.Exists(Path.Combine(root, "tmp"));
+    }
+
+    /// <summary>Pure variant of <see cref="Root"/> for fully-injected callers (e.g.
+    /// <see cref="Setup.AgentDetection"/>, and <see cref="Antigravity.AntigravityPaths"/>'s own
+    /// pure arm, which shares this root) — <paramref name="geminiCliHome"/> null means "not set",
+    /// never falls back to a real <c>GEMINI_CLI_HOME</c> process-env read.</summary>
+    public static string RootPure(string? home, string? geminiCliHome) {
+        var baseDir = !string.IsNullOrWhiteSpace(geminiCliHome)
+            ? geminiCliHome
+            : home ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return Path.Combine(baseDir, ".gemini");
+    }
+
+    /// <summary>Pure variant of <see cref="IsInstalled"/> — never falls back to the real process
+    /// environment for <c>GEMINI_CLI_HOME</c>.</summary>
+    public static bool IsInstalledPure(string? home, string? geminiCliHome) {
+        var root = RootPure(home, geminiCliHome);
         if (!Directory.Exists(root)) return false;
 
         return File.Exists(Path.Combine(root, "settings.json"))

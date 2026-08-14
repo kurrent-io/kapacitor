@@ -75,11 +75,22 @@ public static class PiPaths {
     /// Detection by the agent-state dir's presence — Pi creates it on first run.
     /// The binary name <c>pi</c> is too generic for a PATH probe to be the only
     /// signal, so callers that also want the PATH probe OR this with
-    /// <c>AgentDetector.IsInstalled("pi")</c>. <paramref name="agentDir"/> is a pure
+    /// <c>AgentDetection.BinaryOnPath("pi")</c>. <paramref name="agentDir"/> is a pure
     /// override for <see cref="AgentDir"/>'s <c>PI_CODING_AGENT_DIR</c> env read, so
     /// callers building a fully-injected detection input set never have to touch the
     /// real environment (mirrors <c>KiroPaths.IsInstalled</c>/<c>OpenCodePaths.IsInstalled</c>).
     /// </summary>
     public static bool IsInstalled(string? home = null, string? agentDir = null) =>
         Directory.Exists(AgentDir(home, agentDir));
+
+    /// <summary>Pure variant of <see cref="AgentDir"/> for fully-injected callers (e.g.
+    /// <see cref="Setup.AgentDetection"/>) — <paramref name="agentDir"/> null means "not set",
+    /// never falls back to a real <c>PI_CODING_AGENT_DIR</c> process-env read.</summary>
+    public static string AgentDirPure(string? home, string? agentDir) =>
+        !string.IsNullOrWhiteSpace(agentDir) ? ExpandTilde(agentDir, home) : Path.Combine(Root(home), "agent");
+
+    /// <summary>Pure variant of <see cref="IsInstalled"/> — never falls back to the real process
+    /// environment for <c>PI_CODING_AGENT_DIR</c>.</summary>
+    public static bool IsInstalledPure(string? home, string? agentDir) =>
+        Directory.Exists(AgentDirPure(home, agentDir));
 }

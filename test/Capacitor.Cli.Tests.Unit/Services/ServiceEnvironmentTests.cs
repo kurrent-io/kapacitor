@@ -142,6 +142,44 @@ public class ServiceEnvironmentTests {
         await Assert.That(env["GOOGLE_GENAI_USE_VERTEXAI"]).IsEqualTo("true");
     }
 
+    // ── exact-value contract: KCAP_CONSENT_SEED_DEFAULT / KCAP_EXPECT_SERVER_URL ─────────────
+    // An empty value for either of these is a deliberate refusal (spec), not absence — unlike
+    // every other key, a present-but-empty value must still be baked so it propagates and fails
+    // closed at the gate/daemon instead of silently vanishing from the unit.
+
+    [Test]
+    public async Task Build_bakes_a_present_but_empty_consent_seed_directive_verbatim() {
+        var env = ServiceEnvironment.Build(
+            profileName: null,
+            source: new Dictionary<string, string> { ["PATH"] = "/usr/bin", ["KCAP_CONSENT_SEED_DEFAULT"] = "" },
+            isWindows: false);
+
+        await Assert.That(env.ContainsKey("KCAP_CONSENT_SEED_DEFAULT")).IsTrue();
+        await Assert.That(env["KCAP_CONSENT_SEED_DEFAULT"]).IsEqualTo("");
+    }
+
+    [Test]
+    public async Task Build_bakes_a_present_but_empty_expect_server_url_verbatim() {
+        var env = ServiceEnvironment.Build(
+            profileName: null,
+            source: new Dictionary<string, string> { ["PATH"] = "/usr/bin", ["KCAP_EXPECT_SERVER_URL"] = "" },
+            isWindows: false);
+
+        await Assert.That(env.ContainsKey("KCAP_EXPECT_SERVER_URL")).IsTrue();
+        await Assert.That(env["KCAP_EXPECT_SERVER_URL"]).IsEqualTo("");
+    }
+
+    [Test]
+    public async Task Build_still_omits_the_seed_directive_and_expectation_when_truly_absent() {
+        var env = ServiceEnvironment.Build(
+            profileName: null,
+            source: new Dictionary<string, string> { ["PATH"] = "/usr/bin" },
+            isWindows: false);
+
+        await Assert.That(env.ContainsKey("KCAP_CONSENT_SEED_DEFAULT")).IsFalse();
+        await Assert.That(env.ContainsKey("KCAP_EXPECT_SERVER_URL")).IsFalse();
+    }
+
     [Test]
     public async Task Build_omits_absent_google_variables_rather_than_writing_empties() {
         var env = ServiceEnvironment.Build(

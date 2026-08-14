@@ -9,7 +9,7 @@ namespace Capacitor.Cli.Daemon.Services;
 internal enum SeedOutcome { Seeded, Respected, Rewritten, Quarantined, RefusedInvalidDirective, RefusedUnwritable }
 
 /// <see cref="SeedResult.RefusalToken"/> is non-null exactly when Outcome is one of the
-/// Refused* arms — it is the coded reason the daemon writes to the boot-refusal marker (Task 12).
+/// Refused* arms — it is the coded reason the daemon writes to the boot-refusal marker.
 internal sealed record SeedResult(SeedOutcome Outcome, string? RefusalToken);
 
 /// Owns {stateDir}/consent.json. The running daemon is the SINGLE writer — the CLI and the
@@ -72,7 +72,7 @@ internal sealed partial class LaunchConsentStore {
             bool recognized;
             try {
                 doc = JsonSerializer.Deserialize(File.ReadAllText(_path), LaunchConsentJsonCtx.Default.PolicyDoc);
-                recognized = doc is not null && doc.Default is "allow" or "deny" or "prompt";
+                recognized = doc is not null && doc.Default is "allow" or "deny" or "prompt" && RulesStructurallyValid(doc.Rules);
             } catch (Exception ex) {
                 _log.LogWarning(ex, "Unreadable/malformed consent policy at {Path} during boot seed", _path);
                 doc = null;
@@ -107,6 +107,23 @@ internal sealed partial class LaunchConsentStore {
                 ? new SeedResult(SeedOutcome.Rewritten, null)
                 : new SeedResult(SeedOutcome.RefusedUnwritable, "consent_seed_unwritable");
         }
+    }
+
+    /// Structural validation for BootSeed's raw re-parse: a recognized `default` with a malformed
+    /// rules array (a null element, a bogus action, an unknown kind) must NOT count as Respected —
+    /// <see cref="ToPolicy"/> silently drops such a rule, so an allow-with-rules doc would land as
+    /// an effective zero-rule allow indistinguishable from the pre-consent factory default, never
+    /// having actually been reviewed. Absent Rules is valid (an empty policy).
+    static bool RulesStructurallyValid(List<RuleDoc>? rules) {
+        if (rules is null) return true;
+
+        foreach (var r in rules) {
+            if (r is null) return false;
+            if (r.Action is not ("allow" or "deny")) return false;
+            if (r.Kind is not null && !ValidKinds.Contains(r.Kind)) return false;
+        }
+
+        return true;
     }
 
     static PolicyDoc FreshSeedDoc() =>
