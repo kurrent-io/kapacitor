@@ -136,6 +136,77 @@ public class ProcessRunnerTests {
         }
     }
 
+    [Test]
+    public async Task ProcessOnly_timeout_kills_the_shell_but_spares_the_grandchild() {
+        Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
+
+        var runner = new DaemonClientService.ProcessRunner();
+        // Grandchild redirects its own stdio away from the inherited pipe, like a detached daemon.
+        var result = await runner.RunAsync(
+            "/bin/sh", ["-c", "sleep 30 >/dev/null 2>&1 & echo $!; wait"],
+            new RunOptions(Timeout: TimeSpan.FromMilliseconds(500), TimeoutKill: TimeoutKillScope.ProcessOnly),
+            CancellationToken.None);
+
+        await Assert.That(result.TimedOut).IsTrue();
+        var grandchildPid = int.Parse(result.Stdout.Trim());
+        try {
+            var grandchild = Process.GetProcessById(grandchildPid); // throws if already dead
+            await Assert.That(grandchild.HasExited).IsFalse();
+        } finally {
+            try { Process.GetProcessById(grandchildPid).Kill(); }
+            catch (ArgumentException) { /* already gone */ }
+        }
+    }
+
+    [Test]
+    public async Task Tree_timeout_kills_the_grandchild_too() {
+        Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
+
+        var runner = new DaemonClientService.ProcessRunner();
+        var result = await runner.RunAsync(
+            "/bin/sh", ["-c", "sleep 30 & echo $!; wait"],
+            new RunOptions(Timeout: TimeSpan.FromMilliseconds(500), TimeoutKill: TimeoutKillScope.Tree),
+            CancellationToken.None);
+
+        await Assert.That(result.TimedOut).IsTrue();
+        var grandchildPid = int.Parse(result.Stdout.Trim());
+        await WaitUntilAsync(() => !IsAlive(grandchildPid), TimeSpan.FromSeconds(5), "the grandchild to die with the tree");
+    }
+
+    [Test]
+    public async Task KillTree_cancellation_kills_the_tree_even_with_TimeoutKill_ProcessOnly() {
+        Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
+
+        var runner = new DaemonClientService.ProcessRunner();
+        using var cts = new CancellationTokenSource();
+        var startedMarker = Path.Combine(Path.GetTempPath(), $"kcap-processrunner-{Guid.NewGuid():N}");
+        int grandchildPid = -1;
+        try {
+            var runTask = runner.RunAsync(
+                "/bin/sh", ["-c", $"sleep 30 & echo $! > {startedMarker}; wait"],
+                new RunOptions(CancelMode: CancelMode.KillTree, TimeoutKill: TimeoutKillScope.ProcessOnly),
+                cts.Token);
+
+            await WaitUntilAsync(() => File.Exists(startedMarker), TimeSpan.FromSeconds(5), "the grandchild to start and record its PID");
+            grandchildPid = int.Parse((await File.ReadAllTextAsync(startedMarker)).Trim());
+            cts.Cancel();
+
+            await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+            await WaitUntilAsync(() => !IsAlive(grandchildPid), TimeSpan.FromSeconds(5), "the grandchild to die with the caller-cancelled tree");
+        } finally {
+            File.Delete(startedMarker);
+            if (grandchildPid > 0) {
+                try { Process.GetProcessById(grandchildPid).Kill(); }
+                catch (ArgumentException) { /* already gone */ }
+            }
+        }
+    }
+
+    static bool IsAlive(int pid) {
+        try { return !Process.GetProcessById(pid).HasExited; }
+        catch (ArgumentException) { return false; }
+    }
+
     static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null, string what = "condition") {
         var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
         while (!condition()) {

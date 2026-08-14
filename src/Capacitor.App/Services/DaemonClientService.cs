@@ -218,7 +218,7 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
                 }
 
                 // Only the internal timeout could have fired the linked token.
-                await KillAndAwaitAsync(process).ConfigureAwait(false);
+                await KillAndAwaitAsync(process, options.TimeoutKill == TimeoutKillScope.Tree).ConfigureAwait(false);
                 await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
                 return new ProcessResult(process.ExitCode, stdoutTask.Result, stderrTask.Result, TimedOut: true);
             }
@@ -227,8 +227,8 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
             return new ProcessResult(process.ExitCode, stdoutTask.Result, stderrTask.Result, TimedOut: false);
         }
 
-        static async Task KillAndAwaitAsync(Process process) {
-            try { process.Kill(entireProcessTree: true); }
+        static async Task KillAndAwaitAsync(Process process, bool entireProcessTree = true) {
+            try { process.Kill(entireProcessTree); }
             catch (InvalidOperationException) { /* already exited */ }
             await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
         }
