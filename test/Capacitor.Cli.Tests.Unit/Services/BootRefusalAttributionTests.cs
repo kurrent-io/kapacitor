@@ -42,6 +42,30 @@ public class BootRefusalAttributionTests {
         await Assert.That(ServiceVerify.Attributable(e, "d1", "https://s", new HashSet<int> { 4242 })).IsFalse();
     }
 
+    [Test]
+    public async Task Trailing_slash_difference_still_attributes() {
+        var e = new BootRefusalEvidence("d1", "server_expectation_mismatch", "https://s", "https://t", 4242, "i", null);
+        await Assert.That(ServiceVerify.Attributable(e, "d1", "https://s/", new HashSet<int> { 4242 })).IsTrue();
+    }
+
+    [Test]
+    public async Task Case_only_difference_still_attributes() {
+        var e = new BootRefusalEvidence("d1", "server_expectation_mismatch", "https://S.Example", "https://t", 4242, "i", null);
+        await Assert.That(ServiceVerify.Attributable(e, "d1", "https://s.example", new HashSet<int> { 4242 })).IsTrue();
+    }
+
+    [Test]
+    public async Task Null_versus_empty_expectation_still_attributes() {
+        var e = new BootRefusalEvidence("d1", "consent_seed_unwritable", null, "https://t", 4242, "i", null);
+        await Assert.That(ServiceVerify.Attributable(e, "d1", "", new HashSet<int> { 4242 })).IsTrue();
+    }
+
+    [Test]
+    public async Task Genuinely_different_expectation_never_attributes() {
+        var e = new BootRefusalEvidence("d1", "server_expectation_mismatch", "https://s", "https://t", 4242, "i", null);
+        await Assert.That(ServiceVerify.Attributable(e, "d1", "https://other.example", new HashSet<int> { 4242 })).IsFalse();
+    }
+
     // ── FakeServiceManager-driven: end-to-end pre-clear + collection + attribution ──
 
     sealed class FakeServiceManager : IVerifyServiceManager {

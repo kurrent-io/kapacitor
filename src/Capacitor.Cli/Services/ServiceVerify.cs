@@ -238,7 +238,17 @@ sealed class ServiceVerify(
             // foreign writer, a swapped binary) must not ride the gate's earlier pass into a start.
             if (pre.Probe == LabelProbe.Loaded) {
                 manager.Stop(serviceId, Remaining(deadline), out var bootOutError);
-                if (bootOutError is not null) Say($"stop: {bootOutError}");
+                if (bootOutError is not null) {
+                    // An unconfirmed bootout must never fall through to the ungated Start()
+                    // below — that would kickstart launchd's still-loaded, possibly stale
+                    // definition, exactly the path this gate exists to prevent. Reuse the
+                    // existing bootout-unknown contract (22): Rollback re-attempts the bootout
+                    // with its own verification, landing in RestoreVerification if that also fails.
+                    Say($"stop: {bootOutError}");
+                    ServiceTxnMarker.Write(serviceId,
+                        new TxnMarker(1, "start", "gate-bootout-failed", DescribeQuery(pre), "unloaded-plist-retained", null));
+                    return await Rollback(serviceId, VerifyExit.BootoutUnknown, VerifyExit.BootoutUnknownToken);
+                }
             }
 
             var plistPath      = LaunchdUnit.PlistPath(serviceId);
@@ -352,8 +362,18 @@ sealed class ServiceVerify(
     internal static bool Attributable(BootRefusalEvidence evidence, string daemonName, string? unitExpectation, IReadOnlySet<int> observedJobPids) =>
         evidence.DaemonName == daemonName
         && evidence.AttemptId is null
-        && evidence.Expectation == unitExpectation
+        && ExpectationsAgree(evidence.Expectation, unitExpectation)
         && observedJobPids.Contains(evidence.Pid);
+
+    /// <summary>Mirrors the daemon's own <c>ExpectationSatisfied</c>: null/empty on both sides is
+    /// agreement (no expectation configured on either side), otherwise the two URLs must agree once
+    /// normalized (<see cref="AppConfig.NormalizeUrl"/>, case-insensitively) — a raw string compare
+    /// would let a trailing-slash or case difference alone kill attribution.</summary>
+    static bool ExpectationsAgree(string? a, string? b) {
+        if (string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b)) return true;
+        if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+        return string.Equals(AppConfig.NormalizeUrl(a), AppConfig.NormalizeUrl(b), StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// The pure decision core of the gated start path. Given the environment
@@ -387,8 +407,8 @@ sealed class ServiceVerify(
             if (unitBinaryPath is null) return StartGateReason.EvidenceUnreadable;
 
             if (!matches(unitBinaryPath)) {
-                var samePath = installBinaryPath is not null && string.Equals(
-                    Path.GetFullPath(unitBinaryPath), Path.GetFullPath(installBinaryPath), StringComparison.OrdinalIgnoreCase);
+                var comparison = OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+                var samePath = installBinaryPath is not null && SameBinaryPath(unitBinaryPath, installBinaryPath, comparison);
                 return samePath ? StartGateReason.PackageInconsistent : StartGateReason.ForeignBinary;
             }
         } catch {
@@ -401,6 +421,17 @@ sealed class ServiceVerify(
             return StartGateReason.EvidenceUnreadable;
         }
     }
+
+    /// <summary>Whether the unit's baked binary path and this install's own resolved binary path
+    /// name the same file — the split between <see cref="StartGateReason.PackageInconsistent"/>
+    /// (this install's own binary, just stale/broken) and <see cref="StartGateReason.ForeignBinary"/>
+    /// (a different path entirely). Takes the comparison explicitly (rather than deciding OS-ness
+    /// itself) so both branches are directly unit-testable: callers pass
+    /// <see cref="StringComparison.Ordinal"/> on Linux's case-sensitive filesystems and
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/> elsewhere (macOS/Windows default to
+    /// case-insensitive), so distinct paths on a case-sensitive filesystem never compare equal.</summary>
+    internal static bool SameBinaryPath(string unitBinaryPath, string installBinaryPath, StringComparison comparison) =>
+        string.Equals(Path.GetFullPath(unitBinaryPath), Path.GetFullPath(installBinaryPath), comparison);
 
     /// <summary>
     /// Identity half of <see cref="EvaluateStartGate"/>, split out so its own try/catch stays small.

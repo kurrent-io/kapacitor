@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
@@ -71,9 +72,9 @@ public class ServiceStatusJsonTests {
         var (json, _) = ServiceStatusRender.Render(q, "default", "/i/kcap-daemon", 42, false, false);
         using var doc = JsonDocument.Parse(json!);
         var r = doc.RootElement;
-        await Assert.That(r.GetProperty("unit_profile").ValueKind).IsEqualTo(JsonValueKind.Null);
-        await Assert.That(r.GetProperty("unit_server_url").ValueKind).IsEqualTo(JsonValueKind.Null);
-        await Assert.That(r.GetProperty("unit_expected_server").ValueKind).IsEqualTo(JsonValueKind.Null);
-        await Assert.That(r.GetProperty("unit_consent_seed").ValueKind).IsEqualTo(JsonValueKind.Null);
+        await Assert.That(r.GetProperty("unit_profile").IsNull).IsTrue();
+        await Assert.That(r.GetProperty("unit_server_url").IsNull).IsTrue();
+        await Assert.That(r.GetProperty("unit_expected_server").IsNull).IsTrue();
+        await Assert.That(r.GetProperty("unit_consent_seed").IsNull).IsTrue();
     }
 }

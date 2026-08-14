@@ -17,6 +17,11 @@ public class ServiceVerifyStartTests {
         public bool Started, Stopped, RemainsLoadedAfterStop, ProbeUnknownAfterStop;
         public int? RunningPid = 4242;
         public string? StopError;
+
+        /// <summary>When set, <see cref="StopError"/> is reported on only the FIRST <see cref="Stop"/>
+        /// call and cleared thereafter — for scripting a bootout that fails once (e.g. a foreign
+        /// writer momentarily holding the label) but succeeds on Rollback's own re-attempt.</summary>
+        public bool StopErrorOnceOnly;
         public Action<string>? OnStart;
         public Action<string>? OnStop;
 
@@ -66,7 +71,8 @@ public class ServiceVerifyStartTests {
             OnStop?.Invoke(serviceId);
             Stopped = true;
             error = StopError;
-            return StopError is null;
+            if (StopErrorOnceOnly) StopError = null;
+            return error is null;
         }
     }
 
@@ -530,6 +536,47 @@ public class ServiceVerifyStartTests {
             await Assert.That(stopPhases.Count).IsEqualTo(2);
             await Assert.That(stopPhases[0]).IsEqualTo("captured");
             await Assert.That(stopPhases[1]).IsEqualTo("gate-drift");
+            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
+        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+    }
+
+    [Test]
+    public async Task Phase_b_bootout_failure_never_kickstarts_the_stale_loaded_definition() {
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        try {
+            // Loaded at the fresh query, and the FIRST Stop (Phase B's boot-out) reports an error —
+            // a foreign writer or a launchd hiccup. The gate must never fall through to the ungated
+            // Start() below on an unconfirmed bootout: that would kickstart launchd's still-loaded,
+            // possibly stale definition — exactly the path this gate exists to prevent. Rollback's
+            // own re-attempt (the second Stop) succeeds, confirming the restore.
+            var manager = new FakeServiceManager {
+                Started = true,
+                StopError = "launchctl bootout: 5: Input/output error",
+                StopErrorOnceOnly = true,
+            };
+            var stopPhases = new List<string?>();
+            manager.OnStop = id => stopPhases.Add(ServiceTxnMarker.Read(id)?.Phase);
+
+            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
+                readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt"),
+                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+                digestMatches: _ => true);
+
+            var exit = await sut.StartVerifiedAsync(Id);
+
+            await Assert.That(exit).IsEqualTo(VerifyExit.BootoutUnknown);
+            await Assert.That(manager.StartCalls).IsEqualTo(0);
+            await Assert.That(manager.Calls.Contains("start")).IsFalse();
+            // The failed boot-out ran under "captured"; the marker written right before Rollback
+            // (which re-attempts the bootout, this time successfully) is "gate-bootout-failed" —
+            // proving the marker landed BEFORE Rollback fired, not just that the exit code is 22.
+            await Assert.That(stopPhases.Count).IsEqualTo(2);
+            await Assert.That(stopPhases[0]).IsEqualTo("captured");
+            await Assert.That(stopPhases[1]).IsEqualTo("gate-bootout-failed");
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
     }

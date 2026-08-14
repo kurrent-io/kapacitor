@@ -42,6 +42,26 @@ public class ServiceVerifyStartGateTests {
         await Assert.That(other).IsEqualTo(StartGateReason.ForeignBinary);
     }
 
+    // ── SameBinaryPath: OS-aware comparison split out of the digest-mismatch branch above ──
+
+    [Test]
+    public async Task Ordinal_comparison_treats_case_only_difference_as_a_different_path() {
+        var r = ServiceVerify.SameBinaryPath("/opt/kcap/kcap-daemon", "/opt/kcap/KCAP-DAEMON", StringComparison.Ordinal);
+        await Assert.That(r).IsFalse();
+    }
+
+    [Test]
+    public async Task OrdinalIgnoreCase_comparison_treats_case_only_difference_as_the_same_path() {
+        var r = ServiceVerify.SameBinaryPath("/opt/kcap/kcap-daemon", "/opt/kcap/KCAP-DAEMON", StringComparison.OrdinalIgnoreCase);
+        await Assert.That(r).IsTrue();
+    }
+
+    [Test]
+    public async Task Both_comparisons_agree_a_genuinely_different_path_is_different() {
+        await Assert.That(ServiceVerify.SameBinaryPath("/opt/kcap/kcap-daemon", "/somewhere/else/kcap-daemon", StringComparison.Ordinal)).IsFalse();
+        await Assert.That(ServiceVerify.SameBinaryPath("/opt/kcap/kcap-daemon", "/somewhere/else/kcap-daemon", StringComparison.OrdinalIgnoreCase)).IsFalse();
+    }
+
     [Test]
     public async Task Stale_unit_expectation_is_identity_mismatch() {
         var unit = new Dictionary<string, string> {
