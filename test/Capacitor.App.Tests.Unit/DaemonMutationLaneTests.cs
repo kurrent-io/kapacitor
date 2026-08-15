@@ -245,6 +245,45 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
+    // Qodo: a cached negative must not refuse forever — installing a compatible CLI must let the
+    // very next action recover without an app restart, so a null cached probe gets exactly one
+    // forced re-probe before the lane gives up.
+    [Test]
+    public async Task Cached_negative_probe_recovers_via_one_forced_refresh_before_refusing() {
+        var cli = new FakeKcapCli();
+        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
+        var probe = new FakeLoginShellProbe {
+            KcapPathBehavior = _ => Task.FromResult<string?>(null), // cached negative
+            KcapPathFreshBehavior = _ => Task.FromResult<string?>("/opt/kcap/bin/kcap"), // just installed
+        };
+        var lane = MakeLane(factory, cliOverride: () => null, shellProbe: probe, classify: CannedSucceeded);
+
+        var outcome = await lane.RunAsync(Req(), CancellationToken.None);
+
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
+        await Assert.That(factory.Calls.Count).IsEqualTo(1);
+        await Assert.That(factory.Calls[0].PinnedPath).IsEqualTo("/opt/kcap/bin/kcap");
+        await Assert.That(probe.KcapPathForceRefreshCalls).IsEquivalentTo([false, true]);
+
+        await lane.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Still_null_after_the_forced_refresh_still_refuses_cli_not_found() {
+        var factory = new RecordingExecutorFactory();
+        var channel = new OutcomeChannel();
+        var probe = new FakeLoginShellProbe { KcapPathBehavior = _ => Task.FromResult<string?>(null) }; // both cached and refreshed answer null
+        var lane = MakeLane(factory, channel: channel, cliOverride: () => null, shellProbe: probe);
+
+        var outcome = await lane.RunAsync(Req(), CancellationToken.None);
+
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.Refused("cli_not_found", RecoverySurface.Attention));
+        await Assert.That(factory.Calls.Count).IsEqualTo(0);
+        await Assert.That(probe.KcapPathForceRefreshCalls).IsEquivalentTo([false, true]);
+
+        await lane.DisposeAsync();
+    }
+
     [Test]
     public async Task Below_floor_version_refuses_without_a_mutation_call() {
         var cli = new FakeKcapCli { VersionBehavior = _ => Task.FromResult<string?>("0.1.0") };
@@ -600,6 +639,34 @@ public class DaemonMutationLaneTests {
 
         await Assert.That(factory.Calls.Count).IsEqualTo(1); // B's executor factory never invoked — no successor started
         await Assert.That(cliA.StartVerifiedCallCount).IsEqualTo(0); // A never actually dispatched either
+
+        await lane.DisposeAsync(); // idempotent
+    }
+
+    // Qodo Low: the drain cancels queued waiters BEFORE _lifetime.Cancel() runs (a reviewed
+    // ordering — the drain-under-_gate-first structure stays), so it must not claim the lifetime
+    // token's identity on a task that's cancelled ahead of that token actually being cancelled.
+    [Test]
+    public async Task Dispose_drain_cancellation_does_not_claim_the_lifetime_tokens_identity() {
+        var requestA = Req(daemonName: "daemon-a");
+        var requestB = Req(daemonName: "daemon-b");
+        var gateA = new TaskCompletionSource<string?>();
+        var cliA = new FakeKcapCli { VersionBehavior = _ => gateA.Task };
+        var cliB = new FakeKcapCli();
+        var factory = new RecordingExecutorFactory { Behavior = (req, _) => req.DaemonName == "daemon-a" ? cliA : cliB };
+        var lane = MakeLane(factory);
+
+        var tA = lane.RunAsync(requestA, CancellationToken.None);
+        var tB = lane.RunAsync(requestB, CancellationToken.None); // queues behind A
+
+        var disposeTask = lane.DisposeAsync().AsTask(); // drains B's queued slot synchronously, before _lifetime.Cancel()
+
+        var ex = await Assert.ThrowsAsync<OperationCanceledException>(() => tB);
+        await Assert.That(ex.CancellationToken).IsEqualTo(CancellationToken.None);
+
+        gateA.SetResult("9.9.9");
+        await Assert.ThrowsAsync<OperationCanceledException>(() => tA);
+        await disposeTask.WaitAsync(Bounded);
 
         await lane.DisposeAsync(); // idempotent
     }

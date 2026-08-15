@@ -208,6 +208,25 @@ public class ConsentFlipClaimsTests {
         }
     }
 
+    // Codex P2: a future-version file (even with a valid-looking claims array) must be quarantined,
+    // never applied under v1 semantics or rewritten as v1.
+    [Test]
+    public async Task Future_version_file_is_quarantined_even_with_valid_looking_claims() {
+        var (claimsPath, configPath) = TempPaths();
+        var futureVersion = """{"version":2,"claims":[{"profile":"default","server":"https://example.test:443"}]}""";
+        File.WriteAllText(claimsPath, futureVersion);
+
+        var store = new ConsentFlipClaims(claimsPath, configPath);
+        var pending = store.Pending();
+
+        await Assert.That(pending).IsEmpty();
+        var quarantine = store.Quarantine();
+        await Assert.That(quarantine).IsNotNull();
+        await Assert.That(File.Exists(quarantine!.PreservedPath)).IsTrue();
+        await Assert.That(File.ReadAllText(quarantine.PreservedPath)).IsEqualTo(futureVersion);
+        await Assert.That(File.Exists(claimsPath)).IsFalse();
+    }
+
     [Test]
     public async Task Default_constructs_without_touching_the_filesystem() {
         // Construction only — Default() targets the real user config dir, so arming it would be non-hermetic.

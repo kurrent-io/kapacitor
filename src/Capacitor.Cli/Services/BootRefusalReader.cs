@@ -27,14 +27,18 @@ public static partial class BootRefusalReader {
         Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(daemonName), "boot-refusal.json");
 
     /// <summary>Absent or corrupt → null. Unlike the daemon's own reader, a corrupt marker is LEFT IN
-    /// PLACE — the CLI has no ownership authority to quarantine/rename a file the daemon writes.</summary>
+    /// PLACE — the CLI has no ownership authority to quarantine/rename a file the daemon writes.
+    /// Reads via a share-all FileStream (never File.ReadAllText) — the daemon owns this file and may
+    /// concurrently rename/rewrite it; a write-denying open would stall that on Windows.</summary>
     public static BootRefusalEvidence? TryRead(string daemonName) {
         var path = MarkerPath(daemonName);
-        if (!File.Exists(path)) return null;
 
         try {
-            return JsonSerializer.Deserialize(File.ReadAllText(path), BootRefusalJsonCtx.Default.BootRefusalEvidence);
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+            return JsonSerializer.Deserialize(reader.ReadToEnd(), BootRefusalJsonCtx.Default.BootRefusalEvidence);
         } catch {
+            // Missing (FileNotFoundException) or corrupt — both answer null, left in place.
             return null;
         }
     }

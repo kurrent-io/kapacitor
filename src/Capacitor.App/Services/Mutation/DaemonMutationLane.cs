@@ -93,8 +93,10 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
 
             // Cancel every queued waiter up front: shutdown is not an actionable outcome (nothing
             // enqueued to the channel), and draining now means the owned action's own finish has
-            // nothing left to admit once it completes.
-            foreach (var queued in _queue) queued.Completion.TrySetCanceled(_lifetime.Token);
+            // nothing left to admit once it completes. Parameterless TrySetCanceled — _lifetime.Cancel()
+            // hasn't run yet at this point, so claiming _lifetime.Token here would let a waiter observe
+            // a cancelled task whose token isn't actually cancelled yet.
+            foreach (var queued in _queue) queued.Completion.TrySetCanceled();
             _queue.Clear();
         }
 
@@ -221,6 +223,9 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         ct.ThrowIfCancellationRequested(); // a disposed lane's cancelled token must stop admission before any spawn
 
         var pinnedPath = _cliOverride() ?? await _shellProbe.KcapPathAsync(ct, forceRefresh: false).ConfigureAwait(false);
+        // A cached negative must not refuse forever: one forced re-probe lets a CLI installed after
+        // the cache went negative recover on the very next action, instead of requiring an app restart.
+        pinnedPath ??= await _shellProbe.KcapPathAsync(ct, forceRefresh: true).ConfigureAwait(false);
         if (pinnedPath is null) return new MutationOutcome.Refused("cli_not_found", RecoverySurface.Attention);
 
         var executor = _executorFactory(request, pinnedPath); // built ONCE; the same instance runs the probe and the mutation

@@ -15,13 +15,17 @@ public static partial class BootRefusalMarker {
         Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(daemonName), "boot-refusal.json");
 
     /// Absent or corrupt → null, left in place — the app has no ownership authority over a marker the daemon writes.
+    /// Reads via a share-all FileStream (never File.ReadAllText) — the daemon owns this file and may
+    /// concurrently rename/rewrite it; a write-denying open would stall that on Windows.
     public static BootRefusalEvidence? TryRead(string daemonName) {
         var path = MarkerPath(daemonName);
-        if (!File.Exists(path)) return null;
 
         try {
-            return JsonSerializer.Deserialize(File.ReadAllText(path), BootRefusalJsonCtx.Default.BootRefusalEvidence);
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+            return JsonSerializer.Deserialize(reader.ReadToEnd(), BootRefusalJsonCtx.Default.BootRefusalEvidence);
         } catch {
+            // Missing (FileNotFoundException) or corrupt — both answer null, left in place.
             return null;
         }
     }

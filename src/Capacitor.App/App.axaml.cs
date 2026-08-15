@@ -115,15 +115,25 @@ public partial class App : Application {
                 TimeProvider.System);
             _lane = lane;
 
-            var gate = await EvaluateGateSafelyAsync(OnboardingGate.EvaluateAsync, _shutdown.Token);
-            // Plan C replaces the Incomplete outcome below with wizard-first startup (spec decision 2).
-            var autoActionsPermanentlyClosed = AutoActionsPermanentlyClosed(gate);
-
             var service = await DaemonClientService.CreateDefaultAsync(lane.RunAsync);
             // The live adapter answers a mutation's own confirmation with zero extra socket cost
             // whenever the request targets THIS service's daemon/server — LiveGraphObservation
             // itself falls back to null (one-shot) for any other target.
             lane.SetLiveAdapter(new LiveGraphObservation(service));
+
+            // Shares CreateDefaultAsync's own AppConfig.ResolveActiveProfile resolution (Codex P1
+            // review): a second, independent self-resolving gate call could observe a different
+            // active profile than the graph above if it changed concurrently between the two
+            // resolves — evaluating Complete for profile A while the graph builds for
+            // unauthenticated profile B with auto-actions open. EvaluateResolvedAsync skips its
+            // own resolution and reads the SAME AppConfig.ResolvedProfile CreateDefaultAsync just
+            // set, so the verdict and the graph identity can never diverge.
+            var resolvedProfile = AppConfig.ResolvedProfile;
+            var gate = await EvaluateGateSafelyAsync(
+                ct => OnboardingGate.EvaluateResolvedAsync(resolvedProfile?.ProfileName, resolvedProfile?.Profile, ct),
+                _shutdown.Token);
+            // Plan C replaces the Incomplete outcome below with wizard-first startup (spec decision 2).
+            var autoActionsPermanentlyClosed = AutoActionsPermanentlyClosed(gate);
 
             // One LocalControlOps and one AppNotifier for the whole app: the tray menu and the
             // window rows share a single stop/open-in-web code path (spec §7) and a single

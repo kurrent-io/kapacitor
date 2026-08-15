@@ -1433,5 +1433,10 @@ sealed class FakeLoginShellProbe : ILoginShellProbe {
     }
 
     public Func<CancellationToken, Task<string?>> KcapPathBehavior = _ => Task.FromResult<string?>(null);
-    public Task<string?> KcapPathAsync(CancellationToken ct, bool forceRefresh = false) => KcapPathBehavior(ct);
+    public Func<CancellationToken, Task<string?>>? KcapPathFreshBehavior;
+    public readonly List<bool> KcapPathForceRefreshCalls = [];
+    public Task<string?> KcapPathAsync(CancellationToken ct, bool forceRefresh = false) {
+        KcapPathForceRefreshCalls.Add(forceRefresh);
+        return forceRefresh ? (KcapPathFreshBehavior ?? KcapPathBehavior)(ct) : KcapPathBehavior(ct);
+    }
 }

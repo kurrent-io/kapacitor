@@ -34,8 +34,15 @@ public static class OnboardingGate {
         // Daemon-style resolution — no repo/git discovery, matching decision 1's "local" scope.
         await AppConfig.ResolveActiveProfile([]);
         var resolved = AppConfig.ResolvedProfile;
+        return await EvaluateResolvedAsync(resolved?.ProfileName, resolved?.Profile, ct);
+    }
 
-        if (resolved is not { Profile: { } profile, ProfileName: { Length: > 0 } profileName }) {
+    /// Shares a resolution the CALLER already performed (App.StartAsync: DaemonClientService.
+    /// CreateDefaultAsync's own AppConfig.ResolveActiveProfile) instead of resolving a second
+    /// time — two independent resolves racing a concurrent active-profile change could otherwise
+    /// evaluate the gate against a different profile than the one the daemon graph builds for.
+    public static async Task<GateResult> EvaluateResolvedAsync(string? profileName, Profile? profile, CancellationToken ct) {
+        if (profile is null || string.IsNullOrEmpty(profileName)) {
             return new GateResult.Incomplete(GateReason.NoProfile);
         }
 

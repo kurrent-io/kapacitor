@@ -285,6 +285,28 @@ public class OnboardingGateTests {
         await Assert.That(result).IsTypeOf<GateResult.Complete>();
     }
 
+    // ── EvaluateResolvedAsync: the shared-resolution seam (Codex P1) ────────
+
+    // App.StartAsync now resolves ONCE (via DaemonClientService.CreateDefaultAsync) and hands that
+    // SAME identity to EvaluateResolvedAsync — proving it never re-resolves is what rules out the
+    // race the P1 finding described: a concurrent active-profile change between two independent
+    // resolves evaluating the gate against a different profile than the one the daemon graph built.
+    [Test]
+    public async Task EvaluateResolvedAsync_never_re_resolves_ignoring_a_config_change_after_capture() {
+        WriteConfig(SingleProfileConfig(
+            new Profile { ServerUrl = ServerUrl, AuthProvider = new AuthProviderStamp(AuthProvider.None, ServerUrl) }));
+        await AppConfig.ResolveActiveProfile([]);
+        var resolved = AppConfig.ResolvedProfile;
+
+        // Mutates the identity underneath the already-captured resolution — a fresh self-resolving
+        // EvaluateAsync call at this point would see NoProfile instead.
+        WriteConfig(new ProfileConfig { ActiveProfile = "ghost", Profiles = new() });
+
+        var result = await OnboardingGate.EvaluateResolvedAsync(resolved?.ProfileName, resolved?.Profile, CancellationToken.None);
+
+        await Assert.That(result).IsTypeOf<GateResult.Complete>();
+    }
+
     static async Task AssertIncomplete(GateResult result, GateReason expected) {
         await Assert.That(result).IsTypeOf<GateResult.Incomplete>();
         await Assert.That(((GateResult.Incomplete)result).Reason).IsEqualTo(expected);

@@ -69,7 +69,8 @@ public sealed partial class ConsentFlipClaims(string path, string? configPath = 
             parsed = JsonSerializer.Deserialize(File.ReadAllText(path), ConsentFlipClaimsJsonCtx.Default.ClaimsFile);
         } catch { /* fall through to quarantine */ }
 
-        if (parsed?.Claims is not null) return parsed;
+        // Version gate: a future-version file must never be applied under v1 semantics/rewritten as v1.
+        if (parsed is { Version: 1, Claims: not null }) return parsed;
 
         try { _quarantine = new QuarantineState(QuarantineLocked()); }
         catch { /* quarantining itself failing must not wedge the read */ }
