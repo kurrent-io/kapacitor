@@ -358,6 +358,7 @@ dotnet_diagnostic.ca1001.severity = suggestion ; Types that own disposable field
 dotnet_diagnostic.ca1707.severity = none       ; Identifiers should not contain underscores
 dotnet_diagnostic.ca1816.severity = none       ; Dispose methods should call SuppressFinalize
 dotnet_diagnostic.ca1861.severity = none       ; Avoid constant arrays as arguments
+dotnet_diagnostic.cs8602.severity = suggestion ; Dereference of a possibly null reference
 
 ; =============================================================================
 ; Native PTY shim
