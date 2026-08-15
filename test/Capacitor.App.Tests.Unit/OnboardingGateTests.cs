@@ -93,6 +93,20 @@ public class OnboardingGateTests {
     }
 
     [Test]
+    public async Task Corrupt_config_json_lands_on_InvalidServerUrl_not_a_crash() {
+        // AppConfig.LoadProfileConfig catches JsonException and synthesizes a default profile
+        // (ServerUrl: null) rather than throwing — the gate must ride that degrade to
+        // InvalidServerUrl, not crash or misreport NoProfile (a "default" profile DOES resolve,
+        // it's just unconfigured).
+        Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
+        await File.WriteAllTextAsync(ConfigPath, "{not valid json");
+
+        var result = await OnboardingGate.EvaluateAsync(CancellationToken.None);
+
+        await AssertIncomplete(result, GateReason.InvalidServerUrl);
+    }
+
+    [Test]
     public async Task Invalid_server_url_rejects_file_scheme_and_App_ValidProfileName_agrees() {
         const string fileUrl = "file:///tmp/x";
         var profile = new Profile { ServerUrl = fileUrl };
@@ -221,6 +235,22 @@ public class OnboardingGateTests {
         var result = await OnboardingGate.EvaluateAsync(CancellationToken.None);
 
         await AssertIncomplete(result, GateReason.NoToken);
+    }
+
+    [Test]
+    public async Task Non_none_stamp_does_not_short_circuit_token_rules() {
+        // Only a "none" stamp bypasses the token read (see None_stamp_matching_current_server_is_
+        // Complete_without_any_token_file). A "workos" stamp — even matching the current server —
+        // must still go through the normal expiry/refresh rules: an expired WorkOS token with no
+        // RefreshToken/ClientId is TokenUnusableExpired, stamp or no stamp.
+        var profile = new Profile { ServerUrl = ServerUrl, AuthProvider = new AuthProviderStamp("workos", ServerUrl) };
+        WriteConfig(SingleProfileConfig(profile));
+        await TokenStore.SaveAsync(ProfileName, MakeToken(
+            AuthProvider.WorkOS, expired: true, serverUrl: ServerUrl, refreshToken: null, clientId: null));
+
+        var result = await OnboardingGate.EvaluateAsync(CancellationToken.None);
+
+        await AssertIncomplete(result, GateReason.TokenUnusableExpired);
     }
 
     [Test]

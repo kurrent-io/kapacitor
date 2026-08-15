@@ -11,9 +11,12 @@ public abstract record GateResult {
 public enum GateReason { NoProfile, InvalidServerUrl, NoToken, TokenUnusableBinding, TokenUnusableExpired }
 
 /// <summary>
-/// Decision-1 first-run trigger: local, side-effect-free, no refresh. Whether the wizard opens
-/// is the exact inverse of "does TokenStore already consider this profile authenticated" — so
-/// every branch here mirrors a specific TokenStore rule rather than inventing its own.
+/// Decision-1 first-run trigger: local, side-effect-free except the shared resolution path's own
+/// v1→v2 migration write on legacy configs (kept intentionally shared with the normal daemon
+/// graph — decision 2 — rather than a purity-motivated divergent read that could resolve a
+/// different profile than the graph builds), no refresh. Whether the wizard opens is the exact
+/// inverse of "does TokenStore already consider this profile authenticated" — so every branch
+/// here mirrors a specific TokenStore rule rather than inventing its own.
 /// </summary>
 public static class OnboardingGate {
     /// <summary>
