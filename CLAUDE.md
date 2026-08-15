@@ -76,6 +76,22 @@ subscriber-arrival waiter in the broker (one shared `TaskCompletionSource` per z
 period) lets concurrent waiters converge with arrival winning ties. Cancellation (the launch's own
 shutdown token) aborts the wait and the launch together — no consent decision is ever fabricated.
 
+**AI-1655 Plan B** (spec: `docs/superpowers/specs/2026-08-12-ai1655-onboarding-wizard-design.md` §4/§6)
+is the desktop app's mutation-safety substrate. Every daemon mutation the app performs routes through
+ONE app-lifetime `DaemonMutationLane` (`Capacitor.App/Services/Mutation/`): per-action CLI pinning
+(validated login-shell resolver, strict `0.12.0-beta.1` floor probe per mutation), an action-scoped
+`KcapCli` executor overlaying `KCAP_CONSENT_SEED_DEFAULT`/`KCAP_EXPECT_SERVER_URL`/
+`KCAP_APP_SPAWN_NO_TELEMETRY`/`KCAP_BOOT_ATTEMPT`, instance-bound evidence classification (one
+shared predicate; misclassification-toward-success is the cardinal sin), boot-refusal-marker
+attribution by attempt id, and a leased FIFO outcome channel whose single consumer owns ALL
+actionable presentation (waiter results are state-only; requeue-exactly-once, second abandonment =
+logged consume). `ConsentFlipClaims` (durable, `ConfigFileLock`-mutated, two-lock conditional clear,
+quarantine-aside) + `ConsentFlipCoordinator` (factory guard → `ConsentRulesPutV2`) cover
+pre-existing daemons. `OnboardingGate` (provider-aware, mirrors `TokenStore`'s real refresh rules,
+shared URL validator with `App.ValidProfileName`) drives the decision-2 startup carve-out:
+gate-incomplete machines build the graph with lifecycle auto-actions permanently closed and the
+shim auto-offer suppressed (item stays visible). Wizard UI + the Core auth façade are Plan C.
+
 The receive pump no longer awaits launch/stop EXECUTION for either command format: arrival order is
 preserved by routing sequenced AND un-sequenced server-origin launch/stop traffic through the ONE
 existing serial lane (`RunLaneAsync`). Un-sequenced commands commit via a typed, no-ack entry point
