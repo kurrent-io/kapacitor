@@ -265,10 +265,9 @@ public partial class App : Application {
                 Console.Error.WriteLine($"kcap app failed to dispose the daemon lifecycle controller during startup-failure cleanup: {disposeEx}");
             }
         }
-        // Unset BEFORE disposing service: a mutation still draining out of the lane (its own
-        // disposal is last, below) must never dial into a service whose Status/Snapshots Subjects
-        // are about to be disposed — PinObservationAsync falls back to the one-shot adapter once
-        // this is null.
+        // Unset BEFORE disposing service: an action starting after this pins a plain one-shot;
+        // an in-flight action keeps its pinned composite, whose live leg reading a disposed
+        // subject lands in DeliverFaulted rather than hanging.
         lane?.SetLiveAdapter(null);
         if (service is not null) {
             shutdown.Cancel();

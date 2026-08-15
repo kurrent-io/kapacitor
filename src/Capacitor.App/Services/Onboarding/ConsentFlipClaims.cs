@@ -43,6 +43,7 @@ public sealed partial class ConsentFlipClaims(string path, string? configPath = 
             ConsentFlipClaim claim,
             Func<(string Profile, string Server, string DaemonName)> reResolveUnderConfigLock,
             string expectedDaemonName) {
+        claim = claim with { CanonicalServer = ServerIdentity.Canonicalize(claim.CanonicalServer) ?? claim.CanonicalServer };
         using var configLock = ConfigFileLock.Acquire(_configPath);
         var resolved = reResolveUnderConfigLock();
         if (resolved.Profile != claim.Profile || resolved.Server != claim.CanonicalServer || resolved.DaemonName != expectedDaemonName)
