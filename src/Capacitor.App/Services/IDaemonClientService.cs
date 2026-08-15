@@ -24,9 +24,4 @@ public interface IDaemonClientService {
     Task<StartDaemonResult> StartDaemonAsync(CancellationToken ct);
 
     string DaemonName { get; }
-
-    /// The profile CreateDefaultAsync resolved this client against, or null when none resolved —
-    /// spec §4's live-adapter identity gate (daemon name AND profile/server) needs this to tell a
-    /// same-named daemon under a DIFFERENT profile from the one this client actually attaches to.
-    string? ProfileName { get; }
 }

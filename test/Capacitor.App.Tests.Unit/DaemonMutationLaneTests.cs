@@ -1,7 +1,6 @@
 using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.LocalIpc;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.App.Tests.Unit;
@@ -388,22 +387,29 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
+    // P1 (round 3): the live-observation path is gone — classification evidence is always a fresh
+    // one-shot probe. This pins the ONLY remaining source: the factory runs exactly once per
+    // action, with the action's own request identity, and its result is what Classify sees.
     [Test]
-    public async Task Observation_strategy_is_pinned_once_and_falls_back_to_the_oneshot_factory_when_no_live_adapter_is_set() {
+    public async Task Observation_is_pinned_once_via_the_oneshot_factory_with_the_requests_identity() {
         var cli = new FakeKcapCli();
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
         var oneShotCalls = 0;
-        IDaemonObservation? seen = null;
-        var lane = MakeLane(factory, oneShotFactory: _ => { oneShotCalls++; return new ScriptedObservation(); });
+        MutationRequest? seenRequest = null;
+        IDaemonObservation? seenObservation = null;
+        var scripted = new ScriptedObservation();
+        var lane = MakeLane(factory, oneShotFactory: request => { oneShotCalls++; seenRequest = request; return scripted; });
         lane.Classify = (request, result, executor, observation, attemptId, ct) => {
-            seen = observation;
+            seenObservation = observation;
             return Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
         };
 
-        await lane.RunAsync(Req(), CancellationToken.None);
+        var req = Req();
+        await lane.RunAsync(req, CancellationToken.None);
 
         await Assert.That(oneShotCalls).IsEqualTo(1);
-        await Assert.That(seen).IsTypeOf<ScriptedObservation>();
+        await Assert.That(seenRequest).IsEqualTo(req);
+        await Assert.That(seenObservation).IsSameReferenceAs(scripted);
 
         await lane.DisposeAsync();
     }
@@ -484,194 +490,6 @@ public class DaemonMutationLaneTests {
         await Assert.That(cliA.LastBootAttemptId).IsNotNull();
         await Assert.That(cliB.LastBootAttemptId).IsNotNull();
         await Assert.That(cliA.LastBootAttemptId).IsNotEqualTo(cliB.LastBootAttemptId);
-
-        await lane.DisposeAsync();
-    }
-
-    // ---- T2: SetLiveAdapter coverage ----
-
-    // Blocker 1 (final review): the pinned strategy is now a COMPOSITE that tries live first and
-    // falls through to a fresh one-shot only when live's own result is null/not-Reachable — so
-    // `observation` handed to Classify is never the raw live reference any more. These tests drive
-    // the composite through a REAL ObserveAsync call (rather than just capturing the reference) to
-    // prove the try-live-then-fall-through behavior at the classification-attempt level.
-    [Test]
-    public async Task Live_adapter_with_matching_evidence_is_pinned_and_the_oneshot_factory_is_never_called() {
-        var cli = new FakeKcapCli();
-        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
-        var expectedEvidence = MatchingEvidence(); // captured once — Capabilities is a reference type, so two separately-built instances are never record-equal
-        var live = new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(expectedEvidence) };
-        var oneShotCalls = 0;
-        ObservedEvidence? observed = null;
-        var lane = MakeLane(factory, oneShotFactory: _ => { oneShotCalls++; return new ScriptedObservation(); });
-        lane.Classify = async (request, result, executor, observation, attemptId, ct) => {
-            observed = await observation.ObserveAsync(request, ct);
-            return new MutationOutcome.Succeeded();
-        };
-        lane.SetLiveAdapter(live);
-
-        await lane.RunAsync(Req(), CancellationToken.None);
-
-        await Assert.That(oneShotCalls).IsEqualTo(0);
-        await Assert.That(live.CallCount).IsEqualTo(1);
-        await Assert.That(observed).IsEqualTo(expectedEvidence);
-
-        await lane.DisposeAsync();
-    }
-
-    [Test]
-    public async Task Live_adapter_returning_null_falls_back_to_the_oneshot_factory() {
-        var cli = new FakeKcapCli();
-        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
-        var live = new ScriptedObservation(); // default behavior returns null — cannot target this request
-        var oneShotEvidence = MatchingEvidence(pid: 999, instanceId: "inst-oneshot");
-        var oneShotCalls = 0;
-        ObservedEvidence? observed = null;
-        var lane = MakeLane(factory, oneShotFactory: _ => {
-            oneShotCalls++;
-            return new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(oneShotEvidence) };
-        });
-        lane.Classify = async (request, result, executor, observation, attemptId, ct) => {
-            observed = await observation.ObserveAsync(request, ct);
-            return new MutationOutcome.Succeeded();
-        };
-        lane.SetLiveAdapter(live);
-
-        await lane.RunAsync(Req(), CancellationToken.None);
-
-        await Assert.That(oneShotCalls).IsEqualTo(1);
-        await Assert.That(observed).IsEqualTo(oneShotEvidence);
-
-        await lane.DisposeAsync();
-    }
-
-    // P1-3(a): the pin now happens BEFORE the first await in ExecuteActionAsync (ahead of the CLI
-    // path resolution and the version probe) — gate the VERSION probe itself (not the mutation
-    // dispatch, which now runs strictly after the pin regardless) so a swap landing here proves the
-    // pin genuinely precedes it, not merely something further downstream.
-    [Test]
-    public async Task Observation_strategy_pinned_at_action_start_survives_a_mid_action_SetLiveAdapter_swap() {
-        var gate = new TaskCompletionSource<string?>();
-        var cli = new FakeKcapCli { VersionBehavior = _ => gate.Task }; // gate the VERSION probe — after the pin, before dispatch
-        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
-        var expectedEvidence = MatchingEvidence(); // captured once — Capabilities is a reference type, so two separately-built instances are never record-equal
-        var originalLive = new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(expectedEvidence) };
-        var otherLive = new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(MatchingEvidence(222, "inst-2")) };
-        ObservedEvidence? observed = null;
-        var lane = MakeLane(factory);
-        lane.Classify = async (request, result, executor, observation, attemptId, ct) => {
-            observed = await observation.ObserveAsync(request, ct);
-            return new MutationOutcome.Succeeded();
-        };
-        lane.SetLiveAdapter(originalLive);
-
-        var t = lane.RunAsync(Req(), CancellationToken.None);
-        // By now the pin step has already run (only the version probe is gated) — a swap here must not change it.
-        lane.SetLiveAdapter(otherLive);
-
-        gate.SetResult("9.9.9");
-        await t;
-
-        await Assert.That(observed).IsEqualTo(expectedEvidence);
-        await Assert.That(originalLive.CallCount).IsEqualTo(1);
-        await Assert.That(otherLive.CallCount).IsEqualTo(0);
-
-        await lane.DisposeAsync();
-    }
-
-    // P1-3(c): DetachedStart never trusts the live adapter — even a matching, currently-set one —
-    // because it synchronously replays possibly PRE-mutation status with no fresh-ownership
-    // cross-check to catch it (unlike the service verbs' ServiceStatusAsync daemon_pid ==
-    // evidence.Pid correlation); only a fresh one-shot dial is post-mutation evidence by construction.
-    [Test]
-    public async Task DetachedStart_always_pins_the_oneshot_observation_even_with_a_matching_live_adapter_set() {
-        var cli = new FakeKcapCli { DetachedStartBehavior = _ => Task.FromResult(new ProcessResult(0, "", "", false)) };
-        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
-        var expectedEvidence = MatchingEvidence();
-        var live = new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(expectedEvidence) };
-        var oneShotCalls = 0;
-        var lane = MakeLane(factory, oneShotFactory: _ => {
-            oneShotCalls++;
-            return new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(expectedEvidence) };
-        });
-        lane.SetLiveAdapter(live); // a live adapter IS set and WOULD match this request's identity
-
-        var outcome = await lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
-
-        await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
-        await Assert.That(oneShotCalls).IsEqualTo(1); // the one-shot factory was used
-        await Assert.That(live.CallCount).IsEqualTo(0); // the live adapter was never even consulted
-
-        await lane.DisposeAsync();
-    }
-
-    // Blocker 1 (final review) — the reviewer's pinned scenario: a mutation that restarts the
-    // daemon (takeover Replace, StartVerified, DetachedStart) tears down the app's own attach, so
-    // the live adapter replays a stale Reachable=false snapshot. The composite must not let that
-    // stale snapshot stand as the classification's evidence — it falls through to a fresh one-shot
-    // in the SAME classification attempt, and full evidence there still yields Succeeded.
-    [Test]
-    public async Task Live_adapter_unreachable_falls_back_to_a_fresh_oneshot_and_a_full_evidence_result_still_succeeds() {
-        var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership()) };
-        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
-        var live = new ScriptedObservation {
-            Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(new ObservedEvidence(false, null, null, null, null, null, null, false)),
-        };
-        var lane = MakeLane(factory, oneShotFactory: _ => new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(MatchingEvidence()) });
-        lane.SetLiveAdapter(live);
-
-        var outcome = await lane.RunAsync(Req(), CancellationToken.None);
-
-        await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
-
-        await lane.DisposeAsync();
-    }
-
-    // Companion to the above: when the fallback one-shot ALSO comes back unreachable (a genuinely
-    // gone daemon, not just a stale app-side attach snapshot), the honest outcome is unchanged —
-    // the composite adds a fallback leg, it never manufactures evidence.
-    [Test]
-    public async Task Live_adapter_unreachable_and_oneshot_unreachable_yields_the_unchanged_honest_outcome() {
-        var cli = new FakeKcapCli(); // default: exit 0, StatusBehavior returns null (no recorded owner)
-        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
-        var live = new ScriptedObservation {
-            Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(new ObservedEvidence(false, null, null, null, null, null, null, false)),
-        };
-        var lane = MakeLane(factory); // default oneShotFactory's ScriptedObservation returns null evidence
-        lane.SetLiveAdapter(live);
-
-        var outcome = await lane.RunAsync(Req(), CancellationToken.None);
-
-        await Assert.That(outcome).IsEqualTo(new MutationOutcome.UnconfirmedNoAttach());
-
-        await lane.DisposeAsync();
-    }
-
-    // P2-3: a REAL LiveGraphObservation over a client whose Status/Snapshots hold only replayed
-    // (pre-mutation) values never completes a fresh pair — the generation barrier times out
-    // (FakeTimeProvider-driven) and the composite falls through to the one-shot factory, proving
-    // the fix at the level that actually matters: the lane never trusts stale live evidence.
-    [Test]
-    public async Task Real_live_graph_observation_with_no_fresh_emission_falls_back_to_the_oneshot_factory() {
-        var client = new FakeDaemonClientService { DaemonName = "daemon-a", ProfileName = "default" };
-        client.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap("daemon-a", serverUrl: "https://cap.example.test", pid: 111, instanceId: "inst-1"));
-        client.StatusSubject.OnNext(new AttachStatus(
-            AttachState.Connected, null, ["consent/3"], null, new ConnectedIdentity(111, "inst-1", "daemon-a", "1.0.0")));
-        var time = new FakeTimeProvider();
-        var live = new LiveGraphObservation(client, time);
-        var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership()) };
-        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
-        var oneShotCalls = 0;
-        var lane = MakeLane(factory, oneShotFactory: _ => {
-            oneShotCalls++;
-            return new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(MatchingEvidence()) };
-        });
-        lane.SetLiveAdapter(live);
-
-        var outcome = await Drive(lane.RunAsync(Req(), CancellationToken.None), time, LiveGraphObservation.FreshEmissionTimeout);
-
-        await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
-        await Assert.That(oneShotCalls).IsEqualTo(1);
 
         await lane.DisposeAsync();
     }

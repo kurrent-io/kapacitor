@@ -16,9 +16,6 @@ sealed class FakeDaemonClientService : IDaemonClientService {
     public IObservable<DaemonStatusDto> Snapshots => SnapshotsSubject;
     public SourceCache<AgentStatusDto, string> Agents { get; } = new(a => a.Id);
     public string DaemonName { get; set; } = "daemon-a";
-    // Matches the "default" profile every test's MutationRequest.Profile literal already uses, so
-    // existing LiveGraphObservation tests keep passing without also having to set this explicitly.
-    public string? ProfileName { get; set; } = "default";
 
     public int RestartCount;
     public Task RestartLoopAsync() {

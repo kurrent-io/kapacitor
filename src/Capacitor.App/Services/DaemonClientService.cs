@@ -32,17 +32,13 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
     public DaemonClientService(
             string daemonName,
             Func<CancellationToken, IAsyncEnumerable<LocalControlEvent>> runClient,
-            Func<CancellationToken, Task<MutationOutcome>> startDaemon,
-            string? profileName = null) {
+            Func<CancellationToken, Task<MutationOutcome>> startDaemon) {
         DaemonName   = daemonName;
         _runClient   = runClient;
         _startDaemon = startDaemon;
-        ProfileName  = profileName;
     }
 
     public string DaemonName { get; }
-
-    public string? ProfileName { get; }
 
     public IObservable<AttachStatus> Status => _status.AsObservable();
 
@@ -158,8 +154,7 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
 
         return new DaemonClientService(
             name, ct => new LocalControlClient(name).RunAsync(ct),
-            BuildStartDaemon(name, () => AppConfig.ResolvedProfile, runMutation),
-            AppConfig.ResolvedProfile?.ProfileName);
+            BuildStartDaemon(name, () => AppConfig.ResolvedProfile, runMutation));
     }
 
     /// The main-window Start/Retry delegate: builds a DetachedStart MutationRequest at the

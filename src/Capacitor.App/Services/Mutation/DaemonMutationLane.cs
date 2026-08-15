@@ -40,9 +40,6 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
     TaskCompletionSource _quiescent = CompletedSignal();
     bool _disposed;
 
-    // Atomic slot: an owned action reads this ONCE at start and never again for its own lifetime.
-    volatile IDaemonObservation? _liveAdapter;
-
     // Injectable seam: defaults to the real per-verb classifier below; tests override to pin/observe without running full classification.
     internal MutationClassifier Classify { get; set; }
 
@@ -59,8 +56,6 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         _lifetimeToken   = _lifetime.Token;
         Classify         = ClassifyOutcomeAsync;
     }
-
-    public void SetLiveAdapter(IDaemonObservation? live) => _liveAdapter = live;
 
     public async Task<MutationOutcome> RunAsync(MutationRequest request, CancellationToken waiterCt) {
         var slot = AttachOrCreate(request);
@@ -222,9 +217,9 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
     async Task<MutationOutcome> ExecuteActionAsync(MutationRequest request, CancellationToken ct) {
         ct.ThrowIfCancellationRequested(); // a disposed lane's cancelled token must stop admission before any spawn
 
-        // Pinned before the first await (spec pin-once rule): a concurrent SetLiveAdapter swap
-        // during the CLI/version probes below must never change an already-started action's observer.
-        var observation = PinObservation(request);
+        // Pinned before the first await (spec pin-once rule): evidence is always a fresh socket
+        // dial — a live-graph replay can never prove it postdates the mutation.
+        var observation = _oneShotFactory(request);
 
         var pinnedPath = _cliOverride() ?? await _shellProbe.KcapPathAsync(ct, forceRefresh: false).ConfigureAwait(false);
         // A cached negative must not refuse forever: one forced re-probe lets a CLI installed after
@@ -255,20 +250,6 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
             // Fail closed, never permissive: an unnamed enum value must halt, not silently pick a verb.
             _ => throw new ArgumentOutOfRangeException(nameof(request), request.Verb, "unknown MutationVerb"),
         };
-
-    // Pinned once before the first await, immune to a later SetLiveAdapter swap; DetachedStart always pins one-shot, other verbs composite a set live adapter with a one-shot fallback.
-    IDaemonObservation PinObservation(MutationRequest request) {
-        if (request.Verb == MutationVerb.DetachedStart) return _oneShotFactory(request);
-        var live = _liveAdapter;
-        return live is null ? _oneShotFactory(request) : new CompositeObservation(live, _oneShotFactory);
-    }
-
-    sealed class CompositeObservation(IDaemonObservation live, Func<MutationRequest, IDaemonObservation> oneShotFactory) : IDaemonObservation {
-        public async Task<ObservedEvidence?> ObserveAsync(MutationRequest request, CancellationToken ct) {
-            var evidence = await live.ObserveAsync(request, ct).ConfigureAwait(false);
-            return evidence is { Reachable: true } ? evidence : await oneShotFactory(request).ObserveAsync(request, ct).ConfigureAwait(false);
-        }
-    }
 
     // --- classification (spec §3/§4) ---
 

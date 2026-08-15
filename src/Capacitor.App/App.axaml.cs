@@ -111,10 +111,6 @@ public partial class App : Application {
             _lane = lane;
 
             var service = await DaemonClientService.CreateDefaultAsync(lane.RunAsync);
-            // The live adapter answers a mutation's own confirmation without a fresh socket dial
-            // whenever the request targets THIS service's daemon/server — LiveGraphObservation
-            // itself falls back to null (one-shot) for any other target, or a stale/timed-out one.
-            lane.SetLiveAdapter(new LiveGraphObservation(service, TimeProvider.System));
 
             // Reads the SAME AppConfig.ResolvedProfile CreateDefaultAsync already resolved — the gate verdict and the graph identity can never diverge on a concurrently-changing profile.
             var resolvedProfile = AppConfig.ResolvedProfile;
@@ -153,11 +149,7 @@ public partial class App : Application {
             consentFlip.Start();
             _consentFlip = consentFlip;
 
-            // The composition-root outcome consumer: shares lifecycle's own ILifecycleSurface, so
-            // a lane-executed mutation's dialog reuses its serialized gate rather than a competing
-            // one; also shares its probe (disclosure) and CliVersion (dialog text) and the lane
-            // itself (a Takeover accept re-mutates through it). Starts immediately — Plan C adds
-            // the wizard TransferConsumer handoff.
+            // Composition-root outcome consumer: shares lifecycle's own surface/probe/CliVersion and the lane itself, so a Takeover accept re-mutates through the same gate.
             _ = ConsumeMutationOutcomesAsync(
                 channel, lifecycleSurface, lane.RunAsync, lifecycleProbe.TerminalPathAsync, () => lifecycle.CliVersion, _shutdown.Token);
 
@@ -260,10 +252,6 @@ public partial class App : Application {
                 Console.Error.WriteLine($"kcap app failed to dispose the daemon lifecycle controller during startup-failure cleanup: {disposeEx}");
             }
         }
-        // Unset BEFORE disposing service: an action starting after this pins a plain one-shot;
-        // an in-flight action keeps its pinned composite, whose live leg reading a disposed
-        // subject lands in DeliverFaulted rather than hanging.
-        lane?.SetLiveAdapter(null);
         if (service is not null) {
             shutdown.Cancel();
             try {
@@ -543,15 +531,7 @@ public partial class App : Application {
         _                          => verb.ToString(),
     };
 
-    // spec §10: the closed set of AttentionSkew detail tokens that mean "connected but below the
-    // floor this app requires" — read verbatim off DaemonMutationLane.EvidenceFailureLeg, never
-    // guessed — route to the same caller-routed Takeover presentation as a coded Failed/Refused
-    // (dialog + per-run decline memory, accept issues Replace); every other AttentionSkew detail
-    // (wrong-server, ownership mismatch, unreachable-with-owner, unknown) stays non-destructive
-    // Attention. AttentionRepair is always Attention. Succeeded/SucceededAfterTimeout are the only
-    // cases landing on the None catch-all — unreachable in production, since the lane's Deliver
-    // never enqueues a success outcome; UnconfirmedNoAttach is handled by PresentOutcomeAsync
-    // before this classification runs (it is actionable, not skipped).
+    // spec §10 invariant: only these AttentionSkew tokens route to Takeover; every other AttentionSkew/AttentionRepair stays Attention.
     static readonly HashSet<string> TakeoverRoutedSkewTokens = ["missing_capability_consent_3", "daemon_below_floor", "pre_slice_evidence"];
 
     internal static (RecoverySurface Surface, string? Token) ClassifyForPresentation(MutationOutcome outcome) => outcome switch {
@@ -758,10 +738,6 @@ public partial class App : Application {
                 Console.Error.WriteLine($"kcap app failed to dispose the daemon lifecycle controller during shutdown: {ex}");
             }
         }
-        // Unset BEFORE disposing the service — same reason as HandleStartupFailureAsync's own
-        // ordering comment: a mutation still draining out of the lane must never dial into a
-        // service whose Status/Snapshots Subjects are about to be disposed.
-        _lane?.SetLiveAdapter(null);
         if (_service is not null) await _service.DisposeAsync().ConfigureAwait(false);
         if (_lane is not null) {
             try {
