@@ -322,13 +322,13 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         if (ownership.DaemonPid != evidence!.Pid) // evidenceLeg == null guarantees evidence is non-null and fully valid here
             return new MutationOutcome.AttentionSkew("instance_pid_mismatch"); // same-instance rule
 
-        // ABA guard (round-4 P1): the ServiceStatusAsync read above can straddle a process swap that
-        // reuses pid P, so a pid-only cross-check alone can't tell instance A from a replacement B.
-        // A second fresh dial — required to reproduce the SAME InstanceId+Pid as the first — is the
-        // only proof one continuous process held pid P for the whole window; a per-boot instance id
-        // cannot survive a process swap. Only this (the would-be-Succeeded) path pays for it.
+        // Invariant: Succeeded requires a second fresh dial that independently passes full evidence validation AND matches the first's Pid+InstanceId.
         var confirm = await observation.ObserveAsync(request, ct).ConfigureAwait(false);
-        if (confirm?.Pid != evidence.Pid || confirm?.InstanceId != evidence.InstanceId)
+        var confirmLeg = EvidenceFailureLeg(confirm, request);
+        if (confirmLeg is not null)
+            return new MutationOutcome.AttentionSkew(confirmLeg);
+
+        if (confirm!.Pid != evidence.Pid || confirm.InstanceId != evidence.InstanceId)
             return new MutationOutcome.AttentionSkew("instance_changed_during_classification");
 
         return new MutationOutcome.Succeeded();

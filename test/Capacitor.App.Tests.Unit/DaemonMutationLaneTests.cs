@@ -809,8 +809,7 @@ public class DaemonMutationLaneTests {
     public async Task Full_matching_evidence_and_ownership_on_exit_zero_is_Succeeded() {
         var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership()) };
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
-        // Two independently-built evidence instances that agree on Pid+InstanceId — the sandwich's
-        // second dial is scripted explicitly rather than relying on a re-evaluated Behavior lambda.
+        // Two independently-built evidence instances that agree on Pid+InstanceId, scripted explicitly rather than via a re-evaluated Behavior lambda.
         var observation = new ScriptedObservation { Sequence = new([MatchingEvidence(), MatchingEvidence()]) };
         var lane = MakeLane(factory, oneShotFactory: _ => observation);
 
@@ -838,9 +837,7 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // ---- round-4 P1: ABA guard — the ServiceStatusAsync ownership read can straddle a process swap
-    // that reuses pid P, so the sandwich requires a SECOND fresh dial to reproduce the first's own
-    // InstanceId+Pid before Succeeded is ever returned. ----
+    // ---- ABA guard: Succeeded needs a second fresh dial that both matches and independently validates. ----
 
     [Test]
     public async Task Sandwich_second_observation_different_instance_same_pid_yields_AttentionSkew_never_Succeeded() {
@@ -859,6 +856,40 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
+    // A second dial reproducing the first's own pid+instance but with IdentityConsistent false (a hello/status socket split) must still fail, not pass a naive pid+instance-only cross-check.
+    [Test]
+    public async Task Sandwich_second_observation_matching_pid_instance_but_identity_inconsistent_yields_AttentionSkew_never_Succeeded() {
+        var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership()) };
+        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
+        var first = MatchingEvidence();
+        var second = first with { IdentityConsistent = false };
+        var observation = new ScriptedObservation { Sequence = new([first, second]) };
+        var lane = MakeLane(factory, oneShotFactory: _ => observation);
+
+        var outcome = await lane.RunAsync(Req(), CancellationToken.None);
+
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.AttentionSkew("identity_inconsistent"));
+        await Assert.That(observation.CallCount).IsEqualTo(2);
+
+        await lane.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Sandwich_second_observation_missing_capability_yields_AttentionSkew() {
+        var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership()) };
+        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
+        var first = MatchingEvidence();
+        var second = first with { Capabilities = [] };
+        var observation = new ScriptedObservation { Sequence = new([first, second]) };
+        var lane = MakeLane(factory, oneShotFactory: _ => observation);
+
+        var outcome = await lane.RunAsync(Req(), CancellationToken.None);
+
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.AttentionSkew("missing_capability_consent_3"));
+
+        await lane.DisposeAsync();
+    }
+
     [Test]
     public async Task Sandwich_second_observation_unreachable_fails_closed_to_AttentionSkew() {
         var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership()) };
@@ -869,7 +900,7 @@ public class DaemonMutationLaneTests {
 
         var outcome = await lane.RunAsync(Req(), CancellationToken.None);
 
-        await Assert.That(outcome).IsEqualTo(new MutationOutcome.AttentionSkew("instance_changed_during_classification"));
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.AttentionSkew("unreachable"));
 
         await lane.DisposeAsync();
     }
@@ -883,7 +914,7 @@ public class DaemonMutationLaneTests {
 
         var outcome = await lane.RunAsync(Req(), CancellationToken.None);
 
-        await Assert.That(outcome).IsEqualTo(new MutationOutcome.AttentionSkew("instance_changed_during_classification"));
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.AttentionSkew("unreachable"));
 
         await lane.DisposeAsync();
     }
