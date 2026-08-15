@@ -28,9 +28,10 @@ public sealed class OutcomeChannel {
         public long ActiveLeaseToken; // 0 = not currently leased (queued or terminally resolved)
     }
 
-    sealed class Session {
-        public bool Transferred;
-    }
+    // Reference-identity token for "which ConsumeAsync enumeration currently owns dequeuing" — no
+    // state of its own; TransferConsumer just clears _current so the owning enumeration's next
+    // gate check sees `superseded` and winds down.
+    sealed class Session;
 
     readonly object _gate = new();
     readonly LinkedList<Entry> _queue = new();
@@ -58,11 +59,12 @@ public sealed class OutcomeChannel {
         return ConsumeCoreAsync(session, ct);
     }
 
-    /// Only still-queued envelopes move to the next ConsumeAsync; a lease already yielded to this consumer stays outstanding.
+    /// Only still-queued envelopes move to the next ConsumeAsync; a lease already yielded to this
+    /// consumer stays outstanding and ackable until the old enumeration itself ends, at which
+    /// point any envelope still unresolved gets its one requeue (never silently dropped).
     public void TransferConsumer() {
         lock (_gate) {
             if (_current is null) return;
-            _current.Transferred = true;
             _current = null;
             Wake();
         }
@@ -98,18 +100,20 @@ public sealed class OutcomeChannel {
         } finally {
             lock (_gate) {
                 if (ReferenceEquals(_current, session)) _current = null;
-                if (!session.Transferred) {
-                    // ct/teardown: everything this session still holds unresolved gets its one requeue.
-                    for (var i = mine.Count - 1; i >= 0; i--) {
-                        var (entry, token) = mine[i];
-                        if (entry.ActiveLeaseToken != token) continue; // already resolved directly
-                        entry.ActiveLeaseToken = 0;
-                        if (!entry.Requeued) {
-                            entry.Requeued = true;
-                            _queue.AddFirst(entry);
-                        } else {
-                            LogSecondAbandonment(entry.Envelope); // already used its one requeue: consumed-with-log, never silent
-                        }
+                // Runs unconditionally, transferred-away or not: a lease already resolved (Ack/CancelLease
+                // called while still yielded) has a stale token here and is skipped; anything still
+                // unresolved when THIS enumeration ends — ct/teardown, or a transferred session whose old
+                // enumerator ends without ever being acked — gets its one requeue, so a
+                // dequeued-but-never-presented envelope is never silently lost across a transfer.
+                for (var i = mine.Count - 1; i >= 0; i--) {
+                    var (entry, token) = mine[i];
+                    if (entry.ActiveLeaseToken != token) continue; // already resolved directly
+                    entry.ActiveLeaseToken = 0;
+                    if (!entry.Requeued) {
+                        entry.Requeued = true;
+                        _queue.AddFirst(entry);
+                    } else {
+                        LogSecondAbandonment(entry.Envelope); // already used its one requeue: consumed-with-log, never silent
                     }
                 }
                 Wake();

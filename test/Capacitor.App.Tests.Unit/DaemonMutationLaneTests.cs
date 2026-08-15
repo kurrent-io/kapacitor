@@ -34,8 +34,10 @@ public class DaemonMutationLaneTests {
             string state = "running", bool unitPresent = true) =>
         new("daemon-a", unitPresent, state, "/opt/kcap/kcapd", "/opt/kcap/kcapd", jobPid, daemonPid, txnMarker, txnActive);
 
+    // expectation matches Req()'s own default canonical server — P2-4's TryAttribute now requires
+    // ServerIdentity.Matches(Expectation, request.CanonicalServer) on top of schema/attempt/etc.
     static string MarkerJson(string daemonName, string? attemptId) => $$"""
-        {"daemon_name":"{{daemonName}}","token":"server_expectation_mismatch","expectation":"https://s","resolved":"https://t","pid":4242,"instance_id":"inst-1","attempt_id":{{(attemptId is null ? "null" : $"\"{attemptId}\"")}}}
+        {"schema":1,"daemon_name":"{{daemonName}}","token":"server_expectation_mismatch","expectation":"https://cap.example.test","resolved":"https://t","pid":4242,"instance_id":"inst-1","attempt_id":{{(attemptId is null ? "null" : $"\"{attemptId}\"")}}}
         """;
 
     static void PlantMarker(string daemonName, string content) {
@@ -250,11 +252,12 @@ public class DaemonMutationLaneTests {
     // forced re-probe before the lane gives up.
     [Test]
     public async Task Cached_negative_probe_recovers_via_one_forced_refresh_before_refusing() {
+        var justInstalledPath = Path.Combine(Path.GetTempPath(), "opt-kcap", "bin", "kcap"); // Path.Combine, not a Unix literal, for the Windows CI leg
         var cli = new FakeKcapCli();
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
         var probe = new FakeLoginShellProbe {
             KcapPathBehavior = _ => Task.FromResult<string?>(null), // cached negative
-            KcapPathFreshBehavior = _ => Task.FromResult<string?>("/opt/kcap/bin/kcap"), // just installed
+            KcapPathFreshBehavior = _ => Task.FromResult<string?>(justInstalledPath), // just installed
         };
         var lane = MakeLane(factory, cliOverride: () => null, shellProbe: probe, classify: CannedSucceeded);
 
@@ -262,7 +265,7 @@ public class DaemonMutationLaneTests {
 
         await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
         await Assert.That(factory.Calls.Count).IsEqualTo(1);
-        await Assert.That(factory.Calls[0].PinnedPath).IsEqualTo("/opt/kcap/bin/kcap");
+        await Assert.That(factory.Calls[0].PinnedPath).IsEqualTo(justInstalledPath);
         await Assert.That(probe.KcapPathForceRefreshCalls).IsEquivalentTo([false, true]);
 
         await lane.DisposeAsync();
@@ -326,15 +329,16 @@ public class DaemonMutationLaneTests {
 
     [Test]
     public async Task Executor_factory_runs_once_per_action_and_the_same_pinned_path_serves_probe_and_mutation() {
+        var customPath = Path.Combine(Path.GetTempPath(), "custom", "kcap"); // Path.Combine, not a Unix literal, for the Windows CI leg
         var cli = new FakeKcapCli();
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
-        var lane = MakeLane(factory, cliOverride: () => "/custom/kcap", classify: CannedSucceeded);
+        var lane = MakeLane(factory, cliOverride: () => customPath, classify: CannedSucceeded);
 
         var outcome = await lane.RunAsync(Req(), CancellationToken.None);
 
         await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
         await Assert.That(factory.Calls.Count).IsEqualTo(1);
-        await Assert.That(factory.Calls[0].PinnedPath).IsEqualTo("/custom/kcap");
+        await Assert.That(factory.Calls[0].PinnedPath).IsEqualTo(customPath);
         await Assert.That(cli.VersionCallCount).IsEqualTo(1);
         await Assert.That(cli.StartVerifiedCallCount).IsEqualTo(1); // same FakeKcapCli instance served both calls
 
@@ -540,10 +544,14 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
+    // P1-3(a): the pin now happens BEFORE the first await in ExecuteActionAsync (ahead of the CLI
+    // path resolution and the version probe) — gate the VERSION probe itself (not the mutation
+    // dispatch, which now runs strictly after the pin regardless) so a swap landing here proves the
+    // pin genuinely precedes it, not merely something further downstream.
     [Test]
     public async Task Observation_strategy_pinned_at_action_start_survives_a_mid_action_SetLiveAdapter_swap() {
-        var gate = new TaskCompletionSource<ProcessResult>();
-        var cli = new FakeKcapCli { StartVerifiedBehavior = _ => gate.Task }; // gate AFTER the pin step, not before it
+        var gate = new TaskCompletionSource<string?>();
+        var cli = new FakeKcapCli { VersionBehavior = _ => gate.Task }; // gate the VERSION probe — after the pin, before dispatch
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
         var expectedEvidence = MatchingEvidence(); // captured once — Capabilities is a reference type, so two separately-built instances are never record-equal
         var originalLive = new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(expectedEvidence) };
@@ -557,15 +565,41 @@ public class DaemonMutationLaneTests {
         lane.SetLiveAdapter(originalLive);
 
         var t = lane.RunAsync(Req(), CancellationToken.None);
-        // By now the pin step has already run (only the mutation is gated) — a swap here must not change it.
+        // By now the pin step has already run (only the version probe is gated) — a swap here must not change it.
         lane.SetLiveAdapter(otherLive);
 
-        gate.SetResult(new ProcessResult(0, "", "", false));
+        gate.SetResult("9.9.9");
         await t;
 
         await Assert.That(observed).IsEqualTo(expectedEvidence);
         await Assert.That(originalLive.CallCount).IsEqualTo(1);
         await Assert.That(otherLive.CallCount).IsEqualTo(0);
+
+        await lane.DisposeAsync();
+    }
+
+    // P1-3(c): DetachedStart never trusts the live adapter — even a matching, currently-set one —
+    // because it synchronously replays possibly PRE-mutation status with no fresh-ownership
+    // cross-check to catch it (unlike the service verbs' ServiceStatusAsync daemon_pid ==
+    // evidence.Pid correlation); only a fresh one-shot dial is post-mutation evidence by construction.
+    [Test]
+    public async Task DetachedStart_always_pins_the_oneshot_observation_even_with_a_matching_live_adapter_set() {
+        var cli = new FakeKcapCli { DetachedStartBehavior = _ => Task.FromResult(new ProcessResult(0, "", "", false)) };
+        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
+        var expectedEvidence = MatchingEvidence();
+        var live = new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(expectedEvidence) };
+        var oneShotCalls = 0;
+        var lane = MakeLane(factory, oneShotFactory: _ => {
+            oneShotCalls++;
+            return new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(expectedEvidence) };
+        });
+        lane.SetLiveAdapter(live); // a live adapter IS set and WOULD match this request's identity
+
+        var outcome = await lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
+
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
+        await Assert.That(oneShotCalls).IsEqualTo(1); // the one-shot factory was used
+        await Assert.That(live.CallCount).IsEqualTo(0); // the live adapter was never even consulted
 
         await lane.DisposeAsync();
     }

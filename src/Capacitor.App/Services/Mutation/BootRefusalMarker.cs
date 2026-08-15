@@ -1,16 +1,19 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Auth;
 
 namespace Capacitor.App.Services.Mutation;
 
 /// App-side duplicated view of the daemon's boot-refusal.json marker; same duplication precedent as Capacitor.Cli.Services.BootRefusalReader (the app never references the daemon assembly).
 public sealed record BootRefusalEvidence(
-    string DaemonName, string Token, string? Expectation, string? Resolved,
+    int Schema, string DaemonName, string Token, string? Expectation, string? Resolved,
     int Pid, string? InstanceId, string? AttemptId);
 
 /// For DETACHED starts, the mutation lane is this marker's single consumer — attribution requires the lane's own attempt GUID, never a foreign one.
 public static partial class BootRefusalMarker {
+    const int CurrentSchema = 1;
+
     public static string MarkerPath(string daemonName) =>
         Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(daemonName), "boot-refusal.json");
 
@@ -30,10 +33,24 @@ public static partial class BootRefusalMarker {
         }
     }
 
-    /// Attributes only when AttemptId matches attemptId and DaemonName matches daemonName; any mismatch returns null and leaves the marker untouched.
-    public static BootRefusalEvidence? TryAttribute(string daemonName, string attemptId) {
+    /// Attributes only against a VERIFIABLE identity, not just a timestamp: schema, a non-null
+    /// AttemptId equal to <paramref name="attemptId"/>, DaemonName equal to <paramref
+    /// name="daemonName"/>, a non-empty Token/InstanceId, a positive Pid, and the marker's own
+    /// Expectation matching <paramref name="requestCanonicalServer"/> (every app detached start
+    /// bakes the expectation, so an attributable marker always carries one) must ALL hold. Any
+    /// single failure returns null and leaves the marker untouched — a marker failing identity
+    /// validation against the request is not attributed, and the caller degrades to its generic
+    /// outcome.
+    public static BootRefusalEvidence? TryAttribute(string daemonName, string attemptId, string? requestCanonicalServer) {
         var evidence = TryRead(daemonName);
-        if (evidence is null || evidence.AttemptId != attemptId || evidence.DaemonName != daemonName) return null;
+        if (evidence is null) return null;
+        if (evidence.Schema != CurrentSchema) return null;
+        if (evidence.AttemptId is null || evidence.AttemptId != attemptId) return null;
+        if (evidence.DaemonName != daemonName) return null;
+        if (string.IsNullOrEmpty(evidence.Token)) return null;
+        if (evidence.Pid <= 0) return null;
+        if (string.IsNullOrEmpty(evidence.InstanceId)) return null;
+        if (!ServerIdentity.Matches(evidence.Expectation, requestCanonicalServer)) return null;
 
         try { File.Delete(MarkerPath(daemonName)); } catch { /* best-effort consume, already attributed */ }
         return evidence;

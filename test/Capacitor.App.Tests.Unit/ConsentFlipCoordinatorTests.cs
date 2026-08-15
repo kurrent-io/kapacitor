@@ -119,11 +119,29 @@ public class ConsentFlipCoordinatorTests {
         await Assert.That(h.Claims.Pending()).IsEquivalentTo([Claim]);
     }
 
+    // P2-6: a resurrected claim (crash between a successful put and TryConsume) finds the policy
+    // ALREADY "prompt" on a later pass — no put needed, but the claim must still be consumed
+    // idempotently rather than retained forever (which would let a later deliberate operator
+    // allow+zero-rules be re-flipped by the stale claim).
     [Test]
-    public async Task Default_prompt_skips_the_put_and_leaves_the_claim_pending() {
+    public async Task Default_prompt_skips_the_put_and_consumes_the_resurrected_claim() {
         using var h = new Harness();
         h.Claims.Arm(Claim);
         h.Ops.QueueGet(new ConsentPolicyDto("prompt", 30, []));
+
+        h.Coordinator.Start();
+        h.Client.StatusSubject.OnNext(Connected(ConsentFlipCoordinator.ConsentV3Capability));
+
+        await WaitUntilAsync(() => h.Claims.Pending().Count == 0, what: "the resurrected claim to be consumed");
+
+        await Assert.That(h.Ops.PutV2Calls).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Default_deny_skips_the_put_and_leaves_the_claim_pending() {
+        using var h = new Harness();
+        h.Claims.Arm(Claim);
+        h.Ops.QueueGet(new ConsentPolicyDto("deny", 30, []));
 
         h.Coordinator.Start();
         h.Client.StatusSubject.OnNext(Connected(ConsentFlipCoordinator.ConsentV3Capability));

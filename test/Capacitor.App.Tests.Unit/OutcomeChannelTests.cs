@@ -377,6 +377,46 @@ public class OutcomeChannelTests {
         await enumeratorB.DisposeAsync();
     }
 
+    // P1-1: an envelope dequeued-but-never-presented before the transfer must not be permanently
+    // leased and lost — when the OLD (transferred-away) enumeration itself terminates without ever
+    // acking, the still-unresolved lease gets its one requeue, same as any other implicit-cancel
+    // teardown.
+    [Test]
+    public async Task Old_enumeration_ending_unacked_after_transfer_requeues_the_envelope_exactly_once() {
+        var channel = new OutcomeChannel();
+        var env = Env("transferred-unacked");
+        channel.Enqueue(env);
+
+        using var ctsA = new CancellationTokenSource();
+        var enumeratorA = channel.ConsumeAsync(ctsA.Token).GetAsyncEnumerator();
+        await Assert.That(await BoundedMoveNext(enumeratorA)).IsTrue();
+        var lease = enumeratorA.Current; // dequeued but never presented — no Ack, no CancelLease
+
+        channel.TransferConsumer();
+        await enumeratorA.DisposeAsync(); // the old enumeration ends here, still holding the unresolved lease
+
+        using var ctsB = new CancellationTokenSource();
+        var enumeratorB = channel.ConsumeAsync(ctsB.Token).GetAsyncEnumerator();
+        try {
+            await Assert.That(await BoundedMoveNext(enumeratorB)).IsTrue();
+            await Assert.That(enumeratorB.Current.Envelope).IsEqualTo(env); // redelivered to the NEXT consumer
+            enumeratorB.Current.Ack();
+
+            // N-resolutions invariant: the envelope resolves EXACTLY once — a late call on the
+            // stale original lease (already superseded by the redelivered one) is a silent no-op,
+            // never a double free/second requeue.
+            lease.Ack();
+            lease.CancelLease();
+
+            var moveNextB2 = enumeratorB.MoveNextAsync();
+            await ctsB.CancelAsync();
+            await Assert.That(async () => await moveNextB2.AsTask().WaitAsync(Bounded))
+                .Throws<OperationCanceledException>(); // nothing left: not duplicated
+        } finally {
+            await enumeratorB.DisposeAsync();
+        }
+    }
+
     [Test]
     public async Task TransferConsumer_with_no_active_consumer_is_a_noop() {
         var channel = new OutcomeChannel();

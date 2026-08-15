@@ -25,8 +25,7 @@ public sealed class ShimOfferCoordinator {
     readonly string? _target;
     readonly CancellationToken _lifetime;
     readonly string _destination;
-    // Task 15 round-1 review: true only for a gate-Incomplete startup — Offerable/manual install
-    // still work, only the once-ever auto-offer DIALOG is skipped.
+    // True only for a gate-Incomplete startup — Offerable/manual install still work, only the once-ever auto-offer DIALOG is skipped.
     readonly bool _autoOfferSuppressed;
 
     readonly BehaviorSubject<bool> _offerable = new(false);

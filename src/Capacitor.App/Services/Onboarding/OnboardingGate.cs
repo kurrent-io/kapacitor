@@ -8,8 +8,7 @@ public abstract record GateResult {
     public sealed record Incomplete(GateReason Reason) : GateResult;
 }
 
-// EvaluationFailed: never returned by EvaluateAsync itself — App.EvaluateGateSafelyAsync's fail-safe
-// degrade for an unexpected exception (round-1 review, adjudicated).
+// EvaluationFailed is never returned by EvaluateAsync itself — it's App.EvaluateGateSafelyAsync's fail-safe degrade for an unexpected exception.
 public enum GateReason { NoProfile, InvalidServerUrl, NoToken, TokenUnusableBinding, TokenUnusableExpired, EvaluationFailed }
 
 /// <summary>

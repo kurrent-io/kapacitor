@@ -32,13 +32,17 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
     public DaemonClientService(
             string daemonName,
             Func<CancellationToken, IAsyncEnumerable<LocalControlEvent>> runClient,
-            Func<CancellationToken, Task<MutationOutcome>> startDaemon) {
+            Func<CancellationToken, Task<MutationOutcome>> startDaemon,
+            string? profileName = null) {
         DaemonName   = daemonName;
         _runClient   = runClient;
         _startDaemon = startDaemon;
+        ProfileName  = profileName;
     }
 
     public string DaemonName { get; }
+
+    public string? ProfileName { get; }
 
     public IObservable<AttachStatus> Status => _status.AsObservable();
 
@@ -145,8 +149,8 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
 
     /// Resolves the daemon name ONCE via the same chain DaemonCommands.ResolveName uses, so the
     /// watched daemon and the started daemon can never diverge (spec §5). `runMutation` is the
-    /// app-lifetime DaemonMutationLane's RunAsync (Task 10), injected by the composition
-    /// root so this factory never spawns a process of its own.
+    /// app-lifetime DaemonMutationLane's RunAsync, injected by the composition root so this
+    /// factory never spawns a process of its own.
     public static async Task<DaemonClientService> CreateDefaultAsync(
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
         await AppConfig.ResolveActiveProfile([]);
@@ -154,7 +158,8 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
 
         return new DaemonClientService(
             name, ct => new LocalControlClient(name).RunAsync(ct),
-            BuildStartDaemon(name, () => AppConfig.ResolvedProfile, runMutation));
+            BuildStartDaemon(name, () => AppConfig.ResolvedProfile, runMutation),
+            AppConfig.ResolvedProfile?.ProfileName);
     }
 
     /// The main-window Start/Retry delegate: builds a DetachedStart MutationRequest at the

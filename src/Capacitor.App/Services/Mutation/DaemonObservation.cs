@@ -39,9 +39,11 @@ public sealed class OneShotObservation(TimeSpan timeout) : IDaemonObservation {
 /// Zero-cost evidence from the already-live attach stream — valid ONLY for the client's own pinned daemon on the request's own server.
 public sealed class LiveGraphObservation(IDaemonClientService client) : IDaemonObservation {
     public Task<ObservedEvidence?> ObserveAsync(MutationRequest request, CancellationToken ct) {
-        // Identity gate first: a client bound to a different daemon name can never stand in for
-        // the requested one, regardless of what its own attach state currently shows.
+        // Identity gate first: a client bound to a different daemon name, or a different profile,
+        // can never stand in for the requested one (spec §4: "the client's daemon name + its
+        // profile/server" must match), regardless of what its own attach state currently shows.
         if (client.DaemonName != request.DaemonName) return Task.FromResult<ObservedEvidence?>(null);
+        if (client.ProfileName != request.Profile) return Task.FromResult<ObservedEvidence?>(null);
 
         // Bounded immediate take — Status/Snapshots replay their latest value synchronously on
         // subscribe (same seed-capture pattern as TrayViewModel), so this never waits.

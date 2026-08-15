@@ -29,13 +29,11 @@ public partial class App : Application {
     // lane's 10s DetachedConfirmWindow.
     static readonly TimeSpan OneShotProbeTimeout = TimeSpan.FromSeconds(2);
 
-    // Linked to the app's shutdown sequence below; the token StartDaemonCommand's WAIT is
-    // built against (Task 4 carry-note: never CancellationToken.None — an unbounded wait would
-    // survive app exit).
+    // Linked to the app's shutdown sequence below; the token StartDaemonCommand's WAIT is built
+    // against — never CancellationToken.None, or an unbounded wait would survive app exit.
     readonly CancellationTokenSource _shutdown = new();
-    // Task 10: constructed FIRST (before any other graph object) in StartAsync and
-    // disposed LAST — every daemon mutation in the app runs through it, so nothing that might
-    // still call RunAsync can outlive it.
+    // Constructed FIRST (before any other graph object) in StartAsync and disposed LAST — every
+    // daemon mutation in the app runs through it, so nothing that might still call RunAsync can outlive it.
     DaemonMutationLane? _lane;
     DaemonClientService? _service; // concrete type: IAsyncDisposable is not on the interface
     // spec: subscribed and Start()'d BEFORE _service.Start() begins pumping (subscribe-before-
@@ -99,10 +97,7 @@ public partial class App : Application {
     // surface (stderr is invisible for a GUI-launched WinExe) — it must fail loudly instead.
     async Task StartAsync(IClassicDesktopStyleApplicationLifetime desktop) {
         try {
-            // Task 10: the lane is constructed FIRST, before any other graph object —
-            // every daemon mutation in the app, from here on, routes through this one instance.
-            // Its own dependencies (a process runner + login-shell probe) need neither a resolved
-            // profile nor a live service, so nothing below is reordered to make this possible.
+            // The lane is constructed FIRST, before any other graph object, since every daemon mutation routes through this one instance and its own dependencies need neither a resolved profile nor a live service.
             var laneRunner = new DaemonClientService.ProcessRunner();
             var laneProbe  = new LoginShellProbe(laneRunner, Environment.GetEnvironmentVariable);
             var channel    = new OutcomeChannel();
@@ -121,13 +116,7 @@ public partial class App : Application {
             // itself falls back to null (one-shot) for any other target.
             lane.SetLiveAdapter(new LiveGraphObservation(service));
 
-            // Shares CreateDefaultAsync's own AppConfig.ResolveActiveProfile resolution (Codex P1
-            // review): a second, independent self-resolving gate call could observe a different
-            // active profile than the graph above if it changed concurrently between the two
-            // resolves — evaluating Complete for profile A while the graph builds for
-            // unauthenticated profile B with auto-actions open. EvaluateResolvedAsync skips its
-            // own resolution and reads the SAME AppConfig.ResolvedProfile CreateDefaultAsync just
-            // set, so the verdict and the graph identity can never diverge.
+            // Shares CreateDefaultAsync's own AppConfig.ResolveActiveProfile resolution: EvaluateResolvedAsync reads the SAME AppConfig.ResolvedProfile rather than re-resolving, so the gate verdict and the graph identity can never diverge on a profile that changes concurrently between the two.
             var resolvedProfile = AppConfig.ResolvedProfile;
             var gate = await EvaluateGateSafelyAsync(
                 ct => OnboardingGate.EvaluateResolvedAsync(resolvedProfile?.ProfileName, resolvedProfile?.Profile, ct),
@@ -157,11 +146,7 @@ public partial class App : Application {
                 service, ops, autoActionsPermanentlyClosed, lifecycleStatus.OnNext, lifecycleAttention.OnNext, lane.RunAsync);
             lifecycle.Start();
             _lifecycle = lifecycle;
-            // Task 24: unlike lifecycle's Start(), subscribe-before-run doesn't matter here —
-            // Offerable is a BehaviorSubject, so TrayViewModel (built further below) still sees
-            // the current value the moment it subscribes.
-            // Always started: the item and manual install must keep working in Incomplete mode too
-            // — BuildLifecycleController's autoOfferSuppressed is what skips only the dialog.
+            // Unlike lifecycle's Start(), subscribe-before-run doesn't matter here (Offerable is a BehaviorSubject, replayed to TrayViewModel whenever it subscribes); always started so the item and manual install keep working in Incomplete mode too — BuildLifecycleController's autoOfferSuppressed skips only the dialog.
             shimOffer.Start();
             _shimOffer = shimOffer;
 
@@ -290,8 +275,7 @@ public partial class App : Application {
                 Console.Error.WriteLine($"kcap app failed to dispose the daemon client service during startup-failure cleanup: {disposeEx}");
             }
         }
-        // The lane goes LAST (Task 10): both lifecycle and service can still be calling
-        // its RunAsync until their own disposal above completes.
+        // The lane goes LAST: both lifecycle and service can still be calling its RunAsync until their own disposal above completes.
         if (lane is not null) {
             try {
                 await lane.DisposeAsync();
@@ -386,15 +370,7 @@ public partial class App : Application {
     // KCAP_APP_CLI_PATH override (CliResolver.ResolvePath returning null) is treated as "no CLI"
     // here — the lifecycle features must never silently point at the wrong binary.
     //
-    // Task 24: also builds ShimOfferCoordinator here (not a separate method) — it shares
-    // cliPath/probe/store/surface with the lifecycle controller rather than re-resolving them.
-    // Task 10: `runMutation` (the lane's RunAsync) and the resolved canonical server are threaded
-    // through so the controller's own mutating branches route execution through the ONE lane
-    // instead of calling IKcapCli mutation methods directly; `cli` below is kept for read-only
-    // VersionAsync/ServiceStatusAsync only. `Probe` is returned too so the composition-root
-    // outcome consumer can compute a takeover dialog's PathDegraded disclosure from the SAME
-    // probe instance the controller's own preconditions use.
-    // `ops` (already built by StartAsync) is shared with the ConsentFlipCoordinator built here too.
+    // Also builds ShimOfferCoordinator here (not a separate method), sharing cliPath/probe/store/surface with the lifecycle controller rather than re-resolving them; threads `runMutation` (the lane's RunAsync) and the resolved canonical server so the controller's mutating branches route through the ONE lane (`cli` stays read-only VersionAsync/ServiceStatusAsync); returns `Probe` so the outcome consumer computes a takeover dialog's PathDegraded from the SAME instance; shares `ops` (already built by StartAsync) with the ConsentFlipCoordinator built here too.
     (DaemonLifecycleController Lifecycle, ShimOfferCoordinator ShimOffer, ConsentFlipCoordinator ConsentFlip,
             ILifecycleSurface Surface, ILoginShellProbe Probe) BuildLifecycleController(
             DaemonClientService service, ILocalControlOps ops, bool autoActionsPermanentlyClosed,
@@ -420,8 +396,7 @@ public partial class App : Application {
         // (no override set, or the not-yet-landed bundle-relative arm) means there is
         // nothing to link, so the offer and the menu item both stay off for the whole run.
         var shimTarget = cliPath is not null && Path.IsPathRooted(cliPath) ? cliPath : null;
-        // autoOfferSuppressed (round-1 review): Start() always runs now — Offerable/manual install
-        // must keep working in Incomplete mode — only the once-ever auto-offer dialog is skipped.
+        // autoOfferSuppressed: Start() always runs — Offerable/manual install must keep working in Incomplete mode; only the once-ever auto-offer dialog is skipped.
         var shimOffer = new ShimOfferCoordinator(
             lifecycle.PhaseClosed, probe, new PathShimInstaller(runner, probe), store, surface, shimTarget,
             _shutdown.Token, autoActionsPermanentlyClosed);
@@ -456,8 +431,7 @@ public partial class App : Application {
     // Decision 2's carve-out switch: Incomplete is the only gate outcome that closes auto-actions.
     internal static bool AutoActionsPermanentlyClosed(GateResult gate) => gate is GateResult.Incomplete;
 
-    // Round-1 review (adjudicated): a gate-evaluation exception must never brick startup — degrades
-    // to Incomplete (fail-safe: the app still launches, with auto-actions closed) instead of throwing.
+    // A gate-evaluation exception must never brick startup — degrades to Incomplete (fail-safe: the app still launches, with auto-actions closed) instead of throwing.
     internal static async Task<GateResult> EvaluateGateSafelyAsync(
             Func<CancellationToken, Task<GateResult>> evaluate, CancellationToken ct) {
         try {
@@ -470,14 +444,7 @@ public partial class App : Application {
         }
     }
 
-    // The lane's cliOverride seam. Unlike CreateDefaultAsync's shared CliResolver.ResolvePath
-    // (whose no-override answer is the bare string "kcap", a PATH-resolution-at-spawn-time
-    // sentinel), the lane needs an unambiguous absolute pin or nothing — string-comparing
-    // ResolvePath's return against "kcap" could, in principle, misfire on a real override whose
-    // resolved value is also exactly "kcap" (round-1 review M-4). Reads KCAP_APP_CLI_PATH
-    // directly instead: set + exists → an absolute pin (Path.GetFullPath); set + missing → null
-    // (fail closed, never a silent PATH fallback); truly absent → null (the lane's own
-    // shell-probe path answers instead).
+    // The lane's cliOverride seam reads KCAP_APP_CLI_PATH directly rather than sharing CreateDefaultAsync's CliResolver.ResolvePath (whose no-override answer is the bare string "kcap" — indistinguishable by string-compare from a real override of that same value): set + exists → an absolute pin (Path.GetFullPath); set + missing → null (fail closed, never a silent PATH fallback); truly absent → null (the lane's own shell-probe path answers instead).
     static string? ResolveCliOverride() =>
         ResolveCliOverrideCore(Environment.GetEnvironmentVariable("KCAP_APP_CLI_PATH"), File.Exists, Path.GetFullPath);
 
@@ -488,12 +455,14 @@ public partial class App : Application {
     }
 
     // Drains every non-success outcome the lane enqueues and presents it through the SAME
-    // ILifecycleSurface the controller uses for its own dialogs (single-presentation rule). A
-    // presentation failure for ONE envelope is caught and logged INSIDE the loop (round-1 review
-    // I-1) so it can never brick every presentation after it — only a shutdown cancellation ends
-    // the loop. Owns the per-run Takeover decline memory (round-2 review R2-2): one HashSet per
-    // call ("per run"), never persisted — the controller's own persisted DeclinedTakeoverPairs is
-    // a separate concern entirely.
+    // ILifecycleSurface the controller uses for its own dialogs, tracking whether the UI boundary
+    // was actually reached: a presentation failure BEFORE it (e.g. terminalPathAsync throwing
+    // ahead of the takeover dialog) requeues the envelope once for the next consumer, while a
+    // fault AFTER it (e.g. the accepted takeover's own re-mutation throwing) still acks — the
+    // outcome was genuinely shown. A shutdown OperationCanceledException keeps its prior
+    // disposition (acked; draining stops right after, so nothing could redeliver it anyway). Owns
+    // the per-run (never persisted) Takeover decline memory — separate from the controller's own
+    // persisted DeclinedTakeoverPairs.
     internal static async Task ConsumeMutationOutcomesAsync(
             OutcomeChannel channel, ILifecycleSurface surface,
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation,
@@ -501,16 +470,19 @@ public partial class App : Application {
         var declinedTakeoverPairs = new HashSet<(MutationRequest Request, string Token)>();
         try {
             await foreach (var lease in channel.ConsumeAsync(ct)) {
+                var presented = false;
                 try {
                     await PresentOutcomeAsync(
-                            surface, lease.Envelope, runMutation, terminalPathAsync, cliVersion, ct, declinedTakeoverPairs)
+                            surface, lease.Envelope, runMutation, terminalPathAsync, cliVersion, ct, declinedTakeoverPairs,
+                            () => presented = true)
                         .ConfigureAwait(false);
+                    lease.Ack(); // ran to completion — whether or not anything needed showing
                 } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
-                    throw; // shutdown — let the outer catch end the whole loop, not just this envelope
+                    lease.Ack(); // shutdown: same disposition as before this envelope-boundary fix
+                    throw; // let the outer catch end the whole loop, not just this envelope
                 } catch (Exception ex) {
                     Console.Error.WriteLine($"kcap app failed to present a mutation outcome: {ex}");
-                } finally {
-                    lease.Ack(); // presented, logged-and-skipped, or shutting down — never redelivered
+                    if (presented) lease.Ack(); else lease.CancelLease(); // requeue-once only for a pre-presentation failure
                 }
             }
         } catch (OperationCanceledException) {
@@ -518,26 +490,25 @@ public partial class App : Application {
         }
     }
 
-    // Takeover reuses the controller's own gated ConfirmAsync dialog — accept re-mutates via
-    // Replace at the ENVELOPE's own identity (never freshly resolved: a takeover targets the
-    // identity that failed) and is state-only (any follow-up actionable outcome re-arrives on its
-    // own envelope — that loop is the design); decline is the ONE exception to "never
-    // surface.Status for Takeover" — one line naming the token, nothing else (round-1 review C-1).
-    // Reinstall/Attention/Storage are an attention line naming the coded token (round-1 review
-    // C-2: Reinstall moved off the status slot — the controller's own guard-refusal status line is
-    // now the ONLY status-slot writer for a mutation outcome). UnconfirmedNoAttach is actionable
-    // (round-1 review I-3) — one attention line naming the verb; any success case never reaches
-    // here at all (the lane's Deliver only enqueues non-success outcomes).
-    // `declinedTakeoverPairs` defaults to a fresh (empty) set so every existing direct call site
-    // keeps working unchanged — only ConsumeMutationOutcomesAsync's loop threads one shared
-    // instance across the whole run.
+    // Presents one classified outcome exactly once: Takeover reuses the controller's own gated
+    // ConfirmAsync dialog, whose accept re-mutates via Replace at the ENVELOPE's own identity
+    // (never freshly resolved — a takeover targets the identity that failed) and is state-only,
+    // and whose decline is the ONE exception to "never surface.Status for Takeover" (one line
+    // naming the token); Reinstall/Attention/Storage/UnconfirmedNoAttach each write a single
+    // attention line naming the token or verb; success cases never reach here (the lane's Deliver
+    // only enqueues non-success outcomes). `markPresented` fires once the UI boundary is reached
+    // (right after the surface call/dialog that constitutes presentation) so the caller can tell a
+    // pre-presentation failure from a post-presentation one. `declinedTakeoverPairs` defaults to a
+    // fresh (empty) set so every existing direct call site keeps working unchanged — only
+    // ConsumeMutationOutcomesAsync's loop threads one shared instance across the whole run.
     internal static async Task PresentOutcomeAsync(
             ILifecycleSurface surface, OutcomeEnvelope envelope,
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation,
             Func<CancellationToken, Task<string?>> terminalPathAsync, Func<string?> cliVersion, CancellationToken ct,
-            HashSet<(MutationRequest Request, string Token)>? declinedTakeoverPairs = null) {
+            HashSet<(MutationRequest Request, string Token)>? declinedTakeoverPairs = null, Action? markPresented = null) {
         if (envelope.Outcome is MutationOutcome.UnconfirmedNoAttach) {
             surface.Attention($"The daemon {VerbDisplay(envelope.Request.Verb)} is not yet confirmed — check status.");
+            markPresented?.Invoke();
             return;
         }
 
@@ -553,10 +524,9 @@ public partial class App : Application {
                 var declined = declinedTakeoverPairs ?? [];
                 var pairKey = (envelope.Request, named);
                 if (declined.Contains(pairKey)) {
-                    // round-2 review R2-2: a persistent failure the user already declined once
-                    // this run is downgraded to a one-line attention presentation — still
-                    // exactly-once per envelope, just never a re-dialog for the SAME pair.
+                    // A persistent failure the user already declined once this run downgrades to a one-line attention presentation — still exactly-once per envelope, just never a re-dialog for the SAME pair.
                     surface.Attention($"kcap needs to replace the daemon service to continue ({named}).");
+                    markPresented?.Invoke();
                     break;
                 }
 
@@ -564,13 +534,9 @@ public partial class App : Application {
                 var prompt = new LifecyclePrompt(
                     LifecyclePrompt.KindTakeover, null, cliVersion(), pathDegraded, DaemonLifecycleController.TakeoverDisclosure);
                 var accepted = await surface.ConfirmAsync(prompt, ct).ConfigureAwait(false);
+                markPresented?.Invoke(); // the dialog was shown and answered — everything after this is post-presentation
                 if (accepted) {
-                    // round-2 review R2-1 (adjudicated, deferred to Plan C): no app-side evidence
-                    // revalidation before re-mutating — a stale Accept can only fail coded (28/29,
-                    // under the CLI's own per-label transaction lock, the designed guard for
-                    // exactly this staleness) and re-arrives as a fresh channel outcome; richer
-                    // accept-time UX (incl. any advisory revalidation) is the wizard consumer's to
-                    // own.
+                    // No app-side evidence revalidation before re-mutating on accept — a stale Accept can only fail coded (28/29, under the CLI's own per-label transaction lock) and re-arrives as a fresh channel outcome; richer accept-time UX is the wizard consumer's to own.
                     _ = await runMutation(envelope.Request with { Verb = MutationVerb.Replace }, ct).ConfigureAwait(false);
                 } else {
                     declined.Add(pairKey); // Accept never records here — an accepting user wants the retry loop
@@ -580,16 +546,17 @@ public partial class App : Application {
             }
             case RecoverySurface.Reinstall:
                 surface.Attention($"kcap needs to be reinstalled to continue ({named}).");
+                markPresented?.Invoke();
                 break;
             case RecoverySurface.Attention:
             case RecoverySurface.Storage:
                 surface.Attention($"A daemon mutation needs attention ({named}).");
+                markPresented?.Invoke();
                 break;
         }
     }
 
-    // round-2 review R2-3: a small display map instead of MutationVerb.ToString() for
-    // user-facing copy.
+    // A small display map instead of MutationVerb.ToString() for user-facing copy.
     static string VerbDisplay(MutationVerb verb) => verb switch {
         MutationVerb.Install       => "install",
         MutationVerb.Replace       => "replace",
@@ -598,15 +565,23 @@ public partial class App : Application {
         _                          => verb.ToString(),
     };
 
-    // Succeeded/SucceededAfterTimeout are the only cases still landing on the None catch-all —
-    // they're never enqueued onto the channel at all, so this is unreachable in production;
-    // UnconfirmedNoAttach is handled by PresentOutcomeAsync BEFORE this classification runs
-    // (round-1 review I-3 — it is actionable, not skipped).
+    // spec §10: the closed set of AttentionSkew detail tokens that mean "connected but below the
+    // floor this app requires" — read verbatim off DaemonMutationLane.EvidenceFailureLeg, never
+    // guessed — route to the same caller-routed Takeover presentation as a coded Failed/Refused
+    // (dialog + per-run decline memory, accept issues Replace); every other AttentionSkew detail
+    // (wrong-server, ownership mismatch, unreachable-with-owner, unknown) stays non-destructive
+    // Attention. AttentionRepair is always Attention. Succeeded/SucceededAfterTimeout are the only
+    // cases landing on the None catch-all — unreachable in production, since the lane's Deliver
+    // never enqueues a success outcome; UnconfirmedNoAttach is handled by PresentOutcomeAsync
+    // before this classification runs (it is actionable, not skipped).
+    static readonly HashSet<string> TakeoverRoutedSkewTokens = ["missing_capability_consent_3", "daemon_below_floor", "pre_slice_evidence"];
+
     internal static (RecoverySurface Surface, string? Token) ClassifyForPresentation(MutationOutcome outcome) => outcome switch {
-        MutationOutcome.Refused(var reason, var surface)                => (surface, reason),
-        MutationOutcome.Failed(var exitCode, var reason, var surface)   => (surface, reason ?? VerifyExitCodes.Token(exitCode)),
-        MutationOutcome.AttentionSkew(var detail)                       => (RecoverySurface.Attention, detail),
-        MutationOutcome.AttentionRepair(var detail)                     => (RecoverySurface.Attention, detail),
+        MutationOutcome.Refused(var reason, var surface)              => (surface, reason),
+        MutationOutcome.Failed(var exitCode, var reason, var surface) => (surface, reason ?? VerifyExitCodes.Token(exitCode)),
+        MutationOutcome.AttentionSkew(var detail) =>
+            (TakeoverRoutedSkewTokens.Contains(detail) ? RecoverySurface.Takeover : RecoverySurface.Attention, detail),
+        MutationOutcome.AttentionRepair(var detail) => (RecoverySurface.Attention, detail),
         _ => (RecoverySurface.None, null),
     };
 
@@ -778,11 +753,7 @@ public partial class App : Application {
     }
 
     async Task DisposeAndShutdownAsync() {
-        // spec §3.6: mutations are never abandoned — give a lifecycle-controller-triggered
-        // mutation (startup matrix, skew, txn-requery; none of these carry _shutdown.Token) OR a
-        // main-window-triggered one (Task 10: the lane's own in-flight RunAsync, not gated by
-        // _lifecycle's gate at all) a bounded chance to finish naturally, WHILE the UI is still
-        // up, before anything below starts tearing it down.
+        // spec §3.6: mutations are never abandoned — give a lifecycle-controller-triggered mutation (startup matrix, skew, txn-requery; none of these carry _shutdown.Token) or a main-window-triggered one (the lane's own in-flight RunAsync, ungated by _lifecycle) a bounded chance to finish naturally, while the UI is still up, before anything below starts tearing it down.
         if (_lifecycle is not null || _lane is not null)
             await AwaitQuiescedAsync(() => QuiesceLifecycleAndLaneAsync(_lifecycle, _lane), QuiesceShutdownCap).ConfigureAwait(false);
 
@@ -800,12 +771,7 @@ public partial class App : Application {
         }
     }
 
-    // The dependent (_lifecycle, subscribed to _service's streams) goes first — same rule as
-    // BuildLifecycleController's construction-order comment, in reverse. A throw disposing it must
-    // never skip _service's own disposal, so it gets its own guard rather than sharing the outer
-    // DisposeAndConfirmShutdownAsync's single try/catch. The lane (Task 10) goes LAST, after
-    // BOTH: it is the substrate everything else's mutations run through, so it must outlive every
-    // caller that might still be awaiting a RunAsync call as its OWN disposal above proceeds.
+    // The dependent (_lifecycle, subscribed to _service's streams) goes first, reversing BuildLifecycleController's construction order, with its own guard so a throw disposing it never skips _service's disposal; the lane goes LAST, after both, since it's the substrate every mutation runs through and must outlive any caller still awaiting a RunAsync call as its own disposal proceeds.
     async ValueTask DisposeLifecycleAndServiceAsync() {
         if (_lifecycle is not null) {
             try {
@@ -828,13 +794,7 @@ public partial class App : Application {
         }
     }
 
-    // Task 10: composes the controller's own QuiescedAsync (which only covers mutations
-    // it itself triggered, still serialized by its `_gate`) with the lane's (which also covers the
-    // main-window Start/Retry path — DaemonClientService.StartDaemonAsync calls the lane directly,
-    // never through the controller's gate at all). CancellationToken.None on the lane call: the
-    // bound is the race against Task.Delay(cap) in AwaitQuiescedAsync above, exactly like the
-    // controller's own parameterless QuiescedAsync — an already-cancelled token here would resolve
-    // instantly and defeat the wait entirely.
+    // Composes the controller's own QuiescedAsync (mutations it triggered, serialized by its `_gate`) with the lane's (which also covers main-window Start/Retry, since DaemonClientService.StartDaemonAsync calls the lane directly, never through the controller's gate); CancellationToken.None on the lane call because the bound is the race against Task.Delay(cap) in AwaitQuiescedAsync above — an already-cancelled token here would resolve instantly and defeat the wait.
     internal static async Task QuiesceLifecycleAndLaneAsync(DaemonLifecycleController? lifecycle, DaemonMutationLane? lane) {
         var waits = new List<Task>(2);
         if (lifecycle is not null) waits.Add(lifecycle.QuiescedAsync());

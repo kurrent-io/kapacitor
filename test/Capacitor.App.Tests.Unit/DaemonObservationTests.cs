@@ -91,6 +91,22 @@ public class DaemonObservationTests {
         await Assert.That(evidence).IsNull();
     }
 
+    // P1-3(b): spec §4's live-adapter identity gate is "daemon name + profile/server" — a client
+    // resolved for a DIFFERENT profile can never stand in for this request, even when the daemon
+    // name and server both match (a same-named daemon reachable under two profiles is not the
+    // same target).
+    [Test]
+    public async Task LiveGraph_profile_mismatch_returns_null() {
+        var client = new FakeDaemonClientService { DaemonName = "daemon-a", ProfileName = "other-profile" };
+        client.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap("daemon-a", serverUrl: "http://localhost:9999"));
+        client.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["status/1"]));
+        var adapter = new LiveGraphObservation(client);
+
+        var evidence = await adapter.ObserveAsync(Req(daemonName: "daemon-a", server: "http://localhost:9999"), CancellationToken.None);
+
+        await Assert.That(evidence).IsNull();
+    }
+
     [Test]
     public async Task LiveGraph_server_mismatch_returns_null() {
         var client = new FakeDaemonClientService { DaemonName = "daemon-a" };

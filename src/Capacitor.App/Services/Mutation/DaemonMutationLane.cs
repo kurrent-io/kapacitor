@@ -222,6 +222,10 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
     async Task<MutationOutcome> ExecuteActionAsync(MutationRequest request, CancellationToken ct) {
         ct.ThrowIfCancellationRequested(); // a disposed lane's cancelled token must stop admission before any spawn
 
+        // Pinned before the first await (spec pin-once rule): a concurrent SetLiveAdapter swap
+        // during the CLI/version probes below must never change an already-started action's observer.
+        var observation = PinObservation(request);
+
         var pinnedPath = _cliOverride() ?? await _shellProbe.KcapPathAsync(ct, forceRefresh: false).ConfigureAwait(false);
         // A cached negative must not refuse forever: one forced re-probe lets a CLI installed after
         // the cache went negative recover on the very next action, instead of requiring an app restart.
@@ -231,8 +235,6 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         var executor = _executorFactory(request, pinnedPath); // built ONCE; the same instance runs the probe and the mutation
         var version = await executor.VersionAsync(ct).ConfigureAwait(false);
         if (!KcapCliCompatibility.Satisfies(version)) return new MutationOutcome.Refused("cli_below_floor", RecoverySurface.Attention);
-
-        var observation = PinObservation(request);
 
         var attemptId = request.Verb == MutationVerb.DetachedStart ? Guid.NewGuid().ToString("N") : null;
 
@@ -254,17 +256,9 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
             _ => throw new ArgumentOutOfRangeException(nameof(request), request.Verb, "unknown MutationVerb"),
         };
 
-    // Live adapter usable only when it can actually target this request's identity; unset falls
-    // back to a plain one-shot probe. When set, the pin is a COMPOSITE that tries live on every
-    // ObserveAsync call and falls through to a FRESH one-shot whenever live's result is null or
-    // not Reachable — e.g. a mutation (takeover Replace, StartVerified, DetachedStart) that
-    // restarted the daemon tears down the app's own attach mid-action, and the live adapter would
-    // otherwise keep replaying that stale "unreachable" snapshot for the rest of classification.
-    // Exactly one observation result feeds a given classification attempt, never a live/one-shot
-    // blend. Pinned ONCE at action start (spec pin-once rule): the live reference and
-    // oneShotFactory this wrapper closes over never change even if SetLiveAdapter is called again
-    // while this action is still in flight.
+    // Pinned ONCE at action start (before the caller's first await), so a later SetLiveAdapter call never changes an in-flight action's observer; DetachedStart always pins the one-shot factory, never the live adapter, because a one-shot dials fresh sockets per poll (post-mutation evidence by construction) while the live adapter would synchronously replay possibly pre-mutation status with no fresh-ownership cross-check to catch it. For every other verb an unset live adapter falls back to a plain one-shot probe, and a set one is wrapped in a COMPOSITE that tries live first and falls through to a FRESH one-shot whenever live's result is null or not Reachable (e.g. a mutation that restarted the daemon and tore down the app's own attach) — exactly one observation result feeds a given classification attempt, never a live/one-shot blend.
     IDaemonObservation PinObservation(MutationRequest request) {
+        if (request.Verb == MutationVerb.DetachedStart) return _oneShotFactory(request);
         var live = _liveAdapter;
         return live is null ? _oneShotFactory(request) : new CompositeObservation(live, _oneShotFactory);
     }
@@ -385,17 +379,7 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         return new MutationOutcome.Failed(result.ExitCode, null, RecoverySurface.Attention);
     }
 
-    // Polls the pinned observation for up to DetachedConfirmWindow: full evidence at ANY poll wins
-    // immediately via onFullEvidence; an attributed boot-refusal marker wins Refused. A non-full,
-    // non-unreachable leg (e.g. the two-dial probe's transient mid-boot shape — hello answered,
-    // snapshot not yet subscribed — reads as a server/name mismatch) does NOT fail fast: it is only
-    // ever a snapshot of ONE poll, so the loop keeps polling through it, remembering the LAST
-    // observed leg. Only at window expiry does that last leg decide the outcome: "unreachable" (or
-    // no evidence ever observed) → UnconfirmedNoAttach; any other leg, still true at expiry →
-    // AttentionSkew(leg). Entirely TimeProvider-driven so tests never wait for real time.
-    // `attemptId` is null only via direct test injection through the Classify seam — a real
-    // DetachedStart action always carries one; a null one must never attribute a marker, since a
-    // null-attempt marker belongs to a service-verb refusal, not this action.
+    // Polls the pinned observation (marker checked first each iteration, so an attributed boot-refusal always wins Refused) for up to DetachedConfirmWindow: full evidence at any poll resolves immediately via onFullEvidence, a non-full non-unreachable leg is remembered and polled through rather than failing fast (only a single-poll snapshot), and only at window expiry does the last leg decide — "unreachable"/never-observed → UnconfirmedNoAttach, anything else → AttentionSkew(leg); entirely TimeProvider-driven. `attemptId` is null only via direct test injection through the Classify seam (a real DetachedStart action always carries one) and must never attribute a marker, since a null-attempt marker belongs to a service-verb refusal, not this action.
     async Task<MutationOutcome> AwaitDetachedConfirmationAsync(
             MutationRequest request, IDaemonObservation observation, string? attemptId,
             Func<MutationOutcome> onFullEvidence, CancellationToken ct) {
@@ -406,7 +390,7 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
             // can never produce a false Refused, while evidence-first could let a pre-existing
             // same-name daemon (or, here, a transient mid-boot evidence shape) mask a real refusal —
             // checked fresh every iteration, so a refusal arriving mid-window is caught on the next poll.
-            if (attemptId is not null && BootRefusalMarker.TryAttribute(request.DaemonName, attemptId) is { } refusal)
+            if (attemptId is not null && BootRefusalMarker.TryAttribute(request.DaemonName, attemptId, request.CanonicalServer) is { } refusal)
                 return new MutationOutcome.Refused(refusal.Token, ReasonRouting.ForBootRefusal(refusal.Token));
 
             var evidence = await observation.ObserveAsync(request, ct).ConfigureAwait(false);

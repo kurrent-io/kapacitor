@@ -74,21 +74,30 @@ public sealed class ConsentFlipCoordinator(
             return;
         }
 
-        if (policy.Default != "allow" || policy.Rules.Count != 0) return; // factory guard: only a factory-looking policy flips
+        var isFactory = policy.Default == "allow" && policy.Rules.Count == 0; // factory guard: only a factory-looking policy flips
+        // Resurrected claim: a crash between a successful put and TryConsume can leave the claim
+        // pending while the daemon's policy is ALREADY "prompt" — the factory guard alone would
+        // then retain it forever, and a LATER deliberate operator allow+zero-rules could be
+        // re-flipped by the stale claim. Recognize the already-applied state and clear idempotently
+        // instead: no put needed, the policy already matches what the flip would have set.
+        var alreadyApplied = policy.Default == "prompt";
+        if (!isFactory && !alreadyApplied) return; // deny, or allow-with-rules: not factory-looking, retain
 
-        var put = new ConsentPolicyPutV2Dto(identity.DaemonName, claim.CanonicalServer, policy with { Default = "prompt" });
+        if (isFactory) {
+            var put = new ConsentPolicyPutV2Dto(identity.DaemonName, claim.CanonicalServer, policy with { Default = "prompt" });
 
-        ConsentAckDto ack;
-        try {
-            ack = await ops.PutConsentPolicyV2Async(put, lifetime).ConfigureAwait(false);
-        } catch (LocalControlOpsException) {
-            return; // claim retained
-        } catch (Exception ex) when (ex is not OperationCanceledException) {
-            Console.Error.WriteLine($"kcap: consent-flip coordinator put failed unexpectedly: {ex.Message}");
-            return;
+            ConsentAckDto ack;
+            try {
+                ack = await ops.PutConsentPolicyV2Async(put, lifetime).ConfigureAwait(false);
+            } catch (LocalControlOpsException) {
+                return; // claim retained
+            } catch (Exception ex) when (ex is not OperationCanceledException) {
+                Console.Error.WriteLine($"kcap: consent-flip coordinator put failed unexpectedly: {ex.Message}");
+                return;
+            }
+
+            if (!ack.Ok) return; // identity_mismatch or any other rejection — claim retained, nothing consumed
         }
-
-        if (!ack.Ok) return; // identity_mismatch or any other rejection — claim retained, nothing consumed
 
         // Two-lock conditional clear; a false return leaves the claim pending for the next graph.
         await Task.Run(() => claims.TryConsume(claim, ResolveCanonical, identity.DaemonName), lifetime).ConfigureAwait(false);

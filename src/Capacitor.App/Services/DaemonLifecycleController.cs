@@ -61,10 +61,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     // once from the same AppConfig.ResolvedProfile at composition time) — the mutation-request
     // guard (MutationRequestFactory) reads this at every lane call, never re-resolving it.
     readonly string? _canonicalServer;
-    // The lane's RunAsync, injected so every mutating branch below routes execution through the
-    // ONE app-lifetime lane (Task 10) instead of calling IKcapCli mutation methods
-    // directly — this controller's own _gate still serializes DECIDING, the lane serializes
-    // EXECUTION.
+    // The lane's RunAsync, injected so every mutating branch below routes execution through the ONE app-lifetime lane instead of calling IKcapCli mutation methods directly — this controller's own _gate still serializes DECIDING, the lane serializes EXECUTION.
     readonly Func<MutationRequest, CancellationToken, Task<MutationOutcome>> _runMutation;
     // When true, RunStartupBranchAsync never admits; PhaseClosed still resolves, StartActionAsync unaffected.
     readonly bool _autoActionsPermanentlyClosed;
@@ -387,17 +384,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         return null;
     }
 
-    /// Routes execution through the lane at this action's pinned identity. Two DISTINCT surfaces
-    /// (round-1 review C-2): a guard refusal (`MutationRequestFactory` rejecting BEFORE the lane
-    /// is ever touched) never reaches the outcome channel, so the controller is its sole
-    /// presenter — one `_surface.Status` line, and no lane call ever happened for the daemon to
-    /// have restarted. Everything that DOES reach the lane is a different story: the reattach kick
-    /// fires UNCONDITIONALLY after every `_runMutation` call, regardless of outcome — a mutation
-    /// attempt (takeover Replace, StartVerified, DetachedStart) may have restarted the daemon even
-    /// when it did not end in Succeeded/SucceededAfterTimeout, and kicking reattach is idempotent.
-    /// On any non-success outcome, the lane already enqueued it onto the channel (Deliver enqueues
-    /// every non-success outcome), so this makes NO surface call of its own — a second call here
-    /// would double-present. Returns whether the mutation itself succeeded.
+    /// Routes execution through the lane at this action's pinned identity. Two DISTINCT surfaces: a guard refusal (`MutationRequestFactory` rejecting BEFORE the lane is ever touched) never reaches the outcome channel, so the controller is its sole presenter (one `_surface.Status` line, no lane call, no restart); everything that DOES reach the lane fires the reattach kick UNCONDITIONALLY after every `_runMutation` call regardless of outcome (idempotent, since a mutation attempt may have restarted the daemon even without Succeeded/SucceededAfterTimeout) and makes NO surface call of its own, since the lane already enqueued any non-success outcome onto the channel and a second call here would double-present. Returns whether the mutation itself succeeded.
     async Task<bool> RunLaneMutationAsync(MutationVerb verb, CancellationToken ct) {
         var profileName = await _resolveProfileName().ConfigureAwait(false);
         var refusal = MutationRequestFactory.TryBuild(verb, profileName, _canonicalServer, _client.DaemonName, out var request);

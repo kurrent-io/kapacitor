@@ -97,6 +97,19 @@ public class DaemonClientServiceTests {
             () => svc.Agents.Keys.OrderBy(k => k, StringComparer.Ordinal).SequenceEqual(expectedSortedIds, StringComparer.Ordinal),
             what: $"Agents cache to equal [{string.Join(", ", expectedSortedIds)}]");
 
+    // P1-3(b): ProfileName is exposed verbatim (or null, when unresolved) so LiveGraphObservation's
+    // identity gate can compare against a request's Profile — additive, so the 3-arg constructor
+    // callers above/below keep compiling unchanged.
+    [Test]
+    public async Task ProfileName_defaults_to_null_and_is_exposed_verbatim_when_provided() {
+        var script = new Script();
+        await using var noProfile = new DaemonClientService("daemon-a", script.Run, NoOpStart());
+        await Assert.That(noProfile.ProfileName).IsNull();
+
+        await using var withProfile = new DaemonClientService("daemon-a", script.Run, NoOpStart(), profileName: "work");
+        await Assert.That(withProfile.ProfileName).IsEqualTo("work");
+    }
+
     [Test]
     public async Task Initial_status_replays_connecting() {
         var script = new Script();

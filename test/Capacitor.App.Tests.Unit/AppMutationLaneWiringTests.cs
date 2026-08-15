@@ -45,8 +45,13 @@ public class AppMutationLaneWiringTests {
 
     [Test]
     public async Task ResolveCliOverrideCore_existing_override_is_absolute_pinned() {
-        var result = AppUnderTest.ResolveCliOverrideCore("./bin/kcap", _ => true, p => $"/abs/{p}");
-        await Assert.That(result).IsEqualTo("/abs/./bin/kcap");
+        // Path.GetTempPath() is a real absolute root on every platform (a Windows leg exercises
+        // this with its own drive/backslash form) — Path.Combine, not a hardcoded Unix literal,
+        // builds both the fake getFullPath's answer and the expectation.
+        var absRoot = Path.Combine(Path.GetTempPath(), "abs-root");
+        var overrideEnv = Path.Combine(".", "bin", "kcap");
+        var result = AppUnderTest.ResolveCliOverrideCore(overrideEnv, _ => true, p => Path.Combine(absRoot, p));
+        await Assert.That(result).IsEqualTo(Path.Combine(absRoot, overrideEnv));
     }
 
     [Test]
@@ -59,8 +64,9 @@ public class AppMutationLaneWiringTests {
     // silently treated as "no override set" via a string-compare ambiguity.
     [Test]
     public async Task ResolveCliOverrideCore_override_literally_named_kcap_is_not_confused_with_the_old_sentinel() {
-        var result = AppUnderTest.ResolveCliOverrideCore("kcap", _ => true, p => $"/abs/{p}");
-        await Assert.That(result).IsEqualTo("/abs/kcap");
+        var absRoot = Path.Combine(Path.GetTempPath(), "abs-root");
+        var result = AppUnderTest.ResolveCliOverrideCore("kcap", _ => true, p => Path.Combine(absRoot, p));
+        await Assert.That(result).IsEqualTo(Path.Combine(absRoot, "kcap"));
     }
 
     // ---- PresentOutcomeAsync: Takeover (round-1 review C-1 / C-2) ----
@@ -262,6 +268,77 @@ public class AppMutationLaneWiringTests {
         await Assert.That(surface2).IsEqualTo(RecoverySurface.None);
     }
 
+    // P2-5 / spec §10: the closed set of AttentionSkew tokens meaning "connected but below the
+    // floor this app requires" — read verbatim off DaemonMutationLane.EvidenceFailureLeg — routes
+    // to Takeover; every other AttentionSkew detail stays non-destructive Attention.
+    [Test]
+    [Arguments("missing_capability_consent_3")]
+    [Arguments("daemon_below_floor")]
+    [Arguments("pre_slice_evidence")]
+    public async Task ClassifyForPresentation_routes_the_closed_set_of_AttentionSkew_tokens_to_Takeover(string token) {
+        var (surface, detail) = AppUnderTest.ClassifyForPresentation(new MutationOutcome.AttentionSkew(token));
+        await Assert.That(surface).IsEqualTo(RecoverySurface.Takeover);
+        await Assert.That(detail).IsEqualTo(token);
+    }
+
+    [Test]
+    [Arguments("server_or_name_mismatch")]
+    [Arguments("identity_inconsistent")]
+    [Arguments("unreachable_with_recorded_owner")]
+    [Arguments("ownership_unknown")]
+    [Arguments("ownership_mismatch")]
+    [Arguments("instance_pid_mismatch")]
+    [Arguments("some_unknown_future_token")]
+    public async Task ClassifyForPresentation_routes_every_other_AttentionSkew_token_to_Attention(string token) {
+        var (surface, detail) = AppUnderTest.ClassifyForPresentation(new MutationOutcome.AttentionSkew(token));
+        await Assert.That(surface).IsEqualTo(RecoverySurface.Attention);
+        await Assert.That(detail).IsEqualTo(token);
+    }
+
+    // ---- PresentOutcomeAsync: AttentionSkew routed to Takeover (P2-5) ----
+
+    [Test]
+    [Arguments("missing_capability_consent_3")]
+    [Arguments("daemon_below_floor")]
+    [Arguments("pre_slice_evidence")]
+    public async Task AttentionSkew_known_token_prompts_takeover_and_accept_issues_Replace_at_envelope_identity(string token) {
+        var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(true) };
+        var envelope = Envelope(new MutationOutcome.AttentionSkew(token));
+        var seen = new List<MutationRequest>();
+        Task<MutationOutcome> RunMutation(MutationRequest r, CancellationToken ct) {
+            seen.Add(r);
+            return Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
+        }
+
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, RunMutation, FixedTerminalPath("/usr/bin"), () => "1.2.3", CancellationToken.None);
+
+        await Assert.That(surface.Prompts.Count).IsEqualTo(1);
+        await Assert.That(surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindTakeover);
+        await Assert.That(seen.Count).IsEqualTo(1);
+        await Assert.That(seen[0].Verb).IsEqualTo(MutationVerb.Replace);
+        await Assert.That(seen[0].Profile).IsEqualTo(envelope.Request.Profile);
+        await Assert.That(seen[0].CanonicalServer).IsEqualTo(envelope.Request.CanonicalServer);
+        await Assert.That(seen[0].DaemonName).IsEqualTo(envelope.Request.DaemonName);
+    }
+
+    [Test]
+    [Arguments("server_or_name_mismatch")]
+    [Arguments("ownership_mismatch")]
+    [Arguments("unreachable_with_recorded_owner")]
+    [Arguments("some_unknown_future_token")]
+    public async Task AttentionSkew_other_token_is_attention_only_no_dialog(string token) {
+        var surface = new FakeLifecycleSurface();
+        var envelope = Envelope(new MutationOutcome.AttentionSkew(token));
+
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
+
+        await Assert.That(surface.Prompts).IsEmpty();
+        await Assert.That(surface.AttentionMessages.Count).IsEqualTo(1);
+        await Assert.That(surface.AttentionMessages[0]).Contains(token);
+    }
+
     // ---- ConsumeMutationOutcomesAsync (round-1 review I-1) ----
 
     /// Throws on its FIRST Attention call only, then behaves normally — simulates a presentation
@@ -276,8 +353,11 @@ public class AppMutationLaneWiringTests {
         public Task<bool> ConfirmAsync(LifecyclePrompt prompt, CancellationToken ct) => inner.ConfirmAsync(prompt, ct);
     }
 
+    // P1-2: a presentation failure BEFORE the UI boundary (surface.Attention throwing) must requeue
+    // the envelope for a re-presentation, never Ack-and-drop it — the loop itself survives either
+    // way (never faulted/canceled), but the outcome itself is no longer silently skipped.
     [Test]
-    public async Task ConsumeMutationOutcomesAsync_a_presentation_failure_does_not_kill_the_consumer() {
+    public async Task ConsumeMutationOutcomesAsync_a_presentation_failure_requeues_and_re_presents_then_acks() {
         var inner = new FakeLifecycleSurface();
         var surface = new ThrowOnceOnAttentionSurface(inner);
         var channel = new OutcomeChannel();
@@ -287,14 +367,50 @@ public class AppMutationLaneWiringTests {
             channel, surface, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, cts.Token);
 
         channel.Enqueue(new OutcomeEnvelope(Req(), new MutationOutcome.Failed(1, "boom1", RecoverySurface.Attention)));
-        channel.Enqueue(new OutcomeEnvelope(Req(), new MutationOutcome.Failed(2, "boom2", RecoverySurface.Attention)));
 
-        await WaitUntilAsync(() => inner.AttentionMessages.Count == 1, what: "the second envelope's presentation");
-        await Assert.That(inner.AttentionMessages[0]).Contains("boom2"); // first envelope's presentation threw and was skipped, not fatal
+        // The first attempt throws (pre-presentation) and is requeued at the front, not skipped —
+        // the retry succeeds (ThrowOnceOnAttentionSurface only throws once) and is what actually
+        // reaches the surface.
+        await WaitUntilAsync(() => inner.AttentionMessages.Count == 1, what: "the requeued retry's presentation");
+        await Assert.That(inner.AttentionMessages[0]).Contains("boom1");
+
+        // Channel remains functional afterward: a fresh envelope still presents normally.
+        channel.Enqueue(new OutcomeEnvelope(Req(), new MutationOutcome.Failed(2, "boom2", RecoverySurface.Attention)));
+        await WaitUntilAsync(() => inner.AttentionMessages.Count == 2, what: "the next envelope's presentation");
+        await Assert.That(inner.AttentionMessages[1]).Contains("boom2");
 
         cts.Cancel();
         // The loop's own outer catch swallows shutdown's OperationCanceledException by design
-        // (draining just stops) — the task completes normally, never faulted/canceled.
+        // (draining just stops) — the task completes normally, never faulted/canceled: the loop
+        // survives a presentation failure.
+        await consumerTask.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // P1-2: the takeover dialog IS the presentation boundary — once ConfirmAsync returns (shown
+    // and answered), a fault in the accept's OWN re-mutation must still Ack, never requeue the
+    // envelope for a second dialog.
+    [Test]
+    public async Task ConsumeMutationOutcomesAsync_a_fault_after_the_takeover_dialog_still_acks_not_requeues() {
+        var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(true) }; // accept
+        var channel = new OutcomeChannel();
+        using var cts = new CancellationTokenSource();
+        var runMutationCalls = 0;
+        Task<MutationOutcome> ThrowingRunMutation(MutationRequest r, CancellationToken ct) {
+            runMutationCalls++;
+            throw new InvalidOperationException("boom-after-accept");
+        }
+
+        var consumerTask = AppUnderTest.ConsumeMutationOutcomesAsync(
+            channel, surface, ThrowingRunMutation, FixedTerminalPath("/usr/bin"), () => "1.2.3", cts.Token);
+
+        channel.Enqueue(Envelope(new MutationOutcome.Failed(28, "foreign_binary", RecoverySurface.Takeover)));
+
+        await WaitUntilAsync(() => runMutationCalls == 1, what: "the accept's re-mutation attempt");
+        await Task.Delay(100); // give a wrongly-requeued re-dialog every chance to fire before asserting it didn't
+        await Assert.That(runMutationCalls).IsEqualTo(1);
+        await Assert.That(surface.Prompts.Count).IsEqualTo(1); // never re-dialogued
+
+        cts.Cancel();
         await consumerTask.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
