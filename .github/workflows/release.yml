@@ -209,7 +209,7 @@ jobs:
         if: matrix.container != ''
         shell: sh
         run: |
-          apk add --no-cache bash curl git icu-libs krb5-libs libgcc libstdc++ zlib clang build-base zlib-dev linux-headers
+          apk add --no-cache bash curl git icu-libs krb5-libs libgcc libstdc++ zlib clang build-base zlib-dev linux-headers openssl
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux' && !matrix.container
@@ -253,7 +253,11 @@ jobs:
         shell: bash
         run: |
           BIN=publish/daemon/${{ matrix.daemon-binary }}
-          echo "DIGEST=$(openssl dgst -sha256 -r "$BIN" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          DIGEST=$(openssl dgst -sha256 -r "$BIN" | cut -d' ' -f1)
+          if [ -z "$DIGEST" ]; then
+            echo "::error::empty daemon digest for $BIN"; exit 1
+          fi
+          echo "DIGEST=$DIGEST" >> "$GITHUB_OUTPUT"
 
       - name: Publish CLI AOT binary
         run: >
