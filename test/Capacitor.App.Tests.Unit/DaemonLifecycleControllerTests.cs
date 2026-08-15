@@ -195,6 +195,53 @@ public class DaemonLifecycleControllerTests {
         await Assert.That(h.Lane.Requests).IsEmpty();
     }
 
+    // ---- Task 15 decision-2 carve-out: autoActionsPermanentlyClosed ----
+
+    [Test]
+    public async Task AutoActionsClosed_terminal_unreachable_admits_no_startup_matrix_but_still_closes_the_phase() {
+        await using var h = new Harness(autoActionsPermanentlyClosed: true);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap()); // would otherwise auto-install
+        h.Start();
+
+        h.PushUnreachable();
+
+        await h.Controller.PhaseClosed; // must complete even though the matrix never runs
+        await Task.Delay(50); // give a wrongly-firing query/mutation every chance to appear
+        await Assert.That(h.Cli.StatusCallCount).IsEqualTo(0); // RunStartupBranchAsync never admitted
+        await Assert.That(h.Lane.Requests).IsEmpty();
+        await Assert.That(h.Surface.StatusMessages).IsEmpty();
+        await Assert.That(h.Surface.AttentionMessages).IsEmpty();
+    }
+
+    // Closed mode adds no separate arm — a second unreachable stays just as inert as the open-graph one.
+    [Test]
+    public async Task AutoActionsClosed_second_unreachable_stays_inert() {
+        await using var h = new Harness(autoActionsPermanentlyClosed: true);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap());
+        h.Start();
+
+        h.PushUnreachable();
+        await h.Controller.PhaseClosed;
+        h.PushUnreachable();
+        await Task.Delay(50);
+
+        await Assert.That(h.Cli.StatusCallCount).IsEqualTo(0);
+        await Assert.That(h.Lane.Requests).IsEmpty();
+    }
+
+    // StartActionAsync is a different code path from RunStartupBranchAsync — closing the latter must not touch it.
+    [Test]
+    public async Task AutoActionsClosed_user_clicked_StartAction_still_routes_through_the_lane() {
+        await using var h = new Harness(autoActionsPermanentlyClosed: true);
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap()); // nothing at all — DetachedStart row
+        h.Start();
+
+        await h.Controller.StartActionAsync(CancellationToken.None);
+
+        await Assert.That(h.Lane.Requests.Count).IsEqualTo(1);
+        await Assert.That(h.Lane.Requests[0].Verb).IsEqualTo(MutationVerb.DetachedStart);
+    }
+
     // ---- txn_active defers the startup matrix (spec §6: wait and re-query, never mutate into a held flock) ----
 
     [Test]
@@ -1280,13 +1327,13 @@ public class DaemonLifecycleControllerTests {
 
         public string? ProfileName = "default";
 
-        public Harness(string? canonicalServer = "https://kcap.example.com:443") {
+        public Harness(string? canonicalServer = "https://kcap.example.com:443", bool autoActionsPermanentlyClosed = false) {
             CanonicalServer = canonicalServer;
             Time  = new TimerCountingTimeProvider(Clock);
             Store = new AppStateStore(Path.Combine(TempDir, "app-state.json"));
             Controller = new DaemonLifecycleController(
                 Client, Cli, Probe, Store, Surface, () => Task.FromResult<string?>(ProfileName), Time,
-                CanonicalServer, Lane.RunAsync);
+                CanonicalServer, Lane.RunAsync, autoActionsPermanentlyClosed);
         }
 
         public void Start() => Controller.Start();

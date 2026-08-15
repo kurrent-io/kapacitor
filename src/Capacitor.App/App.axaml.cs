@@ -46,6 +46,8 @@ public partial class App : Application {
     // await chain against BuildLifecycleController's cliPath/probe/store/surface and _shutdown.Token,
     // so cancelling _shutdown (every teardown path below already does) is what stops it.
     ShimOfferCoordinator? _shimOffer;
+    // No disposal needed — its Status subscription dies with _service's own subject disposal below.
+    ConsentFlipCoordinator? _consentFlip;
     // Assigned by StartAsync's success path only; every one is still null on a startup failure
     // (and cleared again by the catch, which disposes whatever had been built). Teardown —
     // shutdown and startup-failure alike — disposes them in reverse creation order, tray icon
@@ -113,6 +115,10 @@ public partial class App : Application {
                 TimeProvider.System);
             _lane = lane;
 
+            // Plan C replaces this arm with wizard-first startup (spec decision 2).
+            var gate = await OnboardingGate.EvaluateAsync(_shutdown.Token);
+            var autoActionsPermanentlyClosed = AutoActionsPermanentlyClosed(gate);
+
             var service = await DaemonClientService.CreateDefaultAsync(lane.RunAsync);
             // The live adapter answers a mutation's own confirmation with zero extra socket cost
             // whenever the request targets THIS service's daemon/server — LiveGraphObservation
@@ -137,15 +143,19 @@ public partial class App : Application {
             // spec subscribe-before-pump: the controller's attach subscription must be live
             // BEFORE service.Start() begins pumping, or the startup phase could miss the very
             // first terminal outcome it hinges on (DaemonLifecycleController.Start's own comment).
-            var (lifecycle, shimOffer, lifecycleSurface, lifecycleProbe) =
-                BuildLifecycleController(service, lifecycleStatus.OnNext, lifecycleAttention.OnNext, lane.RunAsync);
+            var (lifecycle, shimOffer, consentFlip, lifecycleSurface, lifecycleProbe) = BuildLifecycleController(
+                service, ops, autoActionsPermanentlyClosed, lifecycleStatus.OnNext, lifecycleAttention.OnNext, lane.RunAsync);
             lifecycle.Start();
             _lifecycle = lifecycle;
             // Task 24: unlike lifecycle's Start(), subscribe-before-run doesn't matter here —
             // Offerable is a BehaviorSubject, so TrayViewModel (built further below) still sees
             // the current value the moment it subscribes.
-            shimOffer.Start();
+            // Incomplete: the once-ever auto-offer never runs; the tray's manual install command stays wired.
+            if (!autoActionsPermanentlyClosed) shimOffer.Start();
             _shimOffer = shimOffer;
+
+            consentFlip.Start();
+            _consentFlip = consentFlip;
 
             // The composition-root outcome consumer: shares lifecycle's own ILifecycleSurface, so
             // a lane-executed mutation's dialog reuses its serialized gate rather than a competing
@@ -221,6 +231,7 @@ public partial class App : Application {
             _lifecycle = null;
             _lane = null;
             _shimOffer = null; // no disposal of its own (see field comment) — just drop the reference
+            _consentFlip = null; // same — no disposal of its own
             _tray = null;
             _trayVm = null;
             _promptCoordinator = null;
@@ -373,8 +384,11 @@ public partial class App : Application {
     // VersionAsync/ServiceStatusAsync only. `Probe` is returned too so the composition-root
     // outcome consumer can compute a takeover dialog's PathDegraded disclosure from the SAME
     // probe instance the controller's own preconditions use.
-    (DaemonLifecycleController Lifecycle, ShimOfferCoordinator ShimOffer, ILifecycleSurface Surface, ILoginShellProbe Probe) BuildLifecycleController(
-            DaemonClientService service, Action<string> setLifecycleStatus, Action<string> setLifecycleAttention,
+    // `ops` (already built by StartAsync) is shared with the ConsentFlipCoordinator built here too.
+    (DaemonLifecycleController Lifecycle, ShimOfferCoordinator ShimOffer, ConsentFlipCoordinator ConsentFlip,
+            ILifecycleSurface Surface, ILoginShellProbe Probe) BuildLifecycleController(
+            DaemonClientService service, ILocalControlOps ops, bool autoActionsPermanentlyClosed,
+            Action<string> setLifecycleStatus, Action<string> setLifecycleAttention,
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
         var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists);
         var runner  = new DaemonClientService.ProcessRunner();
@@ -390,7 +404,7 @@ public partial class App : Application {
 
         var lifecycle = new DaemonLifecycleController(
             service, cli, probe, store, surface, () => Task.FromResult(ValidProfileName(profile)), TimeProvider.System,
-            canonicalServer, runMutation);
+            canonicalServer, runMutation, autoActionsPermanentlyClosed);
 
         // The shim links to the RESOLVED ABSOLUTE path only — CliResolver's bare "kcap" fallback
         // (no override set, or the not-yet-landed bundle-relative arm) means there is
@@ -399,7 +413,21 @@ public partial class App : Application {
         var shimOffer = new ShimOfferCoordinator(
             lifecycle.PhaseClosed, probe, new PathShimInstaller(runner, probe), store, surface, shimTarget, _shutdown.Token);
 
-        return (lifecycle, shimOffer, surface, probe);
+        // The delegate below and ConsentFlipClaims.Default() both resolve AppConfig.GetConfigPath().
+        var consentFlip = new ConsentFlipCoordinator(
+            service, ops, ConsentFlipClaims.Default(), ResolveConsentFlipIdentity, surface, store, _shutdown.Token);
+
+        return (lifecycle, shimOffer, consentFlip, surface, probe);
+    }
+
+    // Pure LoadPure read only — TryConsume already holds this same config lock when this delegate runs.
+    internal static (string Profile, string Server, string DaemonName) ResolveConsentFlipIdentity() {
+        var config      = ConfigMutator.LoadPure(AppConfig.GetConfigPath());
+        var profileName = config.ActiveProfile;
+        var profile     = config.Profiles.GetValueOrDefault(profileName);
+        var server      = ServerIdentity.Canonicalize(profile?.ServerUrl) ?? profile?.ServerUrl ?? "";
+        var daemonName  = DaemonNameResolver.Resolve([], profile?.Daemon?.Name);
+        return (profileName, server, daemonName);
     }
 
     // Delegates to the ONE shared validator: must agree with OnboardingGate on what counts as a
@@ -409,6 +437,9 @@ public partial class App : Application {
         OnboardingGate.ValidServerUrl(profile?.ServerUrl)
             ? profile!.ProfileName
             : null;
+
+    // Decision 2's carve-out switch: Incomplete is the only gate outcome that closes auto-actions.
+    internal static bool AutoActionsPermanentlyClosed(GateResult gate) => gate is GateResult.Incomplete;
 
     // The lane's cliOverride seam. Unlike CreateDefaultAsync's shared CliResolver.ResolvePath
     // (whose no-override answer is the bare string "kcap", a PATH-resolution-at-spawn-time

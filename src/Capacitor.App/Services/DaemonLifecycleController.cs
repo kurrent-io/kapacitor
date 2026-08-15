@@ -65,6 +65,8 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     // directly — this controller's own _gate still serializes DECIDING, the lane serializes
     // EXECUTION.
     readonly Func<MutationRequest, CancellationToken, Task<MutationOutcome>> _runMutation;
+    // When true, RunStartupBranchAsync never admits; PhaseClosed still resolves, StartActionAsync unaffected.
+    readonly bool _autoActionsPermanentlyClosed;
 
     readonly SemaphoreSlim _gate = new(1, 1);
     readonly CancellationTokenSource _lifetime = new();
@@ -84,16 +86,18 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     public DaemonLifecycleController(
             IDaemonClientService client, IKcapCli cli, ILoginShellProbe probe, IAppStateStore store,
             ILifecycleSurface surface, Func<Task<string?>> resolveProfileName, TimeProvider time,
-            string? canonicalServer, Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
-        _client             = client;
-        _cli                = cli;
-        _probe              = probe;
-        _store              = store;
-        _surface            = surface;
-        _resolveProfileName = resolveProfileName;
-        _time               = time;
-        _canonicalServer    = canonicalServer;
-        _runMutation        = runMutation;
+            string? canonicalServer, Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation,
+            bool autoActionsPermanentlyClosed = false) {
+        _client                        = client;
+        _cli                           = cli;
+        _probe                         = probe;
+        _store                         = store;
+        _surface                       = surface;
+        _resolveProfileName            = resolveProfileName;
+        _time                          = time;
+        _canonicalServer               = canonicalServer;
+        _runMutation                   = runMutation;
+        _autoActionsPermanentlyClosed  = autoActionsPermanentlyClosed;
     }
 
     /// Completes permanently on the first terminal attach outcome (Connected /
@@ -172,7 +176,11 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
                 _ = RunSkewCheckAsync(status.DaemonVersion); // every incompatible event, same reason as above
                 break;
             case AttachState.Unreachable:
-                if (isFirstTerminalOutcome) _ = RunStartupBranchAsync((status.State, status.Reason));
+                // Closed: PhaseClosed still resolves here — only the startup matrix itself never admits.
+                if (isFirstTerminalOutcome) {
+                    if (_autoActionsPermanentlyClosed) ClosePhase();
+                    else _ = RunStartupBranchAsync((status.State, status.Reason));
+                }
                 break;
         }
     }
