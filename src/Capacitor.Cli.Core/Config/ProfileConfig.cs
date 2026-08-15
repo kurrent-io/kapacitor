@@ -108,12 +108,26 @@ public record Profile {
     [JsonPropertyName("flows")]
     public FlowsSettings? Flows { get; init; }
 
+    /// <summary>
+    /// Provider + canonical server identity learned at the last successful sign-in (Plan C's
+    /// commit boundary). Additive and READ-only in Plan B — nothing writes it yet; only
+    /// <c>OnboardingGate</c> reads it, and only when the stamped server still matches.
+    /// </summary>
+    [JsonPropertyName("auth_provider")]
+    public AuthProviderStamp? AuthProvider { get; init; }
+
     /// <summary>The saved reviewer-vendor preference, with null/blank/whitespace defensively
     /// read as "no preference" — a blank treated as set would consume the single preference
     /// retry with an effectively vendor-less request and re-fail identically.</summary>
     public string? EffectiveReviewerVendorPreference() =>
         string.IsNullOrWhiteSpace(Flows?.ReviewerVendor) ? null : Flows!.ReviewerVendor!.Trim();
 }
+
+/// <summary>Provider + the canonical server identity it was learned for — a stamp for a
+/// DIFFERENT server (after a <c>server_url</c> change) must never be trusted as current.</summary>
+public sealed record AuthProviderStamp(
+    [property: JsonPropertyName("provider")]   string Provider,
+    [property: JsonPropertyName("server_url")] string ServerUrl);
 
 public record FlowsSettings {
     [JsonPropertyName("reviewer_vendor")]

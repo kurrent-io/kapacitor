@@ -8,6 +8,7 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
+using Capacitor.App.Services.Onboarding;
 using Capacitor.App.ViewModels;
 using Capacitor.App.Views;
 using Capacitor.Cli.Core;
@@ -401,9 +402,12 @@ public partial class App : Application {
         return (lifecycle, shimOffer, surface, probe);
     }
 
-    static string? ValidProfileName(ResolvedProfile? profile) =>
-        !string.IsNullOrWhiteSpace(profile?.ServerUrl) && Uri.TryCreate(profile.ServerUrl, UriKind.Absolute, out _)
-            ? profile.ProfileName
+    // Delegates to the ONE shared validator: must agree with OnboardingGate on what counts as a
+    // valid server_url (e.g. both reject file://), or a gate-incomplete machine could still pass
+    // this precondition into the normal daemon graph.
+    internal static string? ValidProfileName(ResolvedProfile? profile) =>
+        OnboardingGate.ValidServerUrl(profile?.ServerUrl)
+            ? profile!.ProfileName
             : null;
 
     // The lane's cliOverride seam. Unlike CreateDefaultAsync's shared CliResolver.ResolvePath
