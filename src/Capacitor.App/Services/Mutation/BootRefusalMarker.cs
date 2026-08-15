@@ -33,14 +33,7 @@ public static partial class BootRefusalMarker {
         }
     }
 
-    /// Attributes only against a VERIFIABLE identity, not just a timestamp: schema, a non-null
-    /// AttemptId equal to <paramref name="attemptId"/>, DaemonName equal to <paramref
-    /// name="daemonName"/>, a non-empty Token/InstanceId, a positive Pid, and the marker's own
-    /// Expectation matching <paramref name="requestCanonicalServer"/> (every app detached start
-    /// bakes the expectation, so an attributable marker always carries one) must ALL hold. Any
-    /// single failure returns null and leaves the marker untouched — a marker failing identity
-    /// validation against the request is not attributed, and the caller degrades to its generic
-    /// outcome.
+    /// Attributes only against a verifiable identity (schema, attemptId, daemonName, Token/InstanceId, Pid, Expectation) — any mismatch returns null, marker untouched.
     public static BootRefusalEvidence? TryAttribute(string daemonName, string attemptId, string? requestCanonicalServer) {
         var evidence = TryRead(daemonName);
         if (evidence is null) return null;

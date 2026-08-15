@@ -256,7 +256,7 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
             _ => throw new ArgumentOutOfRangeException(nameof(request), request.Verb, "unknown MutationVerb"),
         };
 
-    // Pinned ONCE at action start (before the caller's first await), so a later SetLiveAdapter call never changes an in-flight action's observer; DetachedStart always pins the one-shot factory, never the live adapter, because a one-shot dials fresh sockets per poll (post-mutation evidence by construction) while the live adapter would synchronously replay possibly pre-mutation status with no fresh-ownership cross-check to catch it. For every other verb an unset live adapter falls back to a plain one-shot probe, and a set one is wrapped in a COMPOSITE that tries live first and falls through to a FRESH one-shot whenever live's result is null or not Reachable (e.g. a mutation that restarted the daemon and tore down the app's own attach) — exactly one observation result feeds a given classification attempt, never a live/one-shot blend.
+    // Pinned once before the first await, immune to a later SetLiveAdapter swap; DetachedStart always pins one-shot, other verbs composite a set live adapter with a one-shot fallback.
     IDaemonObservation PinObservation(MutationRequest request) {
         if (request.Verb == MutationVerb.DetachedStart) return _oneShotFactory(request);
         var live = _liveAdapter;
@@ -379,7 +379,7 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         return new MutationOutcome.Failed(result.ExitCode, null, RecoverySurface.Attention);
     }
 
-    // Polls the pinned observation (marker checked first each iteration, so an attributed boot-refusal always wins Refused) for up to DetachedConfirmWindow: full evidence at any poll resolves immediately via onFullEvidence, a non-full non-unreachable leg is remembered and polled through rather than failing fast (only a single-poll snapshot), and only at window expiry does the last leg decide — "unreachable"/never-observed → UnconfirmedNoAttach, anything else → AttentionSkew(leg); entirely TimeProvider-driven. `attemptId` is null only via direct test injection through the Classify seam (a real DetachedStart action always carries one) and must never attribute a marker, since a null-attempt marker belongs to a service-verb refusal, not this action.
+    // Polls up to DetachedConfirmWindow (marker checked first): full evidence resolves immediately, else the last leg decides at expiry. `attemptId` null is test-only and never attributes a marker.
     async Task<MutationOutcome> AwaitDetachedConfirmationAsync(
             MutationRequest request, IDaemonObservation observation, string? attemptId,
             Func<MutationOutcome> onFullEvidence, CancellationToken ct) {

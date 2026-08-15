@@ -1,6 +1,7 @@
 using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
 using Capacitor.Cli.Core.LocalIpc;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -80,11 +81,17 @@ public class DaemonObservationTests {
     }
 
     // --- LiveGraphObservation ---
+    //
+    // P2-3: a generation barrier, not a synchronous read — ObserveAsync discards whatever Status/
+    // Snapshots replay synchronously on subscribe and waits for the NEXT (post-subscription)
+    // emission of each. Every test below that expects real evidence therefore pushes onto the
+    // subjects AFTER calling ObserveAsync (the subscriptions are already live by then, since
+    // nothing awaits before them), never before.
 
     [Test]
     public async Task LiveGraph_name_mismatch_returns_null() {
         var client = new FakeDaemonClientService { DaemonName = "daemon-other" };
-        var adapter = new LiveGraphObservation(client);
+        var adapter = new LiveGraphObservation(client, new FakeTimeProvider());
 
         var evidence = await adapter.ObserveAsync(Req(daemonName: "daemon-a"), CancellationToken.None);
 
@@ -98,66 +105,86 @@ public class DaemonObservationTests {
     [Test]
     public async Task LiveGraph_profile_mismatch_returns_null() {
         var client = new FakeDaemonClientService { DaemonName = "daemon-a", ProfileName = "other-profile" };
-        client.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap("daemon-a", serverUrl: "http://localhost:9999"));
-        client.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["status/1"]));
-        var adapter = new LiveGraphObservation(client);
+        var adapter = new LiveGraphObservation(client, new FakeTimeProvider());
 
         var evidence = await adapter.ObserveAsync(Req(daemonName: "daemon-a", server: "http://localhost:9999"), CancellationToken.None);
 
         await Assert.That(evidence).IsNull();
     }
 
+    // The timeout leg the composite's fallback depends on: only replayed (pre-subscription)
+    // values ever landed, so no fresh pair ever completes — FreshEmissionTimeout elapses (driven
+    // by FakeTimeProvider, no real sleep) and ObserveAsync degrades to null.
     [Test]
-    public async Task LiveGraph_server_mismatch_returns_null() {
+    public async Task LiveGraph_no_fresh_emission_within_the_bound_times_out_to_null() {
         var client = new FakeDaemonClientService { DaemonName = "daemon-a" };
-        client.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap("daemon-a", serverUrl: "http://localhost:1111"));
-        client.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["status/1"]));
-        var adapter = new LiveGraphObservation(client);
+        client.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap("daemon-a", serverUrl: "http://localhost:9999", pid: 111, instanceId: "inst-1"));
+        client.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["status/1"])); // both pre-subscription — pure replay
+        var time = new FakeTimeProvider();
+        var adapter = new LiveGraphObservation(client, time);
 
-        var evidence = await adapter.ObserveAsync(Req(daemonName: "daemon-a", server: "http://localhost:9999"), CancellationToken.None);
+        var task = adapter.ObserveAsync(Req(daemonName: "daemon-a", server: "http://localhost:9999"), CancellationToken.None);
+        time.Advance(LiveGraphObservation.FreshEmissionTimeout);
+        var evidence = await task.WaitAsync(TimeSpan.FromSeconds(5));
 
         await Assert.That(evidence).IsNull();
     }
 
     [Test]
-    public async Task LiveGraph_connected_matching_identity_is_consistent() {
+    public async Task LiveGraph_server_mismatch_on_a_fresh_snapshot_returns_null() {
+        var client = new FakeDaemonClientService { DaemonName = "daemon-a" };
+        var adapter = new LiveGraphObservation(client, new FakeTimeProvider());
+
+        var task = adapter.ObserveAsync(Req(daemonName: "daemon-a", server: "http://localhost:9999"), CancellationToken.None);
+        client.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["status/1"]));
+        client.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap("daemon-a", serverUrl: "http://localhost:1111"));
+        var evidence = await task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(evidence).IsNull();
+    }
+
+    [Test]
+    public async Task LiveGraph_fresh_connected_matching_identity_is_consistent() {
         var client = new FakeDaemonClientService { DaemonName = "daemon-a" };
         var snap = FakeDaemonClientService.Snap("daemon-a", serverUrl: "http://localhost:9999", pid: 111, instanceId: "inst-1");
         var identity = new ConnectedIdentity(111, "inst-1", "daemon-a", "1.2.3");
         var caps = new List<string> { "status/1" }; // same reference used below — IReadOnlyList members compare by reference
+        var adapter = new LiveGraphObservation(client, new FakeTimeProvider());
+
+        var task = adapter.ObserveAsync(Req(daemonName: "daemon-a", server: "http://localhost:9999"), CancellationToken.None);
         client.SnapshotsSubject.OnNext(snap);
         client.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, caps, null, identity));
-        var adapter = new LiveGraphObservation(client);
-
-        var evidence = await adapter.ObserveAsync(Req(daemonName: "daemon-a", server: "http://localhost:9999"), CancellationToken.None);
+        var evidence = await task.WaitAsync(TimeSpan.FromSeconds(5));
 
         await Assert.That(evidence).IsEqualTo(new ObservedEvidence(
             true, caps, "1.2.3", "http://localhost:9999", "daemon-a", 111, "inst-1", true));
     }
 
     [Test]
-    public async Task LiveGraph_connected_hello_snapshot_pid_mismatch_is_inconsistent() {
+    public async Task LiveGraph_fresh_hello_snapshot_pid_mismatch_is_inconsistent() {
         var client = new FakeDaemonClientService { DaemonName = "daemon-a" };
         var snap = FakeDaemonClientService.Snap("daemon-a", serverUrl: "http://localhost:9999", pid: 111, instanceId: "inst-1");
         var identity = new ConnectedIdentity(222, "inst-1", "daemon-a", "1.2.3"); // pid disagrees with the snapshot
+        var adapter = new LiveGraphObservation(client, new FakeTimeProvider());
+
+        var task = adapter.ObserveAsync(Req(daemonName: "daemon-a", server: "http://localhost:9999"), CancellationToken.None);
         client.SnapshotsSubject.OnNext(snap);
         client.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["status/1"], null, identity));
-        var adapter = new LiveGraphObservation(client);
-
-        var evidence = await adapter.ObserveAsync(Req(daemonName: "daemon-a", server: "http://localhost:9999"), CancellationToken.None);
+        var evidence = await task.WaitAsync(TimeSpan.FromSeconds(5));
 
         await Assert.That(evidence!.Reachable).IsTrue();
         await Assert.That(evidence.IdentityConsistent).IsFalse();
     }
 
     [Test]
-    public async Task LiveGraph_non_connected_is_unreachable_evidence() {
+    public async Task LiveGraph_fresh_non_connected_is_unreachable_evidence() {
         var client = new FakeDaemonClientService { DaemonName = "daemon-a" };
+        var adapter = new LiveGraphObservation(client, new FakeTimeProvider());
+
+        var task = adapter.ObserveAsync(Req(daemonName: "daemon-a", server: "http://localhost:9999"), CancellationToken.None);
         client.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap("daemon-a", serverUrl: "http://localhost:9999"));
         client.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
-        var adapter = new LiveGraphObservation(client);
-
-        var evidence = await adapter.ObserveAsync(Req(daemonName: "daemon-a", server: "http://localhost:9999"), CancellationToken.None);
+        var evidence = await task.WaitAsync(TimeSpan.FromSeconds(5));
 
         await Assert.That(evidence).IsEqualTo(new ObservedEvidence(false, null, null, null, null, null, null, false));
     }

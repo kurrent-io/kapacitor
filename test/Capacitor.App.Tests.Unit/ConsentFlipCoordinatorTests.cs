@@ -119,22 +119,50 @@ public class ConsentFlipCoordinatorTests {
         await Assert.That(h.Claims.Pending()).IsEquivalentTo([Claim]);
     }
 
-    // P2-6: a resurrected claim (crash between a successful put and TryConsume) finds the policy
-    // ALREADY "prompt" on a later pass — no put needed, but the claim must still be consumed
-    // idempotently rather than retained forever (which would let a later deliberate operator
-    // allow+zero-rules be re-flipped by the stale claim).
+    // P2-6/P1-1: a resurrected claim (crash between a successful put and TryConsume) finds the
+    // policy ALREADY "prompt" on a later pass — the identity-conditional put still runs (of the
+    // UNCHANGED prompt policy, a daemon-side no-op) as the only live proof that the daemon
+    // answering Get is genuinely the one named by the currently-resolved identity; only its Ok ack
+    // consumes the claim, idempotently, rather than retaining it forever (which would let a later
+    // deliberate operator allow+zero-rules be re-flipped by the stale claim).
     [Test]
-    public async Task Default_prompt_skips_the_put_and_consumes_the_resurrected_claim() {
+    public async Task Default_prompt_sends_the_idempotent_put_and_consumes_the_resurrected_claim() {
         using var h = new Harness();
         h.Claims.Arm(Claim);
         h.Ops.QueueGet(new ConsentPolicyDto("prompt", 30, []));
+        h.Ops.QueuePutV2(true, null);
 
         h.Coordinator.Start();
         h.Client.StatusSubject.OnNext(Connected(ConsentFlipCoordinator.ConsentV3Capability));
 
         await WaitUntilAsync(() => h.Claims.Pending().Count == 0, what: "the resurrected claim to be consumed");
 
-        await Assert.That(h.Ops.PutV2Calls).IsEqualTo(0);
+        await Assert.That(h.Ops.PutV2Calls).IsEqualTo(1);
+        var put = h.Ops.PutV2Payloads[0];
+        await Assert.That(put.ExpectedName).IsEqualTo("kcap-daemon");
+        await Assert.That(put.ExpectedServerUrl).IsEqualTo(CanonicalServer);
+        await Assert.That(put.Policy.Default).IsEqualTo("prompt"); // unchanged — prompt-over-prompt
+        await Assert.That(put.Policy.PromptTimeoutSeconds).IsEqualTo(30);
+    }
+
+    // The rename hazard P1-1 closes: a pinned client answering Get for a daemon the config has
+    // since renamed away from must not have its "already prompt" reading trusted — the identity
+    // check now lives in the put itself, so an identity_mismatch ack retains the claim exactly
+    // like the factory-flip arm's own ack failure.
+    [Test]
+    public async Task Default_prompt_identity_mismatch_ack_retains_the_claim() {
+        using var h = new Harness();
+        h.Claims.Arm(Claim);
+        h.Ops.QueueGet(new ConsentPolicyDto("prompt", 30, []));
+        h.Ops.QueuePutV2(false, "identity_mismatch");
+
+        h.Coordinator.Start();
+        h.Client.StatusSubject.OnNext(Connected(ConsentFlipCoordinator.ConsentV3Capability));
+
+        await WaitUntilAsync(() => h.Ops.PutV2Calls == 1, what: "the put to run");
+        await WaitUntilAsync(() => h.Coordinator.PassCount >= 1, what: "the pass to settle");
+
+        await Assert.That(h.Claims.Pending()).IsEquivalentTo([Claim]);
     }
 
     [Test]

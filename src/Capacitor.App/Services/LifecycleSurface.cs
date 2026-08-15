@@ -16,15 +16,14 @@ public sealed class LifecycleSurface(
     public void Status(string message) => setStatus(message);
     public void Attention(string message) => setAttention(message);
 
-    public async Task<bool> ConfirmAsync(LifecyclePrompt prompt, CancellationToken ct) {
+    public async Task<bool> ConfirmAsync(LifecyclePrompt prompt, CancellationToken ct) =>
+        await TryConfirmAsync(prompt, ct).ConfigureAwait(false) ?? false;
+
+    public async Task<bool?> TryConfirmAsync(LifecyclePrompt prompt, CancellationToken ct) {
         try {
             await _gate.WaitAsync(ct).ConfigureAwait(false);
         } catch (OperationCanceledException) {
-            // Never got to show a dialog — the shutdown-quiesce contract (Task 21's
-            // WireDialogCancellation, carried forward) still needs `false` from every ConfirmAsync
-            // outcome, not a thrown exception, so a caller awaiting the gate itself degrades the
-            // same way a caller whose already-open dialog got cancelled does.
-            return false;
+            return null; // never got to show a dialog — distinct from a shown-and-declined one (ConfirmAsync degrades this to false)
         }
 
         try {

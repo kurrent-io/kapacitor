@@ -1,6 +1,7 @@
 using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.LocalIpc;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.App.Tests.Unit;
@@ -642,6 +643,35 @@ public class DaemonMutationLaneTests {
         var outcome = await lane.RunAsync(Req(), CancellationToken.None);
 
         await Assert.That(outcome).IsEqualTo(new MutationOutcome.UnconfirmedNoAttach());
+
+        await lane.DisposeAsync();
+    }
+
+    // P2-3: a REAL LiveGraphObservation over a client whose Status/Snapshots hold only replayed
+    // (pre-mutation) values never completes a fresh pair — the generation barrier times out
+    // (FakeTimeProvider-driven) and the composite falls through to the one-shot factory, proving
+    // the fix at the level that actually matters: the lane never trusts stale live evidence.
+    [Test]
+    public async Task Real_live_graph_observation_with_no_fresh_emission_falls_back_to_the_oneshot_factory() {
+        var client = new FakeDaemonClientService { DaemonName = "daemon-a", ProfileName = "default" };
+        client.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap("daemon-a", serverUrl: "https://cap.example.test", pid: 111, instanceId: "inst-1"));
+        client.StatusSubject.OnNext(new AttachStatus(
+            AttachState.Connected, null, ["consent/3"], null, new ConnectedIdentity(111, "inst-1", "daemon-a", "1.0.0")));
+        var time = new FakeTimeProvider();
+        var live = new LiveGraphObservation(client, time);
+        var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership()) };
+        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
+        var oneShotCalls = 0;
+        var lane = MakeLane(factory, oneShotFactory: _ => {
+            oneShotCalls++;
+            return new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(MatchingEvidence()) };
+        });
+        lane.SetLiveAdapter(live);
+
+        var outcome = await Drive(lane.RunAsync(Req(), CancellationToken.None), time, LiveGraphObservation.FreshEmissionTimeout);
+
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
+        await Assert.That(oneShotCalls).IsEqualTo(1);
 
         await lane.DisposeAsync();
     }

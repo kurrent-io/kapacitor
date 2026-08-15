@@ -19,4 +19,11 @@ sealed class FakeLifecycleSurface : ILifecycleSurface {
         Prompts.Add(prompt);
         return ConfirmBehavior(prompt, ct);
     }
+
+    /// Mirrors LifecycleSurface's own contract: an already-cancelled ct never reaches the dialog — null, nothing recorded.
+    public async Task<bool?> TryConfirmAsync(LifecyclePrompt prompt, CancellationToken ct) {
+        if (ct.IsCancellationRequested) return null;
+        Prompts.Add(prompt);
+        return await ConfirmBehavior(prompt, ct).ConfigureAwait(false);
+    }
 }

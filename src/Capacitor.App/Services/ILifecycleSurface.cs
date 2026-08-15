@@ -8,6 +8,9 @@ public interface ILifecycleSurface {
 
     Task<bool> ConfirmAsync(LifecyclePrompt prompt, CancellationToken ct);
 
+    /// Like ConfirmAsync, but null distinguishes "ct won before the dialog factory ran" from a genuinely shown-and-declined dialog (false).
+    Task<bool?> TryConfirmAsync(LifecyclePrompt prompt, CancellationToken ct);
+
     /// Repair-affordance surfaces (spec §4.4) — never a silent mutation.
     void Attention(string message);
 }

@@ -351,6 +351,7 @@ public class AppMutationLaneWiringTests {
             inner.Attention(message);
         }
         public Task<bool> ConfirmAsync(LifecyclePrompt prompt, CancellationToken ct) => inner.ConfirmAsync(prompt, ct);
+        public Task<bool?> TryConfirmAsync(LifecyclePrompt prompt, CancellationToken ct) => inner.TryConfirmAsync(prompt, ct);
     }
 
     // P1-2: a presentation failure BEFORE the UI boundary (surface.Attention throwing) must requeue
@@ -384,6 +385,37 @@ public class AppMutationLaneWiringTests {
         // (draining just stops) — the task completes normally, never faulted/canceled: the loop
         // survives a presentation failure.
         await consumerTask.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // P1-2: a ct already cancelled BEFORE the takeover dialog is ever shown (TryConfirmAsync
+    // returns null) must requeue the envelope — never Ack it, never record decline memory for a
+    // dialog the user never saw. A fresh consumer over the same channel still gets to present it.
+    [Test]
+    public async Task ConsumeMutationOutcomesAsync_cancellation_before_the_takeover_dialog_requeues_and_records_no_decline() {
+        var surface = new FakeLifecycleSurface();
+        var channel = new OutcomeChannel();
+        using var cancelledCts = new CancellationTokenSource();
+
+        channel.Enqueue(Envelope(new MutationOutcome.Failed(28, "foreign_binary", RecoverySurface.Takeover)));
+        cancelledCts.Cancel(); // cancelled before the consumer ever starts draining this envelope
+
+        await AppUnderTest.ConsumeMutationOutcomesAsync(
+                channel, surface, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, cancelledCts.Token)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(surface.Prompts).IsEmpty(); // the dialog was never shown
+        await Assert.That(surface.StatusMessages).IsEmpty(); // no decline line — never declined, just never shown
+
+        var acceptingSurface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(true) };
+        using var liveCts = new CancellationTokenSource();
+        Task<MutationOutcome> AcceptMutation(MutationRequest r, CancellationToken ct) => Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
+        var secondConsumer = AppUnderTest.ConsumeMutationOutcomesAsync(
+            channel, acceptingSurface, AcceptMutation, FixedTerminalPath("/usr/bin"), () => null, liveCts.Token);
+
+        await WaitUntilAsync(() => acceptingSurface.Prompts.Count == 1, what: "the requeued envelope's real presentation");
+
+        liveCts.Cancel();
+        await secondConsumer.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     // P1-2: the takeover dialog IS the presentation boundary — once ConfirmAsync returns (shown

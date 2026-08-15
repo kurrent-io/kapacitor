@@ -132,4 +132,38 @@ public class LifecycleSurfaceTests {
         var result1 = await task1.WaitAsync(TimeSpan.FromSeconds(5));
         await Assert.That(result1).IsTrue();
     }
+
+    // P1-2(b): TryConfirmAsync distinguishes "never reached the factory" (null) from a genuinely
+    // shown-and-declined dialog (false) — ConfirmAsync's own `?? false` is what a caller unaware
+    // of the distinction keeps observing, so this is the same scenario as the queued-cancel test
+    // above, asserted through the new method instead.
+    [Test]
+    public async Task TryConfirmAsync_cancelled_while_queued_returns_null_without_showing_a_dialog() {
+        var shower = new ScriptedPromptShower();
+        var surface = new LifecycleSurface(_ => { }, _ => { }, shower.ShowAsync);
+
+        var task1 = surface.ConfirmAsync(Prompt(LifecyclePrompt.KindRepair), CancellationToken.None);
+        await WaitUntilAsync(() => shower.Calls.Count == 1);
+
+        using var cts = new CancellationTokenSource();
+        var task2 = surface.TryConfirmAsync(Prompt(LifecyclePrompt.KindTakeover), cts.Token);
+        cts.Cancel();
+
+        var result2 = await task2.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(result2).IsNull();
+        await Assert.That(shower.Calls.Count).IsEqualTo(1); // task2 never showed
+
+        shower.Calls[0].Tcs.SetResult(true);
+        var result1 = await task1.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(result1).IsTrue();
+    }
+
+    [Test]
+    public async Task TryConfirmAsync_returns_the_dialogs_result_for_a_genuinely_shown_dialog() {
+        var surface = new LifecycleSurface(_ => { }, _ => { }, (_, _) => Task.FromResult(false));
+
+        var result = await surface.TryConfirmAsync(Prompt(LifecyclePrompt.KindRepair), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(result).IsEqualTo(false);
+    }
 }
