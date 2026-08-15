@@ -446,24 +446,31 @@ public class DaemonMutationLaneTests {
 
     // ---- T2: SetLiveAdapter coverage ----
 
+    // Blocker 1 (final review): the pinned strategy is now a COMPOSITE that tries live first and
+    // falls through to a fresh one-shot only when live's own result is null/not-Reachable — so
+    // `observation` handed to Classify is never the raw live reference any more. These tests drive
+    // the composite through a REAL ObserveAsync call (rather than just capturing the reference) to
+    // prove the try-live-then-fall-through behavior at the classification-attempt level.
     [Test]
     public async Task Live_adapter_with_matching_evidence_is_pinned_and_the_oneshot_factory_is_never_called() {
         var cli = new FakeKcapCli();
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
-        var live = new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(MatchingEvidence()) };
+        var expectedEvidence = MatchingEvidence(); // captured once — Capabilities is a reference type, so two separately-built instances are never record-equal
+        var live = new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(expectedEvidence) };
         var oneShotCalls = 0;
-        IDaemonObservation? seen = null;
+        ObservedEvidence? observed = null;
         var lane = MakeLane(factory, oneShotFactory: _ => { oneShotCalls++; return new ScriptedObservation(); });
-        lane.Classify = (request, result, executor, observation, attemptId, ct) => {
-            seen = observation;
-            return Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
+        lane.Classify = async (request, result, executor, observation, attemptId, ct) => {
+            observed = await observation.ObserveAsync(request, ct);
+            return new MutationOutcome.Succeeded();
         };
         lane.SetLiveAdapter(live);
 
         await lane.RunAsync(Req(), CancellationToken.None);
 
         await Assert.That(oneShotCalls).IsEqualTo(0);
-        await Assert.That(seen).IsSameReferenceAs(live);
+        await Assert.That(live.CallCount).IsEqualTo(1);
+        await Assert.That(observed).IsEqualTo(expectedEvidence);
 
         await lane.DisposeAsync();
     }
@@ -473,19 +480,23 @@ public class DaemonMutationLaneTests {
         var cli = new FakeKcapCli();
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
         var live = new ScriptedObservation(); // default behavior returns null — cannot target this request
+        var oneShotEvidence = MatchingEvidence(pid: 999, instanceId: "inst-oneshot");
         var oneShotCalls = 0;
-        IDaemonObservation? seen = null;
-        var lane = MakeLane(factory, oneShotFactory: _ => { oneShotCalls++; return new ScriptedObservation(); });
-        lane.Classify = (request, result, executor, observation, attemptId, ct) => {
-            seen = observation;
-            return Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
+        ObservedEvidence? observed = null;
+        var lane = MakeLane(factory, oneShotFactory: _ => {
+            oneShotCalls++;
+            return new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(oneShotEvidence) };
+        });
+        lane.Classify = async (request, result, executor, observation, attemptId, ct) => {
+            observed = await observation.ObserveAsync(request, ct);
+            return new MutationOutcome.Succeeded();
         };
         lane.SetLiveAdapter(live);
 
         await lane.RunAsync(Req(), CancellationToken.None);
 
         await Assert.That(oneShotCalls).IsEqualTo(1);
-        await Assert.That(seen).IsNotSameReferenceAs(live);
+        await Assert.That(observed).IsEqualTo(oneShotEvidence);
 
         await lane.DisposeAsync();
     }
@@ -495,13 +506,14 @@ public class DaemonMutationLaneTests {
         var gate = new TaskCompletionSource<ProcessResult>();
         var cli = new FakeKcapCli { StartVerifiedBehavior = _ => gate.Task }; // gate AFTER the pin step, not before it
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
-        var originalLive = new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(MatchingEvidence()) };
+        var expectedEvidence = MatchingEvidence(); // captured once — Capabilities is a reference type, so two separately-built instances are never record-equal
+        var originalLive = new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(expectedEvidence) };
         var otherLive = new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(MatchingEvidence(222, "inst-2")) };
-        IDaemonObservation? seen = null;
+        ObservedEvidence? observed = null;
         var lane = MakeLane(factory);
-        lane.Classify = (request, result, executor, observation, attemptId, ct) => {
-            seen = observation;
-            return Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
+        lane.Classify = async (request, result, executor, observation, attemptId, ct) => {
+            observed = await observation.ObserveAsync(request, ct);
+            return new MutationOutcome.Succeeded();
         };
         lane.SetLiveAdapter(originalLive);
 
@@ -512,8 +524,51 @@ public class DaemonMutationLaneTests {
         gate.SetResult(new ProcessResult(0, "", "", false));
         await t;
 
-        await Assert.That(seen).IsSameReferenceAs(originalLive);
-        await Assert.That(seen).IsNotSameReferenceAs(otherLive);
+        await Assert.That(observed).IsEqualTo(expectedEvidence);
+        await Assert.That(originalLive.CallCount).IsEqualTo(1);
+        await Assert.That(otherLive.CallCount).IsEqualTo(0);
+
+        await lane.DisposeAsync();
+    }
+
+    // Blocker 1 (final review) — the reviewer's pinned scenario: a mutation that restarts the
+    // daemon (takeover Replace, StartVerified, DetachedStart) tears down the app's own attach, so
+    // the live adapter replays a stale Reachable=false snapshot. The composite must not let that
+    // stale snapshot stand as the classification's evidence — it falls through to a fresh one-shot
+    // in the SAME classification attempt, and full evidence there still yields Succeeded.
+    [Test]
+    public async Task Live_adapter_unreachable_falls_back_to_a_fresh_oneshot_and_a_full_evidence_result_still_succeeds() {
+        var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership()) };
+        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
+        var live = new ScriptedObservation {
+            Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(new ObservedEvidence(false, null, null, null, null, null, null, false)),
+        };
+        var lane = MakeLane(factory, oneShotFactory: _ => new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(MatchingEvidence()) });
+        lane.SetLiveAdapter(live);
+
+        var outcome = await lane.RunAsync(Req(), CancellationToken.None);
+
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
+
+        await lane.DisposeAsync();
+    }
+
+    // Companion to the above: when the fallback one-shot ALSO comes back unreachable (a genuinely
+    // gone daemon, not just a stale app-side attach snapshot), the honest outcome is unchanged —
+    // the composite adds a fallback leg, it never manufactures evidence.
+    [Test]
+    public async Task Live_adapter_unreachable_and_oneshot_unreachable_yields_the_unchanged_honest_outcome() {
+        var cli = new FakeKcapCli(); // default: exit 0, StatusBehavior returns null (no recorded owner)
+        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
+        var live = new ScriptedObservation {
+            Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(new ObservedEvidence(false, null, null, null, null, null, null, false)),
+        };
+        var lane = MakeLane(factory); // default oneShotFactory's ScriptedObservation returns null evidence
+        lane.SetLiveAdapter(live);
+
+        var outcome = await lane.RunAsync(Req(), CancellationToken.None);
+
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.UnconfirmedNoAttach());
 
         await lane.DisposeAsync();
     }

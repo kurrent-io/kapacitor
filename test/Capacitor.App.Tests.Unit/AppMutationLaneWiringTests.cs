@@ -226,6 +226,20 @@ public class AppMutationLaneWiringTests {
         await Assert.That(surface.AttentionMessages[0]).Contains("verify_readiness_timeout");
     }
 
+    // M2: DigestGate (43) is DaemonCommands' own gate, not a ServiceVerify exit code, but it still
+    // needs a real presentable token when the CLI emits no reason line — falling back to
+    // "verify_unknown_43" would surface a meaningless code to the user.
+    [Test]
+    public async Task Failed_digest_gate_with_no_reason_token_falls_back_to_the_daemon_start_gate_token() {
+        var surface = new FakeLifecycleSurface();
+        var envelope = Envelope(new MutationOutcome.Failed(VerifyExitCodes.DigestGate, null, RecoverySurface.Attention));
+
+        await AppUnderTest.PresentOutcomeAsync(
+            surface, envelope, NeverRunMutation, FixedTerminalPath("/usr/bin"), () => null, CancellationToken.None);
+
+        await Assert.That(surface.AttentionMessages[0]).Contains("daemon_start_gate");
+    }
+
     // ---- ClassifyForPresentation (the pure routing table, standalone) ----
 
     [Test]

@@ -120,11 +120,13 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
     /// StartDaemonResult the UI already understands — ct abandons the WAIT only (a detached start
     /// already spawned keeps running, never reported as a failure); the lane's own RunAsync
     /// rethrows OperationCanceledException the same way, so it just propagates here unmodified.
+    /// The reattach kick fires UNCONDITIONALLY, not just on Succeeded/SucceededAfterTimeout: any
+    /// mutation attempt may have restarted the daemon even when it did not end in success, and
+    /// kicking reattach is idempotent — the attach doesn't sit out a backoff either way.
     public async Task<StartDaemonResult> StartDaemonAsync(CancellationToken ct) {
         var outcome = await _startDaemon(ct).ConfigureAwait(false);
 
-        if (outcome is MutationOutcome.Succeeded or MutationOutcome.SucceededAfterTimeout)
-            _ = RestartLoopAsync(); // immediate kick — the attach doesn't sit out a backoff
+        _ = RestartLoopAsync();
 
         return ToResult(outcome);
     }

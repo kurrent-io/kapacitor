@@ -227,7 +227,7 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
         var version = await executor.VersionAsync(ct).ConfigureAwait(false);
         if (!KcapCliCompatibility.Satisfies(version)) return new MutationOutcome.Refused("cli_below_floor", RecoverySurface.Attention);
 
-        var observation = await PinObservationAsync(request, ct).ConfigureAwait(false);
+        var observation = PinObservation(request);
 
         var attemptId = request.Verb == MutationVerb.DetachedStart ? Guid.NewGuid().ToString("N") : null;
 
@@ -249,11 +249,26 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
             _ => throw new ArgumentOutOfRangeException(nameof(request), request.Verb, "unknown MutationVerb"),
         };
 
-    // Live adapter usable only when it can actually target this request's identity; unset or a mismatch falls back to one-shot.
-    async Task<IDaemonObservation> PinObservationAsync(MutationRequest request, CancellationToken ct) {
+    // Live adapter usable only when it can actually target this request's identity; unset falls
+    // back to a plain one-shot probe. When set, the pin is a COMPOSITE that tries live on every
+    // ObserveAsync call and falls through to a FRESH one-shot whenever live's result is null or
+    // not Reachable — e.g. a mutation (takeover Replace, StartVerified, DetachedStart) that
+    // restarted the daemon tears down the app's own attach mid-action, and the live adapter would
+    // otherwise keep replaying that stale "unreachable" snapshot for the rest of classification.
+    // Exactly one observation result feeds a given classification attempt, never a live/one-shot
+    // blend. Pinned ONCE at action start (spec pin-once rule): the live reference and
+    // oneShotFactory this wrapper closes over never change even if SetLiveAdapter is called again
+    // while this action is still in flight.
+    IDaemonObservation PinObservation(MutationRequest request) {
         var live = _liveAdapter;
-        if (live is not null && await live.ObserveAsync(request, ct).ConfigureAwait(false) is not null) return live;
-        return _oneShotFactory(request);
+        return live is null ? _oneShotFactory(request) : new CompositeObservation(live, _oneShotFactory);
+    }
+
+    sealed class CompositeObservation(IDaemonObservation live, Func<MutationRequest, IDaemonObservation> oneShotFactory) : IDaemonObservation {
+        public async Task<ObservedEvidence?> ObserveAsync(MutationRequest request, CancellationToken ct) {
+            var evidence = await live.ObserveAsync(request, ct).ConfigureAwait(false);
+            return evidence is { Reachable: true } ? evidence : await oneShotFactory(request).ObserveAsync(request, ct).ConfigureAwait(false);
+        }
     }
 
     // --- classification (spec §3/§4) ---

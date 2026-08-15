@@ -462,14 +462,16 @@ public class DaemonLifecycleControllerTests {
         await Task.Delay(50); // give a wrongly-firing Attention/Status every chance to appear
         await Assert.That(h.Surface.AttentionMessages).IsEmpty();
         await Assert.That(h.Surface.StatusMessages).IsEmpty();
-        await Assert.That(h.Client.RestartCount).IsEqualTo(0); // not a success outcome — no reattach kick
+        // Blocker 1: the reattach kick is unconditional after any lane mutation call — a mutation
+        // attempt may have restarted the daemon even though this outcome isn't itself a success.
+        await Assert.That(h.Client.RestartCount).IsEqualTo(1);
     }
 
     // An UnconfirmedNoAttach outcome (the lane's TimedOut classification, spec §3.6) supersedes
     // the controller's former confirm-window/timeout handling entirely — no local surface call at
     // all, channel-only, same as every other non-success outcome.
     [Test]
-    public async Task UnconfirmedNoAttach_outcome_produces_no_controller_surface_call_or_reattach_kick() {
+    public async Task UnconfirmedNoAttach_outcome_produces_no_controller_surface_call_but_still_kicks_reattach() {
         await using var h = new Harness();
         h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(unitPresent: true, state: "installed"));
         h.Lane.Behavior = (_, _) => Task.FromResult<MutationOutcome>(new MutationOutcome.UnconfirmedNoAttach());
@@ -482,7 +484,9 @@ public class DaemonLifecycleControllerTests {
         await Task.Delay(50);
         await Assert.That(h.Surface.StatusMessages).IsEmpty();
         await Assert.That(h.Surface.AttentionMessages).IsEmpty();
-        await Assert.That(h.Client.RestartCount).IsEqualTo(0);
+        // Blocker 1: any lane mutation attempt may have restarted the daemon, so the kick is
+        // unconditional — not gated on this outcome being a success.
+        await Assert.That(h.Client.RestartCount).IsEqualTo(1);
     }
 
     // Round-1 review C-2: a Refused outcome that reached the LANE (as opposed to the guard
@@ -563,10 +567,14 @@ public class DaemonLifecycleControllerTests {
         await Task.Delay(50); // give a wrongly-firing Status/Attention every chance to appear
         await Assert.That(h.Surface.StatusMessages).IsEmpty();
         await Assert.That(h.Surface.AttentionMessages).IsEmpty();
+        // Blocker 1: a Failed outcome may still mean the daemon got restarted mid-mutation — the
+        // kick is unconditional, not gated on Succeeded/SucceededAfterTimeout.
+        await Assert.That(h.Client.RestartCount).IsEqualTo(1);
 
         h.PushUnreachable(); // once-per-run: no retry
         await Task.Delay(50);
         await Assert.That(h.Lane.Requests.Count).IsEqualTo(1);
+        await Assert.That(h.Client.RestartCount).IsEqualTo(1); // no second lane call — no second kick
     }
 
     // ---- version caching ----
@@ -1396,10 +1404,6 @@ sealed class FakeKcapCli : IKcapCli {
 
     public int DetachedStartCallCount;
     public Func<CancellationToken, Task<ProcessResult>> DetachedStartBehavior = _ => Task.FromResult(new ProcessResult(0, "", "", false));
-    public Task<ProcessResult> DetachedStartAsync(CancellationToken ct) {
-        DetachedStartCallCount++;
-        return DetachedStartBehavior(ct);
-    }
 
     public string? LastBootAttemptId;
     public Task<ProcessResult> DetachedStartAsync(string bootAttemptId, CancellationToken ct) {

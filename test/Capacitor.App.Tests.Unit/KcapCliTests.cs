@@ -158,24 +158,13 @@ public class KcapCliTests {
         var runner = new FakeProcessRunner();
         var cli = MakeCli(runner);
 
-        await cli.DetachedStartAsync(CancellationToken.None);
+        await cli.DetachedStartAsync("boot-attempt-test", CancellationToken.None);
 
         await Assert.That(runner.SeenArgs).IsEquivalentTo(
             ["daemon", "start", "-d", "--name", "daemon-a"], CollectionOrdering.Matching);
         await Assert.That(runner.SeenOptions!.CancelMode).IsEqualTo(CancelMode.AbandonWait);
         await Assert.That(runner.SeenOptions!.Timeout).IsEqualTo(TimeSpan.FromSeconds(75));
         await Assert.That(runner.SeenOptions!.TimeoutKill).IsEqualTo(TimeoutKillScope.ProcessOnly);
-    }
-
-    [Test]
-    public async Task DetachedStartAsync_parameterless_stamps_a_fresh_guid_boot_attempt_id() {
-        var runner = new FakeProcessRunner();
-        var cli = MakeCli(runner);
-
-        await cli.DetachedStartAsync(CancellationToken.None);
-
-        var seen = runner.SeenOptions!.EnvOverlay![KcapCli.BootAttemptVar];
-        await Assert.That(Guid.TryParseExact(seen, "N", out _)).IsTrue();
     }
 
     [Test]
@@ -194,7 +183,7 @@ public class KcapCliTests {
     }
 
     [Test]
-    public async Task DetachedStartAsync_with_null_CliPath_returns_exit_127_without_calling_the_runner_overload() {
+    public async Task DetachedStartAsync_with_null_CliPath_returns_exit_127_without_calling_the_runner() {
         var runner = new FakeProcessRunner();
         var cli = MakeCliWithNullPath(runner);
 
@@ -223,7 +212,7 @@ public class KcapCliTests {
         await cli.ServiceInstallVerifiedAsync(replace: false, CancellationToken.None);
         await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.SpawnNoTelemetryVar]).IsEqualTo("1");
 
-        await cli.DetachedStartAsync(CancellationToken.None);
+        await cli.DetachedStartAsync("boot-attempt-test", CancellationToken.None);
         await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.SpawnNoTelemetryVar]).IsEqualTo("1");
     }
 
@@ -240,7 +229,7 @@ public class KcapCliTests {
         await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.ConsentSeedDefaultVar]).IsEqualTo("prompt");
         await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.ExpectServerUrlVar]).IsEqualTo(CanonicalServer);
 
-        await cli.DetachedStartAsync(CancellationToken.None);
+        await cli.DetachedStartAsync("boot-attempt-test", CancellationToken.None);
         await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.ConsentSeedDefaultVar]).IsEqualTo("prompt");
         await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.ExpectServerUrlVar]).IsEqualTo(CanonicalServer);
     }
@@ -281,15 +270,6 @@ public class KcapCliTests {
 
     [Test]
     public async Task DetachedStartAsync_with_null_canonicalServer_throws_before_any_spawn() {
-        var runner = new FakeProcessRunner();
-        var cli = MakeCli(runner, canonicalServer: null);
-
-        await Assert.ThrowsAsync<InvalidOperationException>(() => cli.DetachedStartAsync(CancellationToken.None));
-        await Assert.That(runner.SeenFileName).IsNull();
-    }
-
-    [Test]
-    public async Task DetachedStartAsync_with_boot_attempt_id_and_null_canonicalServer_throws_before_any_spawn() {
         var runner = new FakeProcessRunner();
         var cli = MakeCli(runner, canonicalServer: null);
 
@@ -341,7 +321,7 @@ public class KcapCliTests {
         await cli.ServiceInstallVerifiedAsync(replace: false, CancellationToken.None);
         await Assert.That(runner.SeenOptions!.EnvOverlay!["KCAP_PROFILE"]).IsEqualTo("work");
 
-        await cli.DetachedStartAsync(CancellationToken.None);
+        await cli.DetachedStartAsync("boot-attempt-test", CancellationToken.None);
         await Assert.That(runner.SeenOptions!.EnvOverlay!["KCAP_PROFILE"]).IsEqualTo("work");
     }
 
@@ -362,7 +342,7 @@ public class KcapCliTests {
         await cli.ServiceStartVerifiedAsync(CancellationToken.None);
         await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey("PATH")).IsFalse();
 
-        await cli.DetachedStartAsync(CancellationToken.None);
+        await cli.DetachedStartAsync("boot-attempt-test", CancellationToken.None);
         await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey("PATH")).IsFalse();
     }
 
@@ -466,17 +446,6 @@ public class KcapCliTests {
         var cli = MakeCliWithNullPath(runner);
 
         var result = await cli.ServiceInstallVerifiedAsync(replace: false, CancellationToken.None);
-
-        await Assert.That(result.ExitCode).IsEqualTo(127);
-        await Assert.That(runner.SeenFileName).IsNull();
-    }
-
-    [Test]
-    public async Task DetachedStartAsync_with_null_CliPath_returns_exit_127_without_calling_the_runner() {
-        var runner = new FakeProcessRunner();
-        var cli = MakeCliWithNullPath(runner);
-
-        var result = await cli.DetachedStartAsync(CancellationToken.None);
 
         await Assert.That(result.ExitCode).IsEqualTo(127);
         await Assert.That(runner.SeenFileName).IsNull();

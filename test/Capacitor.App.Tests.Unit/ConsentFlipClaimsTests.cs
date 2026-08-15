@@ -8,7 +8,11 @@ public class ConsentFlipClaimsTests {
         return (Path.Combine(dir, "consent-flip-claims.json"), Path.Combine(dir, "config.json"));
     }
 
-    static readonly ConsentFlipClaim Claim = new("default", "https://example.test");
+    // Already canonical (explicit :443) — M1's defensive Arm canonicalization is idempotent for
+    // an already-canonical caller, so round-tripping this value must not change it. The
+    // deliberately-uncanonical case is covered by Arm_canonicalizes_a_raw_uncanonical_server_url_
+    // so_consuming_with_the_canonical_identity_works below.
+    static readonly ConsentFlipClaim Claim = new("default", "https://example.test:443");
 
     [Test]
     public async Task Arm_writes_a_durable_file_with_the_key() {
@@ -33,12 +37,32 @@ public class ConsentFlipClaimsTests {
         await Assert.That(store.Pending()).IsEquivalentTo([Claim]);
     }
 
+    // M1 (final review): Arm defensively canonicalizes CanonicalServer at entry — a raw/uncanonical
+    // URL armed here must still be found by a later TryConsume that re-resolves to the canonical
+    // identity, or the claim would be stuck pending forever (the stuck-pending bug class this
+    // guards against).
+    [Test]
+    public async Task Arm_canonicalizes_a_raw_uncanonical_server_url_so_consuming_with_the_canonical_identity_works() {
+        var (claimsPath, configPath) = TempPaths();
+        var store = new ConsentFlipClaims(claimsPath, configPath);
+        var raw = new ConsentFlipClaim("default", "HTTPS://Example.TEST:443/");
+        var canonical = new ConsentFlipClaim("default", "https://example.test:443");
+
+        await Assert.That(store.Arm(raw)).IsTrue();
+        await Assert.That(store.Pending()).IsEquivalentTo([canonical]);
+
+        var consumed = store.TryConsume(canonical, () => (canonical.Profile, canonical.CanonicalServer, "kcap-daemon"), "kcap-daemon");
+
+        await Assert.That(consumed).IsTrue();
+        await Assert.That(store.Pending()).IsEmpty();
+    }
+
     [Test]
     public async Task Two_distinct_identities_arm_concurrently_without_clobbering() {
         var (claimsPath, configPath) = TempPaths();
         var store = new ConsentFlipClaims(claimsPath, configPath);
-        var a = new ConsentFlipClaim("default", "https://a.example.test");
-        var b = new ConsentFlipClaim("work", "https://b.example.test");
+        var a = new ConsentFlipClaim("default", "https://a.example.test:443");
+        var b = new ConsentFlipClaim("work", "https://b.example.test:443");
 
         var results = await Task.WhenAll(Task.Run(() => store.Arm(a)), Task.Run(() => store.Arm(b)));
 

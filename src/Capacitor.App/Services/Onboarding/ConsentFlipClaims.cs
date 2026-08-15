@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.App.Services.Onboarding;
@@ -23,7 +24,11 @@ public sealed partial class ConsentFlipClaims(string path, string? configPath = 
     }
 
     /// Upsert by key + durable flush. False (any pre-durability failure) blocks the sign-in commit (decision 7).
+    /// Defensively canonicalizes CanonicalServer at entry (idempotent for an already-canonical
+    /// caller) — a raw/uncanonical URL armed here would otherwise never match TryConsume's
+    /// canonical-identity re-resolve, stranding the claim as permanently pending.
     public bool Arm(ConsentFlipClaim claim) {
+        claim = claim with { CanonicalServer = ServerIdentity.Canonicalize(claim.CanonicalServer) ?? claim.CanonicalServer };
         using var _ = ConfigFileLock.Acquire(path);
         var file = ReadFreshLocked();
         var claims = file.Claims

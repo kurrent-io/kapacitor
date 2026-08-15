@@ -212,7 +212,25 @@ public class OnboardingGateTests {
 
     [Test]
     public async Task None_stamp_matching_current_server_is_Complete_without_any_token_file() {
+        // Deliberately the raw lowercase literal, not AuthProvider.None: the gate's provider
+        // compare must be case-insensitive, proven by this exact-lowercase row still reaching
+        // Complete alongside the AuthProvider.None-constant row below.
         var profile = new Profile { ServerUrl = ServerUrl, AuthProvider = new AuthProviderStamp("none", ServerUrl) };
+        WriteConfig(SingleProfileConfig(profile));
+        // Deliberately no tokens/ directory at all — the stamp must short-circuit the token read.
+
+        var result = await OnboardingGate.EvaluateAsync(CancellationToken.None);
+
+        await Assert.That(result).IsTypeOf<GateResult.Complete>();
+        await Assert.That(Directory.Exists(TokensDir)).IsFalse();
+    }
+
+    // Blocker (final review): the stamp WRITER emits AuthProvider.None ("None", capitalized)
+    // verbatim, not a lowercased literal — an ordinal-exact "none" compare would silently never
+    // satisfy the gate for a real stamp. This is the actual production shape the fix targets.
+    [Test]
+    public async Task None_constant_stamp_matching_current_server_is_Complete_without_any_token_file() {
+        var profile = new Profile { ServerUrl = ServerUrl, AuthProvider = new AuthProviderStamp(AuthProvider.None, ServerUrl) };
         WriteConfig(SingleProfileConfig(profile));
         // Deliberately no tokens/ directory at all — the stamp must short-circuit the token read.
 
@@ -228,7 +246,7 @@ public class OnboardingGateTests {
         // since the stamp was written) — SameServer fails, so the stamp is ignored, not honored.
         var profile = new Profile {
             ServerUrl    = ServerUrl,
-            AuthProvider = new AuthProviderStamp("none", "https://old.example")
+            AuthProvider = new AuthProviderStamp(AuthProvider.None, "https://old.example")
         };
         WriteConfig(SingleProfileConfig(profile));
 

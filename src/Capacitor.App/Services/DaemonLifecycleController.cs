@@ -19,7 +19,7 @@ internal static class VerifyExitCodes {
     public const int RestoreVerification = 27;
     public const int StartGate           = 28;
     public const int StartGateDrift      = 29;
-    public const int DigestGate          = 43; // not a VerifyExit code (DaemonCommands' own digest gate) — deliberately absent from Token()'s map below
+    public const int DigestGate          = 43; // not a VerifyExit code (DaemonCommands' own digest gate) — mapped in Token() below like every other coded exit
 
     public static string Token(int exitCode) => exitCode switch {
         Contended           => "verify_contended",
@@ -32,6 +32,7 @@ internal static class VerifyExitCodes {
         RestoreVerification => "verify_restore_verification",
         StartGate           => "verify_start_gate",
         StartGateDrift      => "verify_start_gate_drift",
+        DigestGate          => "daemon_start_gate",
         _                   => $"verify_unknown_{exitCode}",
     };
 }
@@ -389,11 +390,14 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     /// Routes execution through the lane at this action's pinned identity. Two DISTINCT surfaces
     /// (round-1 review C-2): a guard refusal (`MutationRequestFactory` rejecting BEFORE the lane
     /// is ever touched) never reaches the outcome channel, so the controller is its sole
-    /// presenter — one `_surface.Status` line. Everything that DOES reach the lane is a different
-    /// story: on success this only kicks the reattach (caller state); on any other outcome, the
-    /// lane already enqueued it onto the channel (Deliver enqueues every non-success outcome), so
-    /// this makes NO surface call at all — a second call here would double-present. Returns
-    /// whether the mutation itself succeeded.
+    /// presenter — one `_surface.Status` line, and no lane call ever happened for the daemon to
+    /// have restarted. Everything that DOES reach the lane is a different story: the reattach kick
+    /// fires UNCONDITIONALLY after every `_runMutation` call, regardless of outcome — a mutation
+    /// attempt (takeover Replace, StartVerified, DetachedStart) may have restarted the daemon even
+    /// when it did not end in Succeeded/SucceededAfterTimeout, and kicking reattach is idempotent.
+    /// On any non-success outcome, the lane already enqueued it onto the channel (Deliver enqueues
+    /// every non-success outcome), so this makes NO surface call of its own — a second call here
+    /// would double-present. Returns whether the mutation itself succeeded.
     async Task<bool> RunLaneMutationAsync(MutationVerb verb, CancellationToken ct) {
         var profileName = await _resolveProfileName().ConfigureAwait(false);
         var refusal = MutationRequestFactory.TryBuild(verb, profileName, _canonicalServer, _client.DaemonName, out var request);
@@ -403,12 +407,8 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         }
 
         var outcome = await _runMutation(request!, ct).ConfigureAwait(false);
-        if (outcome is MutationOutcome.Succeeded or MutationOutcome.SucceededAfterTimeout) {
-            _ = _client.RestartLoopAsync(); // kick reattach after a lane-confirmed mutation
-            return true;
-        }
-
-        return false;
+        _ = _client.RestartLoopAsync(); // any mutation attempt may have restarted the daemon; kicking reattach is idempotent
+        return outcome is MutationOutcome.Succeeded or MutationOutcome.SucceededAfterTimeout;
     }
 
     /// §4.3: runs on every Connected (paired with the latest known snapshot version) and every

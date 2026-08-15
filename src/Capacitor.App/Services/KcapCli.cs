@@ -44,10 +44,8 @@ public interface IKcapCli {
 
     Task<ProcessResult> ServiceInstallVerifiedAsync(bool replace, CancellationToken ct);
 
-    /// `daemon start -d --name <name>`, bounded + ProcessOnly-kill; delegates with a fresh boot-attempt id.
-    Task<ProcessResult> DetachedStartAsync(CancellationToken ct);
-
-    /// Same call, stamped with a boot-attempt id for the daemon's own boot-carrier correlation.
+    /// `daemon start -d --name <name>`, bounded + ProcessOnly-kill, stamped with a boot-attempt id
+    /// for the daemon's own boot-carrier correlation — the lane always mints a fresh one per action.
     Task<ProcessResult> DetachedStartAsync(string bootAttemptId, CancellationToken ct);
 }
 
@@ -144,9 +142,6 @@ public sealed class KcapCli : IKcapCli {
         var env = await EnvWithTerminalPathAsync(mutation, ct).ConfigureAwait(false);
         return await Run(cliPath, args.ToArray(), new RunOptions(EnvOverlay: env, Timeout: MutationTimeout), ct).ConfigureAwait(false);
     }
-
-    public Task<ProcessResult> DetachedStartAsync(CancellationToken ct) =>
-        DetachedStartAsync(Guid.NewGuid().ToString("N"), ct);
 
     public Task<ProcessResult> DetachedStartAsync(string bootAttemptId, CancellationToken ct) {
         var env = MutationEnv(); // throws before any spawn if the instance carries no server

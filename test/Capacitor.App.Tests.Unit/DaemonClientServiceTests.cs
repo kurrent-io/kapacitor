@@ -399,6 +399,27 @@ public class DaemonClientServiceTests {
         await WaitUntilAsync(() => script.StartCount > startCountBefore, TimeSpan.FromSeconds(2), what: "restart kick after SucceededAfterTimeout");
     }
 
+    // Blocker 1 (final review): the reattach kick must fire even when the mutation attempt did NOT
+    // succeed — a mutation that restarts the daemon (takeover Replace, StartVerified,
+    // DetachedStart) may have torn down the app's own attach regardless of its own outcome, and
+    // kicking reattach is idempotent.
+    [Test]
+    public async Task StartDaemon_non_success_outcome_still_kicks_restart() {
+        var script = new Script();
+        var fakeStart = new FakeStartDaemon {
+            Behavior = _ => Task.FromResult<MutationOutcome>(new MutationOutcome.Failed(43, "daemon_start_gate", RecoverySurface.Attention)),
+        };
+        await using var svc = new DaemonClientService("daemon-a", script.Run, fakeStart.InvokeAsync);
+        svc.Start();
+        await WaitUntilAsync(() => script.LiveEnumerations >= 1, what: "enumeration to start");
+        var startCountBefore = script.StartCount;
+
+        var result = await svc.StartDaemonAsync(CancellationToken.None);
+
+        await Assert.That(result.Ok).IsFalse();
+        await WaitUntilAsync(() => script.StartCount > startCountBefore, TimeSpan.FromSeconds(2), what: "restart kick after a non-success outcome");
+    }
+
     // Refused("cli_not_found") is the one outcome that must surface the OLD honest "not found"
     // wording verbatim, not the raw coded token — StartDaemonResult.Message is user-facing text.
     [Test]

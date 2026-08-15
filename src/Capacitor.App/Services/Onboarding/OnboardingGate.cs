@@ -45,7 +45,12 @@ public static class OnboardingGate {
 
         var stamp = profile.AuthProvider;
 
-        if (stamp is { Provider: "none" } && ServerIdentity.SameServer(stamp.ServerUrl, profile.ServerUrl)) {
+        // Case-insensitive: the stamp writer emits the AuthProvider.None constant verbatim
+        // ("None"), not a lowercased literal — an ordinal-exact "none" compare would silently
+        // never satisfy the gate for a real stamp.
+        if (stamp is not null
+                && string.Equals(stamp.Provider, AuthProvider.None, StringComparison.OrdinalIgnoreCase)
+                && ServerIdentity.SameServer(stamp.ServerUrl, profile.ServerUrl)) {
             return new GateResult.Complete();
         }
 
