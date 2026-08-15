@@ -217,8 +217,7 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
     async Task<MutationOutcome> ExecuteActionAsync(MutationRequest request, CancellationToken ct) {
         ct.ThrowIfCancellationRequested(); // a disposed lane's cancelled token must stop admission before any spawn
 
-        // Pinned before the first await (spec pin-once rule): evidence is always a fresh socket
-        // dial — a live-graph replay can never prove it postdates the mutation.
+        // Pinned before the first await (spec pin-once rule): evidence is always a fresh socket dial, never a live-graph replay.
         var observation = _oneShotFactory(request);
 
         var pinnedPath = _cliOverride() ?? await _shellProbe.KcapPathAsync(ct, forceRefresh: false).ConfigureAwait(false);
@@ -322,6 +321,15 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
 
         if (ownership.DaemonPid != evidence!.Pid) // evidenceLeg == null guarantees evidence is non-null and fully valid here
             return new MutationOutcome.AttentionSkew("instance_pid_mismatch"); // same-instance rule
+
+        // ABA guard (round-4 P1): the ServiceStatusAsync read above can straddle a process swap that
+        // reuses pid P, so a pid-only cross-check alone can't tell instance A from a replacement B.
+        // A second fresh dial — required to reproduce the SAME InstanceId+Pid as the first — is the
+        // only proof one continuous process held pid P for the whole window; a per-boot instance id
+        // cannot survive a process swap. Only this (the would-be-Succeeded) path pays for it.
+        var confirm = await observation.ObserveAsync(request, ct).ConfigureAwait(false);
+        if (confirm?.Pid != evidence.Pid || confirm?.InstanceId != evidence.InstanceId)
+            return new MutationOutcome.AttentionSkew("instance_changed_during_classification");
 
         return new MutationOutcome.Succeeded();
     }

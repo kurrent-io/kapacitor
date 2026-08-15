@@ -17,9 +17,12 @@ public class DaemonMutationLaneTests {
 
     sealed class ScriptedObservation : IDaemonObservation {
         public Func<MutationRequest, CancellationToken, Task<ObservedEvidence?>> Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(null);
+        // Per-call sequencing: when set, each call dequeues the next scripted result; Behavior is the fallback once exhausted or when unset.
+        public Queue<ObservedEvidence?>? Sequence;
         public int CallCount;
         public Task<ObservedEvidence?> ObserveAsync(MutationRequest request, CancellationToken ct) {
             CallCount++;
+            if (Sequence is { Count: > 0 } seq) return Task.FromResult(seq.Dequeue());
             return Behavior(request, ct);
         }
     }
@@ -387,9 +390,7 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    // P1 (round 3): the live-observation path is gone — classification evidence is always a fresh
-    // one-shot probe. This pins the ONLY remaining source: the factory runs exactly once per
-    // action, with the action's own request identity, and its result is what Classify sees.
+    // The one-shot factory is invoked exactly once per action, with the action's own request identity, and its result is what Classify sees.
     [Test]
     public async Task Observation_is_pinned_once_via_the_oneshot_factory_with_the_requests_identity() {
         var cli = new FakeKcapCli();
@@ -808,11 +809,15 @@ public class DaemonMutationLaneTests {
     public async Task Full_matching_evidence_and_ownership_on_exit_zero_is_Succeeded() {
         var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership()) };
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
-        var lane = MakeLane(factory, oneShotFactory: _ => new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(MatchingEvidence()) });
+        // Two independently-built evidence instances that agree on Pid+InstanceId — the sandwich's
+        // second dial is scripted explicitly rather than relying on a re-evaluated Behavior lambda.
+        var observation = new ScriptedObservation { Sequence = new([MatchingEvidence(), MatchingEvidence()]) };
+        var lane = MakeLane(factory, oneShotFactory: _ => observation);
 
         var outcome = await lane.RunAsync(Req(), CancellationToken.None);
 
         await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
+        await Assert.That(observation.CallCount).IsEqualTo(2);
 
         await lane.DisposeAsync();
     }
@@ -822,14 +827,80 @@ public class DaemonMutationLaneTests {
         var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership()) };
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
         var channel = new OutcomeChannel();
-        var lane = MakeLane(
-            factory, channel: channel,
-            oneShotFactory: _ => new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(MatchingEvidence()) });
+        var observation = new ScriptedObservation { Sequence = new([MatchingEvidence(), MatchingEvidence()]) };
+        var lane = MakeLane(factory, channel: channel, oneShotFactory: _ => observation);
 
         var outcome = await lane.RunAsync(Req(), CancellationToken.None);
         await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
 
         await AssertChannelEmptyAsync(channel);
+
+        await lane.DisposeAsync();
+    }
+
+    // ---- round-4 P1: ABA guard — the ServiceStatusAsync ownership read can straddle a process swap
+    // that reuses pid P, so the sandwich requires a SECOND fresh dial to reproduce the first's own
+    // InstanceId+Pid before Succeeded is ever returned. ----
+
+    [Test]
+    public async Task Sandwich_second_observation_different_instance_same_pid_yields_AttentionSkew_never_Succeeded() {
+        var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership(jobPid: 111, daemonPid: 111)) };
+        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
+        var first = MatchingEvidence(pid: 111, instanceId: "inst-1");
+        var second = MatchingEvidence(pid: 111, instanceId: "inst-2"); // same pid — a process swap that reused pid 111
+        var observation = new ScriptedObservation { Sequence = new([first, second]) };
+        var lane = MakeLane(factory, oneShotFactory: _ => observation);
+
+        var outcome = await lane.RunAsync(Req(), CancellationToken.None);
+
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.AttentionSkew("instance_changed_during_classification"));
+        await Assert.That(observation.CallCount).IsEqualTo(2);
+
+        await lane.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Sandwich_second_observation_unreachable_fails_closed_to_AttentionSkew() {
+        var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership()) };
+        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
+        var unreachable = new ObservedEvidence(false, null, null, null, null, null, null, false);
+        var observation = new ScriptedObservation { Sequence = new([MatchingEvidence(), unreachable]) };
+        var lane = MakeLane(factory, oneShotFactory: _ => observation);
+
+        var outcome = await lane.RunAsync(Req(), CancellationToken.None);
+
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.AttentionSkew("instance_changed_during_classification"));
+
+        await lane.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Sandwich_second_observation_null_fails_closed_to_AttentionSkew() {
+        var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership()) };
+        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
+        var observation = new ScriptedObservation { Sequence = new([MatchingEvidence(), null]) };
+        var lane = MakeLane(factory, oneShotFactory: _ => observation);
+
+        var outcome = await lane.RunAsync(Req(), CancellationToken.None);
+
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.AttentionSkew("instance_changed_during_classification"));
+
+        await lane.DisposeAsync();
+    }
+
+    // Failure paths (AttentionSkew resolved from the FIRST observation) never pay for a second dial.
+    [Test]
+    public async Task Sandwich_second_dial_never_runs_when_the_first_observation_already_fails() {
+        var cli = new FakeKcapCli { StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Ownership()) };
+        var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
+        var wrongServer = MatchingEvidence() with { ServerUrl = "https://wrong.example.test" };
+        var observation = new ScriptedObservation { Sequence = new([wrongServer]) }; // only ONE scripted result — CallCount below proves a 2nd call never happens
+        var lane = MakeLane(factory, oneShotFactory: _ => observation);
+
+        var outcome = await lane.RunAsync(Req(), CancellationToken.None);
+
+        await Assert.That(outcome).IsTypeOf<MutationOutcome.AttentionSkew>();
+        await Assert.That(observation.CallCount).IsEqualTo(1);
 
         await lane.DisposeAsync();
     }
