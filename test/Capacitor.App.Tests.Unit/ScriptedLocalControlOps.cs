@@ -52,6 +52,8 @@ sealed class ScriptedLocalControlOps : ILocalControlOps {
     }
 
     public void QueuePutV2(bool ok, string? error) => ArmPutV2().SetResult(new ConsentAckDto(ok, error, null));
+    public void QueuePutV2Failure(string reason) => ArmPutV2().SetException(new LocalControlOpsException(reason, reason));
+    public void QueuePutV2UnmappedFailure(Exception ex) => ArmPutV2().SetException(ex);
 
     public TaskCompletionSource<StopAgentResult> ArmStop() {
         var tcs = new TaskCompletionSource<StopAgentResult>(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -168,6 +168,75 @@ public class ConsentFlipCoordinatorTests {
         await Assert.That(h.Claims.Pending()).IsEquivalentTo([Claim]);
     }
 
+    // ---- Get/PutV2 throwing (the two-catch shape) ----
+
+    [Test]
+    public async Task Get_throwing_a_mapped_exception_retains_the_claim_and_skips_put() {
+        using var h = new Harness();
+        h.Claims.Arm(Claim);
+        h.Ops.QueueGetFailure("daemon_unreachable");
+
+        h.Coordinator.Start();
+        h.Client.StatusSubject.OnNext(Connected(ConsentFlipCoordinator.ConsentV3Capability));
+
+        await WaitUntilAsync(() => h.Ops.GetCalls == 1, what: "the get to run");
+        await WaitUntilAsync(() => h.Coordinator.PassCount >= 1, what: "the pass to settle");
+
+        await Assert.That(h.Ops.PutV2Calls).IsEqualTo(0);
+        await Assert.That(h.Claims.Pending()).IsEquivalentTo([Claim]);
+    }
+
+    [Test]
+    public async Task Get_throwing_an_unmapped_exception_retains_the_claim_and_skips_put() {
+        using var h = new Harness();
+        h.Claims.Arm(Claim);
+        h.Ops.QueueGetUnmappedFailure(new InvalidOperationException("boom"));
+
+        h.Coordinator.Start();
+        h.Client.StatusSubject.OnNext(Connected(ConsentFlipCoordinator.ConsentV3Capability));
+
+        await WaitUntilAsync(() => h.Ops.GetCalls == 1, what: "the get to run");
+        await WaitUntilAsync(() => h.Coordinator.PassCount >= 1, what: "the pass to settle");
+
+        await Assert.That(h.Ops.PutV2Calls).IsEqualTo(0);
+        await Assert.That(h.Claims.Pending()).IsEquivalentTo([Claim]);
+    }
+
+    [Test]
+    public async Task Put_throwing_retains_the_claim_without_consuming() {
+        using var h = new Harness();
+        h.Claims.Arm(Claim);
+        h.Ops.QueueGet(new ConsentPolicyDto("allow", 30, [])); // factory-looking — the put IS attempted
+        h.Ops.QueuePutV2Failure("daemon_unreachable");
+
+        h.Coordinator.Start();
+        h.Client.StatusSubject.OnNext(Connected(ConsentFlipCoordinator.ConsentV3Capability));
+
+        await WaitUntilAsync(() => h.Ops.PutV2Calls == 1, what: "the put to run");
+        await WaitUntilAsync(() => h.Coordinator.PassCount >= 1, what: "the pass to settle");
+
+        // TryConsume never ran — the real store still holds the key (not merely "false was returned").
+        await Assert.That(h.Claims.Pending()).IsEquivalentTo([Claim]);
+    }
+
+    // ---- ResolveCanonical `?? server` fallback ----
+
+    // An unparseable resolved server can never equal a properly canonicalized claim key, so this
+    // degrades exactly like any other non-matching identity — inert, not a crash.
+    [Test]
+    public async Task Unparseable_resolved_server_falls_back_to_the_raw_value_and_stays_inert() {
+        using var h = new Harness();
+        h.Claims.Arm(Claim);
+        h.Resolver.Server = "not a url"; // ServerIdentity.Canonicalize returns null for this
+
+        h.Coordinator.Start();
+        h.Client.StatusSubject.OnNext(Connected(ConsentFlipCoordinator.ConsentV3Capability));
+
+        await Task.Delay(150); // give a wrongly-firing get every chance to appear
+        await Assert.That(h.Ops.GetCalls).IsEqualTo(0);
+        await Assert.That(h.Claims.Pending()).IsEquivalentTo([Claim]);
+    }
+
     // ---- §10 rename-injection rows: a rename landing at each point of the sequence must retain ----
 
     [Test]
