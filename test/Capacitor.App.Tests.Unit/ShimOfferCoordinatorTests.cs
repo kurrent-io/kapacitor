@@ -63,7 +63,9 @@ public class ShimOfferCoordinatorTests {
         public readonly PathShimInstaller Installer;
         public readonly ShimOfferCoordinator Coordinator;
 
-        public Harness(bool immediatePhaseClosed = false, bool noTarget = false, Func<bool>? isMacOs = null) {
+        public Harness(
+                bool immediatePhaseClosed = false, bool noTarget = false, Func<bool>? isMacOs = null,
+                bool autoOfferSuppressed = false) {
             Target      = noTarget ? null : Path.Combine(TempDir, "target-cli");
             Destination = Path.Combine(TempDir, "kcap");
             Installer   = new PathShimInstaller(Runner, Probe);
@@ -71,7 +73,7 @@ public class ShimOfferCoordinatorTests {
             var phaseClosed = immediatePhaseClosed ? Task.CompletedTask : PhaseClosedSource.Task;
             Coordinator = new ShimOfferCoordinator(
                 phaseClosed, Probe, Installer, Store, Surface, Target, CancellationToken.None, Destination,
-                isMacOs ?? (() => true));
+                isMacOs ?? (() => true), autoOfferSuppressed);
             Coordinator.Offerable.Subscribe(OfferableValues.Add);
         }
 
@@ -180,6 +182,31 @@ public class ShimOfferCoordinatorTests {
         await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindShim);
         await Assert.That(h.Surface.Prompts[0].Disclosure).IsEqualTo(ShimOfferCoordinator.ShimDisclosure);
         await Assert.That(h.Surface.Prompts[0].PathDegraded).IsFalse();
+    }
+
+    // ---- Task 15 round-1 review: autoOfferSuppressed (carve-out mode) ----
+
+    [Test]
+    public async Task AutoOfferSuppressed_still_becomes_offerable_but_never_shows_the_dialog() {
+        using var h = new Harness(immediatePhaseClosed: true, autoOfferSuppressed: true);
+        h.Probe.KcapOnPathBehavior = _ => Task.FromResult<bool?>(false);
+        h.Coordinator.Start();
+
+        await WaitUntilAsync(() => h.OfferableValues.Contains(true), what: "the item to become visible");
+        await Task.Delay(100); // give a wrongly-firing auto-offer dialog (ConfirmAsync) every chance to appear
+        await Assert.That(h.Surface.Prompts).IsEmpty(); // Prompts records every ConfirmAsync call
+    }
+
+    // Manual install is a separate code path from the suppressed auto-offer — it must still work.
+    [Test]
+    public async Task AutoOfferSuppressed_manual_install_still_works() {
+        using var h = new Harness(autoOfferSuppressed: true);
+        h.Runner.Enqueue(new ProcessResult(0, "", "", false));
+
+        await h.Coordinator.RunManualInstallAsync();
+
+        await Assert.That(h.Runner.Calls.Count).IsEqualTo(1);
+        await Assert.That(h.Surface.Prompts).IsEmpty(); // never a dialog — a direct manual click
     }
 
     // ---- already resolved on a prior run ----

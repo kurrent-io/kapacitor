@@ -8,7 +8,9 @@ public abstract record GateResult {
     public sealed record Incomplete(GateReason Reason) : GateResult;
 }
 
-public enum GateReason { NoProfile, InvalidServerUrl, NoToken, TokenUnusableBinding, TokenUnusableExpired }
+// EvaluationFailed: never returned by EvaluateAsync itself — App.EvaluateGateSafelyAsync's fail-safe
+// degrade for an unexpected exception (round-1 review, adjudicated).
+public enum GateReason { NoProfile, InvalidServerUrl, NoToken, TokenUnusableBinding, TokenUnusableExpired, EvaluationFailed }
 
 /// <summary>
 /// Decision-1 first-run trigger: local, side-effect-free except the shared resolution path's own

@@ -115,8 +115,8 @@ public partial class App : Application {
                 TimeProvider.System);
             _lane = lane;
 
-            // Plan C replaces this arm with wizard-first startup (spec decision 2).
-            var gate = await OnboardingGate.EvaluateAsync(_shutdown.Token);
+            var gate = await EvaluateGateSafelyAsync(OnboardingGate.EvaluateAsync, _shutdown.Token);
+            // Plan C replaces the Incomplete outcome below with wizard-first startup (spec decision 2).
             var autoActionsPermanentlyClosed = AutoActionsPermanentlyClosed(gate);
 
             var service = await DaemonClientService.CreateDefaultAsync(lane.RunAsync);
@@ -150,8 +150,9 @@ public partial class App : Application {
             // Task 24: unlike lifecycle's Start(), subscribe-before-run doesn't matter here —
             // Offerable is a BehaviorSubject, so TrayViewModel (built further below) still sees
             // the current value the moment it subscribes.
-            // Incomplete: the once-ever auto-offer never runs; the tray's manual install command stays wired.
-            if (!autoActionsPermanentlyClosed) shimOffer.Start();
+            // Always started: the item and manual install must keep working in Incomplete mode too
+            // — BuildLifecycleController's autoOfferSuppressed is what skips only the dialog.
+            shimOffer.Start();
             _shimOffer = shimOffer;
 
             consentFlip.Start();
@@ -410,8 +411,11 @@ public partial class App : Application {
         // (no override set, or the not-yet-landed bundle-relative arm) means there is
         // nothing to link, so the offer and the menu item both stay off for the whole run.
         var shimTarget = cliPath is not null && Path.IsPathRooted(cliPath) ? cliPath : null;
+        // autoOfferSuppressed (round-1 review): Start() always runs now — Offerable/manual install
+        // must keep working in Incomplete mode — only the once-ever auto-offer dialog is skipped.
         var shimOffer = new ShimOfferCoordinator(
-            lifecycle.PhaseClosed, probe, new PathShimInstaller(runner, probe), store, surface, shimTarget, _shutdown.Token);
+            lifecycle.PhaseClosed, probe, new PathShimInstaller(runner, probe), store, surface, shimTarget,
+            _shutdown.Token, autoActionsPermanentlyClosed);
 
         // The delegate below and ConsentFlipClaims.Default() both resolve AppConfig.GetConfigPath().
         var consentFlip = new ConsentFlipCoordinator(
@@ -421,6 +425,8 @@ public partial class App : Application {
     }
 
     // Pure LoadPure read only — TryConsume already holds this same config lock when this delegate runs.
+    // Deliberately literal ActiveProfile (no KCAP_PROFILE layering) — a divergence there is fail-safe
+    // via the daemon's own identity-conditional ack (task-13-report).
     internal static (string Profile, string Server, string DaemonName) ResolveConsentFlipIdentity() {
         var config      = ConfigMutator.LoadPure(AppConfig.GetConfigPath());
         var profileName = config.ActiveProfile;
@@ -440,6 +446,20 @@ public partial class App : Application {
 
     // Decision 2's carve-out switch: Incomplete is the only gate outcome that closes auto-actions.
     internal static bool AutoActionsPermanentlyClosed(GateResult gate) => gate is GateResult.Incomplete;
+
+    // Round-1 review (adjudicated): a gate-evaluation exception must never brick startup — degrades
+    // to Incomplete (fail-safe: the app still launches, with auto-actions closed) instead of throwing.
+    internal static async Task<GateResult> EvaluateGateSafelyAsync(
+            Func<CancellationToken, Task<GateResult>> evaluate, CancellationToken ct) {
+        try {
+            return await evaluate(ct).ConfigureAwait(false);
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            throw; // shutdown mid-evaluation — not a gate failure, let the caller's own catch handle it
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: onboarding gate evaluation failed unexpectedly — degrading to Incomplete: {ex.Message}");
+            return new GateResult.Incomplete(GateReason.EvaluationFailed);
+        }
+    }
 
     // The lane's cliOverride seam. Unlike CreateDefaultAsync's shared CliResolver.ResolvePath
     // (whose no-override answer is the bare string "kcap", a PATH-resolution-at-spawn-time

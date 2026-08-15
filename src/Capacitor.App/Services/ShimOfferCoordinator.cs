@@ -25,6 +25,9 @@ public sealed class ShimOfferCoordinator {
     readonly string? _target;
     readonly CancellationToken _lifetime;
     readonly string _destination;
+    // Task 15 round-1 review: true only for a gate-Incomplete startup — Offerable/manual install
+    // still work, only the once-ever auto-offer DIALOG is skipped.
+    readonly bool _autoOfferSuppressed;
 
     readonly BehaviorSubject<bool> _offerable = new(false);
 
@@ -35,8 +38,8 @@ public sealed class ShimOfferCoordinator {
     /// </param>
     public ShimOfferCoordinator(
             Task phaseClosed, ILoginShellProbe probe, PathShimInstaller installer, IAppStateStore store,
-            ILifecycleSurface surface, string? target, CancellationToken lifetime)
-        : this(phaseClosed, probe, installer, store, surface, target, lifetime, PathShimInstaller.Destination) { }
+            ILifecycleSurface surface, string? target, CancellationToken lifetime, bool autoOfferSuppressed = false)
+        : this(phaseClosed, probe, installer, store, surface, target, lifetime, PathShimInstaller.Destination, autoOfferSuppressed) { }
 
     // Test seam mirroring PathShimInstaller.InstallAsync's own internal destination-override
     // overload: lets tests drive real Preflight/InstallAsync taxonomy against a temp path instead
@@ -44,8 +47,9 @@ public sealed class ShimOfferCoordinator {
     // above, which pins `destination` to PathShimInstaller.Destination.
     internal ShimOfferCoordinator(
             Task phaseClosed, ILoginShellProbe probe, PathShimInstaller installer, IAppStateStore store,
-            ILifecycleSurface surface, string? target, CancellationToken lifetime, string destination)
-        : this(phaseClosed, probe, installer, store, surface, target, lifetime, destination, OperatingSystem.IsMacOS) { }
+            ILifecycleSurface surface, string? target, CancellationToken lifetime, string destination,
+            bool autoOfferSuppressed = false)
+        : this(phaseClosed, probe, installer, store, surface, target, lifetime, destination, OperatingSystem.IsMacOS, autoOfferSuppressed) { }
 
     // spec §3.3: macOS-only, no-op elsewhere. `isMacOs` is a test seam (off-macOS can't otherwise
     // be exercised from macOS CI); production always resolves to the real OS check. Nulling
@@ -54,15 +58,16 @@ public sealed class ShimOfferCoordinator {
     internal ShimOfferCoordinator(
             Task phaseClosed, ILoginShellProbe probe, PathShimInstaller installer, IAppStateStore store,
             ILifecycleSurface surface, string? target, CancellationToken lifetime, string destination,
-            Func<bool> isMacOs) {
-        _phaseClosed = phaseClosed;
-        _probe       = probe;
-        _installer   = installer;
-        _store       = store;
-        _surface     = surface;
-        _target      = isMacOs() ? target : null;
-        _lifetime    = lifetime;
-        _destination = destination;
+            Func<bool> isMacOs, bool autoOfferSuppressed = false) {
+        _phaseClosed          = phaseClosed;
+        _probe                = probe;
+        _installer            = installer;
+        _store                = store;
+        _surface              = surface;
+        _target               = isMacOs() ? target : null;
+        _lifetime             = lifetime;
+        _destination          = destination;
+        _autoOfferSuppressed  = autoOfferSuppressed;
     }
 
     /// True while the tray's "Install command-line tool…" item should show: applicable (an
@@ -88,6 +93,8 @@ public sealed class ShimOfferCoordinator {
             if (onPath != false) return; // true (already on PATH) or unknown → never auto-offer, item stays hidden
 
             _offerable.OnNext(true); // applicable-but-absent — the menu item is live from here on
+
+            if (_autoOfferSuppressed) return; // item + manual install still work; only the dialog never fires
 
             var state = await _store.LoadAsync().ConfigureAwait(false);
             if (state.ShimOffered || state.ShimDenied) return; // already resolved on a prior run

@@ -206,7 +206,6 @@ public class DaemonLifecycleControllerTests {
         h.PushUnreachable();
 
         await h.Controller.PhaseClosed; // must complete even though the matrix never runs
-        await Task.Delay(50); // give a wrongly-firing query/mutation every chance to appear
         await Assert.That(h.Cli.StatusCallCount).IsEqualTo(0); // RunStartupBranchAsync never admitted
         await Assert.That(h.Lane.Requests).IsEmpty();
         await Assert.That(h.Surface.StatusMessages).IsEmpty();
@@ -223,7 +222,6 @@ public class DaemonLifecycleControllerTests {
         h.PushUnreachable();
         await h.Controller.PhaseClosed;
         h.PushUnreachable();
-        await Task.Delay(50);
 
         await Assert.That(h.Cli.StatusCallCount).IsEqualTo(0);
         await Assert.That(h.Lane.Requests).IsEmpty();

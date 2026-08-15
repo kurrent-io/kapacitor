@@ -126,6 +126,48 @@ public class AppStartupCarveOutTests {
         await Assert.That(daemonName).IsNotEmpty(); // DaemonNameResolver's OS-username/machine/"daemon" fallback chain
     }
 
+    // ---- EvaluateGateSafelyAsync: round-1 review — a gate exception must not brick startup ----
+
+    [Test]
+    public async Task EvaluateGateSafelyAsync_passes_a_successful_result_through_unchanged() {
+        var complete = new GateResult.Complete();
+
+        var result = await AppUnderTest.EvaluateGateSafelyAsync(_ => Task.FromResult<GateResult>(complete), CancellationToken.None);
+
+        await Assert.That(result).IsSameReferenceAs(complete);
+    }
+
+    [Test]
+    public async Task EvaluateGateSafelyAsync_degrades_an_unexpected_exception_to_incomplete() {
+        var result = await AppUnderTest.EvaluateGateSafelyAsync(
+            _ => throw new InvalidOperationException("boom"), CancellationToken.None);
+
+        await Assert.That(result).IsTypeOf<GateResult.Incomplete>();
+        await Assert.That(((GateResult.Incomplete)result).Reason).IsEqualTo(GateReason.EvaluationFailed);
+    }
+
+    // A cancellation matching the caller's OWN token is shutdown, not a gate failure — it must
+    // propagate rather than be swallowed into a fabricated Incomplete result.
+    [Test]
+    public async Task EvaluateGateSafelyAsync_rethrows_a_cancellation_matching_the_callers_token() {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            AppUnderTest.EvaluateGateSafelyAsync(_ => throw new OperationCanceledException(), cts.Token));
+    }
+
+    // An OperationCanceledException NOT tied to the caller's token (ct never cancelled) is just
+    // another unexpected exception — it degrades exactly like InvalidOperationException above.
+    [Test]
+    public async Task EvaluateGateSafelyAsync_degrades_an_unrelated_cancellation_to_incomplete() {
+        var result = await AppUnderTest.EvaluateGateSafelyAsync(
+            _ => throw new OperationCanceledException("unrelated"), CancellationToken.None);
+
+        await Assert.That(result).IsTypeOf<GateResult.Incomplete>();
+        await Assert.That(((GateResult.Incomplete)result).Reason).IsEqualTo(GateReason.EvaluationFailed);
+    }
+
     static ProfileConfig SingleProfileConfig(Profile profile) =>
         new() { ActiveProfile = ProfileName, Profiles = new() { [ProfileName] = profile } };
 
