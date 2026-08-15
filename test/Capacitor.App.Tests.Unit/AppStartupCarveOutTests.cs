@@ -51,6 +51,7 @@ public class AppStartupCarveOutTests {
     [Arguments(GateReason.NoToken)]
     [Arguments(GateReason.TokenUnusableBinding)]
     [Arguments(GateReason.TokenUnusableExpired)]
+    [Arguments(GateReason.EvaluationFailed)]
     public async Task Incomplete_gate_closes_auto_actions_for_every_reason(GateReason reason) {
         await Assert.That(AppUnderTest.AutoActionsPermanentlyClosed(new GateResult.Incomplete(reason))).IsTrue();
     }

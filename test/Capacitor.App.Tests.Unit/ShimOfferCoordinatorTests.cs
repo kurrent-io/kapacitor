@@ -195,6 +195,9 @@ public class ShimOfferCoordinatorTests {
         await WaitUntilAsync(() => h.OfferableValues.Contains(true), what: "the item to become visible");
         await Task.Delay(100); // give a wrongly-firing auto-offer dialog (ConfirmAsync) every chance to appear
         await Assert.That(h.Surface.Prompts).IsEmpty(); // Prompts records every ConfirmAsync call
+        // The once-ever offer claim must survive a suppressed run — a later complete-gate run still auto-offers.
+        await Assert.That(h.Store.State.ShimOffered).IsFalse();
+        await Assert.That(h.Store.State.ShimDenied).IsFalse();
     }
 
     // Manual install is a separate code path from the suppressed auto-offer — it must still work.
