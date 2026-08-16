@@ -1411,6 +1411,22 @@ sealed class FakeKcapCli : IKcapCli {
         LastBootAttemptId = bootAttemptId;
         return DetachedStartBehavior(ct);
     }
+
+    public int PluginInstallCallCount;
+    public Func<string?, CancellationToken, Task<ProcessResult>> PluginInstallBehavior =
+        (_, _) => Task.FromResult(new ProcessResult(0, "", "", false));
+    public Task<ProcessResult> PluginInstallAsync(string? vendorFlag, CancellationToken ct) {
+        PluginInstallCallCount++;
+        return PluginInstallBehavior(vendorFlag, ct);
+    }
+
+    public int ImportCallCount;
+    public Func<ImportRequest, CancellationToken, Task<StreamingResult>> ImportBehavior =
+        (_, _) => Task.FromResult(new StreamingResult(0, false, []));
+    public Task<StreamingResult> ImportAsync(ImportRequest request, Action<StreamedLine> onLine, CancellationToken ct) {
+        ImportCallCount++;
+        return ImportBehavior(request, ct);
+    }
 }
 
 /// Scripted ILoginShellProbe — the controller only ever calls TerminalPathAsync (the install

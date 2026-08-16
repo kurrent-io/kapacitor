@@ -17,8 +17,16 @@ public class KcapCliTests {
             return (Behavior ?? (_ => Task.FromResult(new ProcessResult(0, "", "", false))))(ct);
         }
 
+        public IReadOnlyList<StreamedLine> ScriptedStreamLines = [];
+
         public Task<StreamingResult> RunStreamingAsync(string fileName, string[] args, RunOptions options,
-            Action<StreamedLine> onLine, CancellationToken ct) => throw new NotImplementedException();
+                Action<StreamedLine> onLine, CancellationToken ct) {
+            SeenFileName = fileName;
+            SeenArgs     = args;
+            SeenOptions  = options;
+            foreach (var line in ScriptedStreamLines) onLine(line);
+            return Task.FromResult(new StreamingResult(0, false, ScriptedStreamLines));
+        }
     }
 
     const string CanonicalServer = "https://cap.example.com:443";
@@ -451,6 +459,146 @@ public class KcapCliTests {
         var result = await cli.ServiceInstallVerifiedAsync(replace: false, CancellationToken.None);
 
         await Assert.That(result.ExitCode).IsEqualTo(127);
+        await Assert.That(runner.SeenFileName).IsNull();
+    }
+
+    [Test]
+    public async Task PluginInstallAsync_null_vendor_flag_is_the_flagless_claude_default() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+
+        await cli.PluginInstallAsync(null, CancellationToken.None);
+
+        await Assert.That(runner.SeenArgs).IsEquivalentTo(["plugin", "install"], CollectionOrdering.Matching);
+        await Assert.That(runner.SeenOptions!.Timeout).IsEqualTo(TimeSpan.FromSeconds(60));
+    }
+
+    [Test]
+    public async Task PluginInstallAsync_with_vendor_flag_appends_it() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+
+        await cli.PluginInstallAsync("--codex", CancellationToken.None);
+
+        await Assert.That(runner.SeenArgs).IsEquivalentTo(["plugin", "install", "--codex"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task PluginInstallAsync_env_overlay_carries_profile_and_no_telemetry_but_not_mutation_keys() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+
+        await cli.PluginInstallAsync(null, CancellationToken.None);
+
+        await Assert.That(runner.SeenOptions!.EnvOverlay!["KCAP_PROFILE"]).IsEqualTo("work");
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.SpawnNoTelemetryVar]).IsEqualTo("1");
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey(KcapCli.ConsentSeedDefaultVar)).IsFalse();
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey(KcapCli.ExpectServerUrlVar)).IsFalse();
+    }
+
+    [Test]
+    public async Task PluginInstallAsync_with_null_CliPath_returns_exit_127_without_calling_the_runner() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCliWithNullPath(runner);
+
+        var result = await cli.PluginInstallAsync(null, CancellationToken.None);
+
+        await Assert.That(result.ExitCode).IsEqualTo(127);
+        await Assert.That(runner.SeenFileName).IsNull();
+    }
+
+    [Test]
+    public async Task ImportAsync_everything_scope_with_two_vendor_flags_builds_argv_in_order() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+        var request = new ImportRequest(ImportScopeChoice.Everything, null, ["--codex", "--cursor"]);
+
+        await cli.ImportAsync(request, _ => { }, CancellationToken.None);
+
+        await Assert.That(runner.SeenArgs).IsEquivalentTo(
+            ["import", "--all", "--yes", "--codex", "--cursor"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task ImportAsync_org_scope_builds_argv() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+        var request = new ImportRequest(ImportScopeChoice.Org, "my-org", []);
+
+        await cli.ImportAsync(request, _ => { }, CancellationToken.None);
+
+        await Assert.That(runner.SeenArgs).IsEquivalentTo(
+            ["import", "--org", "my-org", "--yes"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task ImportAsync_repo_scope_builds_argv() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+        var request = new ImportRequest(ImportScopeChoice.Repo, "my-org/my-repo", []);
+
+        await cli.ImportAsync(request, _ => { }, CancellationToken.None);
+
+        await Assert.That(runner.SeenArgs).IsEquivalentTo(
+            ["import", "--repo", "my-org/my-repo", "--yes"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task ImportAsync_env_overlay_carries_profile_and_no_telemetry_but_not_mutation_keys() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+        var request = new ImportRequest(ImportScopeChoice.Everything, null, []);
+
+        await cli.ImportAsync(request, _ => { }, CancellationToken.None);
+
+        await Assert.That(runner.SeenOptions!.EnvOverlay!["KCAP_PROFILE"]).IsEqualTo("work");
+        await Assert.That(runner.SeenOptions!.EnvOverlay![KcapCli.SpawnNoTelemetryVar]).IsEqualTo("1");
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey(KcapCli.ConsentSeedDefaultVar)).IsFalse();
+        await Assert.That(runner.SeenOptions!.EnvOverlay!.ContainsKey(KcapCli.ExpectServerUrlVar)).IsFalse();
+    }
+
+    [Test]
+    public async Task ImportAsync_passes_no_internal_timeout() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCli(runner);
+        var request = new ImportRequest(ImportScopeChoice.Everything, null, []);
+
+        await cli.ImportAsync(request, _ => { }, CancellationToken.None);
+
+        await Assert.That(runner.SeenOptions!.Timeout).IsNull();
+    }
+
+    [Test]
+    public async Task ImportAsync_streams_lines_and_returns_the_scripted_result() {
+        var runner = new FakeProcessRunner {
+            ScriptedStreamLines = [
+                new StreamedLine(ProcessStreamKind.Stdout, "importing repo one"),
+                new StreamedLine(ProcessStreamKind.Stderr, "warning: skip"),
+            ],
+        };
+        var cli = MakeCli(runner);
+        var request = new ImportRequest(ImportScopeChoice.Everything, null, []);
+        List<StreamedLine> seen = [];
+
+        var result = await cli.ImportAsync(request, seen.Add, CancellationToken.None);
+
+        await Assert.That(seen).IsEquivalentTo(runner.ScriptedStreamLines, CollectionOrdering.Matching);
+        await Assert.That(result.ExitCode).IsEqualTo(0);
+        await Assert.That(result.TimedOut).IsFalse();
+    }
+
+    [Test]
+    public async Task ImportAsync_with_null_CliPath_returns_a_synthesized_no_cli_result_without_calling_the_runner() {
+        var runner = new FakeProcessRunner();
+        var cli = MakeCliWithNullPath(runner);
+        var request = new ImportRequest(ImportScopeChoice.Everything, null, []);
+
+        var result = await cli.ImportAsync(request, _ => { }, CancellationToken.None);
+
+        await Assert.That(result.ExitCode).IsEqualTo(-1);
+        await Assert.That(result.TimedOut).IsFalse();
+        await Assert.That(result.Tail).IsEquivalentTo(
+            [new StreamedLine(ProcessStreamKind.Stderr, "kcap CLI not found")], CollectionOrdering.Matching);
         await Assert.That(runner.SeenFileName).IsNull();
     }
 }

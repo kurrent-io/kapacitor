@@ -26,6 +26,10 @@ public static class ServiceStateClassifier {
     };
 }
 
+public enum ImportScopeChoice { Everything, Org, Repo }
+
+public sealed record ImportRequest(ImportScopeChoice Scope, string? OrgOrRepo, IReadOnlyList<string> VendorFlags);
+
 /// Typed facade over every CLI call the app shells out to (spec §3.1/§3.6, decision 1:
 /// everything through the CLI). Consumed by the lifecycle controller and faked in tests behind
 /// IProcessRunner.
@@ -47,6 +51,13 @@ public interface IKcapCli {
     /// `daemon start -d --name <name>`, bounded + ProcessOnly-kill, stamped with a boot-attempt id
     /// for the daemon's own boot-carrier correlation — the lane always mints a fresh one per action.
     Task<ProcessResult> DetachedStartAsync(string bootAttemptId, CancellationToken ct);
+
+    /// `plugin install` (+ vendorFlag, when non-null); null = the flagless Claude default.
+    Task<ProcessResult> PluginInstallAsync(string? vendorFlag, CancellationToken ct);
+
+    /// `import` with scope/vendor flags, streamed live via onLine — unbounded internal timeout
+    /// (imports are long; ct cancellation is the only bound).
+    Task<StreamingResult> ImportAsync(ImportRequest request, Action<StreamedLine> onLine, CancellationToken ct);
 }
 
 public sealed class KcapCli : IKcapCli {
@@ -154,6 +165,35 @@ public sealed class KcapCli : IKcapCli {
                     EnvOverlay: env, Timeout: DetachedStartTimeout,
                     CancelMode: CancelMode.AbandonWait, TimeoutKill: TimeoutKillScope.ProcessOnly),
                 ct);
+    }
+
+    // Neither this nor ImportAsync overlays MutationEnv — non-daemon shelling keeps lenient
+    // classification (spec §4); the vendor flag itself is the caller's exclusive-flag choice.
+    public Task<ProcessResult> PluginInstallAsync(string? vendorFlag, CancellationToken ct) {
+        if (CliPath is not { } cliPath) return NoCliResult();
+
+        List<string> args = ["plugin", "install"];
+        if (vendorFlag is not null) args.Add(vendorFlag);
+
+        return Run(cliPath, args.ToArray(), new RunOptions(EnvOverlay: Env(), Timeout: MutationTimeout), ct);
+    }
+
+    public Task<StreamingResult> ImportAsync(ImportRequest request, Action<StreamedLine> onLine, CancellationToken ct) {
+        if (CliPath is not { } cliPath)
+            return Task.FromResult(new StreamingResult(-1, false, [new StreamedLine(ProcessStreamKind.Stderr, "kcap CLI not found")]));
+
+        List<string> args = ["import"];
+        args.Add(request.Scope switch {
+            ImportScopeChoice.Everything => "--all",
+            ImportScopeChoice.Org        => "--org",
+            ImportScopeChoice.Repo       => "--repo",
+            _                            => throw new ArgumentOutOfRangeException(nameof(request)),
+        });
+        if (request.Scope != ImportScopeChoice.Everything) args.Add(request.OrgOrRepo!);
+        args.Add("--yes");
+        args.AddRange(request.VendorFlags);
+
+        return _runner.RunStreamingAsync(cliPath, args.ToArray(), new RunOptions(EnvOverlay: Env()), onLine, ct);
     }
 
     // Deterministic exit 127 ("command not found") rather than throwing on a null CliPath — a
