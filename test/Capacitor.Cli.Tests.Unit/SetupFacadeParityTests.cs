@@ -4,7 +4,9 @@ using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Telemetry;
 using Capacitor.Cli.Tests.Unit.Telemetry;
+using Spectre.Console;
 using TUnit.Assertions.Enums;
+using Profile = Capacitor.Cli.Core.Config.Profile;
 
 namespace Capacitor.Cli.Tests.Unit;
 
@@ -103,7 +105,7 @@ public class SetupFacadeParityTests {
     }
 
     [Test]
-    public async Task RunDiscoveryAsync_github_zero_tenants_emits_tenant_none_not_a_duplicate_signin_completed() {
+    public async Task RunDiscoveryAsync_github_zero_tenants_emits_signin_completed_and_tenant_none() {
         var sink = StartCapturingFunnel();
 
         using var handler = AuthHttp.Script(proxyConfig: """{"github_client_id":"cid"}""", tenants: "[]");
@@ -113,10 +115,28 @@ public class SetupFacadeParityTests {
         var discovered = await SetupCommand.RunDiscoveryAsync(["--github"], forceDevice: true);
 
         await Assert.That(discovered).IsNull();
-        // Faithful to the façade boundary: NoTenantsFound implies token acquisition already
-        // succeeded, but the adapter fires only TenantNone here — see OnboardingFacade's mapping.
+        // Today's setup fires SigninCompleted unconditionally once the token is acquired, and
+        // TenantNone additionally when discovery then finds nothing — the two co-occur here.
         await Assert.That(sink.Select(e => e.Name).ToArray()).IsEquivalentTo(
-            new[] { "cli_setup_signin_opened", "cli_setup_tenant_none" }, CollectionOrdering.Matching);
+            new[] { "cli_setup_signin_opened", "cli_setup_signin_completed", "cli_setup_tenant_none" },
+            CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task RunDiscoveryAsync_github_post_acquisition_discovery_error_still_emits_signin_completed() {
+        var sink = StartCapturingFunnel();
+
+        // No `tenants:` stub — /discover-tenants 500s AFTER the device flow already handed out a
+        // token, landing AuthFailureReason.Other (not NoTenantsFound).
+        using var handler = AuthHttp.Script(proxyConfig: """{"github_client_id":"cid"}""");
+
+        SetupCommand.FacadeOverride = _ => OnboardingFacadeTests.NewFacade(new RecordingAuthProgress(), handler);
+
+        var discovered = await SetupCommand.RunDiscoveryAsync(["--github"], forceDevice: true);
+
+        await Assert.That(discovered).IsNull();
+        await Assert.That(sink.Select(e => e.Name).ToArray()).IsEquivalentTo(
+            new[] { "cli_setup_signin_opened", "cli_setup_signin_completed" }, CollectionOrdering.Matching);
     }
 
     [Test]
@@ -155,7 +175,10 @@ public class SetupFacadeParityTests {
 
     // ── Step 2: RunLoginStepAsync ────────────────────────────────────────────
 
+    // AnsiConsole.Console is process-global state (see below) — fully serialize this test against
+    // everything else, mirroring AuthProgressTests' console-redirection convention.
     [Test]
+    [NotInParallel]
     public async Task RunLoginStepAsync_loginComplete_reports_the_already_published_identity_without_a_facade_call() {
         await ConfigMutator.MutateAsync(c => c with {
             Profiles      = new Dictionary<string, Profile> { ["acme"] = new() { ServerUrl = "https://acme.kcap.ai" } },
@@ -171,11 +194,29 @@ public class SetupFacadeParityTests {
 
         SetupCommand.FacadeOverride = _ => throw new InvalidOperationException("loginComplete must not call the façade");
 
-        var exitCode = await SetupCommand.RunLoginStepAsync(
-            loginComplete: true, provider: AuthProvider.GitHubApp, serverUrl: "https://acme.kcap.ai",
-            forceDevice: false, activeProfile: "acme");
+        // SetupCommand writes Step 2's banner via AnsiConsole (not IAuthProgress, and not plain
+        // Console.Out — Spectre's static AnsiConsole.Console caches its writer at first use, so
+        // Console.SetOut alone doesn't redirect it), so swap the singleton console to capture it.
+        var originalConsole = AnsiConsole.Console;
+        var buffer          = new StringWriter();
+        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings {
+            Ansi        = AnsiSupport.No,
+            ColorSystem = ColorSystemSupport.NoColors,
+            Out         = new AnsiConsoleOutput(buffer),
+        });
+
+        int exitCode;
+
+        try {
+            exitCode = await SetupCommand.RunLoginStepAsync(
+                loginComplete: true, provider: AuthProvider.GitHubApp, serverUrl: "https://acme.kcap.ai",
+                forceDevice: false, activeProfile: "acme");
+        } finally {
+            AnsiConsole.Console = originalConsole;
+        }
 
         await Assert.That(exitCode).IsEqualTo(0);
+        await Assert.That(buffer.ToString()).Contains("Logged in as alice");
     }
 
     [Test]

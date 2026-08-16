@@ -839,27 +839,28 @@ public static class SetupCommand {
             : HeadlessEnvironment.IsHeadless() ? "device" : "browser";
         SetupFunnel.SigninOpened(signinMode, chosen);
 
-        // Offer inline tenant creation only in an interactive WorkOS session; headless setup keeps
-        // the legacy "ask your admin" dead-end (provisioner null). GitHub discovery never provisions.
+        // Headless WorkOS keeps the legacy "ask your admin" dead-end; GitHub never provisions.
         var provisioner = chosen == AuthProvider.WorkOS && !HeadlessEnvironment.IsHeadless()
             ? new SpectreTenantProvisioner(new TenantProvisioningClient(new HttpClient()), ProvisioningEndpoint.Url)
             : null;
 
         var result = await NewFacade(provisioner).DiscoverAsync(chosen, forceDevice, CancellationToken.None);
 
-        // WorkOS's own signin_completed/tenant_none fire from inside Core regardless of caller —
-        // only GitHub needs the adapter to derive them from the final result.
+        // WorkOS's own signin_completed/tenant_none fire from inside Core — only GitHub is derived here.
         if (chosen == AuthProvider.GitHubApp) {
             switch (result) {
                 case AuthResult.Failed { Reason: AuthFailureReason.SigninDenied }:
                     SetupFunnel.SigninFailed("github_token_denied");
 
                     break;
+                // Other and NoTenantsFound only occur once AcquireGitHubTokenAsync already succeeded.
                 case AuthResult.Committed:
+                case AuthResult.Failed { Reason: AuthFailureReason.Other }:
                     SetupFunnel.SigninCompleted(AuthProvider.GitHubApp);
 
                     break;
                 case AuthResult.Failed { Reason: AuthFailureReason.NoTenantsFound }:
+                    SetupFunnel.SigninCompleted(AuthProvider.GitHubApp);
                     SetupFunnel.TenantNone(AuthProvider.GitHubApp);
 
                     break;
@@ -877,8 +878,7 @@ public static class SetupCommand {
                     return null;
                 }
 
-                // WorkOS already reported "Logged in as … → …" through the façade's own progress
-                // sink; GitHub's multi-tenant commit has no such notice, so the adapter prints one.
+                // WorkOS already reported "Logged in as … → …" via the façade; GitHub gets its own line.
                 if (committed.Provider != AuthProvider.WorkOS) {
                     AnsiConsole.MarkupLine(
                         $"  [green]✓[/] Discovered {committed.Published.Count} tenant(s). Active: [cyan]{Markup.Escape(committed.ActiveProfile)}[/]");
