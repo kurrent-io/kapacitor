@@ -1,7 +1,11 @@
 using System.Reactive.Threading.Tasks;
 using System.Text.Json;
+using Avalonia.Controls;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels.Onboarding;
+using Capacitor.App.Views.Onboarding;
 using Capacitor.Cli.Core.Config;
 using TUnit.Assertions.Enums;
 
@@ -208,6 +212,73 @@ public class WizardSimpleStepsTests {
         await Assert.That(skip).IsTrue();
     }
 
+    // ── templates ────────────────────────────────────────────────────────────
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task The_window_selects_a_template_for_each_simple_step() {
+        var result = await AvaloniaSession.DispatchAsync(async () => {
+            using var h = new ShimHarness();
+            var defaults = new DefaultsStepViewModel();
+            var done = new DoneStepViewModel(() => [("Command-line tool", false, "kcap CLI not found")]);
+            var vm = new OnboardingViewModel([h.Vm, defaults, done]);
+            await vm.PendingEnterForTesting;
+
+            var window = new OnboardingWindow { DataContext = vm };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            // Run the install and observe the button/success-text react — a broken Idle/Satisfied binding would leave Avalonia's own base defaults instead of tracking the VM.
+            var installButton = window.GetVisualDescendants().OfType<Button>().FirstOrDefault(b => b.Name == "InstallShimButton");
+            var successBefore = window.GetVisualDescendants().OfType<TextBlock>().FirstOrDefault(t => t.Name == "ShimSuccessText")?.IsVisible;
+
+            h.Runner.Enqueue(new ProcessResult(0, "", "", false));
+            h.Probe.KcapOnPathBehavior = _ => Task.FromResult<bool?>(true);
+            await h.Install();
+            Dispatcher.UIThread.RunJobs();
+
+            var successAfter = window.GetVisualDescendants().OfType<TextBlock>().FirstOrDefault(t => t.Name == "ShimSuccessText")?.IsVisible;
+            var installEnabledAfter = installButton?.IsEnabled;
+
+            await vm.NextCommand.Execute().ToTask(); // Shim -> Defaults
+            Dispatcher.UIThread.RunJobs();
+
+            var visibilityCombo = window.GetVisualDescendants().OfType<ComboBox>().FirstOrDefault(c => c.Name == "VisibilityCombo");
+            var selectedVisibility = visibilityCombo?.SelectedValue as string;
+            var daemonNameText = window.GetVisualDescendants().OfType<TextBox>().FirstOrDefault(t => t.Name == "DaemonNameBox")?.Text;
+
+            await vm.SkipCommand.Execute().ToTask(); // Defaults -> Done (Skip never persists — no real config write here)
+            Dispatcher.UIThread.RunJobs();
+
+            var summaryList = window.GetVisualDescendants().OfType<ItemsControl>().FirstOrDefault(i => i.Name == "SummaryList");
+            var summaryTitle = window.GetVisualDescendants().OfType<TextBlock>().FirstOrDefault(t => t.Name == "SummaryTitleText")?.Text;
+            var summaryNote = window.GetVisualDescendants().OfType<TextBlock>().FirstOrDefault(t => t.Name == "SummaryNoteText")?.Text;
+            var summaryGlyph = window.GetVisualDescendants().OfType<TextBlock>().FirstOrDefault(t => t.Name == "SummaryGlyphText")?.Text;
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+
+            return (
+                installButton, successBefore, successAfter, installEnabledAfter,
+                visibilityCombo, selectedVisibility, daemonNameText,
+                summaryList, summaryTitle, summaryNote, summaryGlyph);
+        });
+
+        await Assert.That(result.installButton).IsNotNull();
+        await Assert.That(result.successBefore).IsFalse(); // Satisfied starts false — a broken binding would leave Avalonia's IsVisible default (true)
+        await Assert.That(result.successAfter).IsTrue();   // Satisfied flips true once Installed lands
+        await Assert.That(result.installEnabledAfter).IsTrue();
+
+        await Assert.That(result.visibilityCombo).IsNotNull();
+        await Assert.That(result.selectedVisibility).IsEqualTo("org_public");
+        await Assert.That(result.daemonNameText).IsEqualTo(Environment.UserName.ToLowerInvariant());
+
+        await Assert.That(result.summaryList).IsNotNull();
+        await Assert.That(result.summaryTitle).IsEqualTo("Command-line tool");
+        await Assert.That(result.summaryNote).IsEqualTo("kcap CLI not found");
+        await Assert.That(result.summaryGlyph).IsEqualTo("—");
+    }
+
     sealed class NoopProcessRunner : IProcessRunner {
         public Task<ProcessResult> RunAsync(string fileName, string[] args, RunOptions options, CancellationToken ct) =>
             throw new NotImplementedException();
@@ -305,6 +376,27 @@ public class DefaultsStepViewModelTests {
 
         await Assert.That(vm.Satisfied).IsFalse();
         await Assert.That(File.Exists(ConfigPath)).IsFalse();
+    }
+
+    // A real write failure (read-only config dir), not a fake, proves CanLeaveAsync's own catch.
+    [Test]
+    public async Task A_persist_failure_vetoes_Next_with_a_visible_message() {
+        Skip.When(OperatingSystem.IsWindows(), "chmod-based read-only config dir is POSIX-only.");
+
+        var dir = Path.GetDirectoryName(ConfigPath)!;
+        var vm  = new DefaultsStepViewModel { Visibility = "public", DaemonName = "acme-daemon" };
+
+        File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try {
+            var canLeave = await vm.CanLeaveAsync(WizardNavigation.Next, CancellationToken.None);
+
+            await Assert.That(canLeave).IsFalse();
+            await Assert.That(vm.Satisfied).IsFalse();
+            await Assert.That(vm.Message).IsNotNull();
+            await Assert.That(vm.Message).Contains("Could not save defaults");
+        } finally {
+            File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
     }
 }
 

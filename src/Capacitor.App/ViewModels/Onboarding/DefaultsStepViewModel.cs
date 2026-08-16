@@ -22,9 +22,10 @@ public sealed class DefaultsStepViewModel : ReactiveObject, IWizardStep {
         new("public",     "All public — others can see all your sessions"),
     ];
 
-    string _visibility = "org_public";
-    string _daemonName;
-    bool   _satisfied;
+    string  _visibility = "org_public";
+    string  _daemonName;
+    bool    _satisfied;
+    string? _message;
 
     public DefaultsStepViewModel(string? defaultDaemonName = null) {
         _daemonName = string.IsNullOrWhiteSpace(defaultDaemonName)
@@ -51,25 +52,40 @@ public sealed class DefaultsStepViewModel : ReactiveObject, IWizardStep {
         set => this.RaiseAndSetIfChanged(ref _daemonName, value);
     }
 
+    /// Set when a persist attempt fails, so the veto below is visible, not just logged.
+    public string? Message {
+        get => _message;
+        private set => this.RaiseAndSetIfChanged(ref _message, value);
+    }
+
     public Task OnEnterAsync(CancellationToken ct) => Task.CompletedTask;
 
     /// Persists on Next only — Back and Skip leave the active profile untouched, so re-entering
-    /// this step (or abandoning the wizard) never writes a value the user didn't confirm.
+    /// this step (or abandoning the wizard) never writes a value the user didn't confirm. A
+    /// persist failure vetoes (stays on the step) with a visible Message rather than the shell's
+    /// generic stderr-only catch.
     public async Task<bool> CanLeaveAsync(WizardNavigation direction, CancellationToken ct) {
         if (direction != WizardNavigation.Next) return true;
 
-        await ConfigMutator.MutateAsync(c => {
-            var activeName = string.IsNullOrWhiteSpace(c.ActiveProfile) ? "default" : c.ActiveProfile;
-            var profile    = c.Profiles.GetValueOrDefault(activeName) ?? new Profile();
+        try {
+            await ConfigMutator.MutateAsync(c => {
+                var activeName = string.IsNullOrWhiteSpace(c.ActiveProfile) ? "default" : c.ActiveProfile;
+                var profile    = c.Profiles.GetValueOrDefault(activeName) ?? new Profile();
 
-            profile = profile with {
-                DefaultVisibility = Visibility,
-                Daemon            = (profile.Daemon ?? new DaemonSettings()) with { Name = DaemonName }
-            };
+                profile = profile with {
+                    DefaultVisibility = Visibility,
+                    Daemon            = (profile.Daemon ?? new DaemonSettings()) with { Name = DaemonName }
+                };
 
-            return c with { Profiles = new Dictionary<string, Profile>(c.Profiles) { [activeName] = profile } };
-        }, ct).ConfigureAwait(false);
+                return c with { Profiles = new Dictionary<string, Profile>(c.Profiles) { [activeName] = profile } };
+            }, ct).ConfigureAwait(false);
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            Message = $"Could not save defaults: {ex.Message}";
 
+            return false;
+        }
+
+        Message   = null;
         Satisfied = true;
 
         return true;
