@@ -136,12 +136,30 @@ public class WizardAuthBridgesTests {
         ]);
     }
 
+    [Test]
+    public async Task A_second_pick_cancels_the_one_it_displaces() {
+        var picker = new WizardTenantPicker();
+
+        var first  = picker.PickAsync([Tenant("acme")], CancellationToken.None);
+        var second = picker.PickAsync([Tenant("globex")], CancellationToken.None);
+        picker.Select(Tenant("globex"));
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await first.WaitAsync(TimeSpan.FromSeconds(5)));
+        await Assert.That((await second.WaitAsync(TimeSpan.FromSeconds(5)))!.OrgLogin).IsEqualTo("globex");
+    }
+
     // ── intent → façade call mapping ─────────────────────────────────────────
 
     [Test]
     [Arguments("acme", "https://acme.kcap.ai")]
     [Arguments("https://acme.kcap.ai/sessions/9", "https://acme.kcap.ai")]
     [Arguments(" http://localhost:5108/ ", "http://localhost:5108")]
+    // Core's own scheme rule for scheme-less input: loopback is http, everything else https.
+    [Arguments("localhost:5108", "http://localhost:5108")]
+    [Arguments("127.0.0.1:5108", "http://127.0.0.1:5108")]
+    [Arguments("[::1]:5108", "http://[::1]:5108")]
+    [Arguments("acme.kcap.ai", "https://acme.kcap.ai")]
+    [Arguments("capacitor.example.com", "https://capacitor.example.com")]
     public async Task A_pasted_server_resolves_through_origin_then_slug_expansion(string typed, string expected) =>
         await Assert.That(WizardSignInOperation.ResolveServer(typed)).IsEqualTo(expected);
 
@@ -277,7 +295,7 @@ public class WizardAuthBridgesTests {
     [Arguments("no-slug")]
     [Arguments("declined")]
     public async Task Backing_out_of_any_create_prompt_declines_without_provisioning(string exit) {
-        var (provisioner, handler, _, time) = NewProvisioner();
+        var (provisioner, handler, progress, time) = NewProvisioner();
 
         handler.Respond = (_, _) => (HttpStatusCode.OK, """{"available":true}""");
 
@@ -291,6 +309,8 @@ public class WizardAuthBridgesTests {
 
         await Assert.That(offer.Status).IsEqualTo(ProvisionOfferStatus.Declined);
         await Assert.That(handler.Requests.Any(r => r.Contains("/api/signup/provision"))).IsFalse();
+        // The provisioner owns every non-Created message — a silent decline renders as a bare failure.
+        await Assert.That(progress.Notices).Contains("No workspace created.");
     }
 
     [Test]

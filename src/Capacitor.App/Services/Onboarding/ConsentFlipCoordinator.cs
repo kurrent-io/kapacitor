@@ -126,6 +126,10 @@ public sealed class ConsentFlipCoordinator(
 
     /// Persists the ack so a later launch never re-surfaces this quarantine — called only from
     /// SurfaceQuarantineOnceAsync on an explicit true from TryConfirmAsync.
-    public Task<bool> AckQuarantineAsync() =>
+    public Task<bool> AckQuarantineAsync() => AckQuarantineAsync(appState);
+
+    /// The one ack mutation, shared with the wizard's Sign-in step — which surfaces the same
+    /// disclosure while no coordinator exists (decision 2).
+    internal static Task<bool> AckQuarantineAsync(IAppStateStore appState) =>
         appState.UpdateAsync(s => s.ConsentQuarantineAcked ? s : s with { ConsentQuarantineAcked = true });
 }

@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.App.Services.Onboarding;
@@ -46,7 +47,15 @@ public sealed class WizardTenantPicker : ITenantPicker {
     public async Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, CancellationToken ct) {
         var pending = new TaskCompletionSource<DiscoveredTenant?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        lock (_gate) _pending = pending;
+        TaskCompletionSource<DiscoveredTenant?>? displaced;
+
+        lock (_gate) {
+            displaced = _pending;
+            _pending  = pending;
+        }
+
+        // A displaced pick has no view left to resolve it — end it rather than orphan its await.
+        displaced?.TrySetCanceled();
 
         using var registration = ct.Register(() => pending.TrySetCanceled(ct));
 
@@ -206,7 +215,7 @@ public sealed class WizardTenantProvisioner(
 
     async Task<ProvisionOffer> PollAsync(
             WorkOSTokenSource tokens, string slug, string orgName, string origin, CancellationToken ct) {
-        var retry = $"Join '{slug}' from the Connect step";
+        var retry = $"join '{slug}' from the Connect step";
 
         for (var attempt = 0; attempt < MaxPolls; attempt++) {
             await Task.Delay(TimeSpan.FromMilliseconds(PollIntervalMs), _time, ct);
@@ -222,11 +231,11 @@ public sealed class WizardTenantProvisioner(
                 case PollVerdict.ActiveNoOrg:
                     return Failed($"{slug}.kcap.ai is live but isn't linked to an organization. Contact support.", "active_no_org");
                 case PollVerdict.Failed:
-                    return Failed($"Provisioning failed. {retry} to retry.", "provisioning_failed");
+                    return Failed($"Provisioning failed — {retry} to retry.", "provisioning_failed");
                 case PollVerdict.Forbidden:
-                    return Failed($"Verify your email address, then {retry.ToLowerInvariant()}.", "forbidden");
+                    return Failed($"Verify your email address, then {retry}.", "forbidden");
                 case PollVerdict.NotFound:
-                    return Failed($"'{slug}' isn't linked to your account. {retry}.", "not_found");
+                    return Failed($"'{slug}' isn't linked to your account — {retry}.", "not_found");
                 case PollVerdict.Wait:
                     PollProgress?.Invoke(attempt + 1, MaxPolls);
 
@@ -240,7 +249,10 @@ public sealed class WizardTenantProvisioner(
         return ProvisionOffer.InProgress;
     }
 
-    static ProvisionOffer Declined() {
+    // The interface hands the provisioner every non-Created message, so a decline must say so here
+    // or the step renders a bare failure for something the user chose.
+    ProvisionOffer Declined() {
+        progress.Notice("No workspace created.");
         SetupFunnel.WorkspaceDeclined();
 
         return ProvisionOffer.Declined;
@@ -265,12 +277,25 @@ public sealed class WizardTenantProvisioner(
     };
 }
 
-/// The bridge set one wizard run shares: the composition root builds the façade over exactly these.
-public sealed record WizardBridges(
-    UiAuthProgress          Progress,
-    WizardTenantPicker      Picker,
-    WizardTenantProvisioner Provisioner,
-    Action<Action>          Post);
+/// <summary>
+/// The bridge set one wizard run shares; the composition root builds the façade over exactly
+/// these. The sink is built from this object's own <paramref name="post"/> and handed to the
+/// provisioner factory, so a bridge marshalling through a different dispatcher than the rest is
+/// not representable.
+/// </summary>
+public sealed class WizardBridges {
+    public WizardBridges(Action<Action> post, Func<IAuthProgress, WizardTenantProvisioner> provisioner) {
+        Post        = post;
+        Progress    = new UiAuthProgress(post);
+        Picker      = new WizardTenantPicker();
+        Provisioner = provisioner(Progress);
+    }
+
+    public Action<Action>          Post        { get; }
+    public UiAuthProgress          Progress    { get; }
+    public WizardTenantPicker      Picker      { get; }
+    public WizardTenantProvisioner Provisioner { get; }
+}
 
 /// <summary>
 /// The one mapping from a Connect intent to a façade call, used by the composition root to build
@@ -291,18 +316,20 @@ public static class WizardSignInOperation {
     /// <summary>
     /// Origin first, then slug expansion: a pasted page URL must lose its path before
     /// <see cref="ServerInput.ResolveTenantArg"/> decides it already looks like a host. A
-    /// scheme-less host or host:port then defaults to https, because the Connect step reaches no
-    /// network and so has nothing to probe a scheme with.
+    /// scheme-less host or host:port then gets Core's own scheme rule — the pure half of the
+    /// normalizer the CLI probes with, so a loopback server lands on http here too.
     /// </summary>
     public static string ResolveServer(string input) {
         var resolved = ServerInput.ResolveTenantArg(ServerInput.ToServerOrigin(input));
 
-        return HostOnly(resolved) ? $"https://{resolved}" : resolved;
+        return HostOnly(resolved) ? ServerUrlNormalizer.WithLoopbackDefault(resolved) : resolved;
     }
 
-    // A host or host:port; anything naming an unusable scheme ("file:") is left to fail validation.
+    // A host or host:port (bracketed IPv6 included); anything naming an unusable scheme ("file:")
+    // is left alone to fail the server-URL validator.
     static bool HostOnly(string value) {
-        var colon = value.IndexOf(':', StringComparison.Ordinal);
+        var bracketEnd = value.StartsWith('[') ? value.IndexOf(']') : -1;
+        var colon      = value.IndexOf(':', bracketEnd > 0 ? bracketEnd + 1 : 0);
 
         return colon < 0 || (colon + 1 < value.Length && value[(colon + 1)..].All(char.IsAsciiDigit));
     }

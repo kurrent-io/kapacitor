@@ -55,6 +55,8 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
 
     AuthAttempt?   _attempt;
     ConnectIntent? _running;
+    Task?          _run;
+    string?        _lastReport;
 
     string  _status = "";
     bool    _statusIsError;
@@ -95,8 +97,13 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
         _urlOpener = urlOpener;
         _post      = bridges.Post;
 
-        bridges.Progress.NoticeReceived     += Append;
-        bridges.Progress.ErrorReceived      += line => {
+        bridges.Progress.NoticeReceived += line => {
+            // Kept as the failure detail's fallback: a decline is reported as a notice, not an error.
+            _lastReport = line;
+            Append(line);
+        };
+        bridges.Progress.ErrorReceived += line => {
+            _lastReport  = line;
             StatusDetail = line;
             Append(line);
         };
@@ -149,11 +156,16 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
             _picker.Select(null);
         });
 
+        // Unofferable rather than declinable: a blank submit must never end the whole run.
+        var hasWorkspace = this.WhenAnyValue(x => x.ExistingWorkspaceInput, input => !string.IsNullOrWhiteSpace(input));
+        var hasOrgName   = this.WhenAnyValue(x => x.OrgName, name => !string.IsNullOrWhiteSpace(name));
+
         CreateWorkspaceCommand      = ReactiveCommand.Create(() => _mode.Answer(new ProvisionMode.Create()));
-        UseExistingWorkspaceCommand = ReactiveCommand.Create(() => _mode.Answer(new ProvisionMode.Existing(ExistingWorkspaceInput)));
+        UseExistingWorkspaceCommand = ReactiveCommand.Create(
+            () => _mode.Answer(new ProvisionMode.Existing(ExistingWorkspaceInput)), hasWorkspace);
         CancelWorkspaceCommand      = ReactiveCommand.Create(() => _mode.Answer(new ProvisionMode.Cancel()));
 
-        SubmitOrgNameCommand = ReactiveCommand.Create(() => _orgName.Answer(OrgName));
+        SubmitOrgNameCommand = ReactiveCommand.Create(() => _orgName.Answer(OrgName), hasOrgName);
         CancelOrgNameCommand = ReactiveCommand.Create(() => _orgName.Answer(null));
         SubmitSlugCommand    = ReactiveCommand.Create(() => _slug.Answer(Slug));
         CancelSlugCommand    = ReactiveCommand.Create(() => _slug.Answer(null));
@@ -314,23 +326,35 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
     }
 
     /// <summary>
-    /// Never vetoes. A live attempt is cancelled and awaited: pre-boundary that ends it with
-    /// nothing durable, past the boundary the operation still answers Committed — the wait is what
-    /// keeps the step's rendered state honest either way. The result task never faults.
+    /// Never vetoes. A live attempt is cancelled, and the RUN — not just the attempt — is awaited:
+    /// pre-boundary that ends it with nothing durable, past the boundary the operation still
+    /// answers Committed, and either way the step's rendered state is final before the wizard
+    /// moves, regardless of which continuation registered first.
     /// </summary>
     public async Task<bool> CanLeaveAsync(WizardNavigation direction, CancellationToken ct) {
-        if (_attempt is { } live) {
-            live.Cancel();
-            await live.Result.ConfigureAwait(true);
+        _attempt?.Cancel();
+
+        if (_run is { } run) {
+            try {
+                await run.ConfigureAwait(true);
+            } catch (Exception ex) {
+                // A run that failed unexpectedly must not veto the navigation.
+                Console.Error.WriteLine($"kcap: wizard sign-in run failed unexpectedly: {ex.Message}");
+            }
         }
 
         return true;
     }
 
     /// The command's body, reachable directly so a re-entrant call can be asserted as a no-op.
-    internal async Task SignInAsync() {
-        if (Busy) return;
+    internal Task SignInAsync() {
+        // Busy is set before RunAsync's first await, so a re-entrant call never displaces _run.
+        if (Busy) return Task.CompletedTask;
 
+        return _run = RunAsync();
+    }
+
+    async Task RunAsync() {
         if (_connect.Intent is not { } intent) {
             SetStatus("Choose how to connect on the Connect step.", isError: false);
 
@@ -360,6 +384,8 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
         _attempt = null;
         Busy     = false;
         HidePrompts();
+        // Nothing polls a device code or a browser wait once the attempt has settled.
+        ClearTransient();
         Apply(result);
         await SurfaceQuarantineAsync().ConfigureAwait(true);
     }
@@ -387,10 +413,11 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
                 RetargetRequested?.Invoke(retarget.ServerInput);
 
                 break;
-            // The façade already rendered its own error through the sink; the log is the detail.
+            // Already rendered through the sink; the last reported line stands in when none was an error.
             default:
                 Status        = "Sign-in failed.";
                 StatusIsError = true;
+                StatusDetail ??= _lastReport;
 
                 break;
         }
@@ -428,24 +455,28 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
         QuarantineNotice = null;
 
         try {
-            await _appState.UpdateAsync(s => s.ConsentQuarantineAcked ? s : s with { ConsentQuarantineAcked = true })
-                .ConfigureAwait(true);
+            await ConsentFlipCoordinator.AckQuarantineAsync(_appState).ConfigureAwait(true);
         } catch (Exception ex) {
             Console.Error.WriteLine($"kcap: consent quarantine ack failed unexpectedly: {ex.Message}");
         }
     }
 
     void ResetForRun(ConnectIntent intent) {
-        _running = intent;
+        _running    = intent;
+        _lastReport = null;
         Log.Clear();
         HidePrompts();
+        ClearTransient();
+        SlugError    = null;
+        StatusDetail = null;
+    }
+
+    void ClearTransient() {
         DeviceCode           = null;
         VerificationUri      = null;
         BrowserUrl           = null;
         WaitingText          = null;
         ProvisioningProgress = null;
-        SlugError            = null;
-        StatusDetail         = null;
     }
 
     void HidePrompts() {
