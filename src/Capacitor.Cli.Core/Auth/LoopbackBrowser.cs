@@ -12,8 +12,9 @@ namespace Capacitor.Cli.Core.Auth;
 /// 127.0.0.1 (not localhost). The bind exception is intentionally NOT caught so the
 /// GitHub flow can fall back to device flow on a bind failure.
 /// </summary>
-public sealed class LoopbackBrowser(Action<string>? openBrowser = null) : IBrowser {
+public sealed class LoopbackBrowser(Action<string>? openBrowser = null, IAuthProgress? progress = null) : IBrowser {
     readonly Action<string> _openBrowser = openBrowser ?? OpenSystemBrowser;
+    readonly IAuthProgress  _progress    = progress ?? ConsoleAuthProgress.Instance;
 
     public async Task<BrowserResult> InvokeAsync(BrowserOptions options, CancellationToken ct = default) {
         var port = new Uri(options.EndUrl).Port;
@@ -22,8 +23,7 @@ public sealed class LoopbackBrowser(Action<string>? openBrowser = null) : IBrows
         listener.Prefixes.Add($"http://127.0.0.1:{port}/");
         listener.Start(); // bind failure propagates (HttpListenerException / PlatformNotSupportedException)
 
-        await Console.Out.WriteLineAsync("Opening browser for authentication...");
-        await Console.Out.WriteLineAsync($"  If the browser doesn't open, visit: {options.StartUrl}");
+        _progress.BrowserOpening(options.StartUrl);
         _openBrowser(options.StartUrl);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);

@@ -30,11 +30,13 @@ public static class WorkOSDiscovery {
     /// </summary>
     public static Task<WorkOSDiscoveryOutcome> RunWithLiveAuthAsync(
             string proxyUrl, ProxyConfigResponse proxyConfig, IAuthProxyClient proxy, ITenantPicker picker,
-            ITenantProvisioner? provisioner = null, CancellationToken ct = default) {
+            ITenantProvisioner? provisioner = null, CancellationToken ct = default, IAuthProgress? progress = null) {
+        progress ??= ConsoleAuthProgress.Instance;
         var clientId = proxyConfig.WorkOSClientId ?? "";
 
         return RunAsync(proxyUrl, proxyConfig, proxy, picker,
-            orglessLogin: () => OAuthLoginFlow.AuthenticateWorkOSAsync(clientId, organizationId: null, new LoopbackBrowser(), ct: ct),
+            orglessLogin: () => OAuthLoginFlow.AuthenticateWorkOSAsync(
+                clientId, organizationId: null, new LoopbackBrowser(progress: progress), ct: ct, progress: progress),
             orgSwitch: async (refreshToken, organizationId) => {
                 using var http = new HttpClient();
                 return await OAuthLoginFlow.SwitchWorkOSOrgAsync(http, WorkOSApiBase, clientId, refreshToken, organizationId, ct);
@@ -44,7 +46,8 @@ public static class WorkOSDiscovery {
                 return await OAuthLoginFlow.RefreshWorkOSTokenAsync(http, WorkOSApiBase, clientId, refreshToken, refreshCt);
             },
             provisioner: provisioner,
-            ct: ct);
+            ct: ct,
+            progress: progress);
     }
 
     public static async Task<WorkOSDiscoveryOutcome> RunAsync(
@@ -56,9 +59,12 @@ public static class WorkOSDiscovery {
             Func<string, string, Task<WorkOSAuthResponse?>> orgSwitch,     // args: refreshToken, organizationId
             Func<string, CancellationToken, Task<WorkOSAuthResponse?>>? orglessRefresh = null, // args: refreshToken, ct
             ITenantProvisioner?                             provisioner = null,
-            CancellationToken                               ct = default) {
+            CancellationToken                               ct = default,
+            IAuthProgress?                                  progress = null) {
+        progress ??= ConsoleAuthProgress.Instance;
+
         if (string.IsNullOrEmpty(proxyConfig.WorkOSClientId)) {
-            await Console.Error.WriteLineAsync("This server isn't configured for WorkOS sign-in.");
+            progress.Error("This server isn't configured for WorkOS sign-in.");
 
             return new(1);
         }
@@ -72,7 +78,7 @@ public static class WorkOSDiscovery {
             // provisioning failures, and the deliberately-non-zero retarget path — none of which
             // are a sign-in failure.
             SetupFunnel.SigninFailed("workos_signin_failed");
-            await Console.Error.WriteLineAsync("WorkOS sign-in failed.");
+            progress.Error("WorkOS sign-in failed.");
 
             return new(1);
         }
@@ -81,7 +87,7 @@ public static class WorkOSDiscovery {
 
         var result = await proxy.DiscoverWorkOSTenantsAsync(proxyUrl, auth.AccessToken, ct);
         if (result.Error != DiscoveryError.None) {
-            await Console.Error.WriteLineAsync(result.Error switch {
+            progress.Error(result.Error switch {
                 DiscoveryError.ProxyUnreachable => "The Kurrent auth service is unreachable.",
                 DiscoveryError.TokenRejected    => "WorkOS rejected the authentication token. Please sign in again.",
                 DiscoveryError.UpstreamError    => "Kurrent auth service returned an error. Try again later.",
@@ -98,7 +104,7 @@ public static class WorkOSDiscovery {
             SetupFunnel.TenantNone(AuthProvider.WorkOS);
 
             if (provisioner is null) {
-                await Console.Error.WriteLineAsync("No Capacitor tenants are linked to your account. Ask your admin to invite you.");
+                progress.Error("No Capacitor tenants are linked to your account. Ask your admin to invite you.");
 
                 return new(1);
             }
@@ -137,29 +143,30 @@ public static class WorkOSDiscovery {
             // Polling may have rotated the org-less refresh token; the org-switch must use the
             // current one (WorkOS invalidates the old on refresh) or the final switch would 401.
             var authForSwitch = auth with { RefreshToken = tokens.CurrentRefreshToken ?? auth.RefreshToken };
-            return new(await SwitchAndSaveAsync(created, [created], authForSwitch, proxyConfig.WorkOSClientId!, orgSwitch));
+            return new(await SwitchAndSaveAsync(created, [created], authForSwitch, proxyConfig.WorkOSClientId!, orgSwitch, progress));
         }
 
         var picked = result.Tenants.Length == 1 ? result.Tenants[0] : await picker.PickAsync(result.Tenants, ct);
         if (picked is null) {
-            await Console.Error.WriteLineAsync("No tenant selected.");
+            progress.Error("No tenant selected.");
 
             return new(1);
         }
 
-        return new(await SwitchAndSaveAsync(picked, result.Tenants, auth, proxyConfig.WorkOSClientId!, orgSwitch));
+        return new(await SwitchAndSaveAsync(picked, result.Tenants, auth, proxyConfig.WorkOSClientId!, orgSwitch, progress));
     }
 
     // Org-switch into the chosen tenant, persist its profile + org-bound tokens.
     // Shared by the picked-tenant path and the freshly-provisioned-tenant path.
     static async Task<int> SwitchAndSaveAsync(
             DiscoveredTenant                                picked,
-            DiscoveredTenant[]                              tenants,
-            WorkOSAuthResponse                              auth,
-            string                                          clientId,
-            Func<string, string, Task<WorkOSAuthResponse?>> orgSwitch) {
+            DiscoveredTenant[]                               tenants,
+            WorkOSAuthResponse                               auth,
+            string                                           clientId,
+            Func<string, string, Task<WorkOSAuthResponse?>>  orgSwitch,
+            IAuthProgress                                    progress) {
         if (string.IsNullOrEmpty(picked.OrganizationId)) {
-            await Console.Error.WriteLineAsync($"Tenant {picked.Label} is missing an organization id; cannot complete sign-in.");
+            progress.Error($"Tenant {picked.Label} is missing an organization id; cannot complete sign-in.");
 
             return 1;
         }
@@ -168,13 +175,13 @@ public static class WorkOSDiscovery {
         // (spike-confirmed), so later refreshes need no organization_id.
         var switched = await orgSwitch(auth.RefreshToken!, picked.OrganizationId);
         if (switched is null) {
-            await Console.Error.WriteLineAsync($"Could not switch to organization {picked.Label}.");
+            progress.Error($"Could not switch to organization {picked.Label}.");
 
             return 1;
         }
 
         if (!ServerIdentity.TryCanonicalizeForStamping(picked.Origin, out var canonical, out var identityError)) {
-            await Console.Error.WriteLineAsync($"Error: {identityError}");
+            progress.Error($"Error: {identityError}");
 
             return 1;
         }
@@ -197,7 +204,7 @@ public static class WorkOSDiscovery {
                 ServerUrl      = canonical
             });
 
-        await Console.Out.WriteLineAsync($"Logged in as {username} → {picked.Label}");
+        progress.Notice($"Logged in as {username} → {picked.Label}");
 
         return 0;
     }

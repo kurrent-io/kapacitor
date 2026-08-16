@@ -439,6 +439,10 @@ public static class HttpClientExtensions {
         Console.Error.WriteLine(RenderUnreachableError(baseUrl, ex.Message));
     }
 
+    /// <summary>String-returning twin of <see cref="WriteUnreachableError"/>, for callers that route output through a progress sink instead of Console.</summary>
+    public static string UnreachableErrorText(string baseUrl, HttpRequestException ex) =>
+        RenderUnreachableError(baseUrl, ex.Message);
+
     /// <summary>
     /// Checks if the response is a 401 and prints the server's error message.
     /// Returns true if the response was a 401 (caller should return early).
