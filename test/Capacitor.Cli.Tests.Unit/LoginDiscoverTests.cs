@@ -5,7 +5,9 @@ namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
 /// Tests for OAuthLoginFlow.ExchangeAndSaveAsync(string, string, string, string) —
-/// the named-profile overload used by `kcap login --discover`.
+/// the named-profile overload `kcap setup`'s known-server GitHub sign-in still uses.
+/// `kcap login --discover` now exchanges per tenant through OnboardingFacade instead
+/// (see OnboardingFacadeTests/LoginFacadeParityTests).
 ///
 /// Uses the shared KCAP_CONFIG_DIR temp directory set by RepoPathStoreGlobalSetup
 /// so token files land in an isolated directory, not ~/.config/kcap.

@@ -337,7 +337,7 @@ public class OnboardingFacadeTests {
 
     // ── discovery ────────────────────────────────────────────────────────────
 
-    const string TwoGitHubTenants = """
+    internal const string TwoGitHubTenants = """
         [{"org_id":1,"org_login":"acme","origin":"https://acme.kcap.ai"},
          {"org_id":2,"org_login":"contoso","origin":"https://contoso.kcap.ai"}]
         """;

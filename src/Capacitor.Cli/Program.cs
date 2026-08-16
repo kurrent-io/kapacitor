@@ -296,17 +296,8 @@ switch (command) {
 
         return await WhatsDoneCommand.HandleGenerateWhatsDone(baseUrl!, wdSessionId, wdVendor);
     }
-    case "login": {
-        var forceDevice = args.Contains("--device");
-
-        // No configured server (or explicit --discover) → run tenant discovery (pick provider,
-        // then your tenants). Otherwise log into the configured server.
-        if (OAuthLoginFlow.ShouldDiscoverLogin(baseUrl, args)) {
-            return await HandleDiscoverLoginAsync(forceDevice);
-        }
-
-        return await OAuthLoginFlow.LoginWithDiscoveryAsync(baseUrl!, forceDevice);
-    }
+    case "login":
+        return await LoginCommand.HandleAsync(args, baseUrl);
     case "logout": {
         await TokenStore.DeleteAsync();
         await Console.Out.WriteLineAsync("Logged out.");
@@ -835,85 +826,6 @@ static string? GetArg(string[] arguments, string flag) {
 
 string? ResolveSessionId(string[] args, int skipCount = 1, string[]? valueFlags = null) =>
     ArgParsing.ResolveSessionId(args, skipCount, valueFlags);
-
-async Task<int> HandleDiscoverLoginAsync(bool forceDevice) {
-    // Before the proxy call: a non-interactive session has no discovery provider, so there is
-    // nothing to ask about (see OAuthLoginFlow.ChooseDiscoveryProvider).
-    var provider = OAuthLoginFlow.ChooseDiscoveryProvider(args, isInteractive: !HeadlessEnvironment.IsHeadless());
-
-    if (provider is null) {
-        await Console.Error.WriteLineAsync(OAuthLoginFlow.HeadlessDiscoveryUnsupportedMessage());
-
-        return 1;
-    }
-
-    using var http  = new HttpClient();
-    var proxyClient = new AuthProxyClient(http);
-
-    var proxyConfig = await proxyClient.GetConfigAsync(AuthProxyEndpoint.Url);
-
-    if (proxyConfig is null) {
-        await Console.Error.WriteLineAsync("Cannot reach the Kurrent auth service.");
-
-        return 1;
-    }
-
-    if (provider == AuthProvider.WorkOS) {
-        var workosDiscovery = await WorkOSDiscovery.RunWithLiveAuthAsync(
-            AuthProxyEndpoint.Url, proxyConfig, proxyClient, new SpectreTenantPicker());
-
-        // Unreachable today: this call site passes no provisioner, so discovery dead-ends before it
-        // can offer the choice. Kept because RunWithLiveAuthAsync is shared — if login ever gains a
-        // provisioner, point at the command that can configure a workspace instead of failing mutely.
-        if (workosDiscovery.RetargetServerInput is { } target) {
-            await Console.Error.WriteLineAsync($"Run `kcap setup {target}` to configure that workspace.");
-        }
-
-        return workosDiscovery.ExitCode;
-    }
-
-    if (string.IsNullOrEmpty(proxyConfig.GitHubClientId)) {
-        await Console.Error.WriteLineAsync("Cannot reach the Kurrent auth service.");
-
-        return 1;
-    }
-
-    var ghToken = await OAuthLoginFlow.AcquireGitHubTokenAsync(
-        proxyConfig.GitHubClientId, proxyConfig.GitHubCodeExchangeUrl, forceDevice);
-    if (ghToken is null) return 1;
-
-    var discovery = new TenantDiscovery(proxyClient, new SpectreTenantPicker());
-    var outcome   = await discovery.RunAsync(AuthProxyEndpoint.Url, ghToken);
-
-    if (outcome.ErrorMessage is not null) {
-        await Console.Error.WriteLineAsync(outcome.ErrorMessage);
-
-        return 1;
-    }
-
-    // Merge discovered tenants as profiles; the picked one becomes active
-    await ConfigMutator.MutateAsync(c => TenantDiscovery.MergeProfiles(c, outcome.Tenants, outcome.Picked!));
-
-    // Discovery flows only via the shared GitHub App proxy, so every discovered tenant
-    // uses the GitHubApp provider. If DiscoveredTenant ever gains a Provider field, read it here.
-
-    // Exchange tokens for every discovered tenant so switching profiles works immediately.
-    // One HttpClient shared across all per-tenant exchanges to avoid socket/port exhaustion.
-    var exchanges = outcome.Tenants.Select(async tenant => {
-        var origin = AppConfig.NormalizeUrl(tenant.Origin);
-        var exit = await OAuthLoginFlow.ExchangeAndSaveAsync(
-            http, origin, ghToken, AuthProvider.GitHubApp, tenant.OrgLogin);
-        if (exit != 0) {
-            await Console.Error.WriteLineAsync(
-                $"Warning: token exchange failed for {tenant.OrgLogin}. Run 'kcap login' after switching to that profile.");
-        }
-    });
-    await Task.WhenAll(exchanges);
-
-    await Console.Out.WriteLineAsync($"Logged in. Active profile: {outcome.Picked!.OrgLogin}.");
-
-    return 0;
-}
 
 async Task PrintUsage() {
     var text = EmbeddedResources.Load("help-usage.txt");
