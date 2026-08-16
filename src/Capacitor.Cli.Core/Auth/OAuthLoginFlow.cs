@@ -32,23 +32,9 @@ public static class OAuthLoginFlow {
         // ReSharper disable once ShortLivedHttpClient
         using var http = new HttpClient();
 
-        HttpResponseMessage configResponse;
+        var config = await FetchAuthConfigAsync(http, serverUrl, ct, progress);
 
-        try {
-            configResponse = await http.GetAsync($"{serverUrl}/auth/config", ct);
-        } catch (HttpRequestException ex) {
-            progress.Error(HttpClientExtensions.UnreachableErrorText(serverUrl, ex));
-
-            return 1;
-        }
-
-        if (!configResponse.IsSuccessStatusCode) {
-            progress.Error($"Error: Failed to fetch auth config from {serverUrl}/auth/config");
-
-            return 1;
-        }
-
-        var config = (await configResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.AuthDiscoveryResponse, ct))!;
+        if (config is null) return 1;
 
         return config.Provider switch {
             AuthProvider.None      => HandleNoneLogin(progress),
@@ -56,6 +42,28 @@ public static class OAuthLoginFlow {
             AuthProvider.WorkOS    => await HandleWorkOSLogin(serverUrl, config, profile, ct, progress),
             _                      => HandleUnknownProvider(config.Provider, progress)
         };
+    }
+
+    /// <summary>GET <c>{serverUrl}/auth/config</c>, or <c>null</c> with the failure already reported.</summary>
+    internal static async Task<AuthDiscoveryResponse?> FetchAuthConfigAsync(
+            HttpClient http, string serverUrl, CancellationToken ct, IAuthProgress progress) {
+        HttpResponseMessage configResponse;
+
+        try {
+            configResponse = await http.GetAsync($"{serverUrl}/auth/config", ct);
+        } catch (HttpRequestException ex) {
+            progress.Error(HttpClientExtensions.UnreachableErrorText(serverUrl, ex));
+
+            return null;
+        }
+
+        var config = configResponse.IsSuccessStatusCode
+            ? await configResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.AuthDiscoveryResponse, ct)
+            : null;
+
+        if (config is null) progress.Error($"Error: Failed to fetch auth config from {serverUrl}/auth/config");
+
+        return config;
     }
 
     internal static GitHubFlow ChooseGitHubFlow(bool forceDevice, bool isHeadless, bool hasExchangeUrl)
@@ -136,14 +144,13 @@ public static class OAuthLoginFlow {
             HttpClient http, string clientId, CancellationToken ct = default, IAuthProgress? progress = null) {
         progress ??= ConsoleAuthProgress.Instance;
 
-        var deviceResponse = await http.PostAsync(
+        var deviceResponse = await PostFormForJsonAsync(
+            http,
             "https://github.com/login/device/code",
-            new FormUrlEncodedContent(
-                new Dictionary<string, string> {
-                    ["client_id"] = clientId,
-                    ["scope"]     = "read:user read:org"
-                }
-            ),
+            new() {
+                ["client_id"] = clientId,
+                ["scope"]     = "read:user read:org"
+            },
             ct
         );
 
@@ -186,15 +193,14 @@ public static class OAuthLoginFlow {
             await Task.Delay(TimeSpan.FromSeconds(interval), ct);
             ct.ThrowIfCancellationRequested();
 
-            var tokenResponse = await http.PostAsync(
+            var tokenResponse = await PostFormForJsonAsync(
+                http,
                 "https://github.com/login/oauth/access_token",
-                new FormUrlEncodedContent(
-                    new Dictionary<string, string> {
-                        ["client_id"]   = clientId,
-                        ["device_code"] = device.DeviceCode,
-                        ["grant_type"]  = "urn:ietf:params:oauth:grant-type:device_code"
-                    }
-                ),
+                new() {
+                    ["client_id"]   = clientId,
+                    ["device_code"] = device.DeviceCode,
+                    ["grant_type"]  = "urn:ietf:params:oauth:grant-type:device_code"
+                },
                 ct
             );
 
@@ -221,6 +227,16 @@ public static class OAuthLoginFlow {
                     return null;
             }
         }
+    }
+
+    // Accept rides on the request, not the client: an injected HttpClient (the façade's) would
+    // otherwise get GitHub's form-encoded default and fail to parse.
+    static async Task<HttpResponseMessage> PostFormForJsonAsync(
+            HttpClient http, string url, Dictionary<string, string> form, CancellationToken ct) {
+        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = new FormUrlEncodedContent(form) };
+        request.Headers.Accept.Add(new("application/json"));
+
+        return await http.SendAsync(request, ct);
     }
 
     /// <summary>
@@ -340,25 +356,50 @@ public static class OAuthLoginFlow {
             string serverUrl, string githubAccessToken, string provider, CancellationToken ct = default, IAuthProgress? progress = null) {
         progress ??= ConsoleAuthProgress.Instance;
 
+        using var http = new HttpClient();
+
+        var exchanged = await ExchangeAsync(http, serverUrl, githubAccessToken, provider, profile: null, progress, ct);
+
+        if (exchanged is null) return 1;
+
+        await TokenStore.SaveAsync(exchanged.Value.Tokens);
+
+        progress.Notice($"Logged in as {exchanged.Value.Username}");
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Exchanges a GitHub access token for a Capacitor JWT and returns the tokens WITHOUT saving —
+    /// persistence belongs to the caller's commit boundary. <c>null</c> means the exchange failed and
+    /// the reason has already been reported through <paramref name="progress"/>. <paramref name="profile"/>
+    /// only names the profile in that error text.
+    /// </summary>
+    public static async Task<(StoredTokens Tokens, string? Username)?> ExchangeAsync(
+            HttpClient        http,
+            string            serverUrl,
+            string            githubAccessToken,
+            string            provider,
+            string?           profile,
+            IAuthProgress     progress,
+            CancellationToken ct = default) {
         if (provider is not AuthProvider.GitHubApp) {
             progress.Error($"Error: unknown auth provider '{provider}'");
 
-            return 1;
+            return null;
         }
-
-        using var http = new HttpClient();
 
         var exchangeResponse = await http.PostAsJsonAsync(
             $"{serverUrl}/auth/token",
-            new() { GithubAccessToken = githubAccessToken },
+            new TokenExchangeRequest { GithubAccessToken = githubAccessToken },
             CapacitorJsonContext.Default.TokenExchangeRequest,
             cancellationToken: ct
         );
 
         if (!exchangeResponse.IsSuccessStatusCode) {
-            WriteExchangeError(await exchangeResponse.Content.ReadAsStringAsync(ct), profile: null, progress);
+            WriteExchangeError(await exchangeResponse.Content.ReadAsStringAsync(ct), profile, progress);
 
-            return 1;
+            return null;
         }
 
         var exchange = (await exchangeResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.TokenExchangeResponse, ct))!;
@@ -366,22 +407,16 @@ public static class OAuthLoginFlow {
         if (!ServerIdentity.TryCanonicalizeForStamping(serverUrl, out var canonical, out var identityError)) {
             progress.Error($"Error: {identityError}");
 
-            return 1;
+            return null;
         }
 
-        await TokenStore.SaveAsync(
-            new() {
-                AccessToken    = exchange.AccessToken,
-                ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(exchange.ExpiresIn),
-                GitHubUsername = exchange.Username,
-                Provider       = provider,
-                ServerUrl      = canonical
-            }
-        );
-
-        progress.Notice($"Logged in as {exchange.Username}");
-
-        return 0;
+        return (new StoredTokens {
+            AccessToken    = exchange.AccessToken,
+            ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(exchange.ExpiresIn),
+            GitHubUsername = exchange.Username,
+            Provider       = provider,
+            ServerUrl      = canonical
+        }, exchange.Username);
     }
 
     /// <summary>
@@ -408,43 +443,11 @@ public static class OAuthLoginFlow {
         ) {
         progress ??= ConsoleAuthProgress.Instance;
 
-        if (provider is not AuthProvider.GitHubApp) {
-            progress.Error($"Error: unknown auth provider '{provider}'");
+        var exchanged = await ExchangeAsync(http, serverUrl, githubAccessToken, provider, profile, progress, ct);
 
-            return 1;
-        }
+        if (exchanged is null) return 1;
 
-        var exchangeResponse = await http.PostAsJsonAsync(
-            $"{serverUrl}/auth/token",
-            new TokenExchangeRequest { GithubAccessToken = githubAccessToken },
-            CapacitorJsonContext.Default.TokenExchangeRequest,
-            cancellationToken: ct
-        );
-
-        if (!exchangeResponse.IsSuccessStatusCode) {
-            WriteExchangeError(await exchangeResponse.Content.ReadAsStringAsync(ct), profile, progress);
-
-            return 1;
-        }
-
-        var exchange = (await exchangeResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.TokenExchangeResponse, ct))!;
-
-        if (!ServerIdentity.TryCanonicalizeForStamping(serverUrl, out var canonical, out var identityError)) {
-            progress.Error($"Error: {identityError}");
-
-            return 1;
-        }
-
-        await TokenStore.SaveAsync(
-            profile,
-            new StoredTokens {
-                AccessToken    = exchange.AccessToken,
-                ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(exchange.ExpiresIn),
-                GitHubUsername = exchange.Username,
-                Provider       = provider,
-                ServerUrl      = canonical
-            }
-        );
+        await TokenStore.SaveAsync(profile, exchanged.Value.Tokens, ct);
 
         return 0;
     }
@@ -511,6 +514,16 @@ public static class OAuthLoginFlow {
 
     internal static async Task<string?> AcquireGitHubTokenAsync(
             string clientId, string? codeExchangeUrl, bool forceDevice, CancellationToken ct = default, IAuthProgress? progress = null) {
+        using var http = new HttpClient();
+
+        return await AcquireGitHubTokenAsync(http, clientId, codeExchangeUrl, forceDevice, ct, progress);
+    }
+
+    // HttpClient-injectable core: the device-flow leg runs on the caller's client so the façade's
+    // one client (and a test's scripted handler) covers it.
+    internal static async Task<string?> AcquireGitHubTokenAsync(
+            HttpClient http, string clientId, string? codeExchangeUrl, bool forceDevice,
+            CancellationToken ct = default, IAuthProgress? progress = null) {
         progress ??= ConsoleAuthProgress.Instance;
 
         var headless = HeadlessEnvironment.IsHeadless();
@@ -530,14 +543,14 @@ public static class OAuthLoginFlow {
             }
         }
 
-        return await RunDeviceFlowAsync(clientId, ct, progress);
+        return await RunDeviceFlowAsync(http, clientId, ct, progress);
     }
 
     static Task<int> HandleWorkOSLogin(
             string serverUrl, AuthDiscoveryResponse config, string? profile, CancellationToken ct, IAuthProgress progress) =>
         LoginWorkOSAsync(serverUrl, config.ClientId!, config.OrganizationId, profile, ct, progress);
 
-    const string WorkOSApiBase = "https://api.workos.com";
+    internal const string WorkOSApiBase = "https://api.workos.com";
 
     /// <summary>
     /// Builds OidcClient options for the WorkOS AuthKit authorization-code-with-PKCE flow.
@@ -617,28 +630,49 @@ public static class OAuthLoginFlow {
 
     static async Task<int> LoginWorkOSAsync(
             string serverUrl, string clientId, string? organizationId, string? profile, CancellationToken ct, IAuthProgress progress) {
+        var authenticated = await WorkOSTokensForServerAsync(
+            serverUrl, clientId, organizationId, new LoopbackBrowser(progress: progress), ct, progress);
+
+        if (authenticated is null) return 1;
+
+        var (saved, username) = authenticated.Value;
+
+        if (profile is null) await TokenStore.SaveAsync(saved);
+        else await TokenStore.SaveAsync(profile, saved);
+
+        progress.Notice($"Logged in as {username}");
+
+        return 0;
+    }
+
+    /// <summary>
+    /// WorkOS sign-in against a KNOWN server: authenticate, enforce the org gate, and build the
+    /// server-bound tokens WITHOUT saving them. <c>null</c> means the reason is already reported.
+    /// </summary>
+    internal static async Task<(StoredTokens Tokens, string Username)?> WorkOSTokensForServerAsync(
+            string serverUrl, string clientId, string? organizationId, IBrowser browser,
+            CancellationToken ct, IAuthProgress progress) {
         // AuthenticateWorkOSAsync already reported the specific failure reason.
-        var json = await AuthenticateWorkOSAsync(
-            clientId, organizationId, new LoopbackBrowser(progress: progress), ct: ct, progress: progress);
-        if (json is null) return 1;
+        var json = await AuthenticateWorkOSAsync(clientId, organizationId, browser, ct: ct, progress: progress);
+        if (json is null) return null;
 
         // Org gate: a multi-org user must not be "logged in" to the wrong org — every API
         // call would then fail the server's org check. Reject before saving tokens.
         if (!string.IsNullOrEmpty(organizationId) && !string.Equals(json.OrganizationId, organizationId, StringComparison.Ordinal)) {
             progress.Error($"Error: signed in to the wrong WorkOS organization (expected {organizationId}). Re-run `kcap login` and pick the correct organization.");
 
-            return 1;
+            return null;
         }
-
-        var username = WorkOSDisplayName(json.User);
 
         if (!ServerIdentity.TryCanonicalizeForStamping(serverUrl, out var canonical, out var identityError)) {
             progress.Error($"Error: {identityError}");
 
-            return 1;
+            return null;
         }
 
-        var saved = new StoredTokens {
+        var username = WorkOSDisplayName(json.User);
+
+        return (new StoredTokens {
             AccessToken    = json.AccessToken,
             RefreshToken   = json.RefreshToken,
             ExpiresAt      = TokenStore.JwtExpiry(json.AccessToken),
@@ -648,14 +682,7 @@ public static class OAuthLoginFlow {
             // The kcap server we authenticated FOR — not api.workos.com, which issued the
             // token but says nothing about which Capacitor server will accept it.
             ServerUrl      = canonical
-        };
-
-        if (profile is null) await TokenStore.SaveAsync(saved);
-        else await TokenStore.SaveAsync(profile, saved);
-
-        progress.Notice($"Logged in as {username}");
-
-        return 0;
+        }, username);
     }
 
     /// <summary>Human display name from a WorkOS user (first+last, else email, else "unknown").</summary>

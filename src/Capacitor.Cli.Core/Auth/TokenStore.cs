@@ -286,7 +286,7 @@ public static class TokenStore {
     public static Task<string> ResolveProfileNameAsync(CancellationToken ct = default) =>
         ResolveActiveProfileAsync(ct);
 
-    static async Task<string> ResolveActiveProfileAsync(CancellationToken ct = default) {
+    internal static async Task<string> ResolveActiveProfileAsync(CancellationToken ct = default) {
         if (AppConfig.ResolvedProfile?.ProfileName is { Length: > 0 } resolved) return resolved;
 
         var cfg = await AppConfig.LoadProfileConfig(ct);
