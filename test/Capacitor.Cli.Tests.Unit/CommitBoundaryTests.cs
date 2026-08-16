@@ -1,6 +1,7 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Telemetry;
 using NSubstitute;
 using DiscoveryResult = Capacitor.Cli.Core.Auth.DiscoveryResult;
 
@@ -9,9 +10,14 @@ namespace Capacitor.Cli.Tests.Unit;
 /// <summary>
 /// The ordered commit boundary itself: the claim hook runs last-cancellable and sees every
 /// identity before anything durable exists, then config + stamp + tokens publish to completion
-/// even under a cancel. Shares the TokenStoreProfileTests key (one shared KCAP_CONFIG_DIR).
+/// even under a cancel. Shares the TokenStoreProfileTests key (one shared KCAP_CONFIG_DIR) and the
+/// funnel-sink keys (WorkOS discovery emits into CliTelemetry's process-global sink).
 /// </summary>
-[NotInParallel(nameof(TokenStoreProfileTests))]
+[NotInParallel([
+    nameof(TokenStoreProfileTests),
+    nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
+    nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
+])]
 public class CommitBoundaryTests {
     static string TokensDir  => PathHelpers.ConfigPath("tokens");
     static string LegacyPath => PathHelpers.ConfigPath("tokens.json");
@@ -154,7 +160,8 @@ public class CommitBoundaryTests {
         using var handler = AuthHttp.Script(authConfig: """{"provider":"None"}""");
         var       facade  = OnboardingFacadeTests.NewFacade(new RecordingAuthProgress(), handler);
 
-        await facade.LoginAsync("https://none.example", forceDevice: false, profile: "solo", CancellationToken.None);
+        await facade.LoginAsync(
+            "https://none.example", forceDevice: false, profile: "solo", CancellationToken.None, adoptServer: true);
 
         var profile = ConfigMutator.LoadPure(ConfigPath).Profiles["solo"];
         var stamp   = profile.AuthProvider;
@@ -229,6 +236,66 @@ public class CommitBoundaryTests {
         var cfg = ConfigMutator.LoadPure(ConfigPath);
         await Assert.That(cfg.ActiveProfile).IsEqualTo("eventuous");
         await Assert.That(cfg.Profiles["eventuous"].AuthProvider!.Provider).IsEqualTo(AuthProvider.WorkOS);
+    }
+
+    [Test]
+    public async Task A_token_publication_that_throws_still_answers_Committed_for_what_landed() {
+        // A file where the tokens directory belongs: TokenStore.SaveAsync throws out of the boundary.
+        Directory.CreateDirectory(Path.GetDirectoryName(TokensDir)!);
+        await File.WriteAllTextAsync(TokensDir, "not a directory");
+
+        try {
+            var flow     = await ReadyEventuousFlowAsync();
+            var progress = new RecordingAuthProgress();
+
+            var result = await WorkOSDiscovery.PublishAsync(flow, progress, beforeCommit: null, ct: CancellationToken.None);
+
+            // The config commit landed, so the boundary had begun — no torn stop, and the loss is reported.
+            await Assert.That(result).IsTypeOf<AuthResult.Committed>();
+            await Assert.That(progress.Errors.Any(e => e.Contains("could not be saved"))).IsTrue();
+            await Assert.That(ConfigMutator.LoadPure(ConfigPath).Profiles["eventuous"].AuthProvider!.Provider)
+                .IsEqualTo(AuthProvider.WorkOS);
+        } finally {
+            File.Delete(TokensDir);
+        }
+    }
+
+    [Test]
+    public async Task A_config_commit_that_throws_fails_and_publishes_no_token() {
+        // A directory where config.json belongs: the config publish cannot rename over it.
+        Directory.CreateDirectory(ConfigPath);
+
+        try {
+            var flow     = await ReadyEventuousFlowAsync();
+            var progress = new RecordingAuthProgress();
+
+            var result = await WorkOSDiscovery.PublishAsync(flow, progress, beforeCommit: null, ct: CancellationToken.None);
+
+            // Nothing durable began, so this arm is honestly a failure rather than a partial commit.
+            await Assert.That(result).IsTypeOf<AuthResult.Failed>();
+            await Assert.That(TokenFileExists("eventuous")).IsFalse();
+        } finally {
+            Directory.Delete(ConfigPath, recursive: true);
+        }
+    }
+
+    static async Task<WorkOSDiscoveryFlow.Ready> ReadyEventuousFlowAsync() {
+        var proxy = Substitute.For<IAuthProxyClient>();
+        DiscoveredTenant[] tenants = [
+            new() { Provider = "WorkOS", OrganizationId = "org_a", Slug = "eventuous", DisplayName = "Eventuous", Origin = "https://eventuous.kcap.ai" }
+        ];
+        proxy.DiscoverWorkOSTenantsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+             .Returns(Task.FromResult(new DiscoveryResult(tenants, DiscoveryError.None)));
+
+        var flow = await WorkOSDiscovery.DiscoverAsync(
+            "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_d" },
+            proxy, Substitute.For<ITenantPicker>(),
+            orglessLogin: ()     => Task.FromResult<WorkOSAuthResponse?>(
+                new WorkOSAuthResponse { User = new() { Id = "u", FirstName = "Ada" }, AccessToken = "acc", RefreshToken = "rt" }),
+            orgSwitch:    (_, _) => Task.FromResult<WorkOSAuthResponse?>(
+                new WorkOSAuthResponse { OrganizationId = "org_a", AccessToken = "acc2", RefreshToken = "rt2" }));
+
+        return (WorkOSDiscoveryFlow.Ready)flow;
     }
 
     [Test]

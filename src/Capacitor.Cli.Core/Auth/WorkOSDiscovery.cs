@@ -123,7 +123,7 @@ public static class WorkOSDiscovery {
             // are a sign-in failure.
             SetupFunnel.SigninFailed("workos_signin_failed");
 
-            return Failed(progress, "WorkOS sign-in failed.");
+            return Failed(progress, "WorkOS sign-in failed.", ct);
         }
 
         SetupFunnel.SigninCompleted(AuthProvider.WorkOS);
@@ -135,7 +135,7 @@ public static class WorkOSDiscovery {
                 DiscoveryError.TokenRejected    => "WorkOS rejected the authentication token. Please sign in again.",
                 DiscoveryError.UpstreamError    => "Kurrent auth service returned an error. Try again later.",
                 _                               => "Tenant discovery failed."
-            });
+            }, ct);
         }
 
         if (result.Tenants.Length == 0) {
@@ -274,8 +274,10 @@ public static class WorkOSDiscovery {
         return result;
     }
 
-    static WorkOSDiscoveryFlow.Failed Failed(IAuthProgress progress, string message) {
-        progress.Error(message);
+    // A live cancel suppresses the line: these two arms map an OperationCanceledException onto a
+    // transport failure the user never caused, and the façade answers Cancelled from the result.
+    static WorkOSDiscoveryFlow.Failed Failed(IAuthProgress progress, string message, CancellationToken ct = default) {
+        if (!ct.IsCancellationRequested) progress.Error(message);
 
         return new WorkOSDiscoveryFlow.Failed(message);
     }

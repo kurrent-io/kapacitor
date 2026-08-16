@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core.Config;
+using Duende.IdentityModel.OidcClient.Browser;
 using Config_Profile = Capacitor.Cli.Core.Config.Profile;
 
 namespace Capacitor.Cli.Core.Auth;
@@ -14,7 +15,9 @@ sealed record CommitRequest(
     string                              ActiveProfile,
     string                              CanonicalServer,
     Func<ProfileConfig, ProfileConfig>? ConfigMutation,
-    Func<Task<string?>>?                PublishTokens);
+    Func<Task<string?>>?                PublishTokens,
+    // False for a login that must not claim the profile for this server (see LoginTarget.Foreign).
+    bool                                WriteStamp = true);
 
 /// <summary>
 /// The ordered commit boundary. The before-commit hook is the LAST cancellable await: it either
@@ -43,16 +46,35 @@ static class CommitBoundary {
             }
         }
 
-        await ConfigMutator.MutateAsync(config => Stamp(request.ConfigMutation?.Invoke(config) ?? config, request),
-            CancellationToken.None);
+        if (request.ConfigMutation is not null || request.WriteStamp) {
+            try {
+                // Profile write and stamp are deliberately ONE mutation: no window where a profile exists unstamped.
+                await ConfigMutator.MutateAsync(config => Stamp(request.ConfigMutation?.Invoke(config) ?? config, request),
+                    CancellationToken.None);
+            } catch (Exception ex) {
+                // The config commit is the boundary's first durable step: if it threw, nothing was published.
+                progress.Error($"Error: sign-in could not be saved: {ex.Message}");
 
-        var username = request.PublishTokens is null ? null : await request.PublishTokens();
+                return new AuthResult.Failed(ex.Message);
+            }
+        }
+
+        string? username = null;
+
+        try {
+            if (request.PublishTokens is not null) username = await request.PublishTokens();
+        } catch (Exception ex) {
+            // Past the config commit the boundary has begun; report what was published rather than a torn stop.
+            progress.Error($"Error: some credentials could not be saved: {ex.Message}");
+        }
 
         return new AuthResult.Committed(
             request.ActiveProfile, request.CanonicalServer, request.Provider, username, request.Identities);
     }
 
     static ProfileConfig Stamp(ProfileConfig config, CommitRequest request) {
+        if (!request.WriteStamp) return config;
+
         var profiles = new Dictionary<string, Config_Profile>(config.Profiles);
 
         foreach (var identity in request.Identities) {
@@ -80,6 +102,20 @@ static class CommitBoundary {
 }
 
 /// <summary>
+/// What a known-server login may write. The stamp claims the profile for this server, so it is
+/// written only when the profile already names it or the caller opted to adopt it; adopting also
+/// writes <c>server_url</c>. A foreign profile with no adoption gets neither.
+/// </summary>
+sealed record LoginTarget(string Profile, string CanonicalServer, string ServerUrl, bool PointsAtServer, bool AdoptServer) {
+    internal bool Adopting  => !PointsAtServer && AdoptServer;
+    internal bool Foreign   => !PointsAtServer && !AdoptServer;
+    internal bool WriteStamp => !Foreign;
+
+    internal Func<ProfileConfig, ProfileConfig>? ConfigMutation =>
+        Adopting ? config => CommitBoundary.PointProfileAtServer(config, Profile, ServerUrl) : null;
+}
+
+/// <summary>
 /// GUI-neutral onboarding operations over the existing auth flows: sign in to a known server, or
 /// discover and join a tenant. Every step up to the commit boundary is cancellable and renders
 /// through <paramref name="progress"/> — nothing here touches the console.
@@ -89,8 +125,9 @@ static class CommitBoundary {
 /// throwing aborts the operation with nothing written (the caller may retry).
 /// </param>
 /// <param name="httpFactory">
-/// Supplies the client for every HTTP leg. A supplied factory owns its clients' lifetime; the
-/// default creates and disposes one per operation.
+/// Supplies the client for the auth-config, proxy, token-exchange, device-flow and WorkOS
+/// org-switch legs. The GitHub browser flow and OidcClient still make their own clients. A supplied
+/// factory owns its clients' lifetime; the default creates and disposes one per operation.
 /// </param>
 public sealed class OnboardingFacade(
         IAuthProgress                                               progress,
@@ -101,11 +138,21 @@ public sealed class OnboardingFacade(
     /// <summary>Test seam for the one WorkOS effect with no HTTP surface (loopback browser + OidcClient).</summary>
     internal Func<CancellationToken, Task<WorkOSAuthResponse?>>? WorkOSOrglessLogin { get; init; }
 
-    public async Task<AuthResult> LoginAsync(string serverUrl, bool forceDevice, string? profile, CancellationToken ct) {
+    /// <summary>Test seams for the known-server WorkOS login, whose OidcClient leg bypasses the http factory.</summary>
+    internal IBrowser? WorkOSBrowser { get; init; }
+
+    internal string? WorkOSApiBaseOverride { get; init; }
+
+    /// <param name="adoptServer">
+    /// When the profile doesn't already name this server: true writes its <c>server_url</c> and the
+    /// provider stamp, false leaves config untouched (a <c>None</c> server then has nothing to sign in with).
+    /// </param>
+    public async Task<AuthResult> LoginAsync(
+            string serverUrl, bool forceDevice, string? profile, CancellationToken ct, bool adoptServer = false) {
         var http = httpFactory?.Invoke() ?? new HttpClient();
 
         try {
-            return await GuardAsync(() => LoginCoreAsync(http, serverUrl, forceDevice, profile, ct), ct);
+            return await GuardAsync(() => LoginCoreAsync(http, serverUrl, forceDevice, profile, adoptServer, ct), ct);
         } finally {
             if (httpFactory is null) http.Dispose();
         }
@@ -123,7 +170,7 @@ public sealed class OnboardingFacade(
     }
 
     async Task<AuthResult> LoginCoreAsync(
-            HttpClient http, string serverUrl, bool forceDevice, string? profile, CancellationToken ct) {
+            HttpClient http, string serverUrl, bool forceDevice, string? profile, bool adoptServer, CancellationToken ct) {
         var config = await OAuthLoginFlow.FetchAuthConfigAsync(http, serverUrl, ct, progress);
 
         if (config is null) return Stop($"Failed to fetch auth config from {serverUrl}/auth/config", ct);
@@ -131,23 +178,34 @@ public sealed class OnboardingFacade(
         var targetProfile = profile ?? await TokenStore.ResolveActiveProfileAsync(ct);
 
         if (!ServerIdentity.TryCanonicalizeForStamping(serverUrl, out var canonical, out var identityError)) {
-            progress.Error($"Error: {identityError}");
-
-            return Stop(identityError, ct);
+            return Fail($"Error: {identityError}", identityError, ct);
         }
 
+        var configured = (await AppConfig.LoadProfileConfig(ct)).Profiles.GetValueOrDefault(targetProfile);
+        var target     = new LoginTarget(
+            targetProfile, canonical, serverUrl,
+            PointsAtServer: ServerIdentity.SameServer(configured?.ServerUrl, serverUrl),
+            AdoptServer: adoptServer);
+
         return config.Provider switch {
-            AuthProvider.None      => await LoginNoneAsync(serverUrl, targetProfile, canonical, ct),
-            AuthProvider.GitHubApp => await LoginGitHubAsync(http, serverUrl, config, forceDevice, targetProfile, canonical, ct),
-            AuthProvider.WorkOS    => await LoginWorkOSAsync(serverUrl, config, targetProfile, canonical, ct),
+            AuthProvider.None      => await LoginNoneAsync(target, ct),
+            AuthProvider.GitHubApp => await LoginGitHubAsync(http, config, forceDevice, target, ct),
+            AuthProvider.WorkOS    => await LoginWorkOSAsync(config, target, ct),
             _                      => UnknownProvider(config.Provider)
         };
     }
 
-    async Task<AuthResult> LoginNoneAsync(string serverUrl, string targetProfile, string canonical, CancellationToken ct) {
+    async Task<AuthResult> LoginNoneAsync(LoginTarget target, CancellationToken ct) {
+        // Nothing to sign in with on a None server, so a profile that doesn't name it stays unconfigured.
+        if (target.Foreign) {
+            return Fail(
+                $"Error: profile '{target.Profile}' is not configured for {target.ServerUrl} — pass --profile or run kcap setup.",
+                $"Profile '{target.Profile}' is not configured for {target.ServerUrl}.", ct);
+        }
+
         var request = new CommitRequest(
-            [new AuthIdentity(targetProfile, canonical)], AuthProvider.None, targetProfile, canonical,
-            ConfigMutation: config => CommitBoundary.PointProfileAtServer(config, targetProfile, serverUrl),
+            [new AuthIdentity(target.Profile, target.CanonicalServer)], AuthProvider.None, target.Profile, target.CanonicalServer,
+            ConfigMutation: target.ConfigMutation,
             PublishTokens: null);
 
         var result = await CommitBoundary.CommitAsync(request, beforeCommit, progress, ct);
@@ -160,42 +218,43 @@ public sealed class OnboardingFacade(
     }
 
     async Task<AuthResult> LoginGitHubAsync(
-            HttpClient http, string serverUrl, AuthDiscoveryResponse config, bool forceDevice,
-            string targetProfile, string canonical, CancellationToken ct) {
+            HttpClient http, AuthDiscoveryResponse config, bool forceDevice, LoginTarget target, CancellationToken ct) {
         var accessToken = await OAuthLoginFlow.AcquireGitHubTokenAsync(
             http, config.GithubClientId!, config.GithubCodeExchangeUrl, forceDevice, ct, progress);
 
-        if (accessToken is null) return Stop("GitHub sign-in did not complete.", ct);
+        if (accessToken is null) return Stop("GitHub sign-in did not complete.", ct, AuthFailureReason.SigninDenied);
 
         var exchanged = await OAuthLoginFlow.ExchangeAsync(
-            http, serverUrl, accessToken, config.Provider, targetProfile, progress, ct);
+            http, target.ServerUrl, accessToken, config.Provider, target.Profile, progress, ct);
 
         if (exchanged is null) return Stop("Token exchange failed.", ct);
 
-        return await CommitTokensAsync(exchanged.Value.Tokens, exchanged.Value.Username, config.Provider, targetProfile, canonical, ct);
+        return await CommitTokensAsync(exchanged.Value.Tokens, exchanged.Value.Username, config.Provider, target, ct);
     }
 
-    async Task<AuthResult> LoginWorkOSAsync(
-            string serverUrl, AuthDiscoveryResponse config, string targetProfile, string canonical, CancellationToken ct) {
+    async Task<AuthResult> LoginWorkOSAsync(AuthDiscoveryResponse config, LoginTarget target, CancellationToken ct) {
         var authenticated = await OAuthLoginFlow.WorkOSTokensForServerAsync(
-            serverUrl, config.ClientId!, config.OrganizationId, new LoopbackBrowser(progress: progress), ct, progress);
+            target.ServerUrl, config.ClientId!, config.OrganizationId,
+            WorkOSBrowser ?? new LoopbackBrowser(progress: progress), ct, progress,
+            WorkOSApiBaseOverride ?? OAuthLoginFlow.WorkOSApiBase);
 
-        if (authenticated is null) return Stop("WorkOS sign-in did not complete.", ct);
+        if (authenticated is null) return Stop("WorkOS sign-in did not complete.", ct, AuthFailureReason.SigninDenied);
 
         return await CommitTokensAsync(
-            authenticated.Value.Tokens, authenticated.Value.Username, AuthProvider.WorkOS, targetProfile, canonical, ct);
+            authenticated.Value.Tokens, authenticated.Value.Username, AuthProvider.WorkOS, target, ct);
     }
 
     async Task<AuthResult> CommitTokensAsync(
-            StoredTokens tokens, string? username, string provider, string targetProfile, string canonical, CancellationToken ct) {
+            StoredTokens tokens, string? username, string provider, LoginTarget target, CancellationToken ct) {
         var request = new CommitRequest(
-            [new AuthIdentity(targetProfile, canonical)], provider, targetProfile, canonical,
-            ConfigMutation: null,
+            [new AuthIdentity(target.Profile, target.CanonicalServer)], provider, target.Profile, target.CanonicalServer,
+            ConfigMutation: target.ConfigMutation,
             PublishTokens: async () => {
-                await TokenStore.SaveAsync(targetProfile, tokens, CancellationToken.None);
+                await TokenStore.SaveAsync(target.Profile, tokens, CancellationToken.None);
 
                 return username;
-            });
+            },
+            WriteStamp: target.WriteStamp);
 
         var result = await CommitBoundary.CommitAsync(request, beforeCommit, progress, ct);
 
@@ -209,9 +268,7 @@ public sealed class OnboardingFacade(
         var proxyConfig = await proxy.GetConfigAsync(AuthProxyEndpoint.Url, ct);
 
         if (proxyConfig is null) {
-            progress.Error("Cannot reach the Kurrent auth service.");
-
-            return Stop("Cannot reach the Kurrent auth service.", ct);
+            return Fail("Cannot reach the Kurrent auth service.", ct, AuthFailureReason.Unreachable);
         }
 
         return provider switch {
@@ -243,38 +300,34 @@ public sealed class OnboardingFacade(
             WorkOSDiscoveryFlow.Ready ready       => await WorkOSDiscovery.PublishAsync(ready, progress, beforeCommit, ct),
             WorkOSDiscoveryFlow.Retarget retarget => new AuthResult.Retarget(retarget.ServerInput),
             WorkOSDiscoveryFlow.Failed failed     => Stop(failed.Message, ct),
-            _                                     => Stop("No Capacitor tenants are linked to your account.", ct)
+            _                                     => Stop("No Capacitor tenants are linked to your account.", ct,
+                                                          AuthFailureReason.NoTenantsFound)
         };
     }
 
     async Task<AuthResult> DiscoverGitHubAsync(
             HttpClient http, IAuthProxyClient proxy, ProxyConfigResponse proxyConfig, bool forceDevice, CancellationToken ct) {
         if (string.IsNullOrEmpty(proxyConfig.GitHubClientId)) {
-            progress.Error("Cannot reach the Kurrent auth service.");
-
-            return Stop("Cannot reach the Kurrent auth service.", ct);
+            return Fail("Cannot reach the Kurrent auth service.", ct, AuthFailureReason.Unreachable);
         }
 
         var accessToken = await OAuthLoginFlow.AcquireGitHubTokenAsync(
             http, proxyConfig.GitHubClientId, proxyConfig.GitHubCodeExchangeUrl, forceDevice, ct, progress);
 
-        if (accessToken is null) return Stop("GitHub sign-in did not complete.", ct);
+        if (accessToken is null) return Stop("GitHub sign-in did not complete.", ct, AuthFailureReason.SigninDenied);
 
         var outcome = await new TenantDiscovery(proxy, picker).RunAsync(AuthProxyEndpoint.Url, accessToken, ct);
 
         if (outcome.ErrorMessage is not null) {
-            progress.Error(outcome.ErrorMessage);
-
-            return Stop(outcome.ErrorMessage, ct);
+            return Fail(outcome.ErrorMessage, ct,
+                outcome.NoTenantsFound ? AuthFailureReason.NoTenantsFound : AuthFailureReason.Other);
         }
 
         var identities = new List<AuthIdentity>();
 
         foreach (var tenant in outcome.Tenants) {
             if (!ServerIdentity.TryCanonicalizeForStamping(tenant.Origin, out var canonical, out var identityError)) {
-                progress.Error($"Error: {identityError}");
-
-                return Stop(identityError, ct);
+                return Fail($"Error: {identityError}", identityError, ct);
             }
 
             identities.Add(new(tenant.ProfileName, canonical));
@@ -291,31 +344,37 @@ public sealed class OnboardingFacade(
         return await CommitBoundary.CommitAsync(request, beforeCommit, progress, ct);
     }
 
-    // Inside the boundary: each tenant's exchange is network-then-save, and a failure costs that
-    // tenant its token (today's per-tenant warning) rather than the whole commit.
+    // Inside the boundary: each tenant's exchange is network-then-save, and ANY failure — mapped or
+    // thrown — costs that tenant its token (today's per-tenant warning) rather than the whole commit.
     async Task<string?> ExchangeEveryTenantAsync(
             HttpClient http, DiscoveredTenant[] tenants, DiscoveredTenant picked, string githubAccessToken) {
         string? pickedUsername = null;
 
         foreach (var tenant in tenants) {
-            var exchanged = await OAuthLoginFlow.ExchangeAsync(
-                http, AppConfig.NormalizeUrl(tenant.Origin), githubAccessToken, AuthProvider.GitHubApp,
-                tenant.ProfileName, progress, CancellationToken.None);
+            try {
+                var exchanged = await OAuthLoginFlow.ExchangeAsync(
+                    http, AppConfig.NormalizeUrl(tenant.Origin), githubAccessToken, AuthProvider.GitHubApp,
+                    tenant.ProfileName, progress, CancellationToken.None);
 
-            if (exchanged is null) {
-                progress.Error(
-                    $"Warning: token exchange failed for {tenant.ProfileName}. Run 'kcap login' after switching to that profile.");
+                if (exchanged is null) {
+                    WarnExchangeFailed(tenant.ProfileName);
 
-                continue;
+                    continue;
+                }
+
+                await TokenStore.SaveAsync(tenant.ProfileName, exchanged.Value.Tokens, CancellationToken.None);
+
+                if (tenant.ProfileName == picked.ProfileName) pickedUsername = exchanged.Value.Username;
+            } catch (Exception) {
+                WarnExchangeFailed(tenant.ProfileName);
             }
-
-            await TokenStore.SaveAsync(tenant.ProfileName, exchanged.Value.Tokens, CancellationToken.None);
-
-            if (tenant.ProfileName == picked.ProfileName) pickedUsername = exchanged.Value.Username;
         }
 
         return pickedUsername;
     }
+
+    void WarnExchangeFailed(string profile) =>
+        progress.Error($"Warning: token exchange failed for {profile}. Run 'kcap login' after switching to that profile.");
 
     AuthResult.Failed UnknownProvider(string provider) {
         progress.Error($"Error: Unknown auth provider '{provider}'. Update your kcap CLI.");
@@ -333,6 +392,19 @@ public sealed class OnboardingFacade(
 
     // A pre-boundary failure under a live cancel IS a cancel: the proxy client and the WorkOS
     // refresh map OperationCanceledException onto their own failure results.
-    static AuthResult Stop(string message, CancellationToken ct) =>
-        ct.IsCancellationRequested ? new AuthResult.Cancelled() : new AuthResult.Failed(message);
+    static AuthResult Stop(string message, CancellationToken ct, AuthFailureReason reason = AuthFailureReason.Other) =>
+        ct.IsCancellationRequested ? new AuthResult.Cancelled() : new AuthResult.Failed(message, reason);
+
+    // Same rule for a façade-rendered failure, with the line suppressed under a live cancel: a user
+    // who cancelled must not be shown a transport error the cancel itself caused.
+    AuthResult Fail(string message, CancellationToken ct, AuthFailureReason reason = AuthFailureReason.Other) =>
+        Fail(message, message, ct, reason);
+
+    AuthResult Fail(string rendered, string message, CancellationToken ct, AuthFailureReason reason = AuthFailureReason.Other) {
+        if (ct.IsCancellationRequested) return new AuthResult.Cancelled();
+
+        progress.Error(rendered);
+
+        return new AuthResult.Failed(message, reason);
+    }
 }

@@ -651,9 +651,9 @@ public static class OAuthLoginFlow {
     /// </summary>
     internal static async Task<(StoredTokens Tokens, string Username)?> WorkOSTokensForServerAsync(
             string serverUrl, string clientId, string? organizationId, IBrowser browser,
-            CancellationToken ct, IAuthProgress progress) {
+            CancellationToken ct, IAuthProgress progress, string apiBase = WorkOSApiBase) {
         // AuthenticateWorkOSAsync already reported the specific failure reason.
-        var json = await AuthenticateWorkOSAsync(clientId, organizationId, browser, ct: ct, progress: progress);
+        var json = await AuthenticateWorkOSAsync(clientId, organizationId, browser, apiBase, ct, progress);
         if (json is null) return null;
 
         // Org gate: a multi-org user must not be "logged in" to the wrong org — every API
