@@ -16,10 +16,12 @@ sealed class FakeWizardStep(WizardStepId id, string? title = null) : IWizardStep
     public bool Applicable { get; init; } = true;
     public bool Satisfied { get; set; }
     public int EnterCount { get; private set; }
+    public bool ThrowOnEnter { get; init; }
     public Func<WizardNavigation, CancellationToken, Task<bool>>? CanLeave { get; init; }
 
     public Task OnEnterAsync(CancellationToken ct) {
         EnterCount++;
+        if (ThrowOnEnter) throw new InvalidOperationException("boom: enter failed");
         return Task.CompletedTask;
     }
 
@@ -262,5 +264,100 @@ public class OnboardingViewModelTests {
         });
 
         await Assert.That(rendered).IsEqualTo("Connect to Capacitor");
+    }
+
+    // ---- Fix round 1 ----
+
+    /// Reviewer repro: Skip suspends on a pending veto check; a directly-invoked Next (bypassing
+    /// the canExecute-driven Button disable a real UI enforces) must be a silent no-op — the
+    /// shared busy gate inside NavigateAsync itself, not just canExecute — rather than racing
+    /// Skip's own _index mutation once the veto later resolves.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Skip_blocked_on_a_pending_veto_cannot_race_a_concurrent_Next() {
+        var currentId = await AvaloniaSession.DispatchAsync(async () => {
+            var gate = new TaskCompletionSource<bool>();
+            var connect = new FakeWizardStep(WizardStepId.Connect) {
+                CanLeave = (direction, _) => direction == WizardNavigation.Skip ? gate.Task : Task.FromResult(true),
+            };
+            var signIn = new FakeWizardStep(WizardStepId.SignIn);
+            var done = new FakeWizardStep(WizardStepId.Done);
+            var vm = new OnboardingViewModel([connect, signIn, done]);
+            await vm.PendingEnterForTesting;
+
+            var skipTask = vm.SkipCommand.Execute().ToTask(); // starts, suspends on gate.Task
+            await vm.NextCommand.Execute().ToTask(); // must be a silent no-op — no exception
+
+            gate.SetResult(true); // release Skip's veto check
+            await skipTask;
+
+            return vm.Current.Id;
+        });
+
+        await Assert.That(currentId).IsEqualTo(WizardStepId.SignIn); // exactly one transition, no double-increment
+    }
+
+    /// The busy gate also drives canExecute itself — a real bound Button disables for all three
+    /// directions the instant one navigation starts, not just the internal early-return above.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task All_three_commands_disable_while_one_navigation_is_in_flight() {
+        var (backWhileBusy, skipWhileBusy, nextWhileBusy, backAfter) = await AvaloniaSession.DispatchAsync(async () => {
+            var gate = new TaskCompletionSource<bool>();
+            var connect = new FakeWizardStep(WizardStepId.Connect) { CanLeave = (_, _) => gate.Task };
+            var signIn = new FakeWizardStep(WizardStepId.SignIn);
+            var vm = new OnboardingViewModel([connect, signIn]);
+            await vm.PendingEnterForTesting;
+
+            var skipTask = vm.SkipCommand.Execute().ToTask(); // starts, suspends on gate.Task
+
+            var backWhileBusy = CanExecute(vm.BackCommand);
+            var skipWhileBusy = CanExecute(vm.SkipCommand);
+            var nextWhileBusy = CanExecute(vm.NextCommand);
+
+            gate.SetResult(true);
+            await skipTask;
+
+            return (backWhileBusy, skipWhileBusy, nextWhileBusy, CanExecute(vm.BackCommand));
+        });
+
+        await Assert.That(backWhileBusy).IsFalse();
+        await Assert.That(skipWhileBusy).IsFalse();
+        await Assert.That(nextWhileBusy).IsFalse();
+        await Assert.That(backAfter).IsTrue(); // idle again once the transition settles
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task CanLeaveAsync_throwing_is_treated_as_a_veto_and_does_not_crash() {
+        var currentId = await AvaloniaSession.DispatchAsync(async () => {
+            var connect = new FakeWizardStep(WizardStepId.Connect) { CanLeave = (_, _) => throw new InvalidOperationException("boom") };
+            var signIn = new FakeWizardStep(WizardStepId.SignIn);
+            var vm = new OnboardingViewModel([connect, signIn]);
+            await vm.PendingEnterForTesting;
+
+            await vm.NextCommand.Execute().ToTask(); // must not throw out of the command
+
+            return vm.Current.Id;
+        });
+
+        await Assert.That(currentId).IsEqualTo(WizardStepId.Connect); // treated as a veto: stayed
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task OnEnterAsync_throwing_still_completes_the_transition_and_does_not_crash() {
+        var currentId = await AvaloniaSession.DispatchAsync(async () => {
+            var connect = new FakeWizardStep(WizardStepId.Connect);
+            var signIn = new FakeWizardStep(WizardStepId.SignIn) { ThrowOnEnter = true };
+            var vm = new OnboardingViewModel([connect, signIn]);
+            await vm.PendingEnterForTesting;
+
+            await vm.NextCommand.Execute().ToTask(); // must not throw out of the command
+
+            return vm.Current.Id;
+        });
+
+        await Assert.That(currentId).IsEqualTo(WizardStepId.SignIn); // transition still landed
     }
 }
