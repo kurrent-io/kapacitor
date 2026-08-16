@@ -98,7 +98,8 @@ public sealed class ConsentFlipCoordinator(
         await Task.Run(() => claims.TryConsume(claim, ResolveCanonical, identity.DaemonName), lifetime).ConfigureAwait(false);
     }
 
-    static string QuarantineDisclosure(string preservedPath) =>
+    /// Shared with the wizard's Sign-in step so both surfaces disclose the same recovery.
+    internal static string QuarantineDisclosure(string preservedPath) =>
         $"A corrupted consent-flip claims file was found and preserved at {preservedPath}. " +
         "Pre-existing daemons may need `kcap daemon consent set-default prompt`, or re-run onboarding.";
 
