@@ -1413,19 +1413,23 @@ sealed class FakeKcapCli : IKcapCli {
     }
 
     public int PluginInstallCallCount;
+    public readonly List<string?> PluginInstallCalls = []; // call-order proof for sequential-install tests
     public Func<string?, CancellationToken, Task<ProcessResult>> PluginInstallBehavior =
         (_, _) => Task.FromResult(new ProcessResult(0, "", "", false));
     public Task<ProcessResult> PluginInstallAsync(string? vendorFlag, CancellationToken ct) {
         PluginInstallCallCount++;
+        PluginInstallCalls.Add(vendorFlag);
         return PluginInstallBehavior(vendorFlag, ct);
     }
 
     public int ImportCallCount;
-    public Func<ImportRequest, CancellationToken, Task<StreamingResult>> ImportBehavior =
-        (_, _) => Task.FromResult(new StreamingResult(0, false, []));
+    public readonly List<ImportRequest> ImportRequests = [];
+    public Func<ImportRequest, Action<StreamedLine>, CancellationToken, Task<StreamingResult>> ImportBehavior =
+        (_, _, _) => Task.FromResult(new StreamingResult(0, false, []));
     public Task<StreamingResult> ImportAsync(ImportRequest request, Action<StreamedLine> onLine, CancellationToken ct) {
         ImportCallCount++;
-        return ImportBehavior(request, ct);
+        ImportRequests.Add(request);
+        return ImportBehavior(request, onLine, ct);
     }
 }
 
