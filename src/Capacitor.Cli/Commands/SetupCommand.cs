@@ -27,7 +27,7 @@ public static class SetupCommand {
         // `kcap setup <tenant>`: a leading positional arg (bare slug or full URL) is treated as the
         // server, equivalent to --server-url. A bare single label expands to {slug}.kcap.ai.
         if (serverUrlArg is null && args.Length > 1 && !args[1].StartsWith('-'))
-            serverUrlArg = ResolveTenantArg(args[1]);
+            serverUrlArg = ServerInput.ResolveTenantArg(args[1]);
         var noPrompt         = args.Contains("--no-prompt");
         var forceDevice      = args.Contains("--device");
         var skipClaudeFlag   = args.Contains("--skip-claude-hooks");
@@ -766,7 +766,7 @@ public static class SetupCommand {
 
     /// <summary>
     /// Normalizes a user-supplied server (a full URL, or a bare slug already expanded by
-    /// <see cref="ResolveTenantArg"/>), probes it, and reads the auth provider from the server's
+    /// <see cref="ServerInput.ResolveTenantArg"/>), probes it, and reads the auth provider from the server's
     /// own <c>/auth/config</c>. Returns null after printing the reason. Shared by
     /// `kcap setup &lt;tenant&gt;` / --server-url and by the zero-tenant "I already have a
     /// workspace" path, so provider selection has exactly one implementation.
@@ -854,7 +854,8 @@ public static class SetupCommand {
             if (workosDiscovery.RetargetServerInput is { } target) {
                 // Origin first, then slug expansion: a pasted "acme.kcap.ai/sessions" must lose its
                 // path before ResolveTenantArg decides it already looks like a host.
-                var retargeted = await ResolveServerAndProviderAsync(ResolveTenantArg(ToServerOrigin(target)));
+                var retargeted = await ResolveServerAndProviderAsync(
+                    ServerInput.ResolveTenantArg(ServerInput.ToServerOrigin(target)));
 
                 return retargeted is null
                     ? null
@@ -1066,43 +1067,6 @@ public static class SetupCommand {
 
         return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : null;
     }
-
-    /// <summary>
-    /// Resolves a `kcap setup &lt;tenant&gt;` positional: a bare single label (no scheme/dot/port)
-    /// expands to <c>https://{slug}.kcap.ai</c>; anything that already looks like a URL, FQDN, or
-    /// host:port is returned unchanged for the normal --server-url path. Self-hosted servers should
-    /// pass a full URL.
-    /// </summary>
-    /// <summary>
-    /// Reduces a user-supplied server to its origin, dropping any path/query/fragment. Everything
-    /// downstream appends a fixed root path (<c>/auth/config</c>), so a pasted page URL would probe
-    /// the wrong endpoint and be reported unreachable. Applied to the zero-discovery
-    /// "I already have a workspace" input, which explicitly invites a paste; the pre-existing
-    /// <c>--server-url</c> / <c>&lt;tenant&gt;</c> arguments keep their current behaviour. A bare
-    /// slug passes through untouched for <see cref="ResolveTenantArg"/> to expand.
-    /// </summary>
-    internal static string ToServerOrigin(string input) {
-        var trimmed = input.Trim().TrimEnd('/');
-
-        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var absolute)
-         && (absolute.Scheme == Uri.UriSchemeHttp || absolute.Scheme == Uri.UriSchemeHttps)) {
-            return absolute.GetLeftPart(UriPartial.Authority);
-        }
-
-        // Scheme-less: cut at the first path/query/fragment separator. A bracketed IPv6 literal
-        // ("[::1]:5108") must be skipped first or the scan would cut inside the address.
-        var bracketEnd = trimmed.StartsWith('[') ? trimmed.IndexOf(']') : -1;
-        var scanFrom   = bracketEnd > 0 ? bracketEnd + 1 : 0;
-        var cut        = trimmed.IndexOfAny(['/', '?', '#'], scanFrom);
-
-        return cut < 0 ? trimmed : trimmed[..cut].TrimEnd('/');
-    }
-
-    internal static string ResolveTenantArg(string arg) =>
-        arg.Contains("://") || arg.Contains('.') || arg.Contains(':')
-        || arg.Equals("localhost", StringComparison.OrdinalIgnoreCase) // bare loopback host, not a kcap.ai slug
-            ? arg
-            : $"https://{arg}.kcap.ai";
 
     static readonly JsonSerializerOptions WriteOpts = new() { WriteIndented = true };
 
