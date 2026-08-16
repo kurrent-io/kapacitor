@@ -98,6 +98,10 @@ public sealed class ConsentFlipCoordinator(
         await Task.Run(() => claims.TryConsume(claim, ResolveCanonical, identity.DaemonName), lifetime).ConfigureAwait(false);
     }
 
+    static string QuarantineDisclosure(string preservedPath) =>
+        $"A corrupted consent-flip claims file was found and preserved at {preservedPath}. " +
+        "Pre-existing daemons may need `kcap daemon consent set-default prompt`, or re-run onboarding.";
+
     async Task SurfaceQuarantineOnceAsync() {
         try {
             // A read is what discovers corruption (ConsentFlipClaims quarantines lazily, on any
@@ -107,9 +111,11 @@ public sealed class ConsentFlipCoordinator(
             var state = await appState.LoadAsync().ConfigureAwait(false);
             if (state.ConsentQuarantineAcked) return;
 
-            surface.Attention(
-                $"A corrupted consent-flip claims file was found and preserved at {quarantine.PreservedPath}. " +
-                "Pre-existing daemons may need `kcap daemon consent set-default prompt`, or re-run onboarding.");
+            var prompt = new LifecyclePrompt(
+                LifecyclePrompt.KindQuarantine, null, null, false, QuarantineDisclosure(quarantine.PreservedPath));
+            // true → explicit Acknowledge; false (declined) or null (never shown) must NOT ack — re-surfaces next start.
+            var accepted = await surface.TryConfirmAsync(prompt, lifetime).ConfigureAwait(false);
+            if (accepted == true) await AckQuarantineAsync().ConfigureAwait(false);
         } catch (OperationCanceledException) {
             // shutdown before the surface could complete
         } catch (Exception ex) {
@@ -117,8 +123,8 @@ public sealed class ConsentFlipCoordinator(
         }
     }
 
-    /// Persists the ack so a later launch never re-surfaces this quarantine (invoking this from a
-    /// UI affordance is Plan C — only the method and its persistence are in scope here).
+    /// Persists the ack so a later launch never re-surfaces this quarantine — called only from
+    /// SurfaceQuarantineOnceAsync on an explicit true from TryConfirmAsync.
     public Task<bool> AckQuarantineAsync() =>
         appState.UpdateAsync(s => s.ConsentQuarantineAcked ? s : s with { ConsentQuarantineAcked = true });
 }

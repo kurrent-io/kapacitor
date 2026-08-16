@@ -18,11 +18,34 @@ public class LifecyclePromptViewModelTests {
     [Arguments(LifecyclePrompt.KindRestartUpdate, "Restart daemon to update")]
     [Arguments(LifecyclePrompt.KindTakeover, "Take over daemon management")]
     [Arguments(LifecyclePrompt.KindRepair, "Repair daemon service")]
+    [Arguments(LifecyclePrompt.KindQuarantine, "Corrupted consent claims file")]
     public async Task Title_is_kind_specific(string kind, string expectedTitle) {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var vm = new LifecyclePromptViewModel(Prompt(kind), new TaskCompletionSource<bool>());
 
             await Assert.That(vm.Title).IsEqualTo(expectedTitle);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Quarantine_kind_renders_confirm_only_with_an_acknowledge_button() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var vm = new LifecyclePromptViewModel(Prompt(LifecyclePrompt.KindQuarantine), new TaskCompletionSource<bool>());
+
+            await Assert.That(vm.ShowDeclineButton).IsFalse();
+            await Assert.That(vm.AcceptButtonText).IsEqualTo("Acknowledge");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Non_quarantine_kinds_render_both_buttons() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var vm = new LifecyclePromptViewModel(Prompt(LifecyclePrompt.KindRepair), new TaskCompletionSource<bool>());
+
+            await Assert.That(vm.ShowDeclineButton).IsTrue();
+            await Assert.That(vm.AcceptButtonText).IsEqualTo("Continue");
         });
     }
 

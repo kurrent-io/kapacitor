@@ -363,19 +363,23 @@ public class ConsentFlipCoordinatorTests {
     // ---- quarantine surfacing + ack ----
 
     [Test]
-    public async Task Quarantine_surfaces_once_as_attention_naming_the_preserved_path() {
+    public async Task Quarantine_surfaces_once_as_a_confirm_prompt_naming_the_preserved_path() {
         using var h = new Harness();
         File.WriteAllText(Path.Combine(h.TempDir, "consent-flip-claims.json"), "{not json");
 
         h.Coordinator.Start(); // Start()'s own read discovers the corruption — no pre-read needed
 
-        await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "the quarantine attention line");
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the quarantine confirm prompt");
         await Assert.That(h.Claims.Quarantine()).IsNotNull();
-        await Assert.That(h.Surface.AttentionMessages[0]).Contains(h.Claims.Quarantine()!.PreservedPath);
-        await Assert.That(h.Surface.AttentionMessages[0]).Contains("kcap daemon consent set-default prompt");
+        var prompt = h.Surface.Prompts[0];
+        await Assert.That(prompt.Kind).IsEqualTo(LifecyclePrompt.KindQuarantine);
+        await Assert.That(prompt.Disclosure).Contains(h.Claims.Quarantine()!.PreservedPath);
+        await Assert.That(prompt.Disclosure).Contains("kcap daemon consent set-default prompt");
 
         await Task.Delay(150); // give a duplicate surfacing every chance to appear
-        await Assert.That(h.Surface.AttentionMessages.Count).IsEqualTo(1);
+        await Assert.That(h.Surface.Prompts.Count).IsEqualTo(1);
+        // Default FakeLifecycleSurface.ConfirmBehavior declines — declining must never ack.
+        await Assert.That(h.Store.State.ConsentQuarantineAcked).IsFalse();
     }
 
     // ConsentFlipClaims.Quarantine() is in-memory/per-instance and its evidence (the corrupt file)
@@ -385,15 +389,14 @@ public class ConsentFlipCoordinatorTests {
     // AppState must not re-surface, which is exactly what a real relaunch (fresh coordinator,
     // durable AppState, in-memory ConsentFlipClaims singleton) would observe.
     [Test]
-    public async Task Acked_quarantine_is_not_re_surfaced_by_a_fresh_coordinator() {
+    public async Task Confirmed_quarantine_is_acked_and_not_re_surfaced_by_a_fresh_coordinator() {
         using var h = new Harness();
         File.WriteAllText(Path.Combine(h.TempDir, "consent-flip-claims.json"), "{not json");
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
 
         h.Coordinator.Start();
-        await WaitUntilAsync(() => h.Surface.AttentionMessages.Count == 1, what: "the first surfacing");
-
-        await Assert.That(await h.Coordinator.AckQuarantineAsync()).IsTrue();
-        await Assert.That(h.Store.State.ConsentQuarantineAcked).IsTrue();
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the confirm prompt");
+        await WaitUntilAsync(() => h.Store.State.ConsentQuarantineAcked, what: "the ack to persist");
 
         var freshSurface = new FakeLifecycleSurface();
         var freshCoordinator = new ConsentFlipCoordinator(
@@ -401,6 +404,54 @@ public class ConsentFlipCoordinatorTests {
         freshCoordinator.Start();
 
         await Task.Delay(150); // give a wrongly-firing re-surfacing every chance to appear
-        await Assert.That(freshSurface.AttentionMessages).IsEmpty();
+        await Assert.That(freshSurface.Prompts).IsEmpty();
+    }
+
+    // Acknowledgment must be explicit — a declined prompt must neither persist nor suppress the
+    // next start's surfacing.
+    [Test]
+    public async Task Declined_quarantine_is_not_persisted_and_re_surfaces_on_a_fresh_coordinator() {
+        using var h = new Harness();
+        File.WriteAllText(Path.Combine(h.TempDir, "consent-flip-claims.json"), "{not json");
+        h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(false);
+
+        h.Coordinator.Start();
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the confirm prompt");
+        await Task.Delay(150); // give a wrongly-firing ack every chance to appear
+        await Assert.That(h.Store.State.ConsentQuarantineAcked).IsFalse();
+
+        var freshSurface = new FakeLifecycleSurface();
+        var freshCoordinator = new ConsentFlipCoordinator(
+            h.Client, h.Ops, h.Claims, h.Resolver.Resolve, freshSurface, h.Store, CancellationToken.None);
+        freshCoordinator.Start();
+
+        await WaitUntilAsync(() => freshSurface.Prompts.Count == 1, what: "the re-surfaced prompt");
+    }
+
+    // null means "never reached the dialog" (TryConfirmAsync's own distinction from a genuinely
+    // declined one) — must be treated identically to a decline: never acked.
+    [Test]
+    public async Task Cancelled_confirm_prompt_returns_null_and_is_not_persisted() {
+        using var h = new Harness();
+        File.WriteAllText(Path.Combine(h.TempDir, "consent-flip-claims.json"), "{not json");
+        h.Surface.TryConfirmBehavior = (_, _) => Task.FromResult<bool?>(null);
+
+        h.Coordinator.Start();
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the confirm prompt");
+
+        await Task.Delay(150); // give a wrongly-firing ack every chance to appear
+        await Assert.That(h.Store.State.ConsentQuarantineAcked).IsFalse();
+    }
+
+    [Test]
+    public async Task Already_acked_quarantine_never_prompts() {
+        using var h = new Harness();
+        File.WriteAllText(Path.Combine(h.TempDir, "consent-flip-claims.json"), "{not json");
+        await h.Store.UpdateAsync(s => s with { ConsentQuarantineAcked = true });
+
+        h.Coordinator.Start();
+
+        await Task.Delay(150); // give a wrongly-firing surfacing every chance to appear
+        await Assert.That(h.Surface.Prompts).IsEmpty();
     }
 }

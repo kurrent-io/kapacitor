@@ -11,6 +11,10 @@ sealed class FakeLifecycleSurface : ILifecycleSurface {
 
     public Func<LifecyclePrompt, CancellationToken, Task<bool>> ConfirmBehavior = (_, _) => Task.FromResult(false);
 
+    /// Scripts TryConfirmAsync's own answer (including null) independent of ConfirmBehavior, so a
+    /// test can drive the "never reached the dialog" case without a real ct race.
+    public Func<LifecyclePrompt, CancellationToken, Task<bool?>>? TryConfirmBehavior;
+
     public void Status(string message) => StatusMessages.Add(message);
 
     public void Attention(string message) => AttentionMessages.Add(message);
@@ -22,6 +26,10 @@ sealed class FakeLifecycleSurface : ILifecycleSurface {
 
     /// Mirrors LifecycleSurface's own contract: an already-cancelled ct never reaches the dialog — null, nothing recorded.
     public async Task<bool?> TryConfirmAsync(LifecyclePrompt prompt, CancellationToken ct) {
+        if (TryConfirmBehavior is { } behavior) {
+            Prompts.Add(prompt);
+            return await behavior(prompt, ct).ConfigureAwait(false);
+        }
         if (ct.IsCancellationRequested) return null;
         Prompts.Add(prompt);
         return await ConfirmBehavior(prompt, ct).ConfigureAwait(false);

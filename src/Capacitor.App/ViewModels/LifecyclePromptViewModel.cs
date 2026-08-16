@@ -24,6 +24,11 @@ public sealed class LifecyclePromptViewModel : ReactiveObject {
     public string Disclosure { get; }
     public bool PathDegraded { get; }
 
+    /// False only for KindQuarantine: a confirm-only acknowledgment, never a destructive/declinable action.
+    public bool ShowDeclineButton { get; }
+
+    public string AcceptButtonText { get; }
+
     /// Null when PathDegraded is false — bound with StringConverters.IsNotNullOrEmpty so the
     /// degraded-PATH line collapses instead of reserving dead space (ConsentPromptWindow's same
     /// pattern for its countdown/phase lines).
@@ -37,9 +42,11 @@ public sealed class LifecyclePromptViewModel : ReactiveObject {
     public ReactiveCommand<Unit, Unit> DeclineCommand { get; }
 
     public LifecyclePromptViewModel(LifecyclePrompt prompt, TaskCompletionSource<bool> tcs) {
-        Title        = TitleFor(prompt.Kind);
-        Disclosure   = prompt.Disclosure;
-        PathDegraded = prompt.PathDegraded;
+        Title             = TitleFor(prompt.Kind);
+        Disclosure        = prompt.Disclosure;
+        PathDegraded      = prompt.PathDegraded;
+        ShowDeclineButton = prompt.Kind != LifecyclePrompt.KindQuarantine;
+        AcceptButtonText  = prompt.Kind == LifecyclePrompt.KindQuarantine ? "Acknowledge" : "Continue";
 
         AcceptCommand  = ReactiveCommand.Create(() => Resolve(tcs, true));
         DeclineCommand = ReactiveCommand.Create(() => Resolve(tcs, false));
@@ -58,6 +65,7 @@ public sealed class LifecyclePromptViewModel : ReactiveObject {
         LifecyclePrompt.KindRestartUpdate => "Restart daemon to update",
         LifecyclePrompt.KindTakeover      => "Take over daemon management",
         LifecyclePrompt.KindShim          => "Install command-line tool",
+        LifecyclePrompt.KindQuarantine    => "Corrupted consent claims file",
         _                                 => "Repair daemon service", // KindRepair and any future kind
     };
 }
