@@ -165,6 +165,62 @@
                 </ScrollViewer>
             </Grid>
         </DataTemplate>
+
+        <DataTemplate DataType="vm:ShimStepViewModel">
+            <StackPanel Spacing="10">
+                <TextBlock Text="This links /usr/local/bin/kcap to this app's CLI, so kcap works from any terminal. Installing it prompts once for your admin password."
+                           Opacity="0.7" TextWrapping="Wrap" />
+
+                <Button x:Name="InstallShimButton" Content="Install" Command="{Binding InstallCommand}"
+                        IsEnabled="{Binding Idle}" HorizontalAlignment="Left" />
+
+                <TextBlock x:Name="ShimSuccessText" Text="kcap is now on your terminal PATH."
+                           IsVisible="{Binding Satisfied}" />
+
+                <TextBlock x:Name="ShimMessageText" Text="{Binding Message}" TextWrapping="Wrap" Foreground="#E53935"
+                           IsVisible="{Binding Message, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            </StackPanel>
+        </DataTemplate>
+
+        <DataTemplate DataType="vm:DefaultsStepViewModel">
+            <StackPanel Spacing="14">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="Session visibility" FontWeight="Bold" />
+                    <ComboBox x:Name="VisibilityCombo" ItemsSource="{x:Static vm:DefaultsStepViewModel.VisibilityOptions}"
+                              SelectedValueBinding="{Binding Value}" SelectedValue="{Binding Visibility, Mode=TwoWay}"
+                              HorizontalAlignment="Stretch">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Label}" TextWrapping="Wrap" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                </StackPanel>
+
+                <StackPanel Spacing="4">
+                    <TextBlock Text="Daemon name" FontWeight="Bold" />
+                    <TextBox x:Name="DaemonNameBox" Text="{Binding DaemonName, Mode=TwoWay}"
+                             Width="220" HorizontalAlignment="Left" />
+                </StackPanel>
+            </StackPanel>
+        </DataTemplate>
+
+        <DataTemplate DataType="vm:DoneStepViewModel">
+            <ItemsControl x:Name="SummaryList" ItemsSource="{Binding Summary}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,0,0,10">
+                            <TextBlock Text="{Binding Glyph}" FontWeight="Bold" VerticalAlignment="Top" />
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding Note}" Opacity="0.7" TextWrapping="Wrap"
+                                           IsVisible="{Binding Note, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </DataTemplate>
     </Window.DataTemplates>
 
     <Grid Margin="20" RowDefinitions="Auto,*,Auto">
