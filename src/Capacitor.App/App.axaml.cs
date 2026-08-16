@@ -391,11 +391,14 @@ public partial class App : Application {
         return (lifecycle, shimOffer, consentFlip, surface, probe);
     }
 
-    // Pure LoadPure read only — TryConsume already holds this same config lock when this delegate runs.
+    // Pure read only — TryConsume already holds this same config lock when this delegate runs, so
+    // unreadable config fails closed to an identity that matches nothing (the claim stays pending)
+    // rather than throwing inside the two-lock section.
     // Deliberately literal ActiveProfile (no KCAP_PROFILE layering) — a divergence there is fail-safe
     // via the daemon's own identity-conditional ack (task-13-report).
     internal static (string Profile, string Server, string DaemonName) ResolveConsentFlipIdentity() {
-        var config      = ConfigMutator.LoadPure(AppConfig.GetConfigPath());
+        if (!ConfigMutator.TryLoadPure(AppConfig.GetConfigPath(), out var config)) return ("", "", "");
+
         var profileName = config.ActiveProfile;
         var profile     = config.Profiles.GetValueOrDefault(profileName);
         var server      = ServerIdentity.Canonicalize(profile?.ServerUrl) ?? profile?.ServerUrl ?? "";
