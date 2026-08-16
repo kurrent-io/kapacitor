@@ -19,31 +19,6 @@ public static class AuthProvider {
 public enum GitHubFlow { Browser, Device }
 
 public static class OAuthLoginFlow {
-    /// <param name="profile">
-    /// Target profile for the saved token. Null means "whichever profile this process resolved" —
-    /// correct for `kcap login`. `kcap setup` passes its chosen profile explicitly, because it
-    /// deliberately configures the on-disk active profile even when the current directory resolves
-    /// to a different one, and its token must land in the same place its config does.
-    /// </param>
-    public static async Task<int> LoginWithDiscoveryAsync(
-            string serverUrl, bool forceDevice, string? profile = null, CancellationToken ct = default, IAuthProgress? progress = null) {
-        progress ??= ConsoleAuthProgress.Instance;
-
-        // ReSharper disable once ShortLivedHttpClient
-        using var http = new HttpClient();
-
-        var config = await FetchAuthConfigAsync(http, serverUrl, ct, progress);
-
-        if (config is null) return 1;
-
-        return config.Provider switch {
-            AuthProvider.None      => HandleNoneLogin(progress),
-            AuthProvider.GitHubApp => await HandleGitHubLogin(serverUrl, config, forceDevice, profile, ct, progress),
-            AuthProvider.WorkOS    => await HandleWorkOSLogin(serverUrl, config, profile, ct, progress),
-            _                      => HandleUnknownProvider(config.Provider, progress)
-        };
-    }
-
     /// <summary>GET <c>{serverUrl}/auth/config</c>, or <c>null</c> with the failure already reported.</summary>
     internal static async Task<AuthDiscoveryResponse?> FetchAuthConfigAsync(
             HttpClient http, string serverUrl, CancellationToken ct, IAuthProgress progress) {
@@ -112,18 +87,6 @@ public static class OAuthLoginFlow {
     /// </summary>
     internal static bool ShouldDiscoverLogin(string? baseUrl, string[] args)
         => args.Contains("--discover") || baseUrl is null;
-
-    static int HandleNoneLogin(IAuthProgress progress) {
-        progress.Notice("Server has no authentication configured — login not required.");
-
-        return 0;
-    }
-
-    static int HandleUnknownProvider(string provider, IAuthProgress progress) {
-        progress.Error($"Error: Unknown auth provider '{provider}'. Update your kcap CLI.");
-
-        return 1;
-    }
 
     /// <summary>
     /// Runs GitHub Device Flow interactively. Reports the user code and verification URL, opens the
@@ -500,18 +463,6 @@ public static class OAuthLoginFlow {
         }
     }
 
-    static async Task<int> HandleGitHubLogin(
-            string serverUrl, AuthDiscoveryResponse config, bool forceDevice, string? profile,
-            CancellationToken ct, IAuthProgress progress) {
-        var accessToken = await AcquireGitHubTokenAsync(config.GithubClientId!, config.GithubCodeExchangeUrl, forceDevice, ct, progress);
-
-        if (accessToken is null) return 1;
-
-        return profile is null
-            ? await ExchangeAndSaveAsync(serverUrl, accessToken, config.Provider, ct, progress)
-            : await ExchangeAndSaveAsync(serverUrl, accessToken, config.Provider, profile, ct, progress);
-    }
-
     internal static async Task<string?> AcquireGitHubTokenAsync(
             string clientId, string? codeExchangeUrl, bool forceDevice, CancellationToken ct = default, IAuthProgress? progress = null) {
         using var http = new HttpClient();
@@ -545,10 +496,6 @@ public static class OAuthLoginFlow {
 
         return await RunDeviceFlowAsync(http, clientId, ct, progress);
     }
-
-    static Task<int> HandleWorkOSLogin(
-            string serverUrl, AuthDiscoveryResponse config, string? profile, CancellationToken ct, IAuthProgress progress) =>
-        LoginWorkOSAsync(serverUrl, config.ClientId!, config.OrganizationId, profile, ct, progress);
 
     internal const string WorkOSApiBase = "https://api.workos.com";
 
@@ -627,23 +574,6 @@ public static class OAuthLoginFlow {
         _            => $"WorkOS sign-in failed: {error ?? "unknown error"}"
                       + (string.IsNullOrEmpty(description) ? "" : $" — {description}")
     };
-
-    static async Task<int> LoginWorkOSAsync(
-            string serverUrl, string clientId, string? organizationId, string? profile, CancellationToken ct, IAuthProgress progress) {
-        var authenticated = await WorkOSTokensForServerAsync(
-            serverUrl, clientId, organizationId, new LoopbackBrowser(progress: progress), ct, progress);
-
-        if (authenticated is null) return 1;
-
-        var (saved, username) = authenticated.Value;
-
-        if (profile is null) await TokenStore.SaveAsync(saved);
-        else await TokenStore.SaveAsync(profile, saved);
-
-        progress.Notice($"Logged in as {username}");
-
-        return 0;
-    }
 
     /// <summary>
     /// WorkOS sign-in against a KNOWN server: authenticate, enforce the org gate, and build the

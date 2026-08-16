@@ -77,7 +77,7 @@ public class AuthProgressTests {
     }
 
     [Test]
-    public async Task RunAsync_zero_tenant_headless_emits_through_progress_not_console() {
+    public async Task DiscoverAsync_zero_tenant_headless_emits_through_progress_not_console() {
         var proxy = Substitute.For<IAuthProxyClient>();
         proxy.DiscoverWorkOSTenantsAsync(Arg.Any<string>(), Arg.Any<string>())
              .Returns(Task.FromResult(new DiscoveryResult([], DiscoveryError.None)));
@@ -91,10 +91,10 @@ public class AuthProgressTests {
         Console.SetOut(capturedOut);
         Console.SetError(capturedErr);
 
-        WorkOSDiscoveryOutcome outcome;
+        WorkOSDiscoveryFlow flow;
 
         try {
-            outcome = await WorkOSDiscovery.RunAsync(
+            flow = await WorkOSDiscovery.DiscoverAsync(
                 "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_d" },
                 proxy, Substitute.For<ITenantPicker>(),
                 orglessLogin: () => Task.FromResult<WorkOSAuthResponse?>(new WorkOSAuthResponse { AccessToken = "acc", RefreshToken = "rt" }),
@@ -105,7 +105,7 @@ public class AuthProgressTests {
             Console.SetError(originalErr);
         }
 
-        await Assert.That(outcome.ExitCode).IsEqualTo(1);
+        await Assert.That(flow).IsTypeOf<WorkOSDiscoveryFlow.NoTenants>();
         // Today's code writes this line to stderr — pinned so a future stream swap is deliberate.
         await Assert.That(progress.Errors).Contains("No Capacitor tenants are linked to your account. Ask your admin to invite you.");
         await Assert.That(capturedOut.ToString()).IsEmpty();

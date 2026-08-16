@@ -8,8 +8,8 @@ namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
 /// CancellationToken threading through the auth flows: the device-poll loop actually stops on
-/// cancellation, WorkOSDiscovery.RunAsync forwards its own ct into both OfferCreateAsync and the
-/// orgless-refresh delegate, and TenantDiscovery awaits the new async picker instead of the sync one.
+/// cancellation, WorkOSDiscovery.DiscoverAsync forwards its own ct into both OfferCreateAsync and
+/// the orgless-refresh delegate, and TenantDiscovery awaits the new async picker instead of the sync one.
 /// </summary>
 public class AuthCancellationTests {
     static string JwtWithExpiry(DateTimeOffset exp) {
@@ -58,7 +58,7 @@ public class AuthCancellationTests {
     }
 
     [Test]
-    public async Task WorkOSDiscovery_RunAsync_threads_its_ct_into_OfferCreateAsync_and_the_orgless_refresh_delegate() {
+    public async Task WorkOSDiscovery_DiscoverAsync_threads_its_ct_into_OfferCreateAsync_and_the_orgless_refresh_delegate() {
         var proxy = Substitute.For<IAuthProxyClient>();
         proxy.DiscoverWorkOSTenantsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
              .Returns(Task.FromResult(new DiscoveryResult([], DiscoveryError.None)));
@@ -80,7 +80,7 @@ public class AuthCancellationTests {
 
         var nearExpiry = JwtWithExpiry(DateTimeOffset.UtcNow.AddSeconds(5));
 
-        var outcome = await WorkOSDiscovery.RunAsync(
+        var flow = await WorkOSDiscovery.DiscoverAsync(
             "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_d" },
             proxy, Substitute.For<ITenantPicker>(),
             orglessLogin:   () => Task.FromResult<WorkOSAuthResponse?>(new WorkOSAuthResponse { AccessToken = nearExpiry, RefreshToken = "rt" }),
@@ -89,11 +89,11 @@ public class AuthCancellationTests {
             provisioner:    provisioner,
             ct:             cts.Token);
 
-        await Assert.That(outcome.ExitCode).IsEqualTo(1); // Declined -> non-legacy failure
+        await Assert.That(flow).IsTypeOf<WorkOSDiscoveryFlow.Failed>(); // Declined -> non-legacy failure
 
         // Identity, not mere structural default-equality: cancel AFTER capture and confirm the SAME
-        // token observes it — proving RunAsync forwarded its real ct into both call sites rather
-        // than a fresh default(CancellationToken).
+        // token observes it — proving DiscoverAsync forwarded its real ct into both call sites
+        // rather than a fresh default(CancellationToken).
         await Assert.That(offerCt.CanBeCanceled).IsTrue();
         await Assert.That(refreshCt.CanBeCanceled).IsTrue();
         await cts.CancelAsync();

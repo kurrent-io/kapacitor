@@ -3,15 +3,6 @@ using Capacitor.Cli.Core.Telemetry;
 namespace Capacitor.Cli.Core.Auth;
 
 /// <summary>
-/// Outcome of a discovery run. <see cref="RetargetServerInput"/> is the slug or URL the user
-/// asked to use instead of creating a tenant, and is non-null only when they chose "I already
-/// have a workspace". <see cref="ExitCode"/> is deliberately non-zero in that case: a caller
-/// that does not implement re-targeting then fails visibly, instead of reporting success while
-/// having configured nothing.
-/// </summary>
-public sealed record WorkOSDiscoveryOutcome(int ExitCode, string? RetargetServerInput = null);
-
-/// <summary>
 /// What discovery established, up to but not including any durable write. <see cref="Ready"/>
 /// carries the org-switched auth for the picked (or freshly created) tenant.
 /// </summary>
@@ -40,61 +31,6 @@ public abstract record WorkOSDiscoveryFlow {
 /// production wiring passes <see cref="OAuthLoginFlow"/>'s loopback + switch helpers.
 /// </summary>
 public static class WorkOSDiscovery {
-    /// <summary>
-    /// <see cref="RunAsync"/> wired to the real WorkOS effects: an org-less loopback login on the
-    /// shared AuthKit app + a refresh-token org-switch (both public-client, no secret). The two call
-    /// sites (`kcap login --discover` and `kcap setup`) use this; tests call <see cref="RunAsync"/>
-    /// directly with fakes.
-    /// </summary>
-    public static Task<WorkOSDiscoveryOutcome> RunWithLiveAuthAsync(
-            string proxyUrl, ProxyConfigResponse proxyConfig, IAuthProxyClient proxy, ITenantPicker picker,
-            ITenantProvisioner? provisioner = null, CancellationToken ct = default, IAuthProgress? progress = null) {
-        progress ??= ConsoleAuthProgress.Instance;
-        var clientId = proxyConfig.WorkOSClientId ?? "";
-
-        return RunAsync(proxyUrl, proxyConfig, proxy, picker,
-            orglessLogin: () => OAuthLoginFlow.AuthenticateWorkOSAsync(
-                clientId, organizationId: null, new LoopbackBrowser(progress: progress), ct: ct, progress: progress),
-            orgSwitch: async (refreshToken, organizationId) => {
-                using var http = new HttpClient();
-                return await OAuthLoginFlow.SwitchWorkOSOrgAsync(
-                    http, OAuthLoginFlow.WorkOSApiBase, clientId, refreshToken, organizationId, ct);
-            },
-            orglessRefresh: async (refreshToken, refreshCt) => {
-                using var http = new HttpClient();
-                return await OAuthLoginFlow.RefreshWorkOSTokenAsync(
-                    http, OAuthLoginFlow.WorkOSApiBase, clientId, refreshToken, refreshCt);
-            },
-            provisioner: provisioner,
-            ct: ct,
-            progress: progress);
-    }
-
-    /// <summary>Discovery + publication for callers that want an exit code and no commit hook.</summary>
-    public static async Task<WorkOSDiscoveryOutcome> RunAsync(
-            string                                          proxyUrl,
-            ProxyConfigResponse                             proxyConfig,
-            IAuthProxyClient                                proxy,
-            ITenantPicker                                   picker,
-            Func<Task<WorkOSAuthResponse?>>                 orglessLogin,
-            Func<string, string, Task<WorkOSAuthResponse?>> orgSwitch,     // args: refreshToken, organizationId
-            Func<string, CancellationToken, Task<WorkOSAuthResponse?>>? orglessRefresh = null, // args: refreshToken, ct
-            ITenantProvisioner?                             provisioner = null,
-            CancellationToken                               ct = default,
-            IAuthProgress?                                  progress = null) {
-        progress ??= ConsoleAuthProgress.Instance;
-
-        var flow = await DiscoverAsync(
-            proxyUrl, proxyConfig, proxy, picker, orglessLogin, orgSwitch, orglessRefresh, provisioner, ct, progress);
-
-        return flow switch {
-            WorkOSDiscoveryFlow.Ready ready =>
-                new(await PublishAsync(ready, progress, beforeCommit: null, ct) is AuthResult.Committed ? 0 : 1),
-            WorkOSDiscoveryFlow.Retarget retarget => new(1, retarget.ServerInput),
-            _                                    => new(1)
-        };
-    }
-
     /// <summary>Everything up to the commit boundary: sign in, enumerate, pick (or create), org-switch.</summary>
     public static async Task<WorkOSDiscoveryFlow> DiscoverAsync(
             string                                          proxyUrl,

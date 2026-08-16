@@ -53,7 +53,7 @@ public static class SetupFunnel {
     /// Terminal event for the "I already have a workspace" branch: the user was offered a new
     /// workspace and instead redirected setup at one they already have. Deliberately distinct
     /// from <see cref="WorkspaceDeclined"/> — this is not abandonment, setup continues against a
-    /// different server (see <c>WorkOSDiscoveryOutcome.RetargetServerInput</c>) and may still
+    /// different server (see <c>AuthResult.Retarget</c>) and may still
     /// reach <see cref="Succeeded"/>. Fires before any commitment to THIS offer (no
     /// <see cref="WorkspaceRequested"/> ever follows it), so it stays on the eager path.
     /// </summary>

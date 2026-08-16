@@ -325,7 +325,7 @@ public class CommitBoundaryTests {
     }
 
     [Test]
-    public async Task RunAsync_still_publishes_without_a_hook() {
+    public async Task DiscoverAsync_still_publishes_without_a_hook() {
         var proxy = Substitute.For<IAuthProxyClient>();
         DiscoveredTenant[] tenants = [
             new() { Provider = "WorkOS", OrganizationId = "org_a", Slug = "eventuous", DisplayName = "Eventuous", Origin = "https://eventuous.kcap.ai" }
@@ -333,7 +333,7 @@ public class CommitBoundaryTests {
         proxy.DiscoverWorkOSTenantsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
              .Returns(Task.FromResult(new DiscoveryResult(tenants, DiscoveryError.None)));
 
-        var outcome = await WorkOSDiscovery.RunAsync(
+        var flow = await WorkOSDiscovery.DiscoverAsync(
             "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_d" },
             proxy, Substitute.For<ITenantPicker>(),
             orglessLogin: ()     => Task.FromResult<WorkOSAuthResponse?>(
@@ -341,7 +341,10 @@ public class CommitBoundaryTests {
             orgSwitch:    (_, _) => Task.FromResult<WorkOSAuthResponse?>(
                 new WorkOSAuthResponse { OrganizationId = "org_a", AccessToken = "acc2", RefreshToken = "rt2" }));
 
-        await Assert.That(outcome.ExitCode).IsEqualTo(0);
+        var result = await WorkOSDiscovery.PublishAsync(
+            (WorkOSDiscoveryFlow.Ready)flow, new RecordingAuthProgress(), beforeCommit: null, CancellationToken.None);
+
+        await Assert.That(result).IsTypeOf<AuthResult.Committed>();
         await Assert.That((await TokenStore.LoadAsync("eventuous"))!.AccessToken).IsEqualTo("acc2");
         await Assert.That(ConfigMutator.LoadPure(ConfigPath).Profiles["eventuous"].AuthProvider!.Provider)
             .IsEqualTo(AuthProvider.WorkOS);

@@ -139,11 +139,11 @@ public class SetupFunnelTests {
     }
 
     // Call-site coverage, not just SetupFunnel's statics: every test above calls SetupFunnel
-    // directly, so a wiring defect inside WorkOSDiscovery.RunAsync itself — e.g. the original bug
-    // of anchoring signin_completed/signin_failed on RunAsync's overall ExitCode instead of the
+    // directly, so a wiring defect inside WorkOSDiscovery.DiscoverAsync itself — e.g. the original
+    // bug of anchoring signin_completed/signin_failed on the overall outcome instead of the
     // live-auth result — was invisible to this suite. A zero-tenant, no-provisioner run reaches
-    // the legacy "ask your admin" dead-end (ExitCode 1) despite sign-in having fully succeeded,
-    // which is exactly the case that anchoring on ExitCode gets wrong.
+    // the legacy "ask your admin" dead-end (NoTenants) despite sign-in having fully succeeded,
+    // which is exactly the case that anchoring on the overall outcome gets wrong.
     [Test]
     public async Task WorkOSDiscovery_emits_signin_completed_before_tenant_none_for_a_zero_tenant_run() {
         var sink = StartCapturing();
@@ -152,15 +152,15 @@ public class SetupFunnelTests {
         proxy.DiscoverWorkOSTenantsAsync(Arg.Any<string>(), Arg.Any<string>())
              .Returns(Task.FromResult(new DiscoveryResult([], DiscoveryError.None)));
 
-        var outcome = await WorkOSDiscovery.RunAsync(
+        var flow = await WorkOSDiscovery.DiscoverAsync(
             "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_d" },
             proxy, Substitute.For<ITenantPicker>(),
             ()     => Task.FromResult<WorkOSAuthResponse?>(new WorkOSAuthResponse { AccessToken = "acc", RefreshToken = "rt" }),
             (_, _) => Task.FromResult<WorkOSAuthResponse?>(null));
 
-        // No provisioner passed -> the legacy "ask your admin" dead-end -> ExitCode 1, even though
+        // No provisioner passed -> the legacy "ask your admin" dead-end -> NoTenants, even though
         // sign-in itself worked fine.
-        await Assert.That(outcome.ExitCode).IsEqualTo(1);
+        await Assert.That(flow).IsTypeOf<WorkOSDiscoveryFlow.NoTenants>();
 
         await Assert.That(sink.Select(e => e.Name).ToArray()).IsEquivalentTo(
             new[] { "cli_setup_signin_completed", "cli_setup_tenant_none" }, CollectionOrdering.Matching);
