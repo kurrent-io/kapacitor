@@ -1,0 +1,25 @@
+<rxui:ReactiveWindow xmlns="https://github.com/avaloniaui"
+                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                     xmlns:rxui="clr-namespace:ReactiveUI.Avalonia;assembly=ReactiveUI.Avalonia"
+                     xmlns:vm="clr-namespace:Capacitor.App.ViewModels.Onboarding"
+                     x:Class="Capacitor.App.Views.Onboarding.OnboardingWindow"
+                     x:TypeArguments="vm:OnboardingViewModel"
+                     x:DataType="vm:OnboardingViewModel"
+                     Title="Kurrent Capacitor Setup"
+                     Icon="avares://Kurrent Capacitor/Assets/kcap-icon.png"
+                     Width="640" Height="480">
+    <Grid Margin="20" RowDefinitions="Auto,*,Auto">
+        <!-- Fallback presenter: always shows the current step's title, template or not. -->
+        <TextBlock Grid.Row="0" x:Name="StepTitleText" Text="{Binding Current.Title}"
+                   FontWeight="Bold" FontSize="18" Margin="0,0,0,16" />
+
+        <!-- No ContentTemplate here: per-step DataTemplates elsewhere would lose to one set here. -->
+        <ContentControl Grid.Row="1" x:Name="StepContent" Content="{Binding Current}" />
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,16,0,0">
+            <Button x:Name="BackButton" Content="Back" Command="{Binding BackCommand}" />
+            <Button x:Name="SkipButton" Content="Skip" Command="{Binding SkipCommand}" />
+            <Button x:Name="NextButton" Content="Next" Command="{Binding NextCommand}" />
+        </StackPanel>
+    </Grid>
+</rxui:ReactiveWindow>
