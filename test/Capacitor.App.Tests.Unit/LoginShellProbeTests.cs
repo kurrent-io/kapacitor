@@ -16,6 +16,9 @@ public class LoginShellProbeTests {
             var step = _steps.Count > 0 ? _steps.Dequeue() : () => Task.FromResult(new ProcessResult(0, "", "", false));
             return step();
         }
+
+        public Task<StreamingResult> RunStreamingAsync(string fileName, string[] args, RunOptions options,
+            Action<StreamedLine> onLine, CancellationToken ct) => throw new NotImplementedException();
     }
 
     static string Wrap(string path) => $"{LoginShellProbe.Sentinel}{path}{LoginShellProbe.Sentinel}";

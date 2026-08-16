@@ -249,6 +249,67 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
             return new ProcessResult(process.ExitCode, stdoutTask.Result, stderrTask.Result, TimedOut: false);
         }
 
+        const int TailLimit = 500;
+
+        public async Task<StreamingResult> RunStreamingAsync(string fileName, string[] args, RunOptions options,
+                Action<StreamedLine> onLine, CancellationToken ct) {
+            var psi = new ProcessStartInfo(fileName) {
+                RedirectStandardOutput = true,
+                RedirectStandardError  = true,
+                UseShellExecute        = false,
+            };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+            if (options.EnvOverlay is not null)
+                foreach (var (key, value) in options.EnvOverlay) psi.Environment[key] = value;
+
+            using var process = Process.Start(psi) ?? throw new InvalidOperationException($"Failed to start '{fileName}'.");
+
+            var tailLock = new object();
+            var tail = new Queue<StreamedLine>(TailLimit + 1);
+
+            void Record(StreamedLine line) {
+                try { onLine(line); }
+                catch (Exception ex) { Console.Error.WriteLine($"kcap: streaming callback threw for '{fileName}': {ex}"); }
+
+                lock (tailLock) {
+                    tail.Enqueue(line);
+                    if (tail.Count > TailLimit) tail.Dequeue();
+                }
+            }
+
+            // Line-buffered per stream — no cross-stream ordering promise.
+            async Task PumpAsync(TextReader reader, ProcessStreamKind kind) {
+                string? line;
+                while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) is not null)
+                    Record(new StreamedLine(kind, line));
+            }
+
+            var stdoutTask = PumpAsync(process.StandardOutput, ProcessStreamKind.Stdout);
+            var stderrTask = PumpAsync(process.StandardError, ProcessStreamKind.Stderr);
+
+            using var timeoutCts = options.Timeout is { } timeout ? new CancellationTokenSource(timeout) : null;
+            using var waitCts = timeoutCts is null ? null : CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
+            try {
+                await process.WaitForExitAsync(waitCts?.Token ?? ct).ConfigureAwait(false);
+            } catch (OperationCanceledException) {
+                if (ct.IsCancellationRequested) {
+                    // Streaming always kills the tree on cancellation, ignoring RunOptions.CancelMode.
+                    await KillAndAwaitAsync(process).ConfigureAwait(false);
+                    Observe(stdoutTask);
+                    Observe(stderrTask);
+                    throw;
+                }
+
+                await KillAndAwaitAsync(process, options.TimeoutKill == TimeoutKillScope.Tree).ConfigureAwait(false);
+                await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+                lock (tailLock) return new StreamingResult(process.ExitCode, TimedOut: true, tail.ToArray());
+            }
+
+            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+            lock (tailLock) return new StreamingResult(process.ExitCode, TimedOut: false, tail.ToArray());
+        }
+
         static async Task KillAndAwaitAsync(Process process, bool entireProcessTree = true) {
             try { process.Kill(entireProcessTree); }
             catch (InvalidOperationException) { /* already exited */ }

@@ -28,6 +28,9 @@ public class ShimOfferCoordinatorTests {
             Calls.Add((fileName, args, options));
             return _step();
         }
+
+        public Task<StreamingResult> RunStreamingAsync(string fileName, string[] args, RunOptions options,
+            Action<StreamedLine> onLine, CancellationToken ct) => throw new NotImplementedException();
     }
 
     /// Applies mutations to State only when UpdateSucceeds is true — mirrors AppStateStore's real

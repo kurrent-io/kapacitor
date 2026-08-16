@@ -14,6 +14,9 @@ public class PathShimInstallerTests {
             Calls.Add((fileName, args, options));
             return _step();
         }
+
+        public Task<StreamingResult> RunStreamingAsync(string fileName, string[] args, RunOptions options,
+            Action<StreamedLine> onLine, CancellationToken ct) => throw new NotImplementedException();
     }
 
     readonly List<string> _tempDirs = [];

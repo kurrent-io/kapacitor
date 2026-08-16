@@ -16,6 +16,9 @@ public class KcapCliTests {
             SeenOptions  = options;
             return (Behavior ?? (_ => Task.FromResult(new ProcessResult(0, "", "", false))))(ct);
         }
+
+        public Task<StreamingResult> RunStreamingAsync(string fileName, string[] args, RunOptions options,
+            Action<StreamedLine> onLine, CancellationToken ct) => throw new NotImplementedException();
     }
 
     const string CanonicalServer = "https://cap.example.com:443";

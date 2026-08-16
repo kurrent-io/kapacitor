@@ -21,8 +21,19 @@ public sealed record RunOptions(
     CancelMode CancelMode = CancelMode.AbandonWait,
     TimeoutKillScope TimeoutKill = TimeoutKillScope.Tree);
 
+public enum ProcessStreamKind { Stdout, Stderr }
+
+public sealed record StreamedLine(ProcessStreamKind Kind, string Text);
+
+/// No full Stdout/Stderr captures by design — Tail is only a bounded trailing window.
+public sealed record StreamingResult(int ExitCode, bool TimedOut, IReadOnlyList<StreamedLine> Tail);
+
 /// Seam over process spawning so StartDaemonAsync is testable without touching a real CLI
 /// binary. The production implementation wraps System.Diagnostics.Process.
 public interface IProcessRunner {
     Task<ProcessResult> RunAsync(string fileName, string[] args, RunOptions options, CancellationToken ct);
+
+    /// Cancellation always kills the tree and awaits exit first — unlike RunAsync, ignores RunOptions.CancelMode.
+    Task<StreamingResult> RunStreamingAsync(string fileName, string[] args, RunOptions options,
+        Action<StreamedLine> onLine, CancellationToken ct);
 }
