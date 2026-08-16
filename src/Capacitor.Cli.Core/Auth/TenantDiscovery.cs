@@ -19,12 +19,13 @@ public sealed record DiscoveryOutcome(
 );
 
 public interface ITenantPicker {
-    DiscoveredTenant? Pick(DiscoveredTenant[] tenants);
+    DiscoveredTenant?       Pick(DiscoveredTenant[] tenants);
+    Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, CancellationToken ct);
 }
 
 public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
-    public async Task<DiscoveryOutcome> RunAsync(string proxyUrl, string githubAccessToken) {
-        var result = await proxy.DiscoverTenantsAsync(proxyUrl, githubAccessToken);
+    public async Task<DiscoveryOutcome> RunAsync(string proxyUrl, string githubAccessToken, CancellationToken ct = default) {
+        var result = await proxy.DiscoverTenantsAsync(proxyUrl, githubAccessToken, ct);
 
         if (result.Error != DiscoveryError.None) {
             return new([], null, result.Error switch {
@@ -43,7 +44,7 @@ public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
 
         var picked = result.Tenants.Length == 1
             ? result.Tenants[0]
-            : picker.Pick(result.Tenants);
+            : await picker.PickAsync(result.Tenants, ct);
 
         if (picked is null) {
             return new(result.Tenants, null, "No tenant selected.");

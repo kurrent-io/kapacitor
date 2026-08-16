@@ -38,7 +38,7 @@ public class WorkOSDiscoveryTests {
              .Returns(Task.FromResult(new DiscoveryResult(tenants, DiscoveryError.None)));
 
         var picker = Substitute.For<ITenantPicker>();
-        picker.Pick(tenants).Returns(tenants[0]); // eventuous
+        picker.PickAsync(tenants, Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(tenants[0])); // eventuous
 
         var orgless  = new WorkOSAuthResponse { User = new() { Id = "user_x", FirstName = "Ada" }, AccessToken = "acc",  RefreshToken = "rt" };
         var switched = new WorkOSAuthResponse { User = new() { Id = "user_x" }, OrganizationId = "org_a", AccessToken = "acc2", RefreshToken = "rt2" };

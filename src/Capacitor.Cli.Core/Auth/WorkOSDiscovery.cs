@@ -30,20 +30,21 @@ public static class WorkOSDiscovery {
     /// </summary>
     public static Task<WorkOSDiscoveryOutcome> RunWithLiveAuthAsync(
             string proxyUrl, ProxyConfigResponse proxyConfig, IAuthProxyClient proxy, ITenantPicker picker,
-            ITenantProvisioner? provisioner = null) {
+            ITenantProvisioner? provisioner = null, CancellationToken ct = default) {
         var clientId = proxyConfig.WorkOSClientId ?? "";
 
         return RunAsync(proxyUrl, proxyConfig, proxy, picker,
-            orglessLogin: () => OAuthLoginFlow.AuthenticateWorkOSAsync(clientId, organizationId: null, new LoopbackBrowser()),
+            orglessLogin: () => OAuthLoginFlow.AuthenticateWorkOSAsync(clientId, organizationId: null, new LoopbackBrowser(), ct: ct),
             orgSwitch: async (refreshToken, organizationId) => {
                 using var http = new HttpClient();
-                return await OAuthLoginFlow.SwitchWorkOSOrgAsync(http, WorkOSApiBase, clientId, refreshToken, organizationId);
+                return await OAuthLoginFlow.SwitchWorkOSOrgAsync(http, WorkOSApiBase, clientId, refreshToken, organizationId, ct);
             },
-            orglessRefresh: async (refreshToken, _) => {
+            orglessRefresh: async (refreshToken, refreshCt) => {
                 using var http = new HttpClient();
-                return await OAuthLoginFlow.RefreshWorkOSTokenAsync(http, WorkOSApiBase, clientId, refreshToken);
+                return await OAuthLoginFlow.RefreshWorkOSTokenAsync(http, WorkOSApiBase, clientId, refreshToken, refreshCt);
             },
-            provisioner: provisioner);
+            provisioner: provisioner,
+            ct: ct);
     }
 
     public static async Task<WorkOSDiscoveryOutcome> RunAsync(
@@ -54,7 +55,8 @@ public static class WorkOSDiscovery {
             Func<Task<WorkOSAuthResponse?>>                 orglessLogin,
             Func<string, string, Task<WorkOSAuthResponse?>> orgSwitch,     // args: refreshToken, organizationId
             Func<string, CancellationToken, Task<WorkOSAuthResponse?>>? orglessRefresh = null, // args: refreshToken, ct
-            ITenantProvisioner?                             provisioner = null) {
+            ITenantProvisioner?                             provisioner = null,
+            CancellationToken                               ct = default) {
         if (string.IsNullOrEmpty(proxyConfig.WorkOSClientId)) {
             await Console.Error.WriteLineAsync("This server isn't configured for WorkOS sign-in.");
 
@@ -77,7 +79,7 @@ public static class WorkOSDiscovery {
 
         SetupFunnel.SigninCompleted(AuthProvider.WorkOS);
 
-        var result = await proxy.DiscoverWorkOSTenantsAsync(proxyUrl, auth.AccessToken);
+        var result = await proxy.DiscoverWorkOSTenantsAsync(proxyUrl, auth.AccessToken, ct);
         if (result.Error != DiscoveryError.None) {
             await Console.Error.WriteLineAsync(result.Error switch {
                 DiscoveryError.ProxyUnreachable => "The Kurrent auth service is unreachable.",
@@ -106,7 +108,7 @@ public static class WorkOSDiscovery {
             var tokens = new WorkOSTokenSource(
                 auth.AccessToken, auth.RefreshToken,
                 orglessRefresh ?? ((_, _) => Task.FromResult<WorkOSAuthResponse?>(null)));
-            var offer = await provisioner.OfferCreateAsync(tokens);
+            var offer = await provisioner.OfferCreateAsync(tokens, ct);
 
             if (offer.Status == ProvisionOfferStatus.ExistingWorkspace) {
                 // The user belongs to a workspace already and would rather point at it. Hand the
@@ -138,7 +140,7 @@ public static class WorkOSDiscovery {
             return new(await SwitchAndSaveAsync(created, [created], authForSwitch, proxyConfig.WorkOSClientId!, orgSwitch));
         }
 
-        var picked = result.Tenants.Length == 1 ? result.Tenants[0] : picker.Pick(result.Tenants);
+        var picked = result.Tenants.Length == 1 ? result.Tenants[0] : await picker.PickAsync(result.Tenants, ct);
         if (picked is null) {
             await Console.Error.WriteLineAsync("No tenant selected.");
 

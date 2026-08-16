@@ -12,4 +12,8 @@ public class SpectreTenantPicker : ITenantPicker {
 
         return AnsiConsole.Prompt(prompt);
     }
+
+    // Spectre prompts are not cancellable and the CLI never cancels this path.
+    public Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, CancellationToken ct) =>
+        Task.FromResult<DiscoveredTenant?>(Pick(tenants));
 }

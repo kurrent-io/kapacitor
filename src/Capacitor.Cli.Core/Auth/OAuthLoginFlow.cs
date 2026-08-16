@@ -25,14 +25,14 @@ public static class OAuthLoginFlow {
     /// deliberately configures the on-disk active profile even when the current directory resolves
     /// to a different one, and its token must land in the same place its config does.
     /// </param>
-    public static async Task<int> LoginWithDiscoveryAsync(string serverUrl, bool forceDevice, string? profile = null) {
+    public static async Task<int> LoginWithDiscoveryAsync(string serverUrl, bool forceDevice, string? profile = null, CancellationToken ct = default) {
         // ReSharper disable once ShortLivedHttpClient
         using var http = new HttpClient();
 
         HttpResponseMessage configResponse;
 
         try {
-            configResponse = await http.GetAsync($"{serverUrl}/auth/config");
+            configResponse = await http.GetAsync($"{serverUrl}/auth/config", ct);
         } catch (HttpRequestException ex) {
             HttpClientExtensions.WriteUnreachableError(serverUrl, ex);
 
@@ -45,12 +45,12 @@ public static class OAuthLoginFlow {
             return 1;
         }
 
-        var config = (await configResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.AuthDiscoveryResponse))!;
+        var config = (await configResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.AuthDiscoveryResponse, ct))!;
 
         return config.Provider switch {
             AuthProvider.None      => HandleNoneLogin(),
-            AuthProvider.GitHubApp => await HandleGitHubLogin(serverUrl, config, forceDevice, profile),
-            AuthProvider.WorkOS    => await HandleWorkOSLogin(serverUrl, config, profile),
+            AuthProvider.GitHubApp => await HandleGitHubLogin(serverUrl, config, forceDevice, profile, ct),
+            AuthProvider.WorkOS    => await HandleWorkOSLogin(serverUrl, config, profile, ct),
             _                      => HandleUnknownProvider(config.Provider)
         };
     }
@@ -120,10 +120,16 @@ public static class OAuthLoginFlow {
     /// GitHub for the access token. Intended for CLI use — not suitable for headless callers.
     /// </summary>
     /// <returns>The GitHub access token on success, or <c>null</c> on failure.</returns>
-    public static async Task<string?> RunDeviceFlowAsync(string clientId) {
+    public static async Task<string?> RunDeviceFlowAsync(string clientId, CancellationToken ct = default) {
         using var http = new HttpClient();
         http.DefaultRequestHeaders.Accept.Add(new("application/json"));
 
+        return await RunDeviceFlowAsync(http, clientId, ct);
+    }
+
+    // HttpClient-injectable core — the test seam for pinning the device-code/poll endpoints
+    // to a fake handler (RunDeviceFlowAsync(clientId) hardcodes github.com and can't be redirected).
+    internal static async Task<string?> RunDeviceFlowAsync(HttpClient http, string clientId, CancellationToken ct = default) {
         var deviceResponse = await http.PostAsync(
             "https://github.com/login/device/code",
             new FormUrlEncodedContent(
@@ -131,16 +137,17 @@ public static class OAuthLoginFlow {
                     ["client_id"] = clientId,
                     ["scope"]     = "read:user read:org"
                 }
-            )
+            ),
+            ct
         );
 
         if (!deviceResponse.IsSuccessStatusCode) {
-            Console.Error.WriteLine($"Error requesting device code: {await deviceResponse.Content.ReadAsStringAsync()}");
+            Console.Error.WriteLine($"Error requesting device code: {await deviceResponse.Content.ReadAsStringAsync(ct)}");
 
             return null;
         }
 
-        var device   = (await deviceResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.GitHubDeviceCodeResponse))!;
+        var device   = (await deviceResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.GitHubDeviceCodeResponse, ct))!;
         var interval = device.Interval;
 
         var copied = Clipboard.TryCopy(device.UserCode);
@@ -173,7 +180,8 @@ public static class OAuthLoginFlow {
         Console.Write("Waiting for you to authorize...");
 
         while (true) {
-            await Task.Delay(TimeSpan.FromSeconds(interval));
+            await Task.Delay(TimeSpan.FromSeconds(interval), ct);
+            ct.ThrowIfCancellationRequested();
 
             var tokenResponse = await http.PostAsync(
                 "https://github.com/login/oauth/access_token",
@@ -183,10 +191,11 @@ public static class OAuthLoginFlow {
                         ["device_code"] = device.DeviceCode,
                         ["grant_type"]  = "urn:ietf:params:oauth:grant-type:device_code"
                     }
-                )
+                ),
+                ct
             );
 
-            var tokenResult = (await tokenResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.GitHubTokenResponse))!;
+            var tokenResult = (await tokenResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.GitHubTokenResponse, ct))!;
 
             if (tokenResult.AccessToken is not null) {
                 await Console.Out.WriteLineAsync(" done!");
@@ -220,7 +229,7 @@ public static class OAuthLoginFlow {
     /// thrown out of <see cref="LoopbackBrowser"/>). <paramref name="browser"/> is the test seam.
     /// </summary>
     public static async Task<string?> RunGitHubBrowserFlowAsync(
-            string clientId, string codeExchangeUrl, IBrowser? browser = null, TimeSpan? timeout = null) {
+            string clientId, string codeExchangeUrl, IBrowser? browser = null, TimeSpan? timeout = null, CancellationToken ct = default) {
         browser ??= new LoopbackBrowser();
         var redirectUri = $"http://127.0.0.1:{GetAvailablePort()}/callback";
 
@@ -241,10 +250,10 @@ public static class OAuthLoginFlow {
         options.Policy.Discovery.RequireKeySet = false;
 
         var oidc  = new OidcClient(options);
-        var state = await oidc.PrepareLoginAsync();
+        var state = await oidc.PrepareLoginAsync(cancellationToken: ct);
 
         var result = await browser.InvokeAsync(
-            new BrowserOptions(state.StartUrl, redirectUri) { Timeout = timeout ?? TimeSpan.FromMinutes(5) });
+            new BrowserOptions(state.StartUrl, redirectUri) { Timeout = timeout ?? TimeSpan.FromMinutes(5) }, ct);
 
         if (result.ResultType != BrowserResultType.Success) {
             Console.Error.WriteLine(result.ResultType == BrowserResultType.Timeout
@@ -271,8 +280,10 @@ public static class OAuthLoginFlow {
             return null;
         }
 
-        // Bound the proxy exchange to the login timeout — a stalled endpoint must not hang the CLI.
-        using var cts = new CancellationTokenSource(timeout ?? TimeSpan.FromMinutes(5));
+        // Bound the proxy exchange to the login timeout — a stalled endpoint must not hang the CLI —
+        // while still observing the caller's own cancellation.
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(timeout ?? TimeSpan.FromMinutes(5));
 
         using var http = new HttpClient();
         http.DefaultRequestHeaders.Accept.Add(new("application/json"));
@@ -320,7 +331,7 @@ public static class OAuthLoginFlow {
         return tokenResult.AccessToken;
     }
 
-    public static async Task<int> ExchangeAndSaveAsync(string serverUrl, string githubAccessToken, string provider) {
+    public static async Task<int> ExchangeAndSaveAsync(string serverUrl, string githubAccessToken, string provider, CancellationToken ct = default) {
         if (provider is not AuthProvider.GitHubApp) {
             Console.Error.WriteLine($"Error: unknown auth provider '{provider}'");
 
@@ -332,16 +343,17 @@ public static class OAuthLoginFlow {
         var exchangeResponse = await http.PostAsJsonAsync(
             $"{serverUrl}/auth/token",
             new() { GithubAccessToken = githubAccessToken },
-            CapacitorJsonContext.Default.TokenExchangeRequest
+            CapacitorJsonContext.Default.TokenExchangeRequest,
+            cancellationToken: ct
         );
 
         if (!exchangeResponse.IsSuccessStatusCode) {
-            WriteExchangeError(await exchangeResponse.Content.ReadAsStringAsync(), profile: null);
+            WriteExchangeError(await exchangeResponse.Content.ReadAsStringAsync(ct), profile: null);
 
             return 1;
         }
 
-        var exchange = (await exchangeResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.TokenExchangeResponse))!;
+        var exchange = (await exchangeResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.TokenExchangeResponse, ct))!;
 
         if (!ServerIdentity.TryCanonicalizeForStamping(serverUrl, out var canonical, out var identityError)) {
             Console.Error.WriteLine($"Error: {identityError}");
@@ -369,18 +381,19 @@ public static class OAuthLoginFlow {
     /// Unlike the single-argument overload, this does NOT print "Logged in as …" — the caller
     /// is responsible for user-facing output. Returns 0 on success, 1 on failure.
     /// </summary>
-    public static async Task<int> ExchangeAndSaveAsync(string serverUrl, string githubAccessToken, string provider, string profile) {
+    public static async Task<int> ExchangeAndSaveAsync(string serverUrl, string githubAccessToken, string provider, string profile, CancellationToken ct = default) {
         using var http = new HttpClient();
 
-        return await ExchangeAndSaveAsync(http, serverUrl, githubAccessToken, provider, profile);
+        return await ExchangeAndSaveAsync(http, serverUrl, githubAccessToken, provider, profile, ct);
     }
 
     public static async Task<int> ExchangeAndSaveAsync(
-            HttpClient http,
-            string     serverUrl,
-            string     githubAccessToken,
-            string     provider,
-            string     profile
+            HttpClient        http,
+            string            serverUrl,
+            string            githubAccessToken,
+            string            provider,
+            string            profile,
+            CancellationToken ct = default
         ) {
         if (provider is not AuthProvider.GitHubApp) {
             Console.Error.WriteLine($"Error: unknown auth provider '{provider}'");
@@ -391,16 +404,17 @@ public static class OAuthLoginFlow {
         var exchangeResponse = await http.PostAsJsonAsync(
             $"{serverUrl}/auth/token",
             new TokenExchangeRequest { GithubAccessToken = githubAccessToken },
-            CapacitorJsonContext.Default.TokenExchangeRequest
+            CapacitorJsonContext.Default.TokenExchangeRequest,
+            cancellationToken: ct
         );
 
         if (!exchangeResponse.IsSuccessStatusCode) {
-            WriteExchangeError(await exchangeResponse.Content.ReadAsStringAsync(), profile);
+            WriteExchangeError(await exchangeResponse.Content.ReadAsStringAsync(ct), profile);
 
             return 1;
         }
 
-        var exchange = (await exchangeResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.TokenExchangeResponse))!;
+        var exchange = (await exchangeResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.TokenExchangeResponse, ct))!;
 
         if (!ServerIdentity.TryCanonicalizeForStamping(serverUrl, out var canonical, out var identityError)) {
             Console.Error.WriteLine($"Error: {identityError}");
@@ -470,23 +484,23 @@ public static class OAuthLoginFlow {
         }
     }
 
-    static async Task<int> HandleGitHubLogin(string serverUrl, AuthDiscoveryResponse config, bool forceDevice, string? profile = null) {
-        var accessToken = await AcquireGitHubTokenAsync(config.GithubClientId!, config.GithubCodeExchangeUrl, forceDevice);
+    static async Task<int> HandleGitHubLogin(string serverUrl, AuthDiscoveryResponse config, bool forceDevice, string? profile = null, CancellationToken ct = default) {
+        var accessToken = await AcquireGitHubTokenAsync(config.GithubClientId!, config.GithubCodeExchangeUrl, forceDevice, ct);
 
         if (accessToken is null) return 1;
 
         return profile is null
-            ? await ExchangeAndSaveAsync(serverUrl, accessToken, config.Provider)
-            : await ExchangeAndSaveAsync(serverUrl, accessToken, config.Provider, profile);
+            ? await ExchangeAndSaveAsync(serverUrl, accessToken, config.Provider, ct)
+            : await ExchangeAndSaveAsync(serverUrl, accessToken, config.Provider, profile, ct);
     }
 
-    internal static async Task<string?> AcquireGitHubTokenAsync(string clientId, string? codeExchangeUrl, bool forceDevice) {
+    internal static async Task<string?> AcquireGitHubTokenAsync(string clientId, string? codeExchangeUrl, bool forceDevice, CancellationToken ct = default) {
         var headless = HeadlessEnvironment.IsHeadless();
         var choice   = ChooseGitHubFlow(forceDevice, headless, hasExchangeUrl: IsValidExchangeUrl(codeExchangeUrl));
 
         if (choice == GitHubFlow.Browser) {
             try {
-                var token = await RunGitHubBrowserFlowAsync(clientId, codeExchangeUrl!);
+                var token = await RunGitHubBrowserFlowAsync(clientId, codeExchangeUrl!, ct: ct);
 
                 return token ??
                     // Browser flow ran but user cancelled / state mismatch — don't silently fall back.
@@ -498,11 +512,11 @@ public static class OAuthLoginFlow {
             }
         }
 
-        return await RunDeviceFlowAsync(clientId);
+        return await RunDeviceFlowAsync(clientId, ct);
     }
 
-    static Task<int> HandleWorkOSLogin(string serverUrl, AuthDiscoveryResponse config, string? profile = null) =>
-        LoginWorkOSAsync(serverUrl, config.ClientId!, config.OrganizationId, profile);
+    static Task<int> HandleWorkOSLogin(string serverUrl, AuthDiscoveryResponse config, string? profile = null, CancellationToken ct = default) =>
+        LoginWorkOSAsync(serverUrl, config.ClientId!, config.OrganizationId, profile, ct);
 
     const string WorkOSApiBase = "https://api.workos.com";
 
@@ -546,13 +560,13 @@ public static class OAuthLoginFlow {
     /// source-gen context — omitted/nullable fields don't throw. <paramref name="apiBase"/> is the test seam.
     /// </summary>
     public static async Task<WorkOSAuthResponse?> AuthenticateWorkOSAsync(
-            string clientId, string? organizationId, IBrowser browser, string apiBase = WorkOSApiBase) {
+            string clientId, string? organizationId, IBrowser browser, string apiBase = WorkOSApiBase, CancellationToken ct = default) {
         var redirectUri = $"http://127.0.0.1:{GetAvailablePort()}/callback";
         var options     = BuildWorkOSOptions(clientId, apiBase, redirectUri);
         options.Browser = browser;
 
         var oidc   = new OidcClient(options);
-        var result = await oidc.LoginAsync(new LoginRequest { FrontChannelExtraParameters = WorkOSFrontChannel(organizationId) });
+        var result = await oidc.LoginAsync(new LoginRequest { FrontChannelExtraParameters = WorkOSFrontChannel(organizationId) }, ct);
 
         // Surface the actual reason (timeout / state mismatch / token-endpoint / upstream OIDC error)
         // rather than collapsing every failure to a single opaque "sign-in failed".
@@ -579,9 +593,9 @@ public static class OAuthLoginFlow {
                       + (string.IsNullOrEmpty(description) ? "" : $" — {description}")
     };
 
-    static async Task<int> LoginWorkOSAsync(string serverUrl, string clientId, string? organizationId, string? profile = null) {
+    static async Task<int> LoginWorkOSAsync(string serverUrl, string clientId, string? organizationId, string? profile = null, CancellationToken ct = default) {
         // AuthenticateWorkOSAsync already reported the specific failure reason to stderr.
-        var json = await AuthenticateWorkOSAsync(clientId, organizationId, new LoopbackBrowser());
+        var json = await AuthenticateWorkOSAsync(clientId, organizationId, new LoopbackBrowser(), ct: ct);
         if (json is null) return 1;
 
         // Org gate: a multi-org user must not be "logged in" to the wrong org — every API
@@ -635,7 +649,7 @@ public static class OAuthLoginFlow {
     /// organization_id. No client secret.
     /// </summary>
     public static async Task<WorkOSAuthResponse?> SwitchWorkOSOrgAsync(
-            HttpClient http, string apiBase, string clientId, string refreshToken, string organizationId) {
+            HttpClient http, string apiBase, string clientId, string refreshToken, string organizationId, CancellationToken ct = default) {
         var resp = await http.PostAsync(
             $"{apiBase.TrimEnd('/')}/user_management/authenticate",
             new FormUrlEncodedContent(new Dictionary<string, string> {
@@ -643,11 +657,11 @@ public static class OAuthLoginFlow {
                 ["client_id"]       = clientId,
                 ["refresh_token"]   = refreshToken,
                 ["organization_id"] = organizationId
-            }));
+            }), ct);
 
         if (!resp.IsSuccessStatusCode) return null;
 
-        return await resp.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.WorkOSAuthResponse);
+        return await resp.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.WorkOSAuthResponse, ct);
     }
 
     /// <summary>
@@ -656,7 +670,7 @@ public static class OAuthLoginFlow {
     /// provisioning poll, which can outlive WorkOS's ~5-minute access-token TTL. No client secret.
     /// </summary>
     public static async Task<WorkOSAuthResponse?> RefreshWorkOSTokenAsync(
-            HttpClient http, string apiBase, string clientId, string refreshToken) {
+            HttpClient http, string apiBase, string clientId, string refreshToken, CancellationToken ct = default) {
         // Degrade transport/timeout/parse failures to null (mirrors TenantProvisioningClient): this
         // fires automatically and repeatedly during the provisioning poll, so a blip must not throw
         // and abort the flow — the token source keeps the current token and retries next tick.
@@ -667,11 +681,11 @@ public static class OAuthLoginFlow {
                     ["grant_type"]    = "refresh_token",
                     ["client_id"]     = clientId,
                     ["refresh_token"] = refreshToken
-                }));
+                }), ct);
 
             if (!resp.IsSuccessStatusCode) return null;
 
-            return await resp.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.WorkOSAuthResponse);
+            return await resp.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.WorkOSAuthResponse, ct);
         } catch (Exception e) when (e is HttpRequestException or OperationCanceledException or JsonException or NotSupportedException) {
             return null;
         }
