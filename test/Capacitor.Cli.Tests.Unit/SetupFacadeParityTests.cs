@@ -4,6 +4,7 @@ using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Telemetry;
 using Capacitor.Cli.Tests.Unit.Telemetry;
+using Capacitor.Tests.Helpers;
 using Spectre.Console;
 using TUnit.Assertions.Enums;
 using Profile = Capacitor.Cli.Core.Config.Profile;
@@ -171,6 +172,61 @@ public class SetupFacadeParityTests {
         // NoTenantsFound get a second event.
         await Assert.That(sink.Select(e => e.Name).ToArray()).IsEquivalentTo(
             new[] { "cli_setup_signin_opened" }, CollectionOrdering.Matching);
+    }
+
+    // The façade owns the reason line; setup still owns the guidance tail its old single line carried.
+    [Test]
+    [NotInParallel]
+    public async Task RunDiscoveryAsync_unreachable_proxy_still_prints_the_legacy_guidance_tail() {
+        using var handler = AuthHttp.Script(); // no /config route — proxy unreachable
+
+        SetupCommand.FacadeOverride = _ => OnboardingFacadeTests.NewFacade(new RecordingAuthProgress(), handler);
+
+        using var console = ConsoleOutput.StartErrorCapture("\n");
+
+        var discovered = await SetupCommand.RunDiscoveryAsync(["--github"], forceDevice: true);
+
+        await Assert.That(discovered).IsNull();
+        await Assert.That(console.GetCapturedError()).Contains(SetupAuthProgress.UnreachableGuidance);
+    }
+
+    // ── the setup-scoped progress sink ───────────────────────────────────────
+
+    [Test]
+    public async Task SetupAuthProgress_indents_facade_text_and_passes_the_rest_through() {
+        var inner    = new RecordingAuthProgress();
+        var progress = new SetupAuthProgress(inner);
+
+        progress.Notice("Server has no authentication configured — login not required.");
+        progress.Error("Cannot reach the Kurrent auth service.");
+        progress.Notice("");
+        progress.Notice("  1. Open https://github.com/login/device in a browser");
+        progress.BrowserOpening("https://auth.example/authorize");
+        progress.DeviceCode("UC", "https://github.com/login/device");
+        progress.PollTick();
+
+        await Assert.That(inner.Notices).IsEquivalentTo(new[] {
+            "  Server has no authentication configured — login not required.",
+            "",
+            "  1. Open https://github.com/login/device in a browser",
+        });
+        await Assert.That(inner.Errors).IsEquivalentTo(new[] { "  Cannot reach the Kurrent auth service." });
+        await Assert.That(inner.BrowserOpenings).IsEquivalentTo(new[] { "https://auth.example/authorize" });
+        await Assert.That(inner.DeviceCodes).Count().IsEqualTo(1);
+        await Assert.That(inner.PollTicks).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task SetupAuthProgress_appends_the_guidance_tail_only_for_an_unreachable_failure() {
+        var inner    = new RecordingAuthProgress();
+        var progress = new SetupAuthProgress(inner);
+
+        progress.ReportFailure(new AuthResult.Failed("nope", AuthFailureReason.SigninDenied));
+        progress.ReportFailure(new AuthResult.Cancelled());
+        await Assert.That(inner.Errors).IsEmpty();
+
+        progress.ReportFailure(new AuthResult.Failed("Cannot reach the Kurrent auth service.", AuthFailureReason.Unreachable));
+        await Assert.That(inner.Errors).IsEquivalentTo(new[] { SetupAuthProgress.UnreachableGuidance });
     }
 
     // ── Step 2: RunLoginStepAsync ────────────────────────────────────────────

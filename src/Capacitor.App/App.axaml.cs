@@ -406,15 +406,9 @@ public partial class App : Application {
     }
 
     /// <summary>
-    /// The close boundary, in order (spec decision 2, hardened by spec §7): end the sign-in and
-    /// await its terminal answer — pre-boundary that is <c>Cancelled</c> with nothing durable, past
-    /// it the façade still publishes and answers <c>Committed</c>, and the graph must not be built
-    /// against a half-written config either way — kill and await any in-flight import next (closing
-    /// the window never navigates away from the Import step, so its own <c>CanLeaveAsync</c> never
-    /// fires), then wait the lane out under the existing cap, and only then hand the outcome channel
-    /// to the root consumer. False = the cap was reached with the lane still holding a live action
-    /// (spec §6a: proceed, but the graph must then close its automatic actions rather than race the
-    /// child that is still running).
+    /// The close boundary in order (spec decision 2 / §7): settle the sign-in, kill and await any
+    /// import, wait the lane out under the cap, then transfer the channel. False = §6a's post-cap
+    /// graph, whose automatic actions must stay closed around the child still running.
     /// </summary>
     internal static async Task<bool> HandoffAfterWizardAsync(
             WizardAuthService? auth, Func<Task> laneQuiescedAsync, TimeSpan cap, OutcomeChannel channel,
@@ -627,20 +621,10 @@ public partial class App : Application {
     }
 
     /// <summary>
-    /// A FRESH, env-aware identity resolution for the wizard's OWN daemon-facing operations (finding
-    /// 3) — the SAME precedence chain <see cref="OnboardingGate.EvaluateAsync"/> resolves through
-    /// (<see cref="ProfileResolver"/> over KCAP_URL/KCAP_PROFILE/the active profile), never the
-    /// startup-cached <see cref="AppConfig.ResolvedProfile"/>: a KCAP_PROFILE override set after
-    /// startup must be observed on every call, not just the first. Synchronous and side-effect-free
-    /// (unlike <see cref="AppConfig.ResolveActiveProfile"/>, this never touches
-    /// <see cref="AppConfig.ResolvedProfile"/>) — built from the same <see cref="ProfileResolver"/>
-    /// building block that method wraps around an async config load, over the same
-    /// <see cref="ConfigMutator.TryLoadPure"/> fail-closed read <see cref="ResolveConsentFlipIdentity"/>
-    /// uses (an unreadable config resolves to null here exactly like it resolves to the empty-string
-    /// sentinel there). Returns null — never an empty-string sentinel (finding 4) — when no profile
-    /// resolves or its server_url doesn't canonicalize, which is also what keeps a factory built from
-    /// this identity fail-closed: <see cref="WizardComposition.BuildGraph"/> only ever dials a socket
-    /// once this has already resolved non-null.
+    /// A FRESH, env-aware identity for the wizard's own daemon-facing calls: the same
+    /// <see cref="ProfileResolver"/> precedence <see cref="OnboardingGate.EvaluateAsync"/> uses, never
+    /// the startup-cached <see cref="AppConfig.ResolvedProfile"/>, and side-effect-free. Null — never
+    /// an empty-string sentinel — when nothing resolves, which is what keeps its factories fail-closed.
     /// </summary>
     internal static (string Profile, string Server, string DaemonName)? ResolveWizardIdentity() {
         if (!ConfigMutator.TryLoadPure(AppConfig.GetConfigPath(), out var config)) return null;
@@ -990,11 +974,10 @@ public partial class App : Application {
     }
 
     async Task DisposeAndShutdownAsync() {
-        // spec §3.6 + decision 2: mutations are never abandoned and an in-flight sign-in is never left
-        // half-published — both get a bounded chance to settle, while the UI is still up, before teardown.
-        if (_wizardAuth is not null || _lifecycle is not null || _lane is not null)
-            await AwaitQuiescedAsync(() => QuiesceAppAsync(_wizardAuth, _wizardImport, _lifecycle, _lane), QuiesceShutdownCap)
-                .ConfigureAwait(false);
+        // spec §3.6 + decision 2: an in-flight sign-in always settles, mutations get a bounded chance
+        // to — both while the UI is still up, before teardown.
+        if (_wizardAuth is not null || _wizardImport is not null || _lifecycle is not null || _lane is not null)
+            await QuiesceAppAsync(_wizardAuth, _wizardImport, _lifecycle, _lane, QuiesceShutdownCap).ConfigureAwait(false);
 
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop) {
             // Prompt coordinator BEFORE the consent service (spec §5): the window and its
@@ -1029,19 +1012,22 @@ public partial class App : Application {
         }
     }
 
-    // Shutdown's whole quiesce: the sign-in is CANCELLED (pre-boundary it ends now, past it the
-    // façade still answers Committed) — started first and joined at the very end, concurrently with
-    // the lifecycle/lane waits below, same as always. Any in-flight import is killed alongside it
-    // (spec §7 — same reason HandoffAfterWizardAsync does this: closing never navigates through the
-    // step's own CanLeaveAsync), but AWAITED before the lifecycle/lane quiesce begins, so a lane
-    // quiesce can never race a still-running import child.
+    /// <summary>
+    /// Shutdown's whole quiesce, in two phases. First the wizard's own work, UNCAPPED (decision 2):
+    /// the sign-in is cancelled and its terminal answer awaited — pre-boundary that is immediate,
+    /// past it the façade still publishes and answers <c>Committed</c>, and a cap here would tear
+    /// that publication down — while any in-flight import is killed alongside it (spec §7: closing
+    /// never navigates through the step's own <c>CanLeaveAsync</c>) and joined before phase two, so
+    /// a lane quiesce can never race a still-running import child. Only then the lifecycle/lane
+    /// quiesce, under §6a's cap — the one wait with no other shutdown-token wiring.
+    /// </summary>
     internal static async Task QuiesceAppAsync(
             WizardAuthService? auth, ImportStepViewModel? import,
-            DaemonLifecycleController? lifecycle, DaemonMutationLane? lane) {
+            DaemonLifecycleController? lifecycle, DaemonMutationLane? lane, TimeSpan cap) {
         var authTerminal = CancelAndAwaitAuthAsync(auth);
         if (import is not null) await import.CancelActiveRunAsync().ConfigureAwait(false);
-        await QuiesceLifecycleAndLaneAsync(lifecycle, lane).ConfigureAwait(false);
         await authTerminal.ConfigureAwait(false);
+        await AwaitQuiescedAsync(() => QuiesceLifecycleAndLaneAsync(lifecycle, lane), cap).ConfigureAwait(false);
     }
 
     // Composes the controller's QuiescedAsync with the lane's (covers main-window Start/Retry too); CancellationToken.None — the bound is AwaitQuiescedAsync's own race against Task.Delay(cap).

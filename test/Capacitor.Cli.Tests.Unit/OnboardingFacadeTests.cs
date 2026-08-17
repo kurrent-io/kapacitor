@@ -278,6 +278,29 @@ public class OnboardingFacadeTests {
         await Assert.That(TokenFileExists("acme")).IsFalse();
     }
 
+    // Cancellation is never rendered as failure: closing the wizard while the browser is up must
+    // leave the sink untouched, not report a sign-in error the cancel itself caused.
+    [Test]
+    public async Task LoginAsync_workos_cancelled_during_the_browser_wait_renders_nothing() {
+        using var cts = new CancellationTokenSource();
+
+        using var handler = AuthHttp.Script(
+            authConfig: """{"provider":"workos","client_id":"client_d","organization_id":"org_a"}""");
+
+        var progress = new RecordingAuthProgress();
+        // No token endpoint is stubbed: the cancel lands in the browser, before any WorkOS call.
+        var facade = NewFacade(progress, handler,
+            workosBrowser: FakeBrowser.CancellingCaller(cts), workosApiBase: "http://127.0.0.1:9");
+
+        var result = await facade.LoginAsync(
+            "https://acme.kcap.ai", forceDevice: false, profile: "acme", cts.Token, adoptServer: true);
+
+        await Assert.That(result).IsTypeOf<AuthResult.Cancelled>();
+        await Assert.That(progress.Errors).IsEmpty();
+        await Assert.That(File.Exists(ConfigPath)).IsFalse();
+        await Assert.That(TokenFileExists("acme")).IsFalse();
+    }
+
     [Test]
     public async Task LoginAsync_cancelled_during_the_token_exchange_publishes_nothing() {
         using var cts = new CancellationTokenSource();

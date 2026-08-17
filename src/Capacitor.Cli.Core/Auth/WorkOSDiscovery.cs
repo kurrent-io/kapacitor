@@ -197,8 +197,9 @@ public static class WorkOSDiscovery {
         var request = new CommitRequest(
             [new AuthIdentity(picked.ProfileName, canonical)], AuthProvider.WorkOS, picked.ProfileName, canonical,
             ConfigMutation: config => TenantDiscovery.MergeProfiles(config, ready.Tenants, picked),
-            PublishTokens: async () => {
+            PublishTokens: async saved => {
                 await TokenStore.SaveAsync(picked.ProfileName, tokens, CancellationToken.None);
+                saved();
 
                 return ready.Username;
             });

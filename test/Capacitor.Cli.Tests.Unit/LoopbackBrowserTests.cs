@@ -38,4 +38,22 @@ public class LoopbackBrowserTests {
 
         await Assert.That(result.ResultType).IsEqualTo(BrowserResultType.Timeout);
     }
+
+    // A caller who closed the wizard did not time out: the cancel propagates so the flow answers
+    // Cancelled, instead of being rendered as "Timed out waiting for authorization".
+    [Test]
+    public async Task Caller_cancellation_propagates_instead_of_reporting_a_timeout() {
+        var port     = OAuthLoginFlow.GetAvailablePort();
+        var redirect = $"http://127.0.0.1:{port}/callback";
+        var browser  = new LoopbackBrowser(openBrowser: _ => { });
+
+        using var cts = new CancellationTokenSource();
+
+        var invoke = browser.InvokeAsync(
+            new BrowserOptions("http://example.test/authorize", redirect) { Timeout = TimeSpan.FromMinutes(5) }, cts.Token);
+
+        await cts.CancelAsync();
+
+        await Assert.That(async () => await invoke).Throws<OperationCanceledException>();
+    }
 }

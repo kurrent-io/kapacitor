@@ -7,7 +7,9 @@ namespace Capacitor.Cli.Core.Auth;
 /// <summary>
 /// One durable publication set: the config mutation (profiles + the provider stamp for every
 /// identity) followed by the token writes. <see cref="PublishTokens"/> returns the username to
-/// report, because on the discovery path it is only known once the tokens are exchanged.
+/// report, because on the discovery path it is only known once the tokens are exchanged; it calls
+/// the <see cref="Action"/> it is handed after each token that actually landed, so the boundary
+/// knows whether a failure left anything behind.
 /// </summary>
 sealed record CommitRequest(
     IReadOnlyList<AuthIdentity>         Identities,
@@ -15,16 +17,16 @@ sealed record CommitRequest(
     string                              ActiveProfile,
     string                              CanonicalServer,
     Func<ProfileConfig, ProfileConfig>? ConfigMutation,
-    Func<Task<string?>>?                PublishTokens,
+    Func<Action, Task<string?>>?        PublishTokens,
     // False for a login that must not claim the profile for this server (see LoginTarget.Foreign).
     bool                                WriteStamp = true);
 
 /// <summary>
-/// The ordered commit boundary. The before-commit hook is the LAST cancellable await: it either
-/// completes — after which every publication runs under <see cref="CancellationToken.None"/> to
-/// completion and the answer is <see cref="AuthResult.Committed"/> even if a cancel arrives — or
-/// the operation ends with nothing durable written. Crash residue is safe by this ordering:
-/// claim-without-profile and profile-without-token both leave the start gate failing.
+/// The ordered commit boundary. The before-commit hook is the LAST cancellable await; past it every
+/// publication runs under <see cref="CancellationToken.None"/> and a cancel no longer changes the
+/// answer. <see cref="AuthResult.Committed"/> means something durable landed — a publication failure
+/// with nothing landed is still <see cref="AuthResult.Failed"/>. Crash residue is safe by this
+/// ordering: claim-without-profile and profile-without-token both leave the start gate failing.
 /// </summary>
 static class CommitBoundary {
     internal static async Task<AuthResult> CommitAsync(
@@ -46,7 +48,11 @@ static class CommitBoundary {
             }
         }
 
-        if (request.ConfigMutation is not null || request.WriteStamp) {
+        // A token-only arm (a foreign login writes no config at all) has no config commit to make
+        // the boundary durable, so what landed is tracked rather than assumed.
+        var configPublished = request.ConfigMutation is not null || request.WriteStamp;
+
+        if (configPublished) {
             try {
                 // Profile write and stamp are deliberately ONE mutation: no window where a profile exists unstamped.
                 await ConfigMutator.MutateAsync(config => Stamp(request.ConfigMutation?.Invoke(config) ?? config, request),
@@ -59,12 +65,20 @@ static class CommitBoundary {
             }
         }
 
-        string? username = null;
+        string? username   = null;
+        var     tokenSaved = false;
 
         try {
-            if (request.PublishTokens is not null) username = await request.PublishTokens();
+            if (request.PublishTokens is not null) username = await request.PublishTokens(() => tokenSaved = true);
         } catch (Exception ex) {
-            // Past the config commit the boundary has begun; report what was published rather than a torn stop.
+            // Nothing durable exists, so Committed would be a lie — fail honestly instead.
+            if (!configPublished && !tokenSaved) {
+                progress.Error($"Error: sign-in could not be saved: {ex.Message}");
+
+                return new AuthResult.Failed(ex.Message);
+            }
+
+            // Past a landed publication the boundary has begun; report what was lost rather than a torn stop.
             progress.Error($"Error: some credentials could not be saved: {ex.Message}");
         }
 
@@ -125,9 +139,8 @@ sealed record LoginTarget(string Profile, string CanonicalServer, string ServerU
 /// throwing aborts the operation with nothing written (the caller may retry).
 /// </param>
 /// <param name="httpFactory">
-/// Supplies the client for the auth-config, proxy, token-exchange, device-flow and WorkOS
-/// org-switch legs. The GitHub browser flow and OidcClient still make their own clients. A supplied
-/// factory owns its clients' lifetime; the default creates and disposes one per operation.
+/// The client for every HTTP leg (the GitHub browser flow and OidcClient still make their own). A
+/// supplied factory owns its clients' lifetime; the default creates and disposes one per operation.
 /// </param>
 public sealed class OnboardingFacade(
         IAuthProgress                                               progress,
@@ -249,8 +262,9 @@ public sealed class OnboardingFacade(
         var request = new CommitRequest(
             [new AuthIdentity(target.Profile, target.CanonicalServer)], provider, target.Profile, target.CanonicalServer,
             ConfigMutation: target.ConfigMutation,
-            PublishTokens: async () => {
+            PublishTokens: async saved => {
                 await TokenStore.SaveAsync(target.Profile, tokens, CancellationToken.None);
+                saved();
 
                 return username;
             },
@@ -339,7 +353,7 @@ public sealed class OnboardingFacade(
             identities, AuthProvider.GitHubApp, picked.ProfileName,
             identities.First(i => i.Profile == picked.ProfileName).CanonicalServer,
             ConfigMutation: config => TenantDiscovery.MergeProfiles(config, outcome.Tenants, picked),
-            PublishTokens: () => ExchangeEveryTenantAsync(http, outcome.Tenants, picked, accessToken));
+            PublishTokens: saved => ExchangeEveryTenantAsync(http, outcome.Tenants, picked, accessToken, saved));
 
         return await CommitBoundary.CommitAsync(request, beforeCommit, progress, ct);
     }
@@ -347,7 +361,7 @@ public sealed class OnboardingFacade(
     // Inside the boundary: each tenant's exchange is network-then-save, and ANY failure — mapped or
     // thrown — costs that tenant its token (today's per-tenant warning) rather than the whole commit.
     async Task<string?> ExchangeEveryTenantAsync(
-            HttpClient http, DiscoveredTenant[] tenants, DiscoveredTenant picked, string githubAccessToken) {
+            HttpClient http, DiscoveredTenant[] tenants, DiscoveredTenant picked, string githubAccessToken, Action saved) {
         string? pickedUsername = null;
 
         foreach (var tenant in tenants) {
@@ -363,6 +377,7 @@ public sealed class OnboardingFacade(
                 }
 
                 await TokenStore.SaveAsync(tenant.ProfileName, exchanged.Value.Tokens, CancellationToken.None);
+                saved();
 
                 if (tenant.ProfileName == picked.ProfileName) pickedUsername = exchanged.Value.Username;
             } catch (Exception) {

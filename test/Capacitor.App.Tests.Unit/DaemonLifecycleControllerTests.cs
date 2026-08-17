@@ -1040,7 +1040,7 @@ public class DaemonLifecycleControllerTests {
         await WaitUntilAsync(() => h.Surface.Prompts.Count == 2, what: "the re-offered prompt");
     }
 
-    // Finding 7: a terminal can replace the plist/unit while the dialog is open WITHOUT producing
+    // A terminal can replace the plist/unit while the dialog is open WITHOUT producing
     // an attach event — the generation token alone is blind to this. Acceptance must re-query
     // fresh status and re-classify before mutating; a classification flip aborts exactly like the
     // generation-based stale-consent path above.

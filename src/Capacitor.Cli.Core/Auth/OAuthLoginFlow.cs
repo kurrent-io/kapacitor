@@ -240,6 +240,7 @@ public static class OAuthLoginFlow {
             new BrowserOptions(state.StartUrl, redirectUri) { Timeout = timeout ?? TimeSpan.FromMinutes(5) }, ct);
 
         if (result.ResultType != BrowserResultType.Success) {
+            ct.ThrowIfCancellationRequested(); // a caller cancel is neither a timeout nor a denial
             progress.Error(result.ResultType == BrowserResultType.Timeout
                 ? "Timed out waiting for authorization. Re-run `kcap login` to try again."
                 : $"Authorization failed: {result.Error ?? result.ResultType.ToString()}");
@@ -282,6 +283,7 @@ public static class OAuthLoginFlow {
                 cancellationToken: cts.Token
             );
         } catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or UriFormatException or InvalidOperationException) {
+            ct.ThrowIfCancellationRequested(); // the caller's cancel aborted the exchange — not a connectivity failure
             progress.Error($"Could not reach the code-exchange endpoint at {codeExchangeUrl}: {ex.Message}");
 
             return null;
@@ -553,6 +555,7 @@ public static class OAuthLoginFlow {
         // Surface the actual reason (timeout / state mismatch / token-endpoint / upstream OIDC error)
         // rather than collapsing every failure to a single opaque "sign-in failed".
         if (result.IsError) {
+            ct.ThrowIfCancellationRequested(); // OidcClient renders a caller cancel as an error result
             progress.Error(WorkOSSignInError(result.Error, result.ErrorDescription));
 
             return null;

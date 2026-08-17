@@ -24,4 +24,12 @@ public sealed class FakeBrowser(Func<string, BrowserResult> respond) : IBrowser 
 
     public static FakeBrowser NonSuccess(BrowserResultType type) =>
         new(_ => new BrowserResult { ResultType = type });
+
+    /// <summary>Cancels the caller mid-wait and answers non-success — a browser that renders a cancel as its own result type.</summary>
+    public static FakeBrowser CancellingCaller(CancellationTokenSource cts, BrowserResultType type = BrowserResultType.Timeout) =>
+        new(_ => {
+            cts.Cancel();
+
+            return new BrowserResult { ResultType = type };
+        });
 }

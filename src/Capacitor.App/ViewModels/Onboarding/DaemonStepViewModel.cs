@@ -18,11 +18,9 @@ public enum DaemonRow {
 /// The single action a row offers, or None.
 public enum DaemonAffordance { None, Install, Start, Takeover, Repair }
 
-/// spec §3 step 7: daemon enablement on the lifecycle slice's full state matrix. Every mutation
-/// runs through the injected lane delegate and its result updates THIS step's state only —
-/// actionable outcomes travel the lane's outcome channel to the single consumer
-/// (single-presentation rule). The one dialog this step opens itself is the PRE-mutation
-/// takeover/repair consent, which is a user gate, not outcome presentation.
+/// spec §3 step 7: daemon enablement over the lifecycle state matrix. Mutations run through the lane
+/// delegate and update THIS step only — outcomes are presented by the channel's single consumer, and
+/// the one dialog opened here is the PRE-mutation takeover/repair consent.
 public sealed class DaemonStepViewModel : ReactiveObject, IWizardStep {
     internal const string ConsentV3Capability = "consent/3";
 
@@ -418,10 +416,9 @@ public sealed class DaemonStepViewModel : ReactiveObject, IWizardStep {
         if (IdentityMatches(_evidence, request)) await ApplyPendingClaimAsync(request, _evidence).ConfigureAwait(false);
     }
 
-    /// spec §6 step-7 application: the identity-conditional put, with NO factory guard. The live
-    /// policy is still read first because ConsentRulesPutV2 replaces the whole policy — a get-less
-    /// put would silently drop the daemon's own rules and prompt timeout. Untokened by design:
-    /// leaving the step awaits this rather than cancelling between the ack and the claim clear.
+    /// spec §6 step-7 application: the identity-conditional put, with no factory guard. The live policy
+    /// is read first because ConsentRulesPutV2 replaces it wholesale, and the call is deliberately
+    /// untokened — leaving the step awaits it rather than cancelling between the ack and the claim clear.
     async Task ApplyPendingClaimAsync(MutationRequest request, ObservedEvidence? evidence) {
         try {
             await ApplyPendingClaimCoreAsync(request, evidence).ConfigureAwait(false);

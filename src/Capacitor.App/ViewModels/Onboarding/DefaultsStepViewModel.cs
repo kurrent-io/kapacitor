@@ -30,11 +30,9 @@ public sealed class DefaultsStepViewModel : ReactiveObject, IWizardStep {
     string? _message;
 
     /// <param name="resolveProfileName">
-    /// The profile the persist mutation below targets (finding 3) — a FRESH, env-aware resolution
-    /// (the wizard passes <c>App.ResolveWizardIdentity()?.Profile</c>), re-invoked on every persist
-    /// rather than captured once, since a KCAP_PROFILE override or a sign-in mid-wizard can change
-    /// the answer between steps. Null, or a name absent from <c>config.Profiles</c>, falls back to
-    /// <c>c.ActiveProfile</c> — today's behavior, and the only behavior when this is omitted.
+    /// The profile the persist targets, re-invoked per persist rather than captured — a KCAP_PROFILE
+    /// override or a mid-wizard sign-in can change the answer between steps. Null, or a name absent
+    /// from <c>config.Profiles</c>, falls back to <c>c.ActiveProfile</c>.
     /// </param>
     public DefaultsStepViewModel(string? defaultDaemonName = null, Func<string?>? resolveProfileName = null) {
         _daemonName = string.IsNullOrWhiteSpace(defaultDaemonName)

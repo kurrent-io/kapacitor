@@ -279,6 +279,64 @@ public class CommitBoundaryTests {
         }
     }
 
+    // A foreign login writes no config at all, so the token IS the whole commit: losing it leaves
+    // nothing durable, and Committed (exit 0 + "Logged in as") would be a lie.
+    [Test]
+    public async Task A_token_only_commit_whose_sole_publication_fails_answers_Failed() {
+        await ConfigMutator.MutateAsync(c => c with {
+            Profiles      = new Dictionary<string, Profile> { ["acme"] = new() { ServerUrl = "https://other.example" } },
+            ActiveProfile = "acme",
+        });
+        Directory.CreateDirectory(Path.GetDirectoryName(TokensDir)!);
+        await File.WriteAllTextAsync(TokensDir, "not a directory");
+
+        try {
+            using var handler  = AuthHttp.Script(authConfig: """{"provider":"GitHubApp","github_client_id":"cid"}""");
+            var       progress = new RecordingAuthProgress();
+            var       facade   = OnboardingFacadeTests.NewFacade(progress, handler);
+
+            var result = await facade.LoginAsync(
+                "https://acme.kcap.ai", forceDevice: true, profile: "acme", CancellationToken.None);
+
+            await Assert.That(result).IsTypeOf<AuthResult.Failed>();
+            await Assert.That(((AuthResult.Failed)result).Reason).IsEqualTo(AuthFailureReason.Other);
+            await Assert.That(progress.Errors.Any(e => e.Contains("could not be saved"))).IsTrue();
+            await Assert.That(progress.Notices.Any(n => n.StartsWith("Logged in as", StringComparison.Ordinal))).IsFalse();
+
+            var profile = ConfigMutator.LoadPure(ConfigPath).Profiles["acme"];
+            await Assert.That(profile.ServerUrl).IsEqualTo("https://other.example");
+            await Assert.That(profile.AuthProvider).IsNull();
+        } finally {
+            File.Delete(TokensDir);
+        }
+    }
+
+    // The other arm, unchanged: an adopting login's config commit landed, so the lost token is a
+    // warning on top of a real commit rather than a torn stop.
+    [Test]
+    public async Task An_adopt_login_that_loses_its_token_after_the_config_lands_still_answers_Committed() {
+        Directory.CreateDirectory(Path.GetDirectoryName(TokensDir)!);
+        await File.WriteAllTextAsync(TokensDir, "not a directory");
+
+        try {
+            using var handler  = AuthHttp.Script(authConfig: """{"provider":"GitHubApp","github_client_id":"cid"}""");
+            var       progress = new RecordingAuthProgress();
+            var       facade   = OnboardingFacadeTests.NewFacade(progress, handler);
+
+            var result = await facade.LoginAsync(
+                "https://acme.kcap.ai", forceDevice: true, profile: "acme", CancellationToken.None, adoptServer: true);
+
+            await Assert.That(result).IsTypeOf<AuthResult.Committed>();
+            await Assert.That(progress.Errors.Any(e => e.Contains("some credentials could not be saved"))).IsTrue();
+
+            var profile = ConfigMutator.LoadPure(ConfigPath).Profiles["acme"];
+            await Assert.That(profile.ServerUrl).IsEqualTo("https://acme.kcap.ai");
+            await Assert.That(profile.AuthProvider!.Provider).IsEqualTo(AuthProvider.GitHubApp);
+        } finally {
+            File.Delete(TokensDir);
+        }
+    }
+
     static async Task<WorkOSDiscoveryFlow.Ready> ReadyEventuousFlowAsync() {
         var proxy = Substitute.For<IAuthProxyClient>();
         DiscoveredTenant[] tenants = [

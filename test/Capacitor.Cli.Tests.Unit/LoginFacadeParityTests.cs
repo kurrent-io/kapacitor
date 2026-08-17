@@ -116,6 +116,31 @@ public class LoginFacadeParityTests {
         await Assert.That(progress.Errors).Count().IsEqualTo(1);
     }
 
+    // A foreign profile writes no config, so a failed token save leaves nothing behind — `kcap login`
+    // must not exit 0 having saved nothing.
+    [Test]
+    public async Task Login_known_server_token_only_commit_that_saves_nothing_exits_one() {
+        await ConfigMutator.MutateAsync(c => c with {
+            Profiles      = new Dictionary<string, Profile> { ["acme"] = new() { ServerUrl = "https://other.example" } },
+            ActiveProfile = "acme",
+        });
+        Directory.CreateDirectory(Path.GetDirectoryName(TokensDir)!);
+        await File.WriteAllTextAsync(TokensDir, "not a directory");
+
+        try {
+            using var handler  = AuthHttp.Script(authConfig: """{"provider":"GitHubApp","github_client_id":"cid"}""");
+            var       progress = new RecordingAuthProgress();
+            var       facade   = OnboardingFacadeTests.NewFacade(progress, handler);
+
+            var exit = await LoginCommand.HandleAsync(["login", "--device"], "https://acme.kcap.ai", facade, progress);
+
+            await Assert.That(exit).IsEqualTo(1);
+            await Assert.That(progress.Notices.Any(n => n.StartsWith("Logged in as", StringComparison.Ordinal))).IsFalse();
+        } finally {
+            File.Delete(TokensDir);
+        }
+    }
+
     // ── discover result mapping (pure) ──────────────────────────────────────
 
     [Test]

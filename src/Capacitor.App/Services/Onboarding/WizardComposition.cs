@@ -23,10 +23,9 @@ internal sealed record WizardGraph(
     ImportStepViewModel Import);
 
 /// <summary>
-/// Everything wizard-first mode is composed from. The daemon-facing entries are FACTORIES, not
-/// instances: the wizard writes config while it runs (a sign-in adopts a server, the Defaults step
-/// renames the daemon), so a socket or CLI binding pinned at composition time would land later
-/// calls on the wrong daemon — silently, since a wrong-identity put fails closed.
+/// Everything wizard-first mode is composed from. The daemon-facing entries are FACTORIES: the
+/// wizard writes config while it runs, so a binding pinned at composition time would silently land
+/// later calls on the wrong daemon.
 /// </summary>
 internal sealed record WizardGraphOptions(
     ConsentFlipClaims                                                            Claims,
@@ -34,13 +33,9 @@ internal sealed record WizardGraphOptions(
     Func<WizardFacadeSpec, Func<ConnectIntent, CancellationToken, Task<AuthResult>>> Operation,
     WizardLifecycleSurface                                                       Surface,
     Func<IKcapCli>                                                               ResolveCli,
-    // Takes the already-resolved identity's daemon name — never re-resolves identity on its own
-    // (finding 3/4: a factory that re-derives its own answer is exactly how the old ("","","")
-    // sentinel leaked in). Invoked only from an identity-non-null path below.
+    // Takes the already-resolved identity's daemon name — never re-resolves one of its own.
     Func<string, ILocalControlOps>                                               ResolveOps,
-    // The daemon step's OWN identity — nullable (finding 3): a KCAP_PROFILE override set after
-    // startup, or an unreadable/invalid config, must read as "not ready" rather than a stale or
-    // empty-string sentinel.
+    // The daemon step's OWN identity, nullable: an unreadable/invalid config reads as "not ready".
     Func<(string Profile, string Server, string DaemonName)?>                    ResolveIdentity,
     // The claims path's identity — deliberately the SEPARATE, literal ResolveConsentFlipIdentity
     // (its own doc comment justifies the literal read); never swapped for ResolveIdentity above.
@@ -93,8 +88,8 @@ internal static class WizardComposition {
         var connect  = new ConnectStepViewModel();
         var signIn   = new SignInStepViewModel(auth, connect, options.Bridges, claims, options.AppState, options.UrlOpener);
         var shim     = new ShimStepViewModel(options.ShimApplicable, options.ShimInstaller, options.AppState, options.ShimTarget);
-        // The Defaults step's persist targets the SAME fresh identity the daemon step gates on
-        // (finding 3) — falling back to c.ActiveProfile itself when unresolved (today's behavior).
+        // The Defaults step's persist targets the SAME fresh identity the daemon step gates on,
+        // falling back to c.ActiveProfile itself when unresolved.
         var defaults = new DefaultsStepViewModel(options.DefaultDaemonName, () => options.ResolveIdentity()?.Profile);
         // ONE detection feed for both vendor steps: two would probe the login shell twice for the
         // same answer, and the two steps' vendor lists could then disagree.
@@ -107,9 +102,8 @@ internal static class WizardComposition {
             // read as) and resolved FRESH per call — never the startup-cached profile.
             () => signIn.Satisfied ? options.ResolveIdentity() : null,
             options.Observation,
-            // The ops factory only ever runs from this identity-non-null branch (finding 4): a
-            // null resolution never reaches ResolveOps, so there is no name to fail closed on in
-            // the first place — the step's own gate above is what keeps a live socket un-dialed.
+            // The step's own gate above is what keeps a socket un-dialed: a null resolution never
+            // reaches ResolveOps at all.
             new LateBoundLocalControlOps(() => options.ResolveOps(options.ResolveIdentity() is { } id
                 ? id.DaemonName
                 : options.DefaultDaemonName ?? "daemon")),

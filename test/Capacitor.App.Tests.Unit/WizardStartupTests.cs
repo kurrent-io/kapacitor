@@ -113,9 +113,8 @@ static class WizardFixtures {
             (_, _) => Task.FromResult<AuthResult>(new AuthResult.Cancelled());
 
         public (string Profile, string Server, string DaemonName)? Identity = ("default", "https://acme.example", "daemon-a");
-        // The claims/TryConsume path's identity (ResolveConsentFlipIdentity in production) — kept
-        // separate from Identity above (finding 3): defaults to the same tuple so existing tests
-        // that never diverge the two keep seeing identical behavior.
+        // The claims/TryConsume path's identity (ResolveConsentFlipIdentity in production), kept
+        // separate from Identity above — same default tuple, so tests that never diverge them agree.
         public (string Profile, string Server, string DaemonName) ConsentFlipIdentity = ("default", "https://acme.example", "daemon-a");
         public readonly List<string> OpsFactoryNames = [];
         public bool ShimApplicable = true;
@@ -467,7 +466,7 @@ public class WizardStartupTests {
             var attempt = graph.Auth.Begin(new ConnectIntent.Create());
             await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            await AppUnderTest.QuiesceAppAsync(graph.Auth, import: null, lifecycle: null, lane: null)
+            await AppUnderTest.QuiesceAppAsync(graph.Auth, import: null, lifecycle: null, lane: null, Cap)
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(attempt.Result.IsCompleted).IsTrue();
@@ -479,8 +478,65 @@ public class WizardStartupTests {
 
     [Test]
     public async Task Shutdown_quiesce_with_no_wizard_is_the_existing_lifecycle_and_lane_wait() {
-        await AppUnderTest.QuiesceAppAsync(auth: null, import: null, lifecycle: null, lane: null)
+        await AppUnderTest.QuiesceAppAsync(auth: null, import: null, lifecycle: null, lane: null, Cap)
             .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    /// decision 2: the cap is the LANE's, never the sign-in's — a post-boundary operation that is
+    /// still publishing when the cap window has long expired is awaited to its terminal answer.
+    [Test]
+    public async Task Shutdown_quiesce_awaits_a_post_boundary_sign_in_long_past_the_cap() {
+        await AvaloniaSession.DispatchAsync(async () => {
+            using var harness = new WizardFixtures.GraphHarness();
+            var entered = new TaskCompletionSource();
+            var release = new TaskCompletionSource();
+            harness.Operation = async (_, _) => {
+                entered.TrySetResult();
+                await release.Task;
+                return new AuthResult.Committed("acme", "https://acme.example:443", AuthProvider.None, "someone", []);
+            };
+
+            var graph = WizardComposition.BuildGraph(harness.Options());
+            var attempt = graph.Auth.Begin(new ConnectIntent.Paste("https://acme.example"));
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var quiesce = AppUnderTest.QuiesceAppAsync(
+                graph.Auth, import: null, lifecycle: null, lane: null, TimeSpan.FromMilliseconds(20));
+            await Task.Delay(400); // twenty cap windows
+
+            await Assert.That(quiesce.IsCompleted).IsFalse();
+
+            release.SetResult();
+            await quiesce.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(await attempt.Result).IsTypeOf<AuthResult.Committed>();
+
+            return true;
+        });
+    }
+
+    // The other half: the lifecycle/lane wait is still the capped one (spec §6a).
+    [Test]
+    public async Task Shutdown_quiesce_still_caps_an_in_flight_lane_mutation() {
+        var gate = new TaskCompletionSource<string?>();
+        var cli = new FakeKcapCli { VersionBehavior = _ => gate.Task };
+        await using var lane = new DaemonMutationLane(
+            new FakeLoginShellProbe { KcapPathBehavior = _ => Task.FromResult<string?>(null) },
+            new OutcomeChannel(),
+            () => "/opt/kcap/bin/kcap",
+            (_, _) => cli,
+            _ => new WizardFixtures.NeverObservation(),
+            TimeProvider.System);
+
+        var runTask = lane.RunAsync(
+            new MutationRequest(MutationVerb.StartVerified, "default", "https://kcap.example.com:443", "daemon-a"),
+            CancellationToken.None);
+
+        await AppUnderTest
+            .QuiesceAppAsync(auth: null, import: null, lifecycle: null, lane, TimeSpan.FromMilliseconds(50))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        gate.SetResult("9.9.9");
+        await runTask.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     // Spec §7's close contract (KillTree + await exit) must run from the close boundary, not only CanLeaveAsync.
@@ -495,7 +551,7 @@ public class WizardStartupTests {
                 entered.TrySetResult();
                 await using var reg = ct.Register(() => cancelObserved.TrySetResult());
                 await cancelObserved.Task.ConfigureAwait(false);
-                // Mirrors ProcessRunner.RunStreamingAsync (finding 5): the killed tree's pumps drain
+                // Mirrors ProcessRunner.RunStreamingAsync: the killed tree's pumps drain
                 // to EOF before the streaming call itself returns/throws.
                 await release.Task.ConfigureAwait(false);
                 throw new OperationCanceledException(ct);
@@ -553,7 +609,7 @@ public class WizardStartupTests {
             _ = import.RunAsync();
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            await AppUnderTest.QuiesceAppAsync(auth: null, import, lifecycle: null, lane: null)
+            await AppUnderTest.QuiesceAppAsync(auth: null, import, lifecycle: null, lane: null, Cap)
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(import.Busy).IsFalse();
@@ -1065,8 +1121,8 @@ public class WizardStartupTests {
         }).WaitAsync(TimeSpan.FromSeconds(20));
     }
 
-    // ── finding 3: the daemon step's row/ops identity derives from ResolveIdentity, never the
-    // ── claims identity (ResolveConsentFlipIdentity stays literal, unchanged, for TryConsume only)
+    // ── the daemon step's row/ops identity derives from ResolveIdentity, never the claims
+    // ── identity (ResolveConsentFlipIdentity stays literal, for TryConsume only) ──────
 
     [Test]
     public async Task The_daemon_steps_row_reflects_ResolveIdentity_not_the_claims_identity() {
@@ -1194,7 +1250,7 @@ public class WizardStartupResolutionTests {
         await Assert.That(AppConfig.ResolvedProfile?.ServerUrl).IsEqualTo("https://acme.example");
     }
 
-    // ── finding 3: App.ResolveWizardIdentity's own resolution rules ───────────
+    // ── App.ResolveWizardIdentity's own resolution rules ──────────────────────
 
     [Test]
     public async Task ResolveWizardIdentity_unreadable_config_is_null() {

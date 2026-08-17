@@ -317,7 +317,7 @@ public class LoginShellProbeTests {
         await Assert.That(runner.Calls).Count().IsEqualTo(1);
     }
 
-    // Regression (Finding 10): the post-install probe must never reuse the pre-install cached
+    // Regression: the post-install probe must never reuse the pre-install cached
     // answer — forceRefresh bypasses it AND repopulates the cache with the fresh result.
     [Test]
     public async Task KcapOnPathAsync_forceRefresh_bypasses_and_repopulates_the_cache() {

@@ -175,10 +175,30 @@ public class OAuthFlowTests {
 
     [Test]
     public async Task GitHubBrowser_returns_null_on_non_success_browser_result() {
+        var progress = new RecordingAuthProgress();
+
         var token = await OAuthLoginFlow.RunGitHubBrowserFlowAsync(
-            "Iv1.abc", "http://unused.test/code-exchange", FakeBrowser.NonSuccess(BrowserResultType.Timeout));
+            "Iv1.abc", "http://unused.test/code-exchange", FakeBrowser.NonSuccess(BrowserResultType.Timeout),
+            progress: progress);
 
         await Assert.That(token).IsNull();
+        // The independent timeout keeps its classification and its message.
+        await Assert.That(progress.Errors.Any(e => e.Contains("Timed out waiting for authorization"))).IsTrue();
+    }
+
+    // A caller cancel that the browser rendered as its own non-success result is still a cancel:
+    // it propagates, and nothing is reported as a timeout.
+    [Test]
+    public async Task GitHubBrowser_caller_cancellation_propagates_and_renders_nothing() {
+        using var cts      = new CancellationTokenSource();
+        var       progress = new RecordingAuthProgress();
+
+        await Assert.That(async () => await OAuthLoginFlow.RunGitHubBrowserFlowAsync(
+                "Iv1.abc", "http://unused.test/code-exchange", FakeBrowser.CancellingCaller(cts),
+                ct: cts.Token, progress: progress))
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(progress.Errors).IsEmpty();
     }
 
     [Test]

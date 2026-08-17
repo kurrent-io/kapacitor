@@ -10,7 +10,8 @@ namespace Capacitor.Cli.Core.Auth;
 /// Opens the system browser to the authorize URL, waits for the redirect callback,
 /// and returns its raw query string. WorkOS documents the loopback exception as
 /// 127.0.0.1 (not localhost). The bind exception is intentionally NOT caught so the
-/// GitHub flow can fall back to device flow on a bind failure.
+/// GitHub flow can fall back to device flow on a bind failure. A caller cancel throws
+/// <see cref="OperationCanceledException"/>; only the independent timeout returns Timeout.
 /// </summary>
 public sealed class LoopbackBrowser(Action<string>? openBrowser = null, IAuthProgress? progress = null) : IBrowser {
     readonly Action<string> _openBrowser = openBrowser ?? OpenSystemBrowser;
@@ -40,6 +41,9 @@ public sealed class LoopbackBrowser(Action<string>? openBrowser = null, IAuthPro
                 listener.Stop();
                 _ = getContext.ContinueWith(t => _ = t.Exception, CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+                // The caller's own cancel is not a timeout — it propagates so the flow answers Cancelled.
+                ct.ThrowIfCancellationRequested();
 
                 return new BrowserResult { ResultType = BrowserResultType.Timeout };
             }

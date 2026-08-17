@@ -20,6 +20,33 @@ using Profile = Capacitor.Cli.Core.Config.Profile;
 
 namespace Capacitor.Cli.Commands;
 
+/// <summary>
+/// Setup's step-scoped rendering of façade output: the façade emits flush lines, every other line a
+/// setup step prints is two-space indented, and setup still owns the guidance tail it used to append.
+/// </summary>
+sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
+    internal const string UnreachableGuidance = "  Retry later, or pass --server-url <url>.";
+
+    public void Notice(string message) => inner.Notice(Indent(message));
+
+    public void Error(string message) => inner.Error(Indent(message));
+
+    public void BrowserOpening(string url) => inner.BrowserOpening(url);
+
+    public void DeviceCode(string code, string verificationUri) => inner.DeviceCode(code, verificationUri);
+
+    public void PollTick() => inner.PollTick();
+
+    /// <summary>Mapped off <see cref="AuthFailureReason"/>, never off the rendered text.</summary>
+    public void ReportFailure(AuthResult result) {
+        if (result is AuthResult.Failed { Reason: AuthFailureReason.Unreachable }) inner.Error(UnreachableGuidance);
+    }
+
+    // Blank separators and already-indented copy (the device-flow numbered list) pass through as-is.
+    internal static string Indent(string message) =>
+        string.IsNullOrWhiteSpace(message) || message.StartsWith(' ') ? message : $"  {message}";
+}
+
 public static class SetupCommand {
     public static async Task<int> HandleAsync(string[] args) {
         var serverUrlArg     = GetArg(args, "--server-url");
@@ -776,9 +803,11 @@ public static class SetupCommand {
     /// <summary>Test seam: overrides façade construction for Step 1/2. Reset to null in a finally block.</summary>
     internal static Func<ITenantProvisioner?, OnboardingFacade>? FacadeOverride;
 
+    internal static readonly SetupAuthProgress StepProgress = new(ConsoleAuthProgress.Instance);
+
     static OnboardingFacade NewFacade(ITenantProvisioner? provisioner) =>
         FacadeOverride?.Invoke(provisioner)
-            ?? new OnboardingFacade(ConsoleAuthProgress.Instance, new SpectreTenantPicker(), provisioner, beforeCommit: null);
+            ?? new OnboardingFacade(StepProgress, new SpectreTenantPicker(), provisioner, beforeCommit: null);
 
     /// <summary>
     /// Step 2 (Login) as a standalone step: a discovery-completed sign-in just reports what
@@ -895,7 +924,9 @@ public static class SetupCommand {
                 return retargeted is null ? null : (retargeted.Value.ServerUrl, retargeted.Value.Provider, false);
             }
             default:
-                // Failed/Cancelled — already rendered through the façade's progress sink.
+                // Failed/Cancelled — already rendered through the façade's progress sink, bar the tail setup owns.
+                StepProgress.ReportFailure(result);
+
                 return null;
         }
     }
