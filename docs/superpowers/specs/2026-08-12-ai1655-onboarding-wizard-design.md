@@ -1100,3 +1100,32 @@ rules, `Path.Combine` in path assertions for the Windows CI leg).
   seams (§5), the `auth_provider` server-scoped stamp (§4), the mutation API (decision 10), and
   public `ValidVisibilities`. User-visible CLI behavior is unchanged, so no README/help churn.
 - One PR (references AI-1655 and its GitHub issue).
+
+## Plan C implementation riders (2026-08-17)
+
+- §4/§5 result algebra: `AuthResult` gains `Retarget(ServerInput)` (the WorkOS "I already have a
+  workspace" completion; pre-boundary, nothing durable) and `Failed` carries `AuthFailureReason`
+  `{Other, Unreachable, SigninDenied, NoTenantsFound}` (the setup adapter's funnel discriminator).
+- §5 `LoginAsync` carries `adoptServer` (default `false`): `kcap login` never repoints a profile's
+  `server_url`; `kcap setup` and the wizard's Paste operation pass `true` (the write that makes a
+  fresh profile gate-complete). A `None`-server login on a foreign profile now fails honestly
+  instead of writing nothing.
+- §5 boundary totality: once entered, publication exceptions never escape as raw exceptions —
+  config-commit failure → `Failed` (nothing durable began); post-config failure → `Committed` with
+  a credentials warning; per-tenant exchange failures warn and continue.
+- §3 step 2/3: pasted input uses `ToServerOrigin`+`ResolveTenantArg` plus the pure loopback default
+  (a scheme-less host resolves to `http`) — path-routed self-hosted servers are not expressible in
+  the wizard's Paste field (documented residual; `kcap setup <url>` still accepts them).
+- §6 step-7 claim application: the conditional put preserves the daemon's existing rules and
+  prompt timeout (get-then-put; the v2 identity echo is the guard); an operator-chosen `deny` is
+  respected (no put, claim retained inert).
+- §4 observation: the two-adapter live/one-shot slot design is superseded — every lane
+  classification uses fresh one-shot probes with the instance-bound hello+snapshot correlation
+  (carried from the app-lane slice).
+- Decision 9 note: the wizard's `SetupFunnel` calls inside shared Core/provisioner flows are inert
+  in the app process (`CliTelemetry` never initialized) — kept for CLI parity.
+- §3 step 7: a wizard user with an unresolvable daemon binary sees enable/takeover/repair
+  withdrawn with reinstall guidance (spawn rows only; a running owned daemon still reports
+  enabled).
+- Decision 2: past the wizard-close quiesce cap, the graph is built with auto-actions permanently
+  closed and one attention line (the §6a rule as implemented).

@@ -92,6 +92,21 @@ shared URL validator with `App.ValidProfileName`) drives the decision-2 startup 
 gate-incomplete machines build the graph with lifecycle auto-actions permanently closed and the
 shim auto-offer suppressed (item stays visible). Wizard UI + the Core auth façade are Plan C.
 
+**AI-1655 Plan C** (spec §5/§3) is the Core façade and the full wizard. `OnboardingFacade`
+(`Capacitor.Cli.Core/Auth/`) drives login/discover/create through one ordered commit boundary —
+claims (decision 7) → config + provider stamp → tokens — behind a totalized `AuthResult`:
+`Committed`/`Cancelled`/`Failed(AuthFailureReason)`/`Retarget(ServerInput)`. `LoginAsync`'s
+`adoptServer` flag separates `kcap login` (never repoints `server_url`) from `kcap setup`/the
+wizard (adopts — the write that reaches gate-complete); `kcap setup`/`kcap login` re-plumb onto the
+façade as thin Spectre adapters, behavior-preserving. `WizardComposition.BuildGraph`
+(`Capacitor.App/Services/Onboarding/`) composes the 8-step wizard (Shim/Connect/Sign-in/Defaults/
+Agents/Import/Daemon/Done) over that SAME façade via `WizardAuthService` and its decision-7
+`ArmingHook`; `App.RunWizardModeAsync` runs it wizard-first on a gate-incomplete machine (no
+daemon graph, no tray) and hands the outcome channel to the normal graph's consumer via
+`OutcomeChannel.TransferConsumer` once the sign-in lane cancels/quiesces, closing auto-actions
+permanently past the quiesce cap (decision 2/§6a). The §7 streaming `IProcessRunner` backs the
+Import step's live, bounded-tail log pane.
+
 The receive pump no longer awaits launch/stop EXECUTION for either command format: arrival order is
 preserved by routing sequenced AND un-sequenced server-origin launch/stop traffic through the ONE
 existing serial lane (`RunLaneAsync`). Un-sequenced commands commit via a typed, no-ack entry point

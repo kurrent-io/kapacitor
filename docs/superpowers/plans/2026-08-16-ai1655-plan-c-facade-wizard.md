@@ -401,9 +401,9 @@ public sealed class UiAuthProgress(Action<Action> post) : IAuthProgress { … } 
 
 **Contract.** Composed flows through the REAL shell + real step VMs (scripted externals only): (a) fresh-machine happy path — paste `None` URL → auto-satisfied Sign-in → defaults written → agents/import skipped (no CLI) → daemon step "requires sign-in" absent (gate complete), Done summary correct; (b) abandon-before-sign-in → close → nothing durable (no config/token/claim writes on the temp dirs); (c) sign-in commit → claims armed → quit → relaunch fixture: `ConsentFlipCoordinator` (normal graph) still holds the claim. Spec rider records the Plan C deviations (this plan's pinned list) next to §5's result algebra and §4's adapter text; CLAUDE.md gains the Plan C paragraph (façade + wizard-first summary, ≤16 lines, replacing nothing).
 
-- [ ] **Step 1: Failing composition tests (a)-(c).**
-- [ ] **Step 2-4: red → implement/wire gaps → green.**
-- [ ] **Step 5: Commit** `test(app): wizard composition flows; docs: spec riders`
+- [x] **Step 1: Failing composition tests (a)-(c).**
+- [x] **Step 2-4: red → implement/wire gaps → green.**
+- [x] **Step 5: Commit** `test(app): wizard composition flows; docs: spec riders`
 
 ### Task 18: Final verification sweep
 
