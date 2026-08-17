@@ -18,7 +18,7 @@ public enum DaemonRow {
 /// The single action a row offers, or None.
 public enum DaemonAffordance { None, Install, Start, Takeover, Repair }
 
-/// Daemon enablement over the lifecycle state matrix; outcomes are presented by the channel's single consumer, never by this step directly.
+/// Daemon enablement over the lifecycle state matrix; mutations update this step's status only — dialogs/recovery are presented by the channel's single consumer.
 public sealed class DaemonStepViewModel : ReactiveObject, IWizardStep {
     internal const string ConsentV3Capability = "consent/3";
 
