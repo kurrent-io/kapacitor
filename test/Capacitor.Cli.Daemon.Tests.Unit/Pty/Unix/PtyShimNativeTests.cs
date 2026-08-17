@@ -50,7 +50,7 @@ public class PtyShimNativeTests {
     [Test]
     public async Task Setuid_binary_classifies_uncontained_never_a_false_proof() {
         using var tmp  = new TempDir();
-        var       suid = DummyProcess.CopySetuid(tmp, "/bin/true");
+        var       suid = tmp.SetuidCopyOf("/bin/true");
         var       plan = Preflight(suid, [suid], EmptyEnvp(), execveatSupported: 1);
 
         try { await Assert.That(UnixPtyInterop.pty_plan_contained(plan)).IsEqualTo(0); }
@@ -71,7 +71,7 @@ public class PtyShimNativeTests {
         // No readable fd — EXEC_PATH plans need none; an EXEC_FD attempt's inspection
         // failure must degrade to EXEC_PATH-uncontained, never a launch failure.
         using var tmp   = new TempDir();
-        var       xonly = DummyProcess.CopyExecuteOnly(tmp, "/bin/true");
+        var       xonly = tmp.ExecuteOnlyCopyOf("/bin/true");
         var       plan  = Preflight(xonly, [xonly], EmptyEnvp(), execveatSupported: 1);
 
         try { await Assert.That(plan).IsNotEqualTo(IntPtr.Zero); }
@@ -81,7 +81,7 @@ public class PtyShimNativeTests {
     [Test]
     public async Task Direct_shebang_rewrites_argv_keeping_the_single_optarg() {
         using var tmp    = new TempDir();
-        var       script = DummyProcess.WriteShebangScript(tmp, "shim.sh", "/bin/sh", "-e", "exit 0\n");
+        var       script = tmp.ShebangScript("shim.sh", "/bin/sh", "-e", "exit 0\n");
         var       plan   = Preflight(script, [script, "extra"], EmptyEnvp(), execveatSupported: 1);
 
         try {
@@ -98,7 +98,7 @@ public class PtyShimNativeTests {
         // preflight/exec a DIFFERENT inode than the child would resolve. EXEC_PATH-uncontained lets
         // the kernel resolve the whole thing natively from the original path after chdir.
         using var tmp    = new TempDir();
-        var       script = DummyProcess.WriteShebangScript(tmp, "shim.sh", "bin/sh", null, "exit 0\n");
+        var       script = tmp.ShebangScript("shim.sh", "bin/sh", null, "exit 0\n");
         var       plan   = Preflight(script, [script], EmptyEnvp(), execveatSupported: 1);
 
         try { await Assert.That(UnixPtyInterop.pty_plan_contained(plan)).IsEqualTo(0); }
@@ -112,7 +112,7 @@ public class PtyShimNativeTests {
         // literal absolute `/usr/bin/env` enters the env-rewrite path; a bare `env` falls through to
         // the direct-shebang branch and is rejected there as a non-absolute interpreter.
         using var tmp    = new TempDir();
-        var       script = DummyProcess.WriteShebangScript(tmp, "shim.sh", "env", "sh", "exit 0\n");
+        var       script = tmp.ShebangScript("shim.sh", "env", "sh", "exit 0\n");
         var       plan   = Preflight(script, [script], EmptyEnvp(), execveatSupported: 1);
 
         try { await Assert.That(UnixPtyInterop.pty_plan_contained(plan)).IsEqualTo(0); }
@@ -125,8 +125,8 @@ public class PtyShimNativeTests {
         // ambient PATH points at one, the CHILD's envp PATH points at the other. The contained
         // plan must preflight the one the CHILD's PATH selects.
         using var tmp = new TempDir();
-        var (daemonDir, childDir) = DummyProcess.TwoDistinctPathDirsWithDifferentTarget(tmp, "probe-target");
-        var script    = DummyProcess.WriteShebangScript(tmp, "shim.sh", "/usr/bin/env", "probe-target", "true\n");
+        var (daemonDir, childDir) = tmp.TwoDirsWithDifferentExecutable("probe-target");
+        var script    = tmp.ShebangScript("shim.sh", "/usr/bin/env", "probe-target", "true\n");
         var childEnvp = new[] { Env("PATH", childDir) };
         var plan      = Preflight(script, [script], childEnvp, execveatSupported: 1);
 
@@ -150,8 +150,8 @@ public class PtyShimNativeTests {
     [Arguments("{0}::{0}")] // internal EMPTY element (`::`)
     public async Task Empty_or_relative_child_path_component_is_uncontained(string pathTemplate) {
         using var tmp    = new TempDir();
-        var       dir    = DummyProcess.PathDirWithTarget(tmp, "probe-target");
-        var       script = DummyProcess.WriteShebangScript(tmp, "shim.sh", "/usr/bin/env", "probe-target", "true\n");
+        var       dir    = tmp.DirWithExecutable("probe-target");
+        var       script = tmp.ShebangScript("shim.sh", "/usr/bin/env", "probe-target", "true\n");
 
         var childEnvp = new[] { Env("PATH", string.Format(CultureInfo.InvariantCulture, pathTemplate, dir)) };
         var plan      = Preflight(script, [script], childEnvp, execveatSupported: 1);
@@ -163,7 +163,7 @@ public class PtyShimNativeTests {
     [Test]
     public async Task Env_with_extra_tokens_is_uncontained() {
         using var tmp    = new TempDir();
-        var       script = DummyProcess.WriteShebangScript(tmp, "shim.sh", "/usr/bin/env", "-S FOO=1 sh", "exit 0\n");
+        var       script = tmp.ShebangScript("shim.sh", "/usr/bin/env", "-S FOO=1 sh", "exit 0\n");
         var       plan   = Preflight(script, [script], EmptyEnvp(), execveatSupported: 1);
 
         try { await Assert.That(UnixPtyInterop.pty_plan_contained(plan)).IsEqualTo(0); }
@@ -173,8 +173,8 @@ public class PtyShimNativeTests {
     [Test]
     public async Task Two_level_script_chain_is_uncontained() {
         using var tmp   = new TempDir();
-        var       inner = DummyProcess.WriteShebangScript(tmp, "inner.sh", "/bin/sh", null, "exit 0\n");
-        var       outer = DummyProcess.WriteShebangScript(tmp, "outer.sh", inner, null, "unused\n");
+        var       inner = tmp.ShebangScript("inner.sh", "/bin/sh", null, "exit 0\n");
+        var       outer = tmp.ShebangScript("outer.sh", inner, null, "unused\n");
         var       plan  = Preflight(outer, [outer], EmptyEnvp(), execveatSupported: 1);
 
         try { await Assert.That(UnixPtyInterop.pty_plan_contained(plan)).IsEqualTo(0); }
@@ -187,7 +187,7 @@ public class PtyShimNativeTests {
         // reject a plain file) — the ENOEXEC surfaces at exec time (Task 3's test, not here).
         using var tmp  = new TempDir();
         var       path = tmp.CreateFile("no-shebang", "not a script, no shebang\n");
-        DummyProcess.MakeExecutablePublic(path); // exposes MakeExecutable for this one direct case
+        UnixExecFixtures.MakeExecutable(path);
 
         var plan = Preflight(path, [path], EmptyEnvp(), execveatSupported: 1);
 

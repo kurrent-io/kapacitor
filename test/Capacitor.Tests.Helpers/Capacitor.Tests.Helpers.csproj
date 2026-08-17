@@ -2,8 +2,6 @@
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
         <IsPackable>false</IsPackable>
-        <!-- DummyProcess declares a chmod LibraryImport for the native-shim test fixtures. -->
-        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     </PropertyGroup>
     <ItemGroup>
         <!-- Core only. The guards pin Core-owned statics (KCAP_CONFIG_DIR, DaemonLockPaths,

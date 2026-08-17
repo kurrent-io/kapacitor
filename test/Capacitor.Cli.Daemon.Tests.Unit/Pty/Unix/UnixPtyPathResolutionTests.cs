@@ -102,7 +102,7 @@ public class UnixPtyPathResolutionTests {
         // owner can't execute (mode 0010: group-execute only) must be SKIPPED even though it carries
         // an execute bit, so the resolver falls through to a genuinely runnable candidate later on
         // PATH, exactly as execvp would. Under root access(X_OK) bypasses the class check, so skip.
-        if (DummyProcess.IsEffectiveRoot()) return;
+        if (UnixExecFixtures.IsEffectiveRoot()) return;
 
         var earlier = Directory.CreateTempSubdirectory("kcap-resolve-a-").FullName;
         var later   = Directory.CreateTempSubdirectory("kcap-resolve-b-").FullName;

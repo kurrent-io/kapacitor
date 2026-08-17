@@ -9,7 +9,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Pty.Unix;
 /// exercise the raw native contract in isolation.
 /// </summary>
 public class PtySpawnTests {
-    [Test]
+    [Test, RunOn(OS.Linux | OS.MacOs)]
     public async Task Successful_spawn_returns_a_reapable_child_and_a_captured_identity() {
         var plan = Preflight("/bin/sleep", ["sleep", "5"]);
         try {
@@ -29,8 +29,7 @@ public class PtySpawnTests {
         } finally { Free(plan); }
     }
 
-    [Test]
-    [RunOn(OS.Linux)]
+    [Test, RunOn(OS.Linux)]
     public async Task Missing_original_path_fails_at_preflight_no_child_forked() {
         var rc = UnixPtyInterop.pty_preflight("/no/such/binary-" + Guid.NewGuid(), ["x", null], EmptyEnvp(), 1, out var plan);
         await Assert.That(rc).IsEqualTo(-1);
@@ -38,8 +37,7 @@ public class PtySpawnTests {
         // No pty_spawn call at all — this IS the assertion (a preflight failure never reaches spawn).
     }
 
-    [Test]
-    [RunOn(OS.Linux)]
+    [Test, RunOn(OS.Linux)]
     public async Task Child_side_exec_failure_reports_failed_step_exec_and_reaps_cleanly() {
         // Build a valid EXEC_PATH plan, then remove the file between preflight and spawn so
         // the FORK succeeds but the exec fails inside the child. Force EXEC_PATH explicitly:
@@ -47,7 +45,7 @@ public class PtySpawnTests {
         // would NOT make the fd-based exec fail — only a path-based re-resolution at exec
         // time observes the deletion.
         using var tmp  = new TempDir();
-        var       path = DummyProcess.CopyExecuteOnly(tmp, "/bin/true");
+        var       path = tmp.ExecuteOnlyCopyOf("/bin/true");
         var       plan = Preflight(path, [path], execveatSupported: 0);
         File.Delete(path); // the test's own action, not cleanup: exec must observe the missing path
         try {
@@ -61,8 +59,7 @@ public class PtySpawnTests {
         } finally { Free(plan); }
     }
 
-    [Test]
-    [RunOn(OS.Linux)]
+    [Test, RunOn(OS.Linux)]
     public async Task Bad_cwd_reports_failed_step_chdir() {
         var plan = Preflight("/bin/true", ["true"]);
         try {
@@ -72,8 +69,7 @@ public class PtySpawnTests {
         } finally { Free(plan); }
     }
 
-    [Test]
-    [RunOn(OS.Linux)]
+    [Test, RunOn(OS.Linux)]
     public async Task Getppid_mismatch_self_kills_and_reports_parent_died() {
         // Passing a deliberately WRONG expected_parent simulates "the real daemon died and I was
         // reparented" without actually killing anything — the child must self-kill and the
@@ -86,8 +82,7 @@ public class PtySpawnTests {
         } finally { Free(plan); }
     }
 
-    [Test]
-    [RunOn(OS.Linux | OS.MacOs)]
+    [Test, RunOn(OS.Linux | OS.MacOs)]
     public async Task Cancel_fd_during_handshake_kills_and_reaps_returns_cancelled() {
         // A readable cancel_fd during the handshake must deterministically win over a child that
         // would otherwise exec successfully: pty_spawn polls {errpipe, cancel_fd} and MUST take
@@ -117,8 +112,7 @@ public class PtySpawnTests {
         }
     }
 
-    [Test]
-    [RunOn(OS.Linux | OS.MacOs)]
+    [Test, RunOn(OS.Linux | OS.MacOs)]
     public async Task Capture_binding_a_fast_exiting_child_never_yields_a_recycled_identity() {
         // Spawn something that exits IMMEDIATELY (`sleep 0` — used instead of /bin/true so
         // this runs identically on both platforms: this environment's macOS has no /bin/true
@@ -137,8 +131,7 @@ public class PtySpawnTests {
         } finally { Free(plan); }
     }
 
-    [Test]
-    [RunOn(OS.Linux | OS.MacOs)]
+    [Test, RunOn(OS.Linux | OS.MacOs)]
     public async Task Successful_spawn_marks_the_pty_master_fd_close_on_exec() {
         // Regression (spec §3.0a): forkpty returns the master bare, so without an explicit
         // FD_CLOEXEC on it every child the daemon spawns afterwards inherits a live read/write
