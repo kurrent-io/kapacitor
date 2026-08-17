@@ -14,10 +14,13 @@ internal sealed record WizardFacadeSpec(
     ITenantProvisioner?                                        Provisioner,
     Func<IReadOnlyList<AuthIdentity>, CancellationToken, Task> BeforeCommit);
 
-/// What wizard-first mode runs on: the shell, the sign-in driver the close path awaits, and every
-/// step (including ones the shell filtered out as inapplicable — the summary still names them).
+/// What wizard-first mode runs on: the shell, the sign-in driver the close path awaits, every step
+/// (including ones the shell filtered out as inapplicable — the summary still names them), and the
+/// Import step by name — the close path must cancel its in-flight run directly (spec §7), which
+/// CanLeaveAsync alone does not cover since closing the window never navigates away from a step.
 internal sealed record WizardGraph(
-    OnboardingViewModel ViewModel, WizardAuthService Auth, IReadOnlyList<IWizardStep> Steps);
+    OnboardingViewModel ViewModel, WizardAuthService Auth, IReadOnlyList<IWizardStep> Steps,
+    ImportStepViewModel Import);
 
 /// <summary>
 /// Everything wizard-first mode is composed from. The daemon-facing entries are FACTORIES, not
@@ -31,8 +34,17 @@ internal sealed record WizardGraphOptions(
     Func<WizardFacadeSpec, Func<ConnectIntent, CancellationToken, Task<AuthResult>>> Operation,
     WizardLifecycleSurface                                                       Surface,
     Func<IKcapCli>                                                               ResolveCli,
-    Func<ILocalControlOps>                                                       ResolveOps,
-    Func<(string Profile, string Server, string DaemonName)>                     ResolveIdentity,
+    // Takes the already-resolved identity's daemon name — never re-resolves identity on its own
+    // (finding 3/4: a factory that re-derives its own answer is exactly how the old ("","","")
+    // sentinel leaked in). Invoked only from an identity-non-null path below.
+    Func<string, ILocalControlOps>                                               ResolveOps,
+    // The daemon step's OWN identity — nullable (finding 3): a KCAP_PROFILE override set after
+    // startup, or an unreadable/invalid config, must read as "not ready" rather than a stale or
+    // empty-string sentinel.
+    Func<(string Profile, string Server, string DaemonName)?>                    ResolveIdentity,
+    // The claims path's identity — deliberately the SEPARATE, literal ResolveConsentFlipIdentity
+    // (its own doc comment justifies the literal read); never swapped for ResolveIdentity above.
+    Func<(string Profile, string Server, string DaemonName)>                     ResolveConsentFlipIdentity,
     Func<MutationRequest, CancellationToken, Task<MutationOutcome>>              RunMutation,
     IDaemonObservation                                                           Observation,
     IAppStateStore                                                               AppState,
@@ -81,7 +93,9 @@ internal static class WizardComposition {
         var connect  = new ConnectStepViewModel();
         var signIn   = new SignInStepViewModel(auth, connect, options.Bridges, claims, options.AppState, options.UrlOpener);
         var shim     = new ShimStepViewModel(options.ShimApplicable, options.ShimInstaller, options.AppState, options.ShimTarget);
-        var defaults = new DefaultsStepViewModel(options.DefaultDaemonName);
+        // The Defaults step's persist targets the SAME fresh identity the daemon step gates on
+        // (finding 3) — falling back to c.ActiveProfile itself when unresolved (today's behavior).
+        var defaults = new DefaultsStepViewModel(options.DefaultDaemonName, () => options.ResolveIdentity()?.Profile);
         // ONE detection feed for both vendor steps: two would probe the login shell twice for the
         // same answer, and the two steps' vendor lists could then disagree.
         var detect = options.DetectionFeed(options.Probe);
@@ -92,8 +106,15 @@ internal static class WizardComposition {
             // Gated on a COMMITTED sign-in (the RequiresSignIn row is what a skipped sign-in must
             // read as) and resolved FRESH per call — never the startup-cached profile.
             () => signIn.Satisfied ? options.ResolveIdentity() : null,
-            options.Observation, new LateBoundLocalControlOps(options.ResolveOps), claims,
-            options.ResolveIdentity, options.Surface, options.Probe.TerminalPathAsync, options.Time);
+            options.Observation,
+            // The ops factory only ever runs from this identity-non-null branch (finding 4): a
+            // null resolution never reaches ResolveOps, so there is no name to fail closed on in
+            // the first place — the step's own gate above is what keeps a live socket un-dialed.
+            new LateBoundLocalControlOps(() => options.ResolveOps(options.ResolveIdentity() is { } id
+                ? id.DaemonName
+                : options.DefaultDaemonName ?? "daemon")),
+            claims,
+            options.ResolveConsentFlipIdentity, options.Surface, options.Probe.TerminalPathAsync, options.Time);
 
         IWizardStep[] configured = [shim, connect, signIn, defaults, agents, import, daemon];
         // Read on every entry, so a Back-then-forward re-render sees each step's current state.
@@ -105,7 +126,7 @@ internal static class WizardComposition {
         // the prefill would sit on a page the user is not looking at.
         signIn.RetargetRequested += _ => wizard.TryGoTo(WizardStepId.Connect);
 
-        return new WizardGraph(wizard, auth, steps);
+        return new WizardGraph(wizard, auth, steps, import);
     }
 
     /// The Done step's rows: what each earlier step reached and — when it didn't — why it was skipped.

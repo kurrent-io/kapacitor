@@ -50,6 +50,13 @@ static class WizardFixtures {
         }
     }
 
+    /// A fixed-answer observation, for driving the daemon step past ClassifyLiveDaemonAsync's
+    /// owned+matched branch (the only path that actually dials the ops factory).
+    internal sealed class FixedObservation(ObservedEvidence? evidence) : IDaemonObservation {
+        public Task<ObservedEvidence?> ObserveAsync(MutationRequest request, CancellationToken ct) =>
+            Task.FromResult(evidence);
+    }
+
     /// Records every request the wizard routes through the lane — the "zero service mutation"
     /// assertions read this, never a status snapshot.
     internal sealed class RecordingLane {
@@ -105,7 +112,12 @@ static class WizardFixtures {
         public Func<ConnectIntent, CancellationToken, Task<AuthResult>> Operation =
             (_, _) => Task.FromResult<AuthResult>(new AuthResult.Cancelled());
 
-        public (string Profile, string Server, string DaemonName) Identity = ("default", "https://acme.example", "daemon-a");
+        public (string Profile, string Server, string DaemonName)? Identity = ("default", "https://acme.example", "daemon-a");
+        // The claims/TryConsume path's identity (ResolveConsentFlipIdentity in production) — kept
+        // separate from Identity above (finding 3): defaults to the same tuple so existing tests
+        // that never diverge the two keep seeing identical behavior.
+        public (string Profile, string Server, string DaemonName) ConsentFlipIdentity = ("default", "https://acme.example", "daemon-a");
+        public readonly List<string> OpsFactoryNames = [];
         public bool ShimApplicable = true;
         public string? CliPath = "/opt/kcap/bin/kcap";
         public string? ShimTarget = "/opt/kcap/bin/kcap";
@@ -132,11 +144,13 @@ static class WizardFixtures {
                 CliFactoryCalls++;
                 return Cli;
             },
-            ResolveOps: () => {
+            ResolveOps: name => {
                 OpsFactoryCalls++;
+                OpsFactoryNames.Add(name);
                 return Ops;
             },
             ResolveIdentity: () => Identity,
+            ResolveConsentFlipIdentity: () => ConsentFlipIdentity,
             RunMutation: Lane.RunAsync,
             Observation: Observation,
             AppState: new NoopAppStateStore(),
@@ -453,7 +467,8 @@ public class WizardStartupTests {
             var attempt = graph.Auth.Begin(new ConnectIntent.Create());
             await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            await AppUnderTest.QuiesceAppAsync(graph.Auth, lifecycle: null, lane: null).WaitAsync(TimeSpan.FromSeconds(5));
+            await AppUnderTest.QuiesceAppAsync(graph.Auth, import: null, lifecycle: null, lane: null)
+                .WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(attempt.Result.IsCompleted).IsTrue();
             await Assert.That(await attempt.Result).IsTypeOf<AuthResult.Cancelled>();
@@ -464,7 +479,87 @@ public class WizardStartupTests {
 
     [Test]
     public async Task Shutdown_quiesce_with_no_wizard_is_the_existing_lifecycle_and_lane_wait() {
-        await AppUnderTest.QuiesceAppAsync(auth: null, lifecycle: null, lane: null).WaitAsync(TimeSpan.FromSeconds(5));
+        await AppUnderTest.QuiesceAppAsync(auth: null, import: null, lifecycle: null, lane: null)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // Spec §7's close contract (KillTree + await exit) must run from the close boundary, not only CanLeaveAsync.
+    [Test]
+    public async Task Handoff_cancels_an_in_flight_import_and_awaits_it_before_transferring() {
+        await AvaloniaSession.DispatchAsync(async () => {
+            using var harness = new WizardFixtures.GraphHarness();
+            var entered = new TaskCompletionSource();
+            var cancelObserved = new TaskCompletionSource();
+            var release = new TaskCompletionSource();
+            harness.Cli.ImportBehavior = async (_, _, ct) => {
+                entered.TrySetResult();
+                await using var reg = ct.Register(() => cancelObserved.TrySetResult());
+                await cancelObserved.Task.ConfigureAwait(false);
+                // Mirrors ProcessRunner.RunStreamingAsync (finding 5): the killed tree's pumps drain
+                // to EOF before the streaming call itself returns/throws.
+                await release.Task.ConfigureAwait(false);
+                throw new OperationCanceledException(ct);
+            };
+
+            var graph = WizardComposition.BuildGraph(harness.Options());
+            var import = graph.Import;
+            import.Vendors[0].IsSelected = true; // RunCoreAsync no-ops with nothing selected
+            _ = import.RunAsync();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(import.Busy).IsTrue();
+
+            var channel = new OutcomeChannel();
+            using var wizardCts = new CancellationTokenSource();
+            var wizardConsumer = Task.Run(() => AppUnderTest.ConsumeMutationOutcomesAsync(
+                channel, new FakeLifecycleSurface(), WizardFixtures.NeverRunMutation,
+                WizardFixtures.FixedTerminalPath("/usr/bin"), () => null, wizardCts.Token));
+
+            var handoff = AppUnderTest.HandoffAfterWizardAsync(auth: null, () => Task.CompletedTask, Cap, channel, import);
+            await cancelObserved.Task.WaitAsync(TimeSpan.FromSeconds(5)); // CancelActiveRunAsync reached the CLI's own ct
+            await Task.Delay(50);
+
+            await Assert.That(handoff.IsCompleted).IsFalse(); // still draining the killed import
+            Assert.Throws<InvalidOperationException>(() => { _ = channel.ConsumeAsync(CancellationToken.None); });
+
+            release.SetResult();
+            await handoff.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await Assert.That(import.Busy).IsFalse(); // the run fully finished before the handoff returned
+            _ = channel.ConsumeAsync(CancellationToken.None); // transferred only now
+
+            await wizardCts.CancelAsync();
+            await wizardConsumer.WaitAsync(TimeSpan.FromSeconds(5));
+
+            return true;
+        });
+    }
+
+    [Test]
+    public async Task Shutdown_quiesce_cancels_an_in_flight_import_and_awaits_it() {
+        await AvaloniaSession.DispatchAsync(async () => {
+            using var harness = new WizardFixtures.GraphHarness();
+            var entered = new TaskCompletionSource();
+            var cancelObserved = new TaskCompletionSource();
+            harness.Cli.ImportBehavior = async (_, _, ct) => {
+                entered.TrySetResult();
+                await using var reg = ct.Register(() => cancelObserved.TrySetResult());
+                await cancelObserved.Task.ConfigureAwait(false);
+                throw new OperationCanceledException(ct);
+            };
+
+            var graph = WizardComposition.BuildGraph(harness.Options());
+            var import = graph.Import;
+            import.Vendors[0].IsSelected = true;
+            _ = import.RunAsync();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await AppUnderTest.QuiesceAppAsync(auth: null, import, lifecycle: null, lane: null)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            await Assert.That(import.Busy).IsFalse();
+
+            return true;
+        });
     }
 
     // ── the wizard graph: composition invariants ──────────────────────────────
@@ -969,6 +1064,80 @@ public class WizardStartupTests {
             return true;
         }).WaitAsync(TimeSpan.FromSeconds(20));
     }
+
+    // ── finding 3: the daemon step's row/ops identity derives from ResolveIdentity, never the
+    // ── claims identity (ResolveConsentFlipIdentity stays literal, unchanged, for TryConsume only)
+
+    [Test]
+    public async Task The_daemon_steps_row_reflects_ResolveIdentity_not_the_claims_identity() {
+        await AvaloniaSession.DispatchAsync(async () => {
+            using var harness = new WizardFixtures.GraphHarness();
+            harness.Operation = (_, _) => Task.FromResult<AuthResult>(
+                new AuthResult.Committed("row-profile", "https://row.example:443", AuthProvider.None, "someone", []));
+            // Deliberately different values: if the row-classification gate ever read the claims
+            // identity instead, this server (which the claims identity does NOT name) would still
+            // canonicalize fine and the row would read something other than NoServerConfigured.
+            harness.Identity            = ("row-profile", "file:///etc/passwd", "row-daemon");
+            harness.ConsentFlipIdentity = ("claims-profile", "https://claims.example", "claims-daemon");
+
+            var graph  = WizardComposition.BuildGraph(harness.Options());
+            var daemon = graph.Steps.OfType<DaemonStepViewModel>().Single();
+            var signIn = graph.Steps.OfType<SignInStepViewModel>().Single();
+            await signIn.SignInAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+            await daemon.RefreshAsync(CancellationToken.None);
+
+            await Assert.That(daemon.Row).IsEqualTo(DaemonRow.NoServerConfigured);
+            await Assert.That(harness.Cli.StatusCallCount).IsEqualTo(0); // refused before any status read
+
+            return true;
+        });
+    }
+
+    [Test]
+    public async Task The_ops_factory_receives_the_row_identitys_daemon_name_not_the_claims_identitys() {
+        await AvaloniaSession.DispatchAsync(async () => {
+            using var harness = new WizardFixtures.GraphHarness();
+            harness.Operation = (_, _) => Task.FromResult<AuthResult>(
+                new AuthResult.Committed("row-profile", "https://row.example:443", AuthProvider.None, "someone", []));
+            harness.Identity            = ("row-profile", "https://row.example", "row-daemon");
+            harness.ConsentFlipIdentity = ("claims-profile", "https://claims.example", "claims-daemon");
+            harness.Cli.StatusBehavior  = _ => Task.FromResult<ServiceSnapshot?>(
+                new ServiceSnapshot("row-daemon", true, "running", "/opt/kcap/kcap-daemon", "/opt/kcap/kcap-daemon",
+                    111, 111, false, false));
+
+            var canonical = ServerIdentity.Canonicalize("https://row.example")!;
+            var evidence = new ObservedEvidence(
+                Reachable: true, Capabilities: [DaemonStepViewModel.ConsentV3Capability], DaemonVersion: "1.0.0",
+                ServerUrl: canonical, DaemonName: "row-daemon", Pid: 111, InstanceId: "instance-1", IdentityConsistent: true);
+            var options = harness.Options() with { Observation = new WizardFixtures.FixedObservation(evidence) };
+
+            harness.Ops.QueueGet(new ConsentPolicyDto("allow", 300, []));
+            harness.Ops.QueuePutV2(true, null);
+            harness.Claims.Arm(new ConsentFlipClaim("row-profile", canonical));
+
+            var graph  = WizardComposition.BuildGraph(options);
+            var daemon = graph.Steps.OfType<DaemonStepViewModel>().Single();
+            var signIn = graph.Steps.OfType<SignInStepViewModel>().Single();
+            await signIn.SignInAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+            await daemon.RefreshAsync(CancellationToken.None);
+            await WizardFixtures.WaitUntilAsync(() => harness.Ops.PutV2Calls > 0, what: "the claim to apply");
+
+            await Assert.That(daemon.Row).IsEqualTo(DaemonRow.AlreadyEnabled);
+            await Assert.That(harness.OpsFactoryNames).Contains("row-daemon");
+            await Assert.That(harness.OpsFactoryNames).DoesNotContain("claims-daemon");
+            // The claim was found and PUT (matched against the mutation request, itself built from
+            // the ROW identity) but TryConsume's own re-resolve — resolveIdentityUnderConfigLock,
+            // i.e. ResolveConsentFlipIdentity, deliberately the SEPARATE claims identity — disagrees
+            // with the claim's key, so the claim stays pending. This is the EXACT proof the claims
+            // path stayed decoupled from the row identity, not a bug in this test.
+            await Assert.That(harness.Claims.Pending().Select(c => c.Profile)).IsEquivalentTo(["row-profile"]);
+
+            return true;
+        });
+    }
+
 }
 
 /// <summary>
@@ -1023,6 +1192,71 @@ public class WizardStartupResolutionTests {
         await Assert.That(AppUnderTest.AutoActionsPermanentlyClosed(after)).IsFalse();
         // The graph identity comes from the SAME resolution the verdict was read off.
         await Assert.That(AppConfig.ResolvedProfile?.ServerUrl).IsEqualTo("https://acme.example");
+    }
+
+    // ── finding 3: App.ResolveWizardIdentity's own resolution rules ───────────
+
+    [Test]
+    public async Task ResolveWizardIdentity_unreadable_config_is_null() {
+        File.WriteAllText(ConfigPath, "{ this is not valid json");
+
+        var identity = AppUnderTest.ResolveWizardIdentity();
+
+        await Assert.That(identity).IsNull();
+    }
+
+    [Test]
+    public async Task ResolveWizardIdentity_a_profile_with_an_invalid_server_is_null() {
+        WriteConfig(SingleProfileConfig(new Profile { ServerUrl = "file:///tmp/x" }));
+
+        var identity = AppUnderTest.ResolveWizardIdentity();
+
+        await Assert.That(identity).IsNull();
+    }
+
+    [Test]
+    public async Task ResolveWizardIdentity_a_valid_profile_resolves_the_canonical_tuple() {
+        WriteConfig(SingleProfileConfig(new Profile {
+            ServerUrl = "https://acme.example",
+            Daemon    = new DaemonSettings { Name = "acme-daemon" },
+        }));
+
+        var identity = AppUnderTest.ResolveWizardIdentity();
+
+        await Assert.That(identity).IsNotNull();
+        await Assert.That(identity!.Value.Profile).IsEqualTo(ProfileName);
+        await Assert.That(identity.Value.Server).IsEqualTo(ServerIdentity.Canonicalize("https://acme.example"));
+        await Assert.That(identity.Value.DaemonName).IsEqualTo("acme-daemon");
+    }
+
+    // An empty-name sentinel would dial the sanitized DEFAULT daemon socket — unreadable config must yield null.
+    [Test]
+    public async Task Unreadable_config_shows_the_daemon_steps_not_ready_state_and_makes_no_status_or_ops_call() {
+        File.WriteAllText(ConfigPath, "{ this is not valid json");
+
+        await AvaloniaSession.DispatchAsync(async () => {
+            using var harness = new WizardFixtures.GraphHarness();
+            harness.Operation = (_, _) => Task.FromResult<AuthResult>(
+                new AuthResult.Committed("default", "https://acme.example:443", AuthProvider.None, "someone", []));
+
+            var options = harness.Options() with { ResolveIdentity = AppUnderTest.ResolveWizardIdentity };
+            var graph  = WizardComposition.BuildGraph(options);
+            var daemon = graph.Steps.OfType<DaemonStepViewModel>().Single();
+            var signIn = graph.Steps.OfType<SignInStepViewModel>().Single();
+            await signIn.SignInAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(signIn.Satisfied).IsTrue(); // sign-in itself doesn't touch config.json
+
+            await daemon.RefreshAsync(CancellationToken.None);
+
+            await Assert.That(daemon.Row).IsEqualTo(DaemonRow.RequiresSignIn);
+            await Assert.That(harness.Cli.StatusCallCount).IsEqualTo(0);
+            await Assert.That(harness.Ops.GetCalls).IsEqualTo(0);
+            await Assert.That(harness.Ops.PutV2Calls).IsEqualTo(0);
+            await Assert.That(harness.OpsFactoryCalls).IsEqualTo(0);
+            await Assert.That(harness.Lane.Requests).IsEmpty();
+
+            return true;
+        });
     }
 
     [Test]

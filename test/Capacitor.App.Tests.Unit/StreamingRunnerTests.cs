@@ -157,6 +157,32 @@ public class StreamingRunnerTests {
         await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(10));
     }
 
+    // The ct-cancel branch must await both pumps before throwing — a late onLine after OCE races caller cleanup.
+    [Test]
+    [NotInParallel("StreamingProcessRunner")]
+    public async Task RunStreamingAsync_ct_cancel_awaits_the_pumps_before_throwing_no_late_callbacks() {
+        Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
+
+        var runner = new DaemonClientService.ProcessRunner();
+        using var cts = new CancellationTokenSource();
+        var callbackCount = 0;
+
+        var runTask = runner.RunStreamingAsync(
+            "/bin/sh", ["-c", "while true; do echo tick; sleep 0.01; done"],
+            new RunOptions(), _ => Interlocked.Increment(ref callbackCount), cts.Token);
+
+        await WaitUntilAsync(() => Volatile.Read(ref callbackCount) > 0, TimeSpan.FromSeconds(5), "the first line to arrive");
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
+        // By the time RunStreamingAsync has thrown, the fix already awaited both pumps to EOF —
+        // so no callback can fire after this snapshot (the race the old fire-and-forget allowed).
+        var afterThrow = Volatile.Read(ref callbackCount);
+        await Task.Delay(250);
+
+        await Assert.That(Volatile.Read(ref callbackCount)).IsEqualTo(afterThrow);
+    }
+
     [Test]
     public async Task StreamingResult_shape_has_no_full_capture_property() {
         var properties = typeof(StreamingResult).GetProperties().Select(p => p.Name).ToArray();

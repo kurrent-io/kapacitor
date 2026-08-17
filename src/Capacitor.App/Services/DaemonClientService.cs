@@ -300,8 +300,10 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
                 if (ct.IsCancellationRequested) {
                     // Streaming always kills the tree on cancellation, ignoring RunOptions.CancelMode.
                     await KillAndAwaitAsync(process).ConfigureAwait(false);
-                    Observe(stdoutTask);
-                    Observe(stderrTask);
+                    // Awaited, not fire-and-forget: the pumps end at EOF once the tree is killed
+                    // (same as the timeout arm below) — a fire-and-forget Observe let a callback
+                    // fire AFTER this method had already thrown OCE, racing caller cleanup.
+                    await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
                     throw;
                 }
 

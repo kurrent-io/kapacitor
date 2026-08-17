@@ -368,6 +368,72 @@ public class DefaultsStepViewModelTests {
         await Assert.That(saved.MachineId).IsEqualTo("machine-123");
     }
 
+    // The persist must follow the wizard's resolved identity, not on-disk ActiveProfile (KCAP_PROFILE split).
+    [Test]
+    public async Task Next_persists_to_the_injected_resolved_profile_not_the_active_one() {
+        var existing = new ProfileConfig {
+            ActiveProfile = "acme",
+            Profiles = new() {
+                ["acme"] = new Profile { ServerUrl = "https://acme.example" },
+                ["work"] = new Profile { ServerUrl = "https://work.example" },
+            },
+        };
+        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(existing, ProfileConfigJsonContext.Default.ProfileConfig));
+
+        var vm = new DefaultsStepViewModel(resolveProfileName: () => "work")
+            { Visibility = "public", DaemonName = "work-daemon" };
+
+        var canLeave = await vm.CanLeaveAsync(WizardNavigation.Next, CancellationToken.None);
+
+        await Assert.That(canLeave).IsTrue();
+        await Assert.That(vm.Satisfied).IsTrue();
+
+        var saved = ConfigMutator.LoadPure(ConfigPath);
+
+        await Assert.That(saved.Profiles["work"].DefaultVisibility).IsEqualTo("public");
+        await Assert.That(saved.Profiles["work"].Daemon!.Name).IsEqualTo("work-daemon");
+        // The active profile (acme) is untouched — the mutation targeted the RESOLVED name.
+        await Assert.That(saved.Profiles["acme"].DefaultVisibility).IsEqualTo("org_public");
+        await Assert.That(saved.Profiles["acme"].Daemon).IsNull();
+    }
+
+    [Test]
+    public async Task A_resolved_name_absent_from_config_falls_back_to_the_active_profile() {
+        var existing = new ProfileConfig {
+            ActiveProfile = "acme",
+            Profiles = new() { ["acme"] = new Profile { ServerUrl = "https://acme.example" } },
+        };
+        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(existing, ProfileConfigJsonContext.Default.ProfileConfig));
+
+        var vm = new DefaultsStepViewModel(resolveProfileName: () => "ghost")
+            { Visibility = "public", DaemonName = "acme-daemon" };
+
+        await vm.CanLeaveAsync(WizardNavigation.Next, CancellationToken.None);
+
+        var saved = ConfigMutator.LoadPure(ConfigPath);
+
+        await Assert.That(saved.Profiles["acme"].Daemon!.Name).IsEqualTo("acme-daemon");
+        await Assert.That(saved.Profiles.ContainsKey("ghost")).IsFalse();
+    }
+
+    [Test]
+    public async Task A_null_resolved_name_falls_back_to_the_active_profile() {
+        var existing = new ProfileConfig {
+            ActiveProfile = "acme",
+            Profiles = new() { ["acme"] = new Profile { ServerUrl = "https://acme.example" } },
+        };
+        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(existing, ProfileConfigJsonContext.Default.ProfileConfig));
+
+        var vm = new DefaultsStepViewModel(resolveProfileName: () => null)
+            { Visibility = "public", DaemonName = "acme-daemon" };
+
+        await vm.CanLeaveAsync(WizardNavigation.Next, CancellationToken.None);
+
+        var saved = ConfigMutator.LoadPure(ConfigPath);
+
+        await Assert.That(saved.Profiles["acme"].Daemon!.Name).IsEqualTo("acme-daemon");
+    }
+
     [Test]
     public async Task Skip_and_back_do_not_persist_and_leave_the_step_unsatisfied() {
         var vm = new DefaultsStepViewModel { Visibility = "public", DaemonName = "acme-daemon" };

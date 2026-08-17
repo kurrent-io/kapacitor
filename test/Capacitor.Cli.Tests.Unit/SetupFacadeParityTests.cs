@@ -219,15 +219,40 @@ public class SetupFacadeParityTests {
         await Assert.That(buffer.ToString()).Contains("Logged in as alice");
     }
 
+    // A None-provider setup must still mint the auth_provider stamp, and only inside the commit boundary.
     [Test]
-    public async Task RunLoginStepAsync_none_provider_skips_login_without_a_facade_call() {
-        SetupCommand.FacadeOverride = _ => throw new InvalidOperationException("None provider must not call the façade");
+    public async Task RunLoginStepAsync_none_provider_commits_the_stamp_through_the_facade() {
+        using var handler = AuthHttp.Script(authConfig: """{"provider":"None"}""");
+
+        SetupCommand.FacadeOverride = _ => OnboardingFacadeTests.NewFacade(new RecordingAuthProgress(), handler);
 
         var exitCode = await SetupCommand.RunLoginStepAsync(
             loginComplete: false, provider: AuthProvider.None, serverUrl: "https://none.example",
             forceDevice: false, activeProfile: "default");
 
         await Assert.That(exitCode).IsEqualTo(0);
+
+        var profile = ReadConfig().Profiles["default"];
+        await Assert.That(profile.AuthProvider).IsNotNull();
+        await Assert.That(profile.AuthProvider!.Provider).IsEqualTo(AuthProvider.None);
+        // Gate-complete at config level: the stamp's server must match the canonicalized profile server.
+        await Assert.That(ServerIdentity.SameServer(profile.AuthProvider.ServerUrl, profile.ServerUrl)).IsTrue();
+        await Assert.That(TokenFileExists("default")).IsFalse();
+    }
+
+    [Test]
+    public async Task RunLoginStepAsync_none_provider_failure_prints_login_failed_and_returns_one() {
+        // No /auth/config route at all — the façade's re-fetch fails, mirroring the explicit-login
+        // failure test below. A None-provider server that becomes unreachable must fail the same way.
+        using var handler = AuthHttp.Script();
+
+        SetupCommand.FacadeOverride = _ => OnboardingFacadeTests.NewFacade(new RecordingAuthProgress(), handler);
+
+        var exitCode = await SetupCommand.RunLoginStepAsync(
+            loginComplete: false, provider: AuthProvider.None, serverUrl: "https://none.example",
+            forceDevice: false, activeProfile: "default");
+
+        await Assert.That(exitCode).IsEqualTo(1);
     }
 
     [Test]

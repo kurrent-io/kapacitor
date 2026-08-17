@@ -22,15 +22,25 @@ public sealed class DefaultsStepViewModel : ReactiveObject, IWizardStep {
         new("public",     "All public — others can see all your sessions"),
     ];
 
+    readonly Func<string?>? _resolveProfileName;
+
     string  _visibility = "org_public";
     string  _daemonName;
     bool    _satisfied;
     string? _message;
 
-    public DefaultsStepViewModel(string? defaultDaemonName = null) {
+    /// <param name="resolveProfileName">
+    /// The profile the persist mutation below targets (finding 3) — a FRESH, env-aware resolution
+    /// (the wizard passes <c>App.ResolveWizardIdentity()?.Profile</c>), re-invoked on every persist
+    /// rather than captured once, since a KCAP_PROFILE override or a sign-in mid-wizard can change
+    /// the answer between steps. Null, or a name absent from <c>config.Profiles</c>, falls back to
+    /// <c>c.ActiveProfile</c> — today's behavior, and the only behavior when this is omitted.
+    /// </param>
+    public DefaultsStepViewModel(string? defaultDaemonName = null, Func<string?>? resolveProfileName = null) {
         _daemonName = string.IsNullOrWhiteSpace(defaultDaemonName)
             ? Environment.UserName.ToLowerInvariant()
             : defaultDaemonName;
+        _resolveProfileName = resolveProfileName;
     }
 
     public WizardStepId Id         => WizardStepId.Defaults;
@@ -69,7 +79,10 @@ public sealed class DefaultsStepViewModel : ReactiveObject, IWizardStep {
 
         try {
             await ConfigMutator.MutateAsync(c => {
-                var activeName = string.IsNullOrWhiteSpace(c.ActiveProfile) ? "default" : c.ActiveProfile;
+                var resolvedName = _resolveProfileName?.Invoke();
+                var activeName   = resolvedName is not null && c.Profiles.ContainsKey(resolvedName)
+                    ? resolvedName
+                    : string.IsNullOrWhiteSpace(c.ActiveProfile) ? "default" : c.ActiveProfile;
                 var profile    = c.Profiles.GetValueOrDefault(activeName) ?? new Profile();
 
                 profile = profile with {

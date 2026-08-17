@@ -782,9 +782,10 @@ public static class SetupCommand {
 
     /// <summary>
     /// Step 2 (Login) as a standalone step: a discovery-completed sign-in just reports what
-    /// discovery already published, a <c>None</c> provider needs no login, and everything else logs
-    /// into the known server via the façade — adopting it onto the active profile, since setup's
-    /// whole job is configuring that profile for the chosen server.
+    /// discovery already published; everything else — including a <c>None</c> provider, which needs
+    /// no interactive login but still needs its auth_provider stamp written inside the façade's
+    /// commit boundary — goes through the façade, adopting the server onto the active profile,
+    /// since setup's whole job is configuring that profile for the chosen server.
     /// </summary>
     internal static async Task<int> RunLoginStepAsync(
             bool loginComplete, string provider, string serverUrl, bool forceDevice, string activeProfile) {
@@ -796,12 +797,6 @@ public static class SetupCommand {
             return 0;
         }
 
-        if (provider == AuthProvider.None) {
-            await Console.Out.WriteLineAsync("  Auth provider is None — no login required.");
-
-            return 0;
-        }
-
         var result = await NewFacade(provisioner: null)
             .LoginAsync(serverUrl, forceDevice, activeProfile, CancellationToken.None, adoptServer: true);
 
@@ -809,6 +804,11 @@ public static class SetupCommand {
             await Console.Error.WriteLineAsync("  Login failed.");
 
             return 1;
+        }
+
+        if (provider == AuthProvider.None) {
+            // The façade's ConsoleAuthProgress already printed the "no authentication configured" notice.
+            return 0;
         }
 
         var loggedInTokens = await TokenStore.LoadAsync(activeProfile);
