@@ -534,9 +534,4 @@ public class OpenCodeDbTests {
         await Assert.That(OpenCodeDb.IsImportRelevantLine(
             """{"info":{"role":"assistant"},"parts":[{"id":"p","type":"text","text":" "}]}""")).IsTrue();
     }
-
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = Directory.CreateTempSubdirectory("kcap-ocdb").FullName;
-        public void Dispose() { try { Directory.Delete(Path, true); } catch { } }
-    }
 }

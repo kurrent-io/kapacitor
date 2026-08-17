@@ -77,12 +77,4 @@ public class CursorHooksWriterTests {
         await Assert.That(removed).IsTrue();
         await Assert.That(File.Exists(Path.Combine(tmp.Path, ".kcap-hooks-version"))).IsFalse();
     }
-
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            $"kcap-cursor-writer-test-{Guid.NewGuid().ToString("N")[..8]}");
-        public TempDir() => Directory.CreateDirectory(Path);
-        public void Dispose() { try { Directory.Delete(Path, true); } catch { } }
-    }
 }

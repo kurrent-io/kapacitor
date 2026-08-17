@@ -69,12 +69,4 @@ public class GeminiImportSourceTests {
     public async Task import_relevant_line_mirrors_normalizer_skips(string line, bool expected) {
         await Assert.That(GeminiImportSource.IsImportRelevantLine(line)).IsEqualTo(expected);
     }
-
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            $"kcap-gemini-import-test-{Guid.NewGuid().ToString("N")[..8]}");
-        public TempDir() => Directory.CreateDirectory(Path);
-        public void Dispose() { try { Directory.Delete(Path, true); } catch { } }
-    }
 }

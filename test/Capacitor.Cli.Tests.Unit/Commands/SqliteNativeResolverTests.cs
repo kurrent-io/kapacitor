@@ -116,9 +116,4 @@ public class SqliteNativeResolverTests {
             NativeLibrary.Free(h);
         }
     }
-
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = Directory.CreateTempSubdirectory("kcap-sqlite-native").FullName;
-        public void Dispose() { try { Directory.Delete(Path, true); } catch { } }
-    }
 }

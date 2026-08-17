@@ -16,19 +16,6 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// </summary>
 [NotInParallel("TokenStoreProfileTests")]
 public class UseCommandTests {
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            "kcap-test-" + Guid.NewGuid().ToString("N")[..8]
-        );
-
-        public TempDir() => Directory.CreateDirectory(Path);
-
-        public void Dispose() {
-            try { Directory.Delete(Path, true); } catch { /* best effort */ }
-        }
-    }
-
     [Before(Test)]
     public void Cleanup() {
         SharedConfigDirCleanup.ClearWithRetry("config.json", () => File.Delete(AppConfig.GetConfigPath()));

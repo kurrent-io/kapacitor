@@ -2,10 +2,6 @@
 
 **File paths:** CLI source at `src/Capacitor.Cli/`, shared core at `src/Capacitor.Cli.Core/`, daemon at `src/Capacitor.Cli.Daemon/`, npm packages at `npm/`, Claude Code plugin at `kcap/`.
 
-**Test layout:** one test project per prod project, each mirroring that project's directories — `test/Capacitor.Cli.Core.Tests.Unit/`, `test/Capacitor.Cli.Tests.Unit/`, `test/Capacitor.Cli.Daemon.Tests.Unit/`, plus `test/Capacitor.Cli.Tests.Integration/`.
-A test project references its own prod project and `test/Capacitor.Tests.Helpers/`, never another test project: anything shared across suites goes in Helpers, with a `public` surface (no `InternalsVisibleTo`).
-Helpers' `Guards/` holds the process-global pins every assembly needs.
-
 **Harness layout:** vendor-specific code lives under `Harness/`. Vendors: Antigravity, Claude, Codex, Copilot, Cursor, Gemini, Kiro, OpenCode, Pi.
 
 - `src/Capacitor.Cli.Core/Harness/<Vendor>/` — paths, hook parsers/installers, CLI runners.
@@ -148,6 +144,13 @@ no production consumer yet (AI-1649's supervision IPC is the natural one).
 dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj
 ```
 
+## Test conventions
+
+**Layout:** one test project per prod project, each mirroring that project's directories — `test/Capacitor.Cli.Core.Tests.Unit/`, `test/Capacitor.Cli.Tests.Unit/`, `test/Capacitor.Cli.Daemon.Tests.Unit/`, plus `test/Capacitor.Cli.Tests.Integration/`. A test project references its own prod project and `test/Capacitor.Tests.Helpers/`, never another test project: anything shared across suites goes in Helpers, with a `public` surface (no `InternalsVisibleTo`). Helpers' `Guards/` holds the process-global pins every assembly needs, and Helpers is a global `using` everywhere, so its types need no import.
+
+- Throwaway directories come from Helpers' `TempDir` — `using var tmp = new TempDir();` — never a per-class copy.
+- Capture console output with `ConsoleOutput.StartCapture()` / `StartErrorCapture()`, never a hand-rolled `Console.SetOut`/`SetError` save-restore — TUnit0055 is an error. Console is process-global, so every caller needs bare `[NotInParallel]`; a group key is not enough.
+
 ## Running tests
 
 Tests use TUnit on Microsoft Testing Platform.
@@ -186,7 +189,6 @@ This is a public repository — we develop in the open.
 ## Dos and donts
 
 - DO use `JsonElementExtensions` instead of checking JSON value kind.
-- DO capture console output in tests with `ConsoleOutput.StartCapture()` / `StartErrorCapture()` (`test/Capacitor.Tests.Helpers`), never a hand-rolled `Console.SetOut`/`SetError` save-restore — TUnit0055 is an error. Console is process-global, so every caller needs bare `[NotInParallel]`; a group key is not enough.
 - DO NOT use Linear issue numbers in comments. If you absolutely need an issue number, use the GitHub issue number.
 - DO NOT get too verbose in comments. Write self-explanatory code instead. Keep them short and concise, and carry the non-obvious **why** — the constraint, the trap, the reason for this shape. Never paraphrase what the code already says. Explaining *how* it works is warranted only when it is genuinely complex (a real algorithm, a gnarly construction), not for ordinary code. If a reader could infer it from the source, write no comment.
 

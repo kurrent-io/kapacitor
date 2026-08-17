@@ -9,44 +9,35 @@ namespace Capacitor.Cli.Core.Tests.Unit.Harness.Antigravity;
 /// missed children that never reported back.
 /// </summary>
 public class AntigravitySubagentsTests {
-    static string NewHome() {
-        var home = Path.Combine(Path.GetTempPath(), "kcap-agsub-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(home);
-        return home;
-    }
-
     static void MakeBrainDir(string home, string convId) =>
         Directory.CreateDirectory(Path.Combine(home, ".gemini", "antigravity", "brain", convId, ".system_generated", "logs"));
 
     // on-disk brain layout for the INVOKE_SUBAGENT-based BuildParentMap, one temp
-    // home per test, auto-cleaned on dispose (mirrors the NewHome/MakeBrainDir pattern above,
+    // home per test, auto-cleaned on dispose (mirrors the MakeBrainDir pattern above,
     // but for transcript-based fixtures rather than messages/*.json).
     sealed class TempBrain : IDisposable {
-        public string Home { get; } = NewHome();
+        readonly TempDir _home = new();
+
+        public string Home => _home.Path;
 
         public void WriteTranscript(string convId, params string[] lines) {
-            var dir = Path.Combine(Home, ".gemini", "antigravity", "brain", convId, ".system_generated", "logs");
-            Directory.CreateDirectory(dir);
-            File.WriteAllLines(Path.Combine(dir, "transcript_full.jsonl"), lines);
+            var logs = _home.CreateDir(".gemini", "antigravity", "brain", convId, ".system_generated", "logs");
+            File.WriteAllLines(Path.Combine(logs, "transcript_full.jsonl"), lines);
         }
 
-        public void Dispose() {
-            try { Directory.Delete(Home, recursive: true); } catch { /* best effort */ }
-        }
+        public void Dispose() => _home.Dispose();
     }
 
     // the discovery scan is O(history) IO and must be interruptible.
     // Still valid under the transcript-based rewrite (scan is still O(history) IO).
     [Test]
     public async Task BuildParentMap_honors_cancellation() {
-        var home = NewHome();
-        try {
-            MakeBrainDir(home, "P"); // at least one brain dir so the scan loop runs
-            using var cts = new CancellationTokenSource();
-            cts.Cancel();
-            await Assert.That(() => AntigravitySubagents.BuildParentMap(home: home, geminiCliHome: "", ct: cts.Token))
-                .Throws<OperationCanceledException>();
-        } finally { Directory.Delete(home, recursive: true); }
+        using var home = new TempDir();
+        MakeBrainDir(home.Path, "P"); // at least one brain dir so the scan loop runs
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.That(() => AntigravitySubagents.BuildParentMap(home: home.Path, geminiCliHome: "", ct: cts.Token))
+            .Throws<OperationCanceledException>();
     }
 
     // BuildParentMap now derives child→parent from the parent transcript's
@@ -133,10 +124,9 @@ public class AntigravitySubagentsTests {
 
     [Test]
     public async Task BuildParentMap_is_empty_when_no_antigravity_data() {
-        var home = NewHome();
-        try {
-            await Assert.That(AntigravitySubagents.BuildParentMap(home: home, geminiCliHome: "").Count).IsEqualTo(0);
-        } finally { Directory.Delete(home, recursive: true); }
+        using var home = new TempDir();
+
+        await Assert.That(AntigravitySubagents.BuildParentMap(home: home.Path, geminiCliHome: "").Count).IsEqualTo(0);
     }
 
     [Test]

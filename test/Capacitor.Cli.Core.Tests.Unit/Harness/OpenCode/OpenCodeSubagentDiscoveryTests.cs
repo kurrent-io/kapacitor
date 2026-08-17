@@ -20,12 +20,10 @@ public class OpenCodeSubagentDiscoveryTests {
     public async Task EnumerateSubagentFiles_ReturnsChildFiles_ElseEmpty() {
         using var tmp = new TempDir();
 
-        var lonely = Path.Combine(tmp.Path, "ses_lonely.jsonl");
-        File.WriteAllText(lonely, "");
+        var lonely = tmp.CreateFile("ses_lonely.jsonl", "");
         await Assert.That(OpenCodeSubagentDiscovery.EnumerateSubagentFiles(lonely).Count).IsEqualTo(0);
 
-        var parent = Path.Combine(tmp.Path, "ses_parent.jsonl");
-        File.WriteAllText(parent, "");
+        var parent = tmp.CreateFile("ses_parent.jsonl", "");
         var nested = Path.Combine(tmp.Path, "ses_parent");
         Directory.CreateDirectory(nested);
         File.WriteAllText(Path.Combine(nested, "ses_child1.jsonl"), "");
@@ -44,8 +42,7 @@ public class OpenCodeSubagentDiscoveryTests {
             "{\"info\":{\"role\":\"assistant\",\"id\":\"m2\",\"agent\":\"general\"},\"parts\":[]}\n");
         await Assert.That(OpenCodeSubagentDiscovery.ResolveAgentType(withAgent)).IsEqualTo("general");
 
-        var noAgent = Path.Combine(tmp.Path, "c2.jsonl");
-        File.WriteAllText(noAgent, "{\"info\":{\"role\":\"user\",\"id\":\"m1\"},\"parts\":[]}\n");
+        var noAgent = tmp.CreateFile("c2.jsonl", "{\"info\":{\"role\":\"user\",\"id\":\"m1\"},\"parts\":[]}\n");
         await Assert.That(OpenCodeSubagentDiscovery.ResolveAgentType(noAgent)).IsEqualTo("subagent");
     }
 
@@ -74,12 +71,5 @@ public class OpenCodeSubagentDiscoveryTests {
                  }) {
             await Assert.That(p.ContainsKey(key)).IsTrue();
         }
-    }
-
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(), "kcap-oc-sub-" + Guid.NewGuid().ToString("N")[..8]);
-        public TempDir() => Directory.CreateDirectory(Path);
-        public void Dispose() { try { Directory.Delete(Path, true); } catch { /* best effort */ } }
     }
 }

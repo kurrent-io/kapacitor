@@ -30,9 +30,4 @@ public class OpenCodeImportLedgerTests {
         await File.WriteAllTextAsync(path, "{ not json");
         await Assert.That(OpenCodeImportLedger.Load(path).IsComplete("u", "s", "fp")).IsFalse();
     }
-
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = Directory.CreateTempSubdirectory("kcap-ledger").FullName;
-        public void Dispose() { try { Directory.Delete(Path, true); } catch { } }
-    }
 }

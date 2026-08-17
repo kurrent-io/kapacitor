@@ -6,20 +6,22 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 public class PluginCommandSkillsTests {
     [Test]
     public async Task Install_with_both_codex_and_skills_flags_returns_error() {
+        using var tmp = new TempDir();
         var capturedErr = new StringWriter();
         var exit = await PluginCommand.HandleAsync(
             ["plugin", "install", "--codex", "--skills"],
-            TestEnv(fakeHome: Path.GetTempPath(), stderr: capturedErr));
+            TestEnv(fakeHome: tmp.Path, stderr: capturedErr));
         await Assert.That(exit).IsEqualTo(1);
         await Assert.That(capturedErr.ToString()).Contains("mutually exclusive");
     }
 
     [Test]
     public async Task Remove_with_both_codex_and_skills_flags_returns_error() {
+        using var tmp = new TempDir();
         var capturedErr = new StringWriter();
         var exit = await PluginCommand.HandleAsync(
             ["plugin", "remove", "--codex", "--skills"],
-            TestEnv(fakeHome: Path.GetTempPath(), stderr: capturedErr));
+            TestEnv(fakeHome: tmp.Path, stderr: capturedErr));
         await Assert.That(exit).IsEqualTo(1);
         await Assert.That(capturedErr.ToString()).Contains("mutually exclusive");
     }
@@ -261,15 +263,4 @@ public class PluginCommandSkillsTests {
         Stdout:            stdout ?? TextWriter.Null,
         Stderr:            stderr ?? TextWriter.Null
     );
-
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            $"kcap-skills-test-{Guid.NewGuid().ToString("N")[..8]}"
-        );
-        public TempDir() => Directory.CreateDirectory(Path);
-        public void Dispose() {
-            try { Directory.Delete(Path, true); } catch { /* best effort */ }
-        }
-    }
 }

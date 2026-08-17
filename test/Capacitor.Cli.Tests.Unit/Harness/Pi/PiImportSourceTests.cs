@@ -159,15 +159,4 @@ public class PiImportSourceTests {
     public async Task is_import_relevant_line_matches_normalizer(string line, bool expected) {
         await Assert.That(PiImportSource.IsImportRelevantLine(line)).IsEqualTo(expected);
     }
-
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            $"kcap-pi-import-test-{Guid.NewGuid().ToString("N")[..8]}"
-        );
-        public TempDir() => Directory.CreateDirectory(Path);
-        public void Dispose() {
-            try { Directory.Delete(Path, true); } catch { /* best effort */ }
-        }
-    }
 }

@@ -90,15 +90,4 @@ public class CodexHooksInstallerTests {
         // Idempotent — calling twice does not throw.
         CodexHooksInstaller.DeleteMarker(hooksPath);
     }
-
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            $"kcap-codex-hooks-installer-test-{Guid.NewGuid().ToString("N")[..8]}"
-        );
-        public TempDir() => Directory.CreateDirectory(Path);
-        public void Dispose() {
-            try { Directory.Delete(Path, true); } catch { /* best effort */ }
-        }
-    }
 }

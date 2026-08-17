@@ -134,15 +134,4 @@ public class KiroHooksTests {
         await Assert.That(KiroHooksParser.HasCapacitorHooksFor(root, KiroHooksParser.KiroHookEvents)).IsTrue();
         await Assert.That(KiroHooksParser.HasCapacitorHooksFor(root, ["agentSpawn", "someFutureEvent"])).IsFalse();
     }
-
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            $"kcap-kiro-hooks-test-{Guid.NewGuid().ToString("N")[..8]}"
-        );
-        public TempDir() => Directory.CreateDirectory(Path);
-        public void Dispose() {
-            try { Directory.Delete(Path, true); } catch { /* best effort */ }
-        }
-    }
 }

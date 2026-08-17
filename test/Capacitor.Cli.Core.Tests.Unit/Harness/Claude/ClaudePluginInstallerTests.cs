@@ -158,8 +158,7 @@ public class ClaudePluginInstallerTests {
         using var tmp = new TempDir();
         var source = Directory.CreateDirectory(Path.Combine(tmp.Path, "source-kcap")).FullName;
         File.WriteAllText(Path.Combine(source, ".mcp.json"), "{}");
-        var settingsPath = Path.Combine(tmp.Path, "settings.json");
-        File.WriteAllText(settingsPath, $$"""
+        var settingsPath = tmp.CreateFile("settings.json", $$"""
             { "enabledPlugins": { "kcap@kcap": true },
               "extraKnownMarketplaces": { "kcap": { "source": {
                   "source": "directory", "path": {{JsonValue.Create(source).ToJsonString()}} } } } }
@@ -302,16 +301,5 @@ public class ClaudePluginInstallerTests {
         ClaudePluginInstaller.DeleteMarker(settingsPath);
         await Assert.That(File.Exists(Path.Combine(tmp.Path, ClaudePluginInstaller.MarkerFileName))).IsFalse();
         ClaudePluginInstaller.DeleteMarker(settingsPath);
-    }
-
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            $"kcap-claude-plugin-installer-test-{Guid.NewGuid().ToString("N")[..8]}"
-        );
-        public TempDir() => Directory.CreateDirectory(Path);
-        public void Dispose() {
-            try { Directory.Delete(Path, true); } catch { /* best effort */ }
-        }
     }
 }

@@ -924,25 +924,27 @@ public class SetupCommandTests {
     /// preceding them for what each piece of isolation guards against.
     /// </summary>
     sealed class HandleAsyncE2EFixture : IAsyncDisposable {
-        public string RepoDir { get; }
-        public string Home    { get; }
-
+        readonly TempDir _repoDir;
+        readonly TempDir _home;
         readonly string  _originalCwd;
         readonly string? _originalHome;
 
-        HandleAsyncE2EFixture(string repoDir, string home, string originalCwd, string? originalHome) {
-            RepoDir       = repoDir;
-            Home          = home;
+        public string RepoDir => _repoDir.Path;
+        public string Home    => _home.Path;
+
+        HandleAsyncE2EFixture(TempDir repoDir, TempDir home, string originalCwd, string? originalHome) {
+            _repoDir      = repoDir;
+            _home         = home;
             _originalCwd  = originalCwd;
             _originalHome = originalHome;
         }
 
         public static async Task<HandleAsyncE2EFixture> CreateAsync(string owner, string repo) {
-            var repoDir = Directory.CreateTempSubdirectory("kcap-setup-e2e-repo-").FullName;
-            await RunGitAsync("init", repoDir);
-            await RunGitAsync($"remote add origin https://github.com/{owner}/{repo}.git", repoDir);
+            var repoDir = new TempDir();
+            await RunGitAsync("init", repoDir.Path);
+            await RunGitAsync($"remote add origin https://github.com/{owner}/{repo}.git", repoDir.Path);
 
-            var home = Directory.CreateTempSubdirectory("kcap-setup-e2e-home-").FullName;
+            var home = new TempDir();
 
             var originalCwd  = Environment.CurrentDirectory;
             var originalHome = Environment.GetEnvironmentVariable("HOME");
@@ -960,8 +962,8 @@ public class SetupCommandTests {
             var legacyTokens = PathHelpers.ConfigPath("tokens.json");
             if (File.Exists(legacyTokens)) File.Delete(legacyTokens);
 
-            Environment.CurrentDirectory = repoDir;
-            Environment.SetEnvironmentVariable("HOME", home);
+            Environment.CurrentDirectory = repoDir.Path;
+            Environment.SetEnvironmentVariable("HOME", home.Path);
 
             return new HandleAsyncE2EFixture(repoDir, home, originalCwd, originalHome);
         }
@@ -971,8 +973,8 @@ public class SetupCommandTests {
             Environment.SetEnvironmentVariable("HOME", _originalHome);
             HttpClientExtensions.ResetProviderCacheForTesting();
 
-            try { Directory.Delete(RepoDir, recursive: true); } catch { /* best effort */ }
-            try { Directory.Delete(Home, recursive: true); } catch { /* best effort */ }
+            _repoDir.Dispose();
+            _home.Dispose();
 
             return ValueTask.CompletedTask;
         }
@@ -993,21 +995,6 @@ public class SetupCommandTests {
                 var err = await process.StandardError.ReadToEndAsync();
 
                 throw new InvalidOperationException($"git {arguments} failed: {err}");
-            }
-        }
-    }
-
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            $"kcap-test-{Guid.NewGuid().ToString("N")[..8]}"
-        );
-
-        public TempDir() => Directory.CreateDirectory(Path);
-
-        public void Dispose() {
-            try { Directory.Delete(Path, true); } catch {
-                /* best effort */
             }
         }
     }

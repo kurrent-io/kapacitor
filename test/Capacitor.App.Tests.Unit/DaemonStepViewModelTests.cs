@@ -70,7 +70,8 @@ public class DaemonStepViewModelTests {
     }
 
     sealed class Harness : IDisposable {
-        public readonly string TempDir = Directory.CreateTempSubdirectory("kcap-daemonstep-").FullName;
+        readonly TempDir _dir = new();
+
         public readonly FakeKcapCli Cli = new();
         public readonly RecordingLane Lane = new();
         public readonly ScriptedObservation Observation = new();
@@ -88,7 +89,7 @@ public class DaemonStepViewModelTests {
         public Harness() {
             Time   = new TimerCountingTimeProvider(Clock);
             Claims = new ConsentFlipClaims(
-                Path.Combine(TempDir, "consent-flip-claims.json"), Path.Combine(TempDir, "config.json"));
+                _dir.PathTo("consent-flip-claims.json"), _dir.PathTo("config.json"));
             Vm = new DaemonStepViewModel(
                 Cli, Lane.RunAsync, () => Identity, Observation, Ops, Claims, () => UnderConfigLock, Surface,
                 _ => Task.FromResult<string?>(TerminalPath), Time);
@@ -102,9 +103,7 @@ public class DaemonStepViewModelTests {
 
         public Task Act() => Vm.RunActionAsync();
 
-        public void Dispose() {
-            try { Directory.Delete(TempDir, recursive: true); } catch { /* best effort */ }
-        }
+        public void Dispose() => _dir.Dispose();
     }
 
     static async Task WaitUntilAsync(Func<bool> condition, string what) {
@@ -902,14 +901,13 @@ public class DaemonStepTemplateTests {
     }
 
     sealed class TempClaims : IDisposable {
-        public readonly string Dir = Directory.CreateTempSubdirectory("kcap-daemonstep-tpl-").FullName;
+        readonly TempDir _dir = new();
+
         public readonly ConsentFlipClaims Claims;
 
         public TempClaims() =>
-            Claims = new ConsentFlipClaims(Path.Combine(Dir, "claims.json"), Path.Combine(Dir, "config.json"));
+            Claims = new ConsentFlipClaims(_dir.PathTo("claims.json"), _dir.PathTo("config.json"));
 
-        public void Dispose() {
-            try { Directory.Delete(Dir, recursive: true); } catch { /* best effort */ }
-        }
+        public void Dispose() => _dir.Dispose();
     }
 }

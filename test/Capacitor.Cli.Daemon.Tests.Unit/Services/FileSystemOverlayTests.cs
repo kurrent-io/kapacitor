@@ -5,7 +5,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 public class FileSystemOverlayTests {
     [Test]
     public async Task OverlayDirectory_copies_regular_files() {
-        using var tmp = new TempDir();
+        using var tmp = new OverlayDirs();
         var sourceFile = Path.Combine(tmp.Source, "file.txt");
         File.WriteAllText(sourceFile, "hello");
 
@@ -16,7 +16,7 @@ public class FileSystemOverlayTests {
 
     [Test]
     public async Task OverlayDirectory_skips_symlinked_files() {
-        using var tmp = new TempDir();
+        using var tmp = new OverlayDirs();
 
         // Create an external file that the symlink points to
         var externalFile = Path.Combine(tmp.External, "secret.txt");
@@ -33,7 +33,7 @@ public class FileSystemOverlayTests {
 
     [Test]
     public async Task OverlayDirectory_skips_symlinked_directories() {
-        using var tmp = new TempDir();
+        using var tmp = new OverlayDirs();
 
         // Create an external directory with content
         var externalDir = Path.Combine(tmp.External, "extdir");
@@ -51,7 +51,7 @@ public class FileSystemOverlayTests {
 
     [Test]
     public async Task OverlayDirectory_handles_symlink_loop_without_recursion() {
-        using var tmp = new TempDir();
+        using var tmp = new OverlayDirs();
 
         // Create a symlink loop: source/loop → source (points back to its ancestor)
         var loopLink = Path.Combine(tmp.Source, "loop");
@@ -64,23 +64,19 @@ public class FileSystemOverlayTests {
         await Assert.That(Directory.Exists(Path.Combine(tmp.Dest, "loop"))).IsFalse();
     }
 
-    sealed class TempDir : IDisposable {
-        readonly DirectoryInfo _root;
+    sealed class OverlayDirs : IDisposable {
+        readonly TempDir _root = new();
 
         public string Source { get; }
         public string Dest { get; }
         public string External { get; }
 
-        public TempDir() {
-            _root = Directory.CreateTempSubdirectory("kcap-overlay-test-");
-            Source = Path.Combine(_root.FullName, "source");
-            Dest = Path.Combine(_root.FullName, "dest");
-            External = Path.Combine(_root.FullName, "external");
-            Directory.CreateDirectory(Source);
-            Directory.CreateDirectory(Dest);
-            Directory.CreateDirectory(External);
+        public OverlayDirs() {
+            Source   = _root.CreateDir("source");
+            Dest     = _root.CreateDir("dest");
+            External = _root.CreateDir("external");
         }
 
-        public void Dispose() => _root.Delete(recursive: true);
+        public void Dispose() => _root.Dispose();
     }
 }
