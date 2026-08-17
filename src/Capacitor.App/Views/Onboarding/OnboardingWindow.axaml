@@ -289,6 +289,24 @@
             </Grid>
         </DataTemplate>
 
+        <DataTemplate DataType="vm:DaemonStepViewModel">
+            <StackPanel Spacing="10">
+                <TextBlock Text="The daemon runs kcap's hosted agents and reviews in the background, and starts again after a reboot."
+                           Opacity="0.7" TextWrapping="Wrap" />
+
+                <TextBlock x:Name="DaemonMessageText" Text="{Binding Message}" TextWrapping="Wrap" />
+
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button x:Name="DaemonActionButton" Content="{Binding ActionLabel}" Command="{Binding ActionCommand}"
+                            IsVisible="{Binding ActionLabel, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    <Button x:Name="DaemonRefreshButton" Content="Check again" Command="{Binding RefreshCommand}" />
+                </StackPanel>
+
+                <TextBlock x:Name="DaemonStatusText" Text="{Binding Status}" TextWrapping="Wrap"
+                           IsVisible="{Binding Status, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            </StackPanel>
+        </DataTemplate>
+
         <DataTemplate DataType="vm:DoneStepViewModel">
             <ItemsControl x:Name="SummaryList" ItemsSource="{Binding Summary}">
                 <ItemsControl.ItemTemplate>
