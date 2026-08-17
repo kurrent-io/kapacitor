@@ -141,19 +141,14 @@ public class CursorRewriteGuardTests {
         var guard = new CursorRewriteGuard(NewSessionId());
         guard.Checkpoint(offset: 6, trailingSha: "irrelevant");
 
-        var tmp = Path.GetTempFileName();
+        using var tempDir = new TempDir();
+        var       tmp     = tempDir.CreateFile("stream.tmp", "line1\nline2\n");
 
-        try {
-            await File.WriteAllTextAsync(tmp, "line1\nline2\n");
+        await using var stream = new FileStream(tmp, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        stream.Position = 3;
 
-            await using var stream = new FileStream(tmp, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            stream.Position = 3;
+        guard.HashPriorZone(stream);
 
-            guard.HashPriorZone(stream);
-
-            await Assert.That(stream.Position).IsEqualTo(3L);
-        } finally {
-            File.Delete(tmp);
-        }
+        await Assert.That(stream.Position).IsEqualTo(3L);
     }
 }

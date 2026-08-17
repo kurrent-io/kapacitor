@@ -67,64 +67,48 @@ public class CodexSubagentDiscoveryTests {
 
     [Test]
     public async Task ReadHeader_Child_UsesOwnId_NotTheParentBearingSessionId() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
-        try {
-            var child = WriteChild(DayDir(tmp));
+        using var tmp = new TempDir();
+        var child = WriteChild(DayDir(tmp.Path));
 
-            var (outcome, meta) = CodexSubagentDiscovery.ReadHeader(child);
+        var (outcome, meta) = CodexSubagentDiscovery.ReadHeader(child);
 
-            await Assert.That(outcome).IsEqualTo(CodexSubagentDiscovery.RolloutHeader.Subagent);
-            await Assert.That(meta.IdDashless).IsEqualTo(Dashless(ChildDashed));
-            await Assert.That(meta.ParentThreadIdDashless).IsEqualTo(Dashless(ParentDashed));
-            await Assert.That(meta.AgentPath).IsEqualTo("/root/spec_quality");
-            await Assert.That(meta.AgentNickname).IsEqualTo("Hegel");
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(outcome).IsEqualTo(CodexSubagentDiscovery.RolloutHeader.Subagent);
+        await Assert.That(meta.IdDashless).IsEqualTo(Dashless(ChildDashed));
+        await Assert.That(meta.ParentThreadIdDashless).IsEqualTo(Dashless(ParentDashed));
+        await Assert.That(meta.AgentPath).IsEqualTo("/root/spec_quality");
+        await Assert.That(meta.AgentNickname).IsEqualTo("Hegel");
     }
 
     [Test]
     public async Task ReadHeader_TopLevelSession_IsNotSubagent() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
-        try {
-            var parent = WriteParent(DayDir(tmp));
+        using var tmp = new TempDir();
+        var parent = WriteParent(DayDir(tmp.Path));
 
-            var (outcome, meta) = CodexSubagentDiscovery.ReadHeader(parent);
+        var (outcome, meta) = CodexSubagentDiscovery.ReadHeader(parent);
 
-            await Assert.That(outcome).IsEqualTo(CodexSubagentDiscovery.RolloutHeader.NotSubagent);
-            await Assert.That(meta.ParentThreadIdDashless).IsNull();
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(outcome).IsEqualTo(CodexSubagentDiscovery.RolloutHeader.NotSubagent);
+        await Assert.That(meta.ParentThreadIdDashless).IsNull();
     }
 
     [Test]
     public async Task ReadHeader_MidWriteHeader_IsIndeterminate() {
         // Truncated first line (no newline yet) — could still become a valid session_meta.
-        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
-        try {
-            var path = Path.Combine(DayDir(tmp), $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
-            File.WriteAllText(path, """{"timestamp":"2026-08-10T15:21:59.231Z","type":"session_me""");
+        using var tmp = new TempDir();
+        var path = Path.Combine(DayDir(tmp.Path), $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
+        File.WriteAllText(path, """{"timestamp":"2026-08-10T15:21:59.231Z","type":"session_me""");
 
-            await Assert.That(CodexSubagentDiscovery.ReadHeader(path).Outcome)
-                .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.Indeterminate);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(CodexSubagentDiscovery.ReadHeader(path).Outcome)
+            .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.Indeterminate);
     }
 
     [Test]
     public async Task ReadHeader_EmptyFile_IsIndeterminate() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
-        try {
-            var path = Path.Combine(DayDir(tmp), $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
-            File.WriteAllText(path, "");
+        using var tmp = new TempDir();
+        var path = Path.Combine(DayDir(tmp.Path), $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
+        File.WriteAllText(path, "");
 
-            await Assert.That(CodexSubagentDiscovery.ReadHeader(path).Outcome)
-                .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.Indeterminate);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(CodexSubagentDiscovery.ReadHeader(path).Outcome)
+            .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.Indeterminate);
     }
 
     [Test]
@@ -132,155 +116,127 @@ public class CodexSubagentDiscoveryTests {
         // A newline-terminated first line that isn't parseable session_meta is a permanently
         // malformed file — it must classify definitively so polling callers can cache it as
         // ruled-out instead of re-opening it on every tick.
-        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
-        try {
-            var path = Path.Combine(DayDir(tmp), $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
-            File.WriteAllText(path, "this is not json\n");
+        using var tmp = new TempDir();
+        var path = Path.Combine(DayDir(tmp.Path), $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
+        File.WriteAllText(path, "this is not json\n");
 
-            await Assert.That(CodexSubagentDiscovery.ReadHeader(path).Outcome)
-                .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.NotSubagent);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(CodexSubagentDiscovery.ReadHeader(path).Outcome)
+            .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.NotSubagent);
     }
 
     [Test]
     public async Task ReadHeader_CompleteNonSessionMetaJson_IsDefinitivelyNotSubagent() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
-        try {
-            var path = Path.Combine(DayDir(tmp), $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
-            File.WriteAllText(path, """{"type":"event_msg","payload":{"type":"task_started"}}""" + "\n");
+        using var tmp = new TempDir();
+        var path = Path.Combine(DayDir(tmp.Path), $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
+        File.WriteAllText(path, """{"type":"event_msg","payload":{"type":"task_started"}}""" + "\n");
 
-            await Assert.That(CodexSubagentDiscovery.ReadHeader(path).Outcome)
-                .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.NotSubagent);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(CodexSubagentDiscovery.ReadHeader(path).Outcome)
+            .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.NotSubagent);
     }
 
     [Test]
     public async Task ReadHeader_TruncatedButCompleteJson_IsJudgedOnContent() {
         // The writer flushed the whole session_meta JSON but not the trailing newline yet —
         // parseable content wins over line-completeness.
-        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
-        try {
-            var child = WriteChild(DayDir(tmp));
-            var text  = File.ReadAllText(child).TrimEnd('\n');
-            File.WriteAllText(child, text); // strip the newline
+        using var tmp = new TempDir();
+        var child = WriteChild(DayDir(tmp.Path));
+        var text  = File.ReadAllText(child).TrimEnd('\n');
+        File.WriteAllText(child, text); // strip the newline
 
-            await Assert.That(CodexSubagentDiscovery.ReadHeader(child).Outcome)
-                .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.Subagent);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(CodexSubagentDiscovery.ReadHeader(child).Outcome)
+            .IsEqualTo(CodexSubagentDiscovery.RolloutHeader.Subagent);
     }
 
     // ── EnumerateSubagentRollouts ─────────────────────────────────────────
 
     [Test]
     public async Task EnumerateSubagentRollouts_FindsOwnChild_AndRulesOutForeigners() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
-        try {
-            var day    = DayDir(tmp);
-            var parent = WriteParent(day);
-            WriteChild(day);
-            var other      = WriteParent(day, dashedId: OtherDashed);                    // unrelated top-level session
-            var otherChild = WriteChild(day, dashedId: "019fec46-3858-7900-9d86-c6e79b604ac5",
-                parentDashedId: OtherDashed, agentPath: "/root/standards_review", nickname: "Huygens",
-                stamp: "2026-08-10T17-24-12");
-            var garbage = Path.Combine(day, "rollout-2026-08-10T17-25-00-019fec46-51e6-7a03-9f0b-cc6f701a9134.jsonl");
-            File.WriteAllText(garbage, "not json at all\n"); // permanently malformed — must be ruled out, not re-read forever
+        using var tmp = new TempDir();
+        var day    = DayDir(tmp.Path);
+        var parent = WriteParent(day);
+        WriteChild(day);
+        var other      = WriteParent(day, dashedId: OtherDashed);                    // unrelated top-level session
+        var otherChild = WriteChild(day, dashedId: "019fec46-3858-7900-9d86-c6e79b604ac5",
+            parentDashedId: OtherDashed, agentPath: "/root/standards_review", nickname: "Huygens",
+            stamp: "2026-08-10T17-24-12");
+        var garbage = Path.Combine(day, "rollout-2026-08-10T17-25-00-019fec46-51e6-7a03-9f0b-cc6f701a9134.jsonl");
+        File.WriteAllText(garbage, "not json at all\n"); // permanently malformed — must be ruled out, not re-read forever
 
-            var ruledOut = new HashSet<string>(StringComparer.Ordinal);
-            var subs     = CodexSubagentDiscovery.EnumerateSubagentRollouts(parent, Dashless(ParentDashed), ruledOut);
+        var ruledOut = new HashSet<string>(StringComparer.Ordinal);
+        var subs     = CodexSubagentDiscovery.EnumerateSubagentRollouts(parent, Dashless(ParentDashed), ruledOut);
 
-            await Assert.That(subs.Count).IsEqualTo(1);
-            await Assert.That(subs[0].ChildDashlessId).IsEqualTo(Dashless(ChildDashed));
-            await Assert.That(subs[0].AgentPath).IsEqualTo("/root/spec_quality");
+        await Assert.That(subs.Count).IsEqualTo(1);
+        await Assert.That(subs[0].ChildDashlessId).IsEqualTo(Dashless(ChildDashed));
+        await Assert.That(subs[0].AgentPath).IsEqualTo("/root/spec_quality");
 
-            // Foreign/malformed rollouts are cached as definitive non-children; the parent's
-            // own child is NOT ruled out (it stays enumerable for the teardown's fresh scan).
-            await Assert.That(ruledOut.Contains(other)).IsTrue();
-            await Assert.That(ruledOut.Contains(otherChild)).IsTrue();
-            await Assert.That(ruledOut.Contains(garbage)).IsTrue();
-            await Assert.That(ruledOut.Count).IsEqualTo(3);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        // Foreign/malformed rollouts are cached as definitive non-children; the parent's
+        // own child is NOT ruled out (it stays enumerable for the teardown's fresh scan).
+        await Assert.That(ruledOut.Contains(other)).IsTrue();
+        await Assert.That(ruledOut.Contains(otherChild)).IsTrue();
+        await Assert.That(ruledOut.Contains(garbage)).IsTrue();
+        await Assert.That(ruledOut.Count).IsEqualTo(3);
     }
 
     [Test]
     public async Task EnumerateSubagentRollouts_MidWriteHeader_IsRetried_NotCached() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
-        try {
-            var day    = DayDir(tmp);
-            var parent = WriteParent(day);
+        using var tmp = new TempDir();
+        var day    = DayDir(tmp.Path);
+        var parent = WriteParent(day);
 
-            // First tick: the child rollout exists but its header line has no newline-complete
-            // session_meta yet — it must be skipped WITHOUT being ruled out.
-            var childPath = Path.Combine(day, $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
-            File.WriteAllText(childPath, """{"timestamp":"2026-08-10T15:21:59.231Z","type":"session_me""");
+        // First tick: the child rollout exists but its header line has no newline-complete
+        // session_meta yet — it must be skipped WITHOUT being ruled out.
+        var childPath = Path.Combine(day, $"rollout-2026-08-10T17-21-58-{ChildDashed}.jsonl");
+        File.WriteAllText(childPath, """{"timestamp":"2026-08-10T15:21:59.231Z","type":"session_me""");
 
-            var ruledOut = new HashSet<string>(StringComparer.Ordinal);
-            var first    = CodexSubagentDiscovery.EnumerateSubagentRollouts(parent, Dashless(ParentDashed), ruledOut);
+        var ruledOut = new HashSet<string>(StringComparer.Ordinal);
+        var first    = CodexSubagentDiscovery.EnumerateSubagentRollouts(parent, Dashless(ParentDashed), ruledOut);
 
-            await Assert.That(first.Count).IsEqualTo(0);
-            await Assert.That(ruledOut.Contains(childPath)).IsFalse();
+        await Assert.That(first.Count).IsEqualTo(0);
+        await Assert.That(ruledOut.Contains(childPath)).IsFalse();
 
-            // Second tick: header complete — now discovered.
-            WriteChild(day);
-            var second = CodexSubagentDiscovery.EnumerateSubagentRollouts(parent, Dashless(ParentDashed), ruledOut);
+        // Second tick: header complete — now discovered.
+        WriteChild(day);
+        var second = CodexSubagentDiscovery.EnumerateSubagentRollouts(parent, Dashless(ParentDashed), ruledOut);
 
-            await Assert.That(second.Count).IsEqualTo(1);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(second.Count).IsEqualTo(1);
     }
 
     [Test]
     public async Task EnumerateSubagentRollouts_FindsChildInALaterDayDir() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
-        try {
-            var parent = WriteParent(DayDir(tmp));
+        using var tmp = new TempDir();
+        var parent = WriteParent(DayDir(tmp.Path));
 
-            // Midnight rollover: the child spawns into the NEXT day's directory.
-            var nextDay = Path.Combine(tmp, "2026", "08", "11");
-            Directory.CreateDirectory(nextDay);
-            WriteChild(nextDay, stamp: "2026-08-11T00-01-02");
+        // Midnight rollover: the child spawns into the NEXT day's directory.
+        var nextDay = tmp.PathTo("2026", "08", "11");
+        Directory.CreateDirectory(nextDay);
+        WriteChild(nextDay, stamp: "2026-08-11T00-01-02");
 
-            var subs = CodexSubagentDiscovery.EnumerateSubagentRollouts(parent, Dashless(ParentDashed));
+        var subs = CodexSubagentDiscovery.EnumerateSubagentRollouts(parent, Dashless(ParentDashed));
 
-            await Assert.That(subs.Count).IsEqualTo(1);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(subs.Count).IsEqualTo(1);
     }
 
     // ── EnumerateDescendantRollouts ───────────────────────────────────────
 
     [Test]
     public async Task EnumerateDescendantRollouts_FlattensGrandchildrenUnderTheRoot() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
-        try {
-            var day    = DayDir(tmp);
-            var parent = WriteParent(day);
-            WriteChild(day);
+        using var tmp = new TempDir();
+        var day    = DayDir(tmp.Path);
+        var parent = WriteParent(day);
+        WriteChild(day);
 
-            const string grandDashed = "019fec46-51e6-7a03-9f0b-cc6f701a9134";
-            WriteChild(day, dashedId: grandDashed, parentDashedId: ChildDashed,
-                agentPath: "/root/spec_quality/deep_dive", nickname: "Confucius",
-                stamp: "2026-08-10T17-25-00");
+        const string grandDashed = "019fec46-51e6-7a03-9f0b-cc6f701a9134";
+        WriteChild(day, dashedId: grandDashed, parentDashedId: ChildDashed,
+            agentPath: "/root/spec_quality/deep_dive", nickname: "Confucius",
+            stamp: "2026-08-10T17-25-00");
 
-            var subs = CodexSubagentDiscovery.EnumerateDescendantRollouts(parent, Dashless(ParentDashed));
+        var subs = CodexSubagentDiscovery.EnumerateDescendantRollouts(parent, Dashless(ParentDashed));
 
-            await Assert.That(subs.Count).IsEqualTo(2);
-            await Assert.That(subs.Select(s => s.ChildDashlessId).ToList())
-                .Contains(Dashless(ChildDashed));
-            await Assert.That(subs.Select(s => s.ChildDashlessId).ToList())
-                .Contains(Dashless(grandDashed));
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(subs.Count).IsEqualTo(2);
+        await Assert.That(subs.Select(s => s.ChildDashlessId).ToList())
+            .Contains(Dashless(ChildDashed));
+        await Assert.That(subs.Select(s => s.ChildDashlessId).ToList())
+            .Contains(Dashless(grandDashed));
     }
 
     // ── CodexImportSource.DiscoverAsync filter ────────────────────────────
@@ -292,33 +248,29 @@ public class CodexSubagentDiscoveryTests {
         // rollout whose header can't be judged yet (actively starting mid-import) is skipped
         // for this pass instead of being imported top-level now and nested on the next run.
         // A permanently malformed header stays importable — it can never be proven a child.
-        var tmp = Directory.CreateTempSubdirectory("kcap-csd").FullName;
-        try {
-            var day = DayDir(tmp);
-            WriteParent(day);
-            WriteChild(day);
+        using var tmp = new TempDir();
+        var day = DayDir(tmp.Path);
+        WriteParent(day);
+        WriteChild(day);
 
-            const string truncatedDashed = "019fec46-3858-7900-9d86-c6e79b604ac5";
-            File.WriteAllText(
-                Path.Combine(day, $"rollout-2026-08-10T17-24-12-{truncatedDashed}.jsonl"),
-                """{"timestamp":"2026-08-10T15:24:12.000Z","type":"session_me""");
+        const string truncatedDashed = "019fec46-3858-7900-9d86-c6e79b604ac5";
+        File.WriteAllText(
+            Path.Combine(day, $"rollout-2026-08-10T17-24-12-{truncatedDashed}.jsonl"),
+            """{"timestamp":"2026-08-10T15:24:12.000Z","type":"session_me""");
 
-            const string malformedDashed = "019fec46-51e6-7a03-9f0b-cc6f701a9134";
-            File.WriteAllText(
-                Path.Combine(day, $"rollout-2026-08-10T17-24-19-{malformedDashed}.jsonl"),
-                "not json at all\n");
+        const string malformedDashed = "019fec46-51e6-7a03-9f0b-cc6f701a9134";
+        File.WriteAllText(
+            Path.Combine(day, $"rollout-2026-08-10T17-24-19-{malformedDashed}.jsonl"),
+            "not json at all\n");
 
-            var source     = new CodexImportSource(rootOverride: tmp);
-            var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
-            var ids        = discovered.Select(d => d.SessionId).OrderBy(x => x, StringComparer.Ordinal).ToList();
+        var source     = new CodexImportSource(rootOverride: tmp.Path);
+        var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
+        var ids        = discovered.Select(d => d.SessionId).OrderBy(x => x, StringComparer.Ordinal).ToList();
 
-            await Assert.That(ids).IsEquivalentTo(new[] {
-                Dashless(ParentDashed),
-                Dashless(malformedDashed),
-            });
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(ids).IsEquivalentTo(new[] {
+            Dashless(ParentDashed),
+            Dashless(malformedDashed),
+        });
     }
 
     // ── AgentTypeFrom ─────────────────────────────────────────────────────

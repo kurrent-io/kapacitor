@@ -94,7 +94,7 @@ public class AcpHostedAgentRuntimeFactoryToolUseLiveTests {
             $"Gated live E2E against a real 'cursor-agent acp' tool-using turn — set {LiveGateEnvVar}=1 to run " +
             "(spends a real Cursor turn; requires an authenticated Team-tier `cursor-agent` on PATH).");
 
-        var worktreeDir = Directory.CreateTempSubdirectory("kcap-acp-live-tooluse-");
+        using var worktreeDir = new TempDir();
 
         // A real (console) logger factory, same rationale as the gap-1 live test: AcpHostedAgentRuntime
         // logs warnings on non-fatal model-selection failures that would otherwise be silently swallowed.
@@ -102,89 +102,85 @@ public class AcpHostedAgentRuntimeFactoryToolUseLiveTests {
             .AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss.fff "; })
             .SetMinimumLevel(LogLevel.Debug));
 
+        var connection = new AutoApproveServerConnection();
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: new DaemonConfig(), // CursorPath="cursor-agent"
+            loggerFactory: liveLoggerFactory,
+            connection: connection,
+            connectionSource: null // real cursor-agent acp spawn — gap 1/task 5's production path
+        );
+
+        var ctx = new RuntimeStartContext(
+            AgentId: "ai-688-task5-live",
+            Vendor: "cursor",
+            SourceRepoPath: worktreeDir.Path,
+            Worktree: WorktreeInfo.Borrowed(worktreeDir.Path),
+            Prompt: "Use your shell/command tool to run exactly `echo kcap-e2e-marker` and report the output.",
+            Model: "claude-sonnet-4-5", // resolved against session/new's availableModels by AcpModelResolver
+            Effort: null,
+            Tools: null,
+            IsReview: false,
+            IsReviewFlow: false,
+            Review: null,
+            Cols: 80,
+            Rows: 24,
+            ServerUrl: null,
+            DaemonBridgeUrl: null,
+            CapacitorPath: "/usr/local/bin/kcap");
+
+        using var startCts = new CancellationTokenSource();
+
+        var started = await factory.StartAsync(ctx, startCts.Token).WaitAsync(HandshakeTimeout);
+
+        // AcpHostedAgentRuntimeFactory.StartAsync always sets HostedRuntimeStart.Transcript to
+        // the runtime itself for the "cursor" vendor (task 4's bind-handoff shape) — reading
+        // through this interface, rather than downcasting Runtime, exercises exactly the seam
+        // task 3/4's orchestrator wiring uses.
+        var transcript = started.Transcript ?? throw new InvalidOperationException(
+            "AcpHostedAgentRuntimeFactory.StartAsync did not set HostedRuntimeStart.Transcript — task 4's bind-handoff shape regressed.");
+
         try {
-            var connection = new AutoApproveServerConnection();
+            var envelopes = await CollectEnvelopesAsync(transcript.Envelopes, LiveTurnTimeout);
 
-            var factory = new AcpHostedAgentRuntimeFactory(
-                descriptor: AcpVendorDescriptors.Cursor,
-                config: new DaemonConfig(), // CursorPath="cursor-agent"
-                loggerFactory: liveLoggerFactory,
-                connection: connection,
-                connectionSource: null // real cursor-agent acp spawn — gap 1/task 5's production path
-            );
+            Console.WriteLine($"[ai-688-task5-live] observed {envelopes.Count} AcpEventEnvelope(s):");
+            foreach (var e in envelopes)
+                Console.WriteLine(
+                    $"[ai-688-task5-live]   seq={e.Seq} kind={e.Kind} text={Truncate(e.Text)} " +
+                    $"toolCallId={e.ToolCallId} toolName={e.ToolName} toolInput={Truncate(e.ToolInputJson)} " +
+                    $"toolResult={Truncate(e.ToolResult)} toolIsError={e.ToolIsError}");
 
-            var ctx = new RuntimeStartContext(
-                AgentId: "ai-688-task5-live",
-                Vendor: "cursor",
-                SourceRepoPath: worktreeDir.FullName,
-                Worktree: WorktreeInfo.Borrowed(worktreeDir.FullName),
-                Prompt: "Use your shell/command tool to run exactly `echo kcap-e2e-marker` and report the output.",
-                Model: "claude-sonnet-4-5", // resolved against session/new's availableModels by AcpModelResolver
-                Effort: null,
-                Tools: null,
-                IsReview: false,
-                IsReviewFlow: false,
-                Review: null,
-                Cols: 80,
-                Rows: 24,
-                ServerUrl: null,
-                DaemonBridgeUrl: null,
-                CapacitorPath: "/usr/local/bin/kcap");
+            Console.WriteLine($"[ai-688-task5-live] AcpInteractionRequest(s) seen: {connection.Requests.Count}");
+            foreach (var r in connection.Requests)
+                Console.WriteLine($"[ai-688-task5-live]   kind={r.Kind} tool={r.ToolName} options=[{string.Join(",", (r.Options ?? []).Select(o => o.OptionId))}]");
 
-            using var startCts = new CancellationTokenSource();
+            // Resilient assertions (real-model non-determinism — this is a manual/gated E2E,
+            // not a CI gate; see this class's remarks): every serialized prompt turn — tool-using
+            // or not — produces a UserMessage (ProcessTurnAsync emits it unconditionally before
+            // sending session/prompt) and at least one AssistantText (the aggregated
+            // agent_message_chunk run). Whether a ToolCall/ToolResult pair ALSO appears depends
+            // on whether the model actually exercised the tool for THIS run.
+            await Assert.That(envelopes.Any(e => e.Kind == AcpEventKind.UserMessage)).IsTrue();
+            await Assert.That(envelopes.Any(e => e.Kind == AcpEventKind.AssistantText)).IsTrue();
 
-            var started = await factory.StartAsync(ctx, startCts.Token).WaitAsync(HandshakeTimeout);
+            var toolCalls   = envelopes.Where(e => e.Kind == AcpEventKind.ToolCall).ToList();
+            var toolResults = envelopes.Where(e => e.Kind == AcpEventKind.ToolResult).ToList();
 
-            // AcpHostedAgentRuntimeFactory.StartAsync always sets HostedRuntimeStart.Transcript to
-            // the runtime itself for the "cursor" vendor (task 4's bind-handoff shape) — reading
-            // through this interface, rather than downcasting Runtime, exercises exactly the seam
-            // task 3/4's orchestrator wiring uses.
-            var transcript = started.Transcript ?? throw new InvalidOperationException(
-                "AcpHostedAgentRuntimeFactory.StartAsync did not set HostedRuntimeStart.Transcript — task 4's bind-handoff shape regressed.");
-
-            try {
-                var envelopes = await CollectEnvelopesAsync(transcript.Envelopes, LiveTurnTimeout);
-
-                Console.WriteLine($"[ai-688-task5-live] observed {envelopes.Count} AcpEventEnvelope(s):");
-                foreach (var e in envelopes)
-                    Console.WriteLine(
-                        $"[ai-688-task5-live]   seq={e.Seq} kind={e.Kind} text={Truncate(e.Text)} " +
-                        $"toolCallId={e.ToolCallId} toolName={e.ToolName} toolInput={Truncate(e.ToolInputJson)} " +
-                        $"toolResult={Truncate(e.ToolResult)} toolIsError={e.ToolIsError}");
-
-                Console.WriteLine($"[ai-688-task5-live] AcpInteractionRequest(s) seen: {connection.Requests.Count}");
-                foreach (var r in connection.Requests)
-                    Console.WriteLine($"[ai-688-task5-live]   kind={r.Kind} tool={r.ToolName} options=[{string.Join(",", (r.Options ?? []).Select(o => o.OptionId))}]");
-
-                // Resilient assertions (real-model non-determinism — this is a manual/gated E2E,
-                // not a CI gate; see this class's remarks): every serialized prompt turn — tool-using
-                // or not — produces a UserMessage (ProcessTurnAsync emits it unconditionally before
-                // sending session/prompt) and at least one AssistantText (the aggregated
-                // agent_message_chunk run). Whether a ToolCall/ToolResult pair ALSO appears depends
-                // on whether the model actually exercised the tool for THIS run.
-                await Assert.That(envelopes.Any(e => e.Kind == AcpEventKind.UserMessage)).IsTrue();
-                await Assert.That(envelopes.Any(e => e.Kind == AcpEventKind.AssistantText)).IsTrue();
-
-                var toolCalls   = envelopes.Where(e => e.Kind == AcpEventKind.ToolCall).ToList();
-                var toolResults = envelopes.Where(e => e.Kind == AcpEventKind.ToolResult).ToList();
-
-                if (toolCalls.Count > 0) {
-                    Console.WriteLine("[ai-688-task5-live] turn used a tool — ToolCall envelope(s) present.");
-                    await Assert.That(toolCalls[0].ToolCallId).IsNotNull();
-                } else {
-                    Console.WriteLine("[ai-688-task5-live] turn did NOT surface a ToolCall envelope (model chose not to use a tool this run).");
-                }
-
-                if (toolResults.Count > 0)
-                    Console.WriteLine("[ai-688-task5-live] turn produced a ToolResult envelope — a tool_call_update reached a terminal status with extractable content.");
-
-                Console.WriteLine($"[ai-688-task5-live] PROJ-686 permission path fired: {connection.Requests.Count > 0}");
-            } finally {
-                startCts.Cancel();
-                await started.Runtime.DisposeAsync();
+            if (toolCalls.Count > 0) {
+                Console.WriteLine("[ai-688-task5-live] turn used a tool — ToolCall envelope(s) present.");
+                await Assert.That(toolCalls[0].ToolCallId).IsNotNull();
+            } else {
+                Console.WriteLine("[ai-688-task5-live] turn did NOT surface a ToolCall envelope (model chose not to use a tool this run).");
             }
+
+            if (toolResults.Count > 0)
+                Console.WriteLine("[ai-688-task5-live] turn produced a ToolResult envelope — a tool_call_update reached a terminal status with extractable content.");
+
+            Console.WriteLine($"[ai-688-task5-live] PROJ-686 permission path fired: {connection.Requests.Count > 0}");
         } finally {
-            try { worktreeDir.Delete(recursive: true); } catch { /* best-effort cleanup */ }
+            startCts.Cancel();
+            await started.Runtime.DisposeAsync();
         }
     }
 

@@ -1252,25 +1252,21 @@ public class DaemonLifecycleControllerTests {
     [Test]
     public async Task Skew_classification_resolves_symlinks_to_the_same_canonical_target() {
         await using var h = new Harness();
-        var dir  = Directory.CreateTempSubdirectory("kcap-skew-symlink-").FullName;
-        var real = Path.Combine(dir, "kcapd-real");
+        using var tmp = new TempDir();
+        var real = tmp.PathTo("kcapd-real");
         File.WriteAllText(real, "binary");
-        var link = Path.Combine(dir, "kcapd-link");
+        var link = tmp.PathTo("kcapd-link");
         File.CreateSymbolicLink(link, real);
 
-        try {
-            h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(
-                unitPresent: true, state: "installed", installBinaryPath: real, binaryPath: link));
-            h.Start();
-            await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
+        h.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(Snap(
+            unitPresent: true, state: "installed", installBinaryPath: real, binaryPath: link));
+        h.Start();
+        await WaitUntilAsync(() => h.Cli.VersionCallCount == 1, what: "the version cache");
 
-            h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
+        h.PushUnreachable(reason: "daemon_incompatible", daemonVersion: "0.9");
 
-            await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the skew prompt");
-            await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindRestartUpdate);
-        } finally {
-            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort test cleanup */ }
-        }
+        await WaitUntilAsync(() => h.Surface.Prompts.Count == 1, what: "the skew prompt");
+        await Assert.That(h.Surface.Prompts[0].Kind).IsEqualTo(LifecyclePrompt.KindRestartUpdate);
     }
 
     [Test]

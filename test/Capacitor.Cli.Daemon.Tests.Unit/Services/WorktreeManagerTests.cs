@@ -139,8 +139,8 @@ public class WorktreeManagerTests {
     /// </summary>
     [Test]
     public async Task CreateAsync_ConcurrentBaseRefs_EachWorktreePinnedToCorrectSha() {
-        var upstream = Path.Combine(Path.GetTempPath(), "kcap-upstream-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(upstream);
+        using var tmp = new TempDir();
+        var upstream = tmp.CreateDir("upstream");
 
         Git(upstream, "init", "-q");
         Git(upstream, "config", "user.email", "test@example.com");
@@ -169,39 +169,29 @@ public class WorktreeManagerTests {
             refs[i] = (refName, sha);
         }
 
-        var clone = Path.Combine(Path.GetTempPath(), "kcap-clone-" + Guid.NewGuid().ToString("N")[..8]);
+        var clone = tmp.CreateDir("clone");
         Git(Path.GetTempPath(), "clone", "-q", upstream, clone);
 
+        var manager   = new WorktreeManager(new DaemonConfig(), NullLogger<WorktreeManager>.Instance);
+        var worktrees = new WorktreeInfo[concurrency];
+
+        await Task.WhenAll(
+            Enumerable.Range(0, concurrency)
+                .Select(async i => {
+                        worktrees[i] = await manager.CreateAsync(clone, name: $"review-{i}", baseRef: refs[i].RefName);
+                    }
+                )
+        );
+
         try {
-            var manager   = new WorktreeManager(new DaemonConfig(), NullLogger<WorktreeManager>.Instance);
-            var worktrees = new WorktreeInfo[concurrency];
-
-            await Task.WhenAll(
-                Enumerable.Range(0, concurrency)
-                    .Select(async i => {
-                            worktrees[i] = await manager.CreateAsync(clone, name: $"review-{i}", baseRef: refs[i].RefName);
-                        }
-                    )
-            );
-
-            try {
-                for (var i = 0; i < concurrency; i++) {
-                    var head = GitCapture(worktrees[i].Path, "rev-parse", "HEAD").Trim();
-                    await Assert.That(head).IsEqualTo(refs[i].Sha);
-                    await Assert.That(worktrees[i].FetchedRef).IsEqualTo($"refs/kcap/review/review-{i}");
-                }
-            } finally {
-                foreach (var w in worktrees) {
-                    if (w is not null) await WorktreeManager.RemoveAsync(w);
-                }
+            for (var i = 0; i < concurrency; i++) {
+                var head = GitCapture(worktrees[i].Path, "rev-parse", "HEAD").Trim();
+                await Assert.That(head).IsEqualTo(refs[i].Sha);
+                await Assert.That(worktrees[i].FetchedRef).IsEqualTo($"refs/kcap/review/review-{i}");
             }
         } finally {
-            try { Directory.Delete(upstream, true); } catch {
-                /* best-effort */
-            }
-
-            try { Directory.Delete(clone, true); } catch {
-                /* best-effort */
+            foreach (var w in worktrees) {
+                if (w is not null) await WorktreeManager.RemoveAsync(w);
             }
         }
     }
@@ -246,7 +236,8 @@ public class WorktreeManagerTests {
     public async Task BorrowedSnapshot_CarriesSubmoduleFilesAsPlainContentWithoutItsGit() {
         var (subUpstream, sub)     = MakeUpstreamWithSideRef("refs/pull/91/head", out _);
         var (superUpstream, super) = MakeUpstreamWithSideRef("refs/pull/92/head", out _);
-        var root = Path.Combine(Path.GetTempPath(), "kcap-borrowed-sub-" + Guid.NewGuid().ToString("N")[..8]);
+        using var tmp = new TempDir();
+        var root = tmp.PathTo("root");
         try {
             File.WriteAllText(Path.Combine(sub, "lib.txt"), "sub-tracked");
             Git(sub, "add", "lib.txt");
@@ -278,7 +269,7 @@ public class WorktreeManagerTests {
                 await WorktreeManager.RemoveAsync(snapshot);
             }
         } finally {
-            foreach (var dir in new[] { root, sub, super, subUpstream, superUpstream })
+            foreach (var dir in new[] { sub, super, subUpstream, superUpstream })
                 try { Directory.Delete(dir, true); } catch { /* best-effort */ }
         }
     }
@@ -293,33 +284,29 @@ public class WorktreeManagerTests {
     [Test]
     public async Task BorrowedSnapshot_RefusesSubmodulePathThatIsASymlink() {
         var (_, super) = MakeUpstreamWithSideRef("refs/pull/93/head", out _);
-        var outside = Path.Combine(Path.GetTempPath(), "kcap-outside-" + Guid.NewGuid().ToString("N")[..8]);
-        var root    = Path.Combine(Path.GetTempPath(), "kcap-borrowed-lnk-" + Guid.NewGuid().ToString("N")[..8]);
-        try {
-            Directory.CreateDirectory(outside);
-            File.WriteAllText(Path.Combine(outside, "secret.txt"), "must-not-be-snapshotted");
+        using var tmp = new TempDir();
+        var outside = tmp.CreateDir("outside");
+        var root    = tmp.PathTo("root");
+        File.WriteAllText(Path.Combine(outside, "secret.txt"), "must-not-be-snapshotted");
 
-            // Forge a gitlink entry whose path is a symlink to a directory outside the source.
-            Directory.CreateSymbolicLink(Path.Combine(super, "vendored"), outside);
-            Git(super, "update-index", "--add", "--cacheinfo",
-                "160000," + new string('a', 40) + ",vendored");
+        // Forge a gitlink entry whose path is a symlink to a directory outside the source.
+        Directory.CreateSymbolicLink(Path.Combine(super, "vendored"), outside);
+        Git(super, "update-index", "--add", "--cacheinfo",
+            "160000," + new string('a', 40) + ",vendored");
 
-            var manager = new WorktreeManager(
-                new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
+        var manager = new WorktreeManager(
+            new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
 
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-                await manager.CreateBorrowedSnapshotAsync(super, "review", CancellationToken.None));
-            await Assert.That(ex!.Message).StartsWith("borrowed_snapshot_symlink_unsupported");
-        } finally {
-            try { Directory.Delete(root, true); } catch { /* best-effort */ }
-            try { Directory.Delete(outside, true); } catch { /* best-effort */ }
-        }
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await manager.CreateBorrowedSnapshotAsync(super, "review", CancellationToken.None));
+        await Assert.That(ex!.Message).StartsWith("borrowed_snapshot_symlink_unsupported");
     }
 
     [Test]
     public async Task BorrowedSnapshot_IsIndependent_CopiesDirtyContext_AndRefreshesPristinely() {
         var (upstream, clone) = MakeUpstreamWithSideRef("refs/pull/88/head", out _);
-        var root = Path.Combine(Path.GetTempPath(), "kcap-borrowed-root-" + Guid.NewGuid().ToString("N")[..8]);
+        using var tmp = new TempDir();
+        var root = tmp.PathTo("root");
         try {
             File.WriteAllText(Path.Combine(clone, "main.txt"), "dirty");
             File.WriteAllText(Path.Combine(clone, "untracked.txt"), "one");
@@ -350,14 +337,14 @@ public class WorktreeManagerTests {
         } finally {
             try { Directory.Delete(upstream, true); } catch { }
             try { Directory.Delete(clone, true); } catch { }
-            try { Directory.Delete(root, true); } catch { }
         }
     }
 
     [Test]
     public async Task BorrowedSnapshot_RefreshPreservesRunningExecutionDirectory() {
         var (upstream, clone) = MakeUpstreamWithSideRef("refs/pull/90/head", out _);
-        var root = Path.Combine(Path.GetTempPath(), "kcap-borrowed-root-" + Guid.NewGuid().ToString("N")[..8]);
+        using var tmp = new TempDir();
+        var root = tmp.PathTo("root");
         Process? holder = null;
         try {
             var sourceCwd = Path.Combine(clone, "src");
@@ -407,7 +394,6 @@ public class WorktreeManagerTests {
         } finally {
             try { Directory.Delete(upstream, true); } catch { }
             try { Directory.Delete(clone, true); } catch { }
-            try { Directory.Delete(root, true); } catch { }
         }
     }
 
@@ -415,7 +401,8 @@ public class WorktreeManagerTests {
     public async Task BorrowedSnapshot_RejectsSymlinkWithoutFollowingIt() {
         Skip.When(OperatingSystem.IsWindows(), "Symlink semantics in this certification are POSIX-only.");
         var (upstream, clone) = MakeUpstreamWithSideRef("refs/pull/89/head", out _);
-        var root = Path.Combine(Path.GetTempPath(), "kcap-borrowed-root-" + Guid.NewGuid().ToString("N")[..8]);
+        using var tmp = new TempDir();
+        var root = tmp.PathTo("root");
         try {
             File.CreateSymbolicLink(Path.Combine(clone, "escape"), Path.Combine(upstream, "main.txt"));
             var manager = new WorktreeManager(
@@ -427,61 +414,52 @@ public class WorktreeManagerTests {
         } finally {
             try { Directory.Delete(upstream, true); } catch { }
             try { Directory.Delete(clone, true); } catch { }
-            try { Directory.Delete(root, true); } catch { }
         }
     }
 
     [Test]
     public async Task Snapshot_copy_rejects_linked_destination_parent_before_touching_target() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX symlink semantics.");
-        var root = Directory.CreateTempSubdirectory("kcap-copy-root-").FullName;
-        var external = Directory.CreateTempSubdirectory("kcap-copy-external-").FullName;
-        try {
-            var linkedParent = Path.Combine(root, "linked");
-            Directory.CreateSymbolicLink(linkedParent, external);
+        using var tmp = new TempDir();
+        var root = tmp.CreateDir("root");
+        var external = tmp.CreateDir("external");
+        var linkedParent = Path.Combine(root, "linked");
+        Directory.CreateSymbolicLink(linkedParent, external);
 
-            var ex = Assert.Throws<InvalidOperationException>(() =>
-                WorktreeManager.EnsureParentDirectories(
-                    root, Path.Combine(linkedParent, "child", "file.txt")));
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            WorktreeManager.EnsureParentDirectories(
+                root, Path.Combine(linkedParent, "child", "file.txt")));
 
-            await Assert.That(ex.Message)
-                .StartsWith("borrowed_snapshot_destination_symlink_unsupported");
-            await Assert.That(Directory.Exists(Path.Combine(external, "child"))).IsFalse();
-        } finally {
-            try { Directory.Delete(root, true); } catch { }
-            try { Directory.Delete(external, true); } catch { }
-        }
+        await Assert.That(ex.Message)
+            .StartsWith("borrowed_snapshot_destination_symlink_unsupported");
+        await Assert.That(Directory.Exists(Path.Combine(external, "child"))).IsFalse();
     }
 
     [Test]
     public async Task Snapshot_copy_rejects_linked_destination_leaf_without_truncating_target() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX symlink semantics.");
-        var root = Directory.CreateTempSubdirectory("kcap-copy-root-").FullName;
-        var external = Path.Combine(
-            Directory.CreateTempSubdirectory("kcap-copy-external-").FullName, "secret.txt");
-        try {
-            File.WriteAllText(external, "keep-me");
-            var linkedLeaf = Path.Combine(root, "file.txt");
-            File.CreateSymbolicLink(linkedLeaf, external);
+        using var tmp = new TempDir();
+        var root = tmp.CreateDir("root");
+        var external = Path.Combine(tmp.CreateDir("external"), "secret.txt");
+        File.WriteAllText(external, "keep-me");
+        var linkedLeaf = Path.Combine(root, "file.txt");
+        File.CreateSymbolicLink(linkedLeaf, external);
 
-            var ex = Assert.Throws<InvalidOperationException>(() =>
-                WorktreeManager.EnsureDestinationLeafNoFollow(linkedLeaf));
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            WorktreeManager.EnsureDestinationLeafNoFollow(linkedLeaf));
 
-            await Assert.That(ex.Message)
-                .StartsWith("borrowed_snapshot_destination_symlink_unsupported");
-            await Assert.That(File.ReadAllText(external)).IsEqualTo("keep-me");
-        } finally {
-            try { Directory.Delete(root, true); } catch { }
-            try { Directory.Delete(Path.GetDirectoryName(external)!, true); } catch { }
-        }
+        await Assert.That(ex.Message)
+            .StartsWith("borrowed_snapshot_destination_symlink_unsupported");
+        await Assert.That(File.ReadAllText(external)).IsEqualTo("keep-me");
     }
 
     [Test]
     public async Task Snapshot_build_rejects_branch_linked_parent_before_copying_dirty_child() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX symlink semantics.");
         var (upstream, clone) = MakeUpstreamWithSideRef("refs/pull/91/head", out _);
-        var root = Path.Combine(Path.GetTempPath(), "kcap-borrowed-root-" + Guid.NewGuid().ToString("N")[..8]);
-        var external = Directory.CreateTempSubdirectory("kcap-copy-parent-target-").FullName;
+        using var tmp = new TempDir();
+        var root = tmp.PathTo("root");
+        var external = tmp.CreateDir("external");
         try {
             var route = Path.Combine(clone, "linked-parent");
             Directory.CreateSymbolicLink(route, external);
@@ -502,8 +480,6 @@ public class WorktreeManagerTests {
         } finally {
             try { Directory.Delete(upstream, true); } catch { }
             try { Directory.Delete(clone, true); } catch { }
-            try { Directory.Delete(root, true); } catch { }
-            try { Directory.Delete(external, true); } catch { }
         }
     }
 
@@ -511,8 +487,9 @@ public class WorktreeManagerTests {
     public async Task Snapshot_build_rejects_branch_linked_leaf_without_truncating_target() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX symlink semantics.");
         var (upstream, clone) = MakeUpstreamWithSideRef("refs/pull/92/head", out _);
-        var root = Path.Combine(Path.GetTempPath(), "kcap-borrowed-root-" + Guid.NewGuid().ToString("N")[..8]);
-        var externalDir = Directory.CreateTempSubdirectory("kcap-copy-leaf-target-").FullName;
+        using var tmp = new TempDir();
+        var root = tmp.PathTo("root");
+        var externalDir = tmp.CreateDir("external");
         var external = Path.Combine(externalDir, "sentinel.txt");
         try {
             File.WriteAllText(external, "keep-me");
@@ -534,8 +511,6 @@ public class WorktreeManagerTests {
         } finally {
             try { Directory.Delete(upstream, true); } catch { }
             try { Directory.Delete(clone, true); } catch { }
-            try { Directory.Delete(root, true); } catch { }
-            try { Directory.Delete(externalDir, true); } catch { }
         }
     }
 
@@ -559,8 +534,9 @@ public class WorktreeManagerTests {
     public async Task Snapshot_build_rejects_linked_source_parent_instead_of_copying_external_bytes() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX symlink semantics.");
         var (upstream, clone) = MakeUpstreamWithSideRef("refs/pull/93/head", out _);
-        var root = Path.Combine(Path.GetTempPath(), "kcap-borrowed-root-" + Guid.NewGuid().ToString("N")[..8]);
-        var external = Directory.CreateTempSubdirectory("kcap-source-parent-target-").FullName;
+        using var tmp = new TempDir();
+        var root = tmp.PathTo("root");
+        var external = tmp.CreateDir("external");
         try {
             var trackedDir = Path.Combine(clone, "tracked-dir");
             Directory.CreateDirectory(trackedDir);
@@ -580,18 +556,16 @@ public class WorktreeManagerTests {
         } finally {
             try { Directory.Delete(upstream, true); } catch { }
             try { Directory.Delete(clone, true); } catch { }
-            try { Directory.Delete(root, true); } catch { }
-            try { Directory.Delete(external, true); } catch { }
         }
     }
 
     [Test]
     public async Task Snapshot_removes_stale_head_alias_using_destination_case_policy() {
         var (upstream, clone) = MakeUpstreamWithSideRef("refs/pull/94/head", out _);
-        var root = Path.Combine(Path.GetTempPath(), "kcap-borrowed-root-" + Guid.NewGuid().ToString("N")[..8]);
+        using var tmp = new TempDir();
+        var root = tmp.Path;
         WorktreeInfo? snapshot = null;
         try {
-            Directory.CreateDirectory(root);
             Skip.When(!WorktreeManager.ProbeCaseSensitiveFileSystem(root),
                 "The stale spelling is distinct only on a case-sensitive filesystem.");
 
@@ -613,49 +587,45 @@ public class WorktreeManagerTests {
             if (snapshot is not null) await WorktreeManager.RemoveAsync(snapshot);
             try { Directory.Delete(upstream, true); } catch { }
             try { Directory.Delete(clone, true); } catch { }
-            try { Directory.Delete(root, true); } catch { }
         }
     }
 
     [Test]
     public async Task CleanupOrphaned_PreservesActiveBorrowedSnapshotContainerAndRemovesOnlyOrphans() {
-        var root = Path.Combine(Path.GetTempPath(), "kcap-cleanup-root-" + Guid.NewGuid().ToString("N")[..8]);
+        using var tmp = new TempDir();
+        var root = tmp.PathTo("root");
         var activeRoot = Path.Combine(root, "borrowed-snapshots", "active");
         var activeCwd = Path.Combine(activeRoot, "src");
         var activeSidecar = WorktreeManager.ReviewContextRootFor(activeRoot);
         var orphan = Path.Combine(root, "borrowed-snapshots", "orphan");
         var orphanSidecar = WorktreeManager.ReviewContextRootFor(orphan);
         var legacy = Path.Combine(root, "legacy-orphan");
-        try {
-            Directory.CreateDirectory(activeCwd);
-            Directory.CreateDirectory(activeSidecar);
-            Directory.CreateDirectory(orphan);
-            Directory.CreateDirectory(orphanSidecar);
-            Directory.CreateDirectory(legacy);
-            var manager = new WorktreeManager(
-                new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
+        Directory.CreateDirectory(activeCwd);
+        Directory.CreateDirectory(activeSidecar);
+        Directory.CreateDirectory(orphan);
+        Directory.CreateDirectory(orphanSidecar);
+        Directory.CreateDirectory(legacy);
+        var manager = new WorktreeManager(
+            new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
 
-            await manager.CleanupOrphanedAsync([activeCwd]);
+        await manager.CleanupOrphanedAsync([activeCwd]);
 
-            await Assert.That(Directory.Exists(activeRoot)).IsTrue();
-            await Assert.That(Directory.Exists(activeSidecar)).IsTrue();
-            await Assert.That(Directory.Exists(orphan)).IsFalse();
-            await Assert.That(Directory.Exists(orphanSidecar)).IsFalse();
-            await Assert.That(Directory.Exists(legacy)).IsFalse();
-        } finally {
-            try { Directory.Delete(root, true); } catch { }
-        }
+        await Assert.That(Directory.Exists(activeRoot)).IsTrue();
+        await Assert.That(Directory.Exists(activeSidecar)).IsTrue();
+        await Assert.That(Directory.Exists(orphan)).IsFalse();
+        await Assert.That(Directory.Exists(orphanSidecar)).IsFalse();
+        await Assert.That(Directory.Exists(legacy)).IsFalse();
     }
 
     [Test]
     public async Task CleanupOrphaned_unlinks_borrowed_snapshot_root_without_following_target() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX symlink semantics.");
-        var root = Path.Combine(Path.GetTempPath(), "kcap-cleanup-linked-root-" + Guid.NewGuid().ToString("N")[..8]);
-        var external = Directory.CreateTempSubdirectory("kcap-cleanup-external-").FullName;
+        using var tmp = new TempDir();
+        var root = tmp.CreateDir("root");
+        var external = tmp.CreateDir("external");
         var borrowedSnapshots = Path.Combine(root, "borrowed-snapshots");
         var externalChild = Path.Combine(external, "must-survive");
         try {
-            Directory.CreateDirectory(root);
             Directory.CreateDirectory(externalChild);
             File.WriteAllText(Path.Combine(externalChild, "sentinel.txt"), "keep-me");
             Directory.CreateSymbolicLink(borrowedSnapshots, external);
@@ -670,8 +640,6 @@ public class WorktreeManagerTests {
                 .IsEqualTo("keep-me");
         } finally {
             try { if (Path.Exists(borrowedSnapshots)) File.Delete(borrowedSnapshots); } catch { }
-            try { Directory.Delete(root, true); } catch { }
-            try { Directory.Delete(external, true); } catch { }
         }
     }
 
@@ -682,28 +650,25 @@ public class WorktreeManagerTests {
     /// would present as an unreproducible vendor crash rather than as anything pointing here.</para></summary>
     [Test]
     public async Task CleanupOrphaned_KeepsALiveVendorStateDirectoryAndRemovesADeadOne() {
-        var root       = Path.Combine(Path.GetTempPath(), "kcap-cleanup-state-" + Guid.NewGuid().ToString("N")[..8]);
+        using var tmp = new TempDir();
+        var root       = tmp.PathTo("root");
         var snapshots  = Path.Combine(root, "borrowed-snapshots");
         var activeRoot = Path.Combine(snapshots, "active");
         var activeCwd  = Path.Combine(activeRoot, "src");
         var liveState  = WorktreeManager.VendorStateRootFor(activeRoot);
         var deadState  = WorktreeManager.VendorStateRootFor(Path.Combine(snapshots, "gone"));
-        try {
-            Directory.CreateDirectory(activeCwd);
-            Directory.CreateDirectory(liveState);
-            Directory.CreateDirectory(deadState);
-            var manager = new WorktreeManager(
-                new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
+        Directory.CreateDirectory(activeCwd);
+        Directory.CreateDirectory(liveState);
+        Directory.CreateDirectory(deadState);
+        var manager = new WorktreeManager(
+            new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
 
-            await manager.CleanupOrphanedAsync([activeCwd]);
+        await manager.CleanupOrphanedAsync([activeCwd]);
 
-            await Assert.That(Directory.Exists(liveState)).IsTrue()
-                .Because("the running reviewer's HOME must survive the sweep");
-            await Assert.That(Directory.Exists(deadState)).IsFalse()
-                .Because("a state directory whose snapshot is gone is an orphan");
-        } finally {
-            try { Directory.Delete(root, true); } catch { }
-        }
+        await Assert.That(Directory.Exists(liveState)).IsTrue()
+            .Because("the running reviewer's HOME must survive the sweep");
+        await Assert.That(Directory.Exists(deadState)).IsFalse()
+            .Because("a state directory whose snapshot is gone is an orphan");
     }
 
     /// <summary>An active SNAPSHOT whose own name ends in the state-directory suffix is not deleted.
@@ -714,20 +679,17 @@ public class WorktreeManagerTests {
     /// the directory's own activeness is always checked first.</para></summary>
     [Test]
     public async Task CleanupOrphaned_KeepsAnActiveSnapshotWhoseNameEndsWithTheStateSuffix() {
-        var root       = Path.Combine(Path.GetTempPath(), "kcap-cleanup-collide-" + Guid.NewGuid().ToString("N")[..8]);
+        using var tmp = new TempDir();
+        var root       = tmp.PathTo("root");
         var activeRoot = Path.Combine(root, "borrowed-snapshots", "borrowed-agent" + WorktreeManager.VendorStateSuffix);
         var activeCwd  = Path.Combine(activeRoot, "src");
-        try {
-            Directory.CreateDirectory(activeCwd);
-            var manager = new WorktreeManager(
-                new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
+        Directory.CreateDirectory(activeCwd);
+        var manager = new WorktreeManager(
+            new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
 
-            await manager.CleanupOrphanedAsync([activeCwd]);
+        await manager.CleanupOrphanedAsync([activeCwd]);
 
-            await Assert.That(Directory.Exists(activeCwd)).IsTrue()
-                .Because("an active snapshot must survive regardless of what its name happens to end with");
-        } finally {
-            try { Directory.Delete(root, true); } catch { }
-        }
+        await Assert.That(Directory.Exists(activeCwd)).IsTrue()
+            .Because("an active snapshot must survive regardless of what its name happens to end with");
     }
 }

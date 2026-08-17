@@ -9,25 +9,24 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// </summary>
 [NotInParallel("HomeEnvVarMutation")]
 public class LaunchdUninstallTests {
-    static (string Home, string PlistPath) SetUpHome(string id) {
-        var home = Directory.CreateTempSubdirectory("kcap-uninstall-").FullName;
+    static string SetUpHome(string id, string home) {
         Environment.SetEnvironmentVariable("HOME", home);
         var dir = LaunchdUnit.AgentsDir();
         Directory.CreateDirectory(dir);
         var path = LaunchdUnit.PlistPath(id);
         File.WriteAllText(path, "<plist/>");
-        return (home, path);
+        return path;
     }
 
     static async Task WithHome(Func<string, Task> body) {
         var originalHome = Environment.GetEnvironmentVariable("HOME");
         var id = "test";
-        var (home, path) = SetUpHome(id);
+        using var tmp = new TempDir();
+        var path = SetUpHome(id, tmp.Path);
         try {
             await body(path);
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
-            try { Directory.Delete(home, recursive: true); } catch { /* best-effort */ }
         }
     }
 

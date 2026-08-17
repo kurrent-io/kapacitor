@@ -10,17 +10,13 @@ public class ClaudeLauncherWriteJsonAtomicTests {
     // trust write throws DirectoryNotFoundException and agents re-prompt for trust.
     [Test]
     public async Task WriteJsonAtomic_creates_missing_parent_directory() {
-        var root = Directory.CreateTempSubdirectory("kcap-wja-test-");
-        try {
-            var path = Path.Combine(root.FullName, "fresh-config-dir", ".claude.json");
-            var node = new JsonObject { ["projects"] = new JsonObject() };
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("fresh-config-dir", ".claude.json");
+        var node = new JsonObject { ["projects"] = new JsonObject() };
 
-            ClaudeLauncher.WriteJsonAtomic(path, node);
+        ClaudeLauncher.WriteJsonAtomic(path, node);
 
-            await Assert.That(File.Exists(path)).IsTrue();
-        } finally {
-            root.Delete(recursive: true);
-        }
+        await Assert.That(File.Exists(path)).IsTrue();
     }
 
     // settings.json may hold secrets under `env`, so an atomic temp+rename must NOT relax its mode:
@@ -29,18 +25,14 @@ public class ClaudeLauncherWriteJsonAtomicTests {
     public async Task WriteJsonAtomic_preserves_an_existing_owner_only_mode() {
         if (OperatingSystem.IsWindows()) return;
 
-        var root = Directory.CreateTempSubdirectory("kcap-wja-perms-");
-        try {
-            var path = Path.Combine(root.FullName, "settings.json");
-            await File.WriteAllTextAsync(path, "{}");
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("settings.json");
+        await File.WriteAllTextAsync(path, "{}");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
-            ClaudeLauncher.WriteJsonAtomic(path, new JsonObject { ["k"] = "v" });
+        ClaudeLauncher.WriteJsonAtomic(path, new JsonObject { ["k"] = "v" });
 
-            await Assert.That(File.GetUnixFileMode(path)).IsEqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        } finally {
-            root.Delete(recursive: true);
-        }
+        await Assert.That(File.GetUnixFileMode(path)).IsEqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
     // A brand-new settings file is created owner-only (0600) rather than inheriting the umask.
@@ -48,15 +40,11 @@ public class ClaudeLauncherWriteJsonAtomicTests {
     public async Task WriteJsonAtomic_creates_a_new_file_owner_only() {
         if (OperatingSystem.IsWindows()) return;
 
-        var root = Directory.CreateTempSubdirectory("kcap-wja-new-");
-        try {
-            var path = Path.Combine(root.FullName, "settings.json");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("settings.json");
 
-            ClaudeLauncher.WriteJsonAtomic(path, new JsonObject { ["k"] = "v" });
+        ClaudeLauncher.WriteJsonAtomic(path, new JsonObject { ["k"] = "v" });
 
-            await Assert.That(File.GetUnixFileMode(path)).IsEqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        } finally {
-            root.Delete(recursive: true);
-        }
+        await Assert.That(File.GetUnixFileMode(path)).IsEqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 }

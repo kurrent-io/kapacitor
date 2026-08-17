@@ -4,16 +4,13 @@ using Capacitor.Cli.Core.Mcp;
 namespace Capacitor.Cli.Core.Tests.Unit.Mcp;
 
 public class McpMarkerTests {
-    static (McpMarker marker, string cfg, string markerFile) NewMarker() {
-        var dir = Directory.CreateTempSubdirectory("kcap-marker-").FullName;
-        var cfg = Path.Combine(dir, "mcp.json");
-        var markerFile = Path.Combine(dir, "marker.json");
-        return (new McpMarker("test", _ => markerFile), cfg, markerFile);
-    }
+    static (McpMarker marker, string cfg, string markerFile) NewMarker(TempDir tmp) =>
+        (new McpMarker("test", _ => tmp.PathTo("marker.json")), tmp.PathTo("mcp.json"), tmp.PathTo("marker.json"));
 
     [Test]
     public async Task Record_then_Owned_roundtrips_names() {
-        var (marker, cfg, _) = NewMarker();
+        using var tmp = new TempDir();
+        var (marker, cfg, _) = NewMarker(tmp);
         marker.Record(cfg, ["kcap-review", "kcap-sessions"]);
         await Assert.That(marker.Owned(cfg)).Contains("kcap-review");
         await Assert.That(marker.Owned(cfg)).Contains("kcap-sessions");
@@ -21,7 +18,8 @@ public class McpMarkerTests {
 
     [Test]
     public async Task Owns_true_for_recorded_kcap_command_entry() {
-        var (marker, cfg, _) = NewMarker();
+        using var tmp = new TempDir();
+        var (marker, cfg, _) = NewMarker(tmp);
         marker.Record(cfg, ["kcap-review"]);
         var entry = new JsonObject { ["command"] = "kcap", ["args"] = new JsonArray { "mcp", "review" } };
         await Assert.That(marker.Owns(cfg, "kcap-review", entry)).IsTrue();
@@ -29,7 +27,8 @@ public class McpMarkerTests {
 
     [Test]
     public async Task Owns_false_for_unrecorded_lookalike() {
-        var (marker, cfg, _) = NewMarker();
+        using var tmp = new TempDir();
+        var (marker, cfg, _) = NewMarker(tmp);
         // Never recorded → not owned, even though it's named kcap-review.
         var entry = new JsonObject { ["command"] = "mine" };
         await Assert.That(marker.Owns(cfg, "kcap-review", entry)).IsFalse();
@@ -37,7 +36,8 @@ public class McpMarkerTests {
 
     [Test]
     public async Task Owns_true_for_opencode_command_array() {
-        var (marker, cfg, _) = NewMarker();
+        using var tmp = new TempDir();
+        var (marker, cfg, _) = NewMarker(tmp);
         marker.Record(cfg, ["kcap-review"]);
         var entry = new JsonObject { ["command"] = new JsonArray { "kcap", "mcp", "review" } };
         await Assert.That(marker.Owns(cfg, "kcap-review", entry)).IsTrue();
@@ -45,7 +45,8 @@ public class McpMarkerTests {
 
     [Test]
     public async Task Owns_false_for_malformed_nonstring_command_array() {
-        var (marker, cfg, _) = NewMarker();
+        using var tmp = new TempDir();
+        var (marker, cfg, _) = NewMarker(tmp);
         marker.Record(cfg, ["kcap-review"]);
         var entry = new JsonObject { ["command"] = new JsonArray { 123, "mcp" } };
         await Assert.That(marker.Owns(cfg, "kcap-review", entry)).IsFalse(); // must not throw
@@ -53,7 +54,8 @@ public class McpMarkerTests {
 
     [Test]
     public async Task Clear_removes_the_marker() {
-        var (marker, cfg, markerFile) = NewMarker();
+        using var tmp = new TempDir();
+        var (marker, cfg, markerFile) = NewMarker(tmp);
         marker.Record(cfg, ["kcap-review"]);
         marker.Clear(cfg);
         await Assert.That(File.Exists(markerFile)).IsFalse();
@@ -62,7 +64,8 @@ public class McpMarkerTests {
 
     [Test]
     public async Task Owns_false_and_no_throw_for_nonobject_entry() {
-        var (marker, cfg, _) = NewMarker();
+        using var tmp = new TempDir();
+        var (marker, cfg, _) = NewMarker(tmp);
         marker.Record(cfg, ["kcap-review"]);
         JsonNode arrEntry = new JsonArray { "x" };
         await Assert.That(marker.Owns(cfg, "kcap-review", arrEntry)).IsFalse();            // must not throw
@@ -72,11 +75,11 @@ public class McpMarkerTests {
 
     [Test]
     public async Task Owned_ignores_marker_recorded_for_a_different_config() {
-        var dir = Directory.CreateTempSubdirectory("kcap-marker-x-").FullName;
-        var shared = Path.Combine(dir, ".kcap-mcp-version");
+        using var tmp = new TempDir();
+        var shared = tmp.PathTo(".kcap-mcp-version");
         var m = new McpMarker("test", _ => shared); // both configs resolve to the SAME sidecar (simulates per-dir collision)
-        var cfgA = Path.Combine(dir, "a.json");
-        var cfgB = Path.Combine(dir, "b.json");
+        var cfgA = tmp.PathTo("a.json");
+        var cfgB = tmp.PathTo("b.json");
         m.Record(cfgA, ["kcap-review"]);
         await Assert.That(m.Owned(cfgA)).Contains("kcap-review");   // A owns it
         await Assert.That(m.Owned(cfgB)).IsEmpty();                 // B must NOT inherit A's marker
@@ -85,11 +88,11 @@ public class McpMarkerTests {
 
     [Test]
     public async Task Owned_matches_across_equivalent_path_forms() {
-        var dir = Directory.CreateTempSubdirectory("kcap-marker-norm-").FullName;
-        var shared = Path.Combine(dir, ".kcap-mcp-version");
+        using var tmp = new TempDir();
+        var shared = tmp.PathTo(".kcap-mcp-version");
         var m = new McpMarker("test", _ => shared);
-        var abs   = Path.Combine(dir, "mcp.json");
-        var equiv = Path.Combine(dir, ".", "mcp.json"); // same file, non-canonical form
+        var abs   = tmp.PathTo("mcp.json");
+        var equiv = tmp.PathTo(".", "mcp.json"); // same file, non-canonical form
         m.Record(abs, ["kcap-review"]);
         await Assert.That(m.Owned(equiv)).Contains("kcap-review"); // equivalent path form still recognized
     }
@@ -101,7 +104,8 @@ public class McpMarkerTests {
 
     [Test]
     public async Task Owns_v2_matches_the_exact_recorded_entry_including_absolute_command() {
-        var (marker, cfg, _) = NewMarker();
+        using var tmp = new TempDir();
+        var (marker, cfg, _) = NewMarker(tmp);
         var entry = CanonicalEntry("/opt/a/kcap");
         marker.Record(cfg, [KeyValuePair.Create("kcap-review", (JsonNode?)entry)]);
 
@@ -112,7 +116,8 @@ public class McpMarkerTests {
 
     [Test]
     public async Task Owns_v2_rejects_a_user_edited_entry_even_with_command_kcap() {
-        var (marker, cfg, _) = NewMarker();
+        using var tmp = new TempDir();
+        var (marker, cfg, _) = NewMarker(tmp);
         marker.Record(cfg, [KeyValuePair.Create("kcap-review", (JsonNode?)CanonicalEntry())]);
 
         var edited = CanonicalEntry(); // command is still the literal "kcap"…
@@ -122,9 +127,9 @@ public class McpMarkerTests {
 
     [Test]
     public async Task V1_marker_file_reads_with_legacy_command_semantics_and_migrates_on_record() {
-        var dir = Directory.CreateTempSubdirectory("kcap-marker-v1-").FullName;
-        var cfg = Path.Combine(dir, "mcp.json");
-        var markerFile = Path.Combine(dir, "marker.json");
+        using var tmp = new TempDir();
+        var cfg = tmp.PathTo("mcp.json");
+        var markerFile = tmp.PathTo("marker.json");
         var marker = new McpMarker("test", _ => markerFile);
 
         // The exact on-disk v1 format an older kcap wrote: servers as a bare name array.
@@ -150,7 +155,8 @@ public class McpMarkerTests {
     /// sibling temp + atomic rename (never an in-place truncate), owner-only on Unix.</summary>
     [Test]
     public async Task Record_writes_atomically_owner_only_with_no_temp_litter() {
-        var (marker, cfg, markerFile) = NewMarker();
+        using var tmp = new TempDir();
+        var (marker, cfg, markerFile) = NewMarker(tmp);
         marker.Record(cfg, [KeyValuePair.Create("kcap-review", (JsonNode?)CanonicalEntry("/opt/a/kcap"))]);
         marker.Record(cfg, [KeyValuePair.Create("kcap-sessions", (JsonNode?)CanonicalEntry("/opt/a/kcap"))]); // rewrite path too
 
@@ -167,10 +173,10 @@ public class McpMarkerTests {
     // (a/b resolve to distinct config-hash files).
     [Test]
     public async Task Two_configs_in_same_dir_have_independent_ownership() {
-        var dir = Directory.CreateTempSubdirectory("kcap-marker-indep-").FullName;
+        using var tmp = new TempDir();
         var m = new McpMarker("test"); // real MarkerPath resolution → central root under the pinned temp
-        var a = Path.Combine(dir, "a.json");
-        var b = Path.Combine(dir, "b.json");
+        var a = tmp.PathTo("a.json");
+        var b = tmp.PathTo("b.json");
         m.Record(a, ["kcap-review"]);
         await Assert.That(m.Owned(a)).Contains("kcap-review"); // a owns it
         await Assert.That(m.Owned(b)).IsEmpty();               // b is independent of a

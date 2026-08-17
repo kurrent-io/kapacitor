@@ -14,30 +14,19 @@ public partial class ServiceFilesTests {
     [LibraryImport("libc", EntryPoint = "umask")]
     private static partial uint umask(uint mask);
 
-    static string TempDir(string tag) {
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-{tag}-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-
-        return dir;
-    }
-
     [Test]
     [UnsupportedOSPlatform("windows")]
     public async Task WriteOwnerOnly_writes_the_content_and_leaves_it_owner_only() {
-        var dir  = TempDir("write");
-        var path = Path.Combine(dir, "unit.plist");
-        try {
-            ServiceFiles.WriteOwnerOnly(path, "<plist>KCAP_COPILOT_TOKEN_CMD</plist>");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("unit.plist");
+        ServiceFiles.WriteOwnerOnly(path, "<plist>KCAP_COPILOT_TOKEN_CMD</plist>");
 
-            await Assert.That(await File.ReadAllTextAsync(path))
-                .IsEqualTo("<plist>KCAP_COPILOT_TOKEN_CMD</plist>");
+        await Assert.That(await File.ReadAllTextAsync(path))
+            .IsEqualTo("<plist>KCAP_COPILOT_TOKEN_CMD</plist>");
 
-            Skip.When(OperatingSystem.IsWindows(), "POSIX modes; Windows inherits the directory ACL");
-            await Assert.That(File.GetUnixFileMode(path))
-                .IsEqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        } finally {
-            try { Directory.Delete(dir, true); } catch { /* best-effort */ }
-        }
+        Skip.When(OperatingSystem.IsWindows(), "POSIX modes; Windows inherits the directory ACL");
+        await Assert.That(File.GetUnixFileMode(path))
+            .IsEqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
     /// <summary>The default write mode really is world-readable, so the assertion above is not vacuous.
@@ -48,16 +37,12 @@ public partial class ServiceFilesTests {
     public async Task The_default_write_mode_is_world_readable_so_the_fix_is_load_bearing() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
 
-        var dir  = TempDir("default");
-        var path = Path.Combine(dir, "unit.plist");
-        try {
-            await File.WriteAllTextAsync(path, "<plist/>");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("unit.plist");
+        await File.WriteAllTextAsync(path, "<plist/>");
 
-            await Assert.That(File.GetUnixFileMode(path).HasFlag(UnixFileMode.OtherRead)).IsTrue()
-                .Because("if this stops being true, WriteOwnerOnly is no longer what protects the unit");
-        } finally {
-            try { Directory.Delete(dir, true); } catch { /* best-effort */ }
-        }
+        await Assert.That(File.GetUnixFileMode(path).HasFlag(UnixFileMode.OtherRead)).IsTrue()
+            .Because("if this stops being true, WriteOwnerOnly is no longer what protects the unit");
     }
 
     /// <summary>Overwriting an existing world-readable unit ends up owner-only rather than inheriting the
@@ -65,21 +50,18 @@ public partial class ServiceFilesTests {
     [Test]
     [UnsupportedOSPlatform("windows")]
     public async Task WriteOwnerOnly_overwrites_a_world_readable_unit_and_leaves_no_staging_file() {
-        var dir  = TempDir("overwrite");
+        using var tmp = new TempDir();
+        var dir  = tmp.Path;
         var path = Path.Combine(dir, "unit.plist");
-        try {
-            await File.WriteAllTextAsync(path, "old");
-            ServiceFiles.WriteOwnerOnly(path, "new");
+        await File.WriteAllTextAsync(path, "old");
+        ServiceFiles.WriteOwnerOnly(path, "new");
 
-            await Assert.That(await File.ReadAllTextAsync(path)).IsEqualTo("new");
-            await Assert.That(Directory.GetFiles(dir).Length).IsEqualTo(1)
-                .Because("the staging file must be moved, not left beside the unit");
+        await Assert.That(await File.ReadAllTextAsync(path)).IsEqualTo("new");
+        await Assert.That(Directory.GetFiles(dir).Length).IsEqualTo(1)
+            .Because("the staging file must be moved, not left beside the unit");
 
-            Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
-            await Assert.That(File.GetUnixFileMode(path).HasFlag(UnixFileMode.OtherRead)).IsFalse();
-        } finally {
-            try { Directory.Delete(dir, true); } catch { /* best-effort */ }
-        }
+        Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
+        await Assert.That(File.GetUnixFileMode(path).HasFlag(UnixFileMode.OtherRead)).IsFalse();
     }
 
     /// <summary>The mode is EXACTLY owner read+write under either a permissive or a restrictive umask.
@@ -100,8 +82,8 @@ public partial class ServiceFilesTests {
     public async Task WriteOwnerOnly_produces_exactly_owner_read_write_under_any_umask(uint mask) {
         Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
 
-        var dir      = TempDir("umask");
-        var path     = Path.Combine(dir, "unit.plist");
+        using var tmp = new TempDir();
+        var path     = tmp.PathTo("unit.plist");
         var previous = umask(mask);
         try {
             ServiceFiles.WriteOwnerOnly(path, "SECRET-COMMAND");
@@ -112,7 +94,6 @@ public partial class ServiceFilesTests {
             await Assert.That(await File.ReadAllTextAsync(path)).IsEqualTo("SECRET-COMMAND");
         } finally {
             _ = umask(previous);
-            try { Directory.Delete(dir, true); } catch { /* best-effort */ }
         }
     }
 
@@ -124,21 +105,18 @@ public partial class ServiceFilesTests {
     /// exactly where launchd would consume it — a failed install that still published the secret.</para></summary>
     [Test]
     public async Task WriteOwnerOnly_removes_the_live_unit_when_the_final_check_fails() {
-        var dir  = TempDir("rollback");
+        using var tmp = new TempDir();
+        var dir  = tmp.Path;
         var path = Path.Combine(dir, "unit.plist");
-        try {
-            var ex = Assert.Throws<InvalidOperationException>(() => ServiceFiles.WriteOwnerOnly(
-                path, "SECRET-COMMAND", null,
-                verifyFinal: _ => throw new InvalidOperationException("mode could not be guaranteed")));
+        var ex = Assert.Throws<InvalidOperationException>(() => ServiceFiles.WriteOwnerOnly(
+            path, "SECRET-COMMAND", null,
+            verifyFinal: _ => throw new InvalidOperationException("mode could not be guaranteed")));
 
-            await Assert.That(ex!.Message).Contains("guaranteed");
-            await Assert.That(File.Exists(path)).IsFalse()
-                .Because("a failed install must not leave a unit at the path launchd reads");
-            await Assert.That(Directory.GetFiles(dir)).IsEmpty()
-                .Because("the staging file must not survive either");
-        } finally {
-            try { Directory.Delete(dir, true); } catch { /* best-effort */ }
-        }
+        await Assert.That(ex!.Message).Contains("guaranteed");
+        await Assert.That(File.Exists(path)).IsFalse()
+            .Because("a failed install must not leave a unit at the path launchd reads");
+        await Assert.That(Directory.GetFiles(dir)).IsEmpty()
+            .Because("the staging file must not survive either");
     }
 
     /// <summary>Installing into a directory other local accounts can write is refused: owner-only mode on
@@ -148,7 +126,8 @@ public partial class ServiceFilesTests {
     public async Task WriteOwnerOnly_refuses_a_world_writable_directory() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
 
-        var dir = TempDir("worldwritable");
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         try {
             File.SetUnixFileMode(dir,
                 UnixFileMode.UserRead  | UnixFileMode.UserWrite  | UnixFileMode.UserExecute |
@@ -160,10 +139,10 @@ public partial class ServiceFilesTests {
             await Assert.That(ex!.Message).Contains("writable");
             await Assert.That(File.Exists(Path.Combine(dir, "unit.plist"))).IsFalse();
         } finally {
+            // Restored before the TempDir is disposed — the recursive delete needs the mode back.
             try {
                 File.SetUnixFileMode(dir,
                     UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-                Directory.Delete(dir, true);
             } catch { /* best-effort */ }
         }
     }
@@ -173,18 +152,14 @@ public partial class ServiceFilesTests {
     /// realistic collision.</summary>
     [Test]
     public async Task WriteOwnerOnly_leaves_an_unrelated_file_in_the_directory_alone() {
-        var dir       = TempDir("staging");
-        var path      = Path.Combine(dir, "unit.plist");
-        var bystander = Path.Combine(dir, "unit.plist.tmp-not-ours");
-        try {
-            await File.WriteAllTextAsync(bystander, "PRE-EXISTING");
-            ServiceFiles.WriteOwnerOnly(path, "new");
+        using var tmp = new TempDir();
+        var path      = tmp.PathTo("unit.plist");
+        var bystander = tmp.PathTo("unit.plist.tmp-not-ours");
+        await File.WriteAllTextAsync(bystander, "PRE-EXISTING");
+        ServiceFiles.WriteOwnerOnly(path, "new");
 
-            await Assert.That(await File.ReadAllTextAsync(bystander)).IsEqualTo("PRE-EXISTING");
-            await Assert.That(await File.ReadAllTextAsync(path)).IsEqualTo("new");
-        } finally {
-            try { Directory.Delete(dir, true); } catch { /* best-effort */ }
-        }
+        await Assert.That(await File.ReadAllTextAsync(bystander)).IsEqualTo("PRE-EXISTING");
+        await Assert.That(await File.ReadAllTextAsync(path)).IsEqualTo("new");
     }
 
     // ── manager wiring ───────────────────────────────────────────────────────────────────────────

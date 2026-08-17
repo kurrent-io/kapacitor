@@ -17,15 +17,11 @@ public class CliResolverTests {
 
     [Test]
     public async Task ReturnsTrue_WhenAbsolutePathIsExecutable() {
-        var tempFile = Path.Combine(Path.GetTempPath(), $"cli-resolver-test-{Guid.NewGuid():N}");
-        await File.WriteAllTextAsync(tempFile, "#!/bin/sh\necho hi\n");
+        using var tmp = new TempDir();
+        var tempFile = tmp.CreateFile("cli-resolver-test", "#!/bin/sh\necho hi\n");
         MakeExecutable(tempFile);
 
-        try {
-            await Assert.That(CliResolver.Exists(tempFile)).IsTrue();
-        } finally {
-            File.Delete(tempFile);
-        }
+        await Assert.That(CliResolver.Exists(tempFile)).IsTrue();
     }
 
     /// <summary>
@@ -38,15 +34,11 @@ public class CliResolverTests {
     public async Task ReturnsFalse_WhenAbsolutePathIsNotExecutable() {
         if (OperatingSystem.IsWindows()) return; // Windows has no exec bit
 
-        var tempFile = Path.Combine(Path.GetTempPath(), $"cli-resolver-noexec-{Guid.NewGuid():N}");
-        await File.WriteAllTextAsync(tempFile, "#!/bin/sh\necho hi\n");
+        using var tmp = new TempDir();
+        var tempFile = tmp.CreateFile("cli-resolver-noexec", "#!/bin/sh\necho hi\n");
         File.SetUnixFileMode(tempFile, UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
 
-        try {
-            await Assert.That(CliResolver.Exists(tempFile)).IsFalse();
-        } finally {
-            File.Delete(tempFile);
-        }
+        await Assert.That(CliResolver.Exists(tempFile)).IsFalse();
     }
 
     [Test]
@@ -64,21 +56,19 @@ public class CliResolverTests {
     public async Task ReturnsTrue_WhenBareCommandResolvesOnPath() {
         // Drop a fake "kcap-pathprobe-{guid}" binary into a temp dir,
         // mark it executable on POSIX, and prepend that dir to PATH.
-        var dir        = Directory.CreateTempSubdirectory("cli-resolver-path-").FullName;
+        using var tmp = new TempDir();
         var name       = $"kcap-pathprobe-{Guid.NewGuid():N}";
         var binaryName = OperatingSystem.IsWindows() ? name + ".exe" : name;
-        var binaryPath = Path.Combine(dir, binaryName);
-        await File.WriteAllTextAsync(binaryPath, "");
+        var binaryPath = tmp.CreateFile(binaryName, "");
         MakeExecutable(binaryPath);
 
         var savedPath = Environment.GetEnvironmentVariable("PATH");
-        Environment.SetEnvironmentVariable("PATH", $"{dir}{Path.PathSeparator}{savedPath}");
+        Environment.SetEnvironmentVariable("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
 
         try {
             await Assert.That(CliResolver.Exists(name)).IsTrue();
         } finally {
             Environment.SetEnvironmentVariable("PATH", savedPath);
-            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -90,20 +80,18 @@ public class CliResolverTests {
     public async Task ReturnsFalse_WhenBareCommandOnPathIsNotExecutable() {
         if (OperatingSystem.IsWindows()) return;
 
-        var dir        = Directory.CreateTempSubdirectory("cli-resolver-noexec-path-").FullName;
+        using var tmp = new TempDir();
         var name       = $"kcap-pathprobe-noexec-{Guid.NewGuid():N}";
-        var binaryPath = Path.Combine(dir, name);
-        await File.WriteAllTextAsync(binaryPath, "");
+        var binaryPath = tmp.CreateFile(name, "");
         File.SetUnixFileMode(binaryPath, UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
 
         var savedPath = Environment.GetEnvironmentVariable("PATH");
-        Environment.SetEnvironmentVariable("PATH", $"{dir}{Path.PathSeparator}{savedPath}");
+        Environment.SetEnvironmentVariable("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
 
         try {
             await Assert.That(CliResolver.Exists(name)).IsFalse();
         } finally {
             Environment.SetEnvironmentVariable("PATH", savedPath);
-            Directory.Delete(dir, recursive: true);
         }
     }
 

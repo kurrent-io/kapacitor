@@ -346,10 +346,11 @@ public class UninstallCommandTests {
 
         // Fake project: a temp dir with a .git directory makes GitRepository.FindRoot
         // return it as the working tree root.
-        var projectDir = Directory.CreateTempSubdirectory("kcap-uninstall-project-");
-        Directory.CreateDirectory(Path.Combine(projectDir.FullName, ".git"));
+        using var tmp = new TempDir();
+        var projectDir = tmp.Path;
+        Directory.CreateDirectory(Path.Combine(projectDir, ".git"));
 
-        var projectClaude = Path.Combine(projectDir.FullName, ".claude", "settings.local.json");
+        var projectClaude = Path.Combine(projectDir, ".claude", "settings.local.json");
         Directory.CreateDirectory(Path.GetDirectoryName(projectClaude)!);
         await File.WriteAllTextAsync(projectClaude, """
             {
@@ -358,7 +359,7 @@ public class UninstallCommandTests {
             }
             """);
 
-        var projectCodex = Path.Combine(projectDir.FullName, ".codex", "hooks.json");
+        var projectCodex = Path.Combine(projectDir, ".codex", "hooks.json");
         Directory.CreateDirectory(Path.GetDirectoryName(projectCodex)!);
         await File.WriteAllTextAsync(projectCodex, """
             {
@@ -373,7 +374,7 @@ public class UninstallCommandTests {
 
         var originalCwd = Environment.CurrentDirectory;
         try {
-            Environment.CurrentDirectory = projectDir.FullName;
+            Environment.CurrentDirectory = projectDir;
 
             var exit = await UninstallCommand.HandleAsync(["uninstall", "--yes", "--project", "--keep-config"]);
             await Assert.That(exit).IsEqualTo(0);
@@ -388,7 +389,6 @@ public class UninstallCommandTests {
             await Assert.That(sessionStart[0]!["hooks"]![0]!["command"]!.GetValue<string>()).IsEqualTo("user-script");
         } finally {
             Environment.CurrentDirectory = originalCwd;
-            projectDir.Delete(recursive: true);
         }
     }
 
@@ -402,19 +402,19 @@ public class UninstallCommandTests {
         await using var fixture = await Fixture.CreateAsync();
 
         // A scratch dir with NO .git anywhere up the tree.
-        var noRepoDir = Directory.CreateTempSubdirectory("kcap-uninstall-norepo-");
+        using var tmp = new TempDir();
+        var noRepoDir = tmp.Path;
         var originalCwd = Environment.CurrentDirectory;
         using var capture = ConsoleOutput.StartErrorCapture();
 
         try {
-            Environment.CurrentDirectory = noRepoDir.FullName;
+            Environment.CurrentDirectory = noRepoDir;
 
             var exit = await UninstallCommand.HandleAsync(["uninstall", "--yes", "--project"]);
             await Assert.That(exit).IsEqualTo(1);
             await Assert.That(capture.GetCapturedError()).Contains("--project requires a git working tree");
         } finally {
             Environment.CurrentDirectory = originalCwd;
-            noRepoDir.Delete(recursive: true);
         }
     }
 

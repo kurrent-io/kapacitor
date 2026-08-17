@@ -68,7 +68,7 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
             $"Gated live E2E against a real 'cursor-agent acp' process — set {LiveGateEnvVar}=1 to run " +
             "(spends a real Cursor turn; requires an authenticated Team-tier `cursor-agent` on PATH).");
 
-        var worktreeDir = Directory.CreateTempSubdirectory("kcap-acp-live-");
+        using var worktreeDir = new TempDir();
 
         // A real (console) logger factory rather than NullLoggerFactory — AcpHostedAgentRuntime logs
         // a warning if the requested model can't be resolved against session/new's availableModels,
@@ -79,58 +79,54 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
             .AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss.fff "; })
             .SetMinimumLevel(LogLevel.Debug));
 
+        var connection = new CaptureServerConnection();
+
+        // config.CursorModel stays at its DaemonConfig default ("claude-sonnet-4-5") — ctx.Model
+        // below is "" so AcpHostedAgentRuntimeFactory.ResolveRequestedModel falls back to it,
+        // proving the daemon-wide default reaches a real cursor-agent process, not just the fake.
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: new DaemonConfig(), // CursorPath="cursor-agent", CursorModel="claude-sonnet-4-5"
+            loggerFactory: liveLoggerFactory,
+            connection: connection,
+            connectionSource: null // real cursor-agent acp spawn — gap 1's production path
+        );
+
+        var ctx = new RuntimeStartContext(
+            AgentId: "ai-688-live-gap1",
+            Vendor: "cursor",
+            SourceRepoPath: worktreeDir.Path,
+            Worktree: WorktreeInfo.Borrowed(worktreeDir.Path),
+            Prompt: "Respond with only the single word HELLO and nothing else.",
+            Model: "", // falls back to DaemonConfig.CursorModel
+            Effort: null,
+            Tools: null,
+            IsReview: false,
+            IsReviewFlow: false,
+            Review: null,
+            Cols: 80,
+            Rows: 24,
+            ServerUrl: null,
+            DaemonBridgeUrl: null,
+            CapacitorPath: "/usr/local/bin/kcap");
+
+        using var startCts = new CancellationTokenSource();
+
+        var started = await factory.StartAsync(ctx, startCts.Token).WaitAsync(HandshakeTimeout);
+        var runtime = (AcpHostedAgentRuntime)started.Runtime;
+
         try {
-            var connection = new CaptureServerConnection();
+            var result = await CollectUntilHelloAsync(runtime.Updates, LiveTurnTimeout);
 
-            // config.CursorModel stays at its DaemonConfig default ("claude-sonnet-4-5") — ctx.Model
-            // below is "" so AcpHostedAgentRuntimeFactory.ResolveRequestedModel falls back to it,
-            // proving the daemon-wide default reaches a real cursor-agent process, not just the fake.
-            var factory = new AcpHostedAgentRuntimeFactory(
-                descriptor: AcpVendorDescriptors.Cursor,
-                config: new DaemonConfig(), // CursorPath="cursor-agent", CursorModel="claude-sonnet-4-5"
-                loggerFactory: liveLoggerFactory,
-                connection: connection,
-                connectionSource: null // real cursor-agent acp spawn — gap 1's production path
-            );
+            Console.WriteLine($"[ai-688-live] observed {result.Updates.Count} session/update notification(s):");
+            foreach (var update in result.Updates)
+                Console.WriteLine($"[ai-688-live]   kind={update.Kind} text={update.Text} raw={update.Raw?.GetRawText()}");
+            Console.WriteLine($"[ai-688-live] concatenated agent_message_chunk text: \"{result.ConcatenatedText}\"");
 
-            var ctx = new RuntimeStartContext(
-                AgentId: "ai-688-live-gap1",
-                Vendor: "cursor",
-                SourceRepoPath: worktreeDir.FullName,
-                Worktree: WorktreeInfo.Borrowed(worktreeDir.FullName),
-                Prompt: "Respond with only the single word HELLO and nothing else.",
-                Model: "", // falls back to DaemonConfig.CursorModel
-                Effort: null,
-                Tools: null,
-                IsReview: false,
-                IsReviewFlow: false,
-                Review: null,
-                Cols: 80,
-                Rows: 24,
-                ServerUrl: null,
-                DaemonBridgeUrl: null,
-                CapacitorPath: "/usr/local/bin/kcap");
-
-            using var startCts = new CancellationTokenSource();
-
-            var started = await factory.StartAsync(ctx, startCts.Token).WaitAsync(HandshakeTimeout);
-            var runtime = (AcpHostedAgentRuntime)started.Runtime;
-
-            try {
-                var result = await CollectUntilHelloAsync(runtime.Updates, LiveTurnTimeout);
-
-                Console.WriteLine($"[ai-688-live] observed {result.Updates.Count} session/update notification(s):");
-                foreach (var update in result.Updates)
-                    Console.WriteLine($"[ai-688-live]   kind={update.Kind} text={update.Text} raw={update.Raw?.GetRawText()}");
-                Console.WriteLine($"[ai-688-live] concatenated agent_message_chunk text: \"{result.ConcatenatedText}\"");
-
-                await Assert.That(result.SawHello).IsTrue();
-            } finally {
-                startCts.Cancel();
-                await runtime.DisposeAsync();
-            }
+            await Assert.That(result.SawHello).IsTrue();
         } finally {
-            try { worktreeDir.Delete(recursive: true); } catch { /* best-effort cleanup */ }
+            startCts.Cancel();
+            await runtime.DisposeAsync();
         }
     }
 
@@ -163,10 +159,11 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
             "(spends a real Cursor turn; requires an authenticated Cursor subscription).");
         Skip.When(OperatingSystem.IsWindows(), "The gated probe's tiny stdio MCP fixture is a POSIX executable script.");
 
-        var rootDir     = Directory.CreateTempSubdirectory("kcap-acp-review-live-");
-        var sourceDir   = Directory.CreateDirectory(Path.Combine(rootDir.FullName, "borrowed-source"));
-        var markerPath  = Path.Combine(rootDir.FullName, "result-called");
-        var mcpPath     = Path.Combine(rootDir.FullName, "fake-kcap");
+        using var rootDirTemp = new TempDir();
+        var rootDir     = rootDirTemp.Path;
+        var sourceDir   = Directory.CreateDirectory(Path.Combine(rootDir, "borrowed-source"));
+        var markerPath  = Path.Combine(rootDir, "result-called");
+        var mcpPath     = Path.Combine(rootDir, "fake-kcap");
         var protectedPath = Path.Combine(sourceDir.FullName, "protected.txt");
         File.WriteAllText(protectedPath, "ORIGINAL\n");
         File.WriteAllText(Path.Combine(sourceDir.FullName, "tracked_modified.txt"), "BASE-ORIGINAL\n");
@@ -193,99 +190,95 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
             .AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss.fff "; })
             .SetMinimumLevel(LogLevel.Debug));
 
+        var connection = new CaptureServerConnection();
+        var config = new DaemonConfig {
+            WorktreeRoot = Path.Combine(rootDir, "snapshots"),
+            DebugFrames = true
+        };
+        var manager = new WorktreeManager(config, NullLogger<WorktreeManager>.Instance);
+        var snapshot = await manager.CreateBorrowedSnapshotAsync(
+            sourceDir.FullName, "live-review", CancellationToken.None);
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: config,
+            loggerFactory: liveLoggerFactory,
+            connection: connection,
+            connectionSource: null);
+        var ctx = new RuntimeStartContext(
+            AgentId: markerPath,
+            Vendor: "cursor",
+            SourceRepoPath: sourceDir.FullName,
+            Worktree: snapshot,
+            Prompt: "Read all four of these files: protected.txt, branch_only.txt, "
+                  + "tracked_modified.txt, untracked.txt. Try to replace protected.txt with "
+                  + "MUTATED using any file-edit or shell tool available, but do not work around "
+                  + "unavailable tools. Then call submit_review_result exactly once with verdict "
+                  + "CLEAN and put the exact contents of branch_only.txt, tracked_modified.txt and "
+                  + "untracked.txt into summary, separated by spaces.",
+            Model: "",
+            Effort: null,
+            Tools: null,
+            IsReview: false,
+            IsReviewFlow: true,
+            Review: null,
+            Cols: 80,
+            Rows: 24,
+            ServerUrl: "http://kcap.test",
+            DaemonBridgeUrl: null,
+            CapacitorPath: mcpPath,
+            Work: WorkLocation.OwnedWorktree,
+            IsBorrowedSnapshot: true);
+
+        using var startCts = new CancellationTokenSource();
+        var started = await factory.StartAsync(ctx, startCts.Token).WaitAsync(HandshakeTimeout);
+        var runtime = (AcpHostedAgentRuntime)started.Runtime;
+
         try {
-            var connection = new CaptureServerConnection();
-            var config = new DaemonConfig {
-                WorktreeRoot = Path.Combine(rootDir.FullName, "snapshots"),
-                DebugFrames = true
-            };
-            var manager = new WorktreeManager(config, NullLogger<WorktreeManager>.Instance);
-            var snapshot = await manager.CreateBorrowedSnapshotAsync(
-                sourceDir.FullName, "live-review", CancellationToken.None);
-            var factory = new AcpHostedAgentRuntimeFactory(
-                descriptor: AcpVendorDescriptors.Cursor,
-                config: config,
-                loggerFactory: liveLoggerFactory,
-                connection: connection,
-                connectionSource: null);
-            var ctx = new RuntimeStartContext(
-                AgentId: markerPath,
-                Vendor: "cursor",
-                SourceRepoPath: sourceDir.FullName,
-                Worktree: snapshot,
-                Prompt: "Read all four of these files: protected.txt, branch_only.txt, "
-                      + "tracked_modified.txt, untracked.txt. Try to replace protected.txt with "
-                      + "MUTATED using any file-edit or shell tool available, but do not work around "
-                      + "unavailable tools. Then call submit_review_result exactly once with verdict "
-                      + "CLEAN and put the exact contents of branch_only.txt, tracked_modified.txt and "
-                      + "untracked.txt into summary, separated by spaces.",
-                Model: "",
-                Effort: null,
-                Tools: null,
-                IsReview: false,
-                IsReviewFlow: true,
-                Review: null,
-                Cols: 80,
-                Rows: 24,
-                ServerUrl: "http://kcap.test",
-                DaemonBridgeUrl: null,
-                CapacitorPath: mcpPath,
-                Work: WorkLocation.OwnedWorktree,
-                IsBorrowedSnapshot: true);
+            var deadline = DateTime.UtcNow + LiveTurnTimeout;
+            while (!File.Exists(markerPath) && !runtime.HasExited && DateTime.UtcNow < deadline)
+                await Task.Delay(100);
 
-            using var startCts = new CancellationTokenSource();
-            var started = await factory.StartAsync(ctx, startCts.Token).WaitAsync(HandshakeTimeout);
-            var runtime = (AcpHostedAgentRuntime)started.Runtime;
+            await Assert.That(File.Exists(markerPath)).IsTrue();
+            await Assert.That(connection.RequestAcpInteractionAsyncCalled).IsFalse();
+            await Assert.That(runtime.HasExited).IsFalse();
+            await Assert.That(File.ReadAllText(protectedPath)).IsEqualTo("ORIGINAL\n");
+            var snapshotPath = Path.Combine(snapshot.Path, "protected.txt");
+            await Assert.That(File.ReadAllText(snapshotPath)).StartsWith("MUTATED");
 
-            try {
-                var deadline = DateTime.UtcNow + LiveTurnTimeout;
-                while (!File.Exists(markerPath) && !runtime.HasExited && DateTime.UtcNow < deadline)
-                    await Task.Delay(100);
+            // The read probe: all three classes came back THROUGH THE RESULT CHANNEL, so a
+            // reviewer read them. Asserted individually — a combined "contains all three" check
+            // would let a partially-blind reviewer pass on the strength of the one class a stale
+            // committed base would also have supplied.
+            var submitted = File.ReadAllText(markerPath);
+            Console.WriteLine($"[borrowed-read-probe] result channel payload: {submitted}");
+            await Assert.That(submitted).Contains(BranchOnlySentinel)
+                .Because("a borrowed reviewer must see commits that exist only on the requester's branch");
+            await Assert.That(submitted).Contains(TrackedModifiedSentinel)
+                .Because("a borrowed reviewer must see uncommitted modifications to tracked files");
+            await Assert.That(submitted).Contains(UntrackedSentinel)
+                .Because("a borrowed reviewer must see untracked, non-ignored files");
 
-                await Assert.That(File.Exists(markerPath)).IsTrue();
-                await Assert.That(connection.RequestAcpInteractionAsyncCalled).IsFalse();
-                await Assert.That(runtime.HasExited).IsFalse();
-                await Assert.That(File.ReadAllText(protectedPath)).IsEqualTo("ORIGINAL\n");
-                var snapshotPath = Path.Combine(snapshot.Path, "protected.txt");
-                await Assert.That(File.ReadAllText(snapshotPath)).StartsWith("MUTATED");
+            // Same process, next round: do not refresh until the prior ACP turn is terminal,
+            // then rebuild the complete snapshot generation and require Cursor to observe it.
+            await runtime.WaitForTurnIdleAsync(startCts.Token);
+            File.WriteAllText(protectedPath, "ROUND2\n");
+            await manager.SyncFromSourceAsync(
+                sourceDir.FullName, sourceDir.FullName, snapshot.Path, [], startCts.Token);
+            File.Delete(markerPath);
+            await runtime.SendUserInputAndWaitForWriteAsync(
+                "Read protected.txt and call submit_review_result exactly once with verdict CLEAN and put its exact contents in summary. Do not modify files.");
 
-                // The read probe: all three classes came back THROUGH THE RESULT CHANNEL, so a
-                // reviewer read them. Asserted individually — a combined "contains all three" check
-                // would let a partially-blind reviewer pass on the strength of the one class a stale
-                // committed base would also have supplied.
-                var submitted = File.ReadAllText(markerPath);
-                Console.WriteLine($"[borrowed-read-probe] result channel payload: {submitted}");
-                await Assert.That(submitted).Contains(BranchOnlySentinel)
-                    .Because("a borrowed reviewer must see commits that exist only on the requester's branch");
-                await Assert.That(submitted).Contains(TrackedModifiedSentinel)
-                    .Because("a borrowed reviewer must see uncommitted modifications to tracked files");
-                await Assert.That(submitted).Contains(UntrackedSentinel)
-                    .Because("a borrowed reviewer must see untracked, non-ignored files");
-
-                // Same process, next round: do not refresh until the prior ACP turn is terminal,
-                // then rebuild the complete snapshot generation and require Cursor to observe it.
-                await runtime.WaitForTurnIdleAsync(startCts.Token);
-                File.WriteAllText(protectedPath, "ROUND2\n");
-                await manager.SyncFromSourceAsync(
-                    sourceDir.FullName, sourceDir.FullName, snapshot.Path, [], startCts.Token);
-                File.Delete(markerPath);
-                await runtime.SendUserInputAndWaitForWriteAsync(
-                    "Read protected.txt and call submit_review_result exactly once with verdict CLEAN and put its exact contents in summary. Do not modify files.");
-
-                deadline = DateTime.UtcNow + LiveTurnTimeout;
-                while (!File.Exists(markerPath) && !runtime.HasExited && DateTime.UtcNow < deadline)
-                    await Task.Delay(100);
-                await runtime.WaitForTurnIdleAsync(startCts.Token).WaitAsync(LiveTurnTimeout);
-                await Assert.That(File.Exists(markerPath)).IsTrue();
-                await Assert.That(File.ReadAllText(markerPath)).Contains("ROUND2");
-                await Assert.That(File.ReadAllText(protectedPath)).IsEqualTo("ROUND2\n");
-            } finally {
-                startCts.Cancel();
-                await runtime.DisposeAsync();
-                await WorktreeManager.RemoveAsync(snapshot);
-            }
+            deadline = DateTime.UtcNow + LiveTurnTimeout;
+            while (!File.Exists(markerPath) && !runtime.HasExited && DateTime.UtcNow < deadline)
+                await Task.Delay(100);
+            await runtime.WaitForTurnIdleAsync(startCts.Token).WaitAsync(LiveTurnTimeout);
+            await Assert.That(File.Exists(markerPath)).IsTrue();
+            await Assert.That(File.ReadAllText(markerPath)).Contains("ROUND2");
+            await Assert.That(File.ReadAllText(protectedPath)).IsEqualTo("ROUND2\n");
         } finally {
-            try { rootDir.Delete(recursive: true); } catch { /* best-effort cleanup */ }
+            startCts.Cancel();
+            await runtime.DisposeAsync();
+            await WorktreeManager.RemoveAsync(snapshot);
         }
     }
 

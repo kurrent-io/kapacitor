@@ -28,32 +28,28 @@ public class SessionImporterProgressTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(200));
 
         // Write 250 non-blank JSONL lines → expect 3 flushes: 100, 100, 50
-        var path = Path.GetTempFileName();
-        try {
-            await File.WriteAllLinesAsync(path, Enumerable.Range(0, 250).Select(i =>
-                $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","message":{"content":"line-{{{i}}}"}}"""
-            ));
+        using var tmp = TempDir.WithPathTo("transcript.tmp", out var path);
+        await File.WriteAllLinesAsync(path, Enumerable.Range(0, 250).Select(i =>
+            $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","message":{"content":"line-{{{i}}}"}}"""
+        ));
 
-            var events = new List<ImportProgress>();
-            var progress = new SyncProgress<ImportProgress>(events.Add);
+        var events = new List<ImportProgress>();
+        var progress = new SyncProgress<ImportProgress>(events.Add);
 
-            using var client = new HttpClient();
-            var totalSent = await SessionImporter.SendTranscriptBatches(
-                client, _server.Url!, sessionId: "test", filePath: path,
-                agentId: null, startLine: 0, progress: progress
-            );
+        using var client = new HttpClient();
+        var totalSent = await SessionImporter.SendTranscriptBatches(
+            client, _server.Url!, sessionId: "test", filePath: path,
+            agentId: null, startLine: 0, progress: progress
+        );
 
-            await Assert.That(totalSent).IsEqualTo(250);
+        await Assert.That(totalSent).IsEqualTo(250);
 
-            var flushes = events.OfType<BatchFlushed>().ToList();
-            await Assert.That(flushes.Count).IsEqualTo(3);
-            await Assert.That(flushes[0].LinesAdded).IsEqualTo(100);
-            await Assert.That(flushes[1].LinesAdded).IsEqualTo(100);
-            await Assert.That(flushes[2].LinesAdded).IsEqualTo(50);
-            await Assert.That(flushes.All(f => f.AgentId == null)).IsTrue();
-        } finally {
-            File.Delete(path);
-        }
+        var flushes = events.OfType<BatchFlushed>().ToList();
+        await Assert.That(flushes.Count).IsEqualTo(3);
+        await Assert.That(flushes[0].LinesAdded).IsEqualTo(100);
+        await Assert.That(flushes[1].LinesAdded).IsEqualTo(100);
+        await Assert.That(flushes[2].LinesAdded).IsEqualTo(50);
+        await Assert.That(flushes.All(f => f.AgentId == null)).IsTrue();
     }
 
     // abortDelivery must be re-checked immediately AFTER a
@@ -67,31 +63,27 @@ public class SessionImporterProgressTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(200));
 
         // 30 non-blank lines — a single batch, well under the 100-line flush threshold.
-        var path = Path.GetTempFileName();
-        try {
-            await File.WriteAllLinesAsync(path, Enumerable.Range(0, 30).Select(i =>
-                $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","message":{"content":"line-{{{i}}}"}}"""
-            ));
+        using var tmp = TempDir.WithPathTo("transcript.tmp", out var path);
+        await File.WriteAllLinesAsync(path, Enumerable.Range(0, 30).Select(i =>
+            $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","message":{"content":"line-{{{i}}}"}}"""
+        ));
 
-            using var client = new HttpClient();
-            var quarantined = false;
+        using var client = new HttpClient();
+        var quarantined = false;
 
-            await Assert.ThrowsAsync<SessionImporter.TranscriptDeliveryAbortedException>(async () => {
-                await SessionImporter.SendTranscriptBatches(
-                    client, _server.Url!, sessionId: "test", filePath: path,
-                    agentId: null, startLine: 0,
-                    // Not quarantined for the pre-POST check (nothing has posted yet), but flips
-                    // true the moment it is consulted a SECOND time — simulating a marker written
-                    // while the one-and-only POST above was "in flight".
-                    abortDelivery: () => {
-                        var wasQuarantined = quarantined;
-                        quarantined = true;
-                        return wasQuarantined;
-                    });
-            });
-        } finally {
-            File.Delete(path);
-        }
+        await Assert.ThrowsAsync<SessionImporter.TranscriptDeliveryAbortedException>(async () => {
+            await SessionImporter.SendTranscriptBatches(
+                client, _server.Url!, sessionId: "test", filePath: path,
+                agentId: null, startLine: 0,
+                // Not quarantined for the pre-POST check (nothing has posted yet), but flips
+                // true the moment it is consulted a SECOND time — simulating a marker written
+                // while the one-and-only POST above was "in flight".
+                abortDelivery: () => {
+                    var wasQuarantined = quarantined;
+                    quarantined = true;
+                    return wasQuarantined;
+                });
+        });
     }
 
     [Test]
@@ -99,21 +91,17 @@ public class SessionImporterProgressTests : IDisposable {
         // The per-session progress denominator: must equal the number of
         // lines SendTranscriptBatches/ImportSessionAsync actually POST — non-blank
         // lines from startLine to EOF.
-        var path = Path.GetTempFileName();
-        try {
-            await File.WriteAllLinesAsync(path, ["a", "", "b", "   ", "c"]);
+        using var tmp = TempDir.WithPathTo("transcript.tmp", out var path);
+        await File.WriteAllLinesAsync(path, ["a", "", "b", "   ", "c"]);
 
-            // Whole file: 3 non-blank lines (a, b, c); the two blank lines don't count.
-            await Assert.That(SessionImporter.CountSendableLines(path)).IsEqualTo(3);
+        // Whole file: 3 non-blank lines (a, b, c); the two blank lines don't count.
+        await Assert.That(SessionImporter.CountSendableLines(path)).IsEqualTo(3);
 
-            // From line index 2 onward: "b", "   ", "c" → 2 non-blank (b, c).
-            await Assert.That(SessionImporter.CountSendableLines(path, startLine: 2)).IsEqualTo(2);
+        // From line index 2 onward: "b", "   ", "c" → 2 non-blank (b, c).
+        await Assert.That(SessionImporter.CountSendableLines(path, startLine: 2)).IsEqualTo(2);
 
-            // A missing file is best-effort 0 (slot stays indeterminate, never errors).
-            await Assert.That(SessionImporter.CountSendableLines(path + ".nope")).IsEqualTo(0);
-        } finally {
-            File.Delete(path);
-        }
+        // A missing file is best-effort 0 (slot stays indeterminate, never errors).
+        await Assert.That(SessionImporter.CountSendableLines(path + ".nope")).IsEqualTo(0);
     }
 
     [Test]
@@ -125,59 +113,55 @@ public class SessionImporterProgressTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/subagent-stop").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        var tmp = Directory.CreateTempSubdirectory("kcap-import-test");
-        try {
-            var sessionName = Guid.NewGuid().ToString("N");
-            var sessionPath = Path.Combine(tmp.FullName, $"{sessionName}.jsonl");
-            var agentsDir   = Path.Combine(tmp.FullName, sessionName, "subagents");
-            Directory.CreateDirectory(agentsDir);
+        using var tmp = new TempDir();
+        var sessionName = Guid.NewGuid().ToString("N");
+        var sessionPath = tmp.PathTo($"{sessionName}.jsonl");
+        var agentsDir   = tmp.PathTo(sessionName, "subagents");
+        Directory.CreateDirectory(agentsDir);
 
-            var agentId = Guid.NewGuid().ToString("N");
-            var agentPath = Path.Combine(agentsDir, $"agent-{agentId}.jsonl");
+        var agentId = Guid.NewGuid().ToString("N");
+        var agentPath = Path.Combine(agentsDir, $"agent-{agentId}.jsonl");
 
-            await File.WriteAllLinesAsync(sessionPath, [
-                """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Task","input":{"subagent_type":"code-reviewer"}}]}}""",
-                $$$"""{"type":"progress","data":{"type":"agent_progress","agentId":"{{{agentId}}}"}}""",
-                """{"type":"user","timestamp":"2026-03-15T10:00:00Z","message":{"content":"after"}}"""
-            ]);
+        await File.WriteAllLinesAsync(sessionPath, [
+            """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Task","input":{"subagent_type":"code-reviewer"}}]}}""",
+            $$$"""{"type":"progress","data":{"type":"agent_progress","agentId":"{{{agentId}}}"}}""",
+            """{"type":"user","timestamp":"2026-03-15T10:00:00Z","message":{"content":"after"}}"""
+        ]);
 
-            await File.WriteAllLinesAsync(agentPath, [
-                """{"type":"user","timestamp":"2026-03-15T10:00:00Z","message":{"content":"a1"}}""",
-                """{"type":"assistant","timestamp":"2026-03-15T10:00:01Z","message":{"content":"a2"}}""",
-                """{"type":"user","timestamp":"2026-03-15T10:00:02Z","message":{"content":"a3"}}"""
-            ]);
+        await File.WriteAllLinesAsync(agentPath, [
+            """{"type":"user","timestamp":"2026-03-15T10:00:00Z","message":{"content":"a1"}}""",
+            """{"type":"assistant","timestamp":"2026-03-15T10:00:01Z","message":{"content":"a2"}}""",
+            """{"type":"user","timestamp":"2026-03-15T10:00:02Z","message":{"content":"a3"}}"""
+        ]);
 
-            var events   = new List<ImportProgress>();
-            var progress = new SyncProgress<ImportProgress>(events.Add);
+        var events   = new List<ImportProgress>();
+        var progress = new SyncProgress<ImportProgress>(events.Add);
 
-            using var client = new HttpClient();
-            var result = await SessionImporter.ImportSessionAsync(
-                client, _server.Url!, sessionPath, sessionId: "s1",
-                new SessionMetadata { Cwd = "/x" }, encodedCwd: null,
-                progress: progress
-            );
+        using var client = new HttpClient();
+        var result = await SessionImporter.ImportSessionAsync(
+            client, _server.Url!, sessionPath, sessionId: "s1",
+            new SessionMetadata { Cwd = "/x" }, encodedCwd: null,
+            progress: progress
+        );
 
-            await Assert.That(result.AgentIds).Contains(agentId);
+        await Assert.That(result.AgentIds).Contains(agentId);
 
-            var ordered = events.ToList();
-            var startIdx  = ordered.FindIndex(e => e is SubagentStarted s && s.AgentId == agentId);
-            var finishIdx = ordered.FindIndex(e => e is SubagentFinished f && f.AgentId == agentId);
+        var ordered = events.ToList();
+        var startIdx  = ordered.FindIndex(e => e is SubagentStarted s && s.AgentId == agentId);
+        var finishIdx = ordered.FindIndex(e => e is SubagentFinished f && f.AgentId == agentId);
 
-            await Assert.That(startIdx).IsGreaterThanOrEqualTo(0);
-            await Assert.That(finishIdx).IsGreaterThan(startIdx);
-            await Assert.That(((SubagentFinished)ordered[finishIdx]).LinesSent).IsEqualTo(3);
+        await Assert.That(startIdx).IsGreaterThanOrEqualTo(0);
+        await Assert.That(finishIdx).IsGreaterThan(startIdx);
+        await Assert.That(((SubagentFinished)ordered[finishIdx]).LinesSent).IsEqualTo(3);
 
-            // Batch flushes between the subagent boundaries must carry the agent id
-            // so UI callers can attribute lines to parent vs subagent.
-            var subagentBatches = ordered
-                .Skip(startIdx)
-                .Take(finishIdx - startIdx)
-                .OfType<BatchFlushed>()
-                .ToList();
-            await Assert.That(subagentBatches.Count).IsGreaterThan(0);
-            await Assert.That(subagentBatches.All(b => b.AgentId == agentId)).IsTrue();
-        } finally {
-            tmp.Delete(recursive: true);
-        }
+        // Batch flushes between the subagent boundaries must carry the agent id
+        // so UI callers can attribute lines to parent vs subagent.
+        var subagentBatches = ordered
+            .Skip(startIdx)
+            .Take(finishIdx - startIdx)
+            .OfType<BatchFlushed>()
+            .ToList();
+        await Assert.That(subagentBatches.Count).IsGreaterThan(0);
+        await Assert.That(subagentBatches.All(b => b.AgentId == agentId)).IsTrue();
     }
 }

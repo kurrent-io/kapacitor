@@ -431,23 +431,21 @@ public class DaemonRunnerCursorAvailabilityTests {
     /// than pass because the file paths are wrong or the scan is inert.</summary>
     [Test]
     public async Task AdvertisementGuard_DetectsAReintroducedBuildIdentityGate() {
-        var dir = Directory.CreateTempSubdirectory("kcap-build-identity-guard-");
-        try {
-            var file = Path.Combine(dir.FullName, "DaemonRunner.cs");
-            await File.WriteAllLinesAsync(file, [
-                "// a comment naming TryMatchValidatedBuild must NOT count",
-                "var artifact = CursorBorrowedReviewValidation.TryMatchValidatedBuild(cliPath);",
-            ]);
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
 
-            var lines = await File.ReadAllLinesAsync(file);
-            var hits = lines
-                .Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal))
-                .Count(l => l.Contains("TryMatchValidatedBuild", StringComparison.Ordinal));
+        var file = Path.Combine(dir, "DaemonRunner.cs");
+        await File.WriteAllLinesAsync(file, [
+            "// a comment naming TryMatchValidatedBuild must NOT count",
+            "var artifact = CursorBorrowedReviewValidation.TryMatchValidatedBuild(cliPath);",
+        ]);
 
-            await Assert.That(hits).IsEqualTo(1);
-        } finally {
-            try { dir.Delete(recursive: true); } catch { }
-        }
+        var lines = await File.ReadAllLinesAsync(file);
+        var hits = lines
+            .Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal))
+            .Count(l => l.Contains("TryMatchValidatedBuild", StringComparison.Ordinal));
+
+        await Assert.That(hits).IsEqualTo(1);
     }
 
     /// <summary>Walks up from this file's compile-time path to the repo root, so the guard is

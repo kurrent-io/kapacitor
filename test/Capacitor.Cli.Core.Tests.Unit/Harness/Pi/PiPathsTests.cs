@@ -43,13 +43,9 @@ public class PiPathsTests {
     // KiroPaths.IsInstalled(home, kiroHome) / OpenCodePaths.IsInstalled(...).
     [Test]
     public async Task IsInstalled_honors_injected_agent_dir_override_without_env() {
-        var dir = Directory.CreateTempSubdirectory("kcap-pi-agent-test-").FullName;
-        try {
-            await Assert.That(PiPaths.IsInstalled(home: "/nonexistent", agentDir: dir)).IsTrue();
-            await Assert.That(PiPaths.IsInstalled(home: "/nonexistent", agentDir: "/also-nonexistent")).IsFalse();
-        } finally {
-            Directory.Delete(dir, recursive: true);
-        }
+        using var tmp = new TempDir();
+        await Assert.That(PiPaths.IsInstalled(home: "/nonexistent", agentDir: tmp.Path)).IsTrue();
+        await Assert.That(PiPaths.IsInstalled(home: "/nonexistent", agentDir: "/also-nonexistent")).IsFalse();
     }
 
     [Test]

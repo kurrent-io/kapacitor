@@ -44,19 +44,23 @@ public sealed class TempDir : IDisposable {
     }
 
     /// <summary>Writes a file (creating any missing parent directories) and returns its path.</summary>
-    public string CreateFile(string relativePath, string content = "") {
-        var path = PathTo(relativePath);
-        var dir  = System.IO.Path.GetDirectoryName(path);
+    public string CreateFile(string relativePath, string content = "") =>
+        Write(PathTo(relativePath), content);
+
+    /// <summary>As <see cref="CreateFile(string,string)"/>, from path segments — so a nested file
+    /// needs no <c>Path.Combine</c> at the call site:
+    /// <c>tmp.CreateFile(["events", "events.jsonl"], body)</c>.</summary>
+    public string CreateFile(ReadOnlySpan<string> segments, string content = "") =>
+        Write(PathTo(segments), content);
+
+    static string Write(string path, string content) {
+        var dir = System.IO.Path.GetDirectoryName(path);
 
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
         File.WriteAllText(path, content);
 
         return path;
     }
-
-    /// <summary>As <see cref="CreateFile(string,string)"/>, under a random name, for tests that
-    /// need only that <em>some</em> file exists.</summary>
-    public string CreateFile() => CreateFile(System.IO.Path.GetRandomFileName());
 
     public void Dispose() {
         try { Directory.Delete(Path, recursive: true); } catch { /* best effort */ }

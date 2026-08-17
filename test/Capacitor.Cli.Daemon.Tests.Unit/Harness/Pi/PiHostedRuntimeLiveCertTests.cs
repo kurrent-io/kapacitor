@@ -53,10 +53,11 @@ public class PiHostedRuntimeLiveCertTests {
             !OperatingSystem.IsWindows(),
             "The gated probe git-inits a throwaway worktree with plain POSIX `git`; not exercised on Windows.");
 
-        var worktreeDir = Directory.CreateTempSubdirectory("kcap-pi-hosted-live-");
-        RunGit(worktreeDir.FullName, "init", "-q");
-        RunGit(worktreeDir.FullName, "config", "user.email", "test@example.com");
-        RunGit(worktreeDir.FullName, "config", "user.name", "Test");
+        using var tmp = new TempDir();
+        var worktreeDir = tmp.Path;
+        RunGit(worktreeDir, "init", "-q");
+        RunGit(worktreeDir, "config", "user.email", "test@example.com");
+        RunGit(worktreeDir, "config", "user.name", "Test");
 
         // A real (console) logger factory rather than NullLoggerFactory — PiRpcHostedAgentRuntime logs
         // at Warning/Debug on handshake and translation faults, so a real logger is the only way this
@@ -85,66 +86,62 @@ public class PiHostedRuntimeLiveCertTests {
             processSource: null,  // real `pi --mode rpc` spawn — the production path
             binaryExists: null);  // real CliResolver.Exists probe
 
+        var ctx = new RuntimeStartContext(
+            AgentId: "ai-894-pi-hosted-live",
+            Vendor: "pi",
+            SourceRepoPath: worktreeDir,
+            Worktree: new WorktreeInfo(Path: worktreeDir, Branch: "", SourceRepo: worktreeDir),
+            Prompt: prompt,
+            Model: null,
+            Effort: null,
+            Tools: null,
+            IsReview: false,
+            IsReviewFlow: false,
+            Review: null,
+            Cols: 80,
+            Rows: 24,
+            ServerUrl: null,
+            DaemonBridgeUrl: null,
+            CapacitorPath: "/usr/local/bin/kcap");
+            // Work defaults to WorkLocation.OwnedWorktree — the only shape this factory serves.
+
+        using var startCts = new CancellationTokenSource();
+
+        var start = await factory.StartAsync(ctx, startCts.Token).WaitAsync(ReadyTimeout);
+        var runtime = (PiRpcHostedAgentRuntime)start.Runtime;
+
         try {
-            var ctx = new RuntimeStartContext(
-                AgentId: "ai-894-pi-hosted-live",
-                Vendor: "pi",
-                SourceRepoPath: worktreeDir.FullName,
-                Worktree: new WorktreeInfo(Path: worktreeDir.FullName, Branch: "", SourceRepo: worktreeDir.FullName),
-                Prompt: prompt,
-                Model: null,
-                Effort: null,
-                Tools: null,
-                IsReview: false,
-                IsReviewFlow: false,
-                Review: null,
-                Cols: 80,
-                Rows: 24,
-                ServerUrl: null,
-                DaemonBridgeUrl: null,
-                CapacitorPath: "/usr/local/bin/kcap");
-                // Work defaults to WorkLocation.OwnedWorktree — the only shape this factory serves.
+            // (a) The ordering guarantee StartAsync's own doc states: a factory MUST await the
+            // ready barrier before returning, so both of these must already be true the instant
+            // StartAsync's Task completed above — no further waiting here.
+            await Assert.That(start.Transcript).IsNotNull();
+            await Assert.That(runtime.AcpSessionId).IsNotEmpty();
 
-            using var startCts = new CancellationTokenSource();
+            Console.WriteLine($"[pi-hosted-live] AcpSessionId={runtime.AcpSessionId} ResolvedModel={runtime.ResolvedModel ?? "(none)"}");
 
-            var start = await factory.StartAsync(ctx, startCts.Token).WaitAsync(ReadyTimeout);
-            var runtime = (PiRpcHostedAgentRuntime)start.Runtime;
+            // (b) The prompted turn's assistant_text reply must carry the nonce, observed over the
+            // SAME channel the daemon forwards to the server.
+            var (sawNonce, collected) = await CollectUntilNonceAsync(runtime.Envelopes, nonce, TurnTimeout);
 
-            try {
-                // (a) The ordering guarantee StartAsync's own doc states: a factory MUST await the
-                // ready barrier before returning, so both of these must already be true the instant
-                // StartAsync's Task completed above — no further waiting here.
-                await Assert.That(start.Transcript).IsNotNull();
-                await Assert.That(runtime.AcpSessionId).IsNotEmpty();
+            Console.WriteLine($"[pi-hosted-live] observed {collected.Count} transcript envelope(s):");
+            foreach (var env in collected)
+                Console.WriteLine($"[pi-hosted-live]   kind={env.Kind} text={env.Text}");
 
-                Console.WriteLine($"[pi-hosted-live] AcpSessionId={runtime.AcpSessionId} ResolvedModel={runtime.ResolvedModel ?? "(none)"}");
-
-                // (b) The prompted turn's assistant_text reply must carry the nonce, observed over the
-                // SAME channel the daemon forwards to the server.
-                var (sawNonce, collected) = await CollectUntilNonceAsync(runtime.Envelopes, nonce, TurnTimeout);
-
-                Console.WriteLine($"[pi-hosted-live] observed {collected.Count} transcript envelope(s):");
-                foreach (var env in collected)
-                    Console.WriteLine($"[pi-hosted-live]   kind={env.Kind} text={env.Text}");
-
-                await Assert.That(sawNonce).IsTrue()
-                    .Because($"expected an assistant_text envelope containing '{nonce}' within {TurnTimeout} "
-                           + "of the prompted turn");
-            } finally {
-                // (c) Graceful stop first; TerminateAsync (inside DisposeAsync) is the backstop this
-                // factory's own doc describes for a launch that fails to wind down cleanly.
-                try {
-                    await runtime.RequestGracefulStopAsync().WaitAsync(StopTimeout);
-                    await runtime.WaitForExitAsync(StopTimeout);
-                } catch (Exception ex) {
-                    Console.WriteLine($"[pi-hosted-live] graceful stop did not complete cleanly: {ex.Message}");
-                }
-
-                startCts.Cancel();
-                await runtime.DisposeAsync();
-            }
+            await Assert.That(sawNonce).IsTrue()
+                .Because($"expected an assistant_text envelope containing '{nonce}' within {TurnTimeout} "
+                       + "of the prompted turn");
         } finally {
-            try { worktreeDir.Delete(recursive: true); } catch { /* best-effort cleanup */ }
+            // (c) Graceful stop first; TerminateAsync (inside DisposeAsync) is the backstop this
+            // factory's own doc describes for a launch that fails to wind down cleanly.
+            try {
+                await runtime.RequestGracefulStopAsync().WaitAsync(StopTimeout);
+                await runtime.WaitForExitAsync(StopTimeout);
+            } catch (Exception ex) {
+                Console.WriteLine($"[pi-hosted-live] graceful stop did not complete cleanly: {ex.Message}");
+            }
+
+            startCts.Cancel();
+            await runtime.DisposeAsync();
         }
     }
 

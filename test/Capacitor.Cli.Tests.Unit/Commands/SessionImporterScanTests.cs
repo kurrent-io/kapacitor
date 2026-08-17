@@ -11,18 +11,13 @@ public class SessionImporterScanTests {
                          {"type":"result","tool_use_id":"toolu_1","tool_result":{"status":"async_launched","agentId":"agent-abc"}}
                          """;
 
-        var path = Path.GetTempFileName();
+        using var tmp = new TempDir();
+        var path = tmp.CreateFile("transcript.tmp", transcript);
 
-        try {
-            await File.WriteAllTextAsync(path, transcript);
+        var scan = SessionImporter.ScanAgentLifecycle(path);
 
-            var scan = SessionImporter.ScanAgentLifecycle(path);
-
-            await Assert.That(scan.FirstLineByAgent.ContainsKey("agent-abc")).IsTrue();
-            await Assert.That(scan.AgentTypeByAgent["agent-abc"]).IsEqualTo("code-reviewer");
-        } finally {
-            File.Delete(path);
-        }
+        await Assert.That(scan.FirstLineByAgent.ContainsKey("agent-abc")).IsTrue();
+        await Assert.That(scan.AgentTypeByAgent["agent-abc"]).IsEqualTo("code-reviewer");
     }
 
     [Test]
@@ -32,17 +27,12 @@ public class SessionImporterScanTests {
                          {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2"}]},"toolUseResult":{"agentId":"agent-xyz"}}
                          """;
 
-        var path = Path.GetTempFileName();
+        using var tmp = new TempDir();
+        var path = tmp.CreateFile("transcript.tmp", transcript);
 
-        try {
-            await File.WriteAllTextAsync(path, transcript);
+        var scan = SessionImporter.ScanAgentLifecycle(path);
 
-            var scan = SessionImporter.ScanAgentLifecycle(path);
-
-            await Assert.That(scan.AgentTypeByAgent["agent-xyz"]).IsEqualTo("general-purpose");
-        } finally {
-            File.Delete(path);
-        }
+        await Assert.That(scan.AgentTypeByAgent["agent-xyz"]).IsEqualTo("general-purpose");
     }
 
     [Test]
@@ -56,18 +46,13 @@ public class SessionImporterScanTests {
                          {"type":"result","tool_use_id":"toolu_1","tool_result":{"status":"async_launched","agentId":"agent-abc"}}
                          """;
 
-        var path = Path.GetTempFileName();
+        using var tmp = new TempDir();
+        var path = tmp.CreateFile("transcript.tmp", transcript);
 
-        try {
-            await File.WriteAllTextAsync(path, transcript);
+        var scan = SessionImporter.ScanAgentLifecycle(path);
 
-            var scan = SessionImporter.ScanAgentLifecycle(path);
-
-            await Assert.That(scan.FirstLineByAgent["agent-abc"]).IsEqualTo(0); // progress line wins the position
-            await Assert.That(scan.AgentTypeByAgent["agent-abc"]).IsEqualTo("code-reviewer");
-        } finally {
-            File.Delete(path);
-        }
+        await Assert.That(scan.FirstLineByAgent["agent-abc"]).IsEqualTo(0); // progress line wins the position
+        await Assert.That(scan.AgentTypeByAgent["agent-abc"]).IsEqualTo("code-reviewer");
     }
 
     [Test]
@@ -79,18 +64,13 @@ public class SessionImporterScanTests {
                          {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2"}]},"toolUseResult":{"agentId":"agent-xyz"}}
                          """;
 
-        var path = Path.GetTempFileName();
+        using var tmp = new TempDir();
+        var path = tmp.CreateFile("transcript.tmp", transcript);
 
-        try {
-            await File.WriteAllTextAsync(path, transcript);
+        var scan = SessionImporter.ScanAgentLifecycle(path);
 
-            var scan = SessionImporter.ScanAgentLifecycle(path);
-
-            await Assert.That(scan.FirstLineByAgent["agent-xyz"]).IsEqualTo(0);
-            await Assert.That(scan.AgentTypeByAgent["agent-xyz"]).IsEqualTo("general-purpose");
-        } finally {
-            File.Delete(path);
-        }
+        await Assert.That(scan.FirstLineByAgent["agent-xyz"]).IsEqualTo(0);
+        await Assert.That(scan.AgentTypeByAgent["agent-xyz"]).IsEqualTo("general-purpose");
     }
 
     [Test]
@@ -100,17 +80,12 @@ public class SessionImporterScanTests {
                          {"type":"progress","data":{"type":"agent_progress","agentId":"agent-orphan"}}
                          """;
 
-        var path = Path.GetTempFileName();
+        using var tmp = new TempDir();
+        var path = tmp.CreateFile("transcript.tmp", transcript);
 
-        try {
-            await File.WriteAllTextAsync(path, transcript);
+        var scan = SessionImporter.ScanAgentLifecycle(path);
 
-            var scan = SessionImporter.ScanAgentLifecycle(path);
-
-            await Assert.That(scan.FirstLineByAgent.ContainsKey("agent-orphan")).IsTrue();
-            await Assert.That(scan.AgentTypeByAgent.ContainsKey("agent-orphan")).IsFalse();
-        } finally {
-            File.Delete(path);
-        }
+        await Assert.That(scan.FirstLineByAgent.ContainsKey("agent-orphan")).IsTrue();
+        await Assert.That(scan.AgentTypeByAgent.ContainsKey("agent-orphan")).IsFalse();
     }
 }

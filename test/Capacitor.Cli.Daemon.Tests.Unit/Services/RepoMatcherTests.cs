@@ -10,9 +10,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// <see cref="Capacitor.Cli.Daemon.Services.RepoMatcher.FindAsync"/> returns the expected confirmed roots.
 /// </summary>
 public class RepoMatcherTests {
-    static string MakeTempRepo(string originUrl, string? subdir = null) {
-        var root = Path.Combine(Path.GetTempPath(), "kcap-repo-matcher-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(root);
+    static string MakeTempRepo(TempDir tmp, string dirName, string originUrl, string? subdir = null) {
+        var root = tmp.CreateDir(dirName);
 
         Run(root, "init", "-q");
         Run(root, "remote", "add", "origin", originUrl);
@@ -44,45 +43,41 @@ public class RepoMatcherTests {
 
     [Test]
     public async Task FindAsync_MatchingHttpsOrigin_ReturnsRoot() {
-        var repo = MakeTempRepo("https://github.com/contoso/widgets.git");
-        try {
-            var result = await NewMatcher().FindAsync("contoso", "widgets", [repo], CancellationToken.None);
+        using var tmp = new TempDir();
+        var repo = MakeTempRepo(tmp, "repo", "https://github.com/contoso/widgets.git");
+        var result = await NewMatcher().FindAsync("contoso", "widgets", [repo], CancellationToken.None);
 
-            await Assert.That(result).Count().IsEqualTo(1);
-            await Assert.That(result[0]).IsEqualTo(Path.GetFullPath(repo));
-        } finally { Directory.Delete(repo, true); }
+        await Assert.That(result).Count().IsEqualTo(1);
+        await Assert.That(result[0]).IsEqualTo(Path.GetFullPath(repo));
     }
 
     [Test]
     public async Task FindAsync_MatchingSshOrigin_ReturnsRoot() {
-        var repo = MakeTempRepo("git@github.com:contoso/widgets.git");
-        try {
-            var result = await NewMatcher().FindAsync("contoso", "widgets", [repo], CancellationToken.None);
+        using var tmp = new TempDir();
+        var repo = MakeTempRepo(tmp, "repo", "git@github.com:contoso/widgets.git");
+        var result = await NewMatcher().FindAsync("contoso", "widgets", [repo], CancellationToken.None);
 
-            await Assert.That(result).Count().IsEqualTo(1);
-        } finally { Directory.Delete(repo, true); }
+        await Assert.That(result).Count().IsEqualTo(1);
     }
 
     [Test]
     public async Task FindAsync_DifferentOwner_ReturnsEmpty() {
-        var repo = MakeTempRepo("https://github.com/contoso/widgets.git");
-        try {
-            var result = await NewMatcher().FindAsync("other-org", "widgets", [repo], CancellationToken.None);
+        using var tmp = new TempDir();
+        var repo = MakeTempRepo(tmp, "repo", "https://github.com/contoso/widgets.git");
+        var result = await NewMatcher().FindAsync("other-org", "widgets", [repo], CancellationToken.None);
 
-            await Assert.That(result).IsEmpty();
-        } finally { Directory.Delete(repo, true); }
+        await Assert.That(result).IsEmpty();
     }
 
     [Test]
     public async Task FindAsync_CandidateInsideRepo_WalksUpToRoot() {
-        var sub = MakeTempRepo("https://github.com/contoso/widgets.git", subdir: "src/Foo");
+        using var tmp = new TempDir();
+        var sub = MakeTempRepo(tmp, "repo", "https://github.com/contoso/widgets.git", subdir: "src/Foo");
         var root = Path.GetFullPath(Path.Combine(sub, "..", ".."));
-        try {
-            var result = await NewMatcher().FindAsync("contoso", "widgets", [sub], CancellationToken.None);
+        var result = await NewMatcher().FindAsync("contoso", "widgets", [sub], CancellationToken.None);
 
-            await Assert.That(result).Count().IsEqualTo(1);
-            await Assert.That(result[0]).IsEqualTo(root);
-        } finally { Directory.Delete(root, true); }
+        await Assert.That(result).Count().IsEqualTo(1);
+        await Assert.That(result[0]).IsEqualTo(root);
     }
 
     [Test]
@@ -96,96 +91,84 @@ public class RepoMatcherTests {
 
     [Test]
     public async Task FindAsync_NonGitDirectory_Skipped() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-not-a-repo-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(dir);
-        try {
-            var result = await NewMatcher().FindAsync("contoso", "widgets", [dir], CancellationToken.None);
+        using var tmp = new TempDir();
+        var dir = tmp.CreateDir("not-a-repo");
+        var result = await NewMatcher().FindAsync("contoso", "widgets", [dir], CancellationToken.None);
 
-            await Assert.That(result).IsEmpty();
-        } finally { Directory.Delete(dir, true); }
+        await Assert.That(result).IsEmpty();
     }
 
     [Test]
     public async Task FindAsync_DuplicateCandidatesPointingAtSameRoot_DedupedToOne() {
-        var sub = MakeTempRepo("https://github.com/contoso/widgets.git", subdir: "src");
+        using var tmp = new TempDir();
+        var sub = MakeTempRepo(tmp, "repo", "https://github.com/contoso/widgets.git", subdir: "src");
         var root = Path.GetFullPath(Path.Combine(sub, ".."));
-        try {
-            var result = await NewMatcher().FindAsync("contoso", "widgets", [sub, root, sub], CancellationToken.None);
+        var result = await NewMatcher().FindAsync("contoso", "widgets", [sub, root, sub], CancellationToken.None);
 
-            await Assert.That(result).Count().IsEqualTo(1);
-        } finally { Directory.Delete(root, true); }
+        await Assert.That(result).Count().IsEqualTo(1);
     }
 
     [Test]
     public async Task FindAsync_MultipleDistinctCheckouts_ReturnsAll() {
-        var repoA = MakeTempRepo("https://github.com/contoso/widgets.git");
-        var repoB = MakeTempRepo("git@github.com:contoso/widgets.git");
-        try {
-            var result = await NewMatcher().FindAsync("contoso", "widgets", [repoA, repoB], CancellationToken.None);
+        using var tmp = new TempDir();
+        var repoA = MakeTempRepo(tmp, "repoA", "https://github.com/contoso/widgets.git");
+        var repoB = MakeTempRepo(tmp, "repoB", "git@github.com:contoso/widgets.git");
+        var result = await NewMatcher().FindAsync("contoso", "widgets", [repoA, repoB], CancellationToken.None);
 
-            await Assert.That(result).Count().IsEqualTo(2);
-            await Assert.That(result).Contains(Path.GetFullPath(repoA));
-            await Assert.That(result).Contains(Path.GetFullPath(repoB));
-        } finally {
-            Directory.Delete(repoA, true);
-            Directory.Delete(repoB, true);
-        }
+        await Assert.That(result).Count().IsEqualTo(2);
+        await Assert.That(result).Contains(Path.GetFullPath(repoA));
+        await Assert.That(result).Contains(Path.GetFullPath(repoB));
     }
 
     [Test]
     public async Task FindAsync_OwnerCaseInsensitive() {
-        var repo = MakeTempRepo("https://github.com/Contoso/Widgets.git");
-        try {
-            var result = await NewMatcher().FindAsync("contoso", "WIDGETS", [repo], CancellationToken.None);
+        using var tmp = new TempDir();
+        var repo = MakeTempRepo(tmp, "repo", "https://github.com/Contoso/Widgets.git");
+        var result = await NewMatcher().FindAsync("contoso", "WIDGETS", [repo], CancellationToken.None);
 
-            await Assert.That(result).Count().IsEqualTo(1);
-        } finally { Directory.Delete(repo, true); }
+        await Assert.That(result).Count().IsEqualTo(1);
     }
 
     [Test]
     public async Task FindAsync_MatchingGitlabOrigin_ReturnsRoot() {
-        var repo = MakeTempRepo("git@gitlab.com:group/project.git");
-        try {
-            var result = await NewMatcher().FindAsync("group", "project", [repo], CancellationToken.None);
+        using var tmp = new TempDir();
+        var repo = MakeTempRepo(tmp, "repo", "git@gitlab.com:group/project.git");
+        var result = await NewMatcher().FindAsync("group", "project", [repo], CancellationToken.None);
 
-            await Assert.That(result).Contains(Path.GetFullPath(repo));
-        } finally { Directory.Delete(repo, true); }
+        await Assert.That(result).Contains(Path.GetFullPath(repo));
     }
 
     [Test]
     public async Task FindAsync_MatchingNestedGitlabGroupOrigin_ReturnsRoot() {
+        using var tmp = new TempDir();
         // a nested namespace owner ("group/sub") must match the full
         // owner/repo suffix of the normalized remote.
-        var repo = MakeTempRepo("git@gitlab.com:group/sub/project.git");
-        try {
-            var result = await NewMatcher().FindAsync("group/sub", "project", [repo], CancellationToken.None);
+        var repo = MakeTempRepo(tmp, "repo", "git@gitlab.com:group/sub/project.git");
+        var result = await NewMatcher().FindAsync("group/sub", "project", [repo], CancellationToken.None);
 
-            await Assert.That(result).Contains(Path.GetFullPath(repo));
-        } finally { Directory.Delete(repo, true); }
+        await Assert.That(result).Contains(Path.GetFullPath(repo));
     }
 
     [Test]
     public async Task FindAsync_NestedGroup_WrongSubgroup_ReturnsEmpty() {
+        using var tmp = new TempDir();
         // A different subgroup with the same project name must NOT match.
-        var repo = MakeTempRepo("git@gitlab.com:group/sub/project.git");
-        try {
-            var result = await NewMatcher().FindAsync("group", "project", [repo], CancellationToken.None);
+        var repo = MakeTempRepo(tmp, "repo", "git@gitlab.com:group/sub/project.git");
+        var result = await NewMatcher().FindAsync("group", "project", [repo], CancellationToken.None);
 
-            await Assert.That(result).IsEmpty();
-        } finally { Directory.Delete(repo, true); }
+        await Assert.That(result).IsEmpty();
     }
 
     [Test]
     public async Task FindAsync_AllowedRepoPathsContributesCandidates() {
-        var repo = MakeTempRepo("https://github.com/contoso/widgets.git");
-        try {
-            var config = new DaemonConfig { AllowedRepoPaths = [repo] };
-            var matcher = new RepoMatcher(config, NullLogger<RepoMatcher>.Instance);
+        using var tmp = new TempDir();
+        var repo = MakeTempRepo(tmp, "repo", "https://github.com/contoso/widgets.git");
+        var config = new DaemonConfig { AllowedRepoPaths = [repo] };
+        var matcher = new RepoMatcher(config, NullLogger<RepoMatcher>.Instance);
 
-            // Pass empty server candidates — repo should still surface from AllowedRepoPaths.
-            var result = await matcher.FindAsync("contoso", "widgets", [], CancellationToken.None);
+        // Pass empty server candidates — repo should still surface from AllowedRepoPaths.
+        var result = await matcher.FindAsync("contoso", "widgets", [], CancellationToken.None);
 
-            await Assert.That(result).Count().IsEqualTo(1);
-        } finally { Directory.Delete(repo, true); }
+        await Assert.That(result).Count().IsEqualTo(1);
     }
 }

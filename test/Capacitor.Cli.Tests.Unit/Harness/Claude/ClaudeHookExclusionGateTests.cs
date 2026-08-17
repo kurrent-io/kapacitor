@@ -16,41 +16,31 @@ public class ClaudeHookExclusionGateTests {
 
     [Test]
     public async Task ExcludedPath_ReturnsTrue() {
-        var excludedDir = Path.Combine(Path.GetTempPath(), $"kcap-excl-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(excludedDir);
+        using var tmp = new TempDir();
+        var excludedDir = tmp.CreateDir("excl");
 
-        try {
-            var profile  = new Profile { ExcludedPaths = [excludedDir] };
-            var body     = Body(Path.Combine(excludedDir, "project"));
+        var profile  = new Profile { ExcludedPaths = [excludedDir] };
+        var body     = Body(Path.Combine(excludedDir, "project"));
 
-            var excluded = await ClaudeHookCommand.IsSessionExcludedAsync(
-                profile, body, Stopwatch.GetTimestamp(), "permission-request");
+        var excluded = await ClaudeHookCommand.IsSessionExcludedAsync(
+            profile, body, Stopwatch.GetTimestamp(), "permission-request");
 
-            await Assert.That(excluded).IsTrue();
-        } finally {
-            Directory.Delete(excludedDir, recursive: true);
-        }
+        await Assert.That(excluded).IsTrue();
     }
 
     [Test]
     public async Task NonExcludedPath_ReturnsFalse() {
-        var excludedDir = Path.Combine(Path.GetTempPath(), $"kcap-excl-{Guid.NewGuid():N}");
-        var otherDir    = Path.Combine(Path.GetTempPath(), $"kcap-other-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(excludedDir);
-        Directory.CreateDirectory(otherDir);
+        using var tmp = new TempDir();
+        var excludedDir = tmp.CreateDir("excl");
+        var otherDir    = tmp.CreateDir("other");
 
-        try {
-            var profile  = new Profile { ExcludedPaths = [excludedDir] };
-            var body     = Body(Path.Combine(otherDir, "project"));
+        var profile  = new Profile { ExcludedPaths = [excludedDir] };
+        var body     = Body(Path.Combine(otherDir, "project"));
 
-            var excluded = await ClaudeHookCommand.IsSessionExcludedAsync(
-                profile, body, Stopwatch.GetTimestamp(), "permission-request");
+        var excluded = await ClaudeHookCommand.IsSessionExcludedAsync(
+            profile, body, Stopwatch.GetTimestamp(), "permission-request");
 
-            await Assert.That(excluded).IsFalse();
-        } finally {
-            Directory.Delete(excludedDir, recursive: true);
-            Directory.Delete(otherDir, recursive: true);
-        }
+        await Assert.That(excluded).IsFalse();
     }
 
     [Test]

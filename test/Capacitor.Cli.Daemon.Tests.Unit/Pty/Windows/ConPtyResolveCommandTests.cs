@@ -15,14 +15,14 @@ public class ConPtyResolveCommandTests {
     public async Task ResolveCommand_prefers_cmd_over_extensionless_twin_on_path() {
         if (!OperatingSystem.IsWindows()) return;
 
-        var dir  = Directory.CreateTempSubdirectory("kcap-conpty-twin-").FullName;
+        using var tmp = new TempDir();
         var name = $"kcap-conptyprobe-{Guid.NewGuid():N}";
-        await File.WriteAllTextAsync(Path.Combine(dir, name), "#!/bin/sh\nexit 0\n"); // shim twin
-        var cmd = Path.Combine(dir, name + ".cmd");
+        await File.WriteAllTextAsync(tmp.PathTo(name), "#!/bin/sh\nexit 0\n"); // shim twin
+        var cmd = tmp.PathTo(name + ".cmd");
         await File.WriteAllTextAsync(cmd, "@echo off\r\n");
 
         var savedPath = Environment.GetEnvironmentVariable("PATH");
-        Environment.SetEnvironmentVariable("PATH", $"{dir}{Path.PathSeparator}{savedPath}");
+        Environment.SetEnvironmentVariable("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
 
         try {
             var (resolved, isCmd) = ConPtyProcess.ResolveCommand(name);
@@ -31,7 +31,6 @@ public class ConPtyResolveCommandTests {
             await Assert.That(isCmd).IsTrue(); // drives the cmd.exe /c wrapper in Spawn
         } finally {
             Environment.SetEnvironmentVariable("PATH", savedPath);
-            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -41,13 +40,13 @@ public class ConPtyResolveCommandTests {
     public async Task ResolveCommand_finds_exe_and_marks_not_cmd() {
         if (!OperatingSystem.IsWindows()) return;
 
-        var dir  = Directory.CreateTempSubdirectory("kcap-conpty-exe-").FullName;
+        using var tmp = new TempDir();
         var name = $"kcap-conptyexe-{Guid.NewGuid():N}";
-        var exe  = Path.Combine(dir, name + ".exe");
+        var exe  = tmp.PathTo(name + ".exe");
         await File.WriteAllTextAsync(exe, "");
 
         var savedPath = Environment.GetEnvironmentVariable("PATH");
-        Environment.SetEnvironmentVariable("PATH", $"{dir}{Path.PathSeparator}{savedPath}");
+        Environment.SetEnvironmentVariable("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
 
         try {
             var (resolved, isCmd) = ConPtyProcess.ResolveCommand(name);
@@ -56,7 +55,6 @@ public class ConPtyResolveCommandTests {
             await Assert.That(isCmd).IsFalse();
         } finally {
             Environment.SetEnvironmentVariable("PATH", savedPath);
-            Directory.Delete(dir, recursive: true);
         }
     }
 }

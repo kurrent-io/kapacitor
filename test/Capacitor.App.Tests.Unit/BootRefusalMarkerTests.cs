@@ -19,10 +19,10 @@ public class BootRefusalMarkerTests {
         """;
 
     static async Task Run(Func<string, Task> body) {
-        var dir = Directory.CreateTempSubdirectory("boot-refusal-app-").FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
-            await body(dir);
+            await body(tmp.Path);
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
         }

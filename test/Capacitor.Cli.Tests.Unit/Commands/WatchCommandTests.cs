@@ -181,14 +181,9 @@ public class CountFileLinesTests {
     [Arguments("single", 1)]
     [Arguments("", 0)]
     public async Task CountsLines(string content, int expected) {
-        var path = Path.GetTempFileName();
-
-        try {
-            await File.WriteAllTextAsync(path, content);
-            await Assert.That(WatchCommand.CountFileLines(path)).IsEqualTo(expected);
-        } finally {
-            File.Delete(path);
-        }
+        using var tmp  = new TempDir();
+        var       path = tmp.CreateFile("lines.tmp", content);
+        await Assert.That(WatchCommand.CountFileLines(path)).IsEqualTo(expected);
     }
 
     [Test]
@@ -1018,49 +1013,40 @@ public class ClaudeToolTrackingSourceTests {
     // live subagent is eligible for reaping.
     [Test]
     public async Task Backfill_recovers_a_tool_use_left_open_before_the_resume_cursor() {
-        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("backfill.jsonl");
         await File.WriteAllLinesAsync(path, [ToolUse, """{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"still working"}]}}"""]);
 
-        try {
-            var pending = new HashSet<string>(StringComparer.Ordinal);
-            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 2, CancellationToken.None);
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 2, CancellationToken.None);
 
-            await Assert.That(pending.Contains("toolu_big")).IsTrue();
-        } finally {
-            File.Delete(path);
-        }
+        await Assert.That(pending.Contains("toolu_big")).IsTrue();
     }
 
     [Test]
     public async Task Backfill_leaves_nothing_pending_when_the_tool_already_completed() {
-        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("backfill.jsonl");
         await File.WriteAllLinesAsync(path, [ToolUse, OversizedToolResult()]);
 
-        try {
-            var pending = new HashSet<string>(StringComparer.Ordinal);
-            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 2, CancellationToken.None);
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 2, CancellationToken.None);
 
-            await Assert.That(pending.Count).IsEqualTo(0);
-        } finally {
-            File.Delete(path);
-        }
+        await Assert.That(pending.Count).IsEqualTo(0);
     }
 
     // Only the lines before the cursor are the watcher's blind spot; everything from the cursor on
     // arrives through the normal drain, and scanning it here would double-apply it.
     [Test]
     public async Task Backfill_stops_at_the_cursor() {
-        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("backfill.jsonl");
         await File.WriteAllLinesAsync(path, [ToolUse, OversizedToolResult()]);
 
-        try {
-            var pending = new HashSet<string>(StringComparer.Ordinal);
-            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 1, CancellationToken.None);
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 1, CancellationToken.None);
 
-            await Assert.That(pending.Contains("toolu_big")).IsTrue();
-        } finally {
-            File.Delete(path);
-        }
+        await Assert.That(pending.Contains("toolu_big")).IsTrue();
     }
 
     /// <summary>
@@ -1072,7 +1058,8 @@ public class ClaudeToolTrackingSourceTests {
     /// </summary>
     [Test]
     public async Task Backfill_ignores_an_unmatched_tool_use_older_than_the_scan_window() {
-        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("backfill.jsonl");
 
         var lines = new List<string> { ToolUse };  // never resolved, then buried by later activity
         lines.AddRange(Enumerable.Repeat(
@@ -1081,32 +1068,25 @@ public class ClaudeToolTrackingSourceTests {
 
         await File.WriteAllLinesAsync(path, lines);
 
-        try {
-            var pending = new HashSet<string>(StringComparer.Ordinal);
-            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, lines.Count, CancellationToken.None);
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, lines.Count, CancellationToken.None);
 
-            await Assert.That(pending.Count).IsEqualTo(0);
-        } finally {
-            File.Delete(path);
-        }
+        await Assert.That(pending.Count).IsEqualTo(0);
     }
 
     [Test]
     public async Task Backfill_returns_silently_when_already_cancelled() {
-        var path = Path.Combine(Path.GetTempPath(), $"kcap-backfill-{Guid.NewGuid():N}.jsonl");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("backfill.jsonl");
         await File.WriteAllLinesAsync(path, [ToolUse]);
 
-        try {
-            var pending = new HashSet<string>(StringComparer.Ordinal);
-            using var cancelled = new CancellationTokenSource();
-            await cancelled.CancelAsync();
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
 
-            await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 1, cancelled.Token);
+        await WatchCommand.BackfillClaudePendingToolCallsAsync(pending, path, upToLine: 1, cancelled.Token);
 
-            await Assert.That(pending.Count).IsEqualTo(0);
-        } finally {
-            File.Delete(path);
-        }
+        await Assert.That(pending.Count).IsEqualTo(0);
     }
 
     [Test]

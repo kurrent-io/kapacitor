@@ -43,16 +43,13 @@ public class WatcherHeartbeatTests {
 
     [Test]
     public async Task touch_then_read_roundtrips() {
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-hb-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        try {
-            var p = WatcherHeartbeat.HeartbeatPath(dir, "sess");
-            var now = DateTimeOffset.UtcNow;
-            WatcherHeartbeat.Touch(p, now);
-            var read = WatcherHeartbeat.Read(p);
-            await Assert.That(read).IsNotNull();
-            await Assert.That((read!.Value - now).Duration()).IsLessThan(TimeSpan.FromSeconds(1));
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        using var tmp = new TempDir();
+        var p = WatcherHeartbeat.HeartbeatPath(tmp.Path, "sess");
+        var now = DateTimeOffset.UtcNow;
+        WatcherHeartbeat.Touch(p, now);
+        var read = WatcherHeartbeat.Read(p);
+        await Assert.That(read).IsNotNull();
+        await Assert.That((read!.Value - now).Duration()).IsLessThan(TimeSpan.FromSeconds(1));
     }
 
     [Test]
@@ -63,17 +60,14 @@ public class WatcherHeartbeatTests {
 
     [Test]
     public async Task touch_overwrites_previous_value() {
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-hb-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        try {
-            var p = WatcherHeartbeat.HeartbeatPath(dir, "sess");
-            WatcherHeartbeat.Touch(p, DateTimeOffset.UtcNow.AddMinutes(-5));
-            var second = DateTimeOffset.UtcNow;
-            WatcherHeartbeat.Touch(p, second);
-            var read = WatcherHeartbeat.Read(p);
-            await Assert.That(read).IsNotNull();
-            await Assert.That((read!.Value - second).Duration()).IsLessThan(TimeSpan.FromSeconds(1));
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        using var tmp = new TempDir();
+        var p = WatcherHeartbeat.HeartbeatPath(tmp.Path, "sess");
+        WatcherHeartbeat.Touch(p, DateTimeOffset.UtcNow.AddMinutes(-5));
+        var second = DateTimeOffset.UtcNow;
+        WatcherHeartbeat.Touch(p, second);
+        var read = WatcherHeartbeat.Read(p);
+        await Assert.That(read).IsNotNull();
+        await Assert.That((read!.Value - second).Duration()).IsLessThan(TimeSpan.FromSeconds(1));
     }
 
     // --- Connect-retry / reconnect heartbeat freshness ---

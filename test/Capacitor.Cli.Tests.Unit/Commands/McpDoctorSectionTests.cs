@@ -10,11 +10,16 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// the two-tier stale-path scan (missing binary vs. differs-from-current-resolution).
 /// </summary>
 public class McpDoctorSectionTests {
-    sealed record Fixture(string Dir, string ClaudeConfig, string ClaudeSettings) {
-        public static Fixture Create() {
-            var dir = Directory.CreateTempSubdirectory("kcap-mcpdoctor-").FullName;
-            return new(dir, Path.Combine(dir, ".claude.json"), Path.Combine(dir, "settings.json"));
-        }
+    /// <summary>Owns the scratch directory the fixture files live in, so `using` at each call site
+    /// reaps it — nothing deleted these before.</summary>
+    sealed record Fixture(TempDir Tmp) : IDisposable {
+        public string Dir            => Tmp.Path;
+        public string ClaudeConfig   => Tmp.PathTo(".claude.json");
+        public string ClaudeSettings => Tmp.PathTo("settings.json");
+
+        public static Fixture Create() => new(new TempDir());
+
+        public void Dispose() => Tmp.Dispose();
 
         /// <summary>An EFFECTIVE plugin install: enabled registration + the plugin's INSTALLED
         /// payload (installed_plugins.json → installPath cache dir shipping .mcp.json) — what
@@ -56,7 +61,7 @@ public class McpDoctorSectionTests {
 
     [Test]
     public async Task Reports_duplicates_in_both_scopes_and_conflicts_without_mutating() {
-        var f = Fixture.Create();
+        using var f = Fixture.Create();
         f.InstallPlugin();
         File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
 
@@ -72,7 +77,7 @@ public class McpDoctorSectionTests {
 
     [Test]
     public async Task Clean_removes_only_canonical_duplicates_and_preserves_conflicts() {
-        var f = Fixture.Create();
+        using var f = Fixture.Create();
         f.InstallPlugin();
         File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
 
@@ -90,7 +95,7 @@ public class McpDoctorSectionTests {
 
     [Test]
     public async Task Without_the_plugin_installed_nothing_is_flagged_or_removed() {
-        var f = Fixture.Create(); // no settings.json → plugin not installed
+        using var f = Fixture.Create(); // no settings.json → plugin not installed
         File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
 
         var (issues, output) = await RunAsync(f, clean: true);
@@ -102,7 +107,7 @@ public class McpDoctorSectionTests {
 
     [Test]
     public async Task Stale_version_marker_alone_never_authorizes_flagging_or_cleanup() {
-        var f = Fixture.Create();
+        using var f = Fixture.Create();
         f.WriteStaleMarkerOnly(); // satisfies the refresh gate (IsInstalled) but is not effective
         File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
 
@@ -115,7 +120,7 @@ public class McpDoctorSectionTests {
 
     [Test]
     public async Task Enabled_registration_without_a_resolvable_payload_never_authorizes_cleanup() {
-        var f = Fixture.Create();
+        using var f = Fixture.Create();
         f.InstallPlugin();
         Directory.Delete(Path.Combine(f.Dir, "plugins", "cache"), recursive: true); // re-layout: installed payload gone
         File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
@@ -128,7 +133,7 @@ public class McpDoctorSectionTests {
 
     [Test]
     public async Task Missing_claude_config_reports_healthy() {
-        var f = Fixture.Create();
+        using var f = Fixture.Create();
         var (issues, output) = await RunAsync(f);
         await Assert.That(issues).IsEqualTo(0);
         await Assert.That(output).Contains("no issues found");
@@ -136,7 +141,7 @@ public class McpDoctorSectionTests {
 
     [Test]
     public async Task Stale_scan_distinguishes_missing_binary_from_outdated_resolution() {
-        var f = Fixture.Create();
+        using var f = Fixture.Create();
         var current = Path.Combine(f.Dir, "kcap");     // exists = the "current" binary
         var old     = Path.Combine(f.Dir, "old", "kcap"); // exists but differs from current
         File.WriteAllText(current, "bin");
@@ -172,7 +177,7 @@ public class McpDoctorSectionTests {
     /// </summary>
     [Test]
     public async Task Clean_aborts_without_writing_when_the_config_changed_after_the_snapshot() {
-        var f = Fixture.Create();
+        using var f = Fixture.Create();
         File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
         var snapshot = DuplicateAndConflictConfig;
 
@@ -188,7 +193,7 @@ public class McpDoctorSectionTests {
 
     [Test]
     public async Task Clean_commits_when_the_snapshot_is_still_current() {
-        var f = Fixture.Create();
+        using var f = Fixture.Create();
         File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
 
         var outcome = McpDoctorSection.TryCleanClaudeConfig(f.ClaudeConfig, DuplicateAndConflictConfig, null, out _);
@@ -204,7 +209,7 @@ public class McpDoctorSectionTests {
     [Test]
     public async Task Clean_preserves_the_configs_unix_mode() {
         if (OperatingSystem.IsWindows()) return;
-        var f = Fixture.Create();
+        using var f = Fixture.Create();
         File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
         File.SetUnixFileMode(f.ClaudeConfig, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
@@ -217,7 +222,7 @@ public class McpDoctorSectionTests {
 
     [Test]
     public async Task Stale_scan_covers_codex_toml_kcap_entries_only() {
-        var f = Fixture.Create();
+        using var f = Fixture.Create();
         var missing = Path.Combine(f.Dir, "gone", "kcap");
         var codex = Path.Combine(f.Dir, "config.toml");
         // LITERAL (single-quoted) TOML strings: `\` is an escape introducer in a basic

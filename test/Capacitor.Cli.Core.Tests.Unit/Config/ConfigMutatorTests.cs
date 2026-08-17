@@ -116,7 +116,8 @@ public class ConfigMutatorTests {
 
     [Test]
     public async Task TryLoadPure_absent_file_is_success_with_defaults() {
-        var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-trypure-").FullName, "config.json");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.json");
         var ok = ConfigMutator.TryLoadPure(path, out var config);
         await Assert.That(ok).IsTrue();
         await Assert.That(config.Profiles.ContainsKey("default")).IsTrue();
@@ -126,7 +127,8 @@ public class ConfigMutatorTests {
     public async Task TryLoadPure_directory_in_place_of_file_is_failure_not_absence() {
         // File.Exists alone reads a directory as absent — TryLoadPure must not make that mistake:
         // a directory sitting at the config path is unreadable evidence, never "nothing configured".
-        var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-trypure-").FullName, "config.json");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.json");
         Directory.CreateDirectory(path);
 
         var ok = ConfigMutator.TryLoadPure(path, out var config);
@@ -142,7 +144,8 @@ public class ConfigMutatorTests {
     /// unreadable evidence rather than "nothing configured yet".</summary>
     [Test]
     public async Task TryLoadPure_malformed_json_is_failure_not_absence() {
-        var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-trypure-").FullName, "config.json");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.json");
         await File.WriteAllTextAsync(path, "{not json");
 
         var ok = ConfigMutator.TryLoadPure(path, out var config);
@@ -153,7 +156,8 @@ public class ConfigMutatorTests {
 
     [Test]
     public async Task TryLoadPure_non_object_root_is_failure_not_absence() {
-        var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-trypure-").FullName, "config.json");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.json");
         await File.WriteAllTextAsync(path, "[1,2,3]");
 
         var ok = ConfigMutator.TryLoadPure(path, out var config);
@@ -166,7 +170,8 @@ public class ConfigMutatorTests {
     public async Task LoadPure_still_degrades_malformed_json_to_defaults() {
         // LoadPure discards TryLoadPure's bool — its own soft contract (always usable defaults) is
         // unchanged by the TryLoadPure hardening above.
-        var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-trypure-").FullName, "config.json");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.json");
         await File.WriteAllTextAsync(path, "{not json");
 
         var config = ConfigMutator.LoadPure(path);
@@ -178,7 +183,8 @@ public class ConfigMutatorTests {
     /// is a plain file rather than a directory, so opening through it fails structurally.</summary>
     [Test]
     public async Task TryLoadPure_parent_replaced_by_a_file_is_failure_not_absence() {
-        var root = Directory.CreateTempSubdirectory("kcap-trypure-").FullName;
+        using var tmp = new TempDir();
+        var root = tmp.Path;
         var parentAsFile = Path.Combine(root, "not-a-directory");
         await File.WriteAllTextAsync(parentAsFile, "i am a file, not a directory");
         var path = Path.Combine(parentAsFile, "config.json");
@@ -193,7 +199,8 @@ public class ConfigMutatorTests {
     /// planted file needs the ancestor walk to climb past the never-created child directory.</summary>
     [Test]
     public async Task TryLoadPure_grandparent_replaced_by_a_file_is_failure_not_absence() {
-        var root = Directory.CreateTempSubdirectory("kcap-trypure-").FullName;
+        using var tmp = new TempDir();
+        var root = tmp.Path;
         var grandparentAsFile = Path.Combine(root, "not-a-directory");
         await File.WriteAllTextAsync(grandparentAsFile, "i am a file, not a directory");
         var path = Path.Combine(grandparentAsFile, "child", "config.json");
@@ -211,7 +218,8 @@ public class ConfigMutatorTests {
     public async Task TryLoadPure_dangling_symlink_ancestor_is_failure_not_absence() {
         Skip.When(OperatingSystem.IsWindows(), "symlink creation needs elevated privilege on Windows CI");
 
-        var root = Directory.CreateTempSubdirectory("kcap-trypure-").FullName;
+        using var tmp = new TempDir();
+        var root = tmp.Path;
         var link = Path.Combine(root, "danglink");
         Directory.CreateSymbolicLink(link, Path.Combine(root, "never-created-target"));
         var path = Path.Combine(link, "config.json");
@@ -229,7 +237,8 @@ public class ConfigMutatorTests {
     public async Task TryLoadPure_dangling_symlink_at_exact_path_is_failure_not_absence() {
         Skip.When(OperatingSystem.IsWindows(), "symlink creation needs elevated privilege on Windows CI");
 
-        var root = Directory.CreateTempSubdirectory("kcap-trypure-").FullName;
+        using var tmp = new TempDir();
+        var root = tmp.Path;
         var path = Path.Combine(root, "config.json");
         File.CreateSymbolicLink(path, Path.Combine(root, "never-created-target"));
 
@@ -243,7 +252,8 @@ public class ConfigMutatorTests {
     /// a blocked ancestor must not turn every missing directory level into a false failure.</summary>
     [Test]
     public async Task TryLoadPure_missing_parent_directory_is_still_absence() {
-        var root = Directory.CreateTempSubdirectory("kcap-trypure-").FullName;
+        using var tmp = new TempDir();
+        var root = tmp.Path;
         var path = Path.Combine(root, "never-created", "config.json");
 
         var ok = ConfigMutator.TryLoadPure(path, out var config);
@@ -254,7 +264,8 @@ public class ConfigMutatorTests {
 
     [Test]
     public async Task TryLoadPure_valid_file_is_success() {
-        var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-trypure-").FullName, "config.json");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.json");
         await File.WriteAllTextAsync(path, """{"version":2,"profiles":{"work":{"server_url":"https://w.example"}}}""");
 
         var ok = ConfigMutator.TryLoadPure(path, out var config);

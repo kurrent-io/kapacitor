@@ -53,17 +53,12 @@ public class DaemonConsentCommandTests {
 
     [Test]
     public async Task TryReadLines_filters_blank_lines_from_an_existing_file() {
-        var dir = Directory.CreateTempSubdirectory("kcap-consent-log-").FullName;
-        try {
-            var path = Path.Combine(dir, "consent-decisions.jsonl");
-            File.WriteAllText(path, "{\"a\":1}\n\n{\"a\":2}\n");
+        using var tmp = new TempDir();
+        var path = tmp.CreateFile("consent-decisions.jsonl", "{\"a\":1}\n\n{\"a\":2}\n");
 
-            var lines = DaemonConsentCommand.TryReadLines(path);
-            await Assert.That(lines.Count).IsEqualTo(2);
-            await Assert.That(lines[0]).IsEqualTo("{\"a\":1}");
-            await Assert.That(lines[1]).IsEqualTo("{\"a\":2}");
-        } finally {
-            Directory.Delete(dir, true);
-        }
+        var lines = DaemonConsentCommand.TryReadLines(path);
+        await Assert.That(lines.Count).IsEqualTo(2);
+        await Assert.That(lines[0]).IsEqualTo("{\"a\":1}");
+        await Assert.That(lines[1]).IsEqualTo("{\"a\":2}");
     }
 }

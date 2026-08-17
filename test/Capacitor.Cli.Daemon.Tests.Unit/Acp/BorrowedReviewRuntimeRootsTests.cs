@@ -347,31 +347,27 @@ public class BorrowedReviewRuntimeRootsTests {
     public async Task A_prefix_beneath_a_symlinked_home_is_still_refused() {
         Skip.When(OperatingSystem.IsWindows(), "needs POSIX symlinks");
 
-        var root = Directory.CreateTempSubdirectory("kcap-symlink-home").FullName;
-        try {
-            var real   = Path.Combine(root, "real");
-            var linked = Path.Combine(root, "linked");
-            var prefix = Path.Combine(real, "dev", "toolbox");
-            Directory.CreateDirectory(Path.Combine(prefix, "bin"));
-            Directory.CreateDirectory(Path.Combine(prefix, "lib"));
-            Directory.CreateSymbolicLink(linked, real);
+        using var tmp = new TempDir();
+        var real   = tmp.PathTo("real");
+        var linked = tmp.PathTo("linked");
+        var prefix = Path.Combine(real, "dev", "toolbox");
+        Directory.CreateDirectory(Path.Combine(prefix, "bin"));
+        Directory.CreateDirectory(Path.Combine(prefix, "lib"));
+        Directory.CreateSymbolicLink(linked, real);
 
-            var logicalHome = Path.Combine(linked, "dev");
-            var binary      = Path.Combine(prefix, "bin", "copilot");
-            await File.WriteAllTextAsync(binary, "#!/bin/sh\n");
+        var logicalHome = Path.Combine(linked, "dev");
+        var binary      = Path.Combine(prefix, "bin", "copilot");
+        await File.WriteAllTextAsync(binary, "#!/bin/sh\n");
 
-            // The two forms really do differ, or this test would prove nothing.
-            await Assert.That(Path.GetFullPath(prefix)
-                .StartsWith(Path.GetFullPath(logicalHome), StringComparison.Ordinal)).IsFalse();
+        // The two forms really do differ, or this test would prove nothing.
+        await Assert.That(Path.GetFullPath(prefix)
+            .StartsWith(Path.GetFullPath(logicalHome), StringComparison.Ordinal)).IsFalse();
 
-            var grants = BorrowedReviewRuntimeRoots.Resolve(
-                binary, userHome: logicalHome, measuredPrefixes: [prefix]);
+        var grants = BorrowedReviewRuntimeRoots.Resolve(
+            binary, userHome: logicalHome, measuredPrefixes: [prefix]);
 
-            await Assert.That(grants.Directories).IsEmpty()
-                .Because("the prefix is beneath home once home is resolved to its physical form");
-        } finally {
-            try { Directory.Delete(root, true); } catch { /* best-effort */ }
-        }
+        await Assert.That(grants.Directories).IsEmpty()
+            .Because("the prefix is beneath home once home is resolved to its physical form");
     }
 
     /// <summary>An unusable home fails CLOSED: no home form means the under-home rule cannot be

@@ -5,16 +5,14 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 public class MarkerCandidateResolutionTests {
-    static (AgentPidRecordStore store, MarkerCandidateStore markers, string dir) New() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-mk-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(dir);
-        return (new AgentPidRecordStore(dir, NullLogger.Instance), new MarkerCandidateStore(dir, NullLogger.Instance), dir);
-    }
+    static (AgentPidRecordStore store, MarkerCandidateStore markers, string dir) New(TempDir tmp) =>
+        (new AgentPidRecordStore(tmp.Path, NullLogger.Instance), new MarkerCandidateStore(tmp.Path, NullLogger.Instance), tmp.Path);
 
     [Test]
     public async Task Recordless_marker_kill_emits_resolved_and_deletes_the_source() {
         if (!OperatingSystem.IsLinux()) return;
-        var (store, markers, _) = New();
+        using var tmp = new TempDir();
+        var (store, markers, _) = New(tmp);
         using var dummy = DummyProcess.StartSleep(30, new Dictionary<string, string> {
             ["KCAP_AGENT_ID"] = "rec-less", ["KCAP_DAEMON_ID"] = "did", ["KCAP_DAEMON_EPOCH"] = "old" });
 
@@ -32,7 +30,8 @@ public class MarkerCandidateResolutionTests {
     [Test]
     public async Task Alive_mismatch_spares_and_leaves_the_marker_candidate_pending() {
         if (!OperatingSystem.IsLinux()) return;
-        var (store, markers, _) = New();
+        using var tmp = new TempDir();
+        var (store, markers, _) = New(tmp);
         // A persisted marker-candidate whose pid is now occupied by an UNRELATED process (no triple).
         using var occupant = DummyProcess.StartSleep(30); // no KCAP_* env
         markers.Write(new MarkerCandidate("stale", "did", "old", occupant.Pid));
@@ -51,7 +50,8 @@ public class MarkerCandidateResolutionTests {
     [Test]
     public async Task Confirmed_dead_persisted_candidate_resolves_incl_zombie_path() {
         if (!OperatingSystem.IsLinux()) return;
-        var (store, markers, _) = New();
+        using var tmp = new TempDir();
+        var (store, markers, _) = New(tmp);
         using var dummy = DummyProcess.StartSleep(30);
         var pid = dummy.Pid; dummy.Kill(); dummy.WaitForExit(TimeSpan.FromSeconds(5)); // dead per IsAlive
         markers.Write(new MarkerCandidate("dead1", "did", "old", pid));
@@ -69,7 +69,8 @@ public class MarkerCandidateResolutionTests {
     [Test]
     public async Task Marker_kill_crash_before_append_re_derives_from_the_persisted_source() {
         if (!OperatingSystem.IsLinux()) return;
-        var (store, markers, _) = New();
+        using var tmp = new TempDir();
+        var (store, markers, _) = New(tmp);
         using var dummy = DummyProcess.StartSleep(30);
         var pid = dummy.Pid; dummy.Kill(); dummy.WaitForExit(TimeSpan.FromSeconds(5)); // dead per IsAlive (branch a)
         markers.Write(new MarkerCandidate("mk-gone", "did", "old", pid));
@@ -92,7 +93,8 @@ public class MarkerCandidateResolutionTests {
     [Test]
     public async Task Marker_kill_crash_between_append_and_source_delete_reconciles_idempotently() {
         if (!OperatingSystem.IsLinux()) return;
-        var (store, markers, dir) = New();
+        using var tmp = new TempDir();
+        var (store, markers, dir) = New(tmp);
         var ledger = new ResolvedCandidatesLedger(dir, NullLogger.Instance);
         using var dummy = DummyProcess.StartSleep(30);
         var pid = dummy.Pid; dummy.Kill(); dummy.WaitForExit(TimeSpan.FromSeconds(5));
@@ -117,7 +119,8 @@ public class MarkerCandidateResolutionTests {
     // resolves via branch (a) (!IsAlive of the reaped pid), which needs no env-marker scan.
     [Test]
     public async Task Marker_resolution_does_not_delete_or_falsely_resolve_a_non_corroborating_live_leader_record() {
-        var (store, markers, _) = New();
+        using var tmp = new TempDir();
+        var (store, markers, _) = New(tmp);
 
         // The reaped descendant: a real, test-owned process, killed so branch (a) (!IsAlive) resolves it.
         using var descendant = DummyProcess.StartSleep(30);
@@ -159,7 +162,8 @@ public class MarkerCandidateResolutionTests {
     [Test]
     public async Task Marker_scan_stays_incomplete_when_a_candidate_source_write_fails() {
         if (!OperatingSystem.IsLinux()) return;
-        var (store, _, dir) = New();
+        using var tmp = new TempDir();
+        var (store, _, dir) = New(tmp);
         // A MarkerCandidateStore whose Write ALWAYS throws: its state dir is actually a FILE, so
         // Directory.CreateDirectory(_dir) fails for every Write.
         var badBase = Path.Combine(dir, "not-a-dir");
@@ -183,7 +187,8 @@ public class MarkerCandidateResolutionTests {
     [Test]
     public async Task Identity_unavailable_record_resolved_via_marker_scan_emits_trusted_flow() {
         if (!OperatingSystem.IsLinux()) return;
-        var (store, markers, _) = New();
+        using var tmp = new TempDir();
+        var (store, markers, _) = New(tmp);
         using var dummy = DummyProcess.StartSleep(30);
         var pid = dummy.Pid; dummy.Kill(); dummy.WaitForExit(TimeSpan.FromSeconds(5)); // dead per IsAlive (branch a)
         // A Linux identity_unavailable RECORD (capture failed) co-existing with a marker-candidate source.

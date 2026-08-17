@@ -12,11 +12,11 @@ public class LaunchConsentDecisionLogTests {
 
     [Test]
     public async Task Records_append_as_parseable_snake_case_jsonl() {
-        var dir = Directory.CreateTempSubdirectory("kcap-cdl-").FullName;
-        var log = new LaunchConsentDecisionLog(dir, NullLogger.Instance);
+        using var tmp = new TempDir();
+        var log = new LaunchConsentDecisionLog(tmp.Path, NullLogger.Instance);
         log.Record(Rec("a1"));
         log.Record(Rec("a2"));
-        var lines = File.ReadAllLines(Path.Combine(dir, "consent-decisions.jsonl"));
+        var lines = File.ReadAllLines(tmp.PathTo("consent-decisions.jsonl"));
         await Assert.That(lines.Length).IsEqualTo(2);
         using var parsed = JsonDocument.Parse(lines[0]);
         await Assert.That(parsed.RootElement.GetProperty("agent_id").GetString()).IsEqualTo("a1");
@@ -26,11 +26,11 @@ public class LaunchConsentDecisionLogTests {
 
     [Test]
     public async Task Rotates_to_backup_at_cap() {
-        var dir = Directory.CreateTempSubdirectory("kcap-cdl-").FullName;
-        var log = new LaunchConsentDecisionLog(dir, NullLogger.Instance, maxBytes: 512);
+        using var tmp = new TempDir();
+        var log = new LaunchConsentDecisionLog(tmp.Path, NullLogger.Instance, maxBytes: 512);
         for (var i = 0; i < 20; i++) log.Record(Rec($"agent-{i}"));
-        await Assert.That(File.Exists(Path.Combine(dir, "consent-decisions.jsonl.1"))).IsTrue();
-        var live = new FileInfo(Path.Combine(dir, "consent-decisions.jsonl"));
+        await Assert.That(File.Exists(tmp.PathTo("consent-decisions.jsonl.1"))).IsTrue();
+        var live = new FileInfo(tmp.PathTo("consent-decisions.jsonl"));
         await Assert.That(live.Length <= 512).IsTrue();
     }
 
@@ -46,19 +46,15 @@ public class LaunchConsentDecisionLogTests {
         // Unix-only: file modes are a no-op on Windows.
         if (OperatingSystem.IsWindows()) return;
 
-        var dir = Directory.CreateTempSubdirectory("kcap-cdl-").FullName;
-        try {
-            var log = new LaunchConsentDecisionLog(dir, NullLogger.Instance);
-            log.Record(Rec("agent-perms"));
+        using var tmp = new TempDir();
+        var log = new LaunchConsentDecisionLog(tmp.Path, NullLogger.Instance);
+        log.Record(Rec("agent-perms"));
 
-            const UnixFileMode ownerOnlyFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-            const UnixFileMode ownerOnlyDir  = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        const UnixFileMode ownerOnlyFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        const UnixFileMode ownerOnlyDir  = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
 
-            var logFile = Path.Combine(dir, "consent-decisions.jsonl");
-            await Assert.That(File.GetUnixFileMode(logFile)).IsEqualTo(ownerOnlyFile);
-            await Assert.That(File.GetUnixFileMode(dir)).IsEqualTo(ownerOnlyDir);
-        } finally {
-            Directory.Delete(dir, true);
-        }
+        var logFile = tmp.PathTo("consent-decisions.jsonl");
+        await Assert.That(File.GetUnixFileMode(logFile)).IsEqualTo(ownerOnlyFile);
+        await Assert.That(File.GetUnixFileMode(tmp.Path)).IsEqualTo(ownerOnlyDir);
     }
 }

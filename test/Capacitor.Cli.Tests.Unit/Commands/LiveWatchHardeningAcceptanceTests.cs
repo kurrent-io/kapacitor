@@ -234,38 +234,35 @@ public class LiveWatchHardeningAcceptanceTests {
     /// </summary>
     [Test]
     public async Task ShutdownFinalDrain_RealGrowingFile_HeldUntilComplete_ThenSentAndAdvanced() {
-        var path = Path.GetTempFileName();
-        try {
-            // Starts mid-record: unterminated, unparseable — "still writing".
-            await File.WriteAllTextAsync(path, "{\"a\":1}\n{\"b\":\"still writ");
+        using var tmp = TempDir.WithPathTo("transcript.tmp", out var path);
 
-            // A consuming read attempted WHILE the line is still incomplete must hold it back —
-            // never send-and-advance the truncated prefix — regardless of how long it's been
-            // length-stable.
-            var early = await ReadFinalDrainAsync(path, linesProcessed: 0);
-            await Assert.That(early.Lines).IsEquivalentTo(new[] { "{\"a\":1}" });
-            await Assert.That(early.NextPosition).IsEqualTo(1);
-            await Assert.That(early.HeldIncompleteFinalLine).IsTrue();
+        // Starts mid-record: unterminated, unparseable — "still writing".
+        await File.WriteAllTextAsync(path, "{\"a\":1}\n{\"b\":\"still writ");
 
-            // The writer finishes the record shortly after, inside the probe's bounded window.
-            var writer = Task.Run(async () => {
-                await Task.Delay(60);
-                await File.WriteAllTextAsync(path, "{\"a\":1}\n{\"b\":\"still writing\"}\n");
-            });
+        // A consuming read attempted WHILE the line is still incomplete must hold it back —
+        // never send-and-advance the truncated prefix — regardless of how long it's been
+        // length-stable.
+        var early = await ReadFinalDrainAsync(path, linesProcessed: 0);
+        await Assert.That(early.Lines).IsEquivalentTo(new[] { "{\"a\":1}" });
+        await Assert.That(early.NextPosition).IsEqualTo(1);
+        await Assert.That(early.HeldIncompleteFinalLine).IsTrue();
 
-            var completed = await WatchCommand.WaitForFinalLineCompletionAsync(path, attempts: 8, delayMs: 25);
-            await writer;
-            await Assert.That(completed).IsTrue();
+        // The writer finishes the record shortly after, inside the probe's bounded window.
+        var writer = Task.Run(async () => {
+            await Task.Delay(60);
+            await File.WriteAllTextAsync(path, "{\"a\":1}\n{\"b\":\"still writing\"}\n");
+        });
 
-            // NOW the consuming read — gated on the same policy the shutdown path uses — sends
-            // the completed line and advances past it.
-            var final = await ReadFinalDrainAsync(path, linesProcessed: early.NextPosition);
-            await Assert.That(final.Lines).IsEquivalentTo(new[] { "{\"b\":\"still writing\"}" });
-            await Assert.That(final.NextPosition).IsEqualTo(2);
-            await Assert.That(final.HeldIncompleteFinalLine).IsFalse();
-        } finally {
-            File.Delete(path);
-        }
+        var completed = await WatchCommand.WaitForFinalLineCompletionAsync(path, attempts: 8, delayMs: 25);
+        await writer;
+        await Assert.That(completed).IsTrue();
+
+        // NOW the consuming read — gated on the same policy the shutdown path uses — sends
+        // the completed line and advances past it.
+        var final = await ReadFinalDrainAsync(path, linesProcessed: early.NextPosition);
+        await Assert.That(final.Lines).IsEquivalentTo(new[] { "{\"b\":\"still writing\"}" });
+        await Assert.That(final.NextPosition).IsEqualTo(2);
+        await Assert.That(final.HeldIncompleteFinalLine).IsFalse();
     }
 
     static async Task<WatchCommand.NewTranscriptLines> ReadFinalDrainAsync(string path, int linesProcessed) {

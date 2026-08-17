@@ -30,6 +30,7 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// comments (<c>/* … */</c>) are not specially unwrapped — none of today's matches live inside one.</para>
 /// </summary>
 public class ReviewerModelVendorNeutralityGuardTests {
+
     /// <summary>The vendor-owned resolver IMPLEMENTATION files — the only files that legitimately own a
     /// vendor's reviewer-model aliases/ids, so never scanned. The cross-vendor coordinator
     /// (<c>ReviewerModelResolution.cs</c>) is deliberately NOT here: it must stay vendor-neutral, so a
@@ -144,86 +145,73 @@ public class ReviewerModelVendorNeutralityGuardTests {
     // (doesn't just vacuously pass because it excludes everything) — against a synthetic fixture
     // directory, never the real repo. ===
 
-    static DirectoryInfo NewFixtureDir([CallerMemberName] string name = "") {
-        var dir = Directory.CreateTempSubdirectory($"kcap-vendor-neutrality-fixture-{name}-");
-        return dir;
-    }
 
     [Test]
     public async Task Scanner_FlagsAHardcodedVendorModelMapOutsideResolvers() {
         // This is the TDD RED case the guard exists to catch: a NEW file outside the resolvers
         // hardcoding a vendor→model map (mirrors what a regression would look like in, say,
         // McpFlowsServer.cs or the RPC coordinator).
-        var dir = NewFixtureDir();
-        try {
-            File.WriteAllLines(Path.Combine(dir.FullName, "SomeNewMcpHandler.cs"), [
-                "namespace Capacitor.Cli.Commands;",
-                "static class SomeNewMcpHandler {",
-                "    // a comment mentioning claude-opus should NOT count",
-                "    static string PickModel(string vendor) => vendor switch {",
-                "        \"claude\" => \"claude-opus-4-1\",",
-                "        \"codex\"  => \"gpt-5-codex\",",
-                "        _         => throw new ArgumentException(vendor)",
-                "    };",
-                "}",
-            ]);
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
+        File.WriteAllLines(Path.Combine(dir, "SomeNewMcpHandler.cs"), [
+            "namespace Capacitor.Cli.Commands;",
+            "static class SomeNewMcpHandler {",
+            "    // a comment mentioning claude-opus should NOT count",
+            "    static string PickModel(string vendor) => vendor switch {",
+            "        \"claude\" => \"claude-opus-4-1\",",
+            "        \"codex\"  => \"gpt-5-codex\",",
+            "        _         => throw new ArgumentException(vendor)",
+            "    };",
+            "}",
+        ]);
 
-            var violations = FindVendorNeutralityViolations(dir.FullName);
+        var violations = FindVendorNeutralityViolations(dir);
 
-            await Assert.That(violations).IsNotEmpty();
-            await Assert.That(violations.Any(v => v.Contains("claude-opus"))).IsTrue();
-            await Assert.That(violations.Any(v => v.Contains("gpt-5"))).IsTrue();
-            // The comment line must NOT itself have contributed a violation entry.
-            await Assert.That(violations.Any(v => v.Contains("a comment mentioning"))).IsFalse();
-        } finally {
-            dir.Delete(recursive: true);
-        }
+        await Assert.That(violations).IsNotEmpty();
+        await Assert.That(violations.Any(v => v.Contains("claude-opus"))).IsTrue();
+        await Assert.That(violations.Any(v => v.Contains("gpt-5"))).IsTrue();
+        // The comment line must NOT itself have contributed a violation entry.
+        await Assert.That(violations.Any(v => v.Contains("a comment mentioning"))).IsFalse();
     }
 
     [Test]
     public async Task Scanner_ExcludesResolverOwnedLauncherFiles() {
         // The SAME hardcoded map, but living in a file named like a resolver-owned launcher —
         // proves the exclusion is by filename, not a blanket "scanner finds nothing" bug.
-        var dir = NewFixtureDir();
-        try {
-            File.WriteAllLines(Path.Combine(dir.FullName, "ClaudeLauncher.cs"), [
-                "namespace Capacitor.Cli.Daemon.Services;",
-                "static class ClaudeReviewerModelResolver {",
-                "    public static string Resolve() => \"claude-opus-4-1\";",
-                "}",
-            ]);
-            // A sibling non-resolver file in the SAME directory proves the scan still runs at all.
-            File.WriteAllLines(Path.Combine(dir.FullName, "UnrelatedHelper.cs"), [
-                "namespace Capacitor.Cli.Daemon.Services;",
-                "static class UnrelatedHelper { }",
-            ]);
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
+        File.WriteAllLines(Path.Combine(dir, "ClaudeLauncher.cs"), [
+            "namespace Capacitor.Cli.Daemon.Services;",
+            "static class ClaudeReviewerModelResolver {",
+            "    public static string Resolve() => \"claude-opus-4-1\";",
+            "}",
+        ]);
+        // A sibling non-resolver file in the SAME directory proves the scan still runs at all.
+        File.WriteAllLines(Path.Combine(dir, "UnrelatedHelper.cs"), [
+            "namespace Capacitor.Cli.Daemon.Services;",
+            "static class UnrelatedHelper { }",
+        ]);
 
-            var violations = FindVendorNeutralityViolations(dir.FullName);
+        var violations = FindVendorNeutralityViolations(dir);
 
-            await Assert.That(violations).IsEmpty();
-        } finally {
-            dir.Delete(recursive: true);
-        }
+        await Assert.That(violations).IsEmpty();
     }
 
     [Test]
     public async Task Scanner_GrandfathersOnlyTheDocumentedPreExistingLine_NotOtherLinesInTheSameFile() {
-        var dir = NewFixtureDir();
-        try {
-            File.WriteAllLines(Path.Combine(dir.FullName, "DaemonConfig.cs"), [
-                "namespace Capacitor.Cli.Daemon;",
-                "class DaemonConfig {",
-                "    public string CursorModel { get; set; } = \"claude-sonnet-4-5\";", // grandfathered
-                "    public string SomethingElse { get; set; } = \"claude-opus-4-1\";", // NOT grandfathered
-                "}",
-            ]);
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
+        File.WriteAllLines(Path.Combine(dir, "DaemonConfig.cs"), [
+            "namespace Capacitor.Cli.Daemon;",
+            "class DaemonConfig {",
+            "    public string CursorModel { get; set; } = \"claude-sonnet-4-5\";", // grandfathered
+            "    public string SomethingElse { get; set; } = \"claude-opus-4-1\";", // NOT grandfathered
+            "}",
+        ]);
 
-            var violations = FindVendorNeutralityViolations(dir.FullName);
+        var violations = FindVendorNeutralityViolations(dir);
 
-            await Assert.That(violations.Count).IsEqualTo(1);
-            await Assert.That(violations[0]).Contains("claude-opus");
-        } finally {
-            dir.Delete(recursive: true);
-        }
+        await Assert.That(violations.Count).IsEqualTo(1);
+        await Assert.That(violations[0]).Contains("claude-opus");
     }
 }

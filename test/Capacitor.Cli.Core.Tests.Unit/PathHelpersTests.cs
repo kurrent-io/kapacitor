@@ -4,15 +4,14 @@ namespace Capacitor.Cli.Core.Tests.Unit;
 public class PathHelpersTests {
     [Test]
     public async Task HomeDirectory_uses_HOME_when_set_to_rooted_absolute_path() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-pathhelpers-test-");
+        using var tmp = new TempDir();
         var originalHome = Environment.GetEnvironmentVariable("HOME");
 
         try {
-            Environment.SetEnvironmentVariable("HOME", tmp.FullName);
-            await Assert.That(PathHelpers.HomeDirectory).IsEqualTo(tmp.FullName);
+            Environment.SetEnvironmentVariable("HOME", tmp.Path);
+            await Assert.That(PathHelpers.HomeDirectory).IsEqualTo(tmp.Path);
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
-            tmp.Delete(recursive: true);
         }
     }
 

@@ -19,13 +19,9 @@ public class CodexImportSourceTests {
 
     [Test]
     public async Task is_available_when_sessions_dir_exists() {
-        var dir = Directory.CreateTempSubdirectory("kcap-codex-source-");
-        try {
-            var src = new CodexImportSource(dir.FullName);
-            await Assert.That(src.IsAvailable).IsTrue();
-        } finally {
-            dir.Delete(recursive: true);
-        }
+        using var tmp = new TempDir();
+        var src = new CodexImportSource(tmp.Path);
+        await Assert.That(src.IsAvailable).IsTrue();
     }
 
     [Test]

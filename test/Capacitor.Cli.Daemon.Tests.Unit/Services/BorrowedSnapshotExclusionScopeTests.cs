@@ -380,15 +380,10 @@ public class BorrowedSnapshotExclusionScopeTests {
     [Test]
     public async Task Cwd_outside_the_source_is_refused() {
         using var fixture = NewFixture();
-        var outside = Path.Combine(Path.GetTempPath(), "kcap-outside-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(outside);
-        try {
-            await Assert.That(async () => await NewManager(fixture).CreateBorrowedSnapshotAsync(
-                    fixture.Source, outside, null, CancellationToken.None))
-                .Throws<InvalidOperationException>();
-        } finally {
-            try { Directory.Delete(outside, recursive: true); } catch { }
-        }
+        using var outside = new TempDir();
+        await Assert.That(async () => await NewManager(fixture).CreateBorrowedSnapshotAsync(
+                fixture.Source, outside.Path, null, CancellationToken.None))
+            .Throws<InvalidOperationException>();
     }
 
     // ---------- 16. symlinked snapshot root resolving inside the source ----------
@@ -403,23 +398,21 @@ public class BorrowedSnapshotExclusionScopeTests {
         using var fixture = NewFixture();
         var inside = Path.Combine(fixture.Source, "nested-worktrees");
         Directory.CreateDirectory(inside);
-        var link = Path.Combine(Path.GetTempPath(), "kcap-link-" + Guid.NewGuid().ToString("N")[..8]);
+        using var tmp = new TempDir();
+        var link = tmp.PathTo("link");
         Directory.CreateSymbolicLink(link, inside);
-        try {
-            // Control: the lexical comparison alone passes this — the link's own path is outside the
-            // source, which is exactly why resolving is required rather than nice to have.
-            await Assert.That(link.StartsWith(fixture.Source, StringComparison.Ordinal)).IsFalse();
 
-            var manager = new WorktreeManager(
-                new DaemonConfig { WorktreeRoot = link }, NullLogger<WorktreeManager>.Instance);
-            await Assert.That(async () => await manager.CreateBorrowedSnapshotAsync(
-                    fixture.Source, fixture.Source, null, CancellationToken.None))
-                .Throws<InvalidOperationException>()
-                .Because("Claude Code's .mcp.json lookup walks upward past the git root, so a snapshot "
-                       + "under the source would sit beneath the source's own config");
-        } finally {
-            try { Directory.Delete(link); } catch { }
-        }
+        // Control: the lexical comparison alone passes this — the link's own path is outside the
+        // source, which is exactly why resolving is required rather than nice to have.
+        await Assert.That(link.StartsWith(fixture.Source, StringComparison.Ordinal)).IsFalse();
+
+        var manager = new WorktreeManager(
+            new DaemonConfig { WorktreeRoot = link }, NullLogger<WorktreeManager>.Instance);
+        await Assert.That(async () => await manager.CreateBorrowedSnapshotAsync(
+                fixture.Source, fixture.Source, null, CancellationToken.None))
+            .Throws<InvalidOperationException>()
+            .Because("Claude Code's .mcp.json lookup walks upward past the git root, so a snapshot "
+                   + "under the source would sit beneath the source's own config");
     }
 
     // ---------- descendants of a reserved path are index entries too ----------
@@ -497,18 +490,16 @@ public class BorrowedSnapshotExclusionScopeTests {
         // path and the containment check passes — which is the bug this covers.
         var inside = Path.Combine(fixture.Source, "nested", "existing");
         Directory.CreateDirectory(inside);
-        var link = Path.Combine(Path.GetTempPath(), "kcap-anc-" + Guid.NewGuid().ToString("N")[..8]);
+        using var tmp = new TempDir();
+        var link = tmp.PathTo("link");
         Directory.CreateSymbolicLink(link, Path.Combine(fixture.Source, "nested"));
-        try {
-            var manager = new WorktreeManager(
-                new DaemonConfig { WorktreeRoot = Path.Combine(link, "existing") },
-                NullLogger<WorktreeManager>.Instance);
-            await Assert.That(async () => await manager.CreateBorrowedSnapshotAsync(
-                    fixture.Source, fixture.Source, null, CancellationToken.None))
-                .Throws<InvalidOperationException>();
-        } finally {
-            try { Directory.Delete(link); } catch { }
-        }
+
+        var manager = new WorktreeManager(
+            new DaemonConfig { WorktreeRoot = Path.Combine(link, "existing") },
+            NullLogger<WorktreeManager>.Instance);
+        await Assert.That(async () => await manager.CreateBorrowedSnapshotAsync(
+                fixture.Source, fixture.Source, null, CancellationToken.None))
+            .Throws<InvalidOperationException>();
     }
 
     // ---------- 17. the non-borrowed sync path ----------

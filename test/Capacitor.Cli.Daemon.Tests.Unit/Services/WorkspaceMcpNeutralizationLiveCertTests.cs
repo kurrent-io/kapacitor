@@ -25,6 +25,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// vendor changing where it reads from.</para>
 /// </summary>
 public class WorkspaceMcpNeutralizationLiveCertTests {
+
     const string Gate = "KCAP_WORKSPACE_MCP_CERT";
 
     static void SkipUnlessGated() {
@@ -45,8 +46,9 @@ public class WorkspaceMcpNeutralizationLiveCertTests {
     public async Task Kiro_spawns_a_branch_authored_server_when_the_worktree_is_not_neutralized() {
         SkipUnlessGated();
 
-        var (repo, marker) = HostileRepo();
-        var raw = Path.Combine(Path.GetTempPath(), "kcap-cert-raw-" + Guid.NewGuid().ToString("N")[..8]);
+        using var tmp = new TempDir();
+        var (repo, marker) = HostileRepo(tmp);
+        var raw = tmp.PathTo("raw");
         Git(repo, "worktree", "add", "-q", raw, "-b", "raw-" + Guid.NewGuid().ToString("N")[..8]);
 
         await DriveKiroSessionAsync(raw);
@@ -62,7 +64,8 @@ public class WorkspaceMcpNeutralizationLiveCertTests {
     public async Task Kiro_does_not_spawn_it_from_a_worktree_created_by_WorktreeManager() {
         SkipUnlessGated();
 
-        var (repo, marker) = HostileRepo();
+        using var tmp = new TempDir();
+        var (repo, marker) = HostileRepo(tmp);
 
         var info = await new WorktreeManager(new DaemonConfig(), NullLogger<WorktreeManager>.Instance)
             .CreateAsync(repo);
@@ -81,9 +84,8 @@ public class WorkspaceMcpNeutralizationLiveCertTests {
     /// when the control and the subject sat at different depths and made the control unfireable.
     /// The marker lands OUTSIDE the worktree, so neutralization can never be credited for its absence.</summary>
     [UnsupportedOSPlatform("windows")]
-    static (string repo, string marker) HostileRepo() {
-        var repo = Path.Combine(Path.GetTempPath(), "kcap-cert-repo-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(repo);
+    static (string repo, string marker) HostileRepo(TempDir tmp) {
+        var repo = tmp.CreateDir("repo");
         Git(repo, "init", "-q");
         Git(repo, "config", "user.email", "cert@example.com");
         Git(repo, "config", "user.name", "Cert");

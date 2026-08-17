@@ -37,37 +37,31 @@ public class DaemonLogLevelTests {
 
     [Test]
     public async Task FileLogger_at_Debug_min_level_writes_debug_lines() {
-        var path = Path.Combine(Path.GetTempPath(), "kcap-log-" + Guid.NewGuid().ToString("N")[..8] + ".log");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("kcap.log");
 
-        try {
-            using (var provider = new RollingFileLoggerProvider(path, minLevel: LogLevel.Debug)) {
-                var logger = provider.CreateLogger("Test");
-                logger.Log(LogLevel.Debug, "DaemonPing ok — 42 ms RTT");
-            }
-
-            var contents = await File.ReadAllTextAsync(path);
-            await Assert.That(contents).Contains("DaemonPing ok");
-        } finally {
-            File.Delete(path);
+        using (var provider = new RollingFileLoggerProvider(path, minLevel: LogLevel.Debug)) {
+            var logger = provider.CreateLogger("Test");
+            logger.Log(LogLevel.Debug, "DaemonPing ok — 42 ms RTT");
         }
+
+        var contents = await File.ReadAllTextAsync(path);
+        await Assert.That(contents).Contains("DaemonPing ok");
     }
 
     [Test]
     public async Task FileLogger_at_default_Information_level_drops_debug_lines() {
-        var path = Path.Combine(Path.GetTempPath(), "kcap-log-" + Guid.NewGuid().ToString("N")[..8] + ".log");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("kcap.log");
 
-        try {
-            using (var provider = new RollingFileLoggerProvider(path)) {
-                var logger = provider.CreateLogger("Test");
-                logger.Log(LogLevel.Debug, "should be dropped");
-                logger.Log(LogLevel.Information, "should be kept");
-            }
-
-            var contents = await File.ReadAllTextAsync(path);
-            await Assert.That(contents).DoesNotContain("should be dropped");
-            await Assert.That(contents).Contains("should be kept");
-        } finally {
-            File.Delete(path);
+        using (var provider = new RollingFileLoggerProvider(path)) {
+            var logger = provider.CreateLogger("Test");
+            logger.Log(LogLevel.Debug, "should be dropped");
+            logger.Log(LogLevel.Information, "should be kept");
         }
+
+        var contents = await File.ReadAllTextAsync(path);
+        await Assert.That(contents).DoesNotContain("should be dropped");
+        await Assert.That(contents).Contains("should be kept");
     }
 }

@@ -1390,30 +1390,26 @@ public class WizardStartupResolutionTests {
     public async Task A_pasted_server_is_adopted_and_the_arming_hook_runs_before_the_commit() {
         WriteConfig(new ProfileConfig { ActiveProfile = ProfileName, Profiles = new() { [ProfileName] = new Profile() } });
 
-        var claimsDir = Directory.CreateTempSubdirectory("kcap-wizard-adopt-").FullName;
-        var claims = new ConsentFlipClaims(Path.Combine(claimsDir, "claims.json"), ConfigPath);
+        using var tmp = new TempDir();
+        var claims = new ConsentFlipClaims(tmp.PathTo("claims.json"), ConfigPath);
         var bridges = WizardComposition.BuildBridges(action => action());
         using var handler = new StubAuthHandler();
 
-        try {
-            var operation = WizardComposition.BuildOperation(
-                bridges, claims,
-                spec => WizardSignInOperation.For(new OnboardingFacade(
-                    spec.Progress, spec.Picker, spec.Provisioner, spec.BeforeCommit, () => new HttpClient(handler, false))));
+        var operation = WizardComposition.BuildOperation(
+            bridges, claims,
+            spec => WizardSignInOperation.For(new OnboardingFacade(
+                spec.Progress, spec.Picker, spec.Provisioner, spec.BeforeCommit, () => new HttpClient(handler, false))));
 
-            var result = await operation(new ConnectIntent.Paste("https://acme.example"), CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(10));
+        var result = await operation(new ConnectIntent.Paste("https://acme.example"), CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(10));
 
-            var config = await AppConfig.LoadProfileConfig();
+        var config = await AppConfig.LoadProfileConfig();
 
-            await Assert.That(result).IsTypeOf<AuthResult.Committed>();
-            await Assert.That(config.Profiles[ProfileName].ServerUrl).IsEqualTo("https://acme.example");
-            await Assert.That(config.Profiles[ProfileName].AuthProvider?.Provider).IsEqualTo(AuthProvider.None);
-            await Assert.That(claims.Pending().Select(c => c.Profile).ToList()).IsEquivalentTo([ProfileName]);
-            await Assert.That(handler.Requests.Any(r => r.Contains("/auth/config"))).IsTrue();
-        } finally {
-            try { Directory.Delete(claimsDir, recursive: true); } catch { /* best-effort test cleanup */ }
-        }
+        await Assert.That(result).IsTypeOf<AuthResult.Committed>();
+        await Assert.That(config.Profiles[ProfileName].ServerUrl).IsEqualTo("https://acme.example");
+        await Assert.That(config.Profiles[ProfileName].AuthProvider?.Provider).IsEqualTo(AuthProvider.None);
+        await Assert.That(claims.Pending().Select(c => c.Profile).ToList()).IsEquivalentTo([ProfileName]);
+        await Assert.That(handler.Requests.Any(r => r.Contains("/auth/config"))).IsTrue();
     }
 
     /// Both zero-tenant intents run the DISCOVERY leg (the auth proxy), not a per-server login —
@@ -1422,32 +1418,28 @@ public class WizardStartupResolutionTests {
     [Arguments("create")]
     [Arguments("discover")]
     public async Task Create_and_workos_discovery_route_through_the_auth_proxy(string intentName) {
-        var claimsDir = Directory.CreateTempSubdirectory("kcap-wizard-discover-").FullName;
-        var claims = new ConsentFlipClaims(Path.Combine(claimsDir, "claims.json"), ConfigPath);
+        using var tmp = new TempDir();
+        var claims = new ConsentFlipClaims(tmp.PathTo("claims.json"), ConfigPath);
         var bridges = WizardComposition.BuildBridges(action => action());
         using var handler = new StubAuthHandler { Status = HttpStatusCode.ServiceUnavailable };
         ConnectIntent intent = intentName == "create"
             ? new ConnectIntent.Create()
             : new ConnectIntent.Discover(AuthProvider.WorkOS);
 
-        try {
-            WizardFacadeSpec? spec = null;
-            var operation = WizardComposition.BuildOperation(
-                bridges, claims,
-                s => {
-                    spec = s;
-                    return WizardSignInOperation.For(new OnboardingFacade(
-                        s.Progress, s.Picker, s.Provisioner, s.BeforeCommit, () => new HttpClient(handler, false)));
-                });
+        WizardFacadeSpec? spec = null;
+        var operation = WizardComposition.BuildOperation(
+            bridges, claims,
+            s => {
+                spec = s;
+                return WizardSignInOperation.For(new OnboardingFacade(
+                    s.Progress, s.Picker, s.Provisioner, s.BeforeCommit, () => new HttpClient(handler, false)));
+            });
 
-            var result = await operation(intent, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        var result = await operation(intent, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
 
-            await Assert.That(result).IsTypeOf<AuthResult.Failed>();
-            await Assert.That(handler.Requests.Any(r => r.Contains("/config"))).IsTrue();
-            await Assert.That(spec!.Provisioner).IsSameReferenceAs(bridges.Provisioner);
-        } finally {
-            try { Directory.Delete(claimsDir, recursive: true); } catch { /* best-effort test cleanup */ }
-        }
+        await Assert.That(result).IsTypeOf<AuthResult.Failed>();
+        await Assert.That(handler.Requests.Any(r => r.Contains("/config"))).IsTrue();
+        await Assert.That(spec!.Provisioner).IsSameReferenceAs(bridges.Provisioner);
     }
 
     /// Answers every GET with an auth-config body; the discovery rows flip Status so the proxy leg

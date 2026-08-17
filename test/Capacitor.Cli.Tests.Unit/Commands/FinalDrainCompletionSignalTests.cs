@@ -60,52 +60,39 @@ public class FinalDrainCompletionSignalTests {
 public class WaitForFinalLineCompletionAsyncTests {
     [Test]
     public async Task already_complete_returns_true_immediately() {
-        var path = Path.GetTempFileName();
-
-        try {
-            await File.WriteAllTextAsync(path, "{\"a\":1}\n");
-            var result = await WatchCommand.WaitForFinalLineCompletionAsync(path, attempts: 4, delayMs: 20);
-            await Assert.That(result).IsTrue();
-        } finally {
-            File.Delete(path);
-        }
+        using var tmp  = new TempDir();
+        var       path = tmp.CreateFile("transcript.tmp", "{\"a\":1}\n");
+        var result = await WatchCommand.WaitForFinalLineCompletionAsync(path, attempts: 4, delayMs: 20);
+        await Assert.That(result).IsTrue();
     }
 
     [Test]
     public async Task still_growing_line_completes_within_the_window_returns_true() {
-        var path = Path.GetTempFileName();
+        using var tmp = TempDir.WithPathTo("transcript.tmp", out var path);
 
-        try {
-            // Starts mid-record (no trailing newline, unparseable) — the writer "finishes" the
-            // record shortly after, before the bounded wait gives up.
-            await File.WriteAllTextAsync(path, "{\"a\":1}\n{\"b\":\"still writ");
+        // Starts mid-record (no trailing newline, unparseable) — the writer "finishes" the
+        // record shortly after, before the bounded wait gives up.
+        await File.WriteAllTextAsync(path, "{\"a\":1}\n{\"b\":\"still writ");
 
-            var writer = Task.Run(async () => {
-                await Task.Delay(40);
-                await File.WriteAllTextAsync(path, "{\"a\":1}\n{\"b\":\"still writing\"}\n");
-            });
+        var writer = Task.Run(async () => {
+            await Task.Delay(40);
+            await File.WriteAllTextAsync(path, "{\"a\":1}\n{\"b\":\"still writing\"}\n");
+        });
 
-            var result = await WatchCommand.WaitForFinalLineCompletionAsync(path, attempts: 6, delayMs: 20);
-            await writer;
+        var result = await WatchCommand.WaitForFinalLineCompletionAsync(path, attempts: 6, delayMs: 20);
+        await writer;
 
-            await Assert.That(result).IsTrue();
-        } finally {
-            File.Delete(path);
-        }
+        await Assert.That(result).IsTrue();
     }
 
     [Test]
     public async Task never_completes_returns_false_after_exhausting_attempts() {
-        var path = Path.GetTempFileName();
+        using var tmp = TempDir.WithPathTo("transcript.tmp", out var path);
 
-        try {
-            // Length-stable AND unparseable for the entire window — must never flip to "complete".
-            await File.WriteAllTextAsync(path, "{\"a\":1}\n{\"b\":\"still writ");
-            var result = await WatchCommand.WaitForFinalLineCompletionAsync(path, attempts: 3, delayMs: 10);
-            await Assert.That(result).IsFalse();
-        } finally {
-            File.Delete(path);
-        }
+        // Length-stable AND unparseable for the entire window — must never flip to "complete".
+        await File.WriteAllTextAsync(path, "{\"a\":1}\n{\"b\":\"still writ");
+        var result = await WatchCommand.WaitForFinalLineCompletionAsync(path, attempts: 3, delayMs: 10);
+        await Assert.That(result).IsFalse();
     }
 
     [Test]
@@ -120,21 +107,17 @@ public class WaitForFinalLineCompletionAsyncTests {
     /// fix reverted (verified). Keep that in mind before trusting a local green.</para></summary>
     [Test]
     public async Task completes_while_another_handle_holds_the_file_open_for_writing() {
-        var dir  = Directory.CreateTempSubdirectory("kcap-finaldrain-share-");
-        var path = Path.Combine(dir.FullName, "transcript.jsonl");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("transcript.jsonl");
 
-        try {
-            await File.WriteAllTextAsync(path, "{\"a\":1}\n");
+        await File.WriteAllTextAsync(path, "{\"a\":1}\n");
 
-            // A well-behaved writer: holds the file open for Write, sharing read+write, exactly as an
-            // agent appending to its own transcript does.
-            await using var writer = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+        // A well-behaved writer: holds the file open for Write, sharing read+write, exactly as an
+        // agent appending to its own transcript does.
+        await using var writer = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
 
-            var result = await WatchCommand.WaitForFinalLineCompletionAsync(path, attempts: 3, delayMs: 10);
+        var result = await WatchCommand.WaitForFinalLineCompletionAsync(path, attempts: 3, delayMs: 10);
 
-            await Assert.That(result).IsTrue();
-        } finally {
-            try { dir.Delete(recursive: true); } catch { /* best effort */ }
-        }
+        await Assert.That(result).IsTrue();
     }
 }

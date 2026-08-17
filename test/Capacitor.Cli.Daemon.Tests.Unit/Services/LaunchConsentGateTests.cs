@@ -7,9 +7,10 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 public class LaunchConsentGateTests {
     static (LaunchConsentGate gate, LaunchConsentStore store, string dir) Build(
+        TempDir tmp,
         LaunchConsentDefault def = LaunchConsentDefault.Allow, ILaunchConsentPrompter? prompter = null,
         TimeProvider? time = null, int promptTimeoutSeconds = 5) {
-        var dir = Directory.CreateTempSubdirectory("kcap-gate-").FullName;
+        var dir = tmp.CreateDir(Guid.NewGuid().ToString("N")[..8]);
         var store = new LaunchConsentStore(dir, NullLogger.Instance);
         store.TryReplace(new LaunchConsentPolicy(def, promptTimeoutSeconds, []), out _);
         var log = new LaunchConsentDecisionLog(dir, NullLogger.Instance);
@@ -46,7 +47,8 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task Allow_default_allows_and_logs() {
-        var (gate, _, dir) = Build(LaunchConsentDefault.Allow);
+        using var tmp = new TempDir();
+        var (gate, _, dir) = Build(tmp, LaunchConsentDefault.Allow);
         var o = await gate.DecideAsync("a1", Input(), CancellationToken.None);
         await Assert.That(o.Allowed).IsTrue();
         var lines = File.ReadAllLines(Path.Combine(dir, "consent-decisions.jsonl"));
@@ -56,7 +58,8 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task Deny_default_denies_with_source_default() {
-        var (gate, _, _) = Build(LaunchConsentDefault.Deny);
+        using var tmp = new TempDir();
+        var (gate, _, _) = Build(tmp, LaunchConsentDefault.Deny);
         var o = await gate.DecideAsync("a1", Input(), CancellationToken.None);
         await Assert.That(o.Allowed).IsFalse();
         await Assert.That(o.Source).IsEqualTo("default");
@@ -64,7 +67,8 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task Prompt_without_subscriber_denies_no_ui() {
-        var (gate, _, _) = Build(LaunchConsentDefault.Prompt, new FakePrompter(true, hasSubscriber: false));
+        using var tmp = new TempDir();
+        var (gate, _, _) = Build(tmp, LaunchConsentDefault.Prompt, new FakePrompter(true, hasSubscriber: false));
         var o = await gate.DecideAsync("a1", Input(), CancellationToken.None);
         await Assert.That(o.Allowed).IsFalse();
         await Assert.That(o.Source).IsEqualTo("prompt_no_ui");
@@ -72,15 +76,16 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task Prompt_user_allow_and_deny_and_timeout() {
-        var (allowGate, _, _) = Build(LaunchConsentDefault.Prompt, new FakePrompter(true));
+        using var tmp = new TempDir();
+        var (allowGate, _, _) = Build(tmp, LaunchConsentDefault.Prompt, new FakePrompter(true));
         await Assert.That((await allowGate.DecideAsync("a1", Input(), CancellationToken.None)).Allowed).IsTrue();
 
-        var (denyGate, _, _) = Build(LaunchConsentDefault.Prompt, new FakePrompter(false));
+        var (denyGate, _, _) = Build(tmp, LaunchConsentDefault.Prompt, new FakePrompter(false));
         var denied = await denyGate.DecideAsync("a1", Input(), CancellationToken.None);
         await Assert.That(denied.Allowed).IsFalse();
         await Assert.That(denied.Source).IsEqualTo("prompt_user");
 
-        var (timeoutGate, _, _) = Build(LaunchConsentDefault.Prompt, new FakePrompter(null));
+        var (timeoutGate, _, _) = Build(tmp, LaunchConsentDefault.Prompt, new FakePrompter(null));
         var timedOut = await timeoutGate.DecideAsync("a1", Input(), CancellationToken.None);
         await Assert.That(timedOut.Allowed).IsFalse();
         await Assert.That(timedOut.Source).IsEqualTo("prompt_timeout");
@@ -88,7 +93,8 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task Owner_bypasses_deny_default() {
-        var (gate, _, _) = Build(LaunchConsentDefault.Deny);
+        using var tmp = new TempDir();
+        var (gate, _, _) = Build(tmp, LaunchConsentDefault.Deny);
         var o = await gate.DecideAsync("a1", Input(owner: true), CancellationToken.None);
         await Assert.That(o.Allowed).IsTrue();
         await Assert.That(o.Source).IsEqualTo("owner");
@@ -101,10 +107,11 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task Gate_mints_distinct_prompt_ids_under_a_frozen_clock_and_threads_display() {
+        using var tmp = new TempDir();
         // Frozen TimeProvider (never advanced): RequestedAt is identical for both prompts —
         // PromptId must still differ (the failure mode a timestamp identity would have had).
         var prompter = new CapturingPrompter(answer: true);
-        var (gate, _, _) = Build(LaunchConsentDefault.Prompt, prompter, time: new FakeTimeProvider());
+        var (gate, _, _) = Build(tmp, LaunchConsentDefault.Prompt, prompter, time: new FakeTimeProvider());
         var input = new LaunchConsentInput("github:1", false, "agent", "/r", "codex", "Mathias");
 
         await gate.DecideAsync("agent-1", input, CancellationToken.None);
@@ -119,8 +126,9 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task Done_records_requester_display_in_the_decision_record() {
+        using var tmp = new TempDir();
         // Rule-allowed path (no prompter needed): input display lands in the log record.
-        var (gate, _, dir) = Build(LaunchConsentDefault.Allow);
+        var (gate, _, dir) = Build(tmp, LaunchConsentDefault.Allow);
         var o = await gate.DecideAsync("a1",
             new LaunchConsentInput("github:1", false, "agent", "/r", "codex", "Mathias"), CancellationToken.None);
         await Assert.That(o.Source).IsEqualTo("default");
@@ -178,25 +186,27 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task Allow_and_Deny_default_never_wait_on_an_unadvanced_time_provider() {
+        using var tmp = new TempDir();
         // A FakeTimeProvider that is never Advance()'d would hang forever on any real wait — so
         // completing at all (let alone promptly) proves Allow/Deny never reach the prompt path's
         // clock/wait machinery.
         var time = new FakeTimeProvider();
-        var (allowGate, _, _) = Build(LaunchConsentDefault.Allow, time: time);
+        var (allowGate, _, _) = Build(tmp, LaunchConsentDefault.Allow, time: time);
         await Assert.That((await allowGate.DecideAsync("a1", Input(), CancellationToken.None)).Allowed).IsTrue();
 
-        var (denyGate, _, _) = Build(LaunchConsentDefault.Deny, time: time);
+        var (denyGate, _, _) = Build(tmp, LaunchConsentDefault.Deny, time: time);
         var denied = await denyGate.DecideAsync("a1", Input(), CancellationToken.None);
         await Assert.That(denied.Allowed).IsFalse();
     }
 
     [Test]
     public async Task Prompt_no_subscriber_none_arrives_denies_no_ui_after_grace_and_logs() {
+        using var tmp = new TempDir();
         var time = new FakeTimeProvider();
         var prompter = new TimingPrompter(
             onWaitForSubscriber: (wait, _, _) => { time.Advance(wait); return Task.FromResult(false); },
             onPrompt: (_, _, _, _) => throw new InvalidOperationException("must not prompt when no subscriber ever arrives"));
-        var (gate, _, dir) = Build(LaunchConsentDefault.Prompt, prompter, time, promptTimeoutSeconds: 20);
+        var (gate, _, dir) = Build(tmp, LaunchConsentDefault.Prompt, prompter, time, promptTimeoutSeconds: 20);
 
         var o = await gate.DecideAsync("a-grace-none", Input(), CancellationToken.None);
 
@@ -209,11 +219,12 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task Prompt_subscriber_arrives_inside_grace_gets_remaining_budget_and_times_out_after_it() {
+        using var tmp = new TempDir();
         var time = new FakeTimeProvider();
         var prompter = new TimingPrompter(
             onWaitForSubscriber: (_, _, _) => { time.Advance(TimeSpan.FromSeconds(2)); return Task.FromResult(true); }, // arrives 2s into the grace window
             onPrompt: (_, timeout, _, _) => { time.Advance(timeout); return Task.FromResult<bool?>(null); }); // owner never answers — burns exactly the remaining budget
-        var (gate, _, _) = Build(LaunchConsentDefault.Prompt, prompter, time, promptTimeoutSeconds: 10);
+        var (gate, _, _) = Build(tmp, LaunchConsentDefault.Prompt, prompter, time, promptTimeoutSeconds: 10);
 
         var before = time.GetUtcNow();
         var o = await gate.DecideAsync("a-grace-arrive", Input(), CancellationToken.None);
@@ -228,12 +239,13 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task Time_advanced_between_deadline_anchor_and_grace_wait_shrinks_the_wait_not_the_deadline() {
+        using var tmp = new TempDir();
         var fake = new FakeTimeProvider();
         var jittered = new JitterTimeProvider(fake, TimeSpan.FromSeconds(8)); // 8s "elapses" right after the deadline anchor
         var prompter = new TimingPrompter(
             onWaitForSubscriber: (_, _, _) => Task.FromResult(true),
             onPrompt: (_, _, _, _) => Task.FromResult<bool?>(true));
-        var (gate, _, _) = Build(LaunchConsentDefault.Prompt, prompter, jittered, promptTimeoutSeconds: 10);
+        var (gate, _, _) = Build(tmp, LaunchConsentDefault.Prompt, prompter, jittered, promptTimeoutSeconds: 10);
 
         var o = await gate.DecideAsync("a-jitter", Input(), CancellationToken.None);
 
@@ -249,11 +261,12 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task Subscriber_arrives_at_or_after_deadline_runs_prompt_with_zero_budget_and_times_out() {
+        using var tmp = new TempDir();
         var time = new FakeTimeProvider();
         var prompter = new TimingPrompter(
             onWaitForSubscriber: (_, _, _) => { time.Advance(TimeSpan.FromSeconds(10)); return Task.FromResult(true); }, // arrives exactly at the 10s deadline
             onPrompt: (_, _, _, _) => Task.FromResult<bool?>(null));
-        var (gate, _, _) = Build(LaunchConsentDefault.Prompt, prompter, time, promptTimeoutSeconds: 10);
+        var (gate, _, _) = Build(tmp, LaunchConsentDefault.Prompt, prompter, time, promptTimeoutSeconds: 10);
 
         var o = await gate.DecideAsync("a-zero-budget", Input(), CancellationToken.None);
 
@@ -264,12 +277,13 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task RequestedAt_is_anchored_at_gate_entry_not_after_the_grace_wait() {
+        using var tmp = new TempDir();
         var time = new FakeTimeProvider();
         var expectedRequestedAt = time.GetUtcNow().ToString("O");
         var prompter = new TimingPrompter(
             onWaitForSubscriber: (_, _, _) => { time.Advance(TimeSpan.FromSeconds(3)); return Task.FromResult(true); }, // grace elapses before arrival
             onPrompt: (_, _, _, _) => Task.FromResult<bool?>(true));
-        var (gate, _, _) = Build(LaunchConsentDefault.Prompt, prompter, time, promptTimeoutSeconds: 10);
+        var (gate, _, _) = Build(tmp, LaunchConsentDefault.Prompt, prompter, time, promptTimeoutSeconds: 10);
 
         await gate.DecideAsync("a-anchor", Input(), CancellationToken.None);
 
@@ -278,12 +292,13 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task External_cancellation_during_grace_propagates_without_a_decision_log_record() {
+        using var tmp = new TempDir();
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
         var prompter = new TimingPrompter(
             onWaitForSubscriber: (_, _, ct) => throw new OperationCanceledException(ct),
             onPrompt: (_, _, _, _) => throw new InvalidOperationException("must not reach PromptAsync"));
-        var (gate, _, dir) = Build(LaunchConsentDefault.Prompt, prompter, TimeProvider.System, promptTimeoutSeconds: 10);
+        var (gate, _, dir) = Build(tmp, LaunchConsentDefault.Prompt, prompter, TimeProvider.System, promptTimeoutSeconds: 10);
 
         await Assert.That(async () => await gate.DecideAsync("a-cancel-grace", Input(), cts.Token))
             .Throws<OperationCanceledException>();
@@ -293,12 +308,13 @@ public class LaunchConsentGateTests {
 
     [Test]
     public async Task External_cancellation_during_prompt_propagates_without_a_decision_log_record() {
+        using var tmp = new TempDir();
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
         var prompter = new TimingPrompter(
             onWaitForSubscriber: (_, _, _) => Task.FromResult(true),
             onPrompt: (_, _, _, ct) => throw new OperationCanceledException(ct));
-        var (gate, _, dir) = Build(LaunchConsentDefault.Prompt, prompter, TimeProvider.System, promptTimeoutSeconds: 10);
+        var (gate, _, dir) = Build(tmp, LaunchConsentDefault.Prompt, prompter, TimeProvider.System, promptTimeoutSeconds: 10);
 
         await Assert.That(async () => await gate.DecideAsync("a-cancel-prompt", Input(), cts.Token))
             .Throws<OperationCanceledException>();

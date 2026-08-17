@@ -38,9 +38,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 public class DaemonStopSelfPidTests {
     [Test]
     public async Task Stop_refuses_to_kill_a_pid_file_naming_the_current_process() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-stop-self-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
 
         try {
             // Write the pid file directly rather than acquiring a real DaemonLock. The first
@@ -66,8 +65,6 @@ public class DaemonStopSelfPidTests {
             await Assert.That(exit).IsEqualTo(1);
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-
-            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
         }
     }
 }

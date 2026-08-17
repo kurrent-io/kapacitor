@@ -46,8 +46,8 @@ public class CodexProjectKeyTests {
     /// entry, not two. Before normalisation this produced two — one of them inert.</summary>
     [Test]
     public async Task TrustWorktree_writes_one_entry_regardless_of_input_casing() {
-        var configPath = Path.Combine(
-            Directory.CreateTempSubdirectory("kcap-codexkey-").FullName, "config.toml");
+        using var tmp = new TempDir();
+        var configPath = tmp.PathTo("config.toml");
 
         var upper = OperatingSystem.IsWindows()
             ? @"C:\Src\Repo\Worktrees\Agent-01"
@@ -68,8 +68,8 @@ public class CodexProjectKeyTests {
     /// the user's config.</summary>
     [Test]
     public async Task TrustWorktree_is_idempotent_under_the_normalized_key() {
-        var configPath = Path.Combine(
-            Directory.CreateTempSubdirectory("kcap-codexkey-idem-").FullName, "config.toml");
+        using var tmp = new TempDir();
+        var configPath = tmp.PathTo("config.toml");
 
         var path = OperatingSystem.IsWindows() ? @"C:\Src\Wt" : "/Src/Wt";
 

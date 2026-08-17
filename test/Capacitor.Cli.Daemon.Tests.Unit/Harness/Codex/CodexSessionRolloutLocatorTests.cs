@@ -106,69 +106,57 @@ public class CodexSessionRolloutLocatorTests {
 
     [Test]
     public async Task TryLocate_returns_dashless_session_id_of_the_matching_rollout() {
-        var root = Directory.CreateTempSubdirectory("kcap-codexrollout-").FullName;
-        try {
-            var spawn = DateTime.UtcNow;
-            var uuid  = "019f0022-1702-7a02-a630-edbfb043add4";
-            var wt    = Path.Combine(root, "worktree");
-            WriteRollout(root, uuid, wt, creationUtc: spawn);
+        using var tmp = new TempDir();
+        var root = tmp.Path;
+        var spawn = DateTime.UtcNow;
+        var uuid  = "019f0022-1702-7a02-a630-edbfb043add4";
+        var wt    = Path.Combine(root, "worktree");
+        WriteRollout(root, uuid, wt, creationUtc: spawn);
 
-            var id = CodexSessionRolloutLocator.TryLocate(root, wt, spawn.AddSeconds(-1));
+        var id = CodexSessionRolloutLocator.TryLocate(root, wt, spawn.AddSeconds(-1));
 
-            await Assert.That(id).IsEqualTo(uuid.Replace("-", ""));
-        } finally {
-            Directory.Delete(root, recursive: true);
-        }
+        await Assert.That(id).IsEqualTo(uuid.Replace("-", ""));
     }
 
     // TryLocateWinner returns the winning rollout's session id AND file path together (the daemon
     // caches the path for growth-watching); id and path must agree on which file won.
     [Test]
     public async Task TryLocateWinner_returns_matching_id_and_file_path() {
-        var root = Directory.CreateTempSubdirectory("kcap-codexrollout-").FullName;
-        try {
-            var spawn = DateTime.UtcNow;
-            var uuid  = "019f0022-1702-7a02-a630-edbfb043add4";
-            var wt    = Path.Combine(root, "worktree");
-            var file  = WriteRollout(root, uuid, wt, creationUtc: spawn);
+        using var tmp = new TempDir();
+        var root = tmp.Path;
+        var spawn = DateTime.UtcNow;
+        var uuid  = "019f0022-1702-7a02-a630-edbfb043add4";
+        var wt    = Path.Combine(root, "worktree");
+        var file  = WriteRollout(root, uuid, wt, creationUtc: spawn);
 
-            var winner = CodexSessionRolloutLocator.TryLocateWinner(root, wt, spawn.AddSeconds(-1));
+        var winner = CodexSessionRolloutLocator.TryLocateWinner(root, wt, spawn.AddSeconds(-1));
 
-            await Assert.That(winner?.Path).IsEqualTo(file);
-            await Assert.That(winner?.SessionId).IsEqualTo(uuid.Replace("-", ""));
-        } finally {
-            Directory.Delete(root, recursive: true);
-        }
+        await Assert.That(winner?.Path).IsEqualTo(file);
+        await Assert.That(winner?.SessionId).IsEqualTo(uuid.Replace("-", ""));
     }
 
     [Test]
     public async Task TryLocateWinner_returns_null_when_no_rollout_matches() {
-        var root = Directory.CreateTempSubdirectory("kcap-codexrollout-").FullName;
-        try {
-            var spawn = DateTime.UtcNow;
-            WriteRollout(root, "019f0022-1702-7a02-a630-edbfb043add4", "/some/other/cwd", creationUtc: spawn);
+        using var tmp = new TempDir();
+        var root = tmp.Path;
+        var spawn = DateTime.UtcNow;
+        WriteRollout(root, "019f0022-1702-7a02-a630-edbfb043add4", "/some/other/cwd", creationUtc: spawn);
 
-            var winner = CodexSessionRolloutLocator.TryLocateWinner(root, Path.Combine(root, "worktree"), spawn.AddSeconds(-1));
+        var winner = CodexSessionRolloutLocator.TryLocateWinner(root, Path.Combine(root, "worktree"), spawn.AddSeconds(-1));
 
-            await Assert.That(winner).IsNull();
-        } finally {
-            Directory.Delete(root, recursive: true);
-        }
+        await Assert.That(winner).IsNull();
     }
 
     [Test]
     public async Task TryLocate_ignores_a_foreign_cwd_rollout() {
-        var root = Directory.CreateTempSubdirectory("kcap-codexrollout-").FullName;
-        try {
-            var spawn = DateTime.UtcNow;
-            WriteRollout(root, "019f0022-1702-7a02-a630-edbfb043add4", "/some/other/cwd", creationUtc: spawn);
+        using var tmp = new TempDir();
+        var root = tmp.Path;
+        var spawn = DateTime.UtcNow;
+        WriteRollout(root, "019f0022-1702-7a02-a630-edbfb043add4", "/some/other/cwd", creationUtc: spawn);
 
-            var id = CodexSessionRolloutLocator.TryLocate(root, Path.Combine(root, "worktree"), spawn.AddSeconds(-1));
+        var id = CodexSessionRolloutLocator.TryLocate(root, Path.Combine(root, "worktree"), spawn.AddSeconds(-1));
 
-            await Assert.That(id).IsNull();
-        } finally {
-            Directory.Delete(root, recursive: true);
-        }
+        await Assert.That(id).IsNull();
     }
 
     [Test]
@@ -213,42 +201,36 @@ public class CodexSessionRolloutLocatorTests {
         // An older, unrelated rollout in the same (borrowed) cwd that a live process is still
         // appending to must NOT be mistaken for the freshly-spawned reviewer. Its recent writes
         // are irrelevant (the locator never reads last-write); only its old creation stamp counts.
-        var root = Directory.CreateTempSubdirectory("kcap-codexrollout-").FullName;
-        try {
-            var spawn = DateTime.UtcNow;
-            var wt    = Path.Combine(root, "worktree");
+        using var tmp = new TempDir();
+        var root = tmp.Path;
+        var spawn = DateTime.UtcNow;
+        var wt    = Path.Combine(root, "worktree");
 
-            const string olderUuid = "019f0022-0000-7a02-a630-edbfb043add4";
-            WriteRollout(root, olderUuid, wt, creationUtc: spawn.AddMinutes(-10));
+        const string olderUuid = "019f0022-0000-7a02-a630-edbfb043add4";
+        WriteRollout(root, olderUuid, wt, creationUtc: spawn.AddMinutes(-10));
 
-            const string newerUuid = "019f0022-1111-7a02-a630-edbfb043add5";
-            WriteRollout(root, newerUuid, wt, creationUtc: spawn.AddSeconds(2));
+        const string newerUuid = "019f0022-1111-7a02-a630-edbfb043add5";
+        WriteRollout(root, newerUuid, wt, creationUtc: spawn.AddSeconds(2));
 
-            var id = CodexSessionRolloutLocator.TryLocate(root, wt, spawn);
+        var id = CodexSessionRolloutLocator.TryLocate(root, wt, spawn);
 
-            await Assert.That(id).IsEqualTo(newerUuid.Replace("-", ""));
-        } finally {
-            Directory.Delete(root, recursive: true);
-        }
+        await Assert.That(id).IsEqualTo(newerUuid.Replace("-", ""));
     }
 
     [Test]
     public async Task TryLocate_returns_null_when_only_a_pre_spawn_rollout_matches() {
         // Same shape as above minus the reviewer's own rollout: nothing eligible remains, so
         // TryLocate must not fall back to the stale pre-spawn match.
-        var root = Directory.CreateTempSubdirectory("kcap-codexrollout-").FullName;
-        try {
-            var spawn = DateTime.UtcNow;
-            var wt    = Path.Combine(root, "worktree");
+        using var tmp = new TempDir();
+        var root = tmp.Path;
+        var spawn = DateTime.UtcNow;
+        var wt    = Path.Combine(root, "worktree");
 
-            WriteRollout(root, "019f0022-0000-7a02-a630-edbfb043add4", wt, creationUtc: spawn.AddMinutes(-10));
+        WriteRollout(root, "019f0022-0000-7a02-a630-edbfb043add4", wt, creationUtc: spawn.AddMinutes(-10));
 
-            var id = CodexSessionRolloutLocator.TryLocate(root, wt, spawn);
+        var id = CodexSessionRolloutLocator.TryLocate(root, wt, spawn);
 
-            await Assert.That(id).IsNull();
-        } finally {
-            Directory.Delete(root, recursive: true);
-        }
+        await Assert.That(id).IsNull();
     }
 
     [Test]
@@ -258,23 +240,20 @@ public class CodexSessionRolloutLocatorTests {
         // Picking the numerically EARLIEST creation would wrongly prefer the pre-spawn one —
         // the reviewer's own rollout is always created at/after its own spawn, so the
         // at/after candidate must win.
-        var root = Directory.CreateTempSubdirectory("kcap-codexrollout-").FullName;
-        try {
-            var spawn = DateTime.UtcNow;
-            var wt    = Path.Combine(root, "worktree");
+        using var tmp = new TempDir();
+        var root = tmp.Path;
+        var spawn = DateTime.UtcNow;
+        var wt    = Path.Combine(root, "worktree");
 
-            const string beforeUuid = "019f0022-2222-7a02-a630-edbfb043add6";
-            WriteRollout(root, beforeUuid, wt, creationUtc: spawn.AddSeconds(-3));
+        const string beforeUuid = "019f0022-2222-7a02-a630-edbfb043add6";
+        WriteRollout(root, beforeUuid, wt, creationUtc: spawn.AddSeconds(-3));
 
-            const string afterUuid = "019f0022-3333-7a02-a630-edbfb043add7";
-            WriteRollout(root, afterUuid, wt, creationUtc: spawn.AddSeconds(2));
+        const string afterUuid = "019f0022-3333-7a02-a630-edbfb043add7";
+        WriteRollout(root, afterUuid, wt, creationUtc: spawn.AddSeconds(2));
 
-            var id = CodexSessionRolloutLocator.TryLocate(root, wt, spawn);
+        var id = CodexSessionRolloutLocator.TryLocate(root, wt, spawn);
 
-            await Assert.That(id).IsEqualTo(afterUuid.Replace("-", ""));
-        } finally {
-            Directory.Delete(root, recursive: true);
-        }
+        await Assert.That(id).IsEqualTo(afterUuid.Replace("-", ""));
     }
 
     // ── collab subagent rollouts must never be claimed ────────────────────

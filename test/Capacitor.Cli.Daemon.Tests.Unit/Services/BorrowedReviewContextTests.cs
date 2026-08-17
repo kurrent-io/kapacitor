@@ -373,26 +373,22 @@ public class BorrowedReviewContextTests {
         Skip.When(OperatingSystem.IsWindows(), "POSIX symlink semantics.");
         using var repo = NewGitRepo();
         using var root = new TempDir();
-        var external = Directory.CreateTempSubdirectory("kcap-review-context-external-").FullName;
-        try {
-            File.WriteAllText(Path.Combine(external, "sentinel"), "keep-me");
-            var snapshots = root.PathTo("borrowed-snapshots");
-            Directory.CreateDirectory(snapshots);
-            var sidecar = WorktreeManager.ReviewContextRootFor(
-                Path.Combine(snapshots, "review"));
-            Directory.CreateSymbolicLink(sidecar, external);
+        using var external = new TempDir();
+        File.WriteAllText(Path.Combine(external.Path, "sentinel"), "keep-me");
+        var snapshots = root.PathTo("borrowed-snapshots");
+        Directory.CreateDirectory(snapshots);
+        var sidecar = WorktreeManager.ReviewContextRootFor(
+            Path.Combine(snapshots, "review"));
+        Directory.CreateSymbolicLink(sidecar, external.Path);
 
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-                await Manager(root.Path).CreateBorrowedSnapshotAsync(
-                    repo.Path, "review", CancellationToken.None));
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await Manager(root.Path).CreateBorrowedSnapshotAsync(
+                repo.Path, "review", CancellationToken.None));
 
-            await Assert.That(ex!.Message)
-                .StartsWith("borrowed_snapshot_review_context_unsafe_storage_path");
-            await Assert.That(File.ReadAllText(Path.Combine(external, "sentinel")))
-                .IsEqualTo("keep-me");
-        } finally {
-            TryDelete(external);
-        }
+        await Assert.That(ex!.Message)
+            .StartsWith("borrowed_snapshot_review_context_unsafe_storage_path");
+        await Assert.That(File.ReadAllText(Path.Combine(external.Path, "sentinel")))
+            .IsEqualTo("keep-me");
     }
 
     [Test]
@@ -400,28 +396,25 @@ public class BorrowedReviewContextTests {
         Skip.When(OperatingSystem.IsWindows(), "POSIX symlink semantics.");
         using var repo = NewGitRepo();
         using var root = new TempDir();
-        var external = Directory.CreateTempSubdirectory("kcap-review-parent-external-").FullName;
-        try {
-            File.WriteAllText(Path.Combine(external, "sentinel"), "keep-me");
-            Directory.CreateSymbolicLink(
-                root.PathTo("borrowed-snapshots"), external);
+        using var external = new TempDir();
+        File.WriteAllText(Path.Combine(external.Path, "sentinel"), "keep-me");
+        Directory.CreateSymbolicLink(
+            root.PathTo("borrowed-snapshots"), external.Path);
 
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-                await Manager(root.Path).CreateBorrowedSnapshotAsync(
-                    repo.Path, "review", CancellationToken.None));
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await Manager(root.Path).CreateBorrowedSnapshotAsync(
+                repo.Path, "review", CancellationToken.None));
 
-            await Assert.That(ex!.Message)
-                .StartsWith("borrowed_snapshot_review_context_unsafe_storage_path");
-            await Assert.That(Directory.GetFileSystemEntries(external).Select(p => Path.GetFileName(p)))
-                .IsEquivalentTo(["sentinel"]);
-            await Assert.That(File.ReadAllText(Path.Combine(external, "sentinel")))
-                .IsEqualTo("keep-me");
-        } finally {
-            // Remove the symlink before TempDir.Dispose recurses into root, so cleanup never
-            // has to reason about whether it would follow the link into external.
-            try { Directory.Delete(root.PathTo("borrowed-snapshots")); } catch { }
-            TryDelete(external);
-        }
+        await Assert.That(ex!.Message)
+            .StartsWith("borrowed_snapshot_review_context_unsafe_storage_path");
+        await Assert.That(Directory.GetFileSystemEntries(external.Path).Select(p => Path.GetFileName(p)))
+            .IsEquivalentTo(["sentinel"]);
+        await Assert.That(File.ReadAllText(Path.Combine(external.Path, "sentinel")))
+            .IsEqualTo("keep-me");
+
+        // Remove the symlink before TempDir.Dispose recurses into root, so cleanup never
+        // has to reason about whether it would follow the link into external.
+        try { Directory.Delete(root.PathTo("borrowed-snapshots")); } catch { }
     }
 
     [Test]
@@ -554,9 +547,5 @@ public class BorrowedReviewContextTests {
             try { File.Delete(lower); } catch { }
             try { File.Delete(upper); } catch { }
         }
-    }
-
-    static void TryDelete(string path) {
-        try { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); } catch { }
     }
 }

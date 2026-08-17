@@ -51,19 +51,15 @@ public class ClaudeMemoryIndexLiveCertTests {
         try {
             await RecordClaudeVersionAsync();
 
-            var worktree = Directory.CreateTempSubdirectory("kcap-claude-memory-live-");
-            try {
-                var answer = await RunClaudePrintAsync(
-                    worktree.FullName,
-                    "A team-memory index may have been injected into your context under a " +
-                    "'## Team memory' heading. If a memory slug looks relevant, call get_memory " +
-                    $"on it and reply with ONLY the exact string it contains matching this pattern: " +
-                    $"kcap-live-nonce-<32 hex chars>. Reply with nothing else.");
+            using var tmp = new TempDir();
+            var answer = await RunClaudePrintAsync(
+                tmp.Path,
+                "A team-memory index may have been injected into your context under a " +
+                "'## Team memory' heading. If a memory slug looks relevant, call get_memory " +
+                $"on it and reply with ONLY the exact string it contains matching this pattern: " +
+                $"kcap-live-nonce-<32 hex chars>. Reply with nothing else.");
 
-                await Assert.That(answer).Contains(nonce);
-            } finally {
-                try { worktree.Delete(recursive: true); } catch { /* best-effort */ }
-            }
+            await Assert.That(answer).Contains(nonce);
         } finally {
             await ArchiveMemoryAsync(client, baseUrl, memoryId);
         }
@@ -93,17 +89,13 @@ public class ClaudeMemoryIndexLiveCertTests {
             var configResult = await RunKcapConfigAsync("disable_memory_index", "true");
             await Assert.That(configResult.ExitCode).IsEqualTo(0);
 
-            var worktree = Directory.CreateTempSubdirectory("kcap-claude-memory-live-negctrl-");
-            try {
-                var answer = await RunClaudePrintAsync(
-                    worktree.FullName,
-                    $"Reply with ONLY the string kcap-live-nonce-<32 hex chars> if you can see it " +
-                    "anywhere in your context; otherwise reply NONE.");
+            using var tmp = new TempDir();
+            var answer = await RunClaudePrintAsync(
+                tmp.Path,
+                $"Reply with ONLY the string kcap-live-nonce-<32 hex chars> if you can see it " +
+                "anywhere in your context; otherwise reply NONE.");
 
-                await Assert.That(answer).DoesNotContain(nonce);
-            } finally {
-                try { worktree.Delete(recursive: true); } catch { /* best-effort */ }
-            }
+            await Assert.That(answer).DoesNotContain(nonce);
         } finally {
             // Restore the ORIGINAL value, not an unconditional "false" — `kcap config` has no
             // "unset" primitive, so an originally-absent (null) flag is restored as "false",

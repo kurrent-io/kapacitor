@@ -87,8 +87,9 @@ public class StreamingRunnerTests {
     public async Task RunStreamingAsync_ct_cancel_kills_the_tree_and_leaves_no_orphan() {
         Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
 
+        using var tmp = new TempDir();
         var runner = new DaemonClientService.ProcessRunner();
-        var startedMarker = Path.Combine(Path.GetTempPath(), $"kcap-streamrunner-{Guid.NewGuid():N}");
+        var startedMarker = tmp.PathTo("marker");
         using var cts = new CancellationTokenSource();
         int grandchildPid = -1;
         try {
@@ -103,7 +104,6 @@ public class StreamingRunnerTests {
             await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
             await WaitUntilAsync(() => !IsAlive(grandchildPid), TimeSpan.FromSeconds(5), "the grandchild to die with the cancelled tree");
         } finally {
-            File.Delete(startedMarker);
             if (grandchildPid > 0) {
                 try { Process.GetProcessById(grandchildPid).Kill(); }
                 catch (ArgumentException) { /* already gone */ }
@@ -116,8 +116,9 @@ public class StreamingRunnerTests {
     public async Task RunStreamingAsync_ct_cancel_ignores_AbandonWait_CancelMode_and_still_kills_the_tree() {
         Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
 
+        using var tmp = new TempDir();
         var runner = new DaemonClientService.ProcessRunner();
-        var startedMarker = Path.Combine(Path.GetTempPath(), $"kcap-streamrunner-{Guid.NewGuid():N}");
+        var startedMarker = tmp.PathTo("marker");
         using var cts = new CancellationTokenSource();
         int grandchildPid = -1;
         try {
@@ -133,7 +134,6 @@ public class StreamingRunnerTests {
             await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
             await WaitUntilAsync(() => !IsAlive(grandchildPid), TimeSpan.FromSeconds(5), "the grandchild to die despite AbandonWait");
         } finally {
-            File.Delete(startedMarker);
             if (grandchildPid > 0) {
                 try { Process.GetProcessById(grandchildPid).Kill(); }
                 catch (ArgumentException) { /* already gone */ }

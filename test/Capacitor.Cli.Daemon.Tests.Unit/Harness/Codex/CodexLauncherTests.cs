@@ -414,9 +414,10 @@ public class CodexLauncherTests {
 
     [Test]
     public async Task Prepare_overlays_codex_settings_dir_from_source_repo() {
-        var sourceRepo = Directory.CreateTempSubdirectory("kcap-codexlauncher-src-").FullName;
-        var worktree = Directory.CreateTempSubdirectory("kcap-codexlauncher-wt-").FullName;
-        var home = Directory.CreateTempSubdirectory("kcap-codexlauncher-home-").FullName;
+        using var tmp = new TempDir();
+        var sourceRepo = tmp.CreateDir("src");
+        var worktree = tmp.CreateDir("wt");
+        var home = tmp.CreateDir("home");
         var originalHome = Environment.GetEnvironmentVariable("HOME");
         Environment.SetEnvironmentVariable("HOME", home);
 
@@ -436,9 +437,6 @@ public class CodexLauncherTests {
             await Assert.That(File.Exists(Path.Combine(worktree, ".codex", "hooks.json"))).IsTrue();
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
-            Directory.Delete(sourceRepo, recursive: true);
-            Directory.Delete(worktree, recursive: true);
-            Directory.Delete(home, recursive: true);
         }
     }
 
@@ -453,9 +451,10 @@ public class CodexLauncherTests {
     /// </summary>
     [Test]
     public async Task Prepare_does_not_reintroduce_workspace_mcp_config_via_the_codex_overlay() {
-        var sourceRepo = Directory.CreateTempSubdirectory("kcap-codexlauncher-src-").FullName;
-        var worktree = Directory.CreateTempSubdirectory("kcap-codexlauncher-wt-").FullName;
-        var home = Directory.CreateTempSubdirectory("kcap-codexlauncher-home-").FullName;
+        using var tmp = new TempDir();
+        var sourceRepo = tmp.CreateDir("src");
+        var worktree = tmp.CreateDir("wt");
+        var home = tmp.CreateDir("home");
         var originalHome = Environment.GetEnvironmentVariable("HOME");
         Environment.SetEnvironmentVariable("HOME", home);
 
@@ -480,17 +479,15 @@ public class CodexLauncherTests {
             await Assert.That(File.Exists(Path.Combine(worktree, ".codex", "hooks.json"))).IsTrue();
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
-            Directory.Delete(sourceRepo, recursive: true);
-            Directory.Delete(worktree, recursive: true);
-            Directory.Delete(home, recursive: true);
         }
     }
 
     [Test]
     public async Task Prepare_throws_when_no_hooks_json_anywhere() {
-        var sourceRepo = Directory.CreateTempSubdirectory("kcap-codexlauncher-src-").FullName;
-        var worktree = Directory.CreateTempSubdirectory("kcap-codexlauncher-wt-").FullName;
-        var home = Directory.CreateTempSubdirectory("kcap-codexlauncher-home-").FullName;
+        using var tmp = new TempDir();
+        var sourceRepo = tmp.CreateDir("src");
+        var worktree = tmp.CreateDir("wt");
+        var home = tmp.CreateDir("home");
         var originalHome = Environment.GetEnvironmentVariable("HOME");
         Environment.SetEnvironmentVariable("HOME", home);
 
@@ -503,17 +500,15 @@ public class CodexLauncherTests {
             await Assert.That(ex!.Message).Contains("kcap plugin install --codex");
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
-            Directory.Delete(sourceRepo, recursive: true);
-            Directory.Delete(worktree, recursive: true);
-            Directory.Delete(home, recursive: true);
         }
     }
 
     [Test]
     public async Task Prepare_succeeds_when_user_scope_hooks_json_has_all_three_critical_events() {
-        var sourceRepo = Directory.CreateTempSubdirectory("kcap-codexlauncher-src-").FullName;
-        var worktree = Directory.CreateTempSubdirectory("kcap-codexlauncher-wt-").FullName;
-        var home = Directory.CreateTempSubdirectory("kcap-codexlauncher-home-").FullName;
+        using var tmp = new TempDir();
+        var sourceRepo = tmp.CreateDir("src");
+        var worktree = tmp.CreateDir("wt");
+        var home = tmp.CreateDir("home");
         var originalHome = Environment.GetEnvironmentVariable("HOME");
         Environment.SetEnvironmentVariable("HOME", home);
 
@@ -533,17 +528,15 @@ public class CodexLauncherTests {
             await Assert.That(File.Exists(Path.Combine(home, ".codex", "config.toml"))).IsTrue();
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
-            Directory.Delete(sourceRepo, recursive: true);
-            Directory.Delete(worktree, recursive: true);
-            Directory.Delete(home, recursive: true);
         }
     }
 
     [Test]
     public async Task Prepare_succeeds_when_project_scope_hooks_json_present_after_overlay() {
-        var sourceRepo = Directory.CreateTempSubdirectory("kcap-codexlauncher-src-").FullName;
-        var worktree = Directory.CreateTempSubdirectory("kcap-codexlauncher-wt-").FullName;
-        var home = Directory.CreateTempSubdirectory("kcap-codexlauncher-home-").FullName;
+        using var tmp = new TempDir();
+        var sourceRepo = tmp.CreateDir("src");
+        var worktree = tmp.CreateDir("wt");
+        var home = tmp.CreateDir("home");
         var originalHome = Environment.GetEnvironmentVariable("HOME");
         Environment.SetEnvironmentVariable("HOME", home);
 
@@ -562,17 +555,15 @@ public class CodexLauncherTests {
             await Assert.That(File.Exists(Path.Combine(home, ".codex", "config.toml"))).IsTrue();
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
-            Directory.Delete(sourceRepo, recursive: true);
-            Directory.Delete(worktree, recursive: true);
-            Directory.Delete(home, recursive: true);
         }
     }
 
     [Test]
     public async Task Prepare_invokes_codex_config_writer_with_worktree_path() {
-        var sourceRepo = Directory.CreateTempSubdirectory("kcap-codexlauncher-src-").FullName;
-        var worktree = Directory.CreateTempSubdirectory("kcap-codexlauncher-wt-").FullName;
-        var home = Directory.CreateTempSubdirectory("kcap-codexlauncher-home-").FullName;
+        using var tmp = new TempDir();
+        var sourceRepo = tmp.CreateDir("src");
+        var worktree = tmp.CreateDir("wt");
+        var home = tmp.CreateDir("home");
         var originalHome = Environment.GetEnvironmentVariable("HOME");
         Environment.SetEnvironmentVariable("HOME", home);
 
@@ -600,9 +591,6 @@ public class CodexLauncherTests {
             await Assert.That(configToml).Contains("trust_level = \"trusted\"");
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
-            Directory.Delete(sourceRepo, recursive: true);
-            Directory.Delete(worktree, recursive: true);
-            Directory.Delete(home, recursive: true);
         }
     }
 

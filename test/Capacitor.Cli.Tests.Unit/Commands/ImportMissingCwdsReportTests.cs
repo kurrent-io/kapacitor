@@ -6,25 +6,22 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 public class ImportMissingCwdsReportTests {
     [Test, NotInParallel]
     public async Task Reports_missing_cwds_with_session_count_and_sample() {
-        var existing = Directory.CreateTempSubdirectory("kcap-cwd-test-").FullName;
-        try {
-            var sessionCwds = new Dictionary<string, string>(StringComparer.Ordinal) {
-                ["s1"] = "/does/not/exist/repo-a",
-                ["s2"] = "/does/not/exist/repo-a", // dup cwd → 1 distinct path, 2 sessions
-                ["s3"] = "/does/not/exist/repo-b",
-                ["s4"] = existing,
-            };
+        using var tmp = new TempDir();
+        var existing = tmp.Path;
+        var sessionCwds = new Dictionary<string, string>(StringComparer.Ordinal) {
+            ["s1"] = "/does/not/exist/repo-a",
+            ["s2"] = "/does/not/exist/repo-a", // dup cwd → 1 distinct path, 2 sessions
+            ["s3"] = "/does/not/exist/repo-b",
+            ["s4"] = existing,
+        };
 
-            var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d));
+        var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d));
 
-            await Assert.That(output).Contains("3 sessions reference 2 distinct paths that no longer exist on disk");
-            await Assert.That(output).Contains("/does/not/exist/repo-a");
-            await Assert.That(output).Contains("/does/not/exist/repo-b");
-            await Assert.That(output).DoesNotContain(existing); // existing dir not reported
-            await Assert.That(output).Contains("kcap remap");
-        } finally {
-            Directory.Delete(existing, recursive: true);
-        }
+        await Assert.That(output).Contains("3 sessions reference 2 distinct paths that no longer exist on disk");
+        await Assert.That(output).Contains("/does/not/exist/repo-a");
+        await Assert.That(output).Contains("/does/not/exist/repo-b");
+        await Assert.That(output).DoesNotContain(existing); // existing dir not reported
+        await Assert.That(output).Contains("kcap remap");
     }
 
     [Test, NotInParallel]
@@ -41,18 +38,15 @@ public class ImportMissingCwdsReportTests {
 
     [Test, NotInParallel]
     public async Task Stays_silent_when_all_cwds_exist() {
-        var existing = Directory.CreateTempSubdirectory("kcap-cwd-test-").FullName;
-        try {
-            var sessionCwds = new Dictionary<string, string>(StringComparer.Ordinal) {
-                ["s1"] = existing,
-            };
+        using var tmp = new TempDir();
+        var existing = tmp.Path;
+        var sessionCwds = new Dictionary<string, string>(StringComparer.Ordinal) {
+            ["s1"] = existing,
+        };
 
-            var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d));
+        var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d));
 
-            await Assert.That(output).IsEmpty();
-        } finally {
-            Directory.Delete(existing, recursive: true);
-        }
+        await Assert.That(output).IsEmpty();
     }
 
     [Test, NotInParallel]

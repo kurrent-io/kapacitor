@@ -17,22 +17,17 @@ public class ClaudeLauncherWriteMcpConfigTests {
 
     static async Task RunWithRelocatedConfigAsync(Func<string, string, string, Task> body) {
         var original = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
-        var root     = Path.Combine(Path.GetTempPath(), "kcap-mcpcfg-" + Guid.NewGuid().ToString("N")[..8]);
+        using var tmp = new TempDir();
 
-        var configDir  = Path.Combine(root, "claude-cfg");
-        var sourceRepo = Path.Combine(root, "source-repo");
-        var worktree   = Path.Combine(root, "worktree");
-
-        Directory.CreateDirectory(configDir);
-        Directory.CreateDirectory(sourceRepo);
-        Directory.CreateDirectory(worktree);
+        var configDir  = tmp.CreateDir("claude-cfg");
+        var sourceRepo = tmp.CreateDir("source-repo");
+        var worktree   = tmp.CreateDir("worktree");
 
         try {
             Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", configDir);
             await body(configDir, sourceRepo, worktree);
         } finally {
             Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", original);
-            try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
         }
     }
 

@@ -29,11 +29,9 @@ public class UnixPtyPathResolutionTests {
     [Test]
     public async Task Slashed_relative_command_resolves_against_cwd() {
         if (OperatingSystem.IsWindows()) return;
-        var cwd = Directory.CreateTempSubdirectory("kcap-resolve-").FullName;
-        try {
-            var r = UnixPtyProcess.ResolveExecutableAbsolutePath("sub/tool", cwd, EnvWithPath(null));
-            await Assert.That(r).IsEqualTo(Path.GetFullPath(Path.Combine(cwd, "sub/tool")));
-        } finally { Directory.Delete(cwd, true); }
+        using var tmp = new TempDir();
+        var r = UnixPtyProcess.ResolveExecutableAbsolutePath("sub/tool", tmp.Path, EnvWithPath(null));
+        await Assert.That(r).IsEqualTo(Path.GetFullPath(tmp.PathTo("sub/tool")));
     }
 
     // Create an EXECUTABLE regular file (mode rwx------) — the resolver now honors the execute bit
@@ -48,13 +46,11 @@ public class UnixPtyPathResolutionTests {
     [UnsupportedOSPlatform("windows")]
     public async Task Bare_command_found_in_an_absolute_path_dir() {
         if (OperatingSystem.IsWindows()) return;
-        var dir  = Directory.CreateTempSubdirectory("kcap-resolve-").FullName;
-        var tool = Path.Combine(dir, "mytool");
+        using var tmp = new TempDir();
+        var tool = tmp.PathTo("mytool");
         WriteExecutable(tool);
-        try {
-            var r = UnixPtyProcess.ResolveExecutableAbsolutePath("mytool", "/no/such/cwd", EnvWithPath(dir));
-            await Assert.That(r).IsEqualTo(Path.GetFullPath(tool));
-        } finally { Directory.Delete(dir, true); }
+        var r = UnixPtyProcess.ResolveExecutableAbsolutePath("mytool", "/no/such/cwd", EnvWithPath(tmp.Path));
+        await Assert.That(r).IsEqualTo(Path.GetFullPath(tool));
     }
 
     [Test]
@@ -64,17 +60,16 @@ public class UnixPtyPathResolutionTests {
         // execvp selects the first EXECUTABLE file, not the first that merely EXISTS. A
         // non-executable match earlier on PATH must be skipped in favor of an executable one later,
         // so we preflight the SAME inode the child would exec.
-        var earlier = Directory.CreateTempSubdirectory("kcap-resolve-a-").FullName;
-        var later   = Directory.CreateTempSubdirectory("kcap-resolve-b-").FullName;
+        using var tmp = new TempDir();
+        var earlier = tmp.CreateDir("a");
+        var later   = tmp.CreateDir("b");
         var shadow  = Path.Combine(earlier, "tool");
         var real    = Path.Combine(later, "tool");
         File.WriteAllText(shadow, ""); // exists but NOT executable (mode 0644-ish)
         File.SetUnixFileMode(shadow, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         WriteExecutable(real);
-        try {
-            var r = UnixPtyProcess.ResolveExecutableAbsolutePath("tool", "/no/such/cwd", EnvWithPath($"{earlier}:{later}"));
-            await Assert.That(r).IsEqualTo(Path.GetFullPath(real));
-        } finally { Directory.Delete(earlier, true); Directory.Delete(later, true); }
+        var r = UnixPtyProcess.ResolveExecutableAbsolutePath("tool", "/no/such/cwd", EnvWithPath($"{earlier}:{later}"));
+        await Assert.That(r).IsEqualTo(Path.GetFullPath(real));
     }
 
     [Test]
@@ -82,16 +77,14 @@ public class UnixPtyPathResolutionTests {
         if (OperatingSystem.IsWindows()) return;
         // A file that exists but is not executable is invisible to execvp — if it's the ONLY match,
         // resolution fails rather than handing back a non-executable path.
-        var dir  = Directory.CreateTempSubdirectory("kcap-resolve-").FullName;
-        var tool = Path.Combine(dir, "notexec");
+        using var tmp = new TempDir();
+        var tool = tmp.PathTo("notexec");
         File.WriteAllText(tool, "");
         File.SetUnixFileMode(tool, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        try {
-            var threw = false;
-            try { UnixPtyProcess.ResolveExecutableAbsolutePath("notexec", "/no/such/cwd", EnvWithPath(dir)); }
-            catch (InvalidOperationException) { threw = true; }
-            await Assert.That(threw).IsTrue();
-        } finally { Directory.Delete(dir, true); }
+        var threw = false;
+        try { UnixPtyProcess.ResolveExecutableAbsolutePath("notexec", "/no/such/cwd", EnvWithPath(tmp.Path)); }
+        catch (InvalidOperationException) { threw = true; }
+        await Assert.That(threw).IsTrue();
     }
 
     [Test]
@@ -104,17 +97,16 @@ public class UnixPtyPathResolutionTests {
         // PATH, exactly as execvp would. Under root access(X_OK) bypasses the class check, so skip.
         if (UnixExecFixtures.IsEffectiveRoot()) return;
 
-        var earlier = Directory.CreateTempSubdirectory("kcap-resolve-a-").FullName;
-        var later   = Directory.CreateTempSubdirectory("kcap-resolve-b-").FullName;
+        using var tmp = new TempDir();
+        var earlier = tmp.CreateDir("a");
+        var later   = tmp.CreateDir("b");
         var wrongClass = Path.Combine(earlier, "tool");
         var runnable   = Path.Combine(later, "tool");
         File.WriteAllText(wrongClass, "");
         File.SetUnixFileMode(wrongClass, UnixFileMode.GroupExecute); // 0010: has an exec bit, but NOT for the owner
         WriteExecutable(runnable);
-        try {
-            var r = UnixPtyProcess.ResolveExecutableAbsolutePath("tool", "/no/such/cwd", EnvWithPath($"{earlier}:{later}"));
-            await Assert.That(r).IsEqualTo(Path.GetFullPath(runnable));
-        } finally { Directory.Delete(earlier, true); Directory.Delete(later, true); }
+        var r = UnixPtyProcess.ResolveExecutableAbsolutePath("tool", "/no/such/cwd", EnvWithPath($"{earlier}:{later}"));
+        await Assert.That(r).IsEqualTo(Path.GetFullPath(runnable));
     }
 
     [Test]
@@ -123,41 +115,34 @@ public class UnixPtyPathResolutionTests {
         if (OperatingSystem.IsWindows()) return;
         // A command living ONLY in cwd must be found via an EMPTY PATH field (POSIX cwd) — the
         // case the old RemoveEmptyEntries split silently discarded.
-        var cwd  = Directory.CreateTempSubdirectory("kcap-resolve-").FullName;
-        var tool = Path.Combine(cwd, "cwdtool");
+        using var tmp = new TempDir();
+        var tool = tmp.PathTo("cwdtool");
         WriteExecutable(tool);
-        try {
-            // Leading empty field (":/definitely/not/here") — the empty field IS cwd, and cwd wins.
-            var r = UnixPtyProcess.ResolveExecutableAbsolutePath("cwdtool", cwd, EnvWithPath(":/definitely/not/here"));
-            await Assert.That(r).IsEqualTo(Path.GetFullPath(tool));
-        } finally { Directory.Delete(cwd, true); }
+        // Leading empty field (":/definitely/not/here") — the empty field IS cwd, and cwd wins.
+        var r = UnixPtyProcess.ResolveExecutableAbsolutePath("cwdtool", tmp.Path, EnvWithPath(":/definitely/not/here"));
+        await Assert.That(r).IsEqualTo(Path.GetFullPath(tool));
     }
 
     [Test]
     [UnsupportedOSPlatform("windows")]
     public async Task Relative_path_field_resolves_against_cwd() {
         if (OperatingSystem.IsWindows()) return;
-        var cwd    = Directory.CreateTempSubdirectory("kcap-resolve-").FullName;
-        var binDir = Path.Combine(cwd, "bin");
-        Directory.CreateDirectory(binDir);
+        using var tmp = new TempDir();
+        var binDir = tmp.CreateDir("bin");
         var tool = Path.Combine(binDir, "reltool");
         WriteExecutable(tool);
-        try {
-            // Relative PATH element "bin" resolves against cwd (not the daemon's own cwd).
-            var r = UnixPtyProcess.ResolveExecutableAbsolutePath("reltool", cwd, EnvWithPath("bin"));
-            await Assert.That(r).IsEqualTo(Path.GetFullPath(tool));
-        } finally { Directory.Delete(cwd, true); }
+        // Relative PATH element "bin" resolves against cwd (not the daemon's own cwd).
+        var r = UnixPtyProcess.ResolveExecutableAbsolutePath("reltool", tmp.Path, EnvWithPath("bin"));
+        await Assert.That(r).IsEqualTo(Path.GetFullPath(tool));
     }
 
     [Test]
     public async Task Not_found_anywhere_throws() {
         if (OperatingSystem.IsWindows()) return;
-        var cwd = Directory.CreateTempSubdirectory("kcap-resolve-").FullName;
-        try {
-            var threw = false;
-            try { UnixPtyProcess.ResolveExecutableAbsolutePath("nope-" + Guid.NewGuid().ToString("N")[..8], cwd, EnvWithPath("/no/such/dir")); }
-            catch (InvalidOperationException) { threw = true; }
-            await Assert.That(threw).IsTrue();
-        } finally { Directory.Delete(cwd, true); }
+        using var tmp = new TempDir();
+        var threw = false;
+        try { UnixPtyProcess.ResolveExecutableAbsolutePath("nope-" + Guid.NewGuid().ToString("N")[..8], tmp.Path, EnvWithPath("/no/such/dir")); }
+        catch (InvalidOperationException) { threw = true; }
+        await Assert.That(threw).IsTrue();
     }
 }

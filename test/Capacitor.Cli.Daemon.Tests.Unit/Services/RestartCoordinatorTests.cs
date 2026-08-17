@@ -4,20 +4,20 @@ using Capacitor.Cli.Daemon.Services;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
-public class RestartCoordinatorTests {
-    DirectoryInfo? _dir;
+public class RestartCoordinatorTests : IDisposable {
+    readonly TempDir _dir = new();
 
     [Before(HookType.Test)]
     public void Setup() {
-        _dir = Directory.CreateTempSubdirectory("kcap-coord-");
-        DaemonLockPaths.OverrideDirectoryForTesting(_dir.FullName);
+        DaemonLockPaths.OverrideDirectoryForTesting(_dir.Path);
     }
 
     [After(HookType.Test)]
     public void Teardown() {
         DaemonLockPaths.OverrideDirectoryForTesting(null);
-        try { _dir?.Delete(true); } catch { /* best-effort */ }
     }
+
+    public void Dispose() => _dir.Dispose();
 
     sealed class SpyStrategy : IRestartStrategy {
         public int            Calls;

@@ -1607,7 +1607,8 @@ public class AgentOrchestratorVendorTests {
 
     [Test]
     public async Task Server_launch_denied_under_deny_default_sends_coded_launch_failed() {
-        var dir        = Directory.CreateTempSubdirectory("kcap-consent-deny-").FullName;
+        using var tmp  = new TempDir();
+        var dir        = tmp.Path;
         var server     = new CaptureServerConnection();
         var ptyFactory = new SpyPtyProcessFactory();
         var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
@@ -1642,7 +1643,7 @@ public class AgentOrchestratorVendorTests {
     [Test]
     public async Task Owner_launch_proceeds_under_deny_default() {
         var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
-        var dir = Directory.CreateTempSubdirectory("kcap-consent-owner-").FullName;
+        using var tmp = new TempDir();
 
         try {
             var server     = new CaptureServerConnection();
@@ -1652,7 +1653,7 @@ public class AgentOrchestratorVendorTests {
             var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
 
             await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
-                server, ptyFactory, launchers, allowedRepoPath: repoPath, consentGate: AgentOrchestratorHarness.DenyDefaultGate(dir));
+                server, ptyFactory, launchers, allowedRepoPath: repoPath, consentGate: AgentOrchestratorHarness.DenyDefaultGate(tmp.Path));
 
             var cmd = new LaunchAgentCommand(
                 AgentId: "agent-consent-owner",

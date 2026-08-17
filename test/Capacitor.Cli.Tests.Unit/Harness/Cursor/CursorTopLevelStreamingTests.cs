@@ -24,30 +24,28 @@ public class CursorTopLevelStreamingTests {
     [Test]
     public async Task DrainNewLines_cursor_session_watcher_never_buffers_when_thresholdReached_is_preset_even_below_the_numeric_threshold() {
         var sid = NewSessionId();
-        var dir = Directory.CreateTempSubdirectory("kcap-cursor-no-buffer").FullName;
-        try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
-            // 3 lines — well below WatchState.TranscriptThreshold (10).
-            await File.WriteAllTextAsync(transcriptPath, "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n");
+        using var tmp = new TempDir();
+        var transcriptPath = tmp.PathTo("t.jsonl");
+        // 3 lines — well below WatchState.TranscriptThreshold (10).
+        await File.WriteAllTextAsync(transcriptPath, "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n");
 
-            // What RunWatch's startup now does for Cursor (review fix #4): ThresholdReached is
-            // already true before the main loop's very first poll, regardless of line count.
-            var state = new WatchState { ThresholdReached = true };
-            var guard = new CursorRewriteGuard(sid);
-            await using var hub = UnconnectedHub();
+        // What RunWatch's startup now does for Cursor (review fix #4): ThresholdReached is
+        // already true before the main loop's very first poll, regardless of line count.
+        var state = new WatchState { ThresholdReached = true };
+        var guard = new CursorRewriteGuard(sid);
+        await using var hub = UnconnectedHub();
 
-            var result = await WatchCommand.DrainNewLines(
-                hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
-                cursorGuard: guard);
+        var result = await WatchCommand.DrainNewLines(
+            hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
+            cursorGuard: guard);
 
-            // Neither switch(agentId) case in DrainNewLines can match (both require
-            // `!state.ThresholdReached`), so the 3 lines are treated as flowing content, never
-            // accumulated into the below-threshold buffer — even though the actual send then
-            // fails (unconnected hub) and is gracefully retried next poll (position unchanged).
-            await Assert.That(state.BufferedLines).IsEmpty();
-            await Assert.That(result).IsEquivalentTo(new[] { "{\"a\":1}", "{\"b\":2}", "{\"c\":3}" });
-            await Assert.That(state.LinesProcessed).IsEqualTo(0); // send failed — position not advanced
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        // Neither switch(agentId) case in DrainNewLines can match (both require
+        // `!state.ThresholdReached`), so the 3 lines are treated as flowing content, never
+        // accumulated into the below-threshold buffer — even though the actual send then
+        // fails (unconnected hub) and is gracefully retried next poll (position unchanged).
+        await Assert.That(state.BufferedLines).IsEmpty();
+        await Assert.That(result).IsEquivalentTo(new[] { "{\"a\":1}", "{\"b\":2}", "{\"c\":3}" });
+        await Assert.That(state.LinesProcessed).IsEqualTo(0); // send failed — position not advanced
     }
 
     // Contrast: BEFORE RunWatch's startup wiring runs (thresholdReached left false), Cursor used
@@ -56,22 +54,20 @@ public class CursorTopLevelStreamingTests {
     [Test]
     public async Task DrainNewLines_cursor_session_watcher_still_buffers_when_thresholdReached_is_false_and_below_numeric_threshold() {
         var sid = NewSessionId();
-        var dir = Directory.CreateTempSubdirectory("kcap-cursor-buffer-contrast").FullName;
-        try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(transcriptPath, "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n");
+        using var tmp = new TempDir();
+        var transcriptPath = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(transcriptPath, "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n");
 
-            var state = new WatchState(); // ThresholdReached defaults false
-            var guard = new CursorRewriteGuard(sid);
-            await using var hub = UnconnectedHub();
+        var state = new WatchState(); // ThresholdReached defaults false
+        var guard = new CursorRewriteGuard(sid);
+        await using var hub = UnconnectedHub();
 
-            var result = await WatchCommand.DrainNewLines(
-                hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
-                cursorGuard: guard);
+        var result = await WatchCommand.DrainNewLines(
+            hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
+            cursorGuard: guard);
 
-            await Assert.That(state.BufferedLines).IsEquivalentTo(new[] { "{\"a\":1}", "{\"b\":2}", "{\"c\":3}" });
-            await Assert.That(state.ThresholdReached).IsFalse();
-            await Assert.That(result).IsEquivalentTo(new[] { "{\"a\":1}", "{\"b\":2}", "{\"c\":3}" });
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(state.BufferedLines).IsEquivalentTo(new[] { "{\"a\":1}", "{\"b\":2}", "{\"c\":3}" });
+        await Assert.That(state.ThresholdReached).IsFalse();
+        await Assert.That(result).IsEquivalentTo(new[] { "{\"a\":1}", "{\"b\":2}", "{\"c\":3}" });
     }
 }

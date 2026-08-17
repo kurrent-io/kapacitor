@@ -140,11 +140,10 @@ public class CursorHookCommandTests {
     [Test]
     public async Task telemetry_hook_does_not_recovery_spawn_while_an_earlier_canonical_event_is_still_stuck() {
         var sid = Guid.NewGuid().ToString("N");
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-cursor-fix4-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", dir);
+        using var tmp = new TempDir();
+        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
 
-        var spool = new HookSpool(Path.Combine(dir, "spool"));
+        var spool = new HookSpool(tmp.PathTo("spool"));
         spool.Append(sid, "session-start/cursor", $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}"}""");
 
         var spawned = new List<string>();
@@ -173,7 +172,6 @@ public class CursorHookCommandTests {
         } finally {
             WatcherManager.SpawnOverrideForTesting = null;
             Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
-            try { Directory.Delete(dir, true); } catch { }
         }
     }
 
@@ -798,10 +796,11 @@ public class CursorHookCommandTests {
     [Test, NotInParallel]
     public async Task AbsentWorkspaceRoot_skips_provider_even_when_process_cwd_is_a_repo() {
         var originalCwd = Environment.CurrentDirectory;
+        using var tmp = new TempDir();
         // A real git repo WITH a remote as the process cwd: were the guard missing, the shared
         // scope resolver's Directory.GetCurrentDirectory() fallback would derive THIS repo's scope
         // and fetch its (unrelated) memories into the Cursor session. The guard must prevent any fetch.
-        var repoDir = MakeTempRepoWithRemote("https://github.com/example/leak-check.git");
+        var repoDir = MakeTempRepoWithRemote(tmp, "https://github.com/example/leak-check.git");
         using var capture = ConsoleOutput.StartCapture();
         try {
             Environment.CurrentDirectory = repoDir;
@@ -822,15 +821,13 @@ public class CursorHookCommandTests {
             await Assert.That(capture.GetCapturedOutput()).IsEqualTo("{}\n");
         } finally {
             Environment.CurrentDirectory = originalCwd;
-            try { Directory.Delete(repoDir, recursive: true); } catch { }
         }
     }
 
     // Creates a throwaway git repo with a controlled origin remote so a test can put the process
     // cwd inside a repository the scope resolver would otherwise detect.
-    static string MakeTempRepoWithRemote(string originUrl) {
-        var root = Path.Combine(Path.GetTempPath(), "kcap-cursor-memory-repo-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(root);
+    static string MakeTempRepoWithRemote(TempDir tmp, string originUrl) {
+        var root = tmp.CreateDir("repo");
         RunGit(root, "init", "-q");
         RunGit(root, "remote", "add", "origin", originUrl);
         return root;
@@ -969,22 +966,19 @@ public class CursorHookCommandTests {
 
     [Test]
     public async Task legacy_cursor_spool_is_transformed_and_merged() {
-        var dir       = Path.Combine(Path.GetTempPath(), $"kcap-mig-{Guid.NewGuid():N}");
-        var legacyDir = Path.Combine(dir, "legacy");
-        var spoolDir  = Path.Combine(dir, "spool");
-        Directory.CreateDirectory(legacyDir);
-        try {
-            // Old format: {hook_event_name, body}
-            await File.WriteAllTextAsync(Path.Combine(legacyDir, $"{Sid}.jsonl"),
-                $"{{\"hook_event_name\":\"sessionEnd\",\"body\":\"{{\\\"session_id\\\":\\\"{Sid}\\\"}}\"}}\n");
+        using var tmp = new TempDir();
+        var legacyDir = tmp.CreateDir("legacy");
+        var spoolDir  = tmp.CreateDir("spool");
+        // Old format: {hook_event_name, body}
+        await File.WriteAllTextAsync(Path.Combine(legacyDir, $"{Sid}.jsonl"),
+            $"{{\"hook_event_name\":\"sessionEnd\",\"body\":\"{{\\\"session_id\\\":\\\"{Sid}\\\"}}\"}}\n");
 
-            var spool = new HookSpool(spoolDir);
-            CursorHookCommand.MigrateLegacyCursorSpool(spool, legacyDir);
+        var spool = new HookSpool(spoolDir);
+        CursorHookCommand.MigrateLegacyCursorSpool(spool, legacyDir);
 
-            var migrated = await File.ReadAllTextAsync(Path.Combine(spoolDir, $"{Sid}.jsonl"));
-            await Assert.That(migrated).Contains("\"route\":\"session-end/cursor\"");
-            await Assert.That(File.Exists(Path.Combine(legacyDir, $"{Sid}.jsonl"))).IsFalse();
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        var migrated = await File.ReadAllTextAsync(Path.Combine(spoolDir, $"{Sid}.jsonl"));
+        await Assert.That(migrated).Contains("\"route\":\"session-end/cursor\"");
+        await Assert.That(File.Exists(Path.Combine(legacyDir, $"{Sid}.jsonl"))).IsFalse();
     }
 
     sealed class Fixture : IDisposable {

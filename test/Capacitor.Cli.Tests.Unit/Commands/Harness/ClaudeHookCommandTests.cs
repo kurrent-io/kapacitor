@@ -356,36 +356,17 @@ public class ClaudeHookCommandTests {
     // discoverable .git entry (e.g. "/tmp") must omit the field entirely rather than send null.
     [Test]
     public async Task session_start_includes_workspace_root_when_cwd_is_inside_a_git_repo() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-claude-hook-git-");
-        try {
-            Directory.CreateDirectory(Path.Combine(tmp.FullName, ".git"));
-            var nested = Path.Combine(tmp.FullName, "nested", "dir");
-            Directory.CreateDirectory(nested);
+        using var tmp = new TempDir();
+        tmp.CreateDir(".git");
+        var nested = tmp.PathTo("nested", "dir");
+        Directory.CreateDirectory(nested);
 
-            using var fx = new Fixture();
-            await fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"{{nested.Replace("\\", "\\\\")}}"}""");
+        using var fx = new Fixture();
+        await fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"{{nested.Replace("\\", "\\\\")}}"}""");
 
-            var posted = fx.Sent.Single(s => s.StartsWith("/hooks/session-start|", StringComparison.Ordinal));
-            var body   = JsonNode.Parse(posted[(posted.IndexOf('|') + 1)..]);
-            await Assert.That(body!["workspace_root"]?.GetValue<string>()).IsEqualTo(tmp.FullName);
-        } finally {
-            // Best-effort: on windows-latest runners the AV/indexer can transiently hold a
-            // handle on a just-created directory and fail the recursive delete with
-            // IOException ("being used by another process"). The temp dir is on an
-            // ephemeral runner — retry briefly, then let it go rather than fail the test.
-            for (var attempt = 1; ; attempt++) {
-                try {
-                    tmp.Delete(recursive: true);
-                    break;
-                } catch (IOException) when (attempt < 4) {
-                    await Task.Delay(100 * attempt);
-                } catch (IOException) {
-                    break;
-                } catch (UnauthorizedAccessException) {
-                    break;
-                }
-            }
-        }
+        var posted = fx.Sent.Single(s => s.StartsWith("/hooks/session-start|", StringComparison.Ordinal));
+        var body   = JsonNode.Parse(posted[(posted.IndexOf('|') + 1)..]);
+        await Assert.That(body!["workspace_root"]?.GetValue<string>()).IsEqualTo(tmp.Path);
     }
 
     [Test]

@@ -19,33 +19,33 @@ public class AgentDetectionTests {
     public async Task Binary_probe_walks_injected_path_with_execute_bit() {
         if (OperatingSystem.IsWindows()) return; // Unix exec-bit semantics only
 
-        var dir    = Directory.CreateTempSubdirectory("kcap-detect-").FullName;
-        var claude = Path.Combine(dir, "claude");
+        using var tmp = new TempDir();
+        var claude = tmp.PathTo("claude");
         await File.WriteAllTextAsync(claude, "#!/bin/sh\n");
         File.SetUnixFileMode(claude, UnixFileMode.UserRead | UnixFileMode.UserExecute);
 
-        var r = AgentDetection.Detect(Inputs(pathEnv: dir, home: "/nonexistent"));
+        var r = AgentDetection.Detect(Inputs(pathEnv: tmp.Path, home: "/nonexistent"));
         await Assert.That(r.Claude.BinaryFound).IsTrue();
         await Assert.That(r.Codex.BinaryFound).IsFalse();
     }
 
     [Test]
     public async Task Gemini_marker_rules_bare_dot_gemini_is_NOT_installed() {
-        var home = Directory.CreateTempSubdirectory("kcap-detect-home-").FullName;
-        Directory.CreateDirectory(Path.Combine(home, ".gemini")); // bare dir, no markers
-        var r = AgentDetection.Detect(Inputs(pathEnv: "", home: home));
+        using var tmp = new TempDir();
+        tmp.CreateDir(".gemini"); // bare dir, no markers
+        var r = AgentDetection.Detect(Inputs(pathEnv: "", home: tmp.Path));
         await Assert.That(r.Gemini.InstallSignalFound).IsFalse();
 
-        await File.WriteAllTextAsync(Path.Combine(home, ".gemini", "settings.json"), "{}");
-        var r2 = AgentDetection.Detect(Inputs(pathEnv: "", home: home));
+        await File.WriteAllTextAsync(tmp.PathTo(".gemini", "settings.json"), "{}");
+        var r2 = AgentDetection.Detect(Inputs(pathEnv: "", home: tmp.Path));
         await Assert.That(r2.Gemini.InstallSignalFound).IsTrue();
     }
 
     [Test]
     public async Task Kiro_binary_probe_includes_kiro_cli_and_home_signal_honors_injected_override() {
-        var kiroHome = Directory.CreateTempSubdirectory("kcap-kiro-").FullName;
+        using var tmp = new TempDir();
         var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent",
-            env: new() { ["KIRO_HOME"] = kiroHome }));
+            env: new() { ["KIRO_HOME"] = tmp.Path }));
         await Assert.That(r.Kiro.InstallSignalFound).IsTrue();
     }
 
@@ -53,9 +53,9 @@ public class AgentDetectionTests {
     public async Task Pi_home_signal_honors_injected_PI_CODING_AGENT_DIR_override() {
         // Detect() must never fall back to a real process-env read for Pi — everything comes
         // through Inputs.Env, so this test never mutates Environment.GetEnvironmentVariable.
-        var agentDir = Directory.CreateTempSubdirectory("kcap-pi-agent-").FullName;
+        using var tmp = new TempDir();
         var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent",
-            env: new() { ["PI_CODING_AGENT_DIR"] = agentDir }));
+            env: new() { ["PI_CODING_AGENT_DIR"] = tmp.Path }));
         await Assert.That(r.Pi.InstallSignalFound).IsTrue();
     }
 
@@ -63,12 +63,12 @@ public class AgentDetectionTests {
     public async Task Antigravity_probes_both_agy_and_antigravity_binaries() {
         if (OperatingSystem.IsWindows()) return; // Unix exec-bit semantics only
 
-        var dir = Directory.CreateTempSubdirectory("kcap-agy-").FullName;
-        var agy = Path.Combine(dir, "agy");
+        using var tmp = new TempDir();
+        var agy = tmp.PathTo("agy");
         await File.WriteAllTextAsync(agy, "#!/bin/sh\n");
         File.SetUnixFileMode(agy, UnixFileMode.UserRead | UnixFileMode.UserExecute);
 
-        var r = AgentDetection.Detect(Inputs(pathEnv: dir, home: "/nonexistent"));
+        var r = AgentDetection.Detect(Inputs(pathEnv: tmp.Path, home: "/nonexistent"));
         await Assert.That(r.Antigravity.BinaryFound).IsTrue();
     }
 
@@ -85,12 +85,12 @@ public class AgentDetectionTests {
         // when a "cursor" executable is on the injected PATH.
         if (OperatingSystem.IsWindows()) return;
 
-        var dir    = Directory.CreateTempSubdirectory("kcap-cursor-").FullName;
-        var cursor = Path.Combine(dir, "cursor");
+        using var tmp = new TempDir();
+        var cursor = tmp.PathTo("cursor");
         await File.WriteAllTextAsync(cursor, "#!/bin/sh\n");
         File.SetUnixFileMode(cursor, UnixFileMode.UserRead | UnixFileMode.UserExecute);
 
-        var r = AgentDetection.Detect(Inputs(pathEnv: dir, home: "/nonexistent"));
+        var r = AgentDetection.Detect(Inputs(pathEnv: tmp.Path, home: "/nonexistent"));
         await Assert.That(r.Cursor.BinaryFound).IsFalse();
         await Assert.That(r.Cursor.Detected).IsFalse();
     }
@@ -102,11 +102,11 @@ public class AgentDetectionTests {
     /// non-Windows test host purely through injected inputs.</summary>
     [Test]
     public async Task Cursor_windows_install_signal_is_resolved_from_injected_platform_and_appdata() {
-        var appData = Directory.CreateTempSubdirectory("kcap-cursor-appdata-").FullName;
-        Directory.CreateDirectory(Path.Combine(appData, "Cursor", "User"));
+        using var tmp = new TempDir();
+        tmp.CreateDir("Cursor", "User");
 
         var inputs = new AgentDetectionInputs(PathEnv: "", PathExt: null, IsWindows: false, Home: "/nonexistent",
-            Platform: OsPlatform.Windows, AppData: appData);
+            Platform: OsPlatform.Windows, AppData: tmp.Path);
 
         var r = AgentDetection.Detect(inputs);
         await Assert.That(r.Cursor.InstallSignalFound).IsTrue();
@@ -122,14 +122,14 @@ public class AgentDetectionTests {
     public async Task BinaryOnPath_dedupes_a_repeated_PATH_entry() {
         if (OperatingSystem.IsWindows()) return;
 
-        var dir    = Directory.CreateTempSubdirectory("kcap-detect-dedupe-").FullName;
-        var claude = Path.Combine(dir, "claude");
+        using var tmp = new TempDir();
+        var claude = tmp.PathTo("claude");
         await File.WriteAllTextAsync(claude, "#!/bin/sh\n");
         File.SetUnixFileMode(claude, UnixFileMode.UserRead | UnixFileMode.UserExecute);
 
         // The same directory repeated three times must still be found (and probed only once per
         // Distinct dir, not once per occurrence).
-        var pathEnv = $"{dir}{Path.PathSeparator}{dir}{Path.PathSeparator}{dir}";
+        var pathEnv = $"{tmp.Path}{Path.PathSeparator}{tmp.Path}{Path.PathSeparator}{tmp.Path}";
         await Assert.That(AgentDetection.BinaryOnPath("claude", Inputs(pathEnv: pathEnv))).IsTrue();
     }
 
@@ -184,22 +184,22 @@ public class AgentDetectionTests {
     public async Task BinaryOnPath_skips_empty_path_entries_without_throwing() {
         if (OperatingSystem.IsWindows()) return;
 
-        var dir    = Directory.CreateTempSubdirectory("kcap-detect-").FullName;
-        var claude = Path.Combine(dir, "claude");
+        using var tmp = new TempDir();
+        var claude = tmp.PathTo("claude");
         await File.WriteAllTextAsync(claude, "#!/bin/sh\n");
         File.SetUnixFileMode(claude, UnixFileMode.UserRead | UnixFileMode.UserExecute);
 
-        var pathEnv = $"{Path.PathSeparator}{dir}"; // leading empty entry
+        var pathEnv = $"{Path.PathSeparator}{tmp.Path}"; // leading empty entry
         await Assert.That(AgentDetection.BinaryOnPath("claude", Inputs(pathEnv: pathEnv))).IsTrue();
     }
 
     [Test]
     public async Task BinaryOnPath_windows_walks_pathext_and_rejects_bare_name() {
-        var dir = Directory.CreateTempSubdirectory("kcap-detect-win-").FullName;
-        await File.WriteAllTextAsync(Path.Combine(dir, "claude.CMD"), "@echo off\n");
+        using var tmp = new TempDir();
+        await File.WriteAllTextAsync(tmp.PathTo("claude.CMD"), "@echo off\n");
 
         var winInputs = new AgentDetectionInputs(
-            PathEnv: dir, PathExt: ".EXE;.CMD", IsWindows: true, Home: "/nonexistent");
+            PathEnv: tmp.Path, PathExt: ".EXE;.CMD", IsWindows: true, Home: "/nonexistent");
 
         await Assert.That(AgentDetection.BinaryOnPath("claude", winInputs)).IsTrue();
         await Assert.That(AgentDetection.BinaryOnPath("nope", winInputs)).IsFalse();
@@ -225,9 +225,9 @@ public class AgentDetectionTests {
 
     [Test]
     public async Task OpenCode_honors_an_injected_override_without_touching_real_env() {
-        var dir = Directory.CreateTempSubdirectory("kcap-oc-").FullName;
+        using var tmp = new TempDir();
         var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent",
-            env: new() { ["OPENCODE_CONFIG_DIR"] = dir }));
+            env: new() { ["OPENCODE_CONFIG_DIR"] = tmp.Path }));
         await Assert.That(r.OpenCode.InstallSignalFound).IsTrue();
     }
 
@@ -240,9 +240,9 @@ public class AgentDetectionTests {
     // Positive counterpart: an injected override (not the real env) is what actually gets used.
     [Test]
     public async Task Copilot_honors_an_injected_override_without_touching_real_env() {
-        var dir = Directory.CreateTempSubdirectory("kcap-copilot-").FullName;
+        using var tmp = new TempDir();
         var r = AgentDetection.Detect(Inputs(pathEnv: "", home: "/nonexistent",
-            env: new() { ["COPILOT_HOME"] = dir }));
+            env: new() { ["COPILOT_HOME"] = tmp.Path }));
         await Assert.That(r.Copilot.InstallSignalFound).IsTrue();
     }
 
@@ -264,17 +264,17 @@ public class AgentDetectionTests {
     public async Task BinaryOnPath_pure_unix_requires_any_execute_bit() {
         if (OperatingSystem.IsWindows()) return; // Unix-only
 
-        var tmp     = Directory.CreateTempSubdirectory("kcap-agentprobe-").FullName;
-        var exec    = Path.Combine(tmp, "agentprobe-exec");
-        var nonExec = Path.Combine(tmp, "agentprobe-nonexec");
+        using var tmp = new TempDir();
+        var exec    = tmp.PathTo("agentprobe-exec");
+        var nonExec = tmp.PathTo("agentprobe-nonexec");
 
         await File.WriteAllTextAsync(exec, "#!/bin/sh\nexit 0\n");
         await File.WriteAllTextAsync(nonExec, "not executable");
         File.SetUnixFileMode(exec,    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);   // 0700
         File.SetUnixFileMode(nonExec, UnixFileMode.UserRead | UnixFileMode.UserWrite);                              // 0600
 
-        await Assert.That(AgentDetection.BinaryOnPath("agentprobe-exec", Inputs(pathEnv: tmp))).IsTrue();
-        await Assert.That(AgentDetection.BinaryOnPath("agentprobe-nonexec", Inputs(pathEnv: tmp))).IsFalse();
+        await Assert.That(AgentDetection.BinaryOnPath("agentprobe-exec", Inputs(pathEnv: tmp.Path))).IsTrue();
+        await Assert.That(AgentDetection.BinaryOnPath("agentprobe-nonexec", Inputs(pathEnv: tmp.Path))).IsFalse();
     }
 
     // ── BinaryOnPath separator is derived from the injected platform, never the host-global
@@ -282,10 +282,11 @@ public class AgentDetectionTests {
 
     [Test]
     public async Task BinaryOnPath_windows_input_splits_on_semicolon_regardless_of_host_platform() {
-        var dir = Directory.CreateTempSubdirectory("kcap-detect-winsep-").FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.CreateDir("winsep");
         await File.WriteAllTextAsync(Path.Combine(dir, "claude.CMD"), "@echo off\n");
 
-        var otherDir = Directory.CreateTempSubdirectory("kcap-detect-winsep2-").FullName;
+        var otherDir = tmp.CreateDir("winsep2");
         var winInputs = new AgentDetectionInputs(
             PathEnv: $"{otherDir};{dir}", PathExt: ".EXE;.CMD", IsWindows: true, Home: "/nonexistent");
 
@@ -298,12 +299,13 @@ public class AgentDetectionTests {
     public async Task BinaryOnPath_unix_input_splits_on_colon() {
         if (OperatingSystem.IsWindows()) return; // exec-bit semantics only make sense on Unix
 
-        var dir = Directory.CreateTempSubdirectory("kcap-detect-unixsep-").FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.CreateDir("unixsep");
         var claude = Path.Combine(dir, "claude");
         await File.WriteAllTextAsync(claude, "#!/bin/sh\n");
         File.SetUnixFileMode(claude, UnixFileMode.UserRead | UnixFileMode.UserExecute);
 
-        var otherDir = Directory.CreateTempSubdirectory("kcap-detect-unixsep2-").FullName;
+        var otherDir = tmp.CreateDir("unixsep2");
         var r = AgentDetection.Detect(Inputs(pathEnv: $"{otherDir}:{dir}", home: "/nonexistent"));
 
         await Assert.That(r.Claude.BinaryFound).IsTrue();

@@ -19,13 +19,9 @@ public class ClaudeImportSourceTests {
 
     [Test]
     public async Task is_available_when_projects_dir_exists() {
-        var dir = Directory.CreateTempSubdirectory("kcap-claude-source-");
-        try {
-            var src = new ClaudeImportSource(dir.FullName);
-            await Assert.That(src.IsAvailable).IsTrue();
-        } finally {
-            dir.Delete(recursive: true);
-        }
+        using var tmp = new TempDir();
+        var src = new ClaudeImportSource(tmp.Path);
+        await Assert.That(src.IsAvailable).IsTrue();
     }
 
     [Test]

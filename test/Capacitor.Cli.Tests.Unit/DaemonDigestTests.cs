@@ -8,8 +8,8 @@ public class DaemonDigestTests {
     public async Task Placeholder_is_not_usable_and_never_matches() {
         // Local dev/test builds carry the placeholder unless -p:KcapDaemonDigest was passed:
         if (!DaemonDigest.IsUsable) {
-            var f = Path.GetTempFileName();
-            await File.WriteAllTextAsync(f, "anything");
+            using var tmp = new TempDir();
+            var       f   = tmp.CreateFile("digest.tmp", "anything");
             await Assert.That(DaemonDigest.Matches(f)).IsFalse();
         }
     }
@@ -17,7 +17,7 @@ public class DaemonDigestTests {
     [Test]
     public async Task Matches_hashes_file_content() {
         // exercised via the internal seam: compute what Matches computes
-        var f = Path.GetTempFileName();
+        using var tmp = TempDir.WithPathTo("digest.tmp", out var f);
         await File.WriteAllBytesAsync(f, [1, 2, 3]);
         var expected = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(new byte[] { 1, 2, 3 }));
         await Assert.That(DaemonDigest.HashOf(f)).IsEqualTo(expected);

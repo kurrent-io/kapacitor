@@ -13,8 +13,6 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 public class ShutdownTranscriptSpoolTests {
     const string Sid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    static string TmpDir(string prefix) => Path.Combine(Path.GetTempPath(), $"kcap-{prefix}-{Guid.NewGuid():N}");
-
     [Test]
     public async Task build_batch_serializes_lines_and_vendor() {
         var json = WatchCommand.BuildTranscriptSpoolBatch(Sid, null, "kiro", ["{\"k\":1}"], [7]);
@@ -34,14 +32,13 @@ public class ShutdownTranscriptSpoolTests {
 
     [Test]
     public async Task tail_spooled_when_hub_down_at_shutdown() {
-        var dir = TmpDir("shut");
-        try {
-            var tx    = new TranscriptSpool(dir);
-            var batch = WatchCommand.BuildTranscriptSpoolBatch(Sid, null, "kiro", ["{\"k\":1}"], [0]);
-            var r     = tx.Append(Sid, batch);
-            await Assert.That(r).IsEqualTo(TranscriptSpool.AppendResult.Appended);
-            await Assert.That(tx.HasBacklog(Sid)).IsTrue();
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        using var tmp = new TempDir();
+        var dir = tmp.PathTo("shut");
+        var tx    = new TranscriptSpool(dir);
+        var batch = WatchCommand.BuildTranscriptSpoolBatch(Sid, null, "kiro", ["{\"k\":1}"], [0]);
+        var r     = tx.Append(Sid, batch);
+        await Assert.That(r).IsEqualTo(TranscriptSpool.AppendResult.Appended);
+        await Assert.That(tx.HasBacklog(Sid)).IsTrue();
     }
 
     /// <summary>
@@ -52,89 +49,77 @@ public class ShutdownTranscriptSpoolTests {
     /// </summary>
     [Test]
     public async Task shutdown_spools_only_the_undelivered_tail() {
-        var dir          = TmpDir("shut-tail");
-        var spoolDir     = TmpDir("shut-tail-spool");
+        using var tmp = new TempDir();
+        var dir          = tmp.PathTo("shut-tail");
+        var spoolDir     = tmp.PathTo("shut-tail-spool");
         var transcriptPath = Path.Combine(dir, "transcript.jsonl");
 
-        try {
-            Directory.CreateDirectory(dir);
-            // Lines 0-1 already confirmed sent (LinesProcessed = 2); lines 2-3 are the undelivered
-            // tail that the outage left behind at shutdown.
-            await File.WriteAllTextAsync(transcriptPath,
-                "{\"line\":0}\n{\"line\":1}\n{\"line\":2}\n{\"line\":3}\n");
+        Directory.CreateDirectory(dir);
+        // Lines 0-1 already confirmed sent (LinesProcessed = 2); lines 2-3 are the undelivered
+        // tail that the outage left behind at shutdown.
+        await File.WriteAllTextAsync(transcriptPath,
+            "{\"line\":0}\n{\"line\":1}\n{\"line\":2}\n{\"line\":3}\n");
 
-            var spool  = new TranscriptSpool(spoolDir);
-            var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
-                spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 2, CancellationToken.None);
+        var spool  = new TranscriptSpool(spoolDir);
+        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+            spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 2, CancellationToken.None);
 
-            await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.Appended);
-            await Assert.That(spool.HasBacklog(Sid)).IsTrue();
+        await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.Appended);
+        await Assert.That(spool.HasBacklog(Sid)).IsTrue();
 
-            // Replay via the same DrainAsync path the global drain (task 3) uses — only the
-            // undelivered tail (lines 2 and 3) is replayed, in order, nothing from before LinesProcessed.
-            var replayed = new List<string>();
-            await spool.DrainAsync(Sid, body => {
-                replayed.Add(body);
-                return Task.FromResult(DrainOutcome.Delivered);
-            }, () => false, CancellationToken.None);
+        // Replay via the same DrainAsync path the global drain (task 3) uses — only the
+        // undelivered tail (lines 2 and 3) is replayed, in order, nothing from before LinesProcessed.
+        var replayed = new List<string>();
+        await spool.DrainAsync(Sid, body => {
+            replayed.Add(body);
+            return Task.FromResult(DrainOutcome.Delivered);
+        }, () => false, CancellationToken.None);
 
-            await Assert.That(replayed).Count().IsEqualTo(1);
-            var node  = System.Text.Json.Nodes.JsonNode.Parse(replayed[0])!;
-            var lines = node["lines"]!.AsArray().Select(l => l!.GetValue<string>()).ToList();
-            await Assert.That(lines).IsEquivalentTo(["{\"line\":2}", "{\"line\":3}"]);
-            await Assert.That(spool.HasBacklog(Sid)).IsFalse();
-        } finally {
-            try { Directory.Delete(dir, true); } catch { }
-            try { Directory.Delete(spoolDir, true); } catch { }
-        }
+        await Assert.That(replayed).Count().IsEqualTo(1);
+        var node  = System.Text.Json.Nodes.JsonNode.Parse(replayed[0])!;
+        var lines = node["lines"]!.AsArray().Select(l => l!.GetValue<string>()).ToList();
+        await Assert.That(lines).IsEquivalentTo(["{\"line\":2}", "{\"line\":3}"]);
+        await Assert.That(spool.HasBacklog(Sid)).IsFalse();
     }
 
     [Test]
     public async Task shutdown_with_nothing_undelivered_is_a_noop() {
-        var dir             = TmpDir("shut-empty");
-        var spoolDir        = TmpDir("shut-empty-spool");
+        using var tmp = new TempDir();
+        var dir             = tmp.PathTo("shut-empty");
+        var spoolDir        = tmp.PathTo("shut-empty-spool");
         var transcriptPath  = Path.Combine(dir, "transcript.jsonl");
 
-        try {
-            Directory.CreateDirectory(dir);
-            await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n{\"line\":1}\n");
+        Directory.CreateDirectory(dir);
+        await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n{\"line\":1}\n");
 
-            var spool  = new TranscriptSpool(spoolDir);
-            // LinesProcessed already at EOF — the final drain sent everything before the hub went down.
-            var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
-                spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 2, CancellationToken.None);
+        var spool  = new TranscriptSpool(spoolDir);
+        // LinesProcessed already at EOF — the final drain sent everything before the hub went down.
+        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+            spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 2, CancellationToken.None);
 
-            await Assert.That(result).IsNull();
-            await Assert.That(spool.HasBacklog(Sid)).IsFalse();
-        } finally {
-            try { Directory.Delete(dir, true); } catch { }
-            try { Directory.Delete(spoolDir, true); } catch { }
-        }
+        await Assert.That(result).IsNull();
+        await Assert.That(spool.HasBacklog(Sid)).IsFalse();
     }
 
     /// <summary>Cap exhaustion at shutdown must never silently drop the tail — it marks needs-import
     /// (surfaced by the global drain as a `kcap import` recovery hint) instead.</summary>
     [Test]
     public async Task shutdown_tail_exceeding_cap_marks_needs_import() {
-        var dir            = TmpDir("shut-cap");
-        var spoolDir       = TmpDir("shut-cap-spool");
+        using var tmp = new TempDir();
+        var dir            = tmp.PathTo("shut-cap");
+        var spoolDir       = tmp.PathTo("shut-cap-spool");
         var transcriptPath = Path.Combine(dir, "transcript.jsonl");
 
-        try {
-            Directory.CreateDirectory(dir);
-            var bigLine = "{\"line\":0,\"pad\":\"" + new string('x', 200) + "\"}";
-            await File.WriteAllTextAsync(transcriptPath, bigLine + "\n");
+        Directory.CreateDirectory(dir);
+        var bigLine = "{\"line\":0,\"pad\":\"" + new string('x', 200) + "\"}";
+        await File.WriteAllTextAsync(transcriptPath, bigLine + "\n");
 
-            var spool  = new TranscriptSpool(spoolDir, capBytes: 64); // tiny cap — the batch can't fit
-            var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
-                spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 0, CancellationToken.None);
+        var spool  = new TranscriptSpool(spoolDir, capBytes: 64); // tiny cap — the batch can't fit
+        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+            spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 0, CancellationToken.None);
 
-            await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.MarkedNeedsImport);
-            await Assert.That(spool.NeedsImport(Sid)).IsTrue();
-        } finally {
-            try { Directory.Delete(dir, true); } catch { }
-            try { Directory.Delete(spoolDir, true); } catch { }
-        }
+        await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.MarkedNeedsImport);
+        await Assert.That(spool.NeedsImport(Sid)).IsTrue();
     }
 
     /// <summary>
@@ -147,28 +132,24 @@ public class ShutdownTranscriptSpoolTests {
     [Test]
     public async Task shutdown_skips_spooling_when_the_cursor_session_is_quarantined() {
         var sid            = Guid.NewGuid().ToString("N");
-        var dir            = TmpDir("shut-quarantine");
-        var spoolDir       = TmpDir("shut-quarantine-spool");
+        using var tmp = new TempDir();
+        var dir            = tmp.PathTo("shut-quarantine");
+        var spoolDir       = tmp.PathTo("shut-quarantine-spool");
         var transcriptPath = Path.Combine(dir, "transcript.jsonl");
 
-        try {
-            Directory.CreateDirectory(dir);
-            // Lines beyond `linesProcessed` exist on disk — exactly what a rejected/discarded
-            // batch left behind when the guard tripped mid-poll.
-            await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n{\"line\":1}\n{\"line\":2}\n");
-            CursorMarkers.Quarantine(sid, "rewrite detected");
+        Directory.CreateDirectory(dir);
+        // Lines beyond `linesProcessed` exist on disk — exactly what a rejected/discarded
+        // batch left behind when the guard tripped mid-poll.
+        await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n{\"line\":1}\n{\"line\":2}\n");
+        CursorMarkers.Quarantine(sid, "rewrite detected");
 
-            var spool  = new TranscriptSpool(spoolDir);
-            var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
-                spool, transcriptPath, sid, agentId: null, vendor: "cursor", linesProcessed: 0, CancellationToken.None);
+        var spool  = new TranscriptSpool(spoolDir);
+        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+            spool, transcriptPath, sid, agentId: null, vendor: "cursor", linesProcessed: 0, CancellationToken.None);
 
-            await Assert.That(result).IsNull();
-            await Assert.That(spool.HasBacklog(sid)).IsFalse();
-            await Assert.That(spool.NeedsImport(sid)).IsFalse();
-        } finally {
-            try { Directory.Delete(dir, true); } catch { }
-            try { Directory.Delete(spoolDir, true); } catch { }
-        }
+        await Assert.That(result).IsNull();
+        await Assert.That(spool.HasBacklog(sid)).IsFalse();
+        await Assert.That(spool.NeedsImport(sid)).IsFalse();
     }
 
     /// <summary>Regression guard: the quarantine check is Cursor-scoped only — every other vendor's
@@ -178,37 +159,32 @@ public class ShutdownTranscriptSpoolTests {
         var quarantinedSid = Guid.NewGuid().ToString("N");
         CursorMarkers.Quarantine(quarantinedSid, "unrelated");
 
-        var dir            = TmpDir("shut-nonCursor");
-        var spoolDir       = TmpDir("shut-nonCursor-spool");
+        using var tmp = new TempDir();
+        var dir            = tmp.PathTo("shut-nonCursor");
+        var spoolDir       = tmp.PathTo("shut-nonCursor-spool");
         var transcriptPath = Path.Combine(dir, "transcript.jsonl");
 
-        try {
-            Directory.CreateDirectory(dir);
-            await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n");
+        Directory.CreateDirectory(dir);
+        await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n");
 
-            var spool  = new TranscriptSpool(spoolDir);
-            var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
-                spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 0, CancellationToken.None);
+        var spool  = new TranscriptSpool(spoolDir);
+        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+            spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 0, CancellationToken.None);
 
-            await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.Appended);
-            await Assert.That(spool.HasBacklog(Sid)).IsTrue();
-        } finally {
-            try { Directory.Delete(dir, true); } catch { }
-            try { Directory.Delete(spoolDir, true); } catch { }
-        }
+        await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.Appended);
+        await Assert.That(spool.HasBacklog(Sid)).IsTrue();
     }
 
     [Test]
     public async Task shutdown_missing_transcript_file_is_a_noop() {
-        var spoolDir = TmpDir("shut-missing-spool");
-        try {
-            var spool  = new TranscriptSpool(spoolDir);
-            var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
-                spool, "/tmp/kcap-nonexistent-" + Guid.NewGuid(), Sid, agentId: null, vendor: "kiro",
-                linesProcessed: 0, CancellationToken.None);
+        using var tmp = new TempDir();
+        var spoolDir = tmp.PathTo("shut-missing-spool");
+        var spool  = new TranscriptSpool(spoolDir);
+        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+            spool, "/tmp/kcap-nonexistent-" + Guid.NewGuid(), Sid, agentId: null, vendor: "kiro",
+            linesProcessed: 0, CancellationToken.None);
 
-            await Assert.That(result).IsNull();
-        } finally { try { Directory.Delete(spoolDir, true); } catch { } }
+        await Assert.That(result).IsNull();
     }
 
     /// <summary>
@@ -221,26 +197,22 @@ public class ShutdownTranscriptSpoolTests {
     /// </summary>
     [Test]
     public async Task undelivered_tail_spooled_even_though_connection_stayed_up() {
-        var dir            = TmpDir("shut-hubex");
-        var spoolDir       = TmpDir("shut-hubex-spool");
+        using var tmp = new TempDir();
+        var dir            = tmp.PathTo("shut-hubex");
+        var spoolDir       = tmp.PathTo("shut-hubex-spool");
         var transcriptPath = Path.Combine(dir, "transcript.jsonl");
 
-        try {
-            Directory.CreateDirectory(dir);
-            // Send of line 0 threw a HubException (connection stayed up) → LinesProcessed still 0,
-            // line 0 is the undelivered tail.
-            await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n");
+        Directory.CreateDirectory(dir);
+        // Send of line 0 threw a HubException (connection stayed up) → LinesProcessed still 0,
+        // line 0 is the undelivered tail.
+        await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n");
 
-            var spool  = new TranscriptSpool(spoolDir);
-            var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
-                spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 0, CancellationToken.None);
+        var spool  = new TranscriptSpool(spoolDir);
+        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+            spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 0, CancellationToken.None);
 
-            await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.Appended);
-            await Assert.That(spool.HasBacklog(Sid)).IsTrue();
-        } finally {
-            try { Directory.Delete(dir, true); } catch { }
-            try { Directory.Delete(spoolDir, true); } catch { }
-        }
+        await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.Appended);
+        await Assert.That(spool.HasBacklog(Sid)).IsTrue();
     }
 
     /// <summary>
@@ -251,37 +223,33 @@ public class ShutdownTranscriptSpoolTests {
     /// </summary>
     [Test]
     public async Task spooled_tail_is_secret_redacted() {
-        var dir            = TmpDir("shut-redact");
-        var spoolDir       = TmpDir("shut-redact-spool");
+        using var tmp = new TempDir();
+        var dir            = tmp.PathTo("shut-redact");
+        var spoolDir       = tmp.PathTo("shut-redact-spool");
         var transcriptPath = Path.Combine(dir, "transcript.jsonl");
         const string secret = "ghp_0123456789abcdefABCDEF";
 
-        try {
-            Directory.CreateDirectory(dir);
-            await File.WriteAllTextAsync(transcriptPath, "{\"token\":\"" + secret + "\"}\n");
+        Directory.CreateDirectory(dir);
+        await File.WriteAllTextAsync(transcriptPath, "{\"token\":\"" + secret + "\"}\n");
 
-            var spool  = new TranscriptSpool(spoolDir);
-            var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
-                spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 0, CancellationToken.None);
+        var spool  = new TranscriptSpool(spoolDir);
+        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+            spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 0, CancellationToken.None);
 
-            await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.Appended);
+        await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.Appended);
 
-            // The raw secret must appear nowhere in the spool directory; the placeholder must.
-            foreach (var f in Directory.EnumerateFiles(spoolDir)) {
-                var content = await File.ReadAllTextAsync(f);
-                await Assert.That(content).DoesNotContain(secret);
-            }
-
-            var replayed = new List<string>();
-            await spool.DrainAsync(Sid, body => { replayed.Add(body); return Task.FromResult(DrainOutcome.Delivered); },
-                                   () => false, CancellationToken.None);
-            var node  = System.Text.Json.Nodes.JsonNode.Parse(replayed[0])!;
-            var lines = node["lines"]!.AsArray().Select(l => l!.GetValue<string>()).ToList();
-            await Assert.That(lines[0]).Contains("[REDACTED]");
-            await Assert.That(lines[0]).DoesNotContain(secret);
-        } finally {
-            try { Directory.Delete(dir, true); } catch { }
-            try { Directory.Delete(spoolDir, true); } catch { }
+        // The raw secret must appear nowhere in the spool directory; the placeholder must.
+        foreach (var f in Directory.EnumerateFiles(spoolDir)) {
+            var content = await File.ReadAllTextAsync(f);
+            await Assert.That(content).DoesNotContain(secret);
         }
+
+        var replayed = new List<string>();
+        await spool.DrainAsync(Sid, body => { replayed.Add(body); return Task.FromResult(DrainOutcome.Delivered); },
+                               () => false, CancellationToken.None);
+        var node  = System.Text.Json.Nodes.JsonNode.Parse(replayed[0])!;
+        var lines = node["lines"]!.AsArray().Select(l => l!.GetValue<string>()).ToList();
+        await Assert.That(lines[0]).Contains("[REDACTED]");
+        await Assert.That(lines[0]).DoesNotContain(secret);
     }
 }

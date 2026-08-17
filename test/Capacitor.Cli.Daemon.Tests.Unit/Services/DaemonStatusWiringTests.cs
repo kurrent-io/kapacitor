@@ -77,50 +77,48 @@ public class DaemonStatusWiringTests {
     /// </summary>
     [Test]
     public async Task AgentOrchestrator_resolved_via_DI_shares_the_one_registered_notifier() {
-        var stateDir = Directory.CreateTempSubdirectory("kcap-wiring-orch-state-").FullName;
+        using var tmp = new TempDir();
+        var stateDir = tmp.Path;
+
+        var services = new ServiceCollection();
+        services.AddSingleton(new DaemonConfig {
+            Name         = "wiring-orch-test",
+            ServerUrl    = "http://127.0.0.1:1",
+            StateDir     = stateDir,
+            WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-wiring-orch-wt-" + Guid.NewGuid().ToString("N")[..8]),
+        });
+        services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
+        services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton<DaemonStatusNotifier>();
+        services.AddSingleton<ServerConnection>();
+        services.AddSingleton<WorktreeManager>();
+        services.AddSingleton<RepoMatcher>();
+        services.AddSingleton<IPtyProcessFactory>(new NoopPtyProcessFactory());
+        services.AddSingleton<IHttpClientFactory>(new NoopHttpClientFactory());
+        services.AddSingleton<LocalPermissionBridge>();
+        services.AddSingleton<IReadOnlyDictionary<string, IHostedAgentLauncher>>(
+            new Dictionary<string, IHostedAgentLauncher>());
+        services.AddSingleton<IReadOnlyDictionary<string, IHostedAgentRuntimeFactory>>(
+            new Dictionary<string, IHostedAgentRuntimeFactory>());
+        services.AddSingleton<IHostApplicationLifetime>(new NoopHostLifetime());
+        services.AddSingleton(sp => new LaunchConsentGate(
+            new LaunchConsentStore(stateDir, NullLogger.Instance),
+            new LaunchConsentDecisionLog(stateDir, NullLogger.Instance),
+            prompter: null,
+            TimeProvider.System,
+            sp.GetRequiredService<ILogger<LaunchConsentGate>>()));
+        services.AddSingleton<AgentOrchestrator>();
+
+        await using var provider = services.BuildServiceProvider();
+
+        var notifier     = provider.GetRequiredService<DaemonStatusNotifier>();
+        var orchestrator = provider.GetRequiredService<AgentOrchestrator>();
+
         try {
-            var services = new ServiceCollection();
-            services.AddSingleton(new DaemonConfig {
-                Name         = "wiring-orch-test",
-                ServerUrl    = "http://127.0.0.1:1",
-                StateDir     = stateDir,
-                WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-wiring-orch-wt-" + Guid.NewGuid().ToString("N")[..8]),
-            });
-            services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
-            services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
-            services.AddSingleton<DaemonStatusNotifier>();
-            services.AddSingleton<ServerConnection>();
-            services.AddSingleton<WorktreeManager>();
-            services.AddSingleton<RepoMatcher>();
-            services.AddSingleton<IPtyProcessFactory>(new NoopPtyProcessFactory());
-            services.AddSingleton<IHttpClientFactory>(new NoopHttpClientFactory());
-            services.AddSingleton<LocalPermissionBridge>();
-            services.AddSingleton<IReadOnlyDictionary<string, IHostedAgentLauncher>>(
-                new Dictionary<string, IHostedAgentLauncher>());
-            services.AddSingleton<IReadOnlyDictionary<string, IHostedAgentRuntimeFactory>>(
-                new Dictionary<string, IHostedAgentRuntimeFactory>());
-            services.AddSingleton<IHostApplicationLifetime>(new NoopHostLifetime());
-            services.AddSingleton(sp => new LaunchConsentGate(
-                new LaunchConsentStore(stateDir, NullLogger.Instance),
-                new LaunchConsentDecisionLog(stateDir, NullLogger.Instance),
-                prompter: null,
-                TimeProvider.System,
-                sp.GetRequiredService<ILogger<LaunchConsentGate>>()));
-            services.AddSingleton<AgentOrchestrator>();
-
-            await using var provider = services.BuildServiceProvider();
-
-            var notifier     = provider.GetRequiredService<DaemonStatusNotifier>();
-            var orchestrator = provider.GetRequiredService<AgentOrchestrator>();
-
-            try {
-                await Assert.That(ReferenceEquals(orchestrator.StatusNotifierForTest, notifier)).IsTrue();
-            } finally {
-                await orchestrator.DisposeAsync();
-                await provider.GetRequiredService<ServerConnection>().DisposeAsync();
-            }
+            await Assert.That(ReferenceEquals(orchestrator.StatusNotifierForTest, notifier)).IsTrue();
         } finally {
-            try { Directory.Delete(stateDir, true); } catch { /* best-effort */ }
+            await orchestrator.DisposeAsync();
+            await provider.GetRequiredService<ServerConnection>().DisposeAsync();
         }
     }
 }

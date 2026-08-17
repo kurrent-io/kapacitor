@@ -19,15 +19,15 @@ public class ConsentDecisionLogReaderTests {
                "\"source\":\"owner\"" + displayField + "}";
     }
 
-    static DirectoryInfo SetUp() {
-        var dir = Directory.CreateTempSubdirectory("kcap-consent-decision-log-");
-        DaemonLockPaths.OverrideDirectoryForTesting(dir.FullName);
+    static TempDir SetUp() {
+        var dir = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(dir.Path);
         return dir;
     }
 
-    static void TearDown(DirectoryInfo dir) {
+    static void TearDown(TempDir dir) {
         DaemonLockPaths.OverrideDirectoryForTesting(null);
-        dir.Delete(true);
+        dir.Dispose();
     }
 
     static void WriteLines(string path, params string[] lines) {

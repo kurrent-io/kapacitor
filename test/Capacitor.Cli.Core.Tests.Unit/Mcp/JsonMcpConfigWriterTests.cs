@@ -4,8 +4,7 @@ using Capacitor.Cli.Core.Mcp;
 namespace Capacitor.Cli.Core.Tests.Unit.Mcp;
 
 public class JsonMcpConfigWriterTests {
-    static string TempConfig(string name = "mcp.json") =>
-        Path.Combine(Directory.CreateTempSubdirectory("kcap-mcpwriter-").FullName, name);
+    static string TempConfig(TempDir tmp, string name = "mcp.json") => tmp.PathTo(name);
 
     // In-memory marker double: treats an entry as kcap-owned iff its key starts with "kcap-".
     sealed class FakeMarker : IMcpMarker {
@@ -20,7 +19,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_on_missing_file_writes_all_servers_standard_shape() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new FakeMarker(),
                                                   resolveBinaryPath: () => "/opt/kcap/bin/kcap");
 
@@ -34,7 +34,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_falls_back_to_kcap_when_binary_path_unresolvable() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new FakeMarker(),
                                      resolveBinaryPath: () => null);
 
@@ -46,7 +47,8 @@ public class JsonMcpConfigWriterTests {
     public async Task Register_default_resolution_is_the_running_process_path() {
         // kcap setup executes as the native binary even when invoked via the npm wrapper
         // (the wrapper exec's it), so Environment.ProcessPath IS the platform binary.
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new FakeMarker());
 
         var servers = (JsonObject)Read(path)["mcpServers"]!;
@@ -55,7 +57,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_gemini_shape_marks_only_read_only_servers_trusted() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Gemini, cwd: null, new FakeMarker());
 
         var servers = (JsonObject)Read(path)["mcpServers"]!;
@@ -68,7 +71,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_standard_shape_emits_no_trust_field() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new FakeMarker());
 
         // Cursor uses the plain Standard shape — no per-server trust knob, so we emit none anywhere.
@@ -78,7 +82,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_gemini_heals_existing_untrusted_read_only_entry() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         // A pre-trust kcap-review entry (no trust field) as an older install would have written.
         File.WriteAllText(path, """{ "mcpServers": { "kcap-review": { "command": "kcap", "args": ["mcp","review"] } } }""");
 
@@ -90,7 +95,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_preserves_user_servers() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         File.WriteAllText(path, """{ "mcpServers": { "playwright": { "command": "npx", "args": ["-y","playwright"] } } }""");
 
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, new FakeMarker());
@@ -102,7 +108,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_is_idempotent() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         var marker = new FakeMarker();
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker);
         var second = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker);
@@ -112,7 +119,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_fails_closed_on_malformed_file() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         File.WriteAllText(path, "{ not json");
         var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, new FakeMarker());
 
@@ -124,7 +132,8 @@ public class JsonMcpConfigWriterTests {
     public async Task Register_on_empty_file_writes_all_servers() {
         // Antigravity (and others) ship a 0-byte mcp_config.json on first run. An empty file has
         // nothing to preserve, so it must be treated as an empty config — NOT fail-closed as malformed.
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         File.WriteAllText(path, "");
         var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, new FakeMarker());
 
@@ -136,7 +145,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_on_whitespace_only_file_writes_all_servers() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         File.WriteAllText(path, "  \n\t\n");
         var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, new FakeMarker());
 
@@ -146,7 +156,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_fails_closed_when_block_is_wrong_type() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         File.WriteAllText(path, """{ "mcpServers": "oops" }""");
         var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, new FakeMarker());
 
@@ -155,7 +166,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_does_not_clobber_user_authored_kcap_lookalike() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         // A user server literally named kcap-review but pointing elsewhere; FakeMarker.Owns
         // returns true for the "kcap-" prefix, so replace this with the real marker semantics
         // in Task 4's integration test. Here we assert the collision path via a non-prefixed name.
@@ -168,7 +180,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_opencode_shape_uses_command_array_type_local_enabled() {
-        var path = TempConfig("opencode.json");
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp, "opencode.json");
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.OpenCode, null, new FakeMarker());
 
         var block = (JsonObject)Read(path)["mcp"]!;
@@ -180,7 +193,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_copilot_shape_sets_type_stdio() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Copilot, null, new FakeMarker());
         var review = (JsonObject)((JsonObject)Read(path)["mcpServers"]!)["kcap-review"]!;
         await Assert.That((string)review["type"]!).IsEqualTo("stdio");
@@ -188,7 +202,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_emits_cwd_only_for_repo_scoped_servers() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, cwd: "/w/repo", new FakeMarker());
         var servers = (JsonObject)Read(path)["mcpServers"]!;
         await Assert.That(servers["kcap-review"]!["cwd"]).IsNull();
@@ -197,7 +212,8 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Unregister_removes_only_owned_and_drops_empty_block() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
         var marker = new FakeMarker();
         File.WriteAllText(path, """{ "mcpServers": { "playwright": { "command": "npx" } } }""");
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker);
@@ -212,9 +228,9 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Unregister_clears_marker_even_when_no_kcap_entries_to_remove() {
-        var dir = Directory.CreateTempSubdirectory("kcap-unreg-").FullName;
-        var path = Path.Combine(dir, "mcp.json");
-        var marker = new McpMarker("test", _ => Path.Combine(dir, "marker.json"));
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var marker = new McpMarker("test", _ => tmp.PathTo("marker.json"));
         // Marker recorded, but the JSON has a user server and NO kcap entries (a hand-edit removed them).
         File.WriteAllText(path, """{ "mcpServers": { "my-tool": { "command": "x" } } }""");
         marker.Record(path, ["kcap-review"]);
@@ -226,9 +242,9 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_preserves_unrecorded_kcap_named_user_server() {
-        var dir = Directory.CreateTempSubdirectory("kcap-collide-").FullName;
-        var path = Path.Combine(dir, "mcp.json");
-        var marker = new McpMarker("test", _ => Path.Combine(dir, "marker.json")); // real marker, nothing recorded
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var marker = new McpMarker("test", _ => tmp.PathTo("marker.json")); // real marker, nothing recorded
         File.WriteAllText(path, """{ "mcpServers": { "kcap-review": { "command": "user-owned" } } }""");
 
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker);
@@ -239,9 +255,9 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_heals_stale_owned_entry_but_stays_idempotent() {
-        var dir = Directory.CreateTempSubdirectory("kcap-heal-").FullName;
-        var path = Path.Combine(dir, "mcp.json");
-        var marker = new McpMarker("test", _ => Path.Combine(dir, "marker.json"));
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var marker = new McpMarker("test", _ => tmp.PathTo("marker.json"));
 
         // First registration records ownership + writes canonical entries.
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker);
@@ -277,9 +293,9 @@ public class JsonMcpConfigWriterTests {
     /// </summary>
     [Test]
     public async Task Register_migrates_v1_kcap_entry_to_absolute_and_heals_a_relayout() {
-        var dir = Directory.CreateTempSubdirectory("kcap-migrate-").FullName;
-        var path = Path.Combine(dir, "mcp.json");
-        var marker = new McpMarker("test", _ => Path.Combine(dir, "marker.json"));
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var marker = new McpMarker("test", _ => tmp.PathTo("marker.json"));
 
         // A pre-fingerprint install: entry command "kcap", marker recorded names-only.
         File.WriteAllText(path, """{ "mcpServers": { "kcap-review": { "command": "kcap", "args": ["mcp","review"] } } }""");
@@ -299,9 +315,9 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Unregister_removes_absolute_registered_owned_entries() {
-        var dir = Directory.CreateTempSubdirectory("kcap-absrm-").FullName;
-        var path = Path.Combine(dir, "mcp.json");
-        var marker = new McpMarker("test", _ => Path.Combine(dir, "marker.json"));
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var marker = new McpMarker("test", _ => tmp.PathTo("marker.json"));
 
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker,
                                      resolveBinaryPath: () => "/opt/a/kcap");
@@ -330,7 +346,8 @@ public class JsonMcpConfigWriterTests {
     /// </summary>
     [Test]
     public async Task Register_swallows_a_marker_write_failure_and_keeps_the_config_result() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
 
         var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null,
                                                   new ThrowingMarker(), resolveBinaryPath: () => "/opt/a/kcap");
@@ -347,9 +364,9 @@ public class JsonMcpConfigWriterTests {
     /// </summary>
     [Test]
     public async Task Register_readopts_a_committed_but_unmarked_canonical_entry() {
-        var dir = Directory.CreateTempSubdirectory("kcap-adopt-").FullName;
-        var path = Path.Combine(dir, "mcp.json");
-        var markerFile = Path.Combine(dir, "marker.json");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var markerFile = tmp.PathTo("marker.json");
         var marker = new McpMarker("test", _ => markerFile);
 
         JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker,
@@ -371,9 +388,9 @@ public class JsonMcpConfigWriterTests {
 
     [Test]
     public async Task Register_preserves_a_genuine_user_edit_of_a_previously_owned_entry() {
-        var dir = Directory.CreateTempSubdirectory("kcap-useredit-").FullName;
-        var path = Path.Combine(dir, "mcp.json");
-        var marker = new McpMarker("test", _ => Path.Combine(dir, "marker.json"));
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var marker = new McpMarker("test", _ => tmp.PathTo("marker.json"));
         var oneServer = KcapMcpServers.All.Take(1).ToArray(); // kcap-review only, so no sibling heal muddies the change
 
         JsonMcpConfigWriter.Register(path, oneServer, McpConfigShape.Standard, null, marker,

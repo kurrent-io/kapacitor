@@ -33,46 +33,34 @@ public class GeminiSubagentDiscoveryTests {
 
     [Test]
     public async Task EnumerateSubagentFiles_FindsNestedFile() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd").FullName;
-        try {
-            var parent = WriteParentWithSubagent(tmp, "codebase_investigator");
+        using var tmp = new TempDir();
+        var parent = WriteParentWithSubagent(tmp.Path, "codebase_investigator");
 
-            var files = GeminiSubagentDiscovery.EnumerateSubagentFiles(parent);
+        var files = GeminiSubagentDiscovery.EnumerateSubagentFiles(parent);
 
-            await Assert.That(files.Count).IsEqualTo(1);
-            await Assert.That(Path.GetFileNameWithoutExtension(files[0])).IsEqualTo(DashedSub);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(files.Count).IsEqualTo(1);
+        await Assert.That(Path.GetFileNameWithoutExtension(files[0])).IsEqualTo(DashedSub);
     }
 
     [Test]
     public async Task EnumerateSubagentFiles_EmptyWhenNoNestedDir() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd").FullName;
-        try {
-            var chats = Path.Combine(tmp, "chats");
-            Directory.CreateDirectory(chats);
-            var parent = Path.Combine(chats, "session-x.jsonl");
-            File.WriteAllText(parent, $$"""{"sessionId":"{{DashedParent}}","kind":"main"}""" + "\n");
+        using var tmp = new TempDir();
+        var chats = tmp.PathTo("chats");
+        Directory.CreateDirectory(chats);
+        var parent = Path.Combine(chats, "session-x.jsonl");
+        File.WriteAllText(parent, $$"""{"sessionId":"{{DashedParent}}","kind":"main"}""" + "\n");
 
-            await Assert.That(GeminiSubagentDiscovery.EnumerateSubagentFiles(parent).Count).IsEqualTo(0);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(GeminiSubagentDiscovery.EnumerateSubagentFiles(parent).Count).IsEqualTo(0);
     }
 
     [Test]
     public async Task ResolveAgentTypes_MapsSubIdToParentAgentName() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd").FullName;
-        try {
-            var parent = WriteParentWithSubagent(tmp, "codebase_investigator");
+        using var tmp = new TempDir();
+        var parent = WriteParentWithSubagent(tmp.Path, "codebase_investigator");
 
-            var types = GeminiSubagentDiscovery.ResolveAgentTypes(parent);
+        var types = GeminiSubagentDiscovery.ResolveAgentTypes(parent);
 
-            await Assert.That(types.GetValueOrDefault(DashedSub)).IsEqualTo("codebase_investigator");
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(types.GetValueOrDefault(DashedSub)).IsEqualTo("codebase_investigator");
     }
 
     [Test]
@@ -122,98 +110,82 @@ public class GeminiSubagentDiscoveryTests {
 
     [Test]
     public async Task EnumerateDescendantFiles_FindsGrandchildUnderSubsOwnDir() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd-desc").FullName;
-        try {
-            var root = WriteRootSubGrandsub(tmp, "codebase_investigator", "test_runner");
+        using var tmp = new TempDir();
+        var root = WriteRootSubGrandsub(tmp.Path, "codebase_investigator", "test_runner");
 
-            var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
+        var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
 
-            await Assert.That(result.DescendantsOmitted).IsEqualTo(0);
-            await Assert.That(result.CountTruncated).IsFalse();
-            await Assert.That(result.Files.Select(f => (f.DashedId, f.Depth)))
-                .IsEquivalentTo(new[] { (DashedSub, 1), (DashedGrandsub, 2) });
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(result.DescendantsOmitted).IsEqualTo(0);
+        await Assert.That(result.CountTruncated).IsFalse();
+        await Assert.That(result.Files.Select(f => (f.DashedId, f.Depth)))
+            .IsEquivalentTo(new[] { (DashedSub, 1), (DashedGrandsub, 2) });
     }
 
     [Test]
     public async Task EnumerateDescendantFiles_ResolvesGrandchildTypeFromImmediateParent_NotRoot() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd-desc").FullName;
-        try {
-            var root = WriteRootSubGrandsub(tmp, "codebase_investigator", "test_runner");
+        using var tmp = new TempDir();
+        var root = WriteRootSubGrandsub(tmp.Path, "codebase_investigator", "test_runner");
 
-            var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
+        var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
 
-            var grandsub = result.Files.Single(f => f.DashedId == DashedGrandsub);
-            var sub      = result.Files.Single(f => f.DashedId == DashedSub);
+        var grandsub = result.Files.Single(f => f.DashedId == DashedGrandsub);
+        var sub      = result.Files.Single(f => f.DashedId == DashedSub);
 
-            // The grandsub's immediate parent transcript is SUB's own file (not root's) —
-            // resolving types from it must yield "test_runner", the distinct agent_name
-            // recorded in Sub's own invoke_agent call, not the root's "codebase_investigator"
-            // and not the "subagent" fallback a flat file list would produce.
-            var grandsubTypes = GeminiSubagentDiscovery.ResolveAgentTypes(grandsub.ImmediateParentTranscriptPath);
-            await Assert.That(grandsubTypes.GetValueOrDefault(DashedGrandsub)).IsEqualTo("test_runner");
+        // The grandsub's immediate parent transcript is SUB's own file (not root's) —
+        // resolving types from it must yield "test_runner", the distinct agent_name
+        // recorded in Sub's own invoke_agent call, not the root's "codebase_investigator"
+        // and not the "subagent" fallback a flat file list would produce.
+        var grandsubTypes = GeminiSubagentDiscovery.ResolveAgentTypes(grandsub.ImmediateParentTranscriptPath);
+        await Assert.That(grandsubTypes.GetValueOrDefault(DashedGrandsub)).IsEqualTo("test_runner");
 
-            var subTypes = GeminiSubagentDiscovery.ResolveAgentTypes(sub.ImmediateParentTranscriptPath);
-            await Assert.That(subTypes.GetValueOrDefault(DashedSub)).IsEqualTo("codebase_investigator");
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        var subTypes = GeminiSubagentDiscovery.ResolveAgentTypes(sub.ImmediateParentTranscriptPath);
+        await Assert.That(subTypes.GetValueOrDefault(DashedSub)).IsEqualTo("codebase_investigator");
     }
 
     [Test]
     public async Task EnumerateDescendantFiles_EmptyWhenNoNestedDir() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd-desc").FullName;
-        try {
-            var chats = Path.Combine(tmp, "chats");
-            Directory.CreateDirectory(chats);
-            var parent = Path.Combine(chats, "session-x.jsonl");
-            File.WriteAllText(parent, $$"""{"sessionId":"{{DashedParent}}","kind":"main"}""" + "\n");
+        using var tmp = new TempDir();
+        var chats = tmp.PathTo("chats");
+        Directory.CreateDirectory(chats);
+        var parent = Path.Combine(chats, "session-x.jsonl");
+        File.WriteAllText(parent, $$"""{"sessionId":"{{DashedParent}}","kind":"main"}""" + "\n");
 
-            var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(parent);
+        var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(parent);
 
-            await Assert.That(result.Files.Count).IsEqualTo(0);
-            await Assert.That(result.DescendantsOmitted).IsEqualTo(0);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(result.Files.Count).IsEqualTo(0);
+        await Assert.That(result.DescendantsOmitted).IsEqualTo(0);
     }
 
     [Test]
     public async Task EnumerateDescendantFiles_depth_9_is_omitted_with_diagnostic() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd-desc").FullName;
-        try {
-            var chats = Path.Combine(tmp, "chats");
-            Directory.CreateDirectory(chats);
+        using var tmp = new TempDir();
+        var chats = tmp.PathTo("chats");
+        Directory.CreateDirectory(chats);
 
-            var rootId = "00000000-0000-4000-8000-000000000000";
-            var root   = Path.Combine(chats, "session-root.jsonl");
-            File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
+        var rootId = "00000000-0000-4000-8000-000000000000";
+        var root   = Path.Combine(chats, "session-root.jsonl");
+        File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
 
-            // A 9-level chain of subagent dirs below the root. Each level's directory is
-            // rooted directly under the shared chats/ dir (chats/&lt;thatLevel'sOwnId&gt;/),
-            // matching EnumerateDescendantFiles's "always derived from the ROOT chats/ dir,
-            // never relative to a nested dir" contract — never chats/&lt;root&gt;/&lt;n1&gt;/&lt;n2&gt;/....
-            var prevId = rootId;
-            for (var depth = 1; depth <= 9; depth++) {
-                var id  = $"00000000-0000-4000-8000-{depth:D12}";
-                var dir = Path.Combine(chats, prevId);
-                Directory.CreateDirectory(dir);
-                File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
-                prevId = id;
-            }
-
-            var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
-
-            await Assert.That(result.Files.Count).IsEqualTo(8);
-            await Assert.That(result.Files.Max(f => f.Depth)).IsEqualTo(8);
-            await Assert.That(result.DescendantsOmitted).IsEqualTo(1);
-            await Assert.That(result.OmittedDescendantIds.Count).IsEqualTo(1);
-            await Assert.That(result.CountTruncated).IsFalse();
-        } finally {
-            Directory.Delete(tmp, recursive: true);
+        // A 9-level chain of subagent dirs below the root. Each level's directory is
+        // rooted directly under the shared chats/ dir (chats/&lt;thatLevel'sOwnId&gt;/),
+        // matching EnumerateDescendantFiles's "always derived from the ROOT chats/ dir,
+        // never relative to a nested dir" contract — never chats/&lt;root&gt;/&lt;n1&gt;/&lt;n2&gt;/....
+        var prevId = rootId;
+        for (var depth = 1; depth <= 9; depth++) {
+            var id  = $"00000000-0000-4000-8000-{depth:D12}";
+            var dir = Path.Combine(chats, prevId);
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            prevId = id;
         }
+
+        var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
+
+        await Assert.That(result.Files.Count).IsEqualTo(8);
+        await Assert.That(result.Files.Max(f => f.Depth)).IsEqualTo(8);
+        await Assert.That(result.DescendantsOmitted).IsEqualTo(1);
+        await Assert.That(result.OmittedDescendantIds.Count).IsEqualTo(1);
+        await Assert.That(result.CountTruncated).IsFalse();
     }
 
     // the walker used to stop AT the boundary child (depth 9) and
@@ -222,36 +194,32 @@ public class GeminiSubagentDiscoveryTests {
     // WHOLE omitted subtree.
     [Test]
     public async Task EnumerateDescendantFiles_depth_9_and_10_chain_reports_omitted_two_not_one() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd-desc").FullName;
-        try {
-            var chats = Path.Combine(tmp, "chats");
-            Directory.CreateDirectory(chats);
+        using var tmp = new TempDir();
+        var chats = tmp.PathTo("chats");
+        Directory.CreateDirectory(chats);
 
-            var rootId = "00000000-0000-4000-8000-000000000000";
-            var root   = Path.Combine(chats, "session-root.jsonl");
-            File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
+        var rootId = "00000000-0000-4000-8000-000000000000";
+        var root   = Path.Combine(chats, "session-root.jsonl");
+        File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
 
-            // A 10-level chain of subagent dirs below the root.
-            var prevId = rootId;
-            for (var depth = 1; depth <= 10; depth++) {
-                var id  = $"00000000-0000-4000-8000-{depth:D12}";
-                var dir = Path.Combine(chats, prevId);
-                Directory.CreateDirectory(dir);
-                File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
-                prevId = id;
-            }
-
-            var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
-
-            await Assert.That(result.Files.Count).IsEqualTo(8);
-            await Assert.That(result.Files.Max(f => f.Depth)).IsEqualTo(8);
-            // Depths 9 AND 10 are omitted — TWO, not one.
-            await Assert.That(result.DescendantsOmitted).IsEqualTo(2);
-            await Assert.That(result.OmittedDescendantIds.Count).IsEqualTo(2);
-            await Assert.That(result.CountTruncated).IsFalse();
-        } finally {
-            Directory.Delete(tmp, recursive: true);
+        // A 10-level chain of subagent dirs below the root.
+        var prevId = rootId;
+        for (var depth = 1; depth <= 10; depth++) {
+            var id  = $"00000000-0000-4000-8000-{depth:D12}";
+            var dir = Path.Combine(chats, prevId);
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            prevId = id;
         }
+
+        var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
+
+        await Assert.That(result.Files.Count).IsEqualTo(8);
+        await Assert.That(result.Files.Max(f => f.Depth)).IsEqualTo(8);
+        // Depths 9 AND 10 are omitted — TWO, not one.
+        await Assert.That(result.DescendantsOmitted).IsEqualTo(2);
+        await Assert.That(result.OmittedDescendantIds.Count).IsEqualTo(2);
+        await Assert.That(result.CountTruncated).IsFalse();
     }
 
     // ── MaxCountingNodes scope (D3 review fix #4) ───────────────────────────────────
@@ -264,87 +232,79 @@ public class GeminiSubagentDiscoveryTests {
 
     [Test]
     public async Task EnumerateDescendantFiles_wide_in_cap_fanout_beyond_the_counting_ceiling_finds_every_child() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd-desc").FullName;
-        try {
-            var chats = Path.Combine(tmp, "chats");
-            Directory.CreateDirectory(chats);
+        using var tmp = new TempDir();
+        var chats = tmp.PathTo("chats");
+        Directory.CreateDirectory(chats);
 
-            var rootId = "00000000-0000-4000-8000-000000000000";
-            var root   = Path.Combine(chats, "session-root.jsonl");
-            File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
+        var rootId = "00000000-0000-4000-8000-000000000000";
+        var root   = Path.Combine(chats, "session-root.jsonl");
+        File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
 
-            // MaxCountingNodes + 50 direct (depth-1, well within MaxDescendantDepth=8) subagent
-            // files — before the fix, the old `visited.Count >= MaxCountingNodes` ceiling (which
-            // counted the root + every discovered id, in-cap or not) would silently stop
-            // discovery after ~10,000 total visited ids, dropping the tail of this real, in-cap
-            // import set.
-            var childCount = GeminiSubagentDiscovery.MaxCountingNodes + 50;
-            var rootChatsDir = Path.Combine(chats, rootId);
-            Directory.CreateDirectory(rootChatsDir);
-            for (var i = 0; i < childCount; i++) {
-                var id = $"11111111-{i / 100000000:D4}-4000-8000-{i:D12}";
-                File.WriteAllText(Path.Combine(rootChatsDir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
-            }
-
-            var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
-
-            await Assert.That(result.Files.Count).IsEqualTo(childCount);
-            await Assert.That(result.Files.All(f => f.Depth == 1)).IsTrue();
-            await Assert.That(result.DescendantsOmitted).IsEqualTo(0);
-            await Assert.That(result.CountTruncated).IsFalse();
-        } finally {
-            Directory.Delete(tmp, recursive: true);
+        // MaxCountingNodes + 50 direct (depth-1, well within MaxDescendantDepth=8) subagent
+        // files — before the fix, the old `visited.Count >= MaxCountingNodes` ceiling (which
+        // counted the root + every discovered id, in-cap or not) would silently stop
+        // discovery after ~10,000 total visited ids, dropping the tail of this real, in-cap
+        // import set.
+        var childCount = GeminiSubagentDiscovery.MaxCountingNodes + 50;
+        var rootChatsDir = Path.Combine(chats, rootId);
+        Directory.CreateDirectory(rootChatsDir);
+        for (var i = 0; i < childCount; i++) {
+            var id = $"11111111-{i / 100000000:D4}-4000-8000-{i:D12}";
+            File.WriteAllText(Path.Combine(rootChatsDir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
         }
+
+        var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
+
+        await Assert.That(result.Files.Count).IsEqualTo(childCount);
+        await Assert.That(result.Files.All(f => f.Depth == 1)).IsTrue();
+        await Assert.That(result.DescendantsOmitted).IsEqualTo(0);
+        await Assert.That(result.CountTruncated).IsFalse();
     }
 
     [Test]
     public async Task EnumerateDescendantFiles_below_cap_ceiling_hit_does_not_corrupt_in_cap_files() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd-desc").FullName;
-        try {
-            var chats = Path.Combine(tmp, "chats");
-            Directory.CreateDirectory(chats);
+        using var tmp = new TempDir();
+        var chats = tmp.PathTo("chats");
+        Directory.CreateDirectory(chats);
 
-            var rootId = "00000000-0000-4000-8000-000000000000";
-            var root   = Path.Combine(chats, "session-root.jsonl");
-            File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
+        var rootId = "00000000-0000-4000-8000-000000000000";
+        var root   = Path.Combine(chats, "session-root.jsonl");
+        File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
 
-            // A depth 1..8 chain (in-cap, discovered), then MaxCountingNodes + 50 direct
-            // children of the depth-8 node — ALL at depth 9, entirely below the import cap.
-            // This pushes the below-cap counting walk past MaxCountingNodes, which must set
-            // CountTruncated and stop growing the below-cap subtree WITHOUT touching the in-cap
-            // files gathered above.
-            var prevId = rootId;
-            for (var depth = 1; depth <= 8; depth++) {
-                var id  = $"00000000-0000-4000-8000-{depth:D12}";
-                var dir = Path.Combine(chats, prevId);
-                Directory.CreateDirectory(dir);
-                File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
-                prevId = id;
-            }
-
-            var belowCapCount = GeminiSubagentDiscovery.MaxCountingNodes + 50;
-            var depth8Dir     = Path.Combine(chats, prevId); // prevId is now the depth-8 node's own id
-            Directory.CreateDirectory(depth8Dir);
-            for (var i = 0; i < belowCapCount; i++) {
-                var id = $"22222222-{i / 100000000:D4}-4000-8000-{i:D12}";
-                File.WriteAllText(Path.Combine(depth8Dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
-            }
-
-            var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
-
-            // The in-cap import set (depths 1..8) is complete and uncorrupted.
-            await Assert.That(result.Files.Count).IsEqualTo(8);
-            await Assert.That(result.Files.Max(f => f.Depth)).IsEqualTo(8);
-
-            // The below-cap counting walk hit the ceiling: truncated, and the omitted count/ids
-            // are a lower bound (exactly MaxCountingNodes, not the true belowCapCount), never
-            // silently reported as an exact/complete count.
-            await Assert.That(result.CountTruncated).IsTrue();
-            await Assert.That(result.DescendantsOmitted).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes);
-            await Assert.That(result.OmittedDescendantIds.Count).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
+        // A depth 1..8 chain (in-cap, discovered), then MaxCountingNodes + 50 direct
+        // children of the depth-8 node — ALL at depth 9, entirely below the import cap.
+        // This pushes the below-cap counting walk past MaxCountingNodes, which must set
+        // CountTruncated and stop growing the below-cap subtree WITHOUT touching the in-cap
+        // files gathered above.
+        var prevId = rootId;
+        for (var depth = 1; depth <= 8; depth++) {
+            var id  = $"00000000-0000-4000-8000-{depth:D12}";
+            var dir = Path.Combine(chats, prevId);
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            prevId = id;
         }
+
+        var belowCapCount = GeminiSubagentDiscovery.MaxCountingNodes + 50;
+        var depth8Dir     = Path.Combine(chats, prevId); // prevId is now the depth-8 node's own id
+        Directory.CreateDirectory(depth8Dir);
+        for (var i = 0; i < belowCapCount; i++) {
+            var id = $"22222222-{i / 100000000:D4}-4000-8000-{i:D12}";
+            File.WriteAllText(Path.Combine(depth8Dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+        }
+
+        var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
+
+        // The in-cap import set (depths 1..8) is complete and uncorrupted.
+        await Assert.That(result.Files.Count).IsEqualTo(8);
+        await Assert.That(result.Files.Max(f => f.Depth)).IsEqualTo(8);
+
+        // The below-cap counting walk hit the ceiling: truncated, and the omitted count/ids
+        // are a lower bound (exactly MaxCountingNodes, not the true belowCapCount), never
+        // silently reported as an exact/complete count.
+        await Assert.That(result.CountTruncated).IsTrue();
+        await Assert.That(result.DescendantsOmitted).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes);
+        await Assert.That(result.OmittedDescendantIds.Count).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes);
     }
 
     // the ceiling used to bound the RETURNED omitted count/ids, but
@@ -355,52 +315,48 @@ public class GeminiSubagentDiscoveryTests {
     // below-cap nodes' own subdirectories.
     [Test]
     public async Task EnumerateDescendantFiles_below_cap_truncation_stops_expanding_already_queued_below_cap_nodes() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd-desc").FullName;
-        try {
-            var chats = Path.Combine(tmp, "chats");
-            Directory.CreateDirectory(chats);
+        using var tmp = new TempDir();
+        var chats = tmp.PathTo("chats");
+        Directory.CreateDirectory(chats);
 
-            var rootId = "00000000-0000-4000-8000-000000000000";
-            var root   = Path.Combine(chats, "session-root.jsonl");
-            File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
+        var rootId = "00000000-0000-4000-8000-000000000000";
+        var root   = Path.Combine(chats, "session-root.jsonl");
+        File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
 
-            // A depth 1..8 chain (in-cap), then MaxCountingNodes + 50 direct subagent files
-            // under the depth-8 node's own dir — ALL at depth 9 (below cap). A SINGLE directory
-            // enumeration of that dir returns this entire cap+50 list, so truncation is
-            // established while still inside the IN-CAP walk's processing of the depth-8 node —
-            // before the below-cap frontier is ever drained.
-            var prevId = rootId;
-            for (var depth = 1; depth <= 8; depth++) {
-                var id  = $"00000000-0000-4000-8000-{depth:D12}";
-                var dir = Path.Combine(chats, prevId);
-                Directory.CreateDirectory(dir);
-                File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
-                prevId = id;
-            }
-
-            var belowCapCount = GeminiSubagentDiscovery.MaxCountingNodes + 50;
-            var depth8Dir     = Path.Combine(chats, prevId); // prevId is now the depth-8 node's own id
-            Directory.CreateDirectory(depth8Dir);
-            for (var i = 0; i < belowCapCount; i++) {
-                var id = $"22222222-{i / 100000000:D4}-4000-8000-{i:D12}";
-                File.WriteAllText(Path.Combine(depth8Dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
-            }
-
-            var dequeuedBelowCapCount = 0;
-            var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root, () => dequeuedBelowCapCount++);
-
-            // Sanity: same correctness guarantees as the sibling test above.
-            await Assert.That(result.Files.Count).IsEqualTo(8);
-            await Assert.That(result.CountTruncated).IsTrue();
-            await Assert.That(result.DescendantsOmitted).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes);
-
-            // The actual WORK is bounded too: truncation is already established from the single
-            // directory enumeration of the depth-8 node's dir (an IN-CAP node), so the below-cap
-            // frontier — which would hold up to ~10,000 depth-9 nodes — is never drained at all.
-            await Assert.That(dequeuedBelowCapCount).IsEqualTo(0);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
+        // A depth 1..8 chain (in-cap), then MaxCountingNodes + 50 direct subagent files
+        // under the depth-8 node's own dir — ALL at depth 9 (below cap). A SINGLE directory
+        // enumeration of that dir returns this entire cap+50 list, so truncation is
+        // established while still inside the IN-CAP walk's processing of the depth-8 node —
+        // before the below-cap frontier is ever drained.
+        var prevId = rootId;
+        for (var depth = 1; depth <= 8; depth++) {
+            var id  = $"00000000-0000-4000-8000-{depth:D12}";
+            var dir = Path.Combine(chats, prevId);
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            prevId = id;
         }
+
+        var belowCapCount = GeminiSubagentDiscovery.MaxCountingNodes + 50;
+        var depth8Dir     = Path.Combine(chats, prevId); // prevId is now the depth-8 node's own id
+        Directory.CreateDirectory(depth8Dir);
+        for (var i = 0; i < belowCapCount; i++) {
+            var id = $"22222222-{i / 100000000:D4}-4000-8000-{i:D12}";
+            File.WriteAllText(Path.Combine(depth8Dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+        }
+
+        var dequeuedBelowCapCount = 0;
+        var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root, () => dequeuedBelowCapCount++);
+
+        // Sanity: same correctness guarantees as the sibling test above.
+        await Assert.That(result.Files.Count).IsEqualTo(8);
+        await Assert.That(result.CountTruncated).IsTrue();
+        await Assert.That(result.DescendantsOmitted).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes);
+
+        // The actual WORK is bounded too: truncation is already established from the single
+        // directory enumeration of the depth-8 node's dir (an IN-CAP node), so the below-cap
+        // frontier — which would hold up to ~10,000 depth-9 nodes — is never drained at all.
+        await Assert.That(dequeuedBelowCapCount).IsEqualTo(0);
     }
 
     // a below-cap parent's single directory read used to always
@@ -410,51 +366,47 @@ public class GeminiSubagentDiscoveryTests {
     // counting capacity + 1 sentinel), regardless of how many files the directory truly holds.
     [Test]
     public async Task EnumerateDescendantFiles_below_cap_parent_never_touches_more_than_the_counting_cap_in_a_single_read() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd-desc").FullName;
-        try {
-            var chats = Path.Combine(tmp, "chats");
-            Directory.CreateDirectory(chats);
+        using var tmp = new TempDir();
+        var chats = tmp.PathTo("chats");
+        Directory.CreateDirectory(chats);
 
-            var rootId = "00000000-0000-4000-8000-000000000000";
-            var root   = Path.Combine(chats, "session-root.jsonl");
-            File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
+        var rootId = "00000000-0000-4000-8000-000000000000";
+        var root   = Path.Combine(chats, "session-root.jsonl");
+        File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
 
-            // Depth 1..8 chain (in-cap), then a below-cap depth-9 fan-out FAR larger than
-            // MaxCountingNodes under the depth-8 node's own dir — 5x the cap, to make an
-            // unbounded read unmistakably distinguishable from a bounded one.
-            var prevId = rootId;
-            for (var depth = 1; depth <= 8; depth++) {
-                var id  = $"00000000-0000-4000-8000-{depth:D12}";
-                var dir = Path.Combine(chats, prevId);
-                Directory.CreateDirectory(dir);
-                File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
-                prevId = id;
-            }
-
-            var hugeChildCount = GeminiSubagentDiscovery.MaxCountingNodes * 5;
-            var depth8Dir      = Path.Combine(chats, prevId); // prevId is now the depth-8 node's own id
-            Directory.CreateDirectory(depth8Dir);
-            for (var i = 0; i < hugeChildCount; i++) {
-                var id = $"22222222-{i / 100000000:D4}-4000-8000-{i:D12}";
-                File.WriteAllText(Path.Combine(depth8Dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
-            }
-
-            var maxTouched = 0;
-            var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(
-                root, onDequeueBelowCapNode: null,
-                onBelowCapDirectoryRead: touched => maxTouched = Math.Max(maxTouched, touched));
-
-            await Assert.That(result.CountTruncated).IsTrue();
-            await Assert.That(result.DescendantsOmitted).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes);
-
-            // The crux of the fix: no single below-cap directory read ever pulled more than
-            // (MaxCountingNodes + 1) raw entries from the OS enumeration — proving the read is
-            // capped by Take() rather than listing/sorting the true 50,000-file directory before
-            // truncating.
-            await Assert.That(maxTouched).IsLessThanOrEqualTo(GeminiSubagentDiscovery.MaxCountingNodes + 1);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
+        // Depth 1..8 chain (in-cap), then a below-cap depth-9 fan-out FAR larger than
+        // MaxCountingNodes under the depth-8 node's own dir — 5x the cap, to make an
+        // unbounded read unmistakably distinguishable from a bounded one.
+        var prevId = rootId;
+        for (var depth = 1; depth <= 8; depth++) {
+            var id  = $"00000000-0000-4000-8000-{depth:D12}";
+            var dir = Path.Combine(chats, prevId);
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            prevId = id;
         }
+
+        var hugeChildCount = GeminiSubagentDiscovery.MaxCountingNodes * 5;
+        var depth8Dir      = Path.Combine(chats, prevId); // prevId is now the depth-8 node's own id
+        Directory.CreateDirectory(depth8Dir);
+        for (var i = 0; i < hugeChildCount; i++) {
+            var id = $"22222222-{i / 100000000:D4}-4000-8000-{i:D12}";
+            File.WriteAllText(Path.Combine(depth8Dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+        }
+
+        var maxTouched = 0;
+        var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(
+            root, onDequeueBelowCapNode: null,
+            onBelowCapDirectoryRead: touched => maxTouched = Math.Max(maxTouched, touched));
+
+        await Assert.That(result.CountTruncated).IsTrue();
+        await Assert.That(result.DescendantsOmitted).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes);
+
+        // The crux of the fix: no single below-cap directory read ever pulled more than
+        // (MaxCountingNodes + 1) raw entries from the OS enumeration — proving the read is
+        // capped by Take() rather than listing/sorting the true 50,000-file directory before
+        // truncating.
+        await Assert.That(maxTouched).IsLessThanOrEqualTo(GeminiSubagentDiscovery.MaxCountingNodes + 1);
     }
 
     // a below-cap parent's bounded directory read caps RAW files
@@ -473,30 +425,26 @@ public class GeminiSubagentDiscoveryTests {
     public async Task EnumerateDescendantFiles_unreadable_in_cap_directory_is_counted_not_silent() {
         if (OperatingSystem.IsWindows()) return; // chmod-based unreadable dir is Unix-only
 
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd-desc").FullName;
+        using var tmp = new TempDir();
+        var root = WriteParentWithSubagent(tmp.Path, "codebase_investigator");
+
+        // Sub's own nested dir (where any grandchildren would live) exists but can't be
+        // read — simulating a permissions error or a hostile/corrupt filesystem entry.
+        var subDir = tmp.PathTo("chats", DashedSub);
+        Directory.CreateDirectory(subDir);
+        File.SetUnixFileMode(subDir, UnixFileMode.None);
+
         try {
-            var root = WriteParentWithSubagent(tmp, "codebase_investigator");
+            var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
 
-            // Sub's own nested dir (where any grandchildren would live) exists but can't be
-            // read — simulating a permissions error or a hostile/corrupt filesystem entry.
-            var subDir = Path.Combine(tmp, "chats", DashedSub);
-            Directory.CreateDirectory(subDir);
-            File.SetUnixFileMode(subDir, UnixFileMode.None);
-
-            try {
-                var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
-
-                // Sub itself (discovered from the ROOT's own chats dir) is still found — only
-                // ITS children are unreachable.
-                await Assert.That(result.Files.Select(f => f.DashedId)).IsEquivalentTo(new[] { DashedSub });
-                await Assert.That(result.UnreadableDescendantDirs).IsEqualTo(1);
-                await Assert.That(result.DescendantsOmitted).IsEqualTo(0);
-                await Assert.That(result.CountTruncated).IsFalse();
-            } finally {
-                File.SetUnixFileMode(subDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            }
+            // Sub itself (discovered from the ROOT's own chats dir) is still found — only
+            // ITS children are unreachable.
+            await Assert.That(result.Files.Select(f => f.DashedId)).IsEquivalentTo(new[] { DashedSub });
+            await Assert.That(result.UnreadableDescendantDirs).IsEqualTo(1);
+            await Assert.That(result.DescendantsOmitted).IsEqualTo(0);
+            await Assert.That(result.CountTruncated).IsFalse();
         } finally {
-            Directory.Delete(tmp, recursive: true);
+            File.SetUnixFileMode(subDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
     }
 
@@ -508,107 +456,99 @@ public class GeminiSubagentDiscoveryTests {
     public async Task EnumerateDescendantFiles_unreadable_below_cap_directory_is_counted_not_silent() {
         if (OperatingSystem.IsWindows()) return;
 
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd-desc").FullName;
+        using var tmp = new TempDir();
+        var chats = tmp.PathTo("chats");
+        Directory.CreateDirectory(chats);
+
+        var rootId = "00000000-0000-4000-8000-000000000000";
+        var root   = Path.Combine(chats, "session-root.jsonl");
+        File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
+
+        var prevId = rootId;
+        for (var depth = 1; depth <= 8; depth++) {
+            var id  = $"00000000-0000-4000-8000-{depth:D12}";
+            var dir = Path.Combine(chats, prevId);
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            prevId = id;
+        }
+
+        // The depth-8 node's own dir would hold only below-cap (depth-9) children — make it
+        // unreadable instead of giving it any.
+        var depth8Dir = Path.Combine(chats, prevId);
+        Directory.CreateDirectory(depth8Dir);
+        File.SetUnixFileMode(depth8Dir, UnixFileMode.None);
+
         try {
-            var chats = Path.Combine(tmp, "chats");
-            Directory.CreateDirectory(chats);
+            var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
 
-            var rootId = "00000000-0000-4000-8000-000000000000";
-            var root   = Path.Combine(chats, "session-root.jsonl");
-            File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
-
-            var prevId = rootId;
-            for (var depth = 1; depth <= 8; depth++) {
-                var id  = $"00000000-0000-4000-8000-{depth:D12}";
-                var dir = Path.Combine(chats, prevId);
-                Directory.CreateDirectory(dir);
-                File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
-                prevId = id;
-            }
-
-            // The depth-8 node's own dir would hold only below-cap (depth-9) children — make it
-            // unreadable instead of giving it any.
-            var depth8Dir = Path.Combine(chats, prevId);
-            Directory.CreateDirectory(depth8Dir);
-            File.SetUnixFileMode(depth8Dir, UnixFileMode.None);
-
-            try {
-                var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
-
-                // The in-cap import set (depths 1..8) is unaffected.
-                await Assert.That(result.Files.Count).IsEqualTo(8);
-                await Assert.That(result.Files.Max(f => f.Depth)).IsEqualTo(8);
-                await Assert.That(result.UnreadableDescendantDirs).IsEqualTo(1);
-                await Assert.That(result.DescendantsOmitted).IsEqualTo(0);
-                await Assert.That(result.CountTruncated).IsFalse();
-            } finally {
-                File.SetUnixFileMode(depth8Dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            }
+            // The in-cap import set (depths 1..8) is unaffected.
+            await Assert.That(result.Files.Count).IsEqualTo(8);
+            await Assert.That(result.Files.Max(f => f.Depth)).IsEqualTo(8);
+            await Assert.That(result.UnreadableDescendantDirs).IsEqualTo(1);
+            await Assert.That(result.DescendantsOmitted).IsEqualTo(0);
+            await Assert.That(result.CountTruncated).IsFalse();
         } finally {
-            Directory.Delete(tmp, recursive: true);
+            File.SetUnixFileMode(depth8Dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
     }
 
     [Test]
     public async Task EnumerateDescendantFiles_below_cap_boundary_plus_junk_entry_is_never_falsely_reported_complete() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-gsd-desc").FullName;
-        try {
-            var chats = Path.Combine(tmp, "chats");
-            Directory.CreateDirectory(chats);
+        using var tmp = new TempDir();
+        var chats = tmp.PathTo("chats");
+        Directory.CreateDirectory(chats);
 
-            var rootId = "00000000-0000-4000-8000-000000000000";
-            var root   = Path.Combine(chats, "session-root.jsonl");
-            File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
+        var rootId = "00000000-0000-4000-8000-000000000000";
+        var root   = Path.Combine(chats, "session-root.jsonl");
+        File.WriteAllText(root, $$"""{"sessionId":"{{rootId}}","kind":"main"}""" + "\n");
 
-            var prevId = rootId;
-            for (var depth = 1; depth <= 8; depth++) {
-                var id  = $"00000000-0000-4000-8000-{depth:D12}";
-                var dir = Path.Combine(chats, prevId);
-                Directory.CreateDirectory(dir);
-                File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
-                prevId = id;
-            }
-
-            var depth8Dir = Path.Combine(chats, prevId); // prevId is now the depth-8 node's own id
-            Directory.CreateDirectory(depth8Dir);
-
-            // MaxCountingNodes - 1 valid (GUID-named) below-cap descendant files, plus ONE
-            // non-GUID junk *.jsonl file — MaxCountingNodes raw directory entries total, strictly
-            // BELOW the bounded fetch's limit (MaxCountingNodes + 1). A definite raw EOF: the
-            // whole directory is seen, so this is (correctly) NOT truncated.
-            for (var i = 0; i < GeminiSubagentDiscovery.MaxCountingNodes - 1; i++) {
-                var id = $"22222222-{i / 100000000:D4}-4000-8000-{i:D12}";
-                File.WriteAllText(Path.Combine(depth8Dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
-            }
-            File.WriteAllText(Path.Combine(depth8Dir, "not-a-guid.jsonl"), """{"sessionId":"junk","kind":"subagent"}""" + "\n");
-
-            var before = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
-            await Assert.That(before.CountTruncated).IsFalse();
-            await Assert.That(before.DescendantsOmitted).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes - 1);
-
-            // Add ONE more genuinely-new valid descendant file under the SAME dir, pushing its
-            // raw entry count to exactly MaxCountingNodes + 1 (MaxCountingNodes valid + 1 junk) —
-            // precisely the bounded fetch's sentinel-inflated limit, so the junk file now lands
-            // inside the sentinel window.
-            var extraId = "33333333-0000-4000-8000-000000000000";
-            File.WriteAllText(Path.Combine(depth8Dir, extraId + ".jsonl"), $$"""{"sessionId":"{{extraId}}","kind":"subagent"}""" + "\n");
-
-            var after = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
-
-            // The in-cap import set (depths 1..8) is unaffected either way.
-            await Assert.That(after.Files.Count).IsEqualTo(8);
-
-            // Before the fix: the junk entry silently consumed the sole sentinel slot, so exactly
-            // MaxCountingNodes valid ids filled omittedIds and CountTruncated stayed false — the
-            // genuinely-new descendant added above must change the reported signature:
-            // DescendantsOmitted grows from MaxCountingNodes - 1 to MaxCountingNodes AND
-            // CountTruncated flips to true (a safe over-report — the raw fetch exhausted its
-            // limit, so we can no longer prove there isn't yet another descendant beyond it).
-            await Assert.That(after.CountTruncated).IsTrue();
-            await Assert.That(after.DescendantsOmitted).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes);
-            await Assert.That(after.OmittedDescendantIds.Count).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes);
-        } finally {
-            Directory.Delete(tmp, recursive: true);
+        var prevId = rootId;
+        for (var depth = 1; depth <= 8; depth++) {
+            var id  = $"00000000-0000-4000-8000-{depth:D12}";
+            var dir = Path.Combine(chats, prevId);
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            prevId = id;
         }
+
+        var depth8Dir = Path.Combine(chats, prevId); // prevId is now the depth-8 node's own id
+        Directory.CreateDirectory(depth8Dir);
+
+        // MaxCountingNodes - 1 valid (GUID-named) below-cap descendant files, plus ONE
+        // non-GUID junk *.jsonl file — MaxCountingNodes raw directory entries total, strictly
+        // BELOW the bounded fetch's limit (MaxCountingNodes + 1). A definite raw EOF: the
+        // whole directory is seen, so this is (correctly) NOT truncated.
+        for (var i = 0; i < GeminiSubagentDiscovery.MaxCountingNodes - 1; i++) {
+            var id = $"22222222-{i / 100000000:D4}-4000-8000-{i:D12}";
+            File.WriteAllText(Path.Combine(depth8Dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+        }
+        File.WriteAllText(Path.Combine(depth8Dir, "not-a-guid.jsonl"), """{"sessionId":"junk","kind":"subagent"}""" + "\n");
+
+        var before = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
+        await Assert.That(before.CountTruncated).IsFalse();
+        await Assert.That(before.DescendantsOmitted).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes - 1);
+
+        // Add ONE more genuinely-new valid descendant file under the SAME dir, pushing its
+        // raw entry count to exactly MaxCountingNodes + 1 (MaxCountingNodes valid + 1 junk) —
+        // precisely the bounded fetch's sentinel-inflated limit, so the junk file now lands
+        // inside the sentinel window.
+        var extraId = "33333333-0000-4000-8000-000000000000";
+        File.WriteAllText(Path.Combine(depth8Dir, extraId + ".jsonl"), $$"""{"sessionId":"{{extraId}}","kind":"subagent"}""" + "\n");
+
+        var after = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
+
+        // The in-cap import set (depths 1..8) is unaffected either way.
+        await Assert.That(after.Files.Count).IsEqualTo(8);
+
+        // Before the fix: the junk entry silently consumed the sole sentinel slot, so exactly
+        // MaxCountingNodes valid ids filled omittedIds and CountTruncated stayed false — the
+        // genuinely-new descendant added above must change the reported signature:
+        // DescendantsOmitted grows from MaxCountingNodes - 1 to MaxCountingNodes AND
+        // CountTruncated flips to true (a safe over-report — the raw fetch exhausted its
+        // limit, so we can no longer prove there isn't yet another descendant beyond it).
+        await Assert.That(after.CountTruncated).IsTrue();
+        await Assert.That(after.DescendantsOmitted).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes);
+        await Assert.That(after.OmittedDescendantIds.Count).IsEqualTo(GeminiSubagentDiscovery.MaxCountingNodes);
     }
 }

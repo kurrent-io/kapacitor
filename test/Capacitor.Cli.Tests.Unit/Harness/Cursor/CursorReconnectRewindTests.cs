@@ -24,21 +24,19 @@ public class CursorReconnectRewindTests {
 
     [Test]
     public async Task ResolveByteOffsetForLineAsync_returns_zero_for_line_zero_or_negative() {
-        var dir = Directory.CreateTempSubdirectory("kcap-reconnect-offset").FullName;
-        try {
-            var path = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(path, "line1\nline2\nline3\n");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(path, "line1\nline2\nline3\n");
 
-            // the method now returns a (ByteOffset, LineNumber) pair —
-            // trivial for a non-positive request, LineNumber just carries the input through.
-            var zero = await WatchCommand.ResolveByteOffsetForLineAsync(path, 0, CancellationToken.None);
-            await Assert.That(zero!.Value.ByteOffset).IsEqualTo(0L);
-            await Assert.That(zero!.Value.LineNumber).IsEqualTo(0);
+        // the method now returns a (ByteOffset, LineNumber) pair —
+        // trivial for a non-positive request, LineNumber just carries the input through.
+        var zero = await WatchCommand.ResolveByteOffsetForLineAsync(path, 0, CancellationToken.None);
+        await Assert.That(zero!.Value.ByteOffset).IsEqualTo(0L);
+        await Assert.That(zero!.Value.LineNumber).IsEqualTo(0);
 
-            var negative = await WatchCommand.ResolveByteOffsetForLineAsync(path, -1, CancellationToken.None);
-            await Assert.That(negative!.Value.ByteOffset).IsEqualTo(0L);
-            await Assert.That(negative!.Value.LineNumber).IsEqualTo(-1);
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        var negative = await WatchCommand.ResolveByteOffsetForLineAsync(path, -1, CancellationToken.None);
+        await Assert.That(negative!.Value.ByteOffset).IsEqualTo(0L);
+        await Assert.That(negative!.Value.LineNumber).IsEqualTo(-1);
     }
 
     // a missing file with a POSITIVE requested line number is
@@ -53,27 +51,25 @@ public class CursorReconnectRewindTests {
 
     [Test]
     public async Task ResolveByteOffsetForLineAsync_maps_a_mid_file_line_number_to_its_true_byte_offset() {
-        var dir = Directory.CreateTempSubdirectory("kcap-reconnect-offset-mid").FullName;
-        try {
-            var path = Path.Combine(dir, "t.jsonl");
-            // Deliberately uneven line lengths so a naive "count * avg-length" guess would be wrong.
-            await File.WriteAllTextAsync(path, "a\nbbbb\ncc\n"); // offsets: line0 ends at 2, line1 ends at 7, line2 ends at 10
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("t.jsonl");
+        // Deliberately uneven line lengths so a naive "count * avg-length" guess would be wrong.
+        await File.WriteAllTextAsync(path, "a\nbbbb\ncc\n"); // offsets: line0 ends at 2, line1 ends at 7, line2 ends at 10
 
-            // unchanged mid-file case — the returned pair's LineNumber is
-            // always the requested lineNumber unchanged; only the r5 unterminated-final-record case
-            // (covered below) rewinds it.
-            var r1 = await WatchCommand.ResolveByteOffsetForLineAsync(path, 1, CancellationToken.None);
-            await Assert.That(r1!.Value.ByteOffset).IsEqualTo(2L);
-            await Assert.That(r1!.Value.LineNumber).IsEqualTo(1);
+        // unchanged mid-file case — the returned pair's LineNumber is
+        // always the requested lineNumber unchanged; only the r5 unterminated-final-record case
+        // (covered below) rewinds it.
+        var r1 = await WatchCommand.ResolveByteOffsetForLineAsync(path, 1, CancellationToken.None);
+        await Assert.That(r1!.Value.ByteOffset).IsEqualTo(2L);
+        await Assert.That(r1!.Value.LineNumber).IsEqualTo(1);
 
-            var r2 = await WatchCommand.ResolveByteOffsetForLineAsync(path, 2, CancellationToken.None);
-            await Assert.That(r2!.Value.ByteOffset).IsEqualTo(7L);
-            await Assert.That(r2!.Value.LineNumber).IsEqualTo(2);
+        var r2 = await WatchCommand.ResolveByteOffsetForLineAsync(path, 2, CancellationToken.None);
+        await Assert.That(r2!.Value.ByteOffset).IsEqualTo(7L);
+        await Assert.That(r2!.Value.LineNumber).IsEqualTo(2);
 
-            var r3 = await WatchCommand.ResolveByteOffsetForLineAsync(path, 3, CancellationToken.None);
-            await Assert.That(r3!.Value.ByteOffset).IsEqualTo(10L);
-            await Assert.That(r3!.Value.LineNumber).IsEqualTo(3);
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        var r3 = await WatchCommand.ResolveByteOffsetForLineAsync(path, 3, CancellationToken.None);
+        await Assert.That(r3!.Value.ByteOffset).IsEqualTo(10L);
+        await Assert.That(r3!.Value.LineNumber).IsEqualTo(3);
     }
 
     // the pre-fix behaviour silently clamped to EOF here; this
@@ -81,13 +77,11 @@ public class CursorReconnectRewindTests {
     // "cannot resolve exactly" (null) instead of handing back a bogus baseline offset.
     [Test]
     public async Task ResolveByteOffsetForLineAsync_returns_null_when_the_file_has_fewer_lines_than_requested() {
-        var dir = Directory.CreateTempSubdirectory("kcap-reconnect-offset-clamp").FullName;
-        try {
-            var path = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(path, "a\nb\n"); // only 2 lines
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(path, "a\nb\n"); // only 2 lines
 
-            await Assert.That(await WatchCommand.ResolveByteOffsetForLineAsync(path, 5, CancellationToken.None)).IsNull();
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(await WatchCommand.ResolveByteOffsetForLineAsync(path, 5, CancellationToken.None)).IsNull();
     }
 
     // a COMPLETE final record with no trailing newline yet must resolve,
@@ -108,24 +102,22 @@ public class CursorReconnectRewindTests {
     // next poll, harmlessly deduped by the server's source-ack frontier.
     [Test]
     public async Task ResolveByteOffsetForLineAsync_rewinds_a_complete_unterminated_final_line_to_its_start() {
-        var dir = Directory.CreateTempSubdirectory("kcap-reconnect-offset-unterminated").FullName;
-        try {
-            var path = Path.Combine(dir, "t.jsonl");
-            const string content = "{\"a\":1}\n{\"b\":2}"; // 1 newline-terminated line + 1 complete, unterminated final record
-            await File.WriteAllTextAsync(path, content);
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("t.jsonl");
+        const string content = "{\"a\":1}\n{\"b\":2}"; // 1 newline-terminated line + 1 complete, unterminated final record
+        await File.WriteAllTextAsync(path, content);
 
-            // Line 1 (newline-terminated) resolves exactly as before.
-            var r1 = await WatchCommand.ResolveByteOffsetForLineAsync(path, 1, CancellationToken.None);
-            await Assert.That(r1!.Value.ByteOffset).IsEqualTo(8L); // "{\"a\":1}\n".Length
-            await Assert.That(r1!.Value.LineNumber).IsEqualTo(1);
+        // Line 1 (newline-terminated) resolves exactly as before.
+        var r1 = await WatchCommand.ResolveByteOffsetForLineAsync(path, 1, CancellationToken.None);
+        await Assert.That(r1!.Value.ByteOffset).IsEqualTo(8L); // "{\"a\":1}\n".Length
+        await Assert.That(r1!.Value.LineNumber).IsEqualTo(1);
 
-            // Line 2 — the complete, unterminated final record — rewinds to the record's own start
-            // (same byte offset as line 1's end, NOT EOF) paired with LineNumber - 1 (NOT counted
-            // as processed yet).
-            var r2 = await WatchCommand.ResolveByteOffsetForLineAsync(path, 2, CancellationToken.None);
-            await Assert.That(r2!.Value.ByteOffset).IsEqualTo(8L);
-            await Assert.That(r2!.Value.LineNumber).IsEqualTo(1);
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        // Line 2 — the complete, unterminated final record — rewinds to the record's own start
+        // (same byte offset as line 1's end, NOT EOF) paired with LineNumber - 1 (NOT counted
+        // as processed yet).
+        var r2 = await WatchCommand.ResolveByteOffsetForLineAsync(path, 2, CancellationToken.None);
+        await Assert.That(r2!.Value.ByteOffset).IsEqualTo(8L);
+        await Assert.That(r2!.Value.LineNumber).IsEqualTo(1);
     }
 
     // the completeness gate matters: an unterminated tail that ISN'T a
@@ -133,13 +125,11 @@ public class CursorReconnectRewindTests {
     // quarantine — only a demonstrably COMPLETE trailing record is allowed to resolve at EOF.
     [Test]
     public async Task ResolveByteOffsetForLineAsync_returns_null_when_the_trailing_unterminated_content_is_incomplete_json() {
-        var dir = Directory.CreateTempSubdirectory("kcap-reconnect-offset-incomplete-tail").FullName;
-        try {
-            var path = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(path, "{\"a\":1}\n{\"b\":2"); // final record missing its closing brace
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(path, "{\"a\":1}\n{\"b\":2"); // final record missing its closing brace
 
-            await Assert.That(await WatchCommand.ResolveByteOffsetForLineAsync(path, 2, CancellationToken.None)).IsNull();
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(await WatchCommand.ResolveByteOffsetForLineAsync(path, 2, CancellationToken.None)).IsNull();
     }
 
     // review fix (r4, finding #5), preserved under r5 — a request for a line further beyond
@@ -148,13 +138,11 @@ public class CursorReconnectRewindTests {
     // lines are already accounted for by the two newlines, and line 5 is nowhere close.)
     [Test]
     public async Task ResolveByteOffsetForLineAsync_still_returns_null_when_the_request_is_genuinely_beyond_eof() {
-        var dir = Directory.CreateTempSubdirectory("kcap-reconnect-offset-beyond-eof").FullName;
-        try {
-            var path = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(path, "a\nb\n"); // exactly 2 complete, terminated lines, no trailing content
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(path, "a\nb\n"); // exactly 2 complete, terminated lines, no trailing content
 
-            await Assert.That(await WatchCommand.ResolveByteOffsetForLineAsync(path, 5, CancellationToken.None)).IsNull();
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(await WatchCommand.ResolveByteOffsetForLineAsync(path, 5, CancellationToken.None)).IsNull();
     }
 
     // ---- CursorRewriteGuard.ResetCheckpoint ----
@@ -191,30 +179,28 @@ public class CursorReconnectRewindTests {
 
     [Test]
     public async Task SeedCursorByteOffsetAsync_seeds_the_true_byte_offset_of_the_resumed_line() {
-        var dir = Directory.CreateTempSubdirectory("kcap-seed-initial-resume").FullName;
-        try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
-            // Deliberately uneven line lengths: offsets 2, 7, 10, 15, 21.
-            await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\neeeee\n");
+        using var tmp = new TempDir();
+        var transcriptPath = tmp.PathTo("t.jsonl");
+        // Deliberately uneven line lengths: offsets 2, 7, 10, 15, 21.
+        await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\neeeee\n");
 
-            var sid   = NewSessionId();
-            var guard = new CursorRewriteGuard(sid);
-            // A fresh watcher process resuming at server line 2 — CursorByteOffset starts at its
-            // default (0), exactly as WatchState leaves it before this fix's seeding runs.
-            var state = new WatchState { LinesProcessed = 2 };
-            await Assert.That(state.CursorByteOffset).IsEqualTo(0L);
+        var sid   = NewSessionId();
+        var guard = new CursorRewriteGuard(sid);
+        // A fresh watcher process resuming at server line 2 — CursorByteOffset starts at its
+        // default (0), exactly as WatchState leaves it before this fix's seeding runs.
+        var state = new WatchState { LinesProcessed = 2 };
+        await Assert.That(state.CursorByteOffset).IsEqualTo(0L);
 
-            var ok = await WatchCommand.SeedCursorByteOffsetAsync(
-                state, lineNumber: 2, sid, vendor: "cursor", transcriptPath, guard, CancellationToken.None);
+        var ok = await WatchCommand.SeedCursorByteOffsetAsync(
+            state, lineNumber: 2, sid, vendor: "cursor", transcriptPath, guard, CancellationToken.None);
 
-            await Assert.That(ok).IsTrue();
-            // The TRUE byte offset of line 2 ("a\nbbbb\n" = 7 bytes) — not the default 0, and not
-            // the resumed line COUNT (2) either.
-            await Assert.That(state.CursorByteOffset).IsEqualTo(7L);
-            // The checkpoint is reset so the guard's two-zone checks start clean from here.
-            await Assert.That(guard.VerifyPriorZone("anything-at-all")).IsTrue();
-            await Assert.That(CursorMarkers.IsQuarantined(sid)).IsFalse();
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(ok).IsTrue();
+        // The TRUE byte offset of line 2 ("a\nbbbb\n" = 7 bytes) — not the default 0, and not
+        // the resumed line COUNT (2) either.
+        await Assert.That(state.CursorByteOffset).IsEqualTo(7L);
+        // The checkpoint is reset so the guard's two-zone checks start clean from here.
+        await Assert.That(guard.VerifyPriorZone("anything-at-all")).IsTrue();
+        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsFalse();
     }
 
     // reproduces the actual failure scenario: a final drain
@@ -234,10 +220,10 @@ public class CursorReconnectRewindTests {
     // server's source-ack frontier).
     [Test]
     public async Task SeedCursorByteOffsetAsync_rewinds_a_final_drains_complete_unterminated_line_instead_of_seeding_at_eof() {
-        var dir = Directory.CreateTempSubdirectory("kcap-seed-unterminated-final").FullName;
+        using var tmp = new TempDir();
         var sid = NewSessionId();
         try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
+            var transcriptPath = tmp.PathTo("t.jsonl");
             const string content = "{\"a\":1}\n{\"b\":2}"; // line 1 terminated, line 2 complete but no trailing '\n'
             await File.WriteAllTextAsync(transcriptPath, content);
 
@@ -255,7 +241,6 @@ public class CursorReconnectRewindTests {
             await Assert.That(guard.VerifyPriorZone("anything-at-all")).IsTrue();
             await Assert.That(CursorMarkers.IsQuarantined(sid)).IsFalse(); // NOT quarantined
         } finally {
-            try { Directory.Delete(dir, true); } catch { }
             try { File.Delete(CursorMarkers.QuarantinePath(sid)); } catch { }
         }
     }
@@ -264,19 +249,17 @@ public class CursorReconnectRewindTests {
     public async Task SeedCursorByteOffsetAsync_is_a_byte_only_no_op_for_non_cursor_vendors() {
         // SeedCursorByteOffsetAsync now sets state.LinesProcessed for
         // EVERY vendor (previously only its callers did) — the "no-op" is byte-side only.
-        var dir = Directory.CreateTempSubdirectory("kcap-seed-initial-resume-noncursor").FullName;
-        try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\n");
+        using var tmp = new TempDir();
+        var transcriptPath = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\n");
 
-            var state = new WatchState { LinesProcessed = 0, CursorByteOffset = 999 };
-            var ok = await WatchCommand.SeedCursorByteOffsetAsync(
-                state, lineNumber: 2, NewSessionId(), vendor: "codex", transcriptPath, cursorGuard: null, CancellationToken.None);
+        var state = new WatchState { LinesProcessed = 0, CursorByteOffset = 999 };
+        var ok = await WatchCommand.SeedCursorByteOffsetAsync(
+            state, lineNumber: 2, NewSessionId(), vendor: "codex", transcriptPath, cursorGuard: null, CancellationToken.None);
 
-            await Assert.That(ok).IsTrue();
-            await Assert.That(state.CursorByteOffset).IsEqualTo(999L); // untouched — no guard to keep in sync
-            await Assert.That(state.LinesProcessed).IsEqualTo(2);      // still set to lineNumber
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(ok).IsTrue();
+        await Assert.That(state.CursorByteOffset).IsEqualTo(999L); // untouched — no guard to keep in sync
+        await Assert.That(state.LinesProcessed).IsEqualTo(2);      // still set to lineNumber
     }
 
     [Test]
@@ -284,33 +267,31 @@ public class CursorReconnectRewindTests {
         // End-to-end regression for the actual production consequence, composed from the two pure
         // functions DrainNewLines itself calls (no live hub needed — see the class doc on why a
         // real ack round trip isn't unit-testable here).
-        var dir = Directory.CreateTempSubdirectory("kcap-seed-initial-resume-e2e").FullName;
-        try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\neeeee\n"); // 5 lines, offsets 2,7,10,15,21
+        using var tmp = new TempDir();
+        var transcriptPath = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\neeeee\n"); // 5 lines, offsets 2,7,10,15,21
 
-            var guard = new CursorRewriteGuard(NewSessionId());
-            // The server resumed this fresh watcher process at line N=2 (0-based frontier already
-            // sent/acked by a PRIOR watcher instance).
-            var state = new WatchState { LinesProcessed = 2 };
+        var guard = new CursorRewriteGuard(NewSessionId());
+        // The server resumed this fresh watcher process at line N=2 (0-based frontier already
+        // sent/acked by a PRIOR watcher instance).
+        var state = new WatchState { LinesProcessed = 2 };
 
-            await WatchCommand.SeedCursorByteOffsetAsync(
-                state, lineNumber: 2, NewSessionId(), vendor: "cursor", transcriptPath, guard, CancellationToken.None);
-            await Assert.That(state.CursorByteOffset).IsEqualTo(7L);
+        await WatchCommand.SeedCursorByteOffsetAsync(
+            state, lineNumber: 2, NewSessionId(), vendor: "cursor", transcriptPath, guard, CancellationToken.None);
+        await Assert.That(state.CursorByteOffset).IsEqualTo(7L);
 
-            // The watcher's next poll fully acks the M=3 remaining lines (2, 3, 4) — mirrors
-            // DrainNewLines' own ByteOffsetForAckedLines(verifiedRange, cursorGuardOldOffset,
-            // ackedLineCount) call, with rangeStartOffset seeded from the SAME offset above.
-            var remainingRange  = System.Text.Encoding.UTF8.GetBytes("cc\ndddd\neeeee\n"); // lines 2,3,4 — 14 bytes
-            var ackedByteOffset = WatchCommand.ByteOffsetForAckedLines(
-                remainingRange, rangeStartOffset: state.CursorByteOffset, ackedLineCount: 3);
+        // The watcher's next poll fully acks the M=3 remaining lines (2, 3, 4) — mirrors
+        // DrainNewLines' own ByteOffsetForAckedLines(verifiedRange, cursorGuardOldOffset,
+        // ackedLineCount) call, with rangeStartOffset seeded from the SAME offset above.
+        var remainingRange  = System.Text.Encoding.UTF8.GetBytes("cc\ndddd\neeeee\n"); // lines 2,3,4 — 14 bytes
+        var ackedByteOffset = WatchCommand.ByteOffsetForAckedLines(
+            remainingRange, rangeStartOffset: state.CursorByteOffset, ackedLineCount: 3);
 
-            // N's offset (7) + M's bytes (14) = 21 — the TRUE end-of-file offset. The pre-fix bug
-            // (CursorByteOffset left at 0, so the ack maps M's bytes as if counted from byte 0)
-            // would have produced 14 instead.
-            await Assert.That(ackedByteOffset).IsEqualTo(21L);
-            await Assert.That(ackedByteOffset).IsNotEqualTo(14L);
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        // N's offset (7) + M's bytes (14) = 21 — the TRUE end-of-file offset. The pre-fix bug
+        // (CursorByteOffset left at 0, so the ack maps M's bytes as if counted from byte 0)
+        // would have produced 14 instead.
+        await Assert.That(ackedByteOffset).IsEqualTo(21L);
+        await Assert.That(ackedByteOffset).IsNotEqualTo(14L);
     }
 
     // the server-acknowledged resume frontier can legitimately
@@ -318,10 +299,10 @@ public class CursorReconnectRewindTests {
     // SeedCursorByteOffsetAsync must quarantine and refuse to seed rather than clamp to EOF.
     [Test]
     public async Task SeedCursorByteOffsetAsync_quarantines_instead_of_seeding_when_the_server_frontier_exceeds_local_lines() {
-        var dir = Directory.CreateTempSubdirectory("kcap-seed-beyond-local").FullName;
+        using var tmp = new TempDir();
         var sid = NewSessionId();
         try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
+            var transcriptPath = tmp.PathTo("t.jsonl");
             await File.WriteAllTextAsync(transcriptPath, "a\nb\n"); // only 2 lines locally
 
             var guard = new CursorRewriteGuard(sid);
@@ -337,7 +318,6 @@ public class CursorReconnectRewindTests {
             // Neither the byte offset nor the guard's checkpoint were touched — no bogus baseline.
             await Assert.That(state.CursorByteOffset).IsEqualTo(0L);
         } finally {
-            try { Directory.Delete(dir, true); } catch { }
             try { File.Delete(CursorMarkers.QuarantinePath(sid)); } catch { }
         }
     }
@@ -347,47 +327,43 @@ public class CursorReconnectRewindTests {
     [Test]
     public async Task ApplyReconnectRewindAsync_rewinds_the_byte_checkpoint_to_the_true_offset_of_the_server_frontier() {
         var sid = NewSessionId();
-        var dir = Directory.CreateTempSubdirectory("kcap-reconnect-apply").FullName;
-        try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\n"); // 4 lines
+        using var tmp = new TempDir();
+        var transcriptPath = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\n"); // 4 lines
 
-            var guard = new CursorRewriteGuard(sid);
-            // Simulate: the watcher had sent/acked all 4 lines and checkpointed at the file's
-            // full (stale, too-far-ahead) length.
-            guard.Checkpoint(offset: 15, trailingSha: "later-acked-hash");
-            var state = new WatchState { LinesProcessed = 4, CursorByteOffset = 15 };
+        var guard = new CursorRewriteGuard(sid);
+        // Simulate: the watcher had sent/acked all 4 lines and checkpointed at the file's
+        // full (stale, too-far-ahead) length.
+        guard.Checkpoint(offset: 15, trailingSha: "later-acked-hash");
+        var state = new WatchState { LinesProcessed = 4, CursorByteOffset = 15 };
 
-            // Reconnect discovers the server only actually has the first 2 lines (offset 7).
-            var ok = await WatchCommand.ApplyReconnectRewindAsync(state, serverPosition: 2, sid, vendor: "cursor", transcriptPath, guard, CancellationToken.None);
+        // Reconnect discovers the server only actually has the first 2 lines (offset 7).
+        var ok = await WatchCommand.ApplyReconnectRewindAsync(state, serverPosition: 2, sid, vendor: "cursor", transcriptPath, guard, CancellationToken.None);
 
-            await Assert.That(ok).IsTrue();
-            await Assert.That(state.LinesProcessed).IsEqualTo(2);
-            // The byte checkpoint must rewind to the TRUE byte offset of line 2 ("a\nbbbb\n" = 7
-            // bytes) — not stay at the later, stale, too-far-ahead offset (15).
-            await Assert.That(state.CursorByteOffset).IsEqualTo(7L);
-            // The guard's own checkpoint must be reset too — a stale "later-acked-hash" checkpoint
-            // must never be compared against post-rewind content.
-            await Assert.That(guard.VerifyPriorZone("literally-anything")).IsTrue();
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(ok).IsTrue();
+        await Assert.That(state.LinesProcessed).IsEqualTo(2);
+        // The byte checkpoint must rewind to the TRUE byte offset of line 2 ("a\nbbbb\n" = 7
+        // bytes) — not stay at the later, stale, too-far-ahead offset (15).
+        await Assert.That(state.CursorByteOffset).IsEqualTo(7L);
+        // The guard's own checkpoint must be reset too — a stale "later-acked-hash" checkpoint
+        // must never be compared against post-rewind content.
+        await Assert.That(guard.VerifyPriorZone("literally-anything")).IsTrue();
     }
 
     [Test]
     public async Task ApplyReconnectRewindAsync_is_a_line_only_rewind_for_non_cursor_vendors() {
         // No CursorRewriteGuard exists for any other vendor — only the line cursor rewinds.
-        var dir = Directory.CreateTempSubdirectory("kcap-reconnect-apply-noncursor").FullName;
-        try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\n");
+        using var tmp = new TempDir();
+        var transcriptPath = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\n");
 
-            var state = new WatchState { LinesProcessed = 4, CursorByteOffset = 999 }; // never meaningful for non-cursor
+        var state = new WatchState { LinesProcessed = 4, CursorByteOffset = 999 }; // never meaningful for non-cursor
 
-            var ok = await WatchCommand.ApplyReconnectRewindAsync(state, serverPosition: 1, NewSessionId(), vendor: "codex", transcriptPath, cursorGuard: null, CancellationToken.None);
+        var ok = await WatchCommand.ApplyReconnectRewindAsync(state, serverPosition: 1, NewSessionId(), vendor: "codex", transcriptPath, cursorGuard: null, CancellationToken.None);
 
-            await Assert.That(ok).IsTrue();
-            await Assert.That(state.LinesProcessed).IsEqualTo(1);
-            await Assert.That(state.CursorByteOffset).IsEqualTo(999L); // untouched — no guard to keep in sync
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(ok).IsTrue();
+        await Assert.That(state.LinesProcessed).IsEqualTo(1);
+        await Assert.That(state.CursorByteOffset).IsEqualTo(999L); // untouched — no guard to keep in sync
     }
 
     [Test]
@@ -402,42 +378,40 @@ public class CursorReconnectRewindTests {
         // still covers the replayed region's own trailing bytes — and a same-length in-place
         // rewrite of it is caught on the very next poll.
         var sid = NewSessionId();
-        var dir = Directory.CreateTempSubdirectory("kcap-reconnect-apply-e2e").FullName;
-        try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\n"); // 4 lines: offsets 2,7,10,15
+        using var tmp = new TempDir();
+        var transcriptPath = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\n"); // 4 lines: offsets 2,7,10,15
 
-            // A small TrailingBytes makes the "which region does the checkpoint actually
-            // protect" distinction concrete without needing a large synthetic file.
-            var guard = new CursorRewriteGuard(sid) { TrailingBytes = 3 };
-            guard.Checkpoint(offset: 15, trailingSha: "stale-hash-from-before-reconnect"); // the bug: too-far-ahead
-            var state = new WatchState { LinesProcessed = 4, CursorByteOffset = 15 };
+        // A small TrailingBytes makes the "which region does the checkpoint actually
+        // protect" distinction concrete without needing a large synthetic file.
+        var guard = new CursorRewriteGuard(sid) { TrailingBytes = 3 };
+        guard.Checkpoint(offset: 15, trailingSha: "stale-hash-from-before-reconnect"); // the bug: too-far-ahead
+        var state = new WatchState { LinesProcessed = 4, CursorByteOffset = 15 };
 
-            // Reconnect: the server only actually has the first 2 lines (byte offset 7).
-            await WatchCommand.ApplyReconnectRewindAsync(state, serverPosition: 2, sid, vendor: "cursor", transcriptPath, guard, CancellationToken.None);
-            await Assert.That(state.CursorByteOffset).IsEqualTo(7L);
+        // Reconnect: the server only actually has the first 2 lines (byte offset 7).
+        await WatchCommand.ApplyReconnectRewindAsync(state, serverPosition: 2, sid, vendor: "cursor", transcriptPath, guard, CancellationToken.None);
+        await Assert.That(state.CursorByteOffset).IsEqualTo(7L);
 
-            // The replayed line ("cc\n", offset 7..10) is resent and acked — a checkpoint is
-            // re-established from the CORRECT rewound frontier (mirrors DrainNewLines's own
-            // Checkpoint() call after a successful ack).
-            state.LinesProcessed   = 3;
-            state.CursorByteOffset = 10;
-            guard.Checkpoint(offset: 10, trailingSha: CursorAppendOnlyProbe.Sha256Hex(System.Text.Encoding.UTF8.GetBytes("cc\n")));
+        // The replayed line ("cc\n", offset 7..10) is resent and acked — a checkpoint is
+        // re-established from the CORRECT rewound frontier (mirrors DrainNewLines's own
+        // Checkpoint() call after a successful ack).
+        state.LinesProcessed   = 3;
+        state.CursorByteOffset = 10;
+        guard.Checkpoint(offset: 10, trailingSha: CursorAppendOnlyProbe.Sha256Hex(System.Text.Encoding.UTF8.GetBytes("cc\n")));
 
-            // Now the replayed region itself is rewritten in place (same length: "cc" → "XX").
-            await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\nXX\ndddd\n");
+        // Now the replayed region itself is rewritten in place (same length: "cc" → "XX").
+        await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\nXX\ndddd\n");
 
-            var tripped = false;
-            await using var hub = new HubConnectionBuilder().WithUrl("http://127.0.0.1:1/hubs/sessions").Build();
+        var tripped = false;
+        await using var hub = new HubConnectionBuilder().WithUrl("http://127.0.0.1:1/hubs/sessions").Build();
 
-            var result = await WatchCommand.DrainNewLines(
-                hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
-                cursorGuard: guard, onCursorRewriteDetected: () => tripped = true);
+        var result = await WatchCommand.DrainNewLines(
+            hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
+            cursorGuard: guard, onCursorRewriteDetected: () => tripped = true);
 
-            await Assert.That(tripped).IsTrue();
-            await Assert.That(CursorMarkers.IsQuarantined(sid)).IsTrue();
-            await Assert.That(result).IsEmpty();
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(tripped).IsTrue();
+        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsTrue();
+        await Assert.That(result).IsEmpty();
     }
 
     // ---- review fix (r3, finding #1) — GatedApplyReconnectRewindAsync/GatedDrainNewLinesAsync ----
@@ -454,98 +428,92 @@ public class CursorReconnectRewindTests {
     [Test]
     public async Task GatedDrainNewLinesAsync_cannot_run_while_the_gate_is_held_by_a_reconnect_rewind() {
         var sid = NewSessionId();
-        var dir = Directory.CreateTempSubdirectory("kcap-gate-drain-blocked").FullName;
-        try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\n"); // 4 lines
+        using var tmp = new TempDir();
+        var transcriptPath = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\n"); // 4 lines
 
-            var gate  = new SemaphoreSlim(1, 1);
-            var guard = new CursorRewriteGuard(sid);
-            var state = new WatchState { LinesProcessed = 4, CursorByteOffset = 15 };
+        var gate  = new SemaphoreSlim(1, 1);
+        var guard = new CursorRewriteGuard(sid);
+        var state = new WatchState { LinesProcessed = 4, CursorByteOffset = 15 };
 
-            // Simulate an in-flight reconnect rewind: acquire the gate ourselves (standing in for
-            // GatedApplyReconnectRewindAsync mid-ResolveByteOffsetForLineAsync, BEFORE it has
-            // applied any of its three writes).
-            await gate.WaitAsync();
+        // Simulate an in-flight reconnect rewind: acquire the gate ourselves (standing in for
+        // GatedApplyReconnectRewindAsync mid-ResolveByteOffsetForLineAsync, BEFORE it has
+        // applied any of its three writes).
+        await gate.WaitAsync();
 
-            await using var hub = new HubConnectionBuilder().WithUrl("http://127.0.0.1:1/hubs/sessions").Build();
+        await using var hub = new HubConnectionBuilder().WithUrl("http://127.0.0.1:1/hubs/sessions").Build();
 
-            var drainTask = WatchCommand.GatedDrainNewLinesAsync(
-                gate, hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
-                cursorGuard: guard, onCursorRewriteDetected: () => { });
+        var drainTask = WatchCommand.GatedDrainNewLinesAsync(
+            gate, hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
+            cursorGuard: guard, onCursorRewriteDetected: () => { });
 
-            // Give the (incorrectly ungated) case every chance to complete — it must NOT, because
-            // the gate is still held.
-            await Task.Delay(50);
-            await Assert.That(drainTask.IsCompleted).IsFalse();
+        // Give the (incorrectly ungated) case every chance to complete — it must NOT, because
+        // the gate is still held.
+        await Task.Delay(50);
+        await Assert.That(drainTask.IsCompleted).IsFalse();
 
-            // A half-applied rewind is architecturally impossible here: DrainNewLines has not
-            // even started reading cursorGuardOldOffset/priorLineCursorForGuard yet, let alone
-            // written a checkpoint derived from stale pre-rewind numbers.
-            await Assert.That(state.CursorByteOffset).IsEqualTo(15L);
+        // A half-applied rewind is architecturally impossible here: DrainNewLines has not
+        // even started reading cursorGuardOldOffset/priorLineCursorForGuard yet, let alone
+        // written a checkpoint derived from stale pre-rewind numbers.
+        await Assert.That(state.CursorByteOffset).IsEqualTo(15L);
 
-            gate.Release(); // the "rewind" completes — now the queued drain may proceed
-            await drainTask;
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        gate.Release(); // the "rewind" completes — now the queued drain may proceed
+        await drainTask;
     }
 
     [Test]
     public async Task GatedApplyReconnectRewindAsync_cannot_run_while_the_gate_is_held_by_a_drain() {
         var sid = NewSessionId();
-        var dir = Directory.CreateTempSubdirectory("kcap-gate-rewind-blocked").FullName;
-        try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\n"); // 4 lines: offsets 2,7,10,15
+        using var tmp = new TempDir();
+        var transcriptPath = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(transcriptPath, "a\nbbbb\ncc\ndddd\n"); // 4 lines: offsets 2,7,10,15
 
-            var gate  = new SemaphoreSlim(1, 1);
-            var guard = new CursorRewriteGuard(sid);
-            guard.Checkpoint(offset: 15, trailingSha: "acked-hash");
-            var state = new WatchState { LinesProcessed = 4, CursorByteOffset = 15 };
+        var gate  = new SemaphoreSlim(1, 1);
+        var guard = new CursorRewriteGuard(sid);
+        guard.Checkpoint(offset: 15, trailingSha: "acked-hash");
+        var state = new WatchState { LinesProcessed = 4, CursorByteOffset = 15 };
 
-            // Simulate an in-flight drain (standing in for GatedDrainNewLinesAsync mid-ack).
-            await gate.WaitAsync();
+        // Simulate an in-flight drain (standing in for GatedDrainNewLinesAsync mid-ack).
+        await gate.WaitAsync();
 
-            var rewindTask = WatchCommand.GatedApplyReconnectRewindAsync(
-                gate, state, serverPosition: 2, sid, vendor: "cursor", transcriptPath, guard, CancellationToken.None);
+        var rewindTask = WatchCommand.GatedApplyReconnectRewindAsync(
+            gate, state, serverPosition: 2, sid, vendor: "cursor", transcriptPath, guard, CancellationToken.None);
 
-            await Task.Delay(50);
-            await Assert.That(rewindTask.IsCompleted).IsFalse();
+        await Task.Delay(50);
+        await Assert.That(rewindTask.IsCompleted).IsFalse();
 
-            // The rewind has not been allowed to touch state yet — no half-applied rewind for a
-            // concurrently-finishing drain to observe (or clobber).
-            await Assert.That(state.LinesProcessed).IsEqualTo(4);
-            await Assert.That(state.CursorByteOffset).IsEqualTo(15L);
+        // The rewind has not been allowed to touch state yet — no half-applied rewind for a
+        // concurrently-finishing drain to observe (or clobber).
+        await Assert.That(state.LinesProcessed).IsEqualTo(4);
+        await Assert.That(state.CursorByteOffset).IsEqualTo(15L);
 
-            gate.Release(); // the "drain" completes — now the queued rewind may proceed
-            var rewound = await rewindTask;
+        gate.Release(); // the "drain" completes — now the queued rewind may proceed
+        var rewound = await rewindTask;
 
-            await Assert.That(rewound).IsTrue();
-            await Assert.That(state.LinesProcessed).IsEqualTo(2);
-            await Assert.That(state.CursorByteOffset).IsEqualTo(7L); // true byte offset of line 2
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(rewound).IsTrue();
+        await Assert.That(state.LinesProcessed).IsEqualTo(2);
+        await Assert.That(state.CursorByteOffset).IsEqualTo(7L); // true byte offset of line 2
     }
 
     [Test]
     public async Task GatedDrainNewLinesAsync_and_GatedApplyReconnectRewindAsync_are_no_ops_when_gate_is_null() {
         // Every non-Cursor vendor passes a null gate — both helpers must fall back to calling the
         // underlying method directly rather than deadlocking or throwing on a null semaphore.
-        var dir = Directory.CreateTempSubdirectory("kcap-gate-null-noncursor").FullName;
-        try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(transcriptPath, "a\nb\n");
+        using var tmp = new TempDir();
+        var transcriptPath = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(transcriptPath, "a\nb\n");
 
-            var state = new WatchState { LinesProcessed = 2, CursorByteOffset = 999 };
-            var rewound = await WatchCommand.GatedApplyReconnectRewindAsync(
-                gate: null, state, serverPosition: 1, NewSessionId(), vendor: "codex", transcriptPath, cursorGuard: null, CancellationToken.None);
-            await Assert.That(rewound).IsTrue();
-            await Assert.That(state.LinesProcessed).IsEqualTo(1);
+        var state = new WatchState { LinesProcessed = 2, CursorByteOffset = 999 };
+        var rewound = await WatchCommand.GatedApplyReconnectRewindAsync(
+            gate: null, state, serverPosition: 1, NewSessionId(), vendor: "codex", transcriptPath, cursorGuard: null, CancellationToken.None);
+        await Assert.That(rewound).IsTrue();
+        await Assert.That(state.LinesProcessed).IsEqualTo(1);
 
-            await using var hub = new HubConnectionBuilder().WithUrl("http://127.0.0.1:1/hubs/sessions").Build();
-            var result = await WatchCommand.GatedDrainNewLinesAsync(
-                gate: null, hub, "sid", transcriptPath, agentId: null, new WatchState { ThresholdReached = true },
-                vendor: "codex", CancellationToken.None);
-            await Assert.That(result).IsNotNull();
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await using var hub = new HubConnectionBuilder().WithUrl("http://127.0.0.1:1/hubs/sessions").Build();
+        var result = await WatchCommand.GatedDrainNewLinesAsync(
+            gate: null, hub, "sid", transcriptPath, agentId: null, new WatchState { ThresholdReached = true },
+            vendor: "codex", CancellationToken.None);
+        await Assert.That(result).IsNotNull();
     }
 
     // ---- review fix (r4, finding #5) — GatedApplyReconnectRewindAsync propagates a refused rewind ----
@@ -553,26 +521,22 @@ public class CursorReconnectRewindTests {
     [Test]
     public async Task GatedApplyReconnectRewindAsync_returns_false_and_leaves_state_untouched_when_the_server_frontier_exceeds_local_lines() {
         var sid = NewSessionId();
-        var dir = Directory.CreateTempSubdirectory("kcap-gate-rewind-beyond-local").FullName;
-        try {
-            var transcriptPath = Path.Combine(dir, "t.jsonl");
-            await File.WriteAllTextAsync(transcriptPath, "a\nb\n"); // only 2 lines locally
+        using var tmp = new TempDir();
+        var transcriptPath = tmp.PathTo("t.jsonl");
+        await File.WriteAllTextAsync(transcriptPath, "a\nb\n"); // only 2 lines locally
 
-            var guard = new CursorRewriteGuard(sid);
-            var state = new WatchState { LinesProcessed = 2, CursorByteOffset = 7 };
+        var guard = new CursorRewriteGuard(sid);
+        var state = new WatchState { LinesProcessed = 2, CursorByteOffset = 7 };
 
-            // The server claims line 9 — far beyond the local (truncated) file's 2 lines.
-            var rewound = await WatchCommand.GatedApplyReconnectRewindAsync(
-                gate: null, state, serverPosition: 9, sid, vendor: "cursor", transcriptPath, guard, CancellationToken.None);
+        // The server claims line 9 — far beyond the local (truncated) file's 2 lines.
+        var rewound = await WatchCommand.GatedApplyReconnectRewindAsync(
+            gate: null, state, serverPosition: 9, sid, vendor: "cursor", transcriptPath, guard, CancellationToken.None);
 
-            await Assert.That(rewound).IsFalse();
-            await Assert.That(CursorMarkers.IsQuarantined(sid)).IsTrue();
-            // Neither frontier moved — the caller (RunWatch) is responsible for exiting instead.
-            await Assert.That(state.LinesProcessed).IsEqualTo(2);
-            await Assert.That(state.CursorByteOffset).IsEqualTo(7L);
-        } finally {
-            try { Directory.Delete(dir, true); } catch { }
-            try { File.Delete(CursorMarkers.QuarantinePath(sid)); } catch { }
-        }
+        await Assert.That(rewound).IsFalse();
+        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsTrue();
+        // Neither frontier moved — the caller (RunWatch) is responsible for exiting instead.
+        await Assert.That(state.LinesProcessed).IsEqualTo(2);
+        await Assert.That(state.CursorByteOffset).IsEqualTo(7L);
+        try { File.Delete(CursorMarkers.QuarantinePath(sid)); } catch { }
     }
 }

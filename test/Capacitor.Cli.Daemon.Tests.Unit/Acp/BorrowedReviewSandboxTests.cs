@@ -207,9 +207,9 @@ public class BorrowedReviewSandboxTests {
         Skip.Unless(RuntimeInformation.IsOSPlatform(OSPlatform.OSX) && BorrowedReviewSandbox.Available,
                     "needs macOS with sandbox-exec");
 
-        var root    = Directory.CreateTempSubdirectory("kcap-sandbox-test").FullName;
-        var inside  = Path.Combine(root, "snapshot");
-        var outside = Path.Combine(root, "outside");
+        using var tmp = new TempDir();
+        var inside  = tmp.PathTo("snapshot");
+        var outside = tmp.PathTo("outside");
         Directory.CreateDirectory(inside);
         Directory.CreateDirectory(outside);
 
@@ -227,8 +227,6 @@ public class BorrowedReviewSandboxTests {
         await Assert.That(outsideRun.StandardOutput).DoesNotContain("OUTSIDE-LEAKED");
         await Assert.That(outsideRun.StandardError).DoesNotContain("OUTSIDE-LEAKED");
         await Assert.That(outsideRun.ExitCode).IsNotEqualTo(0);
-
-        Directory.Delete(root, recursive: true);
     }
 
     /// <summary>
@@ -261,13 +259,9 @@ public class BorrowedReviewSandboxTests {
         var target = Path.Combine(home, relative);
         Skip.Unless(File.Exists(target), $"{what} not present on this host: {target}");
 
-        var snapshot = Directory.CreateTempSubdirectory("kcap-sandbox-sentinel").FullName;
-        try {
-            await AssertRefusedWithNoOutputAsync(
-                RealisticProfileFor(snapshot), "/bin/cat", target, what);
-        } finally {
-            Directory.Delete(snapshot, recursive: true);
-        }
+        using var tmp = new TempDir();
+        await AssertRefusedWithNoOutputAsync(
+            RealisticProfileFor(tmp.Path), "/bin/cat", target, what);
     }
 
     /// <summary>The runtime prefix's config and data trees. These are the reason the whole-prefix
@@ -282,13 +276,9 @@ public class BorrowedReviewSandboxTests {
                     "needs macOS with sandbox-exec");
         Skip.Unless(Directory.Exists(directory), $"{what} not present on this host: {directory}");
 
-        var snapshot = Directory.CreateTempSubdirectory("kcap-sandbox-sentinel").FullName;
-        try {
-            await AssertRefusedWithNoOutputAsync(
-                RealisticProfileFor(snapshot), "/bin/ls", directory, what);
-        } finally {
-            Directory.Delete(snapshot, recursive: true);
-        }
+        using var tmp = new TempDir();
+        await AssertRefusedWithNoOutputAsync(
+            RealisticProfileFor(tmp.Path), "/bin/ls", directory, what);
     }
 
     /// <summary>The keychain is unreachable through securityd, not merely unreadable as a file.
@@ -321,9 +311,11 @@ public class BorrowedReviewSandboxTests {
 
         const string sentinel = "KEYCHAIN-SENTINEL-q4w5e6";
         const string account  = "kcap-sandbox-probe";
-        var snapshot = Directory.CreateTempSubdirectory("kcap-sandbox-keychain").FullName;
-        var keychain = Path.Combine(snapshot, "..", $"kcap-probe-{Guid.NewGuid():N}.keychain-db");
-        keychain = Path.GetFullPath(keychain);
+        using var tmp = new TempDir();
+        // Deliberately NOT under tmp: the profile below grants tmp.Path, and a keychain the sandbox
+        // could reach by path would make the inside-the-sandbox leg pass for the wrong reason.
+        using var keychainDir = new TempDir();
+        var keychain = keychainDir.PathTo("probe.keychain-db");
 
         try {
             if (await RunAsync("/usr/bin/security", ["create-keychain", "-p", "probe-pw", keychain]) is null)
@@ -340,7 +332,7 @@ public class BorrowedReviewSandboxTests {
                         "the disposable keychain query does not work unsandboxed on this host");
 
             var inside = await CaptureUnderSandboxAsync(
-                RealisticProfileFor(snapshot), "/usr/bin/security", [.. query]);
+                RealisticProfileFor(tmp.Path), "/usr/bin/security", [.. query]);
 
             // Checked across BOTH streams and REGARDLESS of exit code. A run that printed the secret and
             // then exited non-zero on a later warning must not read as contained.
@@ -353,7 +345,6 @@ public class BorrowedReviewSandboxTests {
         } finally {
             await RunAsync("/usr/bin/security", ["delete-keychain", keychain]);
             try { File.Delete(keychain); } catch { /* best-effort */ }
-            Directory.Delete(snapshot, recursive: true);
         }
     }
 

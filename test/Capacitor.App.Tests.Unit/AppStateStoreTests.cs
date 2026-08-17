@@ -35,8 +35,8 @@ public class AppStateStoreTests {
 
     [Test]
     public async Task Update_creates_missing_parent_directory() {
-        var dir = Directory.CreateTempSubdirectory("kcap-appstate-").FullName;
-        var path = Path.Combine(dir, "nested", "sub", "app-state.json");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("nested", "sub", "app-state.json");
         var store = new AppStateStore(path);
 
         var ok = await store.UpdateAsync(s => s with { ShimOffered = true });
@@ -75,8 +75,8 @@ public class AppStateStoreTests {
 
     [Test]
     public async Task Write_failure_when_parent_is_a_regular_file_returns_false_without_throwing() {
-        var dir = Directory.CreateTempSubdirectory("kcap-appstate-").FullName;
-        var blockingFile = Path.Combine(dir, "blocked");
+        using var tmp = new TempDir();
+        var blockingFile = tmp.PathTo("blocked");
         File.WriteAllText(blockingFile, "not a directory");
         var path = Path.Combine(blockingFile, "app-state.json"); // parent path component is a file
 

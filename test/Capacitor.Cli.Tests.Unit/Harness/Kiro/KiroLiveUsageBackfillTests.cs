@@ -33,31 +33,28 @@ public class KiroLiveUsageBackfillTests {
 
     [Test]
     public async Task append_emits_each_anchor_once() {
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-kiro-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        try {
-            // Write a sidecar {id}.json with one turn (anchor msg-1, 2 credits, 40%).
-            var jsonl = Path.Combine(dir, "sess.jsonl");
-            var meta  = Path.Combine(dir, "sess.json");
-            await File.WriteAllTextAsync(jsonl, "");
-            await File.WriteAllTextAsync(meta, """
-            {"session_state":{"conversation_metadata":{"user_turn_metadatas":[
-              {"message_ids":["msg-1"],"metering_usage":[{"unit":"credit","value":2.0}],"context_usage_percentage":40.0}
-            ]}}}
-            """);
-            var state = new WatchState { ThresholdReached = true };
-            var lines = new List<string>(); var nums = new List<int>();
-            var n1 = WatchCommand.AppendKiroUsageBackfillLines(state, lines, nums, jsonl);
-            // simulate a successful send commit
-            foreach (var a in new[]{"msg-1"}) state.KiroUsageEmittedAnchors.Add(a);
-            var lines2 = new List<string>(); var nums2 = new List<int>();
-            var n2 = WatchCommand.AppendKiroUsageBackfillLines(state, lines2, nums2, jsonl);
+        using var tmp = new TempDir();
+        // Write a sidecar {id}.json with one turn (anchor msg-1, 2 credits, 40%).
+        var jsonl = tmp.PathTo("sess.jsonl");
+        var meta  = tmp.PathTo("sess.json");
+        await File.WriteAllTextAsync(jsonl, "");
+        await File.WriteAllTextAsync(meta, """
+        {"session_state":{"conversation_metadata":{"user_turn_metadatas":[
+          {"message_ids":["msg-1"],"metering_usage":[{"unit":"credit","value":2.0}],"context_usage_percentage":40.0}
+        ]}}}
+        """);
+        var state = new WatchState { ThresholdReached = true };
+        var lines = new List<string>(); var nums = new List<int>();
+        var n1 = WatchCommand.AppendKiroUsageBackfillLines(state, lines, nums, jsonl);
+        // simulate a successful send commit
+        foreach (var a in new[]{"msg-1"}) state.KiroUsageEmittedAnchors.Add(a);
+        var lines2 = new List<string>(); var nums2 = new List<int>();
+        var n2 = WatchCommand.AppendKiroUsageBackfillLines(state, lines2, nums2, jsonl);
 
-            await Assert.That(n1).IsEqualTo(1);
-            await Assert.That(n2).IsEqualTo(0); // already emitted → not re-appended
-            await Assert.That(lines[0]).Contains("KiroUsageBackfilled");
-            await Assert.That(lines.Count).IsEqualTo(nums.Count);
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(n1).IsEqualTo(1);
+        await Assert.That(n2).IsEqualTo(0); // already emitted → not re-appended
+        await Assert.That(lines[0]).Contains("KiroUsageBackfilled");
+        await Assert.That(lines.Count).IsEqualTo(nums.Count);
     }
 
     [Test]
@@ -66,44 +63,38 @@ public class KiroLiveUsageBackfillTests {
         // the AssistantMessage line ran before Kiro flushed {id}.json, so no usage was
         // captured then. A later drain re-reads the (now-populated) sidecar and emits
         // the synthetic backfill line for the same anchor.
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-kiro-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        try {
-            var jsonl = Path.Combine(dir, "sess.jsonl");
-            var meta  = Path.Combine(dir, "sess.json");
-            await File.WriteAllTextAsync(jsonl, "");
-            // No sidecar yet — first drain sees nothing to backfill.
-            var state  = new WatchState { ThresholdReached = true };
-            var lines0 = new List<string>(); var nums0 = new List<int>();
-            var n0     = WatchCommand.AppendKiroUsageBackfillLines(state, lines0, nums0, jsonl);
-            await Assert.That(n0).IsEqualTo(0);
+        using var tmp = new TempDir();
+        var jsonl = tmp.PathTo("sess.jsonl");
+        var meta  = tmp.PathTo("sess.json");
+        await File.WriteAllTextAsync(jsonl, "");
+        // No sidecar yet — first drain sees nothing to backfill.
+        var state  = new WatchState { ThresholdReached = true };
+        var lines0 = new List<string>(); var nums0 = new List<int>();
+        var n0     = WatchCommand.AppendKiroUsageBackfillLines(state, lines0, nums0, jsonl);
+        await Assert.That(n0).IsEqualTo(0);
 
-            // Sidecar lands after the anchor line was already sent.
-            await File.WriteAllTextAsync(meta, """
-            {"session_state":{"conversation_metadata":{"user_turn_metadatas":[
-              {"message_ids":["msg-late"],"metering_usage":[{"unit":"credit","value":1.0}],"context_usage_percentage":12.0}
-            ]}}}
-            """);
+        // Sidecar lands after the anchor line was already sent.
+        await File.WriteAllTextAsync(meta, """
+        {"session_state":{"conversation_metadata":{"user_turn_metadatas":[
+          {"message_ids":["msg-late"],"metering_usage":[{"unit":"credit","value":1.0}],"context_usage_percentage":12.0}
+        ]}}}
+        """);
 
-            var lines1 = new List<string>(); var nums1 = new List<int>();
-            var n1     = WatchCommand.AppendKiroUsageBackfillLines(state, lines1, nums1, jsonl);
-            await Assert.That(n1).IsEqualTo(1);
-            await Assert.That(lines1[0]).Contains("msg-late");
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        var lines1 = new List<string>(); var nums1 = new List<int>();
+        var n1     = WatchCommand.AppendKiroUsageBackfillLines(state, lines1, nums1, jsonl);
+        await Assert.That(n1).IsEqualTo(1);
+        await Assert.That(lines1[0]).Contains("msg-late");
     }
 
     [Test]
     public async Task append_returns_zero_when_sidecar_missing() {
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-kiro-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        try {
-            var jsonl = Path.Combine(dir, "sess.jsonl");
-            await File.WriteAllTextAsync(jsonl, "");
-            var state = new WatchState { ThresholdReached = true };
-            var lines = new List<string>(); var nums = new List<int>();
-            var n = WatchCommand.AppendKiroUsageBackfillLines(state, lines, nums, jsonl);
-            await Assert.That(n).IsEqualTo(0);
-            await Assert.That(lines.Count).IsEqualTo(0);
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        using var tmp = new TempDir();
+        var jsonl = tmp.PathTo("sess.jsonl");
+        await File.WriteAllTextAsync(jsonl, "");
+        var state = new WatchState { ThresholdReached = true };
+        var lines = new List<string>(); var nums = new List<int>();
+        var n = WatchCommand.AppendKiroUsageBackfillLines(state, lines, nums, jsonl);
+        await Assert.That(n).IsEqualTo(0);
+        await Assert.That(lines.Count).IsEqualTo(0);
     }
 }

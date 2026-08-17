@@ -131,25 +131,21 @@ public class CodexSubagentTurnTrackerTests {
     const string FunctionCallOutput =
         """{"timestamp":"2026-08-11T08:55:05.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_seed1","output":"ok"}}""";
 
-    static async Task<WatchState> BackfilledFrom(bool isChildWatcher, int? upToLine, params string[] lines) {
-        var tmp = Directory.CreateTempSubdirectory("kcap-cstt").FullName;
-        try {
-            var path = Path.Combine(tmp, "rollout-2026-08-11T10-54-19-child.jsonl");
-            await File.WriteAllLinesAsync(path, lines);
+    static async Task<WatchState> BackfilledFrom(TempDir tmp, bool isChildWatcher, int? upToLine, params string[] lines) {
+        var path = tmp.PathTo("rollout-2026-08-11T10-54-19-child.jsonl");
+        await File.WriteAllLinesAsync(path, lines);
 
-            var state = new WatchState();
-            await WatchCommand.BackfillCodexWatcherStateAsync(
-                state, path, isChildWatcher, upToLine ?? lines.Length, CancellationToken.None);
+        var state = new WatchState();
+        await WatchCommand.BackfillCodexWatcherStateAsync(
+            state, path, isChildWatcher, upToLine ?? lines.Length, CancellationToken.None);
 
-            return state;
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        return state;
     }
 
     [Test]
     public async Task Backfill_FileEndingWithTaskComplete_RearmsTheChildStop() {
-        var state = await BackfilledFrom(isChildWatcher: true, upToLine: null, FunctionCall, FunctionCallOutput, TaskComplete);
+        using var tmp = new TempDir();
+        var state = await BackfilledFrom(tmp, isChildWatcher: true, upToLine: null, FunctionCall, FunctionCallOutput, TaskComplete);
 
         await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsTrue();
         await Assert.That(state.PendingCodexToolCalls).IsEmpty();
@@ -159,7 +155,8 @@ public class CodexSubagentTurnTrackerTests {
     [Test]
     public async Task Backfill_FileEndingMidTurn_StaysDisarmed() {
         // A completed earlier turn followed by a live tool call: not completed, call pending.
-        var state = await BackfilledFrom(isChildWatcher: true, upToLine: null, TaskComplete, UserMessage, FunctionCall);
+        using var tmp = new TempDir();
+        var state = await BackfilledFrom(tmp, isChildWatcher: true, upToLine: null, TaskComplete, UserMessage, FunctionCall);
 
         await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsFalse();
         await Assert.That(state.PendingCodexToolCalls).Contains("call_seed1");
@@ -169,7 +166,8 @@ public class CodexSubagentTurnTrackerTests {
     // The gap this fixes (#532): a session watcher resuming mid-tool came up with an empty set.
     [Test]
     public async Task Backfill_RecoversACallLeftOpenBeforeTheCursor_ForASessionWatcher() {
-        var state = await BackfilledFrom(isChildWatcher: false, upToLine: null, FunctionCall, TokenCount);
+        using var tmp = new TempDir();
+        var state = await BackfilledFrom(tmp, isChildWatcher: false, upToLine: null, FunctionCall, TokenCount);
 
         await Assert.That(state.PendingCodexToolCalls).Contains("call_seed1");
     }
@@ -177,7 +175,8 @@ public class CodexSubagentTurnTrackerTests {
     // The decision itself, wired the way RunWatch wires it — an empty set idle-ends a live session.
     [Test]
     public async Task Backfill_KeepsASessionWithARunningTool_OffTheIdleEnd() {
-        var state = await BackfilledFrom(isChildWatcher: false, upToLine: null, FunctionCall, TokenCount);
+        using var tmp = new TempDir();
+        var state = await BackfilledFrom(tmp, isChildWatcher: false, upToLine: null, FunctionCall, TokenCount);
 
         var idle = WatchCommand.ShouldEndOnIdle(
             "codex", isSessionWatcher: true, thresholdReached: true,
@@ -191,7 +190,8 @@ public class CodexSubagentTurnTrackerTests {
     // Turn state only drives the child's live subagent-stop.
     [Test]
     public async Task Backfill_DoesNotFoldTurnState_ForASessionWatcher() {
-        var state = await BackfilledFrom(isChildWatcher: false, upToLine: null, TaskComplete);
+        using var tmp = new TempDir();
+        var state = await BackfilledFrom(tmp, isChildWatcher: false, upToLine: null, TaskComplete);
 
         await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsFalse();
     }
@@ -199,7 +199,8 @@ public class CodexSubagentTurnTrackerTests {
     // Only the prefix is the blind spot; the cursor onwards arrives through the drain.
     [Test]
     public async Task Backfill_StopsAtTheCursor() {
-        var state = await BackfilledFrom(isChildWatcher: true, upToLine: 1, FunctionCall, FunctionCallOutput, TaskComplete);
+        using var tmp = new TempDir();
+        var state = await BackfilledFrom(tmp, isChildWatcher: true, upToLine: 1, FunctionCall, FunctionCallOutput, TaskComplete);
 
         await Assert.That(state.PendingCodexToolCalls).Contains("call_seed1");
         await Assert.That(state.CodexSubagentTurn.TurnCompleted).IsFalse();
@@ -208,10 +209,11 @@ public class CodexSubagentTurnTrackerTests {
     // An in-flight call sits at the tail by construction, so anything older is settled.
     [Test]
     public async Task Backfill_IgnoresACallOlderThanTheScanWindow() {
+        using var tmp = new TempDir();
         var lines = new List<string> { FunctionCall };  // never resolved, then buried
         lines.AddRange(Enumerable.Repeat(TokenCount, WatchCommand.ToolBackfillWindowLines + 10));
 
-        var state = await BackfilledFrom(isChildWatcher: true, upToLine: null, [.. lines]);
+        var state = await BackfilledFrom(tmp, isChildWatcher: true, upToLine: null, [.. lines]);
 
         await Assert.That(state.PendingCodexToolCalls).IsEmpty();
     }
@@ -229,22 +231,18 @@ public class CodexSubagentTurnTrackerTests {
 
     [Test]
     public async Task Backfill_ReturnsSilentlyWhenAlreadyCancelled() {
-        var tmp = Directory.CreateTempSubdirectory("kcap-cstt").FullName;
-        try {
-            var path = Path.Combine(tmp, "rollout.jsonl");
-            await File.WriteAllLinesAsync(path, [FunctionCall]);
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("rollout.jsonl");
+        await File.WriteAllLinesAsync(path, [FunctionCall]);
 
-            var       state     = new WatchState();
-            using var cancelled = new CancellationTokenSource();
-            await cancelled.CancelAsync();
+        var       state     = new WatchState();
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
 
-            await WatchCommand.BackfillCodexWatcherStateAsync(
-                state, path, isChildWatcher: true, upToLine: 1, cancelled.Token);
+        await WatchCommand.BackfillCodexWatcherStateAsync(
+            state, path, isChildWatcher: true, upToLine: 1, cancelled.Token);
 
-            await Assert.That(state.PendingCodexToolCalls).IsEmpty();
-        } finally {
-            Directory.Delete(tmp, recursive: true);
-        }
+        await Assert.That(state.PendingCodexToolCalls).IsEmpty();
     }
 
     // ── ResolveStopGrace ──────────────────────────────────────────────────

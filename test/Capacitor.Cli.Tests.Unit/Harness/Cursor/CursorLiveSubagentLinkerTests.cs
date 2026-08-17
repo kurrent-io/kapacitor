@@ -9,33 +9,27 @@ public class CursorLiveSubagentLinkerTests {
 
     [Test]
     public async Task resolves_child_to_parent_by_prompt_hash() {
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-curs-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        try {
-            var parent = Write(dir, "parent.jsonl",
-                "{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"prompt\":\"do the thing\",\"subagent_type\":\"researcher\"}}]}}\n");
-            var child = Write(dir, "child.jsonl",
-                "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<user_query>do the thing</user_query>\"}]}}\n");
+        using var tmp = new TempDir();
+        var parent = Write(tmp.Path, "parent.jsonl",
+            "{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"prompt\":\"do the thing\",\"subagent_type\":\"researcher\"}}]}}\n");
+        var child = Write(tmp.Path, "child.jsonl",
+            "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<user_query>do the thing</user_query>\"}]}}\n");
 
-            var link = CursorLiveSubagentLinker.ResolveParent(
-                "child", child, [("parent", parent)]);
+        var link = CursorLiveSubagentLinker.ResolveParent(
+            "child", child, [("parent", parent)]);
 
-            await Assert.That(link).IsNotNull();
-            await Assert.That(link!.Value.ParentSessionId).IsEqualTo("parent");
-            await Assert.That(link.Value.SubagentType).IsEqualTo("researcher");
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(link).IsNotNull();
+        await Assert.That(link!.Value.ParentSessionId).IsEqualTo("parent");
+        await Assert.That(link.Value.SubagentType).IsEqualTo("researcher");
     }
 
     [Test]
     public async Task no_match_returns_null() {
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-curs-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        try {
-            var child = Write(dir, "child.jsonl",
-                "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"unrelated\"}]}}\n");
-            var link = CursorLiveSubagentLinker.ResolveParent("child", child, []);
-            await Assert.That(link).IsNull();
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        using var tmp = new TempDir();
+        var child = Write(tmp.Path, "child.jsonl",
+            "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"unrelated\"}]}}\n");
+        var link = CursorLiveSubagentLinker.ResolveParent("child", child, []);
+        await Assert.That(link).IsNull();
     }
 
     // --- DiscoverSiblingTranscripts: bounded scan of the real Cursor layout,
@@ -43,39 +37,33 @@ public class CursorLiveSubagentLinkerTests {
 
     [Test]
     public async Task discover_siblings_finds_other_session_dirs_under_the_same_agent_transcripts_root() {
-        var root = Path.Combine(Path.GetTempPath(), $"kcap-curs-siblings-{Guid.NewGuid():N}");
-        var transcripts = Path.Combine(root, "agent-transcripts");
-        Directory.CreateDirectory(transcripts);
-        try {
-            var childDir = Path.Combine(transcripts, "child-sid");
-            Directory.CreateDirectory(childDir);
-            var childPath = Write(childDir, "child-sid.jsonl", "{}\n");
+        using var tmp = new TempDir();
+        var transcripts = tmp.CreateDir("agent-transcripts");
+        var childDir = Path.Combine(transcripts, "child-sid");
+        Directory.CreateDirectory(childDir);
+        var childPath = Write(childDir, "child-sid.jsonl", "{}\n");
 
-            var parentDir = Path.Combine(transcripts, "parent-sid");
-            Directory.CreateDirectory(parentDir);
-            Write(parentDir, "parent-sid.jsonl", "{}\n");
+        var parentDir = Path.Combine(transcripts, "parent-sid");
+        Directory.CreateDirectory(parentDir);
+        Write(parentDir, "parent-sid.jsonl", "{}\n");
 
-            var siblings = CursorLiveSubagentLinker.DiscoverSiblingTranscripts(childPath);
+        var siblings = CursorLiveSubagentLinker.DiscoverSiblingTranscripts(childPath);
 
-            await Assert.That(siblings.Count).IsEqualTo(1);
-            await Assert.That(siblings[0].SessionId).IsEqualTo("parentsid");
-        } finally { try { Directory.Delete(root, true); } catch { } }
+        await Assert.That(siblings.Count).IsEqualTo(1);
+        await Assert.That(siblings[0].SessionId).IsEqualTo("parentsid");
     }
 
     [Test]
     public async Task discover_siblings_excludes_its_own_session_dir() {
-        var root = Path.Combine(Path.GetTempPath(), $"kcap-curs-siblings-{Guid.NewGuid():N}");
-        var transcripts = Path.Combine(root, "agent-transcripts");
-        Directory.CreateDirectory(transcripts);
-        try {
-            var childDir = Path.Combine(transcripts, "only-sid");
-            Directory.CreateDirectory(childDir);
-            var childPath = Write(childDir, "only-sid.jsonl", "{}\n");
+        using var tmp = new TempDir();
+        var transcripts = tmp.CreateDir("agent-transcripts");
+        var childDir = Path.Combine(transcripts, "only-sid");
+        Directory.CreateDirectory(childDir);
+        var childPath = Write(childDir, "only-sid.jsonl", "{}\n");
 
-            var siblings = CursorLiveSubagentLinker.DiscoverSiblingTranscripts(childPath);
+        var siblings = CursorLiveSubagentLinker.DiscoverSiblingTranscripts(childPath);
 
-            await Assert.That(siblings).IsEmpty();
-        } finally { try { Directory.Delete(root, true); } catch { } }
+        await Assert.That(siblings).IsEmpty();
     }
 
     [Test]
@@ -119,30 +107,27 @@ public class CursorLiveSubagentLinkerTests {
 
     [Test]
     public async Task resolve_parent_agrees_with_the_import_path_correlator_over_the_same_transcripts() {
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-curs-parity-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        try {
-            const string prompt = "survey the auth module and report back";
-            var parentId = "11111111111111111111111111111111";
-            var childId  = "22222222222222222222222222222222";
+        using var tmp = new TempDir();
+        const string prompt = "survey the auth module and report back";
+        var parentId = "11111111111111111111111111111111";
+        var childId  = "22222222222222222222222222222222";
 
-            var parentPath = Write(dir, $"{parentId}.jsonl",
-                "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"kick things off\"}]}}\n" +
-                "{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"prompt\":\"" + prompt + "\",\"subagent_type\":\"researcher\"}}]}}\n");
-            var childPath = Write(dir, $"{childId}.jsonl",
-                "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<user_query>\\n" + prompt + "\\n</user_query>\"}]}}\n");
+        var parentPath = Write(tmp.Path, $"{parentId}.jsonl",
+            "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"kick things off\"}]}}\n" +
+            "{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"prompt\":\"" + prompt + "\",\"subagent_type\":\"researcher\"}}]}}\n");
+        var childPath = Write(tmp.Path, $"{childId}.jsonl",
+            "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<user_query>\\n" + prompt + "\\n</user_query>\"}]}}\n");
 
-            // Live path: only the child + its discovered siblings.
-            var liveLink = CursorLiveSubagentLinker.ResolveParent(childId, childPath, [(parentId, parentPath)]);
+        // Live path: only the child + its discovered siblings.
+        var liveLink = CursorLiveSubagentLinker.ResolveParent(childId, childPath, [(parentId, parentPath)]);
 
-            // Import path: CursorSubagentCorrelator.Correlate over the FULL discovered set
-            // directly, exactly as CursorImportSource.ClassifyAsync calls it.
-            var importLinks = CursorSubagentCorrelator.Correlate([(parentId, parentPath), (childId, childPath)]);
+        // Import path: CursorSubagentCorrelator.Correlate over the FULL discovered set
+        // directly, exactly as CursorImportSource.ClassifyAsync calls it.
+        var importLinks = CursorSubagentCorrelator.Correlate([(parentId, parentPath), (childId, childPath)]);
 
-            await Assert.That(liveLink).IsNotNull();
-            await Assert.That(importLinks.ContainsKey(childId)).IsTrue();
-            await Assert.That(liveLink!.Value.ParentSessionId).IsEqualTo(importLinks[childId].ParentSessionId);
-            await Assert.That(liveLink.Value.SubagentType).IsEqualTo(importLinks[childId].SubagentType);
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(liveLink).IsNotNull();
+        await Assert.That(importLinks.ContainsKey(childId)).IsTrue();
+        await Assert.That(liveLink!.Value.ParentSessionId).IsEqualTo(importLinks[childId].ParentSessionId);
+        await Assert.That(liveLink.Value.SubagentType).IsEqualTo(importLinks[childId].SubagentType);
     }
 }
