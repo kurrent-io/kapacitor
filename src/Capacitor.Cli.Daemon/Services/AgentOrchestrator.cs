@@ -3232,7 +3232,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // Task.Run, not a bare discard — WaitAsync can complete synchronously on an uncontended
             // gate, which would otherwise run BuildStatusReport() (disk I/O) inline on this receive
             // loop while still holding BorrowedSnapshotGate.
-            _ = Task.Run(() => SendDaemonStatusReportOnceAsync());
+            _ = Task.Run(SendDaemonStatusReportOnceAsync);
 
             LogSendInputDelivered(agentId, agent.Runtime.Vendor, message.Length);
         } finally {

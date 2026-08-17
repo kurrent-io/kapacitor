@@ -55,7 +55,7 @@ public sealed class WizardTenantPicker : ITenantPicker {
         }
 
         // A displaced pick has no view left to resolve it — end it rather than orphan its await.
-        displaced?.TrySetCanceled();
+        displaced?.TrySetCanceled(CancellationToken.None);
 
         using var registration = ct.Register(() => pending.TrySetCanceled(ct));
 
@@ -109,11 +109,11 @@ public sealed class WizardTenantProvisioner(
     readonly TimeProvider _time = time ?? TimeProvider.System;
 
     /// Null hooks answer as "backed out": an unwired provisioner must never provision.
-    public Func<CancellationToken, Task<ProvisionMode>>?               OfferMode;
-    public Func<CancellationToken, Task<string?>>?                     PromptOrgName;
-    public Func<string, string?, CancellationToken, Task<string?>>?    PromptSlug;
-    public Func<string, string, CancellationToken, Task<bool>>?        ConfirmCreate;
-    public Action<int, int>?                                           PollProgress;
+    public Func<CancellationToken, Task<ProvisionMode>>?               OfferMode     { get; set; }
+    public Func<CancellationToken, Task<string?>>?                     PromptOrgName { get; set; }
+    public Func<string, string?, CancellationToken, Task<string?>>?    PromptSlug    { get; set; }
+    public Func<string, string, CancellationToken, Task<bool>>?        ConfirmCreate { get; set; }
+    public Action<int, int>?                                           PollProgress  { get; set; }
 
     public async Task<ProvisionOffer> OfferCreateAsync(WorkOSTokenSource tokens, CancellationToken ct = default) {
         // Says what was actually established, not more: single sign-on returned nothing.
@@ -279,7 +279,7 @@ public sealed class WizardTenantProvisioner(
 
 /// <summary>
 /// The bridge set one wizard run shares; the composition root builds the façade over exactly
-/// these. The sink is built from this object's own <paramref name="post"/> and handed to the
+/// these. The sink is built from this object's own <see cref="Post"/> and handed to the
 /// provisioner factory, so a bridge marshalling through a different dispatcher than the rest is
 /// not representable.
 /// </summary>

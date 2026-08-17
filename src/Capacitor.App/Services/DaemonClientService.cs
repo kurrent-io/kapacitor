@@ -281,10 +281,10 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
                 }
             }
 
-            // Line-buffered per stream — no cross-stream ordering promise.
+            // Line-buffered per stream — no cross-stream ordering promise; drains to EOF even under kill.
             async Task PumpAsync(TextReader reader, ProcessStreamKind kind) {
                 string? line;
-                while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) is not null)
+                while ((line = await reader.ReadLineAsync(CancellationToken.None).ConfigureAwait(false)) is not null)
                     Record(new StreamedLine(kind, line));
             }
 
