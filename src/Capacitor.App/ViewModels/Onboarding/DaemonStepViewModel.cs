@@ -10,7 +10,7 @@ namespace Capacitor.App.ViewModels.Onboarding;
 
 /// One classified row of the spec §3 step-7 matrix — the step's whole decision, named.
 public enum DaemonRow {
-    CliMissing, RequiresSignIn, NoServerConfigured, StatusUnknown, TransactionActive,
+    CliMissing, RequiresSignIn, NoServerConfigured, BinaryUnresolved, StatusUnknown, TransactionActive,
     AlreadyEnabled, OwnedIdentityMismatch, ManualIdentityMatch, ManualIdentityMismatch,
     OrphanLabel, StaleMarker, RunningUnconfirmed, Stopped, NotInstalled,
 }
@@ -18,16 +18,18 @@ public enum DaemonRow {
 /// The single action a row offers, or None.
 public enum DaemonAffordance { None, Install, Start, Takeover, Repair }
 
-/// spec §3 step 7: daemon enablement on AI-1654's full state matrix. Every mutation runs through
-/// the injected lane delegate and its result updates THIS step's state only — actionable outcomes
-/// travel the lane's outcome channel to the single consumer (single-presentation rule). The one
-/// dialog this step opens itself is the PRE-mutation takeover/repair consent, which is a user
-/// gate, not outcome presentation.
+/// spec §3 step 7: daemon enablement on the lifecycle slice's full state matrix. Every mutation
+/// runs through the injected lane delegate and its result updates THIS step's state only —
+/// actionable outcomes travel the lane's outcome channel to the single consumer
+/// (single-presentation rule). The one dialog this step opens itself is the PRE-mutation
+/// takeover/repair consent, which is a user gate, not outcome presentation.
 public sealed class DaemonStepViewModel : ReactiveObject, IWizardStep {
     internal const string ConsentV3Capability = "consent/3";
 
     internal const string CliMissingMessage    = "kcap CLI not found";
     internal const string RequiresSignInMessage = "Enabling the daemon requires sign-in — sign in first, or skip this step.";
+    internal const string NoServerMessage       = "Server not configured — complete the Sign in step first.";
+    internal const string BinaryUnresolvedMessage = "kcap can't resolve its own daemon binary — reinstall kcap.";
     internal const string StatusUnknownMessage = "Could not read the daemon service status — no changes made.";
     internal const string UnrecognizedStateMessage = "The daemon service reported an unrecognized state — no changes made.";
     internal const string TxnWaitingMessage    = "Waiting for a daemon service operation to finish…";
@@ -45,6 +47,8 @@ public sealed class DaemonStepViewModel : ReactiveObject, IWizardStep {
         "This daemon is too old to accept the consent update — kcap will apply it once the daemon updates.";
     internal const string ClaimFailedMessage =
         "kcap could not update this daemon's consent default — run `kcap daemon consent set-default prompt`, or re-run onboarding.";
+    internal const string ClaimAlreadyStricterMessage =
+        "This daemon already denies launches by default — kcap left that stricter setting alone.";
 
     internal static readonly TimeSpan TxnPollInterval = TimeSpan.FromSeconds(2);
     internal const int MaxTxnPolls = 30; // 30 × 2s ≈ the CLI transaction's own 60s worst case
@@ -209,12 +213,15 @@ public sealed class DaemonStepViewModel : ReactiveObject, IWizardStep {
             if (MutationRequestFactory.TryBuild(
                     MutationVerb.StartVerified, identity.Profile, identity.Server, identity.DaemonName, out var request)
                 is MutationOutcome.Refused(var guardReason, _)) {
-                Set(DaemonRow.NoServerConfigured, $"kcap: {guardReason}", DaemonAffordance.None);
+                Set(DaemonRow.NoServerConfigured, NoServerMessage, DaemonAffordance.None);
+                Console.Error.WriteLine($"kcap: wizard daemon step refused before status: {guardReason}");
                 return;
             }
 
             _request = request!;
-            await ClassifySnapshotAsync(await ReadStatusAsync(ct).ConfigureAwait(false), ct).ConfigureAwait(false);
+            var snapshot = await ReadStatusAsync(ct).ConfigureAwait(false);
+            await ClassifySnapshotAsync(snapshot, ct).ConfigureAwait(false);
+            WithdrawUnitWritingOfferWithoutBinary(snapshot);
         } catch (OperationCanceledException) {
             // left the step (or shutting down) mid-classification — nothing to surface
         } catch (Exception ex) {
@@ -318,6 +325,16 @@ public sealed class DaemonStepViewModel : ReactiveObject, IWizardStep {
             DaemonAffordance.Takeover);
     }
 
+    /// The install-only viability precondition: a unit-writing offer without a resolvable daemon
+    /// binary is a guaranteed coded failure, so it is withdrawn rather than offered. The start row
+    /// is exempt — starting an installed unit writes none.
+    void WithdrawUnitWritingOfferWithoutBinary(ServiceSnapshot? snapshot) {
+        if (snapshot?.InstallBinaryPath is not null) return;
+        if (Affordance is not (DaemonAffordance.Install or DaemonAffordance.Takeover or DaemonAffordance.Repair)) return;
+
+        Set(DaemonRow.BinaryUnresolved, BinaryUnresolvedMessage, DaemonAffordance.None);
+    }
+
     static string DescribeForeign(ObservedEvidence? evidence) =>
         evidence is { Reachable: true, ServerUrl: { Length: > 0 } server }
             ? $"a daemon for {server}"
@@ -328,7 +345,7 @@ public sealed class DaemonStepViewModel : ReactiveObject, IWizardStep {
     static bool IdentityMatches(ObservedEvidence? evidence, MutationRequest request) =>
         evidence is { Reachable: true, IdentityConsistent: true }
         && evidence.DaemonName == request.DaemonName
-        && ServerIdentity.Canonicalize(evidence.ServerUrl) == request.CanonicalServer;
+        && ServerIdentity.Matches(evidence.ServerUrl, request.CanonicalServer);
 
     void Set(DaemonRow row, string message, DaemonAffordance affordance) {
         Row        = row;
@@ -428,6 +445,12 @@ public sealed class DaemonStepViewModel : ReactiveObject, IWizardStep {
         ConsentAckDto ack;
         try {
             var policy = await _ops.GetConsentPolicyAsync(CancellationToken.None).ConfigureAwait(false);
+            // §6 seeding respects an operator's deny: it is stricter than prompt, so the flip is inert here.
+            if (policy.Default == "deny") {
+                Status = Append(Status, ClaimAlreadyStricterMessage);
+                return;
+            }
+
             var put = new ConsentPolicyPutV2Dto(request.DaemonName, claim.CanonicalServer, policy with { Default = "prompt" });
             ack = await _ops.PutConsentPolicyV2Async(put, CancellationToken.None).ConfigureAwait(false);
         } catch (LocalControlOpsException) {

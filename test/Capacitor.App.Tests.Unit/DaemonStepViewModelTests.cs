@@ -12,11 +12,13 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.App.Tests.Unit;
 
-/// spec §3 step 7: every row of AI-1654's state matrix → the exact mutation verb (or an explicit
-/// no-mutation) and the affordance offered, plus the decision-7 claim application rules. The lane
-/// is a recording delegate (results are waiter-state-only), the claims store is REAL on temp paths
-/// (so TryConsume's own two-lock compare runs), and the surface records every dialog — the
-/// single-presentation rule is asserted by the surface staying untouched on every waiter outcome.
+/// spec §3 step 7: every row of the lifecycle slice's state matrix → the exact mutation verb (or
+/// an explicit no-mutation) and the affordance offered, plus the decision-7 claim application
+/// rules. The lane is a recording delegate (results are waiter-state-only), the claims store is
+/// REAL on temp paths (so TryConsume's own two-lock compare runs), and the surface records every
+/// dialog — the single-presentation rule is asserted by the surface staying untouched on every
+/// waiter outcome. Every "no claim application" assertion checks GetCalls, not just PutV2Calls:
+/// the GET is the FIRST ops touch, so a guard that stopped guarding would be invisible otherwise.
 public class DaemonStepViewModelTests {
     const string Profile    = "default";
     const string RawServer  = "https://example.test";
@@ -25,8 +27,8 @@ public class DaemonStepViewModelTests {
 
     static ServiceSnapshot Snap(
             string state = "not_installed", bool unitPresent = false, int? jobPid = null, int? daemonPid = null,
-            bool txnMarker = false, bool txnActive = false) =>
-        new(DaemonName, unitPresent, state, "/opt/kcap/kcap-daemon", "/opt/kcap/kcap-daemon", jobPid, daemonPid,
+            bool txnMarker = false, bool txnActive = false, string? installBinaryPath = "/opt/kcap/kcap-daemon") =>
+        new(DaemonName, unitPresent, state, "/opt/kcap/kcap-daemon", installBinaryPath, jobPid, daemonPid,
             txnMarker, txnActive);
 
     static ObservedEvidence Evidence(
@@ -155,19 +157,77 @@ public class DaemonStepViewModelTests {
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task A_server_that_cannot_be_canonicalized_refuses_before_any_status_read() {
-        var (row, affordance, statusCalls, mutations) = await AvaloniaSession.DispatchAsync(async () => {
+        var (row, affordance, message, statusCalls, mutations) = await AvaloniaSession.DispatchAsync(async () => {
             using var h = new Harness();
             h.Identity = (Profile, "file:///etc/passwd", DaemonName);
 
             await h.Enter();
 
-            return (h.Vm.Row, h.Vm.Affordance, h.Cli.StatusCallCount, h.Lane.Requests.Count);
+            return (h.Vm.Row, h.Vm.Affordance, h.Vm.Message, h.Cli.StatusCallCount, h.Lane.Requests.Count);
         });
 
         await Assert.That(row).IsEqualTo(DaemonRow.NoServerConfigured);
         await Assert.That(affordance).IsEqualTo(DaemonAffordance.None);
+        await Assert.That(message).IsEqualTo(DaemonStepViewModel.NoServerMessage); // humanized, not the raw token
         await Assert.That(statusCalls).IsEqualTo(0);
         await Assert.That(mutations).IsEqualTo(0);
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Re_entering_after_a_completed_sign_in_classifies_on_the_now_resolvable_identity() {
+        var (firstRow, secondRow, secondAffordance) = await AvaloniaSession.DispatchAsync(async () => {
+            using var h = new Harness();
+            h.Status(Snap());
+            h.Identity = null;
+
+            await h.Enter();
+            var first = h.Vm.Row;
+
+            h.Identity = (Profile, RawServer, DaemonName); // the Sign in step committed while we were away
+            await h.Enter();
+
+            return (first, h.Vm.Row, h.Vm.Affordance);
+        });
+
+        await Assert.That(firstRow).IsEqualTo(DaemonRow.RequiresSignIn);
+        await Assert.That(secondRow).IsEqualTo(DaemonRow.NotInstalled);
+        await Assert.That(secondAffordance).IsEqualTo(DaemonAffordance.Install);
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task An_unresolvable_daemon_binary_withdraws_the_unit_writing_offer() {
+        var (row, affordance, message, mutations) = await AvaloniaSession.DispatchAsync(async () => {
+            using var h = new Harness();
+            h.Status(Snap(installBinaryPath: null));
+
+            await h.Enter();
+            await h.Act(); // no affordance — nothing to run
+
+            return (h.Vm.Row, h.Vm.Affordance, h.Vm.Message, h.Lane.Requests.Count);
+        });
+
+        await Assert.That(row).IsEqualTo(DaemonRow.BinaryUnresolved);
+        await Assert.That(affordance).IsEqualTo(DaemonAffordance.None);
+        await Assert.That(message).IsEqualTo(DaemonStepViewModel.BinaryUnresolvedMessage);
+        await Assert.That(mutations).IsEqualTo(0);
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task An_unresolvable_daemon_binary_still_allows_the_start_row() {
+        var (row, affordance) = await AvaloniaSession.DispatchAsync(async () => {
+            using var h = new Harness();
+            h.Status(Snap(state: "installed", unitPresent: true, installBinaryPath: null));
+
+            await h.Enter();
+
+            return (h.Vm.Row, h.Vm.Affordance);
+        });
+
+        await Assert.That(row).IsEqualTo(DaemonRow.Stopped); // starting an installed unit writes none
+        await Assert.That(affordance).IsEqualTo(DaemonAffordance.Start);
     }
 
     // ── unreadable / unrecognized evidence: honest message, no mutation ─────
@@ -326,7 +386,7 @@ public class DaemonStepViewModelTests {
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Ownership_without_an_identity_match_offers_only_the_takeover_and_never_the_claim() {
-        var (row, affordance, satisfied, mutations, puts, pending) = await AvaloniaSession.DispatchAsync(async () => {
+        var (row, affordance, satisfied, mutations, gets, puts, pending) = await AvaloniaSession.DispatchAsync(async () => {
             using var h = new Harness();
             h.ArmClaim();
             h.Status(Snap(state: "running", unitPresent: true, jobPid: 100, daemonPid: 100));
@@ -335,14 +395,15 @@ public class DaemonStepViewModelTests {
             await h.Enter();
             await h.Act(); // the surface declines by default
 
-            return (h.Vm.Row, h.Vm.Affordance, h.Vm.Satisfied, h.Lane.Requests.Count, h.Ops.PutV2Calls,
-                h.Claims.Pending().Count);
+            return (h.Vm.Row, h.Vm.Affordance, h.Vm.Satisfied, h.Lane.Requests.Count, h.Ops.GetCalls,
+                h.Ops.PutV2Calls, h.Claims.Pending().Count);
         });
 
         await Assert.That(row).IsEqualTo(DaemonRow.OwnedIdentityMismatch);
         await Assert.That(affordance).IsEqualTo(DaemonAffordance.Takeover);
         await Assert.That(satisfied).IsFalse();
         await Assert.That(mutations).IsEqualTo(0);
+        await Assert.That(gets).IsEqualTo(0); // the claim path was never entered at all
         await Assert.That(puts).IsEqualTo(0);
         await Assert.That(pending).IsEqualTo(1);
     }
@@ -418,7 +479,7 @@ public class DaemonStepViewModelTests {
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task A_manual_daemon_for_another_server_mutates_nothing_and_applies_no_claim() {
-        var (row, affordance, message, mutations, puts, pending) = await AvaloniaSession.DispatchAsync(async () => {
+        var (row, affordance, message, mutations, gets, puts, pending) = await AvaloniaSession.DispatchAsync(async () => {
             using var h = new Harness();
             h.ArmClaim();
             h.Status(Snap(state: "not_installed", daemonPid: 777));
@@ -427,14 +488,15 @@ public class DaemonStepViewModelTests {
             await h.Enter();
             await h.Act(); // declines
 
-            return (h.Vm.Row, h.Vm.Affordance, h.Vm.Message, h.Lane.Requests.Count, h.Ops.PutV2Calls,
-                h.Claims.Pending().Count);
+            return (h.Vm.Row, h.Vm.Affordance, h.Vm.Message, h.Lane.Requests.Count, h.Ops.GetCalls,
+                h.Ops.PutV2Calls, h.Claims.Pending().Count);
         });
 
         await Assert.That(row).IsEqualTo(DaemonRow.ManualIdentityMismatch);
         await Assert.That(affordance).IsEqualTo(DaemonAffordance.Takeover); // the only offered action
         await Assert.That(message).Contains("https://other.test");
         await Assert.That(mutations).IsEqualTo(0);
+        await Assert.That(gets).IsEqualTo(0); // the decline path never enters the claim path on a mismatch
         await Assert.That(puts).IsEqualTo(0);
         await Assert.That(pending).IsEqualTo(1);
     }
@@ -676,7 +738,7 @@ public class DaemonStepViewModelTests {
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task A_claim_for_another_server_is_never_applied() {
-        var (puts, pending) = await AvaloniaSession.DispatchAsync(async () => {
+        var (gets, puts, pending) = await AvaloniaSession.DispatchAsync(async () => {
             using var h = new Harness();
             h.Claims.Arm(new ConsentFlipClaim(Profile, ServerIdentity.Canonicalize("https://other.test")!));
             h.Status(Snap(state: "running", unitPresent: true, jobPid: 100, daemonPid: 100));
@@ -684,11 +746,54 @@ public class DaemonStepViewModelTests {
 
             await h.Enter();
 
-            return (h.Ops.PutV2Calls, h.Claims.Pending().Count);
+            return (h.Ops.GetCalls, h.Ops.PutV2Calls, h.Claims.Pending().Count);
         });
 
+        await Assert.That(gets).IsEqualTo(0); // the pending filter, not a later rejection, is what stops this
         await Assert.That(puts).IsEqualTo(0);
         await Assert.That(pending).IsEqualTo(1);
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_successful_mutation_whose_re_probe_no_longer_matches_applies_no_claim() {
+        var (satisfied, gets, puts, pending) = await AvaloniaSession.DispatchAsync(async () => {
+            using var h = new Harness();
+            h.ArmClaim();
+            h.Status(Snap());
+            h.Observation.Default = Evidence(server: "https://other.test"); // the post-mutation re-check fails
+
+            await h.Enter();
+            await h.Act();
+
+            return (h.Vm.Satisfied, h.Ops.GetCalls, h.Ops.PutV2Calls, h.Claims.Pending().Count);
+        });
+
+        await Assert.That(satisfied).IsTrue(); // the lane's own outcome still decides enablement
+        await Assert.That(gets).IsEqualTo(0);  // but the claim never reaches a daemon we did not just verify
+        await Assert.That(puts).IsEqualTo(0);
+        await Assert.That(pending).IsEqualTo(1);
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task An_operator_chosen_deny_is_left_stricter_than_prompt() {
+        var (gets, puts, pending, status) = await AvaloniaSession.DispatchAsync(async () => {
+            using var h = new Harness();
+            h.ArmClaim();
+            h.Status(Snap(state: "running", unitPresent: true, jobPid: 100, daemonPid: 100));
+            h.Observation.Default = Evidence();
+            h.Ops.QueueGet(Policy("deny"));
+
+            await h.Enter();
+
+            return (h.Ops.GetCalls, h.Ops.PutV2Calls, h.Claims.Pending().Count, h.Vm.Status);
+        });
+
+        await Assert.That(gets).IsEqualTo(1);
+        await Assert.That(puts).IsEqualTo(0);
+        await Assert.That(pending).IsEqualTo(1); // retained, inert
+        await Assert.That(status).IsEqualTo(DaemonStepViewModel.ClaimAlreadyStricterMessage);
     }
 
     // ── navigation ──────────────────────────────────────────────────────────
