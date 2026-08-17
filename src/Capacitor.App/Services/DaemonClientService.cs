@@ -150,6 +150,15 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
     public static async Task<DaemonClientService> CreateDefaultAsync(
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
         await AppConfig.ResolveActiveProfile([]);
+
+        return CreateResolved(runMutation);
+    }
+
+    /// The same construction over the profile the caller ALREADY resolved: the app resolves once
+    /// per graph build (for the onboarding gate) and builds from that same resolution, so the gate
+    /// verdict and the daemon identity can never diverge on a concurrently-changing profile.
+    public static DaemonClientService CreateResolved(
+            Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
         var name = DaemonNameResolver.Resolve([], AppConfig.ResolvedProfile?.Profile?.Daemon?.Name);
 
         return new DaemonClientService(

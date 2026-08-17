@@ -333,10 +333,23 @@
         <!-- No ContentTemplate here: per-step DataTemplates elsewhere would lose to one set here. -->
         <ContentControl Grid.Row="1" x:Name="StepContent" Content="{Binding Current}" />
 
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,16,0,0">
-            <Button x:Name="BackButton" Content="Back" Command="{Binding BackCommand}" />
-            <Button x:Name="SkipButton" Content="Skip" Command="{Binding SkipCommand}" />
-            <Button x:Name="NextButton" Content="Next" Command="{Binding NextCommand}" />
-        </StackPanel>
+        <!-- Left of the buttons: the outcome consumer's lines. Wizard-first mode has no tray and
+             no main window, so this footer is where a lane outcome actually becomes visible. -->
+        <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="0,16,0,0">
+            <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center" Margin="0,0,12,0">
+                <TextBlock x:Name="LifecycleStatusText" Text="{Binding Surface.StatusText}" TextWrapping="Wrap"
+                           Opacity="0.7"
+                           IsVisible="{Binding Surface.StatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                <TextBlock x:Name="LifecycleAttentionText" Text="{Binding Surface.AttentionText}" TextWrapping="Wrap"
+                           Foreground="#E53935"
+                           IsVisible="{Binding Surface.AttentionText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            </StackPanel>
+
+            <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                <Button x:Name="BackButton" Content="Back" Command="{Binding BackCommand}" />
+                <Button x:Name="SkipButton" Content="Skip" Command="{Binding SkipCommand}" />
+                <Button x:Name="NextButton" Content="Next" Command="{Binding NextCommand}" />
+            </StackPanel>
+        </Grid>
     </Grid>
 </rxui:ReactiveWindow>

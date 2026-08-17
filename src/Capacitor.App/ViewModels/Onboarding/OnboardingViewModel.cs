@@ -1,5 +1,6 @@
 using System.Reactive;
 using System.Reactive.Linq;
+using Capacitor.App.Services.Onboarding;
 using ReactiveUI;
 
 namespace Capacitor.App.ViewModels.Onboarding;
@@ -11,6 +12,10 @@ public sealed class OnboardingViewModel : ReactiveObject {
     bool _navigating;
 
     public IReadOnlyList<IWizardStep> Steps { get; }
+
+    /// Wizard-first mode builds no tray and no main window, so the outcome consumer's Status/
+    /// Attention lines are rendered here (spec decision 2). Null in tests that don't need them.
+    public WizardLifecycleSurface? Surface { get; }
 
     int _index;
 
@@ -36,8 +41,11 @@ public sealed class OnboardingViewModel : ReactiveObject {
     /// The constructor's own initial-entry call, exposed so a test can await it deterministically.
     internal Task PendingEnterForTesting { get; }
 
-    public OnboardingViewModel(IEnumerable<IWizardStep> steps, CancellationToken shutdownToken = default) {
+    public OnboardingViewModel(
+            IEnumerable<IWizardStep> steps, CancellationToken shutdownToken = default,
+            WizardLifecycleSurface? surface = null) {
         _shutdownToken = shutdownToken;
+        Surface = surface;
         Steps = steps.Where(s => s.Applicable).ToList();
         if (Steps.Count == 0) throw new ArgumentException("at least one applicable step is required", nameof(steps));
 
