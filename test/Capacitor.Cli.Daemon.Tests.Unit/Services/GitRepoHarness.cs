@@ -13,7 +13,8 @@ internal static class GitRepoHarness {
         // 32 bits across 59 call sites, and since CreateDirectory is idempotent a collision silently
         // SHARES a directory — after which either test's cleanup() recursively deletes the other's
         // repo. Also closes the window between choosing a name and owning it.
-        var repoPath = Directory.CreateTempSubdirectory("kcap-orch-").FullName;
+        var tmp      = new TempDir();
+        var repoPath = tmp.Path;
 
         Git(repoPath, "init", "-q");
         Git(repoPath, "config", "user.email", "test@example.com");
@@ -22,11 +23,7 @@ internal static class GitRepoHarness {
         Git(repoPath, "add", "-A");
         Git(repoPath, "commit", "-q", "-m", "initial");
 
-        return (repoPath, () => {
-            try { Directory.Delete(repoPath, true); } catch {
-                /* best-effort */
-            }
-        });
+        return (repoPath, tmp.Dispose);
     }
 
     internal static void Git(string cwd, params string[] args) {

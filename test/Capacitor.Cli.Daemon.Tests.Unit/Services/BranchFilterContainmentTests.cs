@@ -18,7 +18,10 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// out through git and so holds LFS pointer text (standalone and borrowed snapshots carry the source's own
 /// bytes), and the overrides cover kcap's creation commands only — not git the agent later runs there.</para>
 /// </summary>
-public class BranchFilterContainmentTests {
+public class BranchFilterContainmentTests : IDisposable {
+    readonly TempDir _tmp = new();
+    public void Dispose() => _tmp.Dispose();
+
     // ── every defined driver is disabled ──
 
     /// <summary>
@@ -357,13 +360,9 @@ public class BranchFilterContainmentTests {
 
     // ── fixture ──
 
-    static string NewDir(string tag) {
-        var p = Path.Combine(Path.GetTempPath(), $"kcap-filt-{tag}-{Guid.NewGuid():N}"[..40]);
-        Directory.CreateDirectory(p);
-        return p;
-    }
+    string NewDir(string tag) => _tmp.CreateDir(tag);
 
-    static string NewRepo() {
+    string NewRepo() {
         var repo = NewDir("repo");
         Git(repo, "init", "-q");
         Git(repo, "config", "user.email", "t@e.com");

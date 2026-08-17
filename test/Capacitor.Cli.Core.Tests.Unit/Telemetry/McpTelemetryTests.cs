@@ -11,7 +11,10 @@ namespace Capacitor.Cli.Core.Tests.Unit.Telemetry;
     nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
     nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
 ])]
-public class McpTelemetryTests {
+public class McpTelemetryTests : IDisposable {
+    readonly TempDir _tmp = new();
+    public void Dispose() => _tmp.Dispose();
+
     // CliTelemetry holds process-global static state (Enabled, TestSink, ...). A prior test
     // elsewhere in the suite (e.g. one that persists `telemetry off`) can leave Enabled=false
     // behind via CliTelemetry.DiscardAndDisable — reset before touching TestSink so every test
@@ -19,10 +22,9 @@ public class McpTelemetryTests {
     [Before(Test)]
     public void ResetTelemetry() => CliTelemetry.Reset();
 
-    static List<TelemetryEvent> StartCapturing() {
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-mcp-{Guid.NewGuid():N}");
-        TelemetryState.PathOverride    = Path.Combine(dir, "telemetry.json");
-        TelemetryDeviceId.PathOverride = Path.Combine(dir, "telemetry-device.json");
+    List<TelemetryEvent> StartCapturing() {
+        TelemetryState.PathOverride    = _tmp.PathTo("telemetry.json");
+        TelemetryDeviceId.PathOverride = _tmp.PathTo("telemetry-device.json");
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
         CliTelemetry.Initialize("mcp-server", null, loggedIn: false);

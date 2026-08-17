@@ -13,7 +13,10 @@ namespace Capacitor.Cli.Daemon.Tests.Unit;
 /// <c>AntigravityReviewerLaunchTests</c>); what these pin is that the list this daemon advertises
 /// derives from that ladder rather than from a second, separately-maintained narrowing pass.
 /// </summary>
-public class DaemonRunnerAntigravityFloorTests {
+public class DaemonRunnerAntigravityFloorTests : IDisposable {
+    readonly TempDir _tmp = new();
+    public void Dispose() => _tmp.Dispose();
+
     sealed class FakeFactory(string vendor, bool advertised) : IHostedAgentRuntimeFactory {
         public string Vendor             { get; } = vendor;
         public bool   SupportsUnattended { get; } = advertised;
@@ -27,12 +30,11 @@ public class DaemonRunnerAntigravityFloorTests {
     /// <param name="minimum">Recorded exactly as enabling the reviewer does in production. Null
     /// records NOTHING — the gate is a daemon-owned record, not configuration, so "unset" is an absent
     /// file rather than a value.</param>
-    static DaemonConfig Config(string? minimum = "1.1.10") {
+    DaemonConfig Config(string? minimum = "1.1.10") {
         var config = new DaemonConfig {
             AntigravityPath                      = "agy",
             AntigravityUnattendedReviewerEnabled = true,
-            StateDir                             = Path.Combine(
-                Path.GetTempPath(), "kcap-agy-floor-" + Guid.NewGuid().ToString("N")),
+            StateDir                             = _tmp.Path,
             Name                                 = "test-daemon"
         };
 

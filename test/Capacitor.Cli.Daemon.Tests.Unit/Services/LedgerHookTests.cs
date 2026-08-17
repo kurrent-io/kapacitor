@@ -4,11 +4,16 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
-public class LedgerHookTests {
-    static (AgentPidRecordStore store, ResolvedCandidatesLedger ledger, string dir) NewPair() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-hook-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(dir);
-        return (new AgentPidRecordStore(dir, NullLogger.Instance), new ResolvedCandidatesLedger(dir, NullLogger.Instance), dir);
+public class LedgerHookTests : IDisposable {
+    readonly TempDir _tmp = new();
+    public void Dispose() => _tmp.Dispose();
+
+    (AgentPidRecordStore store, ResolvedCandidatesLedger ledger, string dir) NewPair() {
+        return (
+            new AgentPidRecordStore(_tmp.Path, NullLogger.Instance),
+            new ResolvedCandidatesLedger(_tmp.Path, NullLogger.Instance),
+            dir: _tmp.Path
+        );
     }
 
     [Test]

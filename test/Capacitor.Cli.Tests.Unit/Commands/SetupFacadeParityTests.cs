@@ -26,7 +26,10 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
     nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
     nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
 ])]
-public class SetupFacadeParityTests {
+public class SetupFacadeParityTests : IDisposable {
+    readonly TempDir _tmp = new();
+    public void Dispose() => _tmp.Dispose();
+
     static string TokensDir  => PathHelpers.ConfigPath("tokens");
     static string LegacyPath => PathHelpers.ConfigPath("tokens.json");
     static string ConfigPath => AppConfig.GetConfigPath();
@@ -45,10 +48,9 @@ public class SetupFacadeParityTests {
 
     static bool TokenFileExists(string profile) => File.Exists(Path.Combine(TokensDir, $"{profile}.json"));
 
-    static List<TelemetryEvent> StartCapturingFunnel() {
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-setup-facade-funnel-{Guid.NewGuid():N}");
-        TelemetryState.PathOverride    = Path.Combine(dir, "telemetry.json");
-        TelemetryDeviceId.PathOverride = Path.Combine(dir, "telemetry-device.json");
+    List<TelemetryEvent> StartCapturingFunnel() {
+        TelemetryState.PathOverride    = _tmp.PathTo("telemetry.json");
+        TelemetryDeviceId.PathOverride = _tmp.PathTo("telemetry-device.json");
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
         CliTelemetry.Initialize("setup", null, loggedIn: false);

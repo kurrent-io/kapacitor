@@ -4200,7 +4200,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
-    public async ValueTask DisposeAsync() {
+    public virtual async ValueTask DisposeAsync() {
         if (Interlocked.Exchange(ref _disposeOnce, 1) != 0) return;
 
         Interlocked.Increment(ref _disposeBodyRuns);

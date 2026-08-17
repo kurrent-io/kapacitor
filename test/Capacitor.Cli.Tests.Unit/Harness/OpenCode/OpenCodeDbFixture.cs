@@ -5,9 +5,10 @@ namespace Capacitor.Cli.Tests.Unit.Harness.OpenCode;
 
 /// <summary>Builds a throwaway OpenCode-shaped SQLite db for import tests.</summary>
 internal sealed class OpenCodeDbFixture : IDisposable {
-    public string Dir        { get; } = Directory.CreateTempSubdirectory("kcap-ocfix").FullName;
-    public string DbPath     => Path.Combine(Dir, "opencode.db");
-    public string LedgerPath => Path.Combine(Dir, "ledger.json"); // isolates each test from the real ~/.cache ledger
+    readonly TempDir _tmp = new();
+    public string Dir        => _tmp.Path;
+    public string DbPath     => _tmp.PathTo("opencode.db");
+    public string LedgerPath => _tmp.PathTo("ledger.json"); // isolates each test from the real ~/.cache ledger
 
     public OpenCodeDbFixture() {
         using var c = Open();

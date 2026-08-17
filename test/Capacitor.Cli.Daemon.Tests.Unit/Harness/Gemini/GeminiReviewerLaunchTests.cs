@@ -13,7 +13,10 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Gemini;
 /// channel (it starts normally and can never report), and a reviewer launched with approval prompting
 /// restored (it stalls on a permission frame no human answers).</para>
 /// </summary>
-public class GeminiReviewerLaunchTests {
+public class GeminiReviewerLaunchTests : IDisposable {
+    readonly TempDir _tmp = new();
+    public void Dispose() => _tmp.Dispose();
+
     static readonly Guid ChannelGuid   = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     static readonly Guid DenyGuid      = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
     static readonly Guid AllowlistGuid = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
@@ -25,11 +28,13 @@ public class GeminiReviewerLaunchTests {
     /// <summary>Enabled AND carrying an affirmation for the build these launches report, seeded exactly
     /// as enabling the reviewer does in production. Without the affirmation every launch is refused over
     /// an upgrade that never happened.</summary>
-    static DaemonConfig EnabledConfig {
+    // EnabledConfig is a property, not a field: every read builds a fresh isolated StateDir so one
+    // test's version affirmation can never leak into another's.
+    DaemonConfig EnabledConfig {
         get {
             var config = new DaemonConfig {
                 GeminiUnattendedReviewerEnabled = true,
-                StateDir = Path.Combine(Path.GetTempPath(), "kcap-gemini-launch-" + Guid.NewGuid().ToString("N")),
+                StateDir = _tmp.CreateDir(Guid.NewGuid().ToString("N")),
                 Name     = "test-daemon"
             };
 
@@ -55,7 +60,7 @@ public class GeminiReviewerLaunchTests {
         DaemonBridgeUrl: null, CapacitorPath: "/usr/local/bin/kcap")
         with { LaunchIdentity = Identity, McpAllowlist = mcpAllowlist };
 
-    static string[] Build(bool isReviewFlow, DaemonConfig? config = null, string? version = null,
+    string[] Build(bool isReviewFlow, DaemonConfig? config = null, string? version = null,
                           string[]? mcpAllowlist = null) =>
         [.. AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
                 AcpVendorDescriptors.Gemini, config ?? EnabledConfig, Ctx(isReviewFlow, mcpAllowlist),

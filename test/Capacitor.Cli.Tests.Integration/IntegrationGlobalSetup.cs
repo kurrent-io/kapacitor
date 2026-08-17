@@ -32,20 +32,17 @@ namespace Capacitor.Cli.Tests.Integration;
 /// in-process tests as safe as the subprocess-based ones.
 /// </summary>
 public class IntegrationGlobalSetup {
-    internal static readonly string SharedConfigDir = Path.Combine(
-        Path.GetTempPath(),
-        "kcap-integration-tests-" + Guid.NewGuid().ToString("N")[..8]
-    );
+    static readonly TempDir Tmp = new();
+    internal static string SharedConfigDir => Tmp.Path;
 
     [ModuleInitializer]
     internal static void SetConfigDir() {
-        Directory.CreateDirectory(SharedConfigDir);
         Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", SharedConfigDir);
     }
 
     [After(Assembly)]
     public static void CleanupConfigDir() {
         Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
-        try { Directory.Delete(SharedConfigDir, recursive: true); } catch { /* best effort */ }
+        Tmp.Dispose();
     }
 }

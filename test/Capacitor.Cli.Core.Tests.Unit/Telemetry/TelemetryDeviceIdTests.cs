@@ -71,8 +71,8 @@ public class TelemetryDeviceIdTests {
 
     [Test]
     public async Task Corrupt_file_heals_on_get_or_create() {
-        using var tmp = TempDir.WithPathTo("telemetry-device.json", out var path);
-        File.WriteAllText(path, "{ not json");
+        using var tmp = new TempDir();
+        var path = tmp.CreateFile("telemetry-device.json", "{ not json");
         TelemetryDeviceId.PathOverride = path;
 
         var first  = TelemetryDeviceId.GetOrCreate();
@@ -90,9 +90,9 @@ public class TelemetryDeviceIdTests {
     // directly always mints/returns an id, full stop.
     [Test]
     public async Task Get_or_create_is_unaffected_by_telemetry_state() {
-        using var tmp = TempDir.WithPathTo("telemetry-device.json", out var deviceIdPath);
-        TelemetryState.PathOverride    = Path.Combine(Path.GetTempPath(), $"kcap-device-id-{Guid.NewGuid():N}", "telemetry.json");
-        TelemetryDeviceId.PathOverride = deviceIdPath;
+        using var tmp = new TempDir();
+        TelemetryState.PathOverride    = tmp.PathTo("state", "telemetry.json");
+        TelemetryDeviceId.PathOverride = tmp.PathTo("telemetry-device.json");
         TelemetryState.SetEnabled(false);
 
         var id = TelemetryDeviceId.GetOrCreate();
@@ -104,9 +104,9 @@ public class TelemetryDeviceIdTests {
     // grounds that opt-out can delete it outright, not merely stop minting new ones.
     [Test]
     public async Task Set_enabled_false_deletes_an_existing_device_id() {
-        using var tmp = TempDir.WithPathTo("telemetry-device.json", out var deviceIdPath);
-        TelemetryState.PathOverride    = Path.Combine(Path.GetTempPath(), $"kcap-device-id-{Guid.NewGuid():N}", "telemetry.json");
-        TelemetryDeviceId.PathOverride = deviceIdPath;
+        using var tmp = new TempDir();
+        TelemetryState.PathOverride    = tmp.PathTo("state", "telemetry.json");
+        TelemetryDeviceId.PathOverride = tmp.PathTo("telemetry-device.json");
         var id = TelemetryDeviceId.GetOrCreate();
         await Assert.That(id).IsNotNull();
 
@@ -120,9 +120,9 @@ public class TelemetryDeviceIdTests {
     // more private behaviour the spec calls for.
     [Test]
     public async Task Re_enabling_after_disable_mints_a_fresh_device_id() {
-        using var tmp = TempDir.WithPathTo("telemetry-device.json", out var deviceIdPath);
-        TelemetryState.PathOverride    = Path.Combine(Path.GetTempPath(), $"kcap-device-id-{Guid.NewGuid():N}", "telemetry.json");
-        TelemetryDeviceId.PathOverride = deviceIdPath;
+        using var tmp = new TempDir();
+        TelemetryState.PathOverride    = tmp.PathTo("state", "telemetry.json");
+        TelemetryDeviceId.PathOverride = tmp.PathTo("telemetry-device.json");
         var original = TelemetryDeviceId.GetOrCreate();
 
         TelemetryState.SetEnabled(false);
@@ -135,9 +135,9 @@ public class TelemetryDeviceIdTests {
 
     [Test]
     public async Task Set_enabled_true_preserves_existing_device_id() {
-        using var tmp = TempDir.WithPathTo("telemetry-device.json", out var deviceIdPath);
-        TelemetryState.PathOverride    = Path.Combine(Path.GetTempPath(), $"kcap-device-id-{Guid.NewGuid():N}", "telemetry.json");
-        TelemetryDeviceId.PathOverride = deviceIdPath;
+        using var tmp = new TempDir();
+        TelemetryState.PathOverride    = tmp.PathTo("state", "telemetry.json");
+        TelemetryDeviceId.PathOverride = tmp.PathTo("telemetry-device.json");
         var id = TelemetryDeviceId.GetOrCreate();
 
         TelemetryState.SetEnabled(true);

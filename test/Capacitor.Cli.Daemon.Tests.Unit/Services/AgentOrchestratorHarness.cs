@@ -14,7 +14,6 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// and <see cref="WaitHarness"/>.
 /// </summary>
 internal static class AgentOrchestratorHarness {
-
     internal static AgentOrchestrator BuildOrchestrator(
             ServerConnection                                    server,
             IPtyProcessFactory                                  ptyFactory,
@@ -38,15 +37,16 @@ internal static class AgentOrchestratorHarness {
             // inline arm and the publication barrier. Production never has that window.
             bool                                                deferProcessorPublication = false
         ) {
+        var tmp    = new TempDir();
         var config = new DaemonConfig {
             Name                = "test",
             ServerUrl           = "http://127.0.0.1:1",
             ClaudePath          = "claude",
             MaxConcurrentAgents = 5,
-            WorktreeRoot        = Path.Combine(Path.GetTempPath(), "kcap-orch-wt-" + Guid.NewGuid().ToString("N")[..8]),
+            WorktreeRoot        = tmp.CreateDir("worktree"),
             // Phase B (D4): isolate the PID-record store to a temp dir so tests never touch the
             // real ~/.config/kcap/daemons.
-            StateDir            = Path.Combine(Path.GetTempPath(), "kcap-orch-state-" + Guid.NewGuid().ToString("N")[..8])
+            StateDir            = tmp.CreateDir("state")
         };
 
         if (allowedRepoPath is not null) {
@@ -75,7 +75,8 @@ internal static class AgentOrchestratorHarness {
             new LaunchConsentDecisionLog(config.StateDir!, NullLogger.Instance),
             prompter: null, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
-        return new AgentOrchestrator(
+        return new HarnessOrchestrator(
+            tmp,
             config,
             server,
             worktreeManager,
@@ -90,6 +91,54 @@ internal static class AgentOrchestratorHarness {
             consentGate,
             deferProcessorPublication
         );
+    }
+
+    /// <summary>Owns the scratch directory its config points at, so disposing the orchestrator — which
+    /// every call site already does — reaps it at test end. BuildOrchestrator is called from many
+    /// sites, so no per-test fixture could own that directory instead.</summary>
+    sealed class HarnessOrchestrator : AgentOrchestrator {
+        readonly TempDir _tmp;
+
+        internal HarnessOrchestrator(
+                TempDir                                                 tmp,
+                DaemonConfig                                            config,
+                ServerConnection                                        server,
+                WorktreeManager                                         worktreeManager,
+                RepoMatcher                                             repoMatcher,
+                IPtyProcessFactory                                      ptyFactory,
+                IHttpClientFactory                                      httpClientFactory,
+                LocalPermissionBridge                                   permissionBridge,
+                IReadOnlyDictionary<string, IHostedAgentLauncher>       launchers,
+                IReadOnlyDictionary<string, IHostedAgentRuntimeFactory> runtimeFactories,
+                IHostApplicationLifetime                                lifetime,
+                ILogger<AgentOrchestrator>                              logger,
+                LaunchConsentGate                                       consentGate,
+                bool                                                    deferProcessorPublication
+            ) : base(
+            config,
+            server,
+            worktreeManager,
+            repoMatcher,
+            ptyFactory,
+            httpClientFactory,
+            permissionBridge,
+            launchers,
+            runtimeFactories,
+            lifetime,
+            logger,
+            consentGate,
+            deferProcessorPublication
+        ) {
+            _tmp = tmp;
+        }
+
+        public override async ValueTask DisposeAsync() {
+            try {
+                await base.DisposeAsync();
+            } finally {
+                _tmp.Dispose();
+            }
+        }
     }
 
     internal sealed class StubHostLifetime : IHostApplicationLifetime {

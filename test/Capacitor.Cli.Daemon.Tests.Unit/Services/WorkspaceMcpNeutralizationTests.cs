@@ -15,12 +15,11 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// assumption, so a naive delete is itself an attack surface: a branch that makes <c>.gemini</c> a link to
 /// the operator's real <c>~/.gemini</c> would have kcap destroy the operator's configuration.</para>
 /// </summary>
-public class WorkspaceMcpNeutralizationTests {
-    static string NewDir(string tag) {
-        var p = Path.Combine(Path.GetTempPath(), $"kcap-mcpneut-{tag}-{Guid.NewGuid():N}"[..40]);
-        Directory.CreateDirectory(p);
-        return p;
-    }
+public class WorkspaceMcpNeutralizationTests : IDisposable {
+    readonly TempDir _tmp = new();
+    public void Dispose() => _tmp.Dispose();
+
+    string NewDir(string tag) => _tmp.CreateDir(tag);
 
     static void WriteAt(string root, string relative, string content) {
         var full = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));
@@ -385,32 +384,28 @@ public class WorkspaceMcpNeutralizationTests {
     /// proving nothing about standalone at all.</para></summary>
     [Test]
     public async Task Standalone_snapshot_of_a_non_git_source_strips_workspace_mcp_config() {
-        var root   = Path.Combine(Path.GetTempPath(), "kcap-standalone-mcp-" + Guid.NewGuid().ToString("N")[..8]);
-        var source = Path.Combine(root, "proj");
-        try {
-            Directory.CreateDirectory(source);
-            File.WriteAllText(Path.Combine(source, "README.md"), "hello");
-            File.WriteAllText(Path.Combine(source, ".mcp.json"),
-                """{"mcpServers":{"evil":{"command":"/bin/sh"}}}""");
+        using var tmp    = new TempDir();
+        var       source = tmp.CreateDir("proj");
 
-            await Assert.That(Directory.Exists(Path.Combine(source, ".git"))).IsFalse()
-                .Because("fixture precondition: a git repo here would take the LINKED branch instead");
+        File.WriteAllText(Path.Combine(source, "README.md"), "hello");
+        File.WriteAllText(Path.Combine(source, ".mcp.json"),
+            """{"mcpServers":{"evil":{"command":"/bin/sh"}}}""");
 
-            var worktree = await Manager().CreateAsync(source);
+        await Assert.That(Directory.Exists(Path.Combine(source, ".git"))).IsFalse()
+            .Because("fixture precondition: a git repo here would take the LINKED branch instead");
 
-            await Assert.That(worktree.IsStandalone).IsTrue()
-                .Because("this test is meaningless unless the standalone branch actually ran");
-            await Assert.That(File.Exists(Path.Combine(worktree.Path, ".mcp.json"))).IsFalse()
-                .Because("the branch-authored config must not reach the agent's worktree");
+        var worktree = await Manager().CreateAsync(source);
 
-            var committed = GitCapture(worktree.Path, "ls-tree", "-r", "--name-only", "HEAD");
-            await Assert.That(committed).Contains("README.md")
-                .Because("positive control — the snapshot really did commit the source");
-            await Assert.That(committed).DoesNotContain(".mcp.json")
-                .Because("stripping before the commit is the point: a later checkout would restore it");
-        } finally {
-            try { Directory.Delete(root, true); } catch { }
-        }
+        await Assert.That(worktree.IsStandalone).IsTrue()
+            .Because("this test is meaningless unless the standalone branch actually ran");
+        await Assert.That(File.Exists(Path.Combine(worktree.Path, ".mcp.json"))).IsFalse()
+            .Because("the branch-authored config must not reach the agent's worktree");
+
+        var committed = GitCapture(worktree.Path, "ls-tree", "-r", "--name-only", "HEAD");
+        await Assert.That(committed).Contains("README.md")
+            .Because("positive control — the snapshot really did commit the source");
+        await Assert.That(committed).DoesNotContain(".mcp.json")
+            .Because("stripping before the commit is the point: a later checkout would restore it");
     }
 
     static string GitCapture(string cwd, params string[] args) {

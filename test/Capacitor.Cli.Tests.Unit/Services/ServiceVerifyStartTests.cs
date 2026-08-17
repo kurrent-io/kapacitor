@@ -119,7 +119,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Happy_bootstrap_writes_marker_before_start_and_deletes_it_after_verified_success() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager();
@@ -150,7 +151,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Readiness_never_satisfied_rolls_back_and_reports_readiness_timeout() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager();
@@ -173,7 +175,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Ownership_mismatch_never_satisfies_the_predicate_and_never_uninstalls() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager { RunningPid = 111 };
@@ -196,7 +199,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Start_accepts_a_capability_incompatible_hello() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager();
@@ -216,7 +220,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Rollback_reserve_exhausted_while_still_loaded_is_restore_verification() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager { RemainsLoadedAfterStop = true, StopError = "launchctl bootout: 5: Input/output error" };
@@ -250,7 +255,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Rollback_reserve_exhausted_while_still_unknown_is_rollback_budget() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager { ProbeUnknownAfterStop = true, StopError = "launchctl bootout: 5: Input/output error" };
@@ -275,7 +281,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Predicate_holding_once_is_not_enough_a_failed_final_recheck_still_rolls_back() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager();
@@ -302,7 +309,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Final_recheck_gets_the_reserved_confirm_slice_when_the_primary_lands_near_the_deadline() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager();
@@ -331,7 +339,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task A_late_hello_never_hands_a_hung_query_a_second_full_budget() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var time = new FakeTimeProvider();
@@ -363,7 +372,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Final_recheck_at_a_different_incarnation_rolls_back_instead_of_committing() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             // A new job pid on every observation (KeepAlive respawn between the primary check and the
@@ -390,7 +400,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Start_success_records_committed_phase_before_deleting_the_marker() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager();
@@ -461,7 +472,8 @@ public class ServiceVerifyStartTests {
     [Arguments(true, "evidence_unreadable")]  // query saw the unit but the read reports absent
     public async Task Phase_a_absence_evidence_disambiguates_directive_missing_from_evidence_unreadable(
         bool unitPresent, string expectedReason) {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager { UnitPresent = unitPresent };
@@ -495,7 +507,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Plist_drift_between_phase_a_and_phase_b_rolls_back_to_29_without_ever_starting() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             // Loaded at the fresh query — the gated path must boot it out (never kickstart it)
@@ -541,7 +554,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Malformed_plist_at_phase_a_is_evidence_unreadable_and_touches_nothing() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager();
@@ -568,7 +582,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Duplicate_key_plist_at_phase_a_is_evidence_unreadable_and_touches_nothing() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager();
@@ -612,7 +627,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Garbage_plist_at_phase_b_recheck_is_treated_as_drift_and_rolls_back() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager { Started = true };
@@ -653,7 +669,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Phase_b_bootout_failure_never_kickstarts_the_stale_loaded_definition() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             // Loaded at the fresh query, and the FIRST Stop (Phase B's boot-out) reports an error —
@@ -694,7 +711,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Bootstrap_only_after_confirmed_bootout_a_lying_success_exit_still_rolls_back() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             // Stop() reports SUCCESS (no error) — the launchctl exit code alone — but the label is
@@ -732,7 +750,8 @@ public class ServiceVerifyStartTests {
     /// probes already saw matching content.</summary>
     [Test]
     public async Task Post_readiness_recheck_detects_plist_drift_after_confirmed_ready_and_rolls_back_to_29() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager();
@@ -772,7 +791,8 @@ public class ServiceVerifyStartTests {
     /// content drift — a swapped binary at the SAME baked path must still roll back to 29.</summary>
     [Test]
     public async Task Post_readiness_recheck_detects_digest_drift_after_confirmed_ready_and_rolls_back_to_29() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager();
@@ -806,7 +826,8 @@ public class ServiceVerifyStartTests {
     /// unchanged.</summary>
     [Test]
     public async Task Ungated_start_never_runs_the_post_readiness_recheck() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager();
@@ -828,7 +849,8 @@ public class ServiceVerifyStartTests {
 
     [Test]
     public async Task Bootstrap_only_never_kickstarts_a_label_that_turned_loaded_just_before_it() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             // Pre-mutation query sees Absent (no Phase B boot-out needed), but a foreign writer

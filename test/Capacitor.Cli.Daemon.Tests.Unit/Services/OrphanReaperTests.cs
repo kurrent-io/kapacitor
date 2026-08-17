@@ -13,12 +13,11 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// separate ENV-MARKER scan still SPARES on macOS 26 (other processes' env is redacted — the scan
 /// finds nothing; ambiguity never kills). The epoch-guard and gone-process paths are OS-independent.
 /// </summary>
-public class OrphanReaperTests {
-    static AgentPidRecordStore NewStore() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-orphan-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(dir);
-        return new AgentPidRecordStore(dir, NullLogger.Instance);
-    }
+public class OrphanReaperTests : IDisposable {
+    readonly TempDir _tmp = new();
+    public void Dispose() => _tmp.Dispose();
+
+    AgentPidRecordStore NewStore() => new(_tmp.Path, NullLogger.Instance);
 
     static AgentPidRecord Rec(string agentId, int pid, string identity, string daemonId, string epoch) =>
         new(agentId, pid, identity, PidIdentityKind.Present, "ReviewFlow", "codex", "flow-1", "reviewer", daemonId, epoch, DateTimeOffset.UtcNow);

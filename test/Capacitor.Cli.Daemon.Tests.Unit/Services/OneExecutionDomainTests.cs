@@ -584,9 +584,13 @@ public class OneExecutionDomainTests {
     // forced-pid-reuse case).
     [Test]
     public async Task A_child_surviving_shutdown_is_reaped_by_the_next_boots_scan_and_a_pid_reused_process_is_not() {
+        // The record root must outlive this orchestrator — surviving a shutdown is the whole subject —
+        // so the state dir is owned here rather than by the harness, whose orchestrator reaps its own
+        // scratch dir on dispose.
+        using var stateTmp = new TempDir();
         var server = new SeqCaptureServerConnection();
         var orch   = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(),
-            new Dictionary<string, IHostedAgentLauncher>());
+            new Dictionary<string, IHostedAgentLauncher>(), configure: c => c.StateDir = stateTmp.Path);
 
         // A child started AFTER the teardown snapshot: it exists and has a durable record, but the
         // orchestrator's registry never knew about it, so shutdown cannot terminate it.

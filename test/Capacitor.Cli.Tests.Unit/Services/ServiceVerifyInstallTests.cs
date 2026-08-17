@@ -7,7 +7,10 @@ using Microsoft.Extensions.Time.Testing;
 namespace Capacitor.Cli.Tests.Unit.Services;
 
 [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
-public class ServiceVerifyInstallTests {
+public class ServiceVerifyInstallTests : IDisposable {
+    readonly TempDir _tmp = new();
+    public void Dispose() => _tmp.Dispose();
+
     const string Id             = "svc-verify-install";
     const string ExpectedVersion = "1.2.3";
     const string OwnPlistContent = "<plist>own-unit</plist>";
@@ -92,8 +95,8 @@ public class ServiceVerifyInstallTests {
         return await task.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
-    static (string Dir, string DaemonPath) SetUpViableInstall() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+    (string Dir, string DaemonPath) SetUpViableInstall() {
+        var dir = _tmp.CreateDir(Guid.NewGuid().ToString("N"));
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         var daemonPath = Path.Combine(dir, "kcap-daemon");
         File.WriteAllText(daemonPath, "");
@@ -109,7 +112,8 @@ public class ServiceVerifyInstallTests {
 
     [Test]
     public async Task Viability_abort_missing_binary_touches_nothing() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var manager = new FakeServiceManager();

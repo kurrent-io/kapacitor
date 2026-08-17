@@ -4,10 +4,14 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
-public class ResolvedCandidatesLedgerTests {
-    static ResolvedCandidatesLedger New(out string dir) {
-        dir = Path.Combine(Path.GetTempPath(), "kcap-ledger-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(dir);
+// One test deletes and recreates its dir mid-test (below) — Dispose is best-effort and tolerates
+// that.
+public class ResolvedCandidatesLedgerTests : IDisposable {
+    readonly TempDir _tmp = new();
+    public void Dispose() => _tmp.Dispose();
+
+    ResolvedCandidatesLedger New(out string dir) {
+        dir = _tmp.Path;
         return new ResolvedCandidatesLedger(dir, NullLogger.Instance);
     }
 

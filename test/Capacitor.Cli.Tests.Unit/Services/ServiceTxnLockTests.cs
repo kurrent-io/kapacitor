@@ -7,7 +7,8 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 public class ServiceTxnLockTests {
     [Test]
     public async Task Acquire_release_and_probe() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             await Assert.That(ServiceTxnLock.IsHeld("a")).IsFalse();
@@ -29,8 +30,8 @@ public class ServiceTxnLockTests {
 
     [Test]
     public async Task Creates_missing_lock_directory() {
-        var tempParent = Directory.CreateTempSubdirectory().FullName;
-        var lockDir = Path.Combine(tempParent, "nonexistent-subdir");
+        using var tmp = new TempDir();
+        var lockDir = tmp.PathTo("nonexistent-subdir");
         DaemonLockPaths.OverrideDirectoryForTesting(lockDir);
         try {
             var l = ServiceTxnLock.TryAcquire("b", TimeSpan.Zero);

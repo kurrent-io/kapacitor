@@ -27,7 +27,12 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// outcome asserted below — i.e. this test FAILS on that regression, unlike the pre-round-4 test it
 /// replaces.
 /// </summary>
-public class AcpHostedAgentRuntimeFactoryTests {
+public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
+    readonly TempDir _tmp = new();
+    public void Dispose() => _tmp.Dispose();
+
+    string NewStateDir() => _tmp.CreateDir(Guid.NewGuid().ToString("N"));
+
     // 20s (was 5s): several barrier tests poll a REAL handshake for its "initialize" send within this
     // window; on the slower/differently-scheduled windows CI runner, under parallel load, that send
     // was not recorded within 5s and three ACP reap tests failed on the same
@@ -2200,10 +2205,10 @@ public class AcpHostedAgentRuntimeFactoryTests {
 
     const string GeminiBuild = "0.54.0";
 
-    static DaemonConfig GeminiEnabledConfig(string? affirmed = GeminiBuild) {
+    DaemonConfig GeminiEnabledConfig(string? affirmed = GeminiBuild) {
         var config = new DaemonConfig {
             GeminiUnattendedReviewerEnabled = true,
-            StateDir = Path.Combine(Path.GetTempPath(), "kcap-gemini-gate-" + Guid.NewGuid().ToString("N")),
+            StateDir = NewStateDir(),
             Name     = "test-daemon"
         };
 
@@ -2561,10 +2566,10 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// override the 120s default when a test needs the deadline to actually fire.</summary>
     const string OpenCodeBuild = "1.0.0";
 
-    static DaemonConfig OpenCodeEnabledConfig(int? launchTimeoutSeconds = null) {
+    DaemonConfig OpenCodeEnabledConfig(int? launchTimeoutSeconds = null) {
         var config = new DaemonConfig {
             OpenCodeUnattendedReviewerEnabled = true,
-            StateDir = Path.Combine(Path.GetTempPath(), "kcap-opencode-gate-" + Guid.NewGuid().ToString("N")),
+            StateDir = NewStateDir(),
             Name     = "test-daemon"
         };
 

@@ -9,7 +9,8 @@ public class ServiceTxnMarkerTests {
 
     [Test]
     public async Task Roundtrip_and_phase_update() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             ServiceTxnMarker.Write("a", M());
@@ -23,7 +24,8 @@ public class ServiceTxnMarkerTests {
 
     [Test]
     public async Task Corrupt_marker_reads_null() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             File.WriteAllText(ServiceTxnMarker.MarkerPath("a"), "{not json");
@@ -33,7 +35,8 @@ public class ServiceTxnMarkerTests {
 
     [Test]
     public async Task Missing_marker_reads_null_and_exists_is_false() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             await Assert.That(ServiceTxnMarker.Exists("missing")).IsFalse();
@@ -43,7 +46,8 @@ public class ServiceTxnMarkerTests {
 
     [Test]
     public async Task Marker_path_is_under_daemon_lock_paths_directory() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             await Assert.That(ServiceTxnMarker.MarkerPath("a")).IsEqualTo(Path.Combine(DaemonLockPaths.Directory, "a.service-txn"));
@@ -61,7 +65,8 @@ public class ServiceTxnMarkerTests {
 
     [Test]
     public async Task Delete_of_missing_marker_does_not_throw() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             ServiceTxnMarker.Delete("never-written");
@@ -73,7 +78,8 @@ public class ServiceTxnMarkerTests {
     // every platform .NET runs Delete on) — this is what the try/catch in Delete swallows.
     [Test]
     public async Task Write_and_delete_fire_the_directory_durability_barrier() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         var original = ServiceTxnMarker.FlushDirectory;
         var flushed  = new List<string>();
@@ -93,7 +99,8 @@ public class ServiceTxnMarkerTests {
 
     [Test]
     public async Task Delete_swallows_the_exception_when_the_path_cannot_be_deleted_as_a_file() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+        using var tmp = new TempDir();
+        var dir = tmp.Path;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
         try {
             var path = ServiceTxnMarker.MarkerPath("a");

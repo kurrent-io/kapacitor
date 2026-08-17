@@ -8,14 +8,21 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
     nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
     nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
 ])]
-public class ConfigTelemetryKeyTests {
+public class ConfigTelemetryKeyTests : IDisposable {
+    readonly TempDir _tmp = new();
+
+    public void Dispose() {
+        TelemetryState.PathOverride    = null;
+        TelemetryDeviceId.PathOverride = null;
+        _tmp.Dispose();
+    }
+
     // Also points TelemetryDeviceId at a fresh, colocated file: TryApplyTelemetry("telemetry",
     // "off") -> TelemetryState.SetEnabled(false) deletes the device id file as a side effect, so
     // leaving that static unset here would reach outside this test's own temp dir.
-    static void FreshState() {
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-cfg-{Guid.NewGuid():N}");
-        TelemetryState.PathOverride    = Path.Combine(dir, "telemetry.json");
-        TelemetryDeviceId.PathOverride = Path.Combine(dir, "telemetry-device.json");
+    void FreshState() {
+        TelemetryState.PathOverride    = _tmp.PathTo("telemetry.json");
+        TelemetryDeviceId.PathOverride = _tmp.PathTo("telemetry-device.json");
     }
 
     [Test]
