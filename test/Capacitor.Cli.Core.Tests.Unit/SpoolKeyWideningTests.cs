@@ -15,12 +15,16 @@ public class SpoolKeyWideningTests : IDisposable {
     // rejected almost every genuine OpenCode session.
     const string OpenCodeId = "ses_619a78374ffe7o0x1iTK74jFRg";
 
-    readonly string _dir  = Path.Combine(Path.GetTempPath(), $"kcap-widen-{Guid.NewGuid():N}");
-    readonly string _tdir = Path.Combine(Path.GetTempPath(), $"kcap-widen-t-{Guid.NewGuid():N}");
+    readonly TempDir _tmp = new();
+    readonly string  _dir;
+    readonly string  _tdir;
 
-    public void Dispose() {
-        foreach (var d in new[] { _dir, _tdir }) { try { Directory.Delete(d, true); } catch { } }
+    public SpoolKeyWideningTests() {
+        _tdir = _tmp.PathTo("tdir");
+        _dir  = _tmp.PathTo("dir");
     }
+
+    public void Dispose() => _tmp.Dispose();
 
     [Test]
     public async Task Lifecycle_filename_is_a_reversible_escape_not_a_digest() {

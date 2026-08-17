@@ -7,11 +7,11 @@ namespace Capacitor.Cli.Tests.Integration;
 
 public class ImportPrivateTests : IDisposable {
     readonly WireMockServer _server  = WireMockServer.Start();
-    readonly string         _tempDir = Directory.CreateTempSubdirectory("kcap-private-test").FullName;
+    readonly TempDir        _tmp     = new();
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_tempDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     [Test]

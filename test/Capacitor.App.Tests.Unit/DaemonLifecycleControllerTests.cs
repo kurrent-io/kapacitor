@@ -614,7 +614,7 @@ public class DaemonLifecycleControllerTests {
 
     [Test]
     public async Task DisposeAsync_is_idempotent() {
-        var h = new Harness();
+        await using var h = new Harness();
         h.Start();
 
         await h.Controller.DisposeAsync();
@@ -1325,7 +1325,8 @@ public class DaemonLifecycleControllerTests {
         public readonly FakeLifecycleSurface Surface = new();
         public readonly FakeTimeProvider Clock = new(new DateTimeOffset(2026, 8, 10, 9, 0, 0, TimeSpan.Zero));
         public readonly TimerCountingTimeProvider Time;
-        public readonly string TempDir = Directory.CreateTempSubdirectory("kcap-lifecycle-").FullName;
+        readonly TempDir _tmp = new();
+        public string TempDir => _tmp.Path;
         public readonly AppStateStore Store;
         public readonly FakeMutationLane Lane = new();
         public readonly DaemonLifecycleController Controller;
@@ -1355,7 +1356,7 @@ public class DaemonLifecycleControllerTests {
 
         public async ValueTask DisposeAsync() {
             await Controller.DisposeAsync();
-            try { Directory.Delete(TempDir, recursive: true); } catch { /* best-effort test cleanup */ }
+            _tmp.Dispose();
         }
     }
 }

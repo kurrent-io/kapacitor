@@ -3,9 +3,11 @@ using Capacitor.Cli.Commands;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class GuardedDiscoveryTests : IDisposable {
-    readonly string _root = Directory.CreateTempSubdirectory("kcap-guarded").FullName;
+    readonly TempDir _tmp = new();
+    readonly string  _root;
+    public GuardedDiscoveryTests() => _root = _tmp.Path;
 
-    public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
+    public void Dispose() => _tmp.Dispose();
 
     [Test]
     public async Task EnumerateFiles_survives_symlink_cycle() {

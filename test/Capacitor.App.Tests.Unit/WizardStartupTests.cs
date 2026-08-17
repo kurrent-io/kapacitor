@@ -91,7 +91,8 @@ static class WizardFixtures {
     /// wizard built no daemon graph" and "the daemon step's ops/CLI are late-bound" are both
     /// directly observable.
     internal sealed class GraphHarness : IDisposable {
-        public readonly string Dir = Directory.CreateTempSubdirectory("kcap-wizard-graph-").FullName;
+        readonly TempDir _tmp = new();
+        public string Dir => _tmp.Path;
         public readonly RecordingLane Lane = new();
         public readonly ScriptedLocalControlOps Ops = new();
         public readonly FakeKcapCli Cli = new();
@@ -172,9 +173,7 @@ static class WizardFixtures {
             Time: TimeProvider.System,
             ShutdownToken: CancellationToken.None);
 
-        public void Dispose() {
-            try { Directory.Delete(Dir, recursive: true); } catch { /* best-effort test cleanup */ }
-        }
+        public void Dispose() => _tmp.Dispose();
     }
 }
 

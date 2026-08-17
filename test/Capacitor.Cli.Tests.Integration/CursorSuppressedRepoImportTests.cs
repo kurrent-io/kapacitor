@@ -17,14 +17,14 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class CursorSuppressedRepoImportTests : IDisposable {
     readonly WireMockServer _server  = WireMockServer.Start();
-    readonly string         _tempDir = Directory.CreateTempSubdirectory("kcap-cursor-suppressed-repo-it").FullName;
+    readonly TempDir        _tmp     = new();
 
-    string ProjectsDir         => Path.Combine(_tempDir, ".cursor", "projects");
-    string WorkspaceStorageDir => Path.Combine(_tempDir, "workspaceStorage");
+    string ProjectsDir         => _tmp.PathTo(".cursor", "projects");
+    string WorkspaceStorageDir => _tmp.PathTo("workspaceStorage");
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_tempDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     const string SessionId = "11111111-1111-1111-1111-111111111111";

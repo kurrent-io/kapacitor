@@ -4,12 +4,13 @@ using Capacitor.Cli.Commands;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class EndedAtResolverTests : IDisposable {
-    readonly string _dir = Directory.CreateTempSubdirectory("kcap-endedat").FullName;
-    public void Dispose() { try { Directory.Delete(_dir, recursive: true); } catch { } }
+    readonly TempDir _tmp = new();
+
+    public void Dispose() => _tmp.Dispose();
 
     [Test]
     public async Task Copilot_shutdown_is_the_end_even_when_last_line() {
-        var path = Path.Combine(_dir, "events.jsonl");
+        var path = _tmp.PathTo("events.jsonl");
         File.WriteAllLines(path, new[] {
             """{"type":"user.message","timestamp":"2026-06-12T10:00:00.000Z","data":{"content":"hi"}}""",
             """{"type":"assistant.message","timestamp":"2026-06-12T10:00:05.000Z","data":{"content":"yo"}}""",
@@ -24,7 +25,7 @@ public class EndedAtResolverTests : IDisposable {
 
     [Test]
     public async Task LastTimestamp_scans_tail_for_last_timestamped_record() {
-        var path = Path.Combine(_dir, "s.jsonl");
+        var path = _tmp.PathTo("s.jsonl");
         File.WriteAllLines(path, new[] {
             """{"timestamp":"2026-06-12T10:00:00.000Z"}""",
             """{"no_timestamp":true}""",

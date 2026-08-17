@@ -14,13 +14,14 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class McpReviewServerTests : IDisposable {
     readonly WireMockServer _server           = WireMockServer.Start();
-    readonly string         _cfgDir           = Path.Combine(Path.GetTempPath(), $"kcap-review-cfg-{Guid.NewGuid():N}");
-    readonly string         _cwdDir           = Path.Combine(Path.GetTempPath(), $"kcap-review-cwd-{Guid.NewGuid():N}");
+    readonly TempDir        _tmp              = new();
+    readonly string         _cfgDir;
+    readonly string         _cwdDir;
     readonly List<Process>  _spawnedProcesses = [];
 
     public McpReviewServerTests() {
-        Directory.CreateDirectory(_cfgDir);
-        Directory.CreateDirectory(_cwdDir);
+        _cfgDir = _tmp.CreateDir("cfg");
+        _cwdDir = _tmp.CreateDir("cwd");
         InitGitRepo(_cwdDir);
     }
 
@@ -35,8 +36,7 @@ public class McpReviewServerTests : IDisposable {
         }
 
         _server.Stop();
-        try { Directory.Delete(_cfgDir, recursive: true); } catch { /* best effort */ }
-        try { Directory.Delete(_cwdDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     static void InitGitRepo(string dir) {

@@ -13,14 +13,14 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 [NotInParallel]
 public class PermissionRequestWatcherSelfHealTests {
-    static readonly string TempDir = Path.Combine(Path.GetTempPath(), "kcap-permreq-watcher-tests");
+    static readonly TempDir Tmp = new();
+    static string TempDir => Tmp.Path;
 
     static string? _previousWatcherDir;
 
     [Before(Class)]
     public static void SetUp() {
         _previousWatcherDir = Environment.GetEnvironmentVariable("KCAP_WATCHER_DIR");
-        Directory.CreateDirectory(TempDir);
         Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", TempDir);
     }
 
@@ -29,10 +29,7 @@ public class PermissionRequestWatcherSelfHealTests {
         // Restore any preexisting value rather than clobbering to null, so a test process
         // started with KCAP_WATCHER_DIR set isn't left altered for later test classes.
         Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", _previousWatcherDir);
-
-        try { Directory.Delete(TempDir, recursive: true); } catch {
-            /* best effort */
-        }
+        Tmp.Dispose();
     }
 
     static (string sessionId, string transcriptPath, string pidFile) NewSession() {

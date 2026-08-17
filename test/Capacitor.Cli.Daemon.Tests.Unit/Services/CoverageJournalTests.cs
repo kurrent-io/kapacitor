@@ -8,10 +8,16 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 public class CoverageJournalTests {
     // Real DaemonLock lifecycle so the InstanceId chain is genuine, never a hand-edited marker.
     sealed class Harness : IDisposable {
-        public readonly string LockDir  = Path.Combine(Path.GetTempPath(), "kcap-cov-lock", Guid.NewGuid().ToString("N"));
-        public readonly string StateDir = Path.Combine(Path.GetTempPath(), "kcap-cov-state", Guid.NewGuid().ToString("N"));
-        public Harness() { Directory.CreateDirectory(LockDir); Directory.CreateDirectory(StateDir);
-            DaemonLockPaths.OverrideDirectoryForTesting(LockDir); }
+        readonly TempDir _tmp = new();
+        public readonly string LockDir;
+        public readonly string StateDir;
+
+        public Harness() {
+            LockDir  = _tmp.CreateDir("lock");
+            StateDir = _tmp.CreateDir("state");
+            DaemonLockPaths.OverrideDirectoryForTesting(LockDir);
+        }
+
         // One real boot: acquire the lock, record coverage (aware), dispose.
         public bool AwareBoot(bool contained = true) {
             using var l = DaemonLock.TryAcquire("alpha")!;
@@ -20,8 +26,7 @@ public class CoverageJournalTests {
         }
         // An unaware/old boot: acquires the real lock (mints a fresh InstanceId) but writes NO journal.
         public static void UnawareBoot() { using var l = DaemonLock.TryAcquire("alpha")!; }
-        public void Dispose() { DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(LockDir, true); } catch { } try { Directory.Delete(StateDir, true); } catch { } }
+        public void Dispose() { DaemonLockPaths.OverrideDirectoryForTesting(null); _tmp.Dispose(); }
     }
 
     [Test] public async Task Genesis_first_ever_contained_boot_seeds_true() {

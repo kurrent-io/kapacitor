@@ -12,8 +12,8 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task Install_copies_each_source_to_kcap_prefixed_target() {
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
 
         foreach (var name in SourceNames) {
             Directory.CreateDirectory(Path.Combine(src.Path, name));
@@ -33,8 +33,8 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task Install_rewrites_name_frontmatter_to_kcap_prefix() {
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
 
         foreach (var name in SourceNames.Where(n => n != "recap")) {
             Directory.CreateDirectory(Path.Combine(src.Path, name));
@@ -56,8 +56,8 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task Install_copies_nested_files_verbatim() {
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
 
         foreach (var name in SourceNames.Where(n => n != "recap")) {
             Directory.CreateDirectory(Path.Combine(src.Path, name));
@@ -79,8 +79,8 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task Install_leaves_user_authored_folders_untouched() {
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
 
         var foreign = Path.Combine(dst.Path, "user-skill");
         Directory.CreateDirectory(foreign);
@@ -100,8 +100,8 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task Install_replaces_existing_kcap_folder_atomically() {
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
 
         var stale = Path.Combine(dst.Path, "kcap-recap");
         Directory.CreateDirectory(stale);
@@ -126,8 +126,8 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task Install_returns_false_when_a_source_folder_is_missing() {
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
 
         Directory.CreateDirectory(Path.Combine(src.Path, "recap"));
         await File.WriteAllTextAsync(
@@ -142,8 +142,8 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task Install_returns_false_when_SKILL_md_is_missing() {
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
 
         // Every folder exists, but one is missing its SKILL.md
         foreach (var name in SourceNames) {
@@ -164,7 +164,7 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task Remove_deletes_kcap_prefixed_folders_only() {
-        using var dst = new InstallerTempDir();
+        using var dst = new TempDir();
 
         foreach (var src in SourceNames) {
             Directory.CreateDirectory(Path.Combine(dst.Path, $"kcap-{src}"));
@@ -183,7 +183,7 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task Remove_returns_false_when_no_kcap_folders_present() {
-        using var dst = new InstallerTempDir();
+        using var dst = new TempDir();
         Directory.CreateDirectory(Path.Combine(dst.Path, "someone-elses-skill"));
 
         var result = AgentsSkillsInstaller.Remove(dst.Path);
@@ -194,7 +194,7 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task CleanLegacyCodexSkills_removes_only_known_kcap_folders() {
-        using var fakeHome = new InstallerTempDir();
+        using var fakeHome = new TempDir();
         var legacy = Path.Combine(fakeHome.Path, ".codex", "skills");
         Directory.CreateDirectory(legacy);
 
@@ -215,7 +215,7 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task CleanLegacyCodexSkills_removes_empty_parent_dir() {
-        using var fakeHome = new InstallerTempDir();
+        using var fakeHome = new TempDir();
         var legacy = Path.Combine(fakeHome.Path, ".codex", "skills");
         Directory.CreateDirectory(legacy);
         foreach (var name in AgentsSkillsInstaller.LegacyCodexSkillNames) {
@@ -229,7 +229,7 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task CleanLegacyCodexSkills_preserves_non_empty_parent_dir() {
-        using var fakeHome = new InstallerTempDir();
+        using var fakeHome = new TempDir();
         var legacy = Path.Combine(fakeHome.Path, ".codex", "skills");
         Directory.CreateDirectory(legacy);
         Directory.CreateDirectory(Path.Combine(legacy, "kcap-recap"));
@@ -243,7 +243,7 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task CleanLegacyCodexSkills_is_noop_when_parent_dir_missing() {
-        using var fakeHome = new InstallerTempDir();
+        using var fakeHome = new TempDir();
         var legacy = Path.Combine(fakeHome.Path, ".codex", "skills");
         // legacy dir not created
 
@@ -255,8 +255,8 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task Install_writes_version_marker_at_target_root() {
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
         await SeedSourceSkills(src.Path);
 
         AgentsSkillsInstaller.Install(src.Path, dst.Path);
@@ -270,8 +270,8 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task IsInstalled_is_false_before_install_and_true_after() {
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
         await SeedSourceSkills(src.Path);
 
         await Assert.That(AgentsSkillsInstaller.IsInstalled(dst.Path)).IsFalse();
@@ -283,15 +283,15 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task ReadMarker_returns_null_when_marker_missing() {
-        using var dst = new InstallerTempDir();
+        using var dst = new TempDir();
         var marker = AgentsSkillsInstaller.ReadMarker(dst.Path);
         await Assert.That(marker).IsNull();
     }
 
     [Test]
     public async Task ReadMarker_returns_written_version_after_install() {
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
         await SeedSourceSkills(src.Path);
 
         AgentsSkillsInstaller.Install(src.Path, dst.Path);
@@ -303,8 +303,8 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task IsCurrent_is_true_after_a_fresh_install() {
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
         await SeedSourceSkills(src.Path);
 
         AgentsSkillsInstaller.Install(src.Path, dst.Path);
@@ -314,7 +314,7 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task IsCurrent_is_false_when_marker_missing() {
-        using var dst = new InstallerTempDir();
+        using var dst = new TempDir();
         // No install, no marker.
         await Assert.That(AgentsSkillsInstaller.IsCurrent(dst.Path)).IsFalse();
     }
@@ -323,8 +323,8 @@ public class AgentsSkillsInstallerTests {
     public async Task IsCurrent_is_false_when_a_skill_folder_deleted_despite_marker() {
         // Self-heal guard: a matching marker whose skill folders were deleted must NOT
         // read as current, or the install/refresh would skip and leave the agent without skills.
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
         await SeedSourceSkills(src.Path);
 
         AgentsSkillsInstaller.Install(src.Path, dst.Path);
@@ -338,8 +338,8 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task Remove_deletes_version_marker() {
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
         await SeedSourceSkills(src.Path);
 
         AgentsSkillsInstaller.Install(src.Path, dst.Path);
@@ -355,7 +355,7 @@ public class AgentsSkillsInstallerTests {
         // Regression: users whose skills were installed before the marker
         // existed must still be detected as "installed" so the first upgrade
         // onto a marker-aware build refreshes them instead of no-opping.
-        using var dst = new InstallerTempDir();
+        using var dst = new TempDir();
         Directory.CreateDirectory(Path.Combine(dst.Path, "kcap-recap"));
 
         await Assert.That(AgentsSkillsInstaller.IsInstalled(dst.Path)).IsTrue();
@@ -363,7 +363,7 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task IsInstalled_returns_false_when_only_unrelated_folders_present() {
-        using var dst = new InstallerTempDir();
+        using var dst = new TempDir();
         Directory.CreateDirectory(Path.Combine(dst.Path, "user-skill"));
         Directory.CreateDirectory(Path.Combine(dst.Path, "kcap-something-else"));
 
@@ -372,8 +372,8 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task Install_failure_does_not_write_marker() {
-        using var src = new InstallerTempDir();
-        using var dst = new InstallerTempDir();
+        using var src = new TempDir();
+        using var dst = new TempDir();
         // Empty source — Install should fail.
 
         var ok = AgentsSkillsInstaller.Install(src.Path, dst.Path);
@@ -395,8 +395,8 @@ public class AgentsSkillsInstallerTests {
         // Asserts the contract: install runs first, legacy cleanup runs only on success.
         // The contract lives in PluginCommand (caller); here we verify the unit
         // primitives are independent and the caller can sequence them safely.
-        using var src      = new InstallerTempDir();
-        using var fakeHome = new InstallerTempDir();
+        using var src      = new TempDir();
+        using var fakeHome = new TempDir();
         var legacy = Path.Combine(fakeHome.Path, ".codex", "skills");
         Directory.CreateDirectory(legacy);
         Directory.CreateDirectory(Path.Combine(legacy, "kcap-recap"));
@@ -411,7 +411,7 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task Remove_returns_RemovedAny_false_HadErrors_false_when_no_kcap_folders_in_populated_dir() {
-        using var dst = new InstallerTempDir();
+        using var dst = new TempDir();
         Directory.CreateDirectory(Path.Combine(dst.Path, "someone-elses-skill"));
 
         var result = AgentsSkillsInstaller.Remove(dst.Path);
@@ -422,7 +422,7 @@ public class AgentsSkillsInstallerTests {
 
     [Test]
     public async Task CleanLegacyCodexSkills_returns_RemovedAny_false_HadErrors_false_when_dir_missing() {
-        using var fakeHome = new InstallerTempDir();
+        using var fakeHome = new TempDir();
         var legacy = Path.Combine(fakeHome.Path, ".codex", "skills");
         // legacy dir not created — simulates never having had Codex installed
 
@@ -430,17 +430,5 @@ public class AgentsSkillsInstallerTests {
 
         await Assert.That(result.RemovedAny).IsFalse();
         await Assert.That(result.HadErrors).IsFalse();
-    }
-
-    sealed class InstallerTempDir : IDisposable {
-        public string Path { get; }
-        public InstallerTempDir() {
-            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                $"kcap-installer-{Guid.NewGuid():N}");
-            Directory.CreateDirectory(Path);
-        }
-        public void Dispose() {
-            if (Directory.Exists(Path)) Directory.Delete(Path, recursive: true);
-        }
     }
 }

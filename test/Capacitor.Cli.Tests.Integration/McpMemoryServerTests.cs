@@ -15,13 +15,14 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class McpMemoryServerTests : IDisposable {
     readonly WireMockServer _server           = WireMockServer.Start();
-    readonly string         _cfgDir           = Path.Combine(Path.GetTempPath(), $"kcap-mcp-mem-cfg-{Guid.NewGuid():N}");
-    readonly string         _cwdDir           = Path.Combine(Path.GetTempPath(), $"kcap-mcp-mem-cwd-{Guid.NewGuid():N}");
+    readonly TempDir        _tmp              = new();
+    readonly string         _cfgDir;
+    readonly string         _cwdDir;
     readonly List<Process>  _spawnedProcesses = [];
 
     public McpMemoryServerTests() {
-        Directory.CreateDirectory(_cfgDir);
-        Directory.CreateDirectory(_cwdDir);
+        _cfgDir = _tmp.CreateDir("cfg");
+        _cwdDir = _tmp.CreateDir("cwd");
     }
 
     public void Dispose() {
@@ -35,8 +36,7 @@ public class McpMemoryServerTests : IDisposable {
         }
 
         _server.Stop();
-        try { Directory.Delete(_cfgDir, recursive: true); } catch { /* best effort */ }
-        try { Directory.Delete(_cwdDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     static string GetCliBinaryPath() {

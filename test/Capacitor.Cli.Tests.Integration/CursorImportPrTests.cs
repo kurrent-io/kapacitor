@@ -16,14 +16,17 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class CursorImportPrTests : IDisposable {
     readonly WireMockServer _server  = WireMockServer.Start();
-    readonly string         _tempDir = Directory.CreateTempSubdirectory("kcap-cursor-import-pr-it").FullName;
+    readonly TempDir        _tmp     = new();
+    readonly string         _tempDir;
+
+    public CursorImportPrTests() => _tempDir = _tmp.Path;
 
     string ProjectsDir         => Path.Combine(_tempDir, ".cursor", "projects");
     string WorkspaceStorageDir => Path.Combine(_tempDir, "workspaceStorage");
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_tempDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     /// <summary>

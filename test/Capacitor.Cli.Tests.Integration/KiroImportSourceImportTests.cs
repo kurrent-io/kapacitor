@@ -15,14 +15,17 @@ namespace Capacitor.Cli.Tests.Integration;
 /// so it doesn't double-count on top of the classify-time AlreadyLoaded bucket.
 /// </summary>
 public class KiroImportSourceImportTests : IDisposable {
-    readonly WireMockServer _server  = WireMockServer.Start();
-    readonly string         _tempDir = Directory.CreateTempSubdirectory("kcap-kiro-import-it").FullName;
+    readonly WireMockServer _server = WireMockServer.Start();
+    readonly TempDir        _tmp    = new();
+    readonly string         _tempDir;
+
+    public KiroImportSourceImportTests() => _tempDir = _tmp.Path;
 
     const string DashedSid = "11111111-2222-3333-4444-555555555555";
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_tempDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     string WriteSession() {

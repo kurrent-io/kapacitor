@@ -6,15 +6,15 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class ImportClassifyTests : IDisposable {
-    readonly WireMockServer _server  = WireMockServer.Start();
-    readonly string         _tempDir = Directory.CreateTempSubdirectory("kcap-classify-test").FullName;
+    readonly WireMockServer _server = WireMockServer.Start();
+    readonly TempDir        _tmp    = new();
+    readonly string         _tempDir;
+
+    public ImportClassifyTests() => _tempDir = _tmp.Path;
 
     public void Dispose() {
         _server.Stop();
-
-        try { Directory.Delete(_tempDir, recursive: true); } catch {
-            /* best effort */
-        }
+        _tmp.Dispose();
     }
 
     static async Task<string> WriteTranscript(string dir, string sessionId, int lines) {

@@ -11,13 +11,12 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// remap a path that only ever existed for a few seconds.
 /// </summary>
 public class ImportResolveReposSubSessionTests : IDisposable {
-    readonly string _tempDir = Directory.CreateTempSubdirectory("kcap-resolve-subsession").FullName;
+    readonly TempDir _tmp = new();
+    readonly string  _tempDir;
 
-    public void Dispose() {
-        try { Directory.Delete(_tempDir, recursive: true); } catch {
-            /* best effort */
-        }
-    }
+    public ImportResolveReposSubSessionTests() => _tempDir = _tmp.Path;
+
+    public void Dispose() => _tmp.Dispose();
 
     [Test]
     public async Task ResolveTranscriptRepos_excludes_kcap_subsessions_from_missing_cwd_report() {

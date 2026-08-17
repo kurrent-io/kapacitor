@@ -60,7 +60,8 @@ public class SignInStepViewModelTests {
     }
 
     sealed class Harness : IDisposable {
-        public readonly string                  TempDir = Directory.CreateTempSubdirectory("kcap-signin-").FullName;
+        readonly TempDir                        _tmp = new();
+        public string                           TempDir => _tmp.Path;
         public readonly ConnectStepViewModel    Connect = new();
         public readonly WizardTenantPicker      Picker;
         public readonly ScriptedSignupHandler   Signup  = new();
@@ -101,13 +102,7 @@ public class SignInStepViewModelTests {
 
         public Task<System.Reactive.Unit> SignIn() => Vm.SignInCommand.Execute().ToTask();
 
-        public void Dispose() {
-            try {
-                Directory.Delete(TempDir, recursive: true);
-            } catch (IOException) {
-                // temp cleanup only
-            }
-        }
+        public void Dispose() => _tmp.Dispose();
     }
 
     // ── committed outcomes ───────────────────────────────────────────────────

@@ -46,21 +46,20 @@ namespace Capacitor.Cli.Tests.Integration;
                 // with WatcherLifecycleTests / WatcherHeartbeatStalenessTests (bare NotInParallel
                 // — no explicit key — puts all of them in the same implicit mutual-exclusion bucket).
 public class CursorTailingWatcherTests {
-    static readonly string WatcherDir = Path.Combine(Path.GetTempPath(), "kcap-cursor-tailing-watcher-tests");
+    static readonly TempDir Tmp = new();
 
     static string? _previousWatcherDir;
 
     [Before(Class)]
     public static void SetUp() {
         _previousWatcherDir = Environment.GetEnvironmentVariable("KCAP_WATCHER_DIR");
-        Directory.CreateDirectory(WatcherDir);
-        Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", WatcherDir);
+        Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", Tmp.Path);
     }
 
     [After(Class)]
     public static void TearDown() {
         Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", _previousWatcherDir);
-        try { Directory.Delete(WatcherDir, recursive: true); } catch { /* best effort */ }
+        Tmp.Dispose();
     }
 
     [After(Test)]

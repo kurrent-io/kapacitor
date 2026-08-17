@@ -794,15 +794,16 @@ public class ClaudeHookCommandTests {
     }
 
     sealed class Fixture : IDisposable {
-        readonly string _tmpHome = Path.Combine(Path.GetTempPath(), $"kcap-claude-hook-{Guid.NewGuid():N}");
-        readonly string? _originalClaudeConfigDir;
-        readonly string _spoolPath;
-        public List<string> Sent { get; } = [];
-        public List<string> RouteOrder { get; } = [];
-        public HookSpool Spool { get; }
-        public HttpClient Client { get; }
-        public TimeSpan HoldOnPost { get; set; } = TimeSpan.Zero;
-        public string? RespondJson { get; set; }
+        readonly TempDir        _tmp = new();
+        readonly string         _tmpHome;
+        readonly string?        _originalClaudeConfigDir;
+        readonly string         _spoolPath;
+        public   List<string>   Sent        { get; } = [];
+        public   List<string>   RouteOrder  { get; } = [];
+        public   HookSpool      Spool       { get; }
+        public   HttpClient     Client      { get; }
+        public   TimeSpan       HoldOnPost  { get; set; } = TimeSpan.Zero;
+        public   string?        RespondJson { get; set; }
         readonly HttpStatusCode _postStatus;
 
         // Lets a test fake the shared SessionStart memory-index endpoint distinctly from the
@@ -814,12 +815,12 @@ public class ClaudeHookCommandTests {
         public int            MemoryIndexRequestCount  { get; private set; }
 
         public Fixture(HttpStatusCode postStatus = HttpStatusCode.OK) {
-            Directory.CreateDirectory(_tmpHome);
             // Isolate Claude's config dir (settings.json / plugins) to this temp home so ambient
             // plugin state on the dev machine can't leak in — notably the work-items-nudge availability
             // gate, which reads whether the kcap plugin is effectively installed. Safe under the class's
             // [NotInParallel("HomeEnvVarMutation")] lock. The kcap profile and the HTTP-stubbed memory
             // index are unaffected (they don't read CLAUDE_CONFIG_DIR).
+            _tmpHome                 = _tmp.Path;
             _originalClaudeConfigDir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
             Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", _tmpHome);
             _spoolPath  = Path.Combine(_tmpHome, "spool");
@@ -863,7 +864,7 @@ public class ClaudeHookCommandTests {
         public void Dispose() {
             Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", _originalClaudeConfigDir);
             Client.Dispose();
-            try { Directory.Delete(_tmpHome, true); } catch { }
+            _tmp.Dispose();
         }
     }
 

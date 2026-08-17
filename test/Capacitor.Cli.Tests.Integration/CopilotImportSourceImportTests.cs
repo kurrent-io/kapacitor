@@ -16,13 +16,16 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class CopilotImportSourceImportTests : IDisposable {
     readonly WireMockServer _server  = WireMockServer.Start();
-    readonly string         _tempDir = Directory.CreateTempSubdirectory("kcap-copilot-import-it").FullName;
+    readonly TempDir        _tmp     = new();
+    readonly string         _tempDir;
+
+    public CopilotImportSourceImportTests() => _tempDir = _tmp.Path;
 
     const string DashedSid = "11111111-2222-3333-4444-555555555555";
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_tempDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     string WriteSession() {

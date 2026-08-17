@@ -57,7 +57,8 @@ public class WizardSimpleStepsTests {
     }
 
     sealed class ShimHarness : IDisposable {
-        public readonly string TempDir = Directory.CreateTempSubdirectory("kcap-shimstep-").FullName;
+        readonly TempDir _tmp = new();
+        public string TempDir => _tmp.Path;
         public readonly FakeProcessRunner  Runner = new();
         public readonly FakeLoginShellProbe Probe = new();
         public readonly FakeAppStateStore  Store  = new();
@@ -75,9 +76,7 @@ public class WizardSimpleStepsTests {
 
         public Task Install() => Vm.InstallCommand.Execute().ToTask();
 
-        public void Dispose() {
-            try { Directory.Delete(TempDir, recursive: true); } catch { /* best effort */ }
-        }
+        public void Dispose() => _tmp.Dispose();
     }
 
     [Test]

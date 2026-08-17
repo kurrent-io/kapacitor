@@ -19,12 +19,18 @@ public class UnusableUrlGuardTests : IDisposable {
     const string BadUrl = "ftp://host";
     const string Sid    = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    readonly string _dir  = Path.Combine(Path.GetTempPath(), $"kcap-guard-{Guid.NewGuid():N}");
-    readonly string _tdir = Path.Combine(Path.GetTempPath(), $"kcap-guard-t-{Guid.NewGuid():N}");
+    readonly TempDir _tmp = new();
+    readonly string  _dir;
+    readonly string  _tdir;
+
+    public UnusableUrlGuardTests() {
+        _tdir = _tmp.PathTo("tdir");
+        _dir  = _tmp.PathTo("dir");
+    }
 
     public void Dispose() {
         WatcherManager.ProcessStarterForTesting = null;
-        foreach (var d in new[] { _dir, _tdir }) { try { Directory.Delete(d, true); } catch { } }
+        _tmp.Dispose();
     }
 
     [Test]

@@ -17,24 +17,21 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 [NotInParallel]
 public class WatcherHeartbeatStalenessTests {
-    static readonly string TempDir = Path.Combine(Path.GetTempPath(), "kcap-watcher-heartbeat-tests");
+    static readonly TempDir Tmp = new();
+    static string TempDir => Tmp.Path;
 
     static string? _previousWatcherDir;
 
     [Before(Class)]
     public static void SetUp() {
         _previousWatcherDir = Environment.GetEnvironmentVariable("KCAP_WATCHER_DIR");
-        Directory.CreateDirectory(TempDir);
         Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", TempDir);
     }
 
     [After(Class)]
     public static void TearDown() {
         Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", _previousWatcherDir);
-
-        try { Directory.Delete(TempDir, recursive: true); } catch {
-            /* best effort */
-        }
+        Tmp.Dispose();
     }
 
     [After(Test)]

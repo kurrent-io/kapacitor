@@ -102,7 +102,7 @@ public class CursorLiveSubagentIntegrationTests {
     }
 
     sealed class Fixture : IDisposable {
-        readonly string _root = Path.Combine(Path.GetTempPath(), $"kcap-live-subagent-{Guid.NewGuid():N}");
+        readonly TempDir _tmp = new();
 
         public string TranscriptsRoot { get; }
         public string SpoolDir        { get; }
@@ -115,12 +115,10 @@ public class CursorLiveSubagentIntegrationTests {
         readonly List<string> _markersToClean = [];
 
         public Fixture(HttpStatusCode postStatus = HttpStatusCode.OK) {
-            PostStatus = postStatus;
-            Directory.CreateDirectory(_root);
-            TranscriptsRoot = Path.Combine(_root, "agent-transcripts");
-            Directory.CreateDirectory(TranscriptsRoot);
-            SpoolDir = Path.Combine(_root, "spool");
-            Spool = new HookSpool(SpoolDir);
+            PostStatus      = postStatus;
+            TranscriptsRoot = _tmp.CreateDir("agent-transcripts");
+            SpoolDir        = _tmp.PathTo("spool");
+            Spool           = new HookSpool(SpoolDir);
 
             var handler = new StubHandler(async req => {
                 var body = req.Content is null ? "" : await req.Content.ReadAsStringAsync();
@@ -194,7 +192,7 @@ public class CursorLiveSubagentIntegrationTests {
                 // HasSubagentStartAck check could read it.
                 try { File.Delete(CursorMarkers.SubagentStartAckPath(m)); } catch { }
             }
-            try { Directory.Delete(_root, true); } catch { }
+            _tmp.Dispose();
         }
     }
 

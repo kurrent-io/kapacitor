@@ -28,12 +28,15 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// isolation").
 /// </summary>
 public class ImportVisibilityTests : IDisposable {
-    readonly WireMockServer _server  = WireMockServer.Start();
-    readonly string         _tempDir = Directory.CreateTempSubdirectory("kcap-import-visibility").FullName;
+    readonly WireMockServer _server = WireMockServer.Start();
+    readonly TempDir        _tmp    = new();
+    readonly string         _tempDir;
+
+    public ImportVisibilityTests() => _tempDir = _tmp.Path;
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_tempDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     void StubAllHookEndpoints() {

@@ -36,15 +36,15 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </para>
 /// </summary>
 public class CursorPrivatizeLifecycleFailureTests : IDisposable {
-    readonly WireMockServer _server  = WireMockServer.Start();
-    readonly string         _tempDir = Directory.CreateTempSubdirectory("kcap-cursor-privatize-it").FullName;
+    readonly WireMockServer _server = WireMockServer.Start();
+    readonly TempDir        _tmp    = new();
 
-    string ProjectsDir         => Path.Combine(_tempDir, ".cursor", "projects");
-    string WorkspaceStorageDir => Path.Combine(_tempDir, "workspaceStorage");
+    string ProjectsDir         => _tmp.PathTo(".cursor", "projects");
+    string WorkspaceStorageDir => _tmp.PathTo("workspaceStorage");
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_tempDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     // On-disk Cursor session directories/files are named with dashes, but the CLI normalizes to
