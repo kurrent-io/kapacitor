@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Tests.Helpers;
 using NSubstitute;
 using DiscoveryResult = Capacitor.Cli.Core.Auth.DiscoveryResult;
 
@@ -54,26 +55,18 @@ public class AuthProgressTests {
 
         var progress = new RecordingAuthProgress();
 
-        var originalOut = Console.Out;
-        var captured    = new StringWriter();
-        Console.SetOut(captured);
+        using var capture = ConsoleOutput.StartCapture();
 
-        string? token;
-
-        try {
-            token = await OAuthLoginFlow.RunDeviceFlowAsync(http, "client_id", progress: progress);
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        var token = await OAuthLoginFlow.RunDeviceFlowAsync(http, "client_id", progress: progress);
 
         await Assert.That(token).IsEqualTo("tok");
-        await Assert.That(progress.DeviceCodes).HasCount(1);
+        await Assert.That(progress.DeviceCodes).Count().IsEqualTo(1);
         // A successful clipboard copy (environment-dependent) appends a suffix to the code.
         await Assert.That(progress.DeviceCodes[0].Code).StartsWith("UC123");
         await Assert.That(progress.PollTicks).IsEqualTo(2); // 2 "authorization_pending" polls before success
         await Assert.That(progress.Notices).Contains(" done!");
         // Nothing reached Console — everything routed through the recording sink.
-        await Assert.That(captured.ToString()).IsEmpty();
+        await Assert.That(capture.GetCapturedOutput()).IsEmpty();
     }
 
     [Test]
@@ -84,47 +77,29 @@ public class AuthProgressTests {
 
         var progress = new RecordingAuthProgress();
 
-        var originalOut = Console.Out;
-        var originalErr = Console.Error;
-        var capturedOut = new StringWriter();
-        var capturedErr = new StringWriter();
-        Console.SetOut(capturedOut);
-        Console.SetError(capturedErr);
+        using var capture = ConsoleOutput.StartFullCapture();
 
-        WorkOSDiscoveryFlow flow;
-
-        try {
-            flow = await WorkOSDiscovery.DiscoverAsync(
-                "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_d" },
-                proxy, Substitute.For<ITenantPicker>(),
-                orglessLogin: () => Task.FromResult<WorkOSAuthResponse?>(new WorkOSAuthResponse { AccessToken = "acc", RefreshToken = "rt" }),
-                orgSwitch: (_, _) => Task.FromResult<WorkOSAuthResponse?>(null),
-                progress: progress);
-        } finally {
-            Console.SetOut(originalOut);
-            Console.SetError(originalErr);
-        }
+        var flow = await WorkOSDiscovery.DiscoverAsync(
+            "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_d" },
+            proxy, Substitute.For<ITenantPicker>(),
+            orglessLogin: () => Task.FromResult<WorkOSAuthResponse?>(new WorkOSAuthResponse { AccessToken = "acc", RefreshToken = "rt" }),
+            orgSwitch: (_, _) => Task.FromResult<WorkOSAuthResponse?>(null),
+            progress: progress);
 
         await Assert.That(flow).IsTypeOf<WorkOSDiscoveryFlow.NoTenants>();
         // Today's code writes this line to stderr — pinned so a future stream swap is deliberate.
         await Assert.That(progress.Errors).Contains("No Capacitor tenants are linked to your account. Ask your admin to invite you.");
-        await Assert.That(capturedOut.ToString()).IsEmpty();
-        await Assert.That(capturedErr.ToString()).IsEmpty();
+        await Assert.That(capture.GetCapturedOutput()).IsEmpty();
+        await Assert.That(capture.GetCapturedError()).IsEmpty();
     }
 
     [Test]
     public async Task ConsoleAuthProgress_DeviceCode_matches_todays_banner_lines() {
-        var originalOut = Console.Out;
-        var captured    = new StringWriter();
-        Console.SetOut(captured);
+        using var capture = ConsoleOutput.StartCapture();
 
-        try {
-            new ConsoleAuthProgress().DeviceCode("UC123", "https://github.com/login/device");
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        new ConsoleAuthProgress().DeviceCode("UC123", "https://github.com/login/device");
 
-        await Assert.That(captured.ToString()).IsEqualTo(
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo(
             "  2. Enter the code: UC123" + Environment.NewLine
           + "  3. Approve access when GitHub asks." + Environment.NewLine
           + Environment.NewLine
@@ -133,33 +108,21 @@ public class AuthProgressTests {
 
     [Test]
     public async Task ConsoleAuthProgress_BrowserOpening_matches_todays_notice_lines() {
-        var originalOut = Console.Out;
-        var captured    = new StringWriter();
-        Console.SetOut(captured);
+        using var capture = ConsoleOutput.StartCapture();
 
-        try {
-            new ConsoleAuthProgress().BrowserOpening("https://example.test/authorize");
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        new ConsoleAuthProgress().BrowserOpening("https://example.test/authorize");
 
-        await Assert.That(captured.ToString()).IsEqualTo(
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo(
             "Opening browser for authentication..." + Environment.NewLine
           + "  If the browser doesn't open, visit: https://example.test/authorize" + Environment.NewLine);
     }
 
     [Test]
     public async Task ConsoleAuthProgress_PollTick_writes_dot_without_newline() {
-        var originalOut = Console.Out;
-        var captured    = new StringWriter();
-        Console.SetOut(captured);
+        using var capture = ConsoleOutput.StartCapture();
 
-        try {
-            new ConsoleAuthProgress().PollTick();
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        new ConsoleAuthProgress().PollTick();
 
-        await Assert.That(captured.ToString()).IsEqualTo(".");
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo(".");
     }
 }

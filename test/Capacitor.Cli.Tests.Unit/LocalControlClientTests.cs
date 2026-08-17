@@ -474,7 +474,7 @@ public class LocalControlClientTests {
             // Fires after RunCycleAsync has already returned success (the first valid snapshot
             // was read) but before RunAsync's ct checkpoint/yield — exactly the race the fix
             // closes.
-            client.OnCycleSucceededForTest = () => cts.Cancel();
+            client.OnCycleSucceededForTest = cts.Cancel;
 
             var events = new List<LocalControlEvent>();
             await foreach (var e in client.RunAsync(cts.Token)) events.Add(e);

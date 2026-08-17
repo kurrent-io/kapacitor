@@ -247,7 +247,7 @@ public class AntigravityRuntimeLifecycleTests {
     [Test]
     public async Task Spawner_receives_the_prompt_text() {
         var prompts = new List<string>();
-        await using var rt = FakeRuntime(onSpawn: p => prompts.Add(p));
+        await using var rt = FakeRuntime(onSpawn: prompts.Add);
 
         await rt.SendUserInputAsync("do the review").WaitAsync(HangGuard);
         await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);

@@ -144,7 +144,7 @@ public class OnboardingFacadeTests {
         var committed = (AuthResult.Committed)result;
         await Assert.That(committed.Provider).IsEqualTo(AuthProvider.None);
         await Assert.That(committed.ActiveProfile).IsEqualTo("solo");
-        await Assert.That(committed.Published).HasCount(1);
+        await Assert.That(committed.Published).Count().IsEqualTo(1);
 
         var profile = ReadConfig().Profiles["solo"];
         await Assert.That(profile.ServerUrl).IsEqualTo("https://none.example");

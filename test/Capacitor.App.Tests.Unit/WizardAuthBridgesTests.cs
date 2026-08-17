@@ -170,7 +170,7 @@ public class WizardAuthBridgesTests {
         var (provisioner, handler, _, time) = NewProvisioner();
 
         handler.Respond = (request, _) => request.RequestUri!.AbsolutePath switch {
-            "/api/signup/availability" => request.RequestUri.Query.Contains("slug=acme&") || request.RequestUri.Query.EndsWith("slug=acme")
+            "/api/signup/availability" => request.RequestUri.Query.Contains("slug=acme&") || request.RequestUri.Query.EndsWith("slug=acme", StringComparison.Ordinal)
                 ? (HttpStatusCode.OK, """{"available":false,"reason":"taken"}""")
                 : (HttpStatusCode.OK, """{"available":true}"""),
             "/api/signup/provision" => (HttpStatusCode.Accepted, """{"slug":"acme-two","state":"provisioning"}"""),

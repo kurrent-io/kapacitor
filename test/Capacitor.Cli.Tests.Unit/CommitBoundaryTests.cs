@@ -136,7 +136,7 @@ public class CommitBoundaryTests {
         var result = await facade.DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, CancellationToken.None);
 
         await Assert.That(result).IsTypeOf<AuthResult.Committed>();
-        await Assert.That(configWhenExchanging).HasCount(2);
+        await Assert.That(configWhenExchanging).Count().IsEqualTo(2);
         await Assert.That(configWhenExchanging).DoesNotContain(false);
         await Assert.That(stampWhenExchanging).DoesNotContain(false);
     }

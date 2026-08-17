@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using Capacitor.App.Services;
 
 namespace Capacitor.App.Tests.Unit;
@@ -96,7 +97,7 @@ public class StreamingRunnerTests {
                 new RunOptions(), _ => { }, cts.Token);
 
             await WaitUntilAsync(() => File.Exists(startedMarker), TimeSpan.FromSeconds(5), "the grandchild to start and record its PID");
-            grandchildPid = int.Parse((await File.ReadAllTextAsync(startedMarker)).Trim());
+            grandchildPid = int.Parse((await File.ReadAllTextAsync(startedMarker)).Trim(), CultureInfo.InvariantCulture);
             cts.Cancel();
 
             await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
@@ -126,7 +127,7 @@ public class StreamingRunnerTests {
                 new RunOptions(CancelMode: CancelMode.AbandonWait), _ => { }, cts.Token);
 
             await WaitUntilAsync(() => File.Exists(startedMarker), TimeSpan.FromSeconds(5), "the grandchild to start and record its PID");
-            grandchildPid = int.Parse((await File.ReadAllTextAsync(startedMarker)).Trim());
+            grandchildPid = int.Parse((await File.ReadAllTextAsync(startedMarker)).Trim(), CultureInfo.InvariantCulture);
             cts.Cancel();
 
             await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);

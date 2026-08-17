@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using System.Text.Json;
 using Capacitor.App.Services.Onboarding;
 using Capacitor.Cli.Core.Auth;
@@ -30,6 +31,7 @@ public class WizardAuthServiceTests {
         return (new ConsentFlipClaims(Path.Combine(dir, "consent-flip-claims.json"), Path.Combine(dir, "config.json")), dir);
     }
 
+    [UnsupportedOSPlatform("windows")]
     static void SetWritable(string dir, bool writable) =>
         File.SetUnixFileMode(dir, writable
             ? UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
@@ -156,6 +158,7 @@ public class WizardAuthServiceTests {
     // InvalidOperationException, never OperationCanceledException: the boundary maps ANY OCE from
     // this hook to Cancelled, which would silently render a store failure as "the user backed out".
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task A_false_arm_throws_claim_arm_failed_rather_than_a_cancellation() {
         Skip.When(OperatingSystem.IsWindows(), "chmod-based read-only directory is POSIX-only.");
 
@@ -172,6 +175,7 @@ public class WizardAuthServiceTests {
     }
 
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task A_false_arm_stops_the_operation_before_anything_is_published() {
         Skip.When(OperatingSystem.IsWindows(), "chmod-based read-only directory is POSIX-only.");
 

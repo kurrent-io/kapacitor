@@ -1,4 +1,5 @@
 using System.Reactive.Threading.Tasks;
+using System.Runtime.Versioning;
 using System.Text.Json;
 using Avalonia.Controls;
 using Avalonia.Threading;
@@ -380,6 +381,7 @@ public class DefaultsStepViewModelTests {
 
     // A real write failure (read-only config dir), not a fake, proves CanLeaveAsync's own catch.
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task A_persist_failure_vetoes_Next_with_a_visible_message() {
         Skip.When(OperatingSystem.IsWindows(), "chmod-based read-only config dir is POSIX-only.");
 

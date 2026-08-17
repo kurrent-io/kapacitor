@@ -113,7 +113,7 @@ public class LoginFacadeParityTests {
 
         await Assert.That(exit).IsEqualTo(1);
         // Rendered once, by the facade itself — the adapter does not re-print AuthResult.Failed.Message.
-        await Assert.That(progress.Errors).HasCount(1);
+        await Assert.That(progress.Errors).Count().IsEqualTo(1);
     }
 
     // ── discover result mapping (pure) ──────────────────────────────────────

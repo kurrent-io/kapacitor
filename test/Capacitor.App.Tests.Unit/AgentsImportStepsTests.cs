@@ -1,4 +1,5 @@
 using System.Reactive.Threading.Tasks;
+using System.Runtime.Versioning;
 using Avalonia.Controls;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -26,6 +27,7 @@ static class VendorDetection {
 /// terminal PATH when the probe resolves one. Pure static helper — no AvaloniaSession needed.
 public class AgentDetectionFeedTests {
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task Uses_the_probed_terminal_PATH_not_the_process_PATH() {
         Skip.When(OperatingSystem.IsWindows(), "chmod-based executable probe is POSIX-only.");
 
