@@ -266,9 +266,9 @@ public class OnboardingViewModelTests {
         await Assert.That(rendered).IsEqualTo("Connect to Capacitor");
     }
 
-    // ---- Fix round 1 ----
+    // ── Busy gate and veto handling ──────────────────────────
 
-    /// Reviewer repro: Skip suspends on a pending veto check; a directly-invoked Next (bypassing
+    /// Skip suspends on a pending veto check; a directly-invoked Next (bypassing
     /// the canExecute-driven Button disable a real UI enforces) must be a silent no-op — the
     /// shared busy gate inside NavigateAsync itself, not just canExecute — rather than racing
     /// Skip's own _index mutation once the veto later resolves.
