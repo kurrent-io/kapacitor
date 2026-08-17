@@ -20,10 +20,7 @@ using Profile = Capacitor.Cli.Core.Config.Profile;
 
 namespace Capacitor.Cli.Commands;
 
-/// <summary>
-/// Setup's step-scoped rendering of façade output: the façade emits flush lines, every other line a
-/// setup step prints is two-space indented, and setup still owns the guidance tail it used to append.
-/// </summary>
+/// <summary>Setup's step-scoped rendering of façade output: every non-flush line is two-space indented, and setup still owns the guidance tail.</summary>
 sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
     internal const string UnreachableGuidance = "  Retry later, or pass --server-url <url>.";
 

@@ -22,11 +22,7 @@ internal sealed record WizardGraph(
     OnboardingViewModel ViewModel, WizardAuthService Auth, IReadOnlyList<IWizardStep> Steps,
     ImportStepViewModel Import);
 
-/// <summary>
-/// Everything wizard-first mode is composed from. The daemon-facing entries are FACTORIES: the
-/// wizard writes config while it runs, so a binding pinned at composition time would silently land
-/// later calls on the wrong daemon.
-/// </summary>
+/// <summary>Everything wizard-first mode is composed from; the daemon-facing entries are factories so a call never lands on a stale daemon.</summary>
 internal sealed record WizardGraphOptions(
     ConsentFlipClaims                                                            Claims,
     WizardBridges                                                                Bridges,
@@ -88,8 +84,7 @@ internal static class WizardComposition {
         var connect  = new ConnectStepViewModel();
         var signIn   = new SignInStepViewModel(auth, connect, options.Bridges, claims, options.AppState, options.UrlOpener);
         var shim     = new ShimStepViewModel(options.ShimApplicable, options.ShimInstaller, options.AppState, options.ShimTarget);
-        // The Defaults step's persist targets the SAME fresh identity the daemon step gates on,
-        // falling back to c.ActiveProfile itself when unresolved.
+        // Defaults persists to the same fresh identity the daemon step gates on, falling back to ActiveProfile.
         var defaults = new DefaultsStepViewModel(options.DefaultDaemonName, () => options.ResolveIdentity()?.Profile);
         // ONE detection feed for both vendor steps: two would probe the login shell twice for the
         // same answer, and the two steps' vendor lists could then disagree.
@@ -98,12 +93,10 @@ internal static class WizardComposition {
         var import = new ImportStepViewModel(cli, detect, options.Bridges.Post);
         var daemon = new DaemonStepViewModel(
             cli, options.RunMutation,
-            // Gated on a COMMITTED sign-in (the RequiresSignIn row is what a skipped sign-in must
-            // read as) and resolved FRESH per call — never the startup-cached profile.
+            // Gated on a committed sign-in and resolved fresh per call, never the startup-cached profile.
             () => signIn.Satisfied ? options.ResolveIdentity() : null,
             options.Observation,
-            // The step's own gate above is what keeps a socket un-dialed: a null resolution never
-            // reaches ResolveOps at all.
+            // The step's own gate above keeps the socket un-dialed: a null resolution never reaches ResolveOps.
             new LateBoundLocalControlOps(() => options.ResolveOps(options.ResolveIdentity() is { } id
                 ? id.DaemonName
                 : options.DefaultDaemonName ?? "daemon")),

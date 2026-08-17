@@ -4,13 +4,7 @@ using Config_Profile = Capacitor.Cli.Core.Config.Profile;
 
 namespace Capacitor.Cli.Core.Auth;
 
-/// <summary>
-/// One durable publication set: the config mutation (profiles + the provider stamp for every
-/// identity) followed by the token writes. <see cref="PublishTokens"/> returns the username to
-/// report, because on the discovery path it is only known once the tokens are exchanged; it calls
-/// the <see cref="Action"/> it is handed after each token that actually landed, so the boundary
-/// knows whether a failure left anything behind.
-/// </summary>
+/// <summary>One durable publication set: the config mutation and provider stamp, followed by token writes tracked so a partial failure is known.</summary>
 sealed record CommitRequest(
     IReadOnlyList<AuthIdentity>         Identities,
     string                              Provider,
@@ -21,13 +15,7 @@ sealed record CommitRequest(
     // False for a login that must not claim the profile for this server (see LoginTarget.Foreign).
     bool                                WriteStamp = true);
 
-/// <summary>
-/// The ordered commit boundary. The before-commit hook is the LAST cancellable await; past it every
-/// publication runs under <see cref="CancellationToken.None"/> and a cancel no longer changes the
-/// answer. <see cref="AuthResult.Committed"/> means something durable landed — a publication failure
-/// with nothing landed is still <see cref="AuthResult.Failed"/>. Crash residue is safe by this
-/// ordering: claim-without-profile and profile-without-token both leave the start gate failing.
-/// </summary>
+/// <summary>The ordered commit boundary: the before-commit hook is the last cancellable await, after which every publication is uncancellable.</summary>
 static class CommitBoundary {
     internal static async Task<AuthResult> CommitAsync(
             CommitRequest                                              request,
@@ -48,8 +36,7 @@ static class CommitBoundary {
             }
         }
 
-        // A token-only arm (a foreign login writes no config at all) has no config commit to make
-        // the boundary durable, so what landed is tracked rather than assumed.
+        // A token-only arm has no config commit to make the boundary durable, so what landed is tracked rather than assumed.
         var configPublished = request.ConfigMutation is not null || request.WriteStamp;
 
         if (configPublished) {

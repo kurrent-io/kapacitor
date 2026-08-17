@@ -405,11 +405,7 @@ public partial class App : Application {
         }
     }
 
-    /// <summary>
-    /// The close boundary in order (spec decision 2 / §7): settle the sign-in, kill and await any
-    /// import, wait the lane out under the cap, then transfer the channel. False = §6a's post-cap
-    /// graph, whose automatic actions must stay closed around the child still running.
-    /// </summary>
+    /// <summary>Close boundary: settle sign-in, cancel any import, quiesce the lane under the cap, then transfer the channel.</summary>
     internal static async Task<bool> HandoffAfterWizardAsync(
             WizardAuthService? auth, Func<Task> laneQuiescedAsync, TimeSpan cap, OutcomeChannel channel,
             ImportStepViewModel? import = null) {
@@ -1012,15 +1008,7 @@ public partial class App : Application {
         }
     }
 
-    /// <summary>
-    /// Shutdown's whole quiesce, in two phases. First the wizard's own work, UNCAPPED (decision 2):
-    /// the sign-in is cancelled and its terminal answer awaited — pre-boundary that is immediate,
-    /// past it the façade still publishes and answers <c>Committed</c>, and a cap here would tear
-    /// that publication down — while any in-flight import is killed alongside it (spec §7: closing
-    /// never navigates through the step's own <c>CanLeaveAsync</c>) and joined before phase two, so
-    /// a lane quiesce can never race a still-running import child. Only then the lifecycle/lane
-    /// quiesce, under §6a's cap — the one wait with no other shutdown-token wiring.
-    /// </summary>
+    /// <summary>Quiesces shutdown in two phases: sign-in and import finish uncapped so an in-progress commit isn't torn down, then lifecycle/lane quiesce under the cap.</summary>
     internal static async Task QuiesceAppAsync(
             WizardAuthService? auth, ImportStepViewModel? import,
             DaemonLifecycleController? lifecycle, DaemonMutationLane? lane, TimeSpan cap) {

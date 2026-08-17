@@ -29,11 +29,7 @@ public sealed class DefaultsStepViewModel : ReactiveObject, IWizardStep {
     bool    _satisfied;
     string? _message;
 
-    /// <param name="resolveProfileName">
-    /// The profile the persist targets, re-invoked per persist rather than captured — a KCAP_PROFILE
-    /// override or a mid-wizard sign-in can change the answer between steps. Null, or a name absent
-    /// from <c>config.Profiles</c>, falls back to <c>c.ActiveProfile</c>.
-    /// </param>
+    /// <param name="resolveProfileName">Re-invoked per persist rather than captured; null or unresolved falls back to <c>c.ActiveProfile</c>.</param>
     public DefaultsStepViewModel(string? defaultDaemonName = null, Func<string?>? resolveProfileName = null) {
         _daemonName = string.IsNullOrWhiteSpace(defaultDaemonName)
             ? Environment.UserName.ToLowerInvariant()

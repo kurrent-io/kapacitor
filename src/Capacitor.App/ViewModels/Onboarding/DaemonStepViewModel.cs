@@ -18,9 +18,7 @@ public enum DaemonRow {
 /// The single action a row offers, or None.
 public enum DaemonAffordance { None, Install, Start, Takeover, Repair }
 
-/// spec §3 step 7: daemon enablement over the lifecycle state matrix. Mutations run through the lane
-/// delegate and update THIS step only — outcomes are presented by the channel's single consumer, and
-/// the one dialog opened here is the PRE-mutation takeover/repair consent.
+/// Daemon enablement over the lifecycle state matrix; outcomes are presented by the channel's single consumer, never by this step directly.
 public sealed class DaemonStepViewModel : ReactiveObject, IWizardStep {
     internal const string ConsentV3Capability = "consent/3";
 
@@ -416,9 +414,7 @@ public sealed class DaemonStepViewModel : ReactiveObject, IWizardStep {
         if (IdentityMatches(_evidence, request)) await ApplyPendingClaimAsync(request, _evidence).ConfigureAwait(false);
     }
 
-    /// spec §6 step-7 application: the identity-conditional put, with no factory guard. The live policy
-    /// is read first because ConsentRulesPutV2 replaces it wholesale, and the call is deliberately
-    /// untokened — leaving the step awaits it rather than cancelling between the ack and the claim clear.
+    /// Reads the live policy first because the put replaces it wholesale, and stays untokened so leaving the step awaits rather than cancels mid-claim.
     async Task ApplyPendingClaimAsync(MutationRequest request, ObservedEvidence? evidence) {
         try {
             await ApplyPendingClaimCoreAsync(request, evidence).ConfigureAwait(false);
