@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using Capacitor.Cli.Daemon.Acp;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -179,6 +180,7 @@ public class KiroReviewerHomeTests {
     /// run a reviewer whose transcript directory others can read.
     /// </summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task Create_ThrowsWhenAnExistingDirectoryIsNotOwnerOnly() {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX file-mode semantics.");
 

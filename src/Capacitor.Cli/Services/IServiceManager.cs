@@ -60,7 +60,7 @@ interface IServiceManager {
 
 /// <summary>
 /// The launchctl-invoking operations the <c>--verify</c> transaction drives, each bounded by a
-/// per-call <paramref name="timeout"/> carved from the transaction's remaining budget. A launchctl
+/// per-call <c>timeout</c> carved from the transaction's remaining budget. A launchctl
 /// child that exceeds it is tree-killed and mapped to a bounded failure (Query → <see
 /// cref="LabelProbe.Unknown"/>; Start/Stop/Uninstall → false; WriteAndBootstrap → throw) so a hung
 /// tool can never block the transaction past its deadline. Only <see cref="LaunchdServiceManager"/>

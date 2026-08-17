@@ -26,7 +26,7 @@ public class SettlementProgressWindowTests {
         ? """{"error":"flow_settlement_busy","message":"holding"}"""
         : $$"""{"error":"flow_settlement_busy","message":"holding","last_processed_seq":{{seq}}}""";
 
-    /// <summary>Advances the shared clock to exactly <paramref name="targetElapsed"/> (a no-op if
+    /// <summary>Advances the shared clock to exactly <c>targetElapsed</c> (a no-op if
     /// already past it — attempts beyond the scripted list share the last scripted response without
     /// forcing any further advance) before returning the scripted 409 body for each successive
     /// call. Never throws past the end of the script: the tail entry repeats, which is what "held

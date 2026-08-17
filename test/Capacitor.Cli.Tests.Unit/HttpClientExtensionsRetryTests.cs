@@ -41,7 +41,7 @@ public class HttpClientExtensionsRetryTests {
         // must not block past totalTimeout. The implementation caps each attempt
         // at min(perAttemptTimeout, remainingBudget) instead of always using the
         // full per-attempt cap.
-        async Task<HttpResponseMessage> Send(CancellationToken token) {
+        static async Task<HttpResponseMessage> Send(CancellationToken token) {
             await Task.Delay(Timeout.Infinite, token);
             return new HttpResponseMessage(HttpStatusCode.OK); // unreachable
         }

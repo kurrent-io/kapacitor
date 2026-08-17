@@ -572,7 +572,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// <summary>Removes branch-authored vendor MCP configuration and logs what went, so an operator whose
     /// repo legitimately ships one can tell that kcap removed it rather than that the vendor ignored it.
     /// <para>Called by the worktree creation paths. Borrowed snapshots do not call it — they never
-    /// materialise these files in the first place, because <see cref="SnapshotExcludedPaths"/> now folds in
+    /// materialise these files in the first place, because <see cref="PlanSnapshotExclusions"/> now folds in
     /// the same list. An earlier version of this comment claimed "every creation path calls this", which
     /// was not true and papered over exactly the gap that left <c>.kiro/settings/mcp.json</c> in a borrowed
     /// snapshot.</para></summary>

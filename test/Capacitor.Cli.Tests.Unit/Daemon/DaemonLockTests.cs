@@ -1,3 +1,4 @@
+using System.Globalization;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon;
 
@@ -186,7 +187,7 @@ public class DaemonLockTests {
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
             await Assert.That(lines.Length).IsEqualTo(2);
-            await Assert.That(lines[0]).IsEqualTo(Environment.ProcessId.ToString());
+            await Assert.That(lines[0]).IsEqualTo(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
             // The test process IS the "daemon" here, so the recorded token must
             // match what a reader computes for this same PID.
             await Assert.That(lines[1]).IsEqualTo(ProcessStartToken.ForCurrent());

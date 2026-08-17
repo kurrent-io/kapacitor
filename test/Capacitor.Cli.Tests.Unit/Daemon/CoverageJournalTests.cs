@@ -20,7 +20,7 @@ public class CoverageJournalTests {
                 .RecordBoot(l.InstanceId, l.PriorInstanceId, priorLockReadFailed: l.PriorLockIndeterminate, contained);
         }
         // An unaware/old boot: acquires the real lock (mints a fresh InstanceId) but writes NO journal.
-        public void UnawareBoot() { using var l = DaemonLock.TryAcquire("alpha")!; }
+        public static void UnawareBoot() { using var l = DaemonLock.TryAcquire("alpha")!; }
         public void Dispose() { DaemonLockPaths.OverrideDirectoryForTesting(null);
             try { Directory.Delete(LockDir, true); } catch { } try { Directory.Delete(StateDir, true); } catch { } }
     }
@@ -44,7 +44,7 @@ public class CoverageJournalTests {
     [Test] public async Task Downgrade_sandwich_breaks_the_chain_permanently() {
         using var h = new Harness();
         await Assert.That(h.AwareBoot()).IsTrue();
-        h.UnawareBoot();                             // old boot mints a fresh lock InstanceId, no journal
+        Harness.UnawareBoot();                             // old boot mints a fresh lock InstanceId, no journal
         await Assert.That(h.AwareBoot()).IsFalse();  // prior lock id != journal tail id ⇒ broken
         await Assert.That(h.AwareBoot()).IsFalse();  // sticky: the detecting boot persisted false
     }
@@ -60,7 +60,7 @@ public class CoverageJournalTests {
         using var h = new Harness();
         // A pre-existing (previously-used) state dir with NO journal file + a prior lock InstanceId.
         // Genesis-eligibility is "journal absent", but a prior lock InstanceId ⇒ un-journaled history ⇒ false.
-        h.UnawareBoot(); // prior lock id exists; state dir has no journal
+        Harness.UnawareBoot(); // prior lock id exists; state dir has no journal
         await Assert.That(h.AwareBoot()).IsFalse();
     }
 

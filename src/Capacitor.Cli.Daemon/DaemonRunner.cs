@@ -1052,7 +1052,7 @@ public static partial class DaemonRunner {
     /// launch is that the vendor be installed, certified and above its version floor.
     /// <list type="number">
     /// <item>The operator keeps an explicit opt-out — and it is REACHABLE on the supported install path:
-    /// <see cref="Cli.Services.ServiceEnvironment"/> carries these four variables into a service unit on
+    /// <c>ServiceEnvironment</c> carries these four variables into a service unit on
     /// every platform, DERIVED from the affirmable-reviewer registry so a new vendor cannot be omitted.
     /// The caveat is timing, not reachability: a supervised daemon's environment is FROZEN at
     /// <c>kcap daemon service install</c>, so an opt-out set afterwards needs a reinstall to take
@@ -1069,7 +1069,7 @@ public static partial class DaemonRunner {
     /// and fails SILENTLY when a build stops honouring it, which is what
     /// <c>kcap daemon reviewer affirm</c> exists to remediate. Remediation, not permission.</para>
     ///
-    /// <para><b>Unset means enabled; a value we cannot read means DISABLED.</b>
+    /// <para><b>Unset means enabled; a value we cannot read means DISABLED.</b></para>
     ///
     /// <para>Those two are not in tension, and the asymmetry is the point. Since unset already enables,
     /// the only reason to set one of these variables at all is to turn a reviewer OFF — enabling needs no

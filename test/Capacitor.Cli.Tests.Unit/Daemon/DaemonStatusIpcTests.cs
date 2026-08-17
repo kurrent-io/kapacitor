@@ -13,7 +13,7 @@ namespace Capacitor.Cli.Tests.Unit.Daemon;
 
 /// <summary>
 /// End-to-end coverage of the StatusSubscribe/DaemonStatus frame pair over a REAL Unix-domain
-/// socket — the same <see cref="LocalControlServer.HandleConnectionAsync"/> routing switch a real
+/// socket — the same <c>LocalControlServer.HandleConnectionAsync</c> routing switch a real
 /// `kcap` client talks to. The harness mirrors <see cref="LocalControlHelloTests"/> (temp
 /// DaemonLockPaths override, socket-file poll, Windows guard). Beyond the single wiring test,
 /// this file pins the debounce/pulse/convergence behavior matrix: every mutation triggers a

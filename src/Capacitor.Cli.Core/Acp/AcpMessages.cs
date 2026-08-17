@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 namespace Capacitor.Cli.Core.Acp;
 
 /// <summary>
-/// Typed <c>params</c> payloads for the ACP methods <see cref="Daemon.Acp.AcpConnection"/> callers
+/// Typed <c>params</c> payloads for the ACP methods <c>Daemon.Acp.AcpConnection</c> callers
 /// (<c>AcpHostedAgentRuntime</c>, Task 9) send. These exist only so request construction can
 /// go through source-gen (<see cref="JsonSerializer.SerializeToElement{T}(T, System.Text.Json.Serialization.Metadata.JsonTypeInfo{T})"/>
 /// against <see cref="CapacitorJsonContext"/>) instead of the reflection-based overloads, which are
@@ -232,11 +232,11 @@ public sealed record ConfigOptionChoiceDto(
 
 /// <summary>
 /// <c>session/request_permission</c> params sent BY THE AGENT (server-initiated request, handled
-/// via <see cref="Daemon.Acp.AcpConnection.OnServerRequest"/>). Spec-derived, NOT
+/// via <c>Daemon.Acp.AcpConnection.OnServerRequest</c>). Spec-derived, NOT
 /// probe-confirmed: the probe never observed a real <c>session/request_permission</c> frame
 /// (the probe account's turn ended before any tool call — see
 /// <c>docs/acp-probe-findings.md</c> §"Permission / elicitation requests"). Mirrors the shape
-/// <see cref="Capacitor.Cli.Tests.Unit.Acp.FakeAcpAgent.BuildRequestPermissionFrame"/> already
+/// <c>Capacitor.Cli.Tests.Unit.Acp.FakeAcpAgent.BuildRequestPermissionFrame</c> already
 /// builds for tests. <see cref="ToolCall"/> stays an opaque <see cref="JsonElement"/> — its exact
 /// schema is unconfirmed and it is never re-serialized, only forwarded to the server as
 /// <see cref="AcpInteractionRequest.ToolInput"/> best-effort (see <c>AcpInteractionBridge</c>).
@@ -256,8 +256,8 @@ public sealed record PermissionOptionDto(
 
 /// <summary>
 /// Client's JSON-RPC <c>result</c> for a <c>session/request_permission</c> request — spec-derived,
-/// NOT probe-confirmed. Mirrors <see cref="Capacitor.Cli.Tests.Unit.Acp.FakeAcpAgent.PermissionOutcomeSelected"/>/
-/// <see cref="Capacitor.Cli.Tests.Unit.Acp.FakeAcpAgent.PermissionOutcomeCancelled"/>.
+/// NOT probe-confirmed. Mirrors <c>Capacitor.Cli.Tests.Unit.Acp.FakeAcpAgent.PermissionOutcomeSelected</c>/
+/// <c>Capacitor.Cli.Tests.Unit.Acp.FakeAcpAgent.PermissionOutcomeCancelled</c>.
 /// </summary>
 public sealed record PermissionOutcomeResult(
     [property: JsonPropertyName("outcome")] PermissionOutcomeDto Outcome

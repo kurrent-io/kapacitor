@@ -20,7 +20,7 @@ namespace Capacitor.Cli.Daemon.Services;
 /// must not pass just because its last-write time is recent) and verified by <c>payload.cwd</c>
 /// equal to the agent's cwd; among matches, the one created closest after spawn wins — not the
 /// numerically earliest creation. That creation time is read from the immutable timestamp
-/// EMBEDDED IN THE FILENAME, not <see cref="File.GetCreationTimeUtc"/>: Linux cannot set file
+/// EMBEDDED IN THE FILENAME, not <see cref="File.GetCreationTimeUtc(string)"/>: Linux cannot set file
 /// birth time (<c>SetCreationTime</c> is a no-op) and does not reliably expose it, so the
 /// filesystem creation time is unusable there for distinguishing rollouts — the filename stamp is
 /// Codex's own session-start time, stable and cross-platform. The decision logic is pure and
@@ -208,7 +208,7 @@ internal static class CodexSessionRolloutLocator {
     /// this stamp — and the enclosing <c>YYYY/MM/DD</c> day folder — in LOCAL time, so it is parsed
     /// as local and converted; the daemon and Codex share a machine and clock, so this round-trips
     /// against the daemon's UTC spawn time. The stamp is immutable and, unlike
-    /// <see cref="File.GetCreationTimeUtc"/>, cross-platform (Linux cannot set birth time and does
+    /// <see cref="File.GetCreationTimeUtc(string)"/>, cross-platform (Linux cannot set birth time and does
     /// not reliably expose it). Returns null when the name carries no parseable stamp.
     /// </summary>
     internal static DateTime? TryParseCreationFromFileName(string filePath) {

@@ -49,7 +49,7 @@ public static class CursorHookCommand {
     /// The single hard-cap deadline for the ENTIRE dispatch — client/auth setup through the
     /// bounded async stdin read, recording-critical work, and memory (review finding 1).
     /// There is exactly one race here: client/auth creation is bounded by its own
-    /// <see cref="Task.WhenAny"/> against the full <see cref="DispatcherBudget"/> (some
+    /// <see cref="Task.WhenAny(Task, Task)"/> against the full <see cref="DispatcherBudget"/> (some
     /// <c>TokenStore</c> paths don't honour a <see cref="CancellationToken"/> and would
     /// otherwise sit on the default 100 s <see cref="HttpClient"/> timeout — this is the ONE
     /// place that step can be abandoned), and — ONLY once that step has resolved within

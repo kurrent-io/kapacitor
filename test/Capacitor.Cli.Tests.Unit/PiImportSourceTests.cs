@@ -1,3 +1,4 @@
+using System.Globalization;
 using Capacitor.Cli.Commands;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -33,7 +34,7 @@ public class PiImportSourceTests {
         await Assert.That(sessions[0].SessionId).IsEqualTo(Sid1.Replace("-", ""));
         await Assert.That(sessions[0].Vendor).IsEqualTo("pi");
         await Assert.That(sessions[0].Cwd).IsEqualTo("/work/a");
-        await Assert.That(sessions[0].FirstTimestamp).IsEqualTo(DateTimeOffset.Parse("2026-06-12T10:00:00.000Z"));
+        await Assert.That(sessions[0].FirstTimestamp).IsEqualTo(DateTimeOffset.Parse("2026-06-12T10:00:00.000Z", CultureInfo.InvariantCulture));
     }
 
     [Test]

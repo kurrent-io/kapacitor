@@ -4,6 +4,7 @@ using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Services;
 using Microsoft.Extensions.Time.Testing;
 
+using Capacitor.Tests.Helpers;
 namespace Capacitor.Cli.Tests.Unit.Services;
 
 [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
@@ -198,7 +199,7 @@ public class ServiceVerifyInstallTests {
             ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "committed", "stale", "no-unit", "stale-fingerprint"));
 
             var manager = new FakeServiceManager();
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
@@ -222,7 +223,7 @@ public class ServiceVerifyInstallTests {
             ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "written", "stale", "no-unit", matchingFingerprint));
 
             var manager = new FakeServiceManager();
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
@@ -247,7 +248,7 @@ public class ServiceVerifyInstallTests {
             ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "captured", "stale", "no-unit", null));
 
             var manager = new FakeServiceManager();
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
@@ -337,7 +338,7 @@ public class ServiceVerifyInstallTests {
             var manager = new FakeServiceManager();
             var time = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, "0.9.0", Id)); // version != ExpectedVersion; name/protocol right
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
@@ -362,7 +363,7 @@ public class ServiceVerifyInstallTests {
             var manager = new FakeServiceManager();
             var time = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "someone-elses-daemon"));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
@@ -387,7 +388,7 @@ public class ServiceVerifyInstallTests {
             var manager = new FakeServiceManager();
             var time = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 2, ExpectedVersion, Id)); // protocol 2 != this build's 1
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
@@ -412,7 +413,7 @@ public class ServiceVerifyInstallTests {
         try {
             var manager = new FakeServiceManager();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, "whatever-version-nobody-checks", Id));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
@@ -430,7 +431,7 @@ public class ServiceVerifyInstallTests {
         try {
             var manager = new FakeServiceManager();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             // A different writer's plist text is on disk by the time the final recheck reads it —
@@ -523,7 +524,7 @@ public class ServiceVerifyInstallTests {
             var manager = new FakeServiceManager { RunningPid = 111, StayUnknownAfterUninstall = true }; // ownership never holds
             var time = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 222, Hello, time,
@@ -547,7 +548,7 @@ public class ServiceVerifyInstallTests {
             var manager = new FakeServiceManager { RunningPid = 111 }; // never matches the validated pid below
             var time = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 222, Hello, time,
@@ -653,13 +654,11 @@ public class ServiceVerifyInstallTests {
     [Test, NotInParallel]
     public async Task Gated_install_with_bad_binary_digest_aborts_viability_with_reason_line() {
         var (dir, daemonPath) = SetUpViableInstall();
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
+        using var capture = ConsoleOutput.StartErrorCapture();
         try {
-            Console.SetError(capturedErr);
 
             var manager = new FakeServiceManager();
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
@@ -670,12 +669,11 @@ public class ServiceVerifyInstallTests {
             var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
             await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
-            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
             await Assert.That(lines).IsEquivalentTo(["viability_reason=package_inconsistent"]);
             await Assert.That(manager.Calls).IsEmpty();
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally {
-            Console.SetError(originalErr);
             DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
@@ -689,7 +687,7 @@ public class ServiceVerifyInstallTests {
         var (dir, daemonPath) = SetUpViableInstall();
         try {
             var manager = new FakeServiceManager();
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var digestCalls = 0;
@@ -716,7 +714,7 @@ public class ServiceVerifyInstallTests {
         var (dir, daemonPath) = SetUpViableInstall();
         try {
             var manager = new FakeServiceManager();
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
@@ -740,7 +738,7 @@ public class ServiceVerifyInstallTests {
         var (dir, daemonPath) = SetUpViableInstall();
         try {
             var manager = new FakeServiceManager();
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
@@ -764,15 +762,13 @@ public class ServiceVerifyInstallTests {
     [Test, NotInParallel]
     public async Task Gated_replace_with_bad_binary_digest_aborts_viability_before_any_destructive_step() {
         var (dir, daemonPath) = SetUpViableInstall();
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
+        using var capture = ConsoleOutput.StartErrorCapture();
         try {
-            Console.SetError(capturedErr);
 
             // Loaded and owned (RunningPid matches the validated pid below) — exactly the shape
             // that would otherwise drive ApplyReplaceMatrixAsync's owning-label bootout branch.
             var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, RunningPid = 4242 };
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
@@ -783,7 +779,7 @@ public class ServiceVerifyInstallTests {
             var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
 
             await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
-            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
             await Assert.That(lines).IsEquivalentTo(["viability_reason=package_inconsistent"]);
             // No destructive step ran at all: not even the pre-mutation Query, let alone
             // ApplyReplaceMatrixAsync's Uninstall-driven bootout or the takeover kill it can
@@ -792,7 +788,6 @@ public class ServiceVerifyInstallTests {
             await Assert.That(manager.UninstallCalls).IsEqualTo(0);
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally {
-            Console.SetError(originalErr);
             DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
@@ -809,7 +804,7 @@ public class ServiceVerifyInstallTests {
         var (dir, daemonPath) = SetUpViableInstall();
         try {
             var manager = new FakeServiceManager();
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var digestCalls = 0;
@@ -857,10 +852,8 @@ public class ServiceVerifyInstallTests {
     [Test, NotInParallel]
     public async Task Gated_install_readiness_timeout_with_matching_marker_attributes_refusal_reason() {
         var (dir, daemonPath) = SetUpViableInstall();
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
+        using var capture = ConsoleOutput.StartErrorCapture();
         try {
-            Console.SetError(capturedErr);
 
             // The observed job pid IS this test process's own pid, matching what BootRefusal.TryWrite
             // (the daemon's real writer) stamps onto the marker — planted from OnWriteAndBootstrap,
@@ -874,7 +867,7 @@ public class ServiceVerifyInstallTests {
                     "server_expectation_mismatch");
             };
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var time = new FakeTimeProvider();
@@ -894,10 +887,9 @@ public class ServiceVerifyInstallTests {
             var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
             await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
-            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
             await Assert.That(lines.Count(l => l == "refusal_reason=server_expectation_mismatch")).IsEqualTo(1);
         } finally {
-            Console.SetError(originalErr);
             DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
@@ -905,10 +897,8 @@ public class ServiceVerifyInstallTests {
     [Test, NotInParallel]
     public async Task Gated_install_readiness_timeout_with_a_foreign_marker_reports_no_refusal_reason() {
         var (dir, daemonPath) = SetUpViableInstall();
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
+        using var capture = ConsoleOutput.StartErrorCapture();
         try {
-            Console.SetError(capturedErr);
 
             // Same shape as the matching-marker test, but the marker names a DIFFERENT daemon —
             // residue from an unrelated service. Attributable must reject it on name alone.
@@ -921,7 +911,7 @@ public class ServiceVerifyInstallTests {
                     "server_expectation_mismatch");
             };
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var time = new FakeTimeProvider();
@@ -939,10 +929,9 @@ public class ServiceVerifyInstallTests {
             var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
             await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
-            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
             await Assert.That(lines.Any(l => l.StartsWith("refusal_reason=", StringComparison.Ordinal))).IsFalse();
         } finally {
-            Console.SetError(originalErr);
             DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }

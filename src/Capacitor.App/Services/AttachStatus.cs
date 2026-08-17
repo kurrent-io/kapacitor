@@ -15,5 +15,5 @@ public sealed record AttachStatus(
     AttachState State, string? Reason, IReadOnlyList<string>? Capabilities, string? DaemonVersion = null,
     ConnectedIdentity? Identity = null);
 
-/// Outcome of a `kcap daemon start -d --name <name>` spawn attempt.
+/// Outcome of a <c>kcap daemon start -d --name &lt;name&gt;</c> spawn attempt.
 public sealed record StartDaemonResult(bool Ok, string? Message);

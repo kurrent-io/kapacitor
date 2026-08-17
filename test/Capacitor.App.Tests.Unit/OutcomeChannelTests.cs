@@ -1,4 +1,5 @@
 using Capacitor.App.Services.Mutation;
+using Capacitor.Tests.Helpers;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -139,18 +140,12 @@ public class OutcomeChannelTests {
         await Assert.That(await BoundedMoveNext(enumeratorB)).IsTrue();
         await Assert.That(enumeratorB.Current.Envelope).IsEqualTo(env);
 
-        var originalError = Console.Error;
-        var stderrWriter = new StringWriter();
-        try {
-            Console.SetError(stderrWriter);
-            enumeratorB.Current.CancelLease(); // second cancel of the SAME envelope: consumed-with-log, must not requeue again
-        } finally {
-            Console.SetError(originalError);
-        }
+        using var capture = ConsoleOutput.StartErrorCapture();
+        enumeratorB.Current.CancelLease(); // second cancel of the SAME envelope: consumed-with-log, must not requeue again
         channel.TransferConsumer();
         await enumeratorB.DisposeAsync();
 
-        await Assert.That(stderrWriter.ToString()).Contains("double-cancel"); // never a silent drop
+        await Assert.That(capture.GetCapturedError()).Contains("double-cancel"); // never a silent drop
 
         using var ctsC = new CancellationTokenSource();
         var enumeratorC = channel.ConsumeAsync(ctsC.Token).GetAsyncEnumerator();
@@ -190,20 +185,14 @@ public class OutcomeChannelTests {
         await Assert.That(enumeratorB.Current.Envelope).IsEqualTo(env);
         // deliberately neither Ack nor CancelLease — tear B down via ct with the redelivered lease still outstanding
 
-        var originalError = Console.Error;
-        var stderrWriter = new StringWriter();
         var moveNextB2 = enumeratorB.MoveNextAsync();
-        try {
-            Console.SetError(stderrWriter);
-            await ctsB.CancelAsync();
-            await Assert.That(async () => await moveNextB2.AsTask().WaitAsync(Bounded))
-                .Throws<OperationCanceledException>();
-        } finally {
-            Console.SetError(originalError);
-        }
+        using var capture = ConsoleOutput.StartErrorCapture();
+        await ctsB.CancelAsync();
+        await Assert.That(async () => await moveNextB2.AsTask().WaitAsync(Bounded))
+            .Throws<OperationCanceledException>();
         await enumeratorB.DisposeAsync();
 
-        await Assert.That(stderrWriter.ToString()).Contains("implicit-double-abandon"); // second abandonment logged, not silent
+        await Assert.That(capture.GetCapturedError()).Contains("implicit-double-abandon"); // second abandonment logged, not silent
 
         using var ctsC = new CancellationTokenSource();
         var enumeratorC = channel.ConsumeAsync(ctsC.Token).GetAsyncEnumerator();

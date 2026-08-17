@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core.Telemetry;
 
@@ -63,7 +64,7 @@ public class PostHogPayloadTests {
         var json = PostHogPayload.Build([Event("cli_command")], "phc_test", "device-1", null);
         var ts   = Parse(json)["batch"]![0]!["timestamp"]!.GetValue<string>();
 
-        await Assert.That(DateTimeOffset.Parse(ts)).IsEqualTo(DateTimeOffset.UnixEpoch);
+        await Assert.That(DateTimeOffset.Parse(ts, CultureInfo.InvariantCulture)).IsEqualTo(DateTimeOffset.UnixEpoch);
     }
 
     // The org group is only sound where the Helm chart guarantees Tenant__Name == slug.

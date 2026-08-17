@@ -23,10 +23,8 @@ public class XmlRepresentableValueTests {
         await Assert.That(ex!.Message).Contains("KCAP_TEST").Because(because);
     }
 
-    static async Task Accepts(string value) {
-        Check(value); // the guard throws on rejection, so reaching the next line IS the assertion
-        await Assert.That(true).IsTrue();
-    }
+    static async Task Accepts(string value) =>
+        await Assert.That(() => Check(value)).ThrowsNothing();
 
     // ── accepted: ordinary text and the three legal whitespace controls ──
 

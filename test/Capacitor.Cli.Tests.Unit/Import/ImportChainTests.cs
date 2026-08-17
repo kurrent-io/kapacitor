@@ -1,3 +1,4 @@
+using System.Globalization;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 
@@ -38,9 +39,9 @@ public class ImportChainTests {
     [Test]
     public async Task BuildImportChains_groups_by_slug_and_orders_by_timestamp() {
         var classifications = new List<ImportCommand.SessionClassification> {
-            Classify("a2", ImportCommand.ClassificationStatus.New, slug: "feature-x", ts: DateTimeOffset.Parse("2026-04-10T10:00:00Z")),
-            Classify("a1", ImportCommand.ClassificationStatus.New, slug: "feature-x", ts: DateTimeOffset.Parse("2026-04-10T09:00:00Z")),
-            Classify("a3", ImportCommand.ClassificationStatus.New, slug: "feature-x", ts: DateTimeOffset.Parse("2026-04-10T11:00:00Z")),
+            Classify("a2", ImportCommand.ClassificationStatus.New, slug: "feature-x", ts: DateTimeOffset.Parse("2026-04-10T10:00:00Z", CultureInfo.InvariantCulture)),
+            Classify("a1", ImportCommand.ClassificationStatus.New, slug: "feature-x", ts: DateTimeOffset.Parse("2026-04-10T09:00:00Z", CultureInfo.InvariantCulture)),
+            Classify("a3", ImportCommand.ClassificationStatus.New, slug: "feature-x", ts: DateTimeOffset.Parse("2026-04-10T11:00:00Z", CultureInfo.InvariantCulture)),
         };
 
         var chains = ImportCommand.BuildImportChains(classifications);

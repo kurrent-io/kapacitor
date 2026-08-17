@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Tests.Helpers;
 
 namespace Capacitor.Cli.Tests.Unit.Http;
 
@@ -128,17 +129,11 @@ public class UnusableUrlGuardTests : IDisposable {
         // A stopwatch assertion here was vacuous: the unguarded path can also return quickly. The
         // proof is the diagnostic, which only this guard emits — distinct from the POST guard's and
         // from the drain guard's, so it cannot be satisfied by a neighbouring path.
-        var captured = new StringWriter();
-        var prior    = Console.Error;
-        Console.SetError(captured);
+        using var capture = ConsoleOutput.StartErrorCapture();
 
-        try {
-            await WatcherManager.InlineDrainAsync(BadUrl, Sid, Path.Combine(_dir, "t.jsonl"), agentId: null);
-        } finally {
-            Console.SetError(prior);
-        }
+        await WatcherManager.InlineDrainAsync(BadUrl, Sid, Path.Combine(_dir, "t.jsonl"), agentId: null);
 
-        await Assert.That(captured.ToString()).Contains($"inline drain skipped for {Sid}");
+        await Assert.That(capture.GetCapturedError()).Contains($"inline drain skipped for {Sid}");
     }
 
     [Test]

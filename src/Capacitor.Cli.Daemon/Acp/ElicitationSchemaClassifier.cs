@@ -232,7 +232,7 @@ internal static class ElicitationSchemaClassifier {
         return true;
     }
 
-    static bool Fail(string reason, out string? unrenderableReason) {
+    static bool Fail(string reason, [NotNullWhen(false)] out string? unrenderableReason) {
         unrenderableReason = reason;
         return false;
     }
@@ -249,7 +249,7 @@ internal static class ElicitationSchemaClassifier {
     /// <summary>`required` stage: missing/JSON-null → no required set; non-array or non-string
     /// entries → `malformed_schema` (pinned typing); a well-typed entry naming another property →
     /// `unsupported_required` (protocol-valid, unsatisfiable by the one-property subset).</summary>
-    static bool ValidateRequired(JsonElement schema, string propertyName, out string? reason) {
+    static bool ValidateRequired(JsonElement schema, string propertyName, [NotNullWhen(false)] out string? reason) {
         reason = null;
         if (!TryGetNonNull(schema, "required", out var required))
             return true;
@@ -279,7 +279,7 @@ internal static class ElicitationSchemaClassifier {
     /// </summary>
     static bool TryReadOptions(
         JsonElement selector, bool titled, string emptyReason,
-        out AcpInteractionOption[] options, out string? reason) {
+        out AcpInteractionOption[] options, [NotNullWhen(false)] out string? reason) {
         options = [];
 
         if (selector.ValueKind != JsonValueKind.Array) {
@@ -348,7 +348,7 @@ internal static class ElicitationSchemaClassifier {
     /// leading '-' (including -0), decimal point, exponent — is `malformed_schema`, a deliberate
     /// documented narrowing (exact-valued spellings like 1e3/5.0 are recorded open cases).
     /// </summary>
-    static bool TryReadBound(JsonElement property, string name, out int? value, out string? reason) {
+    static bool TryReadBound(JsonElement property, string name, out int? value, [NotNullWhen(false)] out string? reason) {
         value  = null;
         reason = null;
 

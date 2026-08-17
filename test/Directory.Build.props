@@ -3,22 +3,8 @@
          has to be imported by hand or none of its settings reach the test projects. -->
     <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
     <PropertyGroup>
-        <!-- Test-only conventions. Each of these has zero occurrences under src/, so suppressing
-             here keeps the rule live for production code. -->
-        <NoWarn>
-            $(NoWarn);
-            CA1707<!-- Identifiers should not contain underscores — Method_Does_Thing test names -->;
-            CA1861<!-- Prefer static readonly for constant arrays — inline literal expectations -->;
-            CA1816<!-- Dispose should call GC.SuppressFinalize — fixtures have no finalizer -->;
-        </NoWarn>
-        <!-- Temporary triage list, same deal as the root one: TUnit's own analyzers only ever fire
-             here, so their backlog is exempted here rather than repo-wide. -->
-        <WarningsNotAsErrors>
-            $(WarningsNotAsErrors);
-            TUnit0055<!-- Overwriting the Console writer can break TUnit logging -->;
-            TUnit0301<!-- Tuple parameter uses reflection and is not AOT-compatible -->;
-            TUnitAssertions0005<!-- Assert.That(...) used with a constant value -->;
-            TUnitAssertions0015<!-- Use .IsFalse() instead of .IsEqualTo(false) -->;
-        </WarningsNotAsErrors>
+        <!-- High/critical advisories are errors under src/. Here they are not: a test-only package
+             ships to nobody, so a fresh advisory is a bump to schedule, not a build to stop. -->
+        <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1903;NU1904</WarningsNotAsErrors>
     </PropertyGroup>
 </Project>

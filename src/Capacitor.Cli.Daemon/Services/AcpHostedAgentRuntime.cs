@@ -81,12 +81,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// the router races against the bridge, so a blocked cancellation callback can never strand the
     /// response or the entry's removal; <see cref="Cts"/> is signalled last, as the best-effort
     /// tail that runs foreign callbacks.</summary>
+    // CA1001: disposing Cts on removal severs the sweep's tail (see RouteServerRequestAsync's
+    // finally); disposing in the sweep races that method's read of Cts.Token.
+#pragma warning disable CA1001
     sealed class PendingInteraction(long incarnationId) {
         public long IncarnationId { get; } = incarnationId;
         public bool Cancelled; // mutated under the reconnect lock only
         public readonly CancellationTokenSource    Cts             = new();
         public readonly TaskCompletionSource       CancelledSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
+#pragma warning restore CA1001
 
     readonly object _reconnectLock = new();
     readonly AcpReconnectSupport? _reconnect;
@@ -98,7 +102,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// <summary>The runtime phase with acquire semantics — the backing field is written only under
     /// <see cref="_reconnectLock"/>, but several readers (`HasExited`/`ExitCode`, the graceful-stop
     /// catch filter) run lock-free, and a plain enum field gives them no visibility guarantee
-    /// (Qodo review #2). Backed by an int because <c>volatile</c>/<see cref="Volatile.Read(ref int)"/>
+    /// (Qodo review #2). Backed by an int because <c>volatile</c>/<see cref="Volatile"/>
     /// don't apply to enum fields. Reads under the lock use this too — uniform and harmless.</summary>
     RuntimePhase Phase => (RuntimePhase)Volatile.Read(ref _phase);
     volatile bool _suppressNotifications;
@@ -530,7 +534,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// <summary>
     /// The initialize/session-new wrapper's failure, carrying the sanitized transport cause as a
     /// SEPARATE property from the composed, hint-decorated <see cref="Exception.Message"/> (design
-    /// spec §3.2). <see cref="Message"/> is composed exactly as the plain
+    /// spec §3.2). <see cref="Exception.Message"/> is composed exactly as the plain
     /// <see cref="InvalidOperationException"/> this replaces always was — byte-identical for the
     /// no-verdict path — but <see cref="TransportMessage"/> lets a caller (the factory's
     /// launch-failure reclassification) quote just the transport cause, so a reclassified suffix can
@@ -2299,7 +2303,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         return candidate;
     }
 
-    async Task InitializeCandidateAsync(Incarnation candidate, CancellationToken ct) {
+    static async Task InitializeCandidateAsync(Incarnation candidate, CancellationToken ct) {
         // Must advertise the SAME capability set as StartAsync's initialize — a reconnect
         // candidate that silently dropped the elicitation advertisement would flip the agent
         // back to never asking, mid-session.

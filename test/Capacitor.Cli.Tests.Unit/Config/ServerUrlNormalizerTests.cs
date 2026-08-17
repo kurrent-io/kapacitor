@@ -80,7 +80,7 @@ public class ServerUrlNormalizerOrchestrationTests {
     public async Task SchemeMissing_HttpsFails_HttpSucceeds_NonLoopback_WarnsAboutDowngrade() {
         var result = await ServerUrlNormalizer.NormalizeAsync(
             "staging.kcap.ai", skipProbe: false, CancellationToken.None,
-            (u, _, _) => Task.FromResult(u.StartsWith("http://")));
+            (u, _, _) => Task.FromResult(u.StartsWith("http://", StringComparison.Ordinal)));
 
         await Assert.That(result.Url).IsEqualTo("http://staging.kcap.ai");
         await Assert.That(result.Warning).IsNotNull();
@@ -93,7 +93,7 @@ public class ServerUrlNormalizerOrchestrationTests {
         var probedUrls = new List<string>();
         var result = await ServerUrlNormalizer.NormalizeAsync(
             "staging.kcap.ai", skipProbe: false, CancellationToken.None,
-            (u, _, _) => { probedUrls.Add(u); return Task.FromResult(u.StartsWith("https://")); });
+            (u, _, _) => { probedUrls.Add(u); return Task.FromResult(u.StartsWith("https://", StringComparison.Ordinal)); });
 
         await Assert.That(result.Url).IsEqualTo("https://staging.kcap.ai");
         await Assert.That(result.Warning).IsNull();
@@ -105,7 +105,7 @@ public class ServerUrlNormalizerOrchestrationTests {
         var probedUrls = new List<string>();
         var result = await ServerUrlNormalizer.NormalizeAsync(
             "localhost:5108", skipProbe: false, CancellationToken.None,
-            (u, _, _) => { probedUrls.Add(u); return Task.FromResult(u.StartsWith("http://")); });
+            (u, _, _) => { probedUrls.Add(u); return Task.FromResult(u.StartsWith("http://", StringComparison.Ordinal)); });
 
         await Assert.That(result.Url).IsEqualTo("http://localhost:5108");
         await Assert.That(result.Warning).IsNull();

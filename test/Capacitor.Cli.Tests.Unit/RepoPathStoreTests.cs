@@ -7,7 +7,7 @@ namespace Capacitor.Cli.Tests.Unit;
 /// Assembly-level setup/teardown for RepoPathStore tests.
 ///
 /// PathHelpers.ConfigDir is static readonly — captured once per process from
-/// KCAP_CONFIG_DIR. We must set that env var from a <see cref="ModuleInitializerAttribute"/>
+/// KCAP_CONFIG_DIR. We must set that env var from a <c>[ModuleInitializer]</c>
 /// method, not a TUnit <c>[Before(Assembly)]</c> hook: the runtime guarantees a module
 /// initializer runs before ANY type in the module is touched, including before TUnit's
 /// own discovery/bootstrap code runs, which can itself trigger the PathHelpers static
@@ -214,7 +214,7 @@ public class RepoPathStoreTests {
 
         var entries = await RepoPathStore.LoadAsync();
         await Assert.That(entries.Length).IsEqualTo(2);
-        await Assert.That(entries.Any(e => e.Path.EndsWith("project-b"))).IsFalse();
+        await Assert.That(entries.Any(e => e.Path.EndsWith("project-b", StringComparison.Ordinal))).IsFalse();
     }
 
     [Test]

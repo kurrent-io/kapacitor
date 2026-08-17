@@ -11,10 +11,10 @@ public class CuratedBlockTests {
 
         var block = CuratedBlock.Render([G("quality", "b"), G("quality", "a"), G("efficiency", "c")])!;
         // efficiency sorts before quality; within quality, "a" before "b"
-        var bullets = block.Split('\n').Where(l => l.StartsWith("- ")).ToArray();
+        var bullets = block.Split('\n').Where(l => l.StartsWith("- ", StringComparison.Ordinal)).ToArray();
         await Assert.That(bullets).IsEquivalentTo(new[] { "- c", "- a", "- b" });
-        await Assert.That(block.StartsWith(CuratedBlock.StartMarker)).IsTrue();
-        await Assert.That(block.TrimEnd().EndsWith(CuratedBlock.EndMarker)).IsTrue();
+        await Assert.That(block.StartsWith(CuratedBlock.StartMarker, StringComparison.Ordinal)).IsTrue();
+        await Assert.That(block.TrimEnd().EndsWith(CuratedBlock.EndMarker, StringComparison.Ordinal)).IsTrue();
     }
 
     [Test]
@@ -23,7 +23,7 @@ public class CuratedBlockTests {
         var block   = CuratedBlock.Render([G("quality", "always close writers")])!;
         var result  = CuratedBlock.Splice(content, block);
 
-        await Assert.That(result.StartsWith("# My Project")).IsTrue();
+        await Assert.That(result.StartsWith("# My Project", StringComparison.Ordinal)).IsTrue();
         await Assert.That(result.Contains("Hand-written notes.")).IsTrue();
         await Assert.That(result.Contains(CuratedBlock.StartMarker)).IsTrue();
         // idempotent
@@ -85,16 +85,16 @@ public class CuratedBlockTests {
 
         // After appending a block the result ends with exactly one newline.
         var appended = CuratedBlock.Splice(content, block);
-        await Assert.That(appended.EndsWith("\n")).IsTrue();
-        await Assert.That(appended.EndsWith("\n\n")).IsFalse();
+        await Assert.That(appended.EndsWith('\n')).IsTrue();
+        await Assert.That(appended.EndsWith("\n\n", StringComparison.Ordinal)).IsFalse();
 
         // Byte-idempotent: second splice produces same output.
         await Assert.That(CuratedBlock.Splice(appended, block)).IsEqualTo(appended);
 
         // After removing the block the result ends with exactly one newline.
         var removed = CuratedBlock.Splice(appended, null);
-        await Assert.That(removed.EndsWith("\n")).IsTrue();
-        await Assert.That(removed.EndsWith("\n\n")).IsFalse();
+        await Assert.That(removed.EndsWith('\n')).IsTrue();
+        await Assert.That(removed.EndsWith("\n\n", StringComparison.Ordinal)).IsFalse();
     }
 
     [Test]

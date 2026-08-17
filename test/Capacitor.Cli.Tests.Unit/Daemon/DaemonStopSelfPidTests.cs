@@ -7,7 +7,7 @@ namespace Capacitor.Cli.Tests.Unit.Daemon;
 /// <c>daemon stop</c> must refuse to kill a PID that is this very process.
 ///
 /// <para>This is a REGRESSION test for a real kcap-cli CI failure, and it reproduces it exactly
-/// rather than approximating it. A live <see cref="DaemonLock"/> writes the acquiring process's own
+/// rather than approximating it. A live <see cref="Capacitor.Cli.Daemon.DaemonLock"/> writes the acquiring process's own
 /// pid and start token, so after acquiring one here, the daemons directory contains a pid file that
 /// names the test runner. Every identity check in <c>StopByName</c> then legitimately passes — the
 /// process exists, and its start token matches — and the old code proceeded to

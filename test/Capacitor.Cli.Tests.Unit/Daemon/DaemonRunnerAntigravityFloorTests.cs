@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Acp;
@@ -53,6 +54,7 @@ public class DaemonRunnerAntigravityFloorTests {
     /// <c>SupportsUnattended</c> from a field and prove nothing about where the floor lives.</para>
     /// </summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task TheComputedVendorListAppliesTheFloorThroughTheFactory() {
         Skip.Unless(!OperatingSystem.IsWindows(), "The stub binary below is a POSIX shell script.");
 
@@ -76,6 +78,7 @@ public class DaemonRunnerAntigravityFloorTests {
     /// <summary>The positive twin of the test above — without it, an antigravity that never advertised
     /// for ANY reason (a broken stub, a path that does not resolve) would satisfy the exclusion.</summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task TheComputedVendorListKeepsAFloorMeetingBuild() {
         Skip.Unless(!OperatingSystem.IsWindows(), "The stub binary below is a POSIX shell script.");
 
@@ -106,6 +109,7 @@ public class DaemonRunnerAntigravityFloorTests {
     /// would only re-derive the writer's own answer.</para>
     /// </summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task TheDaemonsSeededRecordIsTheOneTheFactoryReads() {
         Skip.Unless(!OperatingSystem.IsWindows(), "The stub binary below is a POSIX shell script.");
 
@@ -153,6 +157,7 @@ public class DaemonRunnerAntigravityFloorTests {
     /// while a turn source that was never called is exactly what a refusal looks like.</para>
     /// </summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task AConsentLessDaemonSeedsTheFloorThatAdmitsAHostedLaunch() {
         Skip.Unless(!OperatingSystem.IsWindows(), "The stub binary below is a POSIX shell script.");
 
@@ -209,6 +214,7 @@ public class DaemonRunnerAntigravityFloorTests {
     /// would pass with the consent condition deleted.</para>
     /// </summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task OnlyAntigravitySeedsAFloorWithoutConsent() {
         Skip.Unless(!OperatingSystem.IsWindows(), "The stub binaries below are POSIX shell scripts.");
 
@@ -247,6 +253,7 @@ public class DaemonRunnerAntigravityFloorTests {
     /// their absence in that test is the consent condition and not a broken stub or a mis-keyed
     /// vendor token.</summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task ConsentingSiblingsSeedTheirOwnFloors() {
         Skip.Unless(!OperatingSystem.IsWindows(), "The stub binaries below are POSIX shell scripts.");
 
@@ -287,6 +294,7 @@ public class DaemonRunnerAntigravityFloorTests {
         ServerUrl: "http://kcap.test", DaemonBridgeUrl: null, CapacitorPath: "/usr/local/bin/kcap",
         DaemonId: "daemon-1", DaemonEpoch: "epoch-1");
 
+    [UnsupportedOSPlatform("windows")]
     static async Task<string> StubAgyAsync(string version) {
         var stub = Path.Combine(Path.GetTempPath(), "kcap-agy-stub-" + Guid.NewGuid().ToString("N"));
 
@@ -304,6 +312,7 @@ public class DaemonRunnerAntigravityFloorTests {
     /// the two apart.
     /// </summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task TheAdvertisedCapabilityCarriesTheProbedCliVersion() {
         Skip.Unless(!OperatingSystem.IsWindows(), "The stub binary below is a POSIX shell script.");
 

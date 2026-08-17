@@ -264,22 +264,28 @@ dotnet_diagnostic.ide0005.severity = error   ; Remove unnecessary usings
 dotnet_diagnostic.ide0020.severity = warning ; Use pattern matching
 dotnet_diagnostic.ide0029.severity = warning ; Use coalesce expression (non-nullable)
 dotnet_diagnostic.ide0030.severity = warning ; Use coalesce expression (nullable)
-dotnet_diagnostic.ide0031.severity = warning ; Use null propagation
+dotnet_diagnostic.ide0031.severity = suggestion ; Use null propagation
 dotnet_diagnostic.ide0035.severity = warning ; Remove unreachable code
 dotnet_diagnostic.ide0036.severity = warning ; Order modifiers
 dotnet_diagnostic.ide0038.severity = warning ; Use pattern matching
 dotnet_diagnostic.ide0043.severity = warning ; Format string contains invalid placeholder
 dotnet_diagnostic.ide0044.severity = warning ; Make field readonly
 dotnet_diagnostic.ide0051.severity = warning ; Remove unused private members
+dotnet_diagnostic.ide0055.severity = silent  ; Fix formatting
 dotnet_diagnostic.ide0059.severity = warning ; Unnecessary assignment
 dotnet_diagnostic.ide0062.severity = warning ; Make local function static
 dotnet_diagnostic.ide0161.severity = warning ; Convert to file-scoped namespace
 dotnet_diagnostic.ide0200.severity = warning ; Remove unnecessary lambda expression
+dotnet_diagnostic.ide1006.severity = suggestion ; Naming rule violation
 
 ; --- Compiler Warnings ---
 dotnet_diagnostic.cs0162.severity = warning ; Unreachable code detected
 dotnet_diagnostic.cs0169.severity = warning ; Field is never used
+dotnet_diagnostic.cs1573.severity = suggestion ; Parameter has no matching param tag
+dotnet_diagnostic.cs1591.severity = silent  ; Missing XML comment
 dotnet_diagnostic.cs4014.severity = error   ; Not awaited async call
+dotnet_diagnostic.cs8509.severity = error   ; Switch expression is not exhaustive
+dotnet_diagnostic.cs8524.severity = suggestion ; Switch expression is not exhaustive (unnamed enum value)
 
 ; --- Code Analysis Rules ---
 dotnet_diagnostic.ca1801.severity = warning
@@ -288,6 +294,8 @@ dotnet_diagnostic.ca1805.severity = warning
 dotnet_diagnostic.ca1810.severity = warning
 dotnet_diagnostic.ca1811.severity = warning
 dotnet_diagnostic.ca1821.severity = warning
+dotnet_diagnostic.ca1822.severity = warning ; Mark members as static
+dotnet_code_quality.ca1822.api_surface = private, internal
 dotnet_diagnostic.ca1823.severity = warning
 dotnet_diagnostic.ca1830.severity = warning
 dotnet_diagnostic.ca1831.severity = warning
@@ -314,9 +322,12 @@ dotnet_diagnostic.ca1855.severity = warning
 dotnet_diagnostic.ca1856.severity = error
 dotnet_diagnostic.ca1857.severity = warning
 dotnet_diagnostic.ca1858.severity = warning
+dotnet_diagnostic.ca1859.severity = suggestion ; Use concrete types where possible for performance
+dotnet_diagnostic.ca1873.severity = suggestion ; Expensive logging arguments
 
 dotnet_diagnostic.ca1018.severity = warning
 dotnet_diagnostic.ca1047.severity = warning
+dotnet_diagnostic.ca1068.severity = suggestion ; CancellationToken parameters must come last
 dotnet_diagnostic.ca1507.severity = warning
 dotnet_diagnostic.ca1510.severity = warning
 dotnet_diagnostic.ca1511.severity = warning
@@ -337,6 +348,17 @@ dotnet_diagnostic.ca2208.severity = warning
 dotnet_diagnostic.ca2245.severity = warning
 dotnet_diagnostic.ca2246.severity = warning
 dotnet_diagnostic.ca2249.severity = warning
+
+; Avalonia owns lifetimes, so CA1001's fix is a Dispose nobody calls:
+; the app's real teardown is OnShutdownRequested.
+[{src/Capacitor.App,test/Capacitor.App.Tests.Unit}/**.cs]
+dotnet_diagnostic.ca1001.severity = suggestion ; Types that own disposable fields should be disposable
+
+[test/**.cs]
+dotnet_diagnostic.ca1707.severity = none       ; Identifiers should not contain underscores
+dotnet_diagnostic.ca1816.severity = none       ; Dispose methods should call SuppressFinalize
+dotnet_diagnostic.ca1861.severity = none       ; Avoid constant arrays as arguments
+dotnet_diagnostic.cs8602.severity = suggestion ; Dereference of a possibly null reference
 
 ; =============================================================================
 ; Native PTY shim

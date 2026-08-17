@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 
 namespace Capacitor.Cli.Core.Telemetry;
@@ -90,7 +91,7 @@ public sealed class TelemetrySpool(string path, int maxEvents = 2000) {
             var ts   = o["timestamp"]?.GetValue<string>();
             if (name is null || ts is null || o["properties"] is not JsonObject props) return null;
 
-            return new TelemetryEvent(name, (JsonObject)props.DeepClone(), DateTimeOffset.Parse(ts));
+            return new TelemetryEvent(name, (JsonObject)props.DeepClone(), DateTimeOffset.Parse(ts, CultureInfo.InvariantCulture, DateTimeStyles.None));
         } catch (Exception) {
             // Broad catch required by the never-throw constraint: a torn write, truncated file,
             // or hand-edited spool can produce structurally-valid JSON with unexpected types,

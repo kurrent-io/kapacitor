@@ -8,7 +8,7 @@ namespace Capacitor.Cli.Daemon.Services;
 /// ACP analogue of <see cref="ClaudeLauncher"/>'s PTY <c>BuildReviewFlowMcpConfig</c>: the
 /// <c>kcap-flow-result</c> submit channel plus the reviewer allowlist.
 ///
-/// Caller (<see cref="AcpHostedAgentRuntimeFactory"/>) supplies <paramref name="allowlistServerIds"/>
+/// Caller (<see cref="AcpHostedAgentRuntimeFactory"/>) supplies <c>allowlistServerIds</c>
 /// already resolved and validated via <see cref="KcapMcpRegistry.TryResolveReviewFlowAllowlist"/>,
 /// so every id here is a canonical, auto-approvable read-only server. Reads the launch's own
 /// <c>ctx</c> fields (validated non-blank) rather than <c>DaemonConfig</c>, matching the factory.

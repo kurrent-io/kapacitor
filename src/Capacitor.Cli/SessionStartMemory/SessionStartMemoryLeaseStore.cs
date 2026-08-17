@@ -247,7 +247,7 @@ internal sealed partial class SessionStartMemoryLeaseStore {
         return Path.Combine(_root, key + ".json");
     }
 
-    SessionStartMemoryStoreRecord? ReadRecord(string path) {
+    static SessionStartMemoryStoreRecord? ReadRecord(string path) {
         if (!File.Exists(path)) return null;
         return BoundedJsonFile.Read(path, SessionStartMemoryConstants.MaxRecordBytes,
             SessionStartMemoryJsonContext.Default.SessionStartMemoryStoreRecord);

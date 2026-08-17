@@ -164,6 +164,6 @@ public class LifecycleSurfaceTests {
 
         var result = await surface.TryConfirmAsync(Prompt(LifecyclePrompt.KindRepair), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
 
-        await Assert.That(result).IsEqualTo(false);
+        await Assert.That(result).IsFalse();
     }
 }

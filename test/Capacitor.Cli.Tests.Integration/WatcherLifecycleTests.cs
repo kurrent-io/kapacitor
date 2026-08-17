@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Integration;
@@ -79,7 +80,7 @@ public class WatcherLifecycleTests {
             var lines = await File.ReadAllLinesAsync(pidFile);
             await Assert.That(lines.Length).IsGreaterThanOrEqualTo(2);
 
-            var pid = int.Parse(lines[0].Trim());
+            var pid = int.Parse(lines[0].Trim(), CultureInfo.InvariantCulture);
             await Assert.That(lines[1].Trim()).IsEqualTo(ProcessStartToken.ForPid(pid));
 
             await Cli.WatcherManager.KillWatcher(key);

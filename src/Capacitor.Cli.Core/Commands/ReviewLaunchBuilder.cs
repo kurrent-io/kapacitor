@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -22,13 +23,13 @@ public static class ReviewLaunchBuilder {
         // the prompt before writing any temp file keeps the file's lifetime fully
         // inside the caller's try/finally so a throw never leaks a path-less file.
         var systemPrompt = EmbeddedResources.Load("prompt-review.txt")
-            .Replace("{prNumber}", prNumber.ToString())
+            .Replace("{prNumber}", prNumber.ToString(CultureInfo.InvariantCulture))
             .Replace("{owner}", owner)
             .Replace("{repo}", repo);
 
         var mcp = new ReviewMcpServer(
             Command: cliPath,
-            Args: ["mcp", "review", "--owner", owner, "--repo", repo, "--pr", prNumber.ToString()],
+            Args: ["mcp", "review", "--owner", owner, "--repo", repo, "--pr", prNumber.ToString(CultureInfo.InvariantCulture)],
             Env: new Dictionary<string, string> { ["KCAP_URL"] = baseUrl });
 
         string? configPath = null;

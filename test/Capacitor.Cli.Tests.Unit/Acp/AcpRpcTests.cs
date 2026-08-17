@@ -23,6 +23,25 @@ public class AcpRpcTests {
         await Assert.That(back.Method).IsEqualTo(request.Method);
     }
 
+    /// <summary>Outbound notifications carry the envelope too. The other two frame types had this
+    /// covered; this one did not, and every AcpNotification test only ever DESERIALIZED an inbound
+    /// frame — so nothing would have caught the jsonrpc property silently dropping out of the
+    /// serialized form (which is what marking it static, or any change STJ declines to serialize,
+    /// would do).</summary>
+    [Test]
+    public async Task AcpNotification_serializes_the_jsonrpc_envelope() {
+        var notification = new AcpNotification(
+            "session/cancel",
+            JsonDocument.Parse("""{"sessionId":"s-1"}""").RootElement
+        );
+
+        var json = JsonSerializer.Serialize(notification, CapacitorJsonContext.Default.AcpNotification);
+
+        await Assert.That(json).Contains(@"""jsonrpc"":""2.0""");
+        await Assert.That(json).Contains(@"""method"":""session/cancel""");
+        await Assert.That(json).DoesNotContain(@"""id""");
+    }
+
     [Test]
     public async Task AcpRequest_omits_params_key_when_null() {
         var request = new AcpRequest(2, "session/cancel", null);

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Capacitor.Cli.Daemon.Pty.Unix;
 
 namespace Capacitor.Cli.Tests.Unit.Daemon;
@@ -175,7 +176,7 @@ public class PtyShimNativeTests {
         var dir    = DummyProcess.PathDirWithTarget("probe-target");
         var script = DummyProcess.WriteShebangScript("/usr/bin/env", "probe-target", "true\n");
         try {
-            var childEnvp = new[] { Env("PATH", string.Format(pathTemplate, dir)) };
+            var childEnvp = new[] { Env("PATH", string.Format(CultureInfo.InvariantCulture, pathTemplate, dir)) };
             var plan = Preflight(script, [script], childEnvp, execveatSupported: 1);
             try { await Assert.That(UnixPtyInterop.pty_plan_contained(plan)).IsEqualTo(0); }
             finally { Free(plan); }

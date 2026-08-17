@@ -12,7 +12,7 @@ namespace Capacitor.Cli.Tests.Unit.Daemon;
 
 /// <summary>
 /// End-to-end coverage of ConsentRulesPutV2 over a REAL Unix-domain socket — the same
-/// <see cref="LocalControlServer.HandleConnectionAsync"/> routing switch a real `kcap` client
+/// <c>LocalControlServer.HandleConnectionAsync</c> routing switch a real `kcap` client
 /// talks to. The harness mirrors <see cref="LocalControlHelloTests"/> (temp DaemonLockPaths
 /// override, socket-file poll, Windows guard) but builds its own minimal AgentOrchestrator,
 /// since none of these tests exercise Spawn/Attach/List/Stop — the orchestrator only needs to

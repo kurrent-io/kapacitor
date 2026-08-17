@@ -108,7 +108,7 @@ public class StatusWaitArgumentTests {
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("wait must be a boolean");
         // Never even reached the network — a malformed argument fails before any GET.
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(0);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(0);
     }
 
     // === wait: true — polls until the round is terminal, then stops ===
@@ -235,7 +235,7 @@ public class StatusWaitArgumentTests {
         // round-submission poll lane's own "give up on the (N+1)th consecutive failure" rule.
         await Assert.That(server.LogEntries.Count(e => e.RequestMessage.Path == $"/api/flows/{flowRunId}"))
             .IsEqualTo(MaxTransientRetries + 1);
-        await Assert.That(clock.Delays).HasCount().EqualTo(MaxTransientRetries);
+        await Assert.That(clock.Delays).Count().IsEqualTo(MaxTransientRetries);
     }
 
     [Test]

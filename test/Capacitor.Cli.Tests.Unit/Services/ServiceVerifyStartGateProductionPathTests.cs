@@ -1,5 +1,7 @@
+using System.Runtime.Versioning;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Services;
+using Capacitor.Tests.Helpers;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
 
@@ -35,7 +37,6 @@ public class ServiceVerifyStartGateProductionPathTests {
 
     sealed class Fixture : IDisposable {
         readonly ProdPathFixture _core = new(Id);
-        readonly TextWriter _originalErr = Console.Error;
 
         public string PlistPath => _core.PlistPath;
         public LaunchdServiceManager Manager => _core.Manager;
@@ -47,25 +48,18 @@ public class ServiceVerifyStartGateProductionPathTests {
             var sut = new ServiceVerify(Manager, _ => 4242, Hello, TimeProvider.System,
                 gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
 
-            var capturedErr = new StringWriter();
-            Console.SetError(capturedErr);
-            int exit;
-            try {
-                exit = await sut.StartVerifiedAsync(Id);
-            } finally {
-                Console.SetError(_originalErr);
-            }
+            using var capture = ConsoleOutput.StartErrorCapture();
+            var exit = await sut.StartVerifiedAsync(Id);
 
-            return (exit, capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries));
+            return (exit, capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries));
         }
 
-        public void Dispose() {
-            Console.SetError(_originalErr);
-            _core.Dispose();
-        }
+        public void Dispose() => _core.Dispose();
     }
 
-    [Test]
+    // Bare NotInParallel like its siblings: RunStartVerifiedAsync captures Console.Error, and a
+    // group key alone would let it overlap another capture.
+    [Test, NotInParallel]
     public async Task Malformed_unit_on_disk_is_contained_through_the_real_manager_and_reaches_exit_28() {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution is POSIX-only");
 
@@ -89,6 +83,7 @@ public class ServiceVerifyStartGateProductionPathTests {
     /// absent unit gets. Here: a real plist file with its read permission stripped —
     /// <c>File.Exists</c> still reports it present, but the open throws.</summary>
     [Test, NotInParallel]
+    [UnsupportedOSPlatform("windows")]
     public async Task Present_but_unreadable_unit_is_evidence_unreadable_not_directive_missing() {
         Skip.When(OperatingSystem.IsWindows(), "launchd/HOME-based plist resolution and Unix file modes are POSIX-only");
 

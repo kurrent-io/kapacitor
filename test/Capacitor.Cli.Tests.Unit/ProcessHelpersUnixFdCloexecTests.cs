@@ -56,8 +56,8 @@ public class ProcessHelpersUnixFdCloexecTests {
             await Assert.That(fcntl(writeFd, F_GETFD, 0) & FD_CLOEXEC).IsEqualTo(FD_CLOEXEC);
             await Assert.That(fcntl(readFd, F_GETFD, 0) & FD_CLOEXEC).IsEqualTo(FD_CLOEXEC);
         } finally {
-            close(readFd);
-            close(writeFd);
+            _ = close(readFd);
+            _ = close(writeFd);
         }
     }
 }

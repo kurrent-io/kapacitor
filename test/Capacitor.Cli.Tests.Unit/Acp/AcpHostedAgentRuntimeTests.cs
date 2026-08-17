@@ -506,7 +506,7 @@ public class AcpHostedAgentRuntimeTests {
         await h.Runtime.SendUserInputAsync("more").WaitAsync(HangGuard);
 
         var deadline = DateTime.UtcNow + HangGuard;
-        while (h.Fake.ReceivedCalls.Count(c => c.Method == "session/prompt") < 1 && DateTime.UtcNow < deadline)
+        while (h.Fake.ReceivedCalls.All(c => c.Method != "session/prompt") && DateTime.UtcNow < deadline)
             await Task.Delay(10);
 
         await Assert.That(h.Fake.ReceivedCalls.Any(c => c.Method == "session/prompt")).IsTrue();
@@ -651,7 +651,7 @@ public class AcpHostedAgentRuntimeTests {
         // Explicit type argument: Task.Run would otherwise resolve TakeReap's Task? return via the
         // Func<Task> "unwrap" overload (treating it as the work to await) instead of Func<Task?>
         // (treating it as the RESULT), silently changing what takeTask represents.
-        var takeTask  = Task.Run<Task?>(() => h.Runtime.TakeReap());
+        var takeTask  = Task.Run<Task?>(h.Runtime.TakeReap);
         var loserTask = Task.Run(() => h.Runtime.TryStartReap("loser-reason", () => Task.CompletedTask));
 
         // Neither concurrent caller can have progressed past the lock yet.

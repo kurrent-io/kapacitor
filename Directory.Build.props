@@ -5,90 +5,17 @@
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
 
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
         <AnalysisLevel>latest-recommended</AnalysisLevel>
         <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-        <!-- Only on for IDE0005, which the compiler reports nowhere else. We ship no XML docs, so
-             the doc-markup warnings it drags in are suppressed below; worth revisiting later. -->
+        <!-- Only on for IDE0005, which the compiler reports nowhere else. -->
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
-        <NoWarn>
-            IDE0055<!-- Fix formatting -->;
-            IDE1006<!-- Naming rule violation -->;
-            CS1591<!-- Missing XML comment -->;
-            CS1573<!-- Parameter has no matching param tag -->;
-            CS1574<!-- cref attribute could not be resolved -->;
-            CS0419<!-- Ambiguous reference in cref attribute -->;
-            CS1734<!-- paramref tag with no matching parameter -->;
-            CS1570<!-- Badly formed XML in comment -->;
-        </NoWarn>
-        <!-- CS8509: a switch expression that does not cover every named enum value. An error, not a
-             warning, because the alternative to exhaustiveness is a discard arm, and a discard that
-             maps to the permissive outcome makes the safe direction of a fail-closed gate whatever
-             nobody thought about. The reviewer version gate shipped exactly that bug. Measured before
-             enabling: zero CS8509 warnings across the daemon, Core, the CLI and the unit tests. -->
-        <WarningsAsErrors>$(WarningsAsErrors);CS8509;IDE0005</WarningsAsErrors>
-        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-        <!-- Temporary triage list: every code that was already warning when TreatWarningsAsErrors
-             went on. Anything NEW is an error from now on; these stay warnings until fixed, and each
-             is deleted from here as its last site goes. Add nothing to this list. -->
-        <WarningsNotAsErrors>
-            $(WarningsNotAsErrors);
-            CA1001<!-- Type owns disposable fields but is not disposable -->;
-            CA1051<!-- Do not declare visible instance fields -->;
-            CA1068<!-- CancellationToken parameters must come last -->;
-            CA1200<!-- Avoid using cref tags with a prefix -->;
-            CA1305<!-- Specify IFormatProvider -->;
-            CA1309<!-- Use ordinal string comparison -->;
-            CA1310<!-- Specify StringComparison for correctness -->;
-            CA1416<!-- Validate platform compatibility -->;
-            CA1513<!-- Use ObjectDisposedException.ThrowIf -->;
-            CA1806<!-- Do not ignore method results -->;
-            CA1822<!-- Mark members as static -->;
-            CA1826<!-- Do not use Enumerable methods on indexable collections -->;
-            CA1827<!-- Do not use Count() when Any() can be used -->;
-            CA1829<!-- Use the Count property instead of Enumerable.Count() -->;
-            CA1847<!-- Use string.Contains(char) for a single character -->;
-            CA1852<!-- Seal internal types -->;
-            CA1859<!-- Use concrete types where possible for performance -->;
-            CA1862<!-- Use the StringComparison overloads for case-insensitive comparison -->;
-            CA1866<!-- Use the char overload for a single character -->;
-            CA1869<!-- Cache and reuse JsonSerializerOptions instances -->;
-            CA1873<!-- Evaluation of this argument may be expensive if logging is disabled -->;
-            CA1875<!-- Use Regex.Count instead of Regex.Matches().Count -->;
-            CA2008<!-- Do not create tasks without passing a TaskScheduler -->;
-            CA2016<!-- Forward the CancellationToken parameter -->;
-            CA2101<!-- Specify marshaling for P/Invoke string arguments -->;
-            CA2201<!-- Exception type is not sufficiently specific -->;
-            CA2215<!-- Dispose(bool) should call base.Dispose(bool) -->;
-            CA2249<!-- Use string.Contains instead of string.IndexOf -->;
-            CA2250<!-- Use ThrowIfCancellationRequested -->;
-            CA2254<!-- The logging message template should not vary between calls -->;
 
-            CS0618<!-- Type or member is obsolete -->;
-            CS0649<!-- Field is never assigned and keeps its default value -->;
-            CS8519<!-- The given expression never matches the provided pattern -->;
-            CS8524<!-- Switch expression is not exhaustive over an unnamed enum value -->;
-            CS8602<!-- Dereference of a possibly null reference -->;
-            CS8604<!-- Possible null reference argument -->;
-            CS8625<!-- Cannot convert null literal to non-nullable reference type -->;
-            CS8631<!-- Nullability of type argument does not match constraint -->;
-            CS8762<!-- Parameter must have a non-null value when exiting -->;
-            CS8793<!-- The given expression always matches the provided pattern -->;
-            CS9124<!-- Parameter is captured into enclosing state and also initializes a field -->;
+        <!-- The exemption is for low/moderate: the NuGet audit's advisory database updates independently
+             of this repo, so a clean tree can start failing overnight on code nobody touched.
+              High (NU1903) and critical (NU1904) are worth that interruption. -->
+        <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1901;NU1902</WarningsNotAsErrors>
 
-            IDE0031<!-- Null check can be simplified -->;
-            IDE0044<!-- Make field readonly -->;
-            IDE0051<!-- Private member is unused -->;
-            IDE0059<!-- Unnecessary assignment of a value -->;
-            IDE0062<!-- Local function can be made static -->;
-            IDE0200<!-- Lambda expression can be removed -->;
-
-            NU1510<!-- PackageReference will not be pruned -->;
-        </WarningsNotAsErrors>
-        <!-- NOT part of the triage list above: the NuGet audit warns from an advisory database that
-             updates independently of this repo, so a clean tree can start failing overnight on code
-             nobody touched. These stay warnings permanently; the fix for one is a package bump, not
-             a deletion from here. Currently: Scriban.Signed 5.5.0 (NU1904, critical). -->
-        <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1902;NU1903;NU1904</WarningsNotAsErrors>
         <MinVerTagPrefix>v</MinVerTagPrefix>
     </PropertyGroup>
     <ItemGroup>

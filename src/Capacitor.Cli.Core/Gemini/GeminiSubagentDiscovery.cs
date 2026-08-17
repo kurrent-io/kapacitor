@@ -30,7 +30,7 @@ public static class GeminiSubagentDiscovery {
     /// Nested subagent <c>*.jsonl</c> files recorded alongside a parent main transcript
     /// (empty when the session spawned none). Path: <c>chats/&lt;dashedParent&gt;/*.jsonl</c>.
     /// Single-level — shared by the live watcher/teardown paths, which stay single-level for
-    /// now (the recursive fix is import-only; see <see cref="EnumerateDescendantFiles"/>).
+    /// now (the recursive fix is import-only; see <see cref="EnumerateDescendantFiles(string)"/>).
     /// </summary>
     public static IReadOnlyList<string> EnumerateSubagentFiles(string transcriptPath) {
         if (ReadParentSessionId(transcriptPath) is not { } dashedParent) return [];
@@ -50,7 +50,7 @@ public static class GeminiSubagentDiscovery {
     /// Hard ceiling on the total number of BELOW-CAP (omitted) nodes visited by the counting
     /// walk — mirrors <c>OpenCodeDb.MaxCountingNodes</c> for symmetry. This bounds ONLY the walk into
     /// descendants already beyond <see cref="MaxDescendantDepth"/> — it never applies to in-cap
-    /// import discovery, which is always complete (see <see cref="EnumerateDescendantFiles"/>).
+    /// import discovery, which is always complete (see <see cref="EnumerateDescendantFiles(string)"/>).
     /// The visited-id set already prevents an infinite loop on a reachable cycle; this ceiling
     /// instead bounds the total work a pathologically huge or wide UNIMPORTED subtree could
     /// otherwise force onto a single import pass. A real Gemini subagent tree tops out at a

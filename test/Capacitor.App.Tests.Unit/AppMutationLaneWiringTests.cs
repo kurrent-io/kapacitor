@@ -408,7 +408,7 @@ public class AppMutationLaneWiringTests {
 
         var acceptingSurface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(true) };
         using var liveCts = new CancellationTokenSource();
-        Task<MutationOutcome> AcceptMutation(MutationRequest r, CancellationToken ct) => Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
+        static Task<MutationOutcome> AcceptMutation(MutationRequest r, CancellationToken ct) => Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
         var secondConsumer = AppUnderTest.ConsumeMutationOutcomesAsync(
             channel, acceptingSurface, AcceptMutation, FixedTerminalPath("/usr/bin"), () => null, liveCts.Token);
 

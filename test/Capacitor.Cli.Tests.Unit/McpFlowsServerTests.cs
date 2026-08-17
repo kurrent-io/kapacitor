@@ -336,7 +336,7 @@ public class McpFlowsServerTests {
 
         await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1", "m2"], Clock());
 
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(1);
         var body = server.LogEntries.Single().RequestMessage.Body!;
         await Assert.That(body).Contains("\"message_ids\"");
         var parsed = JsonNode.Parse(body)!.AsObject();
@@ -355,8 +355,8 @@ public class McpFlowsServerTests {
         await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1"], clock);
         var delays = clock.Delays;
 
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(2);
-        await Assert.That(delays).HasCount().EqualTo(1);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(2);
+        await Assert.That(delays).Count().IsEqualTo(1);
         await Assert.That(delays[0]).IsEqualTo(TimeSpan.FromSeconds(2));
     }
 
@@ -380,7 +380,7 @@ public class McpFlowsServerTests {
 
         // No exception propagated, and the retry-after-delay path still ran once — i.e. both the
         // initial attempt and the retry timed out and were swallowed rather than thrown.
-        await Assert.That(delays).HasCount().EqualTo(1);
+        await Assert.That(delays).Count().IsEqualTo(1);
     }
 
     [Test]
@@ -390,7 +390,7 @@ public class McpFlowsServerTests {
 
         await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", [], Clock());
 
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(0);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(0);
     }
 
     /// <summary>
@@ -422,7 +422,7 @@ public class McpFlowsServerTests {
 
         await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", pendingIds, Clock());
 
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(1);
         var ackBody = server.LogEntries.Single().RequestMessage.Body!;
         var ackIds  = JsonNode.Parse(ackBody)!.AsObject()["message_ids"]!.AsArray().Select(n => n!.GetValue<string>());
         await Assert.That(ackIds).IsEquivalentTo(pendingIds);
@@ -467,7 +467,7 @@ public class McpFlowsServerTests {
             cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(1);
 
         var hit = server.LogEntries.Single();
         await Assert.That(hit.RequestMessage.Path).IsEqualTo("/api/flows/review/start/v3");
@@ -491,7 +491,7 @@ public class McpFlowsServerTests {
                 cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null))
             .Throws<ArgumentException>();
 
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(0);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(0);
     }
 
     [Test]
@@ -516,7 +516,7 @@ public class McpFlowsServerTests {
                 cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "definition_id", requestingSessionId: null))
             .Throws<ArgumentException>();
 
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(0);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(0);
     }
 
     [Test]
@@ -706,7 +706,7 @@ public class McpFlowsServerTests {
         await Assert.That(text).DoesNotContain("reviewer_model_protocol_required");
 
         // Exactly one POST — no v2 fallback, and nothing to close (no run ever started).
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(1);
         await Assert.That(server.LogEntries.Single().RequestMessage.Path).IsEqualTo("/api/flows/review/start/v3");
         await Assert.That(server.LogEntries.Any(e => e.RequestMessage.Path.Contains("/close"))).IsFalse();
     }

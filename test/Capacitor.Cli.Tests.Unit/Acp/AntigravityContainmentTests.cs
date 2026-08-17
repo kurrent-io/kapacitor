@@ -305,7 +305,7 @@ public class AntigravityContainmentTests {
     static HashSet<string> SnapshotNames(string dir) {
         try {
             return Directory.Exists(dir)
-                ? [.. Directory.EnumerateFileSystemEntries(dir).Select(Path.GetFileName)!]
+                ? [.. Directory.EnumerateFileSystemEntries(dir).Select(Path.GetFileName).Select(x => x!)]
                 : [];
         } catch {
             return [];

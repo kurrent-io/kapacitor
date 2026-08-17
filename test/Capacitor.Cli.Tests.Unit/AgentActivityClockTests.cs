@@ -284,7 +284,7 @@ public class ActivityClockTurnAndEnvelopeWiringTests {
         await h.Runtime.SendUserInputAsync("hi");
 
         var deadline = DateTime.UtcNow + HangGuard;
-        while (h.Fake.ReceivedCalls.Count(c => c.Method == "session/prompt") < 1 && DateTime.UtcNow < deadline)
+        while (h.Fake.ReceivedCalls.All(c => c.Method != "session/prompt") && DateTime.UtcNow < deadline)
             await Task.Delay(10);
 
         await Assert.That(h.Runtime.ActivityClock!.TurnInFlight).IsTrue();

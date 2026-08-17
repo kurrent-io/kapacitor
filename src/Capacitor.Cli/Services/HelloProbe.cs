@@ -8,7 +8,7 @@ public sealed record HelloProbeResult(bool WellFormed, int? ProtocolVersion, str
 
 /// <summary>
 /// One-shot dial + Hello + HelloReply against a daemon's local control socket, bounded by
-/// <paramref name="timeout"/>. Mirrors the hello leg of <c>LocalControlClient.RunCycleAsync</c>
+/// <c>timeout</c>. Mirrors the hello leg of <c>LocalControlClient.RunCycleAsync</c>
 /// but deliberately WITHOUT its <c>status/1</c> capability gate — that gate is exactly what
 /// install-verify (which validates version itself) and start-verify (which must accept a
 /// capability-incompatible hello) must not apply.

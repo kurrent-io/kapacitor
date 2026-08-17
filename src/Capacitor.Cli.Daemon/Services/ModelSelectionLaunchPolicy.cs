@@ -26,7 +26,7 @@ internal enum ModelSelectionDisposition {
 /// <c>hosted_agent_started</c> analytics. Without this gate, launching such a vendor with
 /// <c>model="foo"</c> runs the vendor's default while telling the dashboard and analytics that
 /// <c>foo</c> is live — a silent requested-vs-running mismatch, and precisely the failure mode the
-/// no-op selector was chosen to avoid.
+/// no-op selector was chosen to avoid.</para>
 ///
 /// <para><b>Why the two negative cases differ.</b> Clearing the reported model is right for an
 /// interactive launch: the user gets a working agent and honest metadata, and refusing outright would

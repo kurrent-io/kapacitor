@@ -19,7 +19,7 @@ public interface IDaemonClientService {
     /// next one. Concurrent calls coalesce onto the in-flight restart. No-op after shutdown.
     Task RestartLoopAsync();
 
-    /// Spawns `kcap daemon start -d --name <DaemonName>`. On exit 0 immediately kicks
+    /// Spawns <c>kcap daemon start -d --name &lt;DaemonName&gt;</c>. On exit 0 immediately kicks
     /// RestartLoopAsync so the attach doesn't sit out a backoff.
     Task<StartDaemonResult> StartDaemonAsync(CancellationToken ct);
 

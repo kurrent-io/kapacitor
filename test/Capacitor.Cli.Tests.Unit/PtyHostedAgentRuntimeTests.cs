@@ -129,7 +129,7 @@ public class PtyHostedAgentRuntimeTests {
         await runtime.SendUserInputAsync("hi");
 
         await Assert.That(pty.Writes.Count).IsEqualTo(1);                   // just the paste, no CRs
-        await Assert.That(pty.Writes[0].StartsWith("\x1b[200~")).IsTrue();
+        await Assert.That(pty.Writes[0].StartsWith("\x1b[200~", StringComparison.Ordinal)).IsTrue();
     }
 
     [Test]

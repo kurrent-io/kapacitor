@@ -14,7 +14,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
-/// Covers the vendor-routing logic in <see cref="AgentOrchestrator.HandleLaunchAgent"/>
+/// Covers the vendor-routing logic in <c>AgentOrchestrator.HandleLaunchAgent</c>
 /// added in Task 14. Verifies that:
 ///   • Unknown vendors short-circuit with LaunchFailed before any worktree work.
 ///   • Claude/Codex commands route to the matching <see cref="IHostedAgentLauncher"/>.
@@ -437,7 +437,7 @@ public partial class AgentOrchestratorVendorTests {
         await orch.HandleLaunchAgentForTest(
             PostureCmd("agent-posture-ok", new("read-only", "never")));
 
-        await Assert.That(server.LaunchFailedCalls.Any(c => c.Reason.StartsWith("codex_posture_"))).IsFalse();
+        await Assert.That(server.LaunchFailedCalls.Any(c => c.Reason.StartsWith("codex_posture_", StringComparison.Ordinal))).IsFalse();
     }
 
     // ── Applied-posture echo on registration ────────────────────────────────────────────────
@@ -446,7 +446,7 @@ public partial class AgentOrchestratorVendorTests {
     // daemon-owned worktree; every other launch shape reports nulls, which is what lets a consumer
     // render it without any launch-kind discriminator.
 
-    async Task<(CaptureServerConnection Server, SpyHostedAgentRuntimeFactory Codex)> LaunchForEchoAsync(
+    static async Task<(CaptureServerConnection Server, SpyHostedAgentRuntimeFactory Codex)> LaunchForEchoAsync(
             string repoPath,
             string agentId,
             CodexLaunchPosture? posture,
@@ -2068,7 +2068,7 @@ public partial class AgentOrchestratorVendorTests {
             LastContext = ctx;
             if (StartThrow is not null) throw StartThrow;
 
-            var runtime = new FakeHostedAgentRuntime(vendor, EmitsTerminalOutput);
+            var runtime = new FakeHostedAgentRuntime(Vendor, EmitsTerminalOutput);
             LastRuntime = runtime;
 
             return Task.FromResult(new HostedRuntimeStart(runtime, McpConfigPath: null));
@@ -2350,7 +2350,7 @@ public partial class AgentOrchestratorVendorTests {
         /// <summary>One-shot gate: when set, the NEXT raw AcpSessionStarted invoke awaits this task
         /// before returning (then the field is cleared) — models a bind call still in flight across
         /// a reconnect outage (reliability fix's stale-binding-race test), independent of
-        /// <paramref name="ct"/> so the test controls exactly when the "late bind" resolves.</summary>
+        /// <c>ct</c> so the test controls exactly when the "late bind" resolves.</summary>
         public TaskCompletionSource? PendingAcpBindGate { get; set; }
 
         internal override async Task<AcpBindOutcome> InvokeAcpSessionStartedRawAsync(

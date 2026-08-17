@@ -316,7 +316,7 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     readonly int                       _pendingTurnsCapacity;
     int                                _rejectedPendingTurns;
 
-    Task _turnWorkerTask = Task.CompletedTask;
+    readonly Task _turnWorkerTask = Task.CompletedTask;
 
     const int DefaultTranscriptCapacity  = 2000;
     const int DefaultPendingTurnsCapacity = 64;

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Capacitor.Cli.Commands;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -42,7 +43,7 @@ public class CopilotImportSourceTests {
 
         await Assert.That(sessions.Count).IsEqualTo(1);
         await Assert.That(sessions[0].Cwd).IsEqualTo("/work/a");
-        await Assert.That(sessions[0].FirstTimestamp).IsEqualTo(DateTimeOffset.Parse("2026-06-10T20:23:25.556Z"));
+        await Assert.That(sessions[0].FirstTimestamp).IsEqualTo(DateTimeOffset.Parse("2026-06-10T20:23:25.556Z", CultureInfo.InvariantCulture));
         await Assert.That(sessions[0].SourceMeta["Name"]).IsEqualTo("Create a file hello.txt containing 'hello world'");
     }
 
@@ -132,8 +133,8 @@ public class CopilotImportSourceTests {
         await Assert.That(meta!.Cwd).IsEqualTo("/private/tmp/work");
         // Values containing ": " must not be truncated at the second colon.
         await Assert.That(meta.Name).IsEqualTo("Fix the bug: timestamps are wrong");
-        await Assert.That(meta.CreatedAt).IsEqualTo(DateTimeOffset.Parse("2026-06-10T20:23:25.556Z"));
-        await Assert.That(meta.UpdatedAt).IsEqualTo(DateTimeOffset.Parse("2026-06-10T20:23:37.838Z"));
+        await Assert.That(meta.CreatedAt).IsEqualTo(DateTimeOffset.Parse("2026-06-10T20:23:25.556Z", CultureInfo.InvariantCulture));
+        await Assert.That(meta.UpdatedAt).IsEqualTo(DateTimeOffset.Parse("2026-06-10T20:23:37.838Z", CultureInfo.InvariantCulture));
     }
 
     [Test]
@@ -156,7 +157,7 @@ public class CopilotImportSourceTests {
         await Assert.That(meta).IsNotNull();
         await Assert.That(meta!.Name).IsEqualTo("Reply with exactly: ok");
         await Assert.That(meta.Cwd).IsEqualTo("/private/tmp/quoted dir");
-        await Assert.That(meta.CreatedAt).IsEqualTo(DateTimeOffset.Parse("2026-06-10T20:23:21.000Z"));
+        await Assert.That(meta.CreatedAt).IsEqualTo(DateTimeOffset.Parse("2026-06-10T20:23:21.000Z", CultureInfo.InvariantCulture));
     }
 
     [Test]

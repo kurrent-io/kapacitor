@@ -32,7 +32,9 @@ public class FrameCodecStatusTests {
     [Test]
     public async Task Frame_values_are_pinned_16_and_76() {
         // Append-only wire contract: these bytes are claimed by the spec and must never move.
+#pragma warning disable TUnitAssertions0005
         await Assert.That((byte)FrameType.StatusSubscribe).IsEqualTo((byte)16);
         await Assert.That((byte)FrameType.DaemonStatus).IsEqualTo((byte)76);
+#pragma warning restore TUnitAssertions0005
     }
 }

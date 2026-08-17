@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Services;
@@ -11,6 +12,7 @@ namespace Capacitor.Cli.Tests.Unit;
 /// intentionally excluded from ordinary local/CI runs.</summary>
 public class ClaudeBorrowedReviewLiveTests {
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task BorrowedReview_DeniesMutation_AndCallsResultMcp() {
         Skip.Unless(
             Environment.GetEnvironmentVariable("KCAP_CLAUDE_LIVE") == "1",

@@ -31,7 +31,7 @@ public static class PiPaths {
     /// <summary>Expand a leading <c>~</c>/<c>~/</c> against <paramref name="home"/>
     /// (or the OS user profile), matching Pi's <c>expandTildePath</c>.</summary>
     static string ExpandTilde(string path, string? home) {
-        if (path != "~" && !path.StartsWith("~/") && !path.StartsWith("~\\")) return path;
+        if (path != "~" && !path.StartsWith("~/", StringComparison.Ordinal) && !path.StartsWith("~\\", StringComparison.Ordinal)) return path;
 
         var baseDir = home ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         return path.Length <= 1 ? baseDir : Path.Combine(baseDir, path[2..]);

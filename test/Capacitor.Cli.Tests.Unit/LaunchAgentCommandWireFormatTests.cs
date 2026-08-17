@@ -260,7 +260,7 @@ public class LaunchAgentCommandWireFormatTests {
         await Assert.That(json).Contains("\"requester_is_owner\":true");
         var back = JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.LaunchAgentCommand);
         await Assert.That(back.RequesterUserId).IsEqualTo("user_x");
-        await Assert.That(back.RequesterIsOwner).IsEqualTo(true);
+        await Assert.That(back.RequesterIsOwner).IsTrue();
     }
 
     [Test]

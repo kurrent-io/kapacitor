@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 
 namespace Capacitor.Cli.Core;
@@ -367,7 +368,7 @@ static class ClaudeCliRunner {
         args.Add("--output-format");
         args.Add("json");
         args.Add("--max-turns");
-        args.Add(maxTurns.ToString());
+        args.Add(maxTurns.ToString(CultureInfo.InvariantCulture));
         args.Add("--model");
         args.Add(model);
 

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Capacitor.Cli.Commands;
 
 namespace Capacitor.Cli.Tests.Unit.Import;
@@ -19,7 +20,7 @@ public class ImportCommandTests {
             var result = ImportCommand.ExtractLastTimestamp(path);
 
             await Assert.That(result).IsNotNull();
-            await Assert.That(result!.Value).IsEqualTo(DateTimeOffset.Parse("2026-03-15T10:05:00Z"));
+            await Assert.That(result!.Value).IsEqualTo(DateTimeOffset.Parse("2026-03-15T10:05:00Z", CultureInfo.InvariantCulture));
         } finally {
             File.Delete(path);
         }
@@ -38,7 +39,7 @@ public class ImportCommandTests {
             var result = ImportCommand.ExtractLastTimestamp(path);
 
             await Assert.That(result).IsNotNull();
-            await Assert.That(result!.Value).IsEqualTo(DateTimeOffset.Parse("2026-03-15T10:00:00Z"));
+            await Assert.That(result!.Value).IsEqualTo(DateTimeOffset.Parse("2026-03-15T10:00:00Z", CultureInfo.InvariantCulture));
         } finally {
             File.Delete(path);
         }
@@ -77,7 +78,7 @@ public class ImportCommandTests {
             var meta = ImportCommand.ExtractSessionMetadata(path);
 
             await Assert.That(meta.FirstTimestamp).IsNotNull();
-            await Assert.That(meta.FirstTimestamp!.Value).IsEqualTo(DateTimeOffset.Parse("2026-03-15T09:30:00Z"));
+            await Assert.That(meta.FirstTimestamp!.Value).IsEqualTo(DateTimeOffset.Parse("2026-03-15T09:30:00Z", CultureInfo.InvariantCulture));
             await Assert.That(meta.Cwd).IsEqualTo("/home/user/project");
             await Assert.That(meta.Model).IsEqualTo("opus");
         } finally {

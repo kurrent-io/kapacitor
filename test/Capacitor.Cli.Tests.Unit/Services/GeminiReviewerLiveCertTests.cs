@@ -159,7 +159,7 @@ public class GeminiReviewerLiveCertTests {
             var drive = await DriveGeminiAsync(ws, project, allowlist, injectAs, server, injectedMarker);
 
             var injectedBody = File.Exists(injectedMarker) ? await File.ReadAllTextAsync(injectedMarker) : "";
-            var hostileRan   = markers.Where(kv => kv.Key.StartsWith("hostile-") && File.Exists(kv.Value))
+            var hostileRan   = markers.Where(kv => kv.Key.StartsWith("hostile-", StringComparison.Ordinal) && File.Exists(kv.Value))
                                       .Select(kv => kv.Key).ToList();
 
             Console.WriteLine($"[gemini-cert] session={drive.SessionEstablished} turn={drive.TurnCompleted} "

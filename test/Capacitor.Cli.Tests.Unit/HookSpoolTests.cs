@@ -45,8 +45,8 @@ public class HookSpoolTests {
             spool.Append(SidA, "session-end",   """{"n":3}"""); // TransientStop
 
             await spool.DrainAllAsync(SidA, (route, body) =>
-                Task.FromResult(body.Contains("2") ? DrainOutcome.Drop
-                              : body.Contains("3") ? DrainOutcome.TransientStop
+                Task.FromResult(body.Contains('2') ? DrainOutcome.Drop
+                              : body.Contains('3') ? DrainOutcome.TransientStop
                               : DrainOutcome.Delivered),
                 TimeSpan.FromSeconds(5), CancellationToken.None);
 

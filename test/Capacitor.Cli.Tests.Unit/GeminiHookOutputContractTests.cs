@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Tests.Helpers;
 
 namespace Capacitor.Cli.Tests.Unit;
 
@@ -180,18 +181,12 @@ public class GeminiHookOutputContractTests {
     }
 
     static async Task<string> RunAsync(string payload) {
-        var originalOut = Console.Out;
-        var writer      = new StringWriter();
-        Console.SetOut(writer);
+        using var capture = ConsoleOutput.StartCapture();
 
-        try {
-            // A URL no POST can reach: these paths must all return before any network call, and a test
-            // that quietly started talking to a live server would be measuring something else.
-            await GeminiHookCommand.Handle("http://127.0.0.1:1", new StringReader(payload));
+        // A URL no POST can reach: these paths must all return before any network call, and a test
+        // that quietly started talking to a live server would be measuring something else.
+        await GeminiHookCommand.Handle("http://127.0.0.1:1", new StringReader(payload));
 
-            return writer.ToString();
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        return capture.GetCapturedOutput();
     }
 }

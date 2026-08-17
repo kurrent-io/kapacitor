@@ -10,9 +10,9 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// from AcpHostedAgentRuntime.StartAsync after session/new resolves and before the first
 /// session/prompt fires.
 ///
-/// <b>Cancellation contract (spec-review Finding 2):</b> a canceled <paramref name="ct"/> is NOT
+/// <b>Cancellation contract (spec-review Finding 2):</b> a canceled <c>ct</c> is NOT
 /// one of the "never throws" failure modes below — <see cref="AcpConnection.RequestAsync"/> throws
-/// <see cref="OperationCanceledException"/> when <paramref name="ct"/> is canceled, and every
+/// <see cref="OperationCanceledException"/> when <c>ct</c> is canceled, and every
 /// implementation of this method MUST let that propagate uncaught, aborting <c>StartAsync</c>
 /// entirely (no runtime is ever handed back to a caller who already canceled the launch). Only a
 /// best-effort RESOLUTION failure — no requested model, a <c>session/new</c> result publishing no

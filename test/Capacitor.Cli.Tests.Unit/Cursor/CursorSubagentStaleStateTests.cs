@@ -111,7 +111,7 @@ public class CursorSubagentStaleStateTests {
             await Assert.That(routes).DoesNotContain("/hooks/agent-thought/cursor");
             // ...and so is the agent-routed transcript backfill. This is the assertion the gate
             // owns: without it the backfill runs even though SubagentStarted was never appended.
-            await Assert.That(routes.Any(r => r.StartsWith("/hooks/transcript"))).IsFalse();
+            await Assert.That(routes.Any(r => r.StartsWith("/hooks/transcript", StringComparison.Ordinal))).IsFalse();
             await Assert.That(spawned).IsEmpty();
 
             // Fail-closed AND SILENT: nothing is logged, surfaced or marked at the moment of the

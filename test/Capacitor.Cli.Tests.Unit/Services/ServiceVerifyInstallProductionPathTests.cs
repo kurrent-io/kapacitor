@@ -27,7 +27,7 @@ public class ServiceVerifyInstallProductionPathTests {
         // once the read is classified Unreadable.
         ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "written", "stale", "no-unit", "irrelevant-fingerprint"));
 
-        Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(false, null, null, null));
 
         var sut = new ServiceVerify(fx.Manager, _ => 4242, Hello, TimeProvider.System);

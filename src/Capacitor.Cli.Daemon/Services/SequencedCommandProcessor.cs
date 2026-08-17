@@ -291,9 +291,10 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
         if (outcome is SubmitOutcome.DroppedUnknownTarget)
             // The processor owns this log: the caller has no reply surface for an un-sequenced command
             // (§1.8) and the drop is observably identical to the unknown-agent no-op it replaces.
-            LogQuietlyUnsequenced(null,
-                "dropping an un-sequenced stop for unknown target {AgentId} (payload {PayloadKey}) — neither registered nor an in-flight launch",
-                item.AgentId, item.PayloadKey);
+            LogQuietly(() => _logger.LogDebug(
+                    "SequencedCommandProcessor: dropping an un-sequenced stop for unknown target {AgentId} (payload {PayloadKey}) — neither registered nor an in-flight launch",
+                    item.AgentId,
+                    item.PayloadKey));
 
         if (alarmDepth > 0)
             try {
@@ -452,14 +453,6 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
         alarmHighWater = _queuedStopsHighWater;
     }
 
-    /// <summary>Diagnostics for the un-sequenced lane that cannot themselves become the failure — same
-    /// contract as <see cref="LogQuietly"/>, different argument shape.</summary>
-    void LogQuietlyUnsequenced(Exception? error, string template, string agentId, string payloadKey) {
-        try {
-            _logger.LogDebug(error, "SequencedCommandProcessor: " + template, agentId, payloadKey);
-        } catch { /* deliberately empty — see summary */ }
-    }
-
     /// <summary>Test seams for the §3.3 tracking state. Reading them takes <c>_lock</c>, so they observe
     /// exactly what admission and coalescing observe.</summary>
     internal bool IsActiveLaunchTargetForTest(string agentId) { lock (_lock) return _activeLaunches.ContainsKey(agentId); }
@@ -477,7 +470,7 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     /// cached outcome. A DIFFERENT CommandId at an already-accepted Seq is a protocol-invariant violation →
     /// <c>duplicate_collision</c>. Called under <c>_lock</c>; the processed arm only CAPTURES the cached
     /// outcome, leaving the ack for <see cref="SubmitAsync"/> to build outside the lock.</summary>
-    Task HandleDuplicateLocked(SequencedItem item, CacheEntry existing,
+    static Task HandleDuplicateLocked(SequencedItem item, CacheEntry existing,
             out CommandOutcome? replay, out bool acceptedReplay, out CommandRejected? rejection) {
         replay = null;
         acceptedReplay = false;
@@ -506,13 +499,11 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     /// readLiveness delegate, which walks the orchestrator's lifecycle collections, and every settled
     /// command reaches this — holding the lock across it would put that read on the critical path of
     /// concurrent <see cref="SubmitAsync"/>/<see cref="AckPrefix"/> callers. Both callers commit the
-    /// outcome to the cache first, so an ack can never advertise an outcome the cache lacks.</para></summary>
-    CommandAck BuildProcessedAck(SequencedItem item, CommandOutcome outcome) =>
-        BuildProcessedAck(item.Seq, item.CommandId, item.AgentId, outcome);
-
-    /// <summary>Settlement lost-ack redelivery (D1): the primitive builder, so a re-delivery can rebuild an entry's terminal ack
-    /// from the cached identity (Seq/CommandId/AgentId + Outcome) without the original SequencedItem. Same
-    /// live <c>_readLiveness</c> read and lock-scope contract as the item overload.</summary>
+    /// outcome to the cache first, so an ack can never advertise an outcome the cache lacks.</para>
+    ///
+    /// <para>Settlement lost-ack redelivery (D1): the primitive form, so a re-delivery can rebuild an
+    /// entry's terminal ack from the cached identity (Seq/CommandId/AgentId + Outcome) without the
+    /// original SequencedItem.</para></summary>
     CommandAck BuildProcessedAck(long seq, string commandId, string agentId, CommandOutcome outcome) {
         var live   = _readLiveness(outcome.AgentId ?? agentId);
         var reason = outcome.RejectReason is { } r ? RejectReasonWireToken(r) : null;
@@ -544,7 +535,7 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
             // diagnostic goes through LogQuietly because a throwing ILogger provider is a supported input
             // here — logging must not become the failure and let the exception escape the containment
             // (which would fault SubmitAsync into the hub, or fault a tick/reconnect re-delivery).
-            LogQuietly(ex, "{What} freeze for seq {Seq}: liveness read threw — deferred for re-delivery", "terminal-ack", seq);
+            LogQuietly(() => _logger.LogDebug(ex, "SequencedCommandProcessor: {What} freeze for seq {Seq}: liveness read threw — deferred for re-delivery", "terminal-ack", seq));
             return null;
         }
         lock (_lock) {
@@ -614,11 +605,11 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     /// <summary>Phase B2-b (sequenced-settlement design): a non-next Seq (a gap — Seq &gt; HighestAcceptedSeq+1,
     /// or a too-low already-retired Seq below the frontier) is NEVER accepted out of order. Emit wrong_next so
     /// the server's transport sequencer resyncs (nudge → observe → retransmit); accept path + watermark untouched.</summary>
-    Task HandleNonNextLocked(SequencedItem item, out CommandRejected? rejection) =>
+    static Task HandleNonNextLocked(SequencedItem item, out CommandRejected? rejection) =>
         RejectLocked(item, CommandRejectedReason.WrongNext, out rejection);
 
     /// <summary>Records WHICH rejection is owed; the caller sends it after releasing <c>_lock</c>.</summary>
-    Task RejectLocked(SequencedItem item, CommandRejectedReason reason, out CommandRejected? rejection) {
+    static Task RejectLocked(SequencedItem item, CommandRejectedReason reason, out CommandRejected? rejection) {
         rejection = new CommandRejected(item.Epoch, item.Seq, item.CommandId, reason, item.AgentId);
         return Task.CompletedTask;
     }
@@ -642,13 +633,13 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
                     // Guarded: an unguarded LogDebug here would fault this DISCARDED continuation on a
                     // throwing provider — recreating the very unobserved-task-failure this wrapper exists
                     // to prevent, in the code meant to report it.
-                    t => LogQuietly(t.Exception, "{What} for seq {Seq} failed to send", what, seq),
+                    t => LogQuietly(() => _logger.LogDebug(t.Exception, "SequencedCommandProcessor: {What} for seq {Seq} failed to send", what, seq)),
                     CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
         } catch (Exception ex) {
             // Guarded for the same reason, and a sharper one: the hub-side callers (stale epoch, gap,
             // duplicate collision, accepted/processed replay) have NO outer per-item catch, so a
             // transport throw followed by a logging throw escaped straight into the hub.
-            LogQuietly(ex, "{What} for seq {Seq} threw", what, seq);
+            LogQuietly(() => _logger.LogDebug(ex, "SequencedCommandProcessor: {What} for seq {Seq} threw", what, seq));
         }
     }
 
@@ -656,9 +647,9 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     /// best-effort path routes through here — a throwing <c>ILogger</c> provider is a supported input,
     /// not a contract violation, and losing a Debug line is always preferable to losing the operation
     /// it was describing.</summary>
-    void LogQuietly(Exception? error, string template, string what, long seq) {
+    static void LogQuietly(Action logAction) {
         try {
-            _logger.LogDebug(error, "SequencedCommandProcessor: " + template, what, seq);
+            logAction();
         } catch { /* deliberately empty — see summary */ }
     }
 

@@ -44,7 +44,7 @@ public class AcpServerConnectionTests {
 
         /// <summary> reliability fix (Codex P1 #1): how many MORE times the raw
         /// AcpSessionStarted invoke should throw for a given agentId before it starts succeeding —
-        /// drives <see cref="ReBindAcpSessionsAsyncBoundedRetryTests"/>'s bounded-retry-then-give-up
+        /// drives <c>ReBindAcpSessionsAsyncBoundedRetryTests</c>'s bounded-retry-then-give-up
         /// and transient-failure-then-recover cases. Absent/zero entries always succeed.</summary>
         public Dictionary<string, int> FailSessionStartedRemaining { get; } = [];
 
@@ -337,8 +337,11 @@ public class AcpServerConnectionTests {
     /// </summary>
     [Test]
     public async Task AcpBindOutcome_default_is_Bound() {
+        // Constant vs constant is the point: the zero value is the wire contract, not an outcome.
+#pragma warning disable TUnitAssertions0005
         await Assert.That(default(AcpBindOutcome)).IsEqualTo(AcpBindOutcome.Bound);
         await Assert.That((int)AcpBindOutcome.Bound).IsEqualTo(0);
+#pragma warning restore TUnitAssertions0005
     }
 
     // ── Reconnect re-bind ordering (design spec §2.3) ────────────────────────────────────────────
@@ -393,7 +396,7 @@ public class AcpServerConnectionTests {
                 reRegisterAgents: conn.ReRegisterAgentsAndAcpBindingsAsync)
             .WaitAsync(HangGuard);
 
-        await Assert.That(readyDuringRebind).IsEqualTo(false);
+        await Assert.That(readyDuringRebind).IsFalse();
         await Assert.That(gate.IsReady(HubConnectionState.Connected)).IsTrue();
     }
 }

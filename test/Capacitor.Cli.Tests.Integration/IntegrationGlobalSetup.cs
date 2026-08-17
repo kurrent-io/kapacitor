@@ -14,7 +14,7 @@ namespace Capacitor.Cli.Tests.Integration;
 /// covering <c>/tmp/test</c> or a CI repo path) would then make the test
 /// silently emit nothing and pass for the wrong reason.
 ///
-/// The env var is set from a <see cref="ModuleInitializerAttribute"/> method,
+/// The env var is set from a <c>[ModuleInitializer]</c> method,
 /// not a TUnit <c>[Before(Assembly)]</c> hook. The runtime guarantees a module
 /// initializer runs before ANY type in the module is touched — including
 /// before TUnit's own test discovery/bootstrap code runs, which can itself

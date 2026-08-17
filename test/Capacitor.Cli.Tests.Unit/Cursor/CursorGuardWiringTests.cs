@@ -10,7 +10,7 @@ namespace Capacitor.Cli.Tests.Unit.Cursor;
 /// which pins the guard's own pure hash-comparison logic in isolation). Both scenarios here trip
 /// the guard and return BEFORE <c>DrainNewLines</c> ever touches its <see cref="HubConnection"/>
 /// argument, so an unconnected/never-started connection is sufficient — no live SignalR server
-/// needed (mirrors the constraint <see cref="Integration.CursorTailingWatcherTests"/>'s class doc
+/// needed (mirrors the constraint <c>Integration.CursorTailingWatcherTests</c>'s class doc
 /// already states for this project).
 /// </summary>
 public class CursorGuardWiringTests {

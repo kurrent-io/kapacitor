@@ -5,7 +5,7 @@ namespace Capacitor.Cli.Core;
 /// <summary>
 /// D0. Pure prefix-hash comparison used by both the phase-0 empirical verification harness
 /// (<c>kcap cursor-verify-appendonly</c>) and the runtime two-zone rewrite guard
-/// (<see cref="Capacitor.Cli.Commands.CursorRewriteGuard"/>). Append-only ⇔ length is monotonically
+/// (<c>Capacitor.Cli.Commands.CursorRewriteGuard</c>). Append-only ⇔ length is monotonically
 /// non-decreasing AND re-hashing the first L_earlier bytes at the later time reproduces the
 /// earlier hash.
 /// </summary>

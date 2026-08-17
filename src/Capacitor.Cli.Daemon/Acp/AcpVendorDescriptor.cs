@@ -313,7 +313,7 @@ internal static class AcpVendorDescriptors {
     /// operator consent decision, gated by <c>KiroReviewerCapability</c>, not something the trust list
     /// bounds.</para>
     ///
-    /// <para><b><see cref="SupportsMcpServers"/> is <c>true</c> here while <see cref="Copilot"/> sets
+    /// <para><b><see cref="AcpVendorDescriptor.SupportsMcpServers"/> is <c>true</c> here while <see cref="Copilot"/> sets
     /// it <c>false</c>, and the reasoning is NOT contradictory.</b> Both vendors advertise the same
     /// ACP <c>mcpCapabilities</c> shape (<c>{http, sse}</c> — no stdio), so the advertisement cannot be
     /// what decides it. Copilot's <c>false</c> is an empirical finding about Copilot. Kiro was probed
@@ -383,7 +383,7 @@ internal static class AcpVendorDescriptors {
     /// over stdio and advertises <c>loadSession</c> plus <c>sessionCapabilities {close, fork, list,
     /// resume}</c>.</para>
     ///
-    /// <para><b><see cref="SupportsMcpServers"/> is <c>true</c> on a CALL-level probe</b>, not on the
+    /// <para><b><see cref="AcpVendorDescriptor.SupportsMcpServers"/> is <c>true</c> on a CALL-level probe</b>, not on the
     /// advertisement — OpenCode advertises the same <c>mcpCapabilities {http, sse}</c> shape Kiro,
     /// Gemini and Copilot all advertise, and those three do not agree with each other, so the
     /// advertisement decides nothing. A purpose-built stdio server passed in
@@ -411,7 +411,7 @@ internal static class AcpVendorDescriptors {
     /// <para><b><c>Argv</c> is bare <c>["acp"]</c>, and the launch controls live in the ENVIRONMENT</b>
     /// — see <see cref="OpenCodeLaunchEnvironment"/>. <c>opencode acp</c> does not accept the global
     /// <c>--auto</c>/config flags, so there is no argv to put them in; that is why this descriptor's
-    /// <see cref="UnattendedTrustArgv"/> is EMPTY even though it supports unattended launches, and the
+    /// <see cref="AcpVendorDescriptor.UnattendedTrustArgv"/> is EMPTY even though it supports unattended launches, and the
     /// reason the usual reviewer-onboarding instinct (add a trust flag) has nothing to reach for here.
     /// The one setting every hosted launch needs is <c>OPENCODE_PURE=1</c>, which suppresses kcap's OWN
     /// live-ingest plugin inside the hosted child: OpenCode is the single vendor where two capture paths
@@ -438,7 +438,7 @@ internal static class AcpVendorDescriptors {
     /// minimum. There is no opt-in: gating one vendor never narrowed anything, since the reviewer vendor
     /// is caller-chosen and four others run ungated with more capability.</para>
     ///
-    /// <para><b><see cref="SupportsReconnectResume"/> is <c>false</c> as UNPROBED</b>, which is a
+    /// <para><b><see cref="AcpVendorDescriptor.SupportsReconnectResume"/> is <c>false</c> as UNPROBED</b>, which is a
     /// different claim from <see cref="Kiro"/>'s and <see cref="Gemini"/>'s — both of those are
     /// measured-INELIGIBLE. OpenCode advertises <c>loadSession</c> and a <c>resume</c> session
     /// capability, and nothing here has measured <c>session/load</c> across a SIGKILLed owner or the

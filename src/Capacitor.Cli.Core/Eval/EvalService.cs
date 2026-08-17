@@ -818,11 +818,13 @@ public static class EvalService {
         }
 
         var sb = new StringBuilder();
+
         foreach (var f in facts) {
-            sb.AppendLine($"- {f.Fact}");
+            if (sb.Length > 0) sb.AppendLine();
+            sb.Append("- ").Append(f.Fact);
         }
 
-        return sb.ToString().TrimEnd();
+        return sb.ToString();
     }
 
     // ── Verdict parsing ────────────────────────────────────────────────────
@@ -1074,14 +1076,14 @@ public static class EvalService {
     }
 
     static string StripCodeFences(string text) {
-        if (!text.StartsWith("```")) return text;
+        if (!text.StartsWith("```", StringComparison.Ordinal)) return text;
 
         var firstNewline = text.IndexOf('\n');
         if (firstNewline >= 0) {
             text = text[(firstNewline + 1)..];
         }
 
-        if (text.EndsWith("```")) {
+        if (text.EndsWith("```", StringComparison.Ordinal)) {
             text = text[..^3].TrimEnd();
         }
 

@@ -25,7 +25,8 @@ namespace Capacitor.Cli.Daemon.Services;
 /// publishes a computation made <em>after</em> that request — the freshest result wins.</para>
 /// </summary>
 internal sealed class SingleFlightRefresh {
-    readonly SemaphoreSlim _gate = new(1, 1);
+    // A flag, not a SemaphoreSlim: the gate is only ever try-entered, never waited on.
+    int  _passRunning;
     int  _rerunRequested;
     Task _current = Task.CompletedTask;
 
@@ -35,9 +36,9 @@ internal sealed class SingleFlightRefresh {
     /// only that it was recorded), and a future caller awaiting it would get a guarantee that does
     /// not hold. Nothing may block on a self-heal.</summary>
     public void Trigger(Func<Task> refresh, Action<Exception>? onError = null) {
-        // Wait(0) is the synchronous try-enter: it never blocks, and it either wins the gate or
-        // tells us a pass is already running.
-        if (!_gate.Wait(0)) {
+        // The synchronous try-enter: it never blocks, and it either wins the gate or tells us a
+        // pass is already running.
+        if (Interlocked.CompareExchange(ref _passRunning, 1, 0) != 0) {
             // A pass is mid-flight. It may have started before whatever we are reacting to, so ask
             // for one more afterwards rather than assuming it covers us.
             Interlocked.Exchange(ref _rerunRequested, 1);
@@ -69,7 +70,8 @@ internal sealed class SingleFlightRefresh {
                 }
             } while (Interlocked.CompareExchange(ref _rerunRequested, 0, 1) == 1);
         } finally {
-            _gate.Release();
+            // Release pairs with Trigger's interlocked acquire.
+            Volatile.Write(ref _passRunning, 0);
         }
     }
 }

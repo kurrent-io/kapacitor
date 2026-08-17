@@ -11,7 +11,7 @@ public class RemapCommandTests {
         var (next, replaced) = RemapCommand.ApplyAdd([], "/old", "/new");
 
         await Assert.That(replaced).IsFalse();
-        await Assert.That(next).HasCount(1);
+        await Assert.That(next).Count().IsEqualTo(1);
         await Assert.That(next[0].From).IsEqualTo("/old");
         await Assert.That(next[0].To).IsEqualTo("/new");
     }
@@ -21,7 +21,7 @@ public class RemapCommandTests {
         var (next, replaced) = RemapCommand.ApplyAdd(null, "/old", "/new");
 
         await Assert.That(replaced).IsFalse();
-        await Assert.That(next).HasCount(1);
+        await Assert.That(next).Count().IsEqualTo(1);
     }
 
     [Test]
@@ -30,7 +30,7 @@ public class RemapCommandTests {
         var (next, replaced) = RemapCommand.ApplyAdd(current, "/old", "/v2");
 
         await Assert.That(replaced).IsTrue();
-        await Assert.That(next).HasCount(2);
+        await Assert.That(next).Count().IsEqualTo(2);
         await Assert.That(next.Single(r => r.From == "/old").To).IsEqualTo("/v2");
         await Assert.That(next.Single(r => r.From == "/other").To).IsEqualTo("/keep");
     }
@@ -42,7 +42,7 @@ public class RemapCommandTests {
         var (next, replaced) = RemapCommand.ApplyAdd(current, "/old/", "/v2");
 
         await Assert.That(replaced).IsTrue();
-        await Assert.That(next).HasCount(1);
+        await Assert.That(next).Count().IsEqualTo(1);
         // Note: ApplyAdd does NOT normalize the args itself (HandleAsync does
         // that before calling). This test exercises the SameFrom comparator.
     }
@@ -52,7 +52,7 @@ public class RemapCommandTests {
         var current = new[] { R("/a", "/x"), R("/b", "/y") };
         var next    = RemapCommand.ApplyRemove(current, "/a");
 
-        await Assert.That(next).HasCount(1);
+        await Assert.That(next).Count().IsEqualTo(1);
         await Assert.That(next[0].From).IsEqualTo("/b");
     }
 
@@ -61,7 +61,7 @@ public class RemapCommandTests {
         var current = new[] { R("/a", "/x") };
         var next    = RemapCommand.ApplyRemove(current, "/missing");
 
-        await Assert.That(next).HasCount(1);
+        await Assert.That(next).Count().IsEqualTo(1);
     }
 
     [Test]
@@ -111,7 +111,7 @@ public class RemapCommandTests {
             current, @"c:\users\alice\dev", @"C:\Users\Alice\New", StringComparison.OrdinalIgnoreCase);
 
         await Assert.That(replaced).IsTrue();
-        await Assert.That(next).HasCount(1);
+        await Assert.That(next).Count().IsEqualTo(1);
         await Assert.That(next[0].From).IsEqualTo(@"c:\users\alice\dev"); // new casing wins
         await Assert.That(next[0].To).IsEqualTo(@"C:\Users\Alice\New");
     }
@@ -125,7 +125,7 @@ public class RemapCommandTests {
             current, "/dev/foo", "/dev/v2", StringComparison.Ordinal);
 
         await Assert.That(replaced).IsFalse();
-        await Assert.That(next).HasCount(2);
+        await Assert.That(next).Count().IsEqualTo(2);
     }
 
     [Test]
@@ -139,6 +139,6 @@ public class RemapCommandTests {
     public async Task ApplyRemove_with_Ordinal_keeps_case_variant_entry() {
         var current = new[] { R("/dev/Foo", "/dev/x") };
         var next    = RemapCommand.ApplyRemove(current, "/dev/foo", StringComparison.Ordinal);
-        await Assert.That(next).HasCount(1);
+        await Assert.That(next).Count().IsEqualTo(1);
     }
 }

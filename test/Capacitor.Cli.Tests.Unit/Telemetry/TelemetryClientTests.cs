@@ -122,7 +122,7 @@ public class TelemetryClientTests {
         await Assert.That(ok.LastBody!.Contains("offline_event")).IsTrue();
         await Assert.That(ok.LastBody!.Contains("fresh_event")).IsTrue();
         // Ordering: spooled events (offline) come before queued events (fresh)
-        await Assert.That(ok.LastBody!.IndexOf("offline_event") < ok.LastBody!.IndexOf("fresh_event")).IsTrue();
+        await Assert.That(ok.LastBody!.IndexOf("offline_event", StringComparison.Ordinal) < ok.LastBody!.IndexOf("fresh_event", StringComparison.Ordinal)).IsTrue();
         await Assert.That(spool.DrainAll().Count).IsEqualTo(0);
     }
 

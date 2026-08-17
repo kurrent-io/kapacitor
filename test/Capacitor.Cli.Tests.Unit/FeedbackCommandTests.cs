@@ -6,6 +6,7 @@ using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
 
+using Capacitor.Tests.Helpers;
 namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
@@ -56,22 +57,12 @@ public class FeedbackCommandTests : IDisposable {
                 .WithBody("""{"provider":"None"}"""));
 
     static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(Func<Task<int>> action) {
-        var originalOut = Console.Out;
-        var originalErr = Console.Error;
-        var stdout      = new StringWriter { NewLine = "\n" };
-        var stderr      = new StringWriter { NewLine = "\n" };
+        using var capture = ConsoleOutput.StartFullCapture("\n");
         int exitCode;
 
-        try {
-            Console.SetOut(stdout);
-            Console.SetError(stderr);
-            exitCode = await action();
-        } finally {
-            Console.SetOut(originalOut);
-            Console.SetError(originalErr);
-        }
+        exitCode = await action();
 
-        return (exitCode, stdout.ToString(), stderr.ToString());
+        return (exitCode, capture.GetCapturedOutput(), capture.GetCapturedError());
     }
 
     // ── flag validation ────────────────────────────────────────────────────────────────────────

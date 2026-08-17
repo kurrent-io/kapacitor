@@ -171,8 +171,8 @@ public class McpFlowsServerSettlementRetryTests {
         var delays = clock.Delays;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(2);
-        await Assert.That(delays).HasCount().EqualTo(1);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(2);
+        await Assert.That(delays).Count().IsEqualTo(1);
         // Equal jitter over the 500ms base: the first retry always lands in [250ms, 500ms].
         await Assert.That(delays[0]).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(250));
         await Assert.That(delays[0]).IsLessThanOrEqualTo(TimeSpan.FromMilliseconds(500));
@@ -198,7 +198,7 @@ public class McpFlowsServerSettlementRetryTests {
         var delays = clock.Delays;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(2);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(2);
     }
 
     /// <summary>A server that never settles exhausts the ELAPSED deadline, not an attempt count:
@@ -221,7 +221,7 @@ public class McpFlowsServerSettlementRetryTests {
         await Assert.That(exhausted!.LastCode).IsEqualTo("flow_settlement_busy");
         await Assert.That(exhausted.LastMessage).IsEqualTo("still racing");
         await Assert.That(exhausted.Elapsed).IsEqualTo(McpFlowsServer.SettlementElapsedDeadline);
-        await Assert.That(exhausted.Attempts).IsEqualTo(server.LogEntries.Count());
+        await Assert.That(exhausted.Attempts).IsEqualTo(server.LogEntries.Count);
 
         // Far past the old 3-attempt bound, and it never overshot the deadline.
         await Assert.That(exhausted.Attempts).IsGreaterThan(10);
@@ -242,7 +242,7 @@ public class McpFlowsServerSettlementRetryTests {
         var delays = clock.Delays;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(1); // no retry at all
+        await Assert.That(server.LogEntries.Count).IsEqualTo(1); // no retry at all
         await Assert.That(delays).IsEmpty();
     }
 
@@ -259,7 +259,7 @@ public class McpFlowsServerSettlementRetryTests {
         var delays = clock.Delays;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(1);
         await Assert.That(delays).IsEmpty();
     }
 

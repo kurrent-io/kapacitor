@@ -16,7 +16,7 @@ namespace Capacitor.Cli.Tests.Unit;
 /// output before the next reap sweep — looked idle to the reaper even while a human/driver was
 /// actively working with it.
 ///
-/// <see cref="AgentOrchestrator.HandleSendInput"/> calls <c>Advance()</c> only once delivery is
+/// <c>AgentOrchestrator.HandleSendInput</c> calls <c>Advance()</c> only once delivery is
 /// KNOWN to have succeeded — the runtime write returned without throwing. A failed/cancelled
 /// delivery must leave the clock untouched: a false advance would mask a genuinely wedged/dead
 /// agent from the reaper, which is exactly the failure mode this whole clock exists to catch.
@@ -44,7 +44,7 @@ public partial class AgentOrchestratorVendorTests {
     /// <summary>Pins the mechanism the design's residual note is about: ACP's default (non-borrowed)
     /// <c>SendUserInputAsync</c> is fire-and-forget — its non-throwing return means "enqueued", not
     /// "the agent read it" (<c>AcpHostedAgentRuntime.EnqueueTurn</c>'s full-queue branch drops
-    /// silently, no throw) — yet <see cref="AgentOrchestrator.HandleSendInput"/> still advances the
+    /// silently, no throw) — yet <c>AgentOrchestrator.HandleSendInput</c> still advances the
     /// clock on it, by design (a false advance only delays a reap/silence verdict, never manufactures
     /// one). Uses <see cref="FakeAcpRuntime"/> (an <see cref="IHostedAgentRuntime"/> test double
     /// already in this partial class, from the ACP-forwarding tests) via <c>SeedAcpAgent</c> — its
@@ -90,8 +90,8 @@ public partial class AgentOrchestratorVendorTests {
 
     /// <summary>PTY double whose every write throws — simulates a dead/closed PTY
     /// (<see cref="IPtyProcess.WriteAsync(string)"/> is documented "unguarded and throws on a closed
-    /// pipe" — see <see cref="PtyHostedAgentRuntime.WriteSubmitCarriageReturnAsync"/>'s remarks), so
-    /// <see cref="AgentOrchestrator.HandleSendInput"/>'s delivery await never completes without an
+    /// pipe" — see <c>PtyHostedAgentRuntime.WriteSubmitCarriageReturnAsync</c>'s remarks), so
+    /// <c>AgentOrchestrator.HandleSendInput</c>'s delivery await never completes without an
     /// exception and the activity-clock advance it gates on must not run.</summary>
     sealed class AlwaysThrowsPtyProcess : IPtyProcess {
         public int  Pid       => 5151;

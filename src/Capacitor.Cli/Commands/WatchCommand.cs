@@ -1063,7 +1063,7 @@ static partial class WatchCommand {
     /// read per new file — see <see cref="CodexSubagentDiscovery.EnumerateSubagentRollouts"/>):
     /// on first sight it registers the subagent (<c>subagent-start</c>, fail-closed) then spawns
     /// a detached child watcher streaming the child rollout under the child's canonical agentId
-    /// (→ <c>AgentSubsession-*</c>). Idempotent across ticks via <paramref name="seen"/>;
+    /// (→ <c>AgentSubsession-*</c>). Idempotent across ticks via <c>seen</c>;
     /// deterministic server-side lifecycle ids make re-registration safe. Disk enumeration (not
     /// the parent's in-band <c>sub_agent_activity</c> events) so a restarted parent watcher
     /// still recovers already-spawned children.
@@ -1465,7 +1465,7 @@ static partial class WatchCommand {
             : lastActivityAt;
 
     /// <summary>
-    /// Updates <paramref name="pending"/> based on a single Codex rollout line.
+    /// Updates <c>pending</c> based on a single Codex rollout line.
     /// A <c>function_call</c> or <c>custom_tool_call</c> response_item adds its
     /// <c>call_id</c> to the set; the matching <c>_output</c> variant removes it.
     /// All other lines and malformed JSON are silently ignored so this is safe to

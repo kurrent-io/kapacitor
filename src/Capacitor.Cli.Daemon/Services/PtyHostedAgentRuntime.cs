@@ -64,7 +64,7 @@ internal sealed class PtyHostedAgentRuntime(string vendor, IPtyProcess pty, bool
     }
 
     /// <summary>
-    /// Submits the composer. When <see cref="approvalsDisabled"/> (no dialog an Enter could accept),
+    /// Submits the composer. When <c>approvalsDisabled</c> (no dialog an Enter could accept),
     /// sprays carriage returns on <see cref="SubmitCarriageReturnSchedule"/> so at least one lands
     /// past codex's post-paste Enter-suppression window (GitHub #349); the extra CRs are then
     /// empty-composer no-ops. Otherwise sends a single CR — in an interactive session a stray Enter

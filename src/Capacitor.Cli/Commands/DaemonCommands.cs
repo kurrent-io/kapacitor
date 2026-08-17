@@ -47,7 +47,7 @@ public static class DaemonCommands {
     /// Open the per-name <c>&lt;name&gt;.start</c> lock with
     /// <c>FileShare.None</c> for the CLI-side critical section that wraps
     /// the PID-file stale-check + daemon spawn. The daemon itself takes a
-    /// separate <c>&lt;name&gt;.lock</c> via <see cref="DaemonLock"/>; this
+    /// separate <c>&lt;name&gt;.lock</c> via <c>DaemonLock</c>; this
     /// lock just keeps two concurrent <c>kcap daemon start --name X</c>
     /// invocations from both observing a stale PID file and both spawning.
     /// </summary>

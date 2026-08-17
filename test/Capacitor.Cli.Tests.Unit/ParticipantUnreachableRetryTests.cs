@@ -238,7 +238,7 @@ public class ParticipantUnreachableRetryTests {
             clock, SettlementBackoff.Seeded(11)) as McpFlowsServer.SettlementSendResult.Response)!.Value;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(1);
         await Assert.That(clock.Delays).IsEmpty();
     }
 
@@ -260,7 +260,7 @@ public class ParticipantUnreachableRetryTests {
             as McpFlowsServer.SettlementSendResult.Response)!.Value;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(1);
     }
 
     [Test]
@@ -283,7 +283,7 @@ public class ParticipantUnreachableRetryTests {
         // The real status is surfaced untouched, and exactly one attempt was made — no retry budget
         // was burned on a status the server never actually uses for this code.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(1);
         await Assert.That(clock.Delays).IsEmpty();
     }
 

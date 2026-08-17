@@ -13,7 +13,7 @@ namespace Capacitor.Cli.Core;
 /// <summary>
 /// Read-modify-write engine for <c>~/.codex/config.toml</c>. Owns the AOT-safe
 /// Tomlyn plumbing (load, atomic write, untyped-model type info) so both the
-/// daemon's per-worktree pre-trust (<see cref="TrustWorktree"/>) and the setup
+/// daemon's per-worktree pre-trust (<see cref="TrustWorktree(string, string?)"/>) and the setup
 /// wizard's sandbox network-access opt-in (<see cref="EnableNetworkAccess"/>)
 /// share one code path.
 ///
@@ -419,7 +419,7 @@ public static class CodexConfigToml {
 
     /// <summary>
     /// Load → mutate → atomic-write. <paramref name="mutate"/> returns true when it
-    /// changed <paramref name="root"/>. Returns <see cref="Change.Failed"/> on a
+    /// changed <c>root</c>. Returns <see cref="Change.Failed"/> on a
     /// parse error (we never clobber a config we can't read) or a write error,
     /// <see cref="Change.Unchanged"/> when nothing changed, otherwise
     /// <see cref="Change.Updated"/>. <paramref name="error"/> carries the captured

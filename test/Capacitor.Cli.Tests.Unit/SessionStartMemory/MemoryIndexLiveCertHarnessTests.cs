@@ -117,7 +117,7 @@ public class MemoryIndexLiveCertHarnessTests {
     }
 
     /// <summary>A throwaway PATH entry holding one uniquely named file, plus an empty sibling directory
-    /// to prove a miss is skipped rather than treated as a match. <paramref name="executable"/> controls
+    /// to prove a miss is skipped rather than treated as a match. <c>executable</c> controls
     /// the execute bit, because "exists" and "is executable" are different questions and the resolver
     /// must answer the second one.</summary>
     sealed class PathProbe : IDisposable {

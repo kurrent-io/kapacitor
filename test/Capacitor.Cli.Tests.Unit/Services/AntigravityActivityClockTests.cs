@@ -200,7 +200,7 @@ public class AntigravityActivityClockTests {
     /// looks silent, and only the turn-start/turn-end pair would ever re-arm the wedge ceiling.</summary>
     [Test]
     public async Task Each_forwarded_envelope_advances_the_clock() {
-        var (rt, clock, _t) = Wired();
+        var (rt, clock, _) = Wired();
         await using var _r = rt;
 
         await rt.SendUserInputAsync("hello").WaitAsync(HangGuard);

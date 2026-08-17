@@ -15,7 +15,7 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// semantics ARE the boundary, so a build change can void consent. Here the ordinary regression —
 /// Kiro stops honouring <c>KIRO_HOME</c>, or gains a second global config source — surfaces as global
 /// servers initializing under names outside the injected set, which is exactly what this catches.
-/// <see cref="KiroReviewerVersionStore"/> handles the build-change axis separately.</para>
+/// <see cref="Capacitor.Cli.Core.ReviewerVersionStore"/> handles the build-change axis separately.</para>
 ///
 /// <para><b>Enforced continuously, not sampled.</b> These are asynchronous notifications and the
 /// protocol has no initialization-complete event, so there is no barrier to wait for. Sampling after

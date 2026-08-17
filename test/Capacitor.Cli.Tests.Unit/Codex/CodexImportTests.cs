@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
@@ -28,7 +29,7 @@ public class CodexImportTests {
             await Assert.That(meta.Model).IsEqualTo("openai");
             await Assert.That(meta.SessionId).IsEqualTo("019e0322-05fc-7570-be65-75719c3ea861");
             await Assert.That(meta.FirstTimestamp).IsNotNull();
-            await Assert.That(meta.FirstTimestamp!.Value).IsEqualTo(DateTimeOffset.Parse("2026-05-07T15:50:21.989Z"));
+            await Assert.That(meta.FirstTimestamp!.Value).IsEqualTo(DateTimeOffset.Parse("2026-05-07T15:50:21.989Z", CultureInfo.InvariantCulture));
             await Assert.That(meta.Slug).IsNull();
         } finally {
             File.Delete(path);

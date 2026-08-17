@@ -15,7 +15,7 @@ namespace Capacitor.Cli.Tests.Unit;
 /// as one block, then submits with the escalating carriage-return schedule (GitHub #349 — a
 /// single CR after the paste is unreliably folded into paste-finalization; the extra CRs are
 /// harmless empty-composer no-ops once submitted). This test drives
-/// <see cref="AgentOrchestrator.HandleSendInput"/> end-to-end through the
+/// <c>AgentOrchestrator.HandleSendInput</c> end-to-end through the
 /// <see cref="IHostedAgentRuntime"/> seam (<see cref="PtyHostedAgentRuntime"/> wrapping a fake
 /// PTY) and asserts the wire shape reaching the PTY.
 /// </summary>

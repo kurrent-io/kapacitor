@@ -1,3 +1,4 @@
+using System.Globalization;
 using Capacitor.Cli.Commands;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -27,7 +28,7 @@ public class UpdateCacheRecordTests {
             """{"latest_version":"0.11.10","checked_at":"2026-08-08T10:00:00Z"}""");
 
         await Assert.That(rec!.IsFresh(
-            DateTimeOffset.Parse("2026-08-08T10:00:00Z").AddHours(1),
+            DateTimeOffset.Parse("2026-08-08T10:00:00Z", CultureInfo.InvariantCulture).AddHours(1),
             TimeSpan.FromHours(24))).IsTrue();
     }
 
@@ -39,7 +40,7 @@ public class UpdateCacheRecordTests {
 
     [Test]
     public async Task ToJson_RoundTrips_ThroughParse() {
-        var now  = DateTimeOffset.Parse("2026-08-08T10:00:00Z");
+        var now  = DateTimeOffset.Parse("2026-08-08T10:00:00Z", CultureInfo.InvariantCulture);
         var orig = new UpdateCommand.UpdateCacheRecord("0.11.10", now, AttemptedAt: null, Failed: false);
         var rec  = UpdateCommand.UpdateCacheRecord.Parse(orig.ToJson());
 
@@ -52,7 +53,7 @@ public class UpdateCacheRecordTests {
 
     [Test]
     public async Task FailedRecord_ToJson_RoundTrips_RetainingLatestVersion() {
-        var attemptedAt = DateTimeOffset.Parse("2026-08-08T10:00:00Z");
+        var attemptedAt = DateTimeOffset.Parse("2026-08-08T10:00:00Z", CultureInfo.InvariantCulture);
         var orig        = new UpdateCommand.UpdateCacheRecord("0.11.10", CheckedAt: null, attemptedAt, Failed: true);
         var rec         = UpdateCommand.UpdateCacheRecord.Parse(orig.ToJson());
 

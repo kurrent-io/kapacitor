@@ -1,9 +1,10 @@
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Gemini;
 using Capacitor.Cli.Core.Kiro;
 using Capacitor.Cli.Core.Mcp;
+using Capacitor.Cli.Core;
+using Capacitor.Tests.Helpers;
 
 namespace Capacitor.Cli.Tests.Unit;
 
@@ -401,18 +402,15 @@ public class UninstallCommandTests {
         // A scratch dir with NO .git anywhere up the tree.
         var noRepoDir = Directory.CreateTempSubdirectory("kcap-uninstall-norepo-");
         var originalCwd = Environment.CurrentDirectory;
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
+        using var capture = ConsoleOutput.StartErrorCapture();
 
         try {
             Environment.CurrentDirectory = noRepoDir.FullName;
-            Console.SetError(capturedErr);
 
             var exit = await UninstallCommand.HandleAsync(["uninstall", "--yes", "--project"]);
             await Assert.That(exit).IsEqualTo(1);
-            await Assert.That(capturedErr.ToString()).Contains("--project requires a git working tree");
+            await Assert.That(capture.GetCapturedError()).Contains("--project requires a git working tree");
         } finally {
-            Console.SetError(originalErr);
             Environment.CurrentDirectory = originalCwd;
             noRepoDir.Delete(recursive: true);
         }

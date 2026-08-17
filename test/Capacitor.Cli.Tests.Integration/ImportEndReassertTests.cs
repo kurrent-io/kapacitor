@@ -105,8 +105,8 @@ public class ImportEndReassertTests : IDisposable {
             .Select(e => e.RequestMessage.Path!)
             .ToArray();
 
-        await Assert.That(posts.Count(p => p.StartsWith("/hooks/session-start"))).IsEqualTo(0);
-        await Assert.That(posts.Count(p => p.StartsWith("/hooks/session-end"))).IsEqualTo(1);
+        await Assert.That(posts.Count(p => p.StartsWith("/hooks/session-start", StringComparison.Ordinal))).IsEqualTo(0);
+        await Assert.That(posts.Count(p => p.StartsWith("/hooks/session-end", StringComparison.Ordinal))).IsEqualTo(1);
         await Assert.That(posts.Last()).StartsWith("/hooks/session-end");
     }
 
@@ -130,7 +130,7 @@ public class ImportEndReassertTests : IDisposable {
         await Assert.That(result.Errored).IsEqualTo(1);
         await Assert.That(result.Resumed).IsEqualTo(0);
 
-        var endPosts = _server.LogEntries.Count(e => e.RequestMessage.Path!.StartsWith("/hooks/session-end"));
+        var endPosts = _server.LogEntries.Count(e => e.RequestMessage.Path!.StartsWith("/hooks/session-end", StringComparison.Ordinal));
         await Assert.That(endPosts).IsEqualTo(0); // never finalize on a gap
     }
 }

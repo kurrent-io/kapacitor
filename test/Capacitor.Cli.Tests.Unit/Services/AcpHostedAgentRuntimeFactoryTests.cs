@@ -1477,7 +1477,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         // and every "does not contain create/edit/bash" check while handing the reviewer exactly the
         // surface this issue exists to withhold. Exclusivity IS the security boundary, so the test
         // has to pin the whole set.
-        var emitted = argv.Where(a => a.StartsWith("--available-tools=")).ToArray();
+        var emitted = argv.Where(a => a.StartsWith("--available-tools=", StringComparison.Ordinal)).ToArray();
 
         await Assert.That(emitted).IsEquivalentTo(ExpectedAvailableTools(
             allowlisted: ["kcap-review"], extra: CopilotBorrowedReviewPolicy.ReadToolIds));
@@ -1527,7 +1527,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         // path must still resolve, or the fail-closed guard fires for a reason unrelated to the argv.
         var emitted = AcpHostedAgentRuntimeFactory
             .BuildProcessStartInfo(AcpVendorDescriptors.Copilot, ResolvableConfig(), ctx)
-            .ArgumentList.Where(a => a.StartsWith("--available-tools=")).ToArray();
+            .ArgumentList.Where(a => a.StartsWith("--available-tools=", StringComparison.Ordinal)).ToArray();
 
         await Assert.That(emitted).IsEquivalentTo(ExpectedAvailableTools(
             allowlisted: ["kcap-review"], extra: host.ExtraBorrowedToolIds));
@@ -2557,7 +2557,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// refuses it before <c>_connectionSource</c> even runs unless the operator has opted in AND the
     /// resolved build matches (or exceeds) what this daemon has affirmed. Mirrors the established
     /// <c>GeminiEnabledConfig</c> pattern: a real, per-test-unique StateDir backs a filesystem
-    /// <see cref="ReviewerVersionStore"/>, and <paramref name="launchTimeoutSeconds"/> lets a caller
+    /// <see cref="ReviewerVersionStore"/>, and <c>launchTimeoutSeconds</c> lets a caller
     /// override the 120s default when a test needs the deadline to actually fire.</summary>
     const string OpenCodeBuild = "1.0.0";
 
@@ -2618,7 +2618,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
             () => startTask.WaitAsync(HangGuard));
 
-        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex!.Message).StartsWith(ReapVerdictReason);
         await Assert.That(ex.Message).Contains("(transport:");
         await Assert.That(ex.Message).Contains("read loop ended");
         await Assert.That(ex.Message).DoesNotContain("auth/subscription");
@@ -2681,7 +2681,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
             () => startTask.WaitAsync(HangGuard));
 
-        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex!.Message).StartsWith(ReapVerdictReason);
         await Assert.That(ex.Message).Contains("(transport:");
         await Assert.That(ex.Message).Contains("read loop ended");
         await Assert.That(ex.Message).DoesNotContain("auth/subscription");
@@ -2723,7 +2723,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
             () => startTask.WaitAsync(HangGuard));
 
-        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex!.Message).StartsWith(ReapVerdictReason);
         await Assert.That(ex.Message).Contains("(transport:");
         await Assert.That(ex.Message).DoesNotContain("auth/subscription");
 
@@ -2794,7 +2794,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
             () => startTask.WaitAsync(HangGuard));
 
-        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex!.Message).StartsWith(ReapVerdictReason);
         await Assert.That(ex.Message).Contains("(transport:");
         await Assert.That(ex.Message).DoesNotContain("auth/subscription");
 
@@ -2858,7 +2858,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
             () => startTask.WaitAsync(HangGuard));
 
-        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex!.Message).StartsWith(ReapVerdictReason);
         await Assert.That(ex.Message).DoesNotContain("auth/subscription");
 
         cts.Cancel();
@@ -2918,7 +2918,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
             () => startTask.WaitAsync(HangGuard));
 
-        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex!.Message).StartsWith(ReapVerdictReason);
         await Assert.That(ex.Message).DoesNotContain("auth/subscription");
 
         cts.Cancel();
@@ -2949,7 +2949,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntime.AcpHandshakeFailedException>(
             () => factory.StartAsync(MakeContext("agent-1"), cts.Token).WaitAsync(HangGuard));
 
-        await Assert.That(ex.Message).IsEqualTo(
+        await Assert.That(ex!.Message).IsEqualTo(
             "ACP handshake (initialize/session-new) failed: not authenticated — if this is an "
           + "auth/subscription issue, run `cursor-agent login` and verify a Team-tier subscription.");
         await Assert.That(ex.TransportMessage).IsEqualTo("not authenticated");
@@ -3011,7 +3011,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
             () => startTask.WaitAsync(HangGuard));
 
-        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex!.Message).StartsWith(ReapVerdictReason);
         await Assert.That(ex.Message).DoesNotContain("opencode_reviewer_launch_timeout");
         await Assert.That(ex.Message).DoesNotContain("auth/subscription");
 
@@ -3059,7 +3059,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => factory.StartAsync(MakeContext("agent-1"), CancellationToken.None).WaitAsync(HangGuard));
 
-        await Assert.That(ex.Message.Trim()).IsEmpty();
+        await Assert.That(ex!.Message.Trim()).IsEmpty();
         await Assert.That(AcpHostedAgentRuntimeFactory.DescribeLaunchFailure(ex))
             .IsEqualTo($"launch_failed:{nameof(InvalidOperationException)} — see daemon log");
     }
@@ -3112,7 +3112,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
             () => startTask.WaitAsync(HangGuard));
 
-        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex!.Message).StartsWith(ReapVerdictReason);
         await Assert.That(ex.Message).DoesNotContain("teardown-fault"); // never the disposal exception
 
         cts.Cancel();
@@ -3135,8 +3135,10 @@ public class AcpHostedAgentRuntimeFactoryTests {
         public override long Seek(long offset, SeekOrigin origin) => 0;
         public override void SetLength(long value) { }
         public override void Write(byte[] buffer, int offset, int count) { }
-        protected override void Dispose(bool disposing) => throw new InvalidOperationException("stream-disposal-fault");
-        public override ValueTask DisposeAsync() => throw new InvalidOperationException("stream-disposal-fault");
+        protected override void Dispose(bool disposing) {
+            base.Dispose(disposing);
+            throw new InvalidOperationException("stream-disposal-fault");
+        }
     }
 
     /// <summary>Tracks Terminate/Dispose so a test can prove the process was disposed even when the

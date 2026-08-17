@@ -184,7 +184,7 @@ public class AcpEventTranslatorTests {
         var env = AcpEventTranslator.Translate(update, seq: 1, timestampIso: TimestampIso, logger: logger);
 
         await Assert.That(env).IsNull();
-        await Assert.That(logger.Entries).HasCount(1);
+        await Assert.That(logger.Entries).Count().IsEqualTo(1);
         await Assert.That(logger.Entries[0].Level).IsEqualTo(LogLevel.Debug);
         await Assert.That(logger.Entries[0].Message).DoesNotContain("sk-super-secret-prompt-content-marker");
         await Assert.That(logger.Entries[0].Message).Contains("RawLength");
@@ -197,7 +197,7 @@ public class AcpEventTranslatorTests {
 
         AcpEventTranslator.Translate(update, seq: 1, timestampIso: TimestampIso, logger: logger, debugFrames: false);
 
-        await Assert.That(logger.Entries).HasCount(1);
+        await Assert.That(logger.Entries).Count().IsEqualTo(1);
         await Assert.That(logger.Entries[0].Message).DoesNotContain("sk-super-secret-prompt-content-marker");
     }
 
@@ -208,7 +208,7 @@ public class AcpEventTranslatorTests {
 
         AcpEventTranslator.Translate(update, seq: 1, timestampIso: TimestampIso, logger: logger, debugFrames: true);
 
-        await Assert.That(logger.Entries).HasCount(1);
+        await Assert.That(logger.Entries).Count().IsEqualTo(1);
         await Assert.That(logger.Entries[0].Level).IsEqualTo(LogLevel.Debug);
         await Assert.That(logger.Entries[0].Message).Contains("sk-super-secret-prompt-content-marker");
     }

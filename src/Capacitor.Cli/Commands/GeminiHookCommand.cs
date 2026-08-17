@@ -339,7 +339,7 @@ static class GeminiHookCommand {
         // again here (double-subtraction was a real defect in the Copilot adapter).
         var memoryTask = StartMemoryIndexTask(
             baseUrl, sessionId,
-            scopeRoot: GitRepository.FindRoot(cwd) ?? cwd,
+            scopeRoot: cwd is not null ? GitRepository.FindRoot(cwd) ?? cwd : null,
             disabled: activeProfile?.DisableMemoryIndex is true,
             guidelinesDisabled: activeProfile?.DisableSessionGuidelines is true,
             source: source,

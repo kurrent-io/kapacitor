@@ -69,7 +69,7 @@ public class LocalControlClientTests {
         if (f?.Type == FrameType.Hello)
             await FrameCodec.WriteAsync(s, LocalFrame.HelloJson(FrameType.HelloReply, replyJson), ct);
     };
-    static ConnScript HelloEof() => async (s, ct) => { await FrameCodec.ReadAsync(s, ct); }; // read, close silently
+    static ConnScript HelloEof() => FrameCodec.ReadAsync; // read, close silently
     static ConnScript HelloStall() => async (s, ct) => {
         await FrameCodec.ReadAsync(s, ct); await Task.Delay(Timeout.Infinite, ct);           // accept, never reply
     };
@@ -116,7 +116,7 @@ public class LocalControlClientTests {
         try { await FrameCodec.ReadAsync(s, ct); } catch { } // null (EOF) or an exception once the peer closes
         closed.TrySetResult();
     };
-    static ConnScript SubscribeEof() => async (s, ct) => { await FrameCodec.ReadAsync(s, ct); };
+    static ConnScript SubscribeEof() => FrameCodec.ReadAsync;
     static ConnScript SubscribeStall() => async (s, ct) => {
         await FrameCodec.ReadAsync(s, ct); await Task.Delay(Timeout.Infinite, ct);
     };

@@ -359,7 +359,7 @@ public class AcpLaunchStageTests {
 /// <see cref="AgentOrchestratorVendorTests"/> harness (<c>BuildOrchestrator</c>, <c>CreateGitRepo</c>,
 /// <c>CaptureServerConnection</c>) to prove two things the factory-level <see cref="AcpLaunchStageTests"/>
 /// suite cannot reach on its own: (1) a stage timeout surfaces through
-/// <see cref="AgentOrchestrator.HandleLaunchAgentCore"/>'s ordinary catch-all as a real
+/// <c>AgentOrchestrator.HandleLaunchAgentCore</c>'s ordinary catch-all as a real
 /// <c>LaunchFailedAsync</c> call — an ordinary launch failure the server already understands, never
 /// a silent hang or an unhandled fault — and (2) <see cref="AgentActivityClock.ClearLaunchStage"/>
 /// runs at the exact instant the orchestrator flips a Starting ACP agent to Running.

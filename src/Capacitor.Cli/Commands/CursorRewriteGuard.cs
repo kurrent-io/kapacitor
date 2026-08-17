@@ -12,7 +12,7 @@ namespace Capacitor.Cli.Commands;
 /// Two zones are checked on every poll before a batch is sent:
 /// <list type="bullet">
 /// <item><b>Prior zone</b> — the trailing <see cref="TrailingBytes"/> bytes ending at the last
-/// committed checkpoint offset (<see cref="Checkpoint"/>). <see cref="HashPriorZone"/> +
+/// committed checkpoint offset (<see cref="Checkpoint"/>). <see cref="HashPriorZone(ReadOnlySpan{byte}, long)"/> +
 /// <see cref="VerifyPriorZone"/> must be called both immediately before and immediately after the
 /// length-capped snapshot read of the new range, so a rewrite racing the read itself can't slip
 /// through a single-snapshot check.</item>
@@ -124,7 +124,7 @@ public sealed class CursorRewriteGuard(string sessionId) {
     public void ResetCheckpoint() => _checkpoint = null;
 
     /// <summary>
-    /// True when <paramref name="currentTrailingSha"/> (from <see cref="HashPriorZone"/>) still
+    /// True when <paramref name="currentTrailingSha"/> (from <see cref="HashPriorZone(ReadOnlySpan{byte}, long)"/>) still
     /// matches the stored checkpoint hash. Always true when no checkpoint has been recorded yet
     /// (nothing to compare against on the very first batch). On a mismatch, writes the structured
     /// diagnostic and quarantines the session.

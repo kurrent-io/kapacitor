@@ -35,7 +35,7 @@ public static class CurationApplyPlanner {
             CurateAction action;
             if (current is null)                          action = CurateAction.Create;
             else if (!hasContent)                         action = oldBullets.Count > 0 ? CurateAction.Remove : CurateAction.NoOp;
-            else if (string.Equals(newContent, current))  action = CurateAction.NoOp;
+            else if (newContent == current)               action = CurateAction.NoOp;
             else                                          action = CurateAction.Update;
 
             files.Add(new FilePlan(

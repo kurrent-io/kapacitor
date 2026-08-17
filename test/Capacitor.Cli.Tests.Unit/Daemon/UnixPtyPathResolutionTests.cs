@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using Capacitor.Cli.Daemon.Pty.Unix;
 
 namespace Capacitor.Cli.Tests.Unit.Daemon;
@@ -37,12 +38,14 @@ public class UnixPtyPathResolutionTests {
 
     // Create an EXECUTABLE regular file (mode rwx------) — the resolver now honors the execute bit
     // like execvp, so PATH-fixture tools must actually be executable to be selected.
+    [UnsupportedOSPlatform("windows")]
     static void WriteExecutable(string path) {
         File.WriteAllText(path, "");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task Bare_command_found_in_an_absolute_path_dir() {
         if (OperatingSystem.IsWindows()) return;
         var dir  = Directory.CreateTempSubdirectory("kcap-resolve-").FullName;
@@ -55,6 +58,7 @@ public class UnixPtyPathResolutionTests {
     }
 
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task Non_executable_earlier_on_path_is_skipped_for_executable_later() {
         if (OperatingSystem.IsWindows()) return;
         // execvp selects the first EXECUTABLE file, not the first that merely EXISTS. A
@@ -91,6 +95,7 @@ public class UnixPtyPathResolutionTests {
     }
 
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task Exec_bit_wrong_permission_class_is_skipped_like_access_x_ok() {
         if (OperatingSystem.IsWindows()) return;
         // execvp uses access(X_OK) — permission-CLASS-aware — not "any execute bit set". A file the
@@ -113,6 +118,7 @@ public class UnixPtyPathResolutionTests {
     }
 
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task Empty_path_field_resolves_against_cwd_not_dropped() {
         if (OperatingSystem.IsWindows()) return;
         // A command living ONLY in cwd must be found via an EMPTY PATH field (POSIX cwd) — the
@@ -128,6 +134,7 @@ public class UnixPtyPathResolutionTests {
     }
 
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task Relative_path_field_resolves_against_cwd() {
         if (OperatingSystem.IsWindows()) return;
         var cwd    = Directory.CreateTempSubdirectory("kcap-resolve-").FullName;

@@ -79,8 +79,8 @@ public class DaemonHeartbeatLoopTests {
         // the deadline) — the loop must warn about climbing latency yet NOT force
         // a reconnect, since the ping still came back in time.
         var port = new FakePort {
-            PingHandler = async _ => {
-                await Task.Delay(60);
+            PingHandler = async ct => {
+                await Task.Delay(60, ct);
 
                 return true;
             }

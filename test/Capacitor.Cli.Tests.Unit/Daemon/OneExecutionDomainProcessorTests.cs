@@ -47,10 +47,10 @@ public class OneExecutionDomainProcessorTests {
             isKnownStopTarget: id => { lock (KnownTargets) return KnownTargets.Contains(id); },
             time: Time, startBarrier: startBarrier);
 
-        public SequencedItem SeqLaunch(long seq, string agent, string epoch = "e1") =>
+        public static SequencedItem SeqLaunch(long seq, string agent, string epoch = "e1") =>
             new(SequencedKind.Launch, epoch, seq, "cmd" + seq, agent);
 
-        public SequencedItem SeqStop(long seq, string agent, string epoch = "e1") =>
+        public static SequencedItem SeqStop(long seq, string agent, string epoch = "e1") =>
             new(SequencedKind.Stop, epoch, seq, "cmd" + seq, agent);
 
         /// <summary>An un-seq'd item that records its execution under a label and then completes.</summary>
@@ -121,7 +121,7 @@ public class OneExecutionDomainProcessorTests {
         await using var p = h.P();
         using var park = new Park();
 
-        _ = p.SubmitAsync(h.SeqLaunch(1, "x"), async () => {
+        _ = p.SubmitAsync(Harness.SeqLaunch(1, "x"), async () => {
             h.ExecOrder.Enqueue("seq-launch");
             await park.RunAsync();
             return new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "x");
@@ -151,7 +151,7 @@ public class OneExecutionDomainProcessorTests {
         await WaitBounded(park.Started.Task, "the un-sequenced stop never started executing");
 
         // Cross-format direction B: a SEQUENCED item behind an un-seq'd one.
-        var seq = p.SubmitAsync(h.SeqLaunch(1, "y"), () => {
+        var seq = p.SubmitAsync(Harness.SeqLaunch(1, "y"), () => {
             h.ExecOrder.Enqueue("seq-launch");
             return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "y"));
         });
@@ -249,7 +249,7 @@ public class OneExecutionDomainProcessorTests {
         // Deliberately NOT known: nothing has registered "x" — the launch is still parked.
 
         if (sequencedLaunch)
-            _ = p.SubmitAsync(h.SeqLaunch(1, "x"), async () => {
+            _ = p.SubmitAsync(Harness.SeqLaunch(1, "x"), async () => {
                 h.ExecOrder.Enqueue("launch");
                 await park.RunAsync();
                 return new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "x");
@@ -353,7 +353,7 @@ public class OneExecutionDomainProcessorTests {
         await Assert.That(p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "x", "stop-1"))).IsEqualTo(SubmitOutcome.Committed);
 
         if (sequencedLaunch)
-            _ = p.SubmitAsync(h.SeqLaunch(1, "x"), () => {
+            _ = p.SubmitAsync(Harness.SeqLaunch(1, "x"), () => {
                 h.ExecOrder.Enqueue("launch");
                 return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "x"));
             });
@@ -456,11 +456,11 @@ public class OneExecutionDomainProcessorTests {
         };
 
         if (firstIsSequenced) {
-            _ = p.SubmitAsync(h.SeqLaunch(1, "x"), async () => { await failing(); return default; });
+            _ = p.SubmitAsync(Harness.SeqLaunch(1, "x"), async () => { await failing(); return default; });
             p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Launch, "x", "launch-2", "launch", second.RunAsync));
         } else {
             p.SubmitUnsequenced(new UnsequencedItem(UnsequencedKind.Launch, "x", "launch", failing));
-            _ = p.SubmitAsync(h.SeqLaunch(1, "x"), async () => {
+            _ = p.SubmitAsync(Harness.SeqLaunch(1, "x"), async () => {
                 h.ExecOrder.Enqueue("launch-2");
                 await second.RunAsync();
                 return new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "x");
@@ -504,7 +504,7 @@ public class OneExecutionDomainProcessorTests {
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "blocker", "blocker", "stop", park.RunAsync));
         await WaitBounded(park.Started.Task, "the blocker stop never started executing");
 
-        var accepted = h.SeqLaunch(1, "keyed");
+        var accepted = Harness.SeqLaunch(1, "keyed");
         _ = p.SubmitAsync(accepted, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "keyed")));
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "keyed", "keyed-stop"));
 
@@ -519,11 +519,11 @@ public class OneExecutionDomainProcessorTests {
         // 1) duplicate replay — answered from the identity cache, never re-executed.
         _ = p.SubmitAsync(accepted, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
         // 2) stale epoch — never touches THIS epoch's lane.
-        _ = p.SubmitAsync(h.SeqLaunch(2, "keyed", epoch: "other"), () => Task.FromResult(default(CommandOutcome)));
+        _ = p.SubmitAsync(Harness.SeqLaunch(2, "keyed", epoch: "other"), () => Task.FromResult(default(CommandOutcome)));
         // 3) non-next (a gap).
-        _ = p.SubmitAsync(h.SeqLaunch(9, "keyed"), () => Task.FromResult(default(CommandOutcome)));
+        _ = p.SubmitAsync(Harness.SeqLaunch(9, "keyed"), () => Task.FromResult(default(CommandOutcome)));
         // 4) backpressure — the next seq, with the identity cache already at its bound.
-        _ = p.SubmitAsync(h.SeqLaunch(2, "keyed"), () => Task.FromResult(default(CommandOutcome)));
+        _ = p.SubmitAsync(Harness.SeqLaunch(2, "keyed"), () => Task.FromResult(default(CommandOutcome)));
 
         await Assert.That(h.Rejects.Select(r => r.Reason)).Contains(CommandRejectedReason.StaleEpoch);
         await Assert.That(h.Rejects.Select(r => r.Reason)).Contains(CommandRejectedReason.WrongNext);
@@ -658,7 +658,7 @@ public class OneExecutionDomainProcessorTests {
         // launch (to be synthesized). The sequenced launch also holds an active instance, so its
         // shutdown-synthesized settlement must retire that exact token.
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "victim", "victim-stop"));
-        var seqDone = p.SubmitAsync(h.SeqLaunch(1, "queued-launch"), () => {
+        var seqDone = p.SubmitAsync(Harness.SeqLaunch(1, "queued-launch"), () => {
             h.ExecOrder.Enqueue("queued-launch");
             return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted));
         });
@@ -704,7 +704,7 @@ public class OneExecutionDomainProcessorTests {
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Launch, "gate", "gate", "launch", park.RunAsync));
         await WaitBounded(park.Started.Task, "the gate launch must be dequeued and running before shutdown begins");
 
-        var seqDone = p.SubmitAsync(h.SeqStop(1, "queued"), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.StopExecuted)));
+        var seqDone = p.SubmitAsync(Harness.SeqStop(1, "queued"), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.StopExecuted)));
 
         // Close the lane BEFORE releasing the in-flight item — see the note in the test above.
         var disposing = p.DisposeAsync().AsTask();

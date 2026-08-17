@@ -9,7 +9,7 @@ namespace Capacitor.Cli.Tests.Integration;
 /// <summary>
 /// Task 13 — end-to-end acceptance tests for the Cursor tailing-watcher promotion,
 /// composing the pure/HTTP seams Tasks 7-12 already built (mirroring
-/// <see cref="LiveWatchHardeningAcceptanceTests"/>'s style: thin tests proving the contract from
+/// <c>LiveWatchHardeningAcceptanceTests</c>'s style: thin tests proving the contract from
 /// a fresh vantage point, not re-deriving coverage an earlier task's unit tests already own).
 /// A real SignalR wire round trip (the watcher's own <c>HubConnection</c>) is out of scope here —
 /// this project has no in-process SignalR host, so the drain/ack path itself is unit-tested

@@ -42,7 +42,7 @@ public class BorrowedReviewRuntimeRootsTests {
     }
 
     /// <summary>Separators normalized to <c>/</c> so the POSIX-shaped fixtures below read the same on
-    /// every platform. The resolver joins with <see cref="Path.Combine"/>, which emits <c>\</c> on
+    /// every platform. The resolver joins with <see cref="Path.Combine(string, string)"/>, which emits <c>\</c> on
     /// Windows — the paths are equivalent, and asserting on the raw form would make these tests fail
     /// there for a reason that has nothing to do with the grant rules they exist to pin.</summary>
     static string Posix(string path) => path.Replace('\\', '/');

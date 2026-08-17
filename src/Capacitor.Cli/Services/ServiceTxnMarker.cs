@@ -94,7 +94,7 @@ public static partial class ServiceTxnMarker {
         } catch {
             return false; // durability hardening only — a failure must never break a marker write
         } finally {
-            if (fd >= 0) close(fd);
+            if (fd >= 0) _ = close(fd);
         }
     }
 

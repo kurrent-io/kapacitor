@@ -25,7 +25,7 @@ namespace Capacitor.Cli.Daemon.Services;
 ///
 /// <b>Round-4 Finding 3:</b> process-spawning + stream construction is extracted into
 /// <paramref name="connectionSource"/> (defaulting to <see cref="StartRealProcess"/>) purely so
-/// <see cref="AcpHostedAgentRuntimeFactoryTests"/> can construct THIS class for real and drive its
+/// <c>AcpHostedAgentRuntimeFactoryTests</c> can construct THIS class for real and drive its
 /// REAL <see cref="StartAsync"/> against an in-memory <c>FakeAcpAgent</c> peer instead of a real
 /// <c>cursor-agent acp</c> child process (unavailable and non-portable in CI) — the seam changes
 /// nothing about production behavior, since the default IS the real `Process.Start`-backed path.
@@ -497,9 +497,6 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     internal static string FormatFallbackLaunchReason(string token) => $"launch_failed:{token} — see daemon log";
 
     /// <summary>
-    /// Fail-closed validation + build of the review-flow MCP list, run as the FIRST thing in
-    /// <see cref="StartAsync"/> — before <c>_connectionSource</c> can spawn a child. Returns
-    /// <summary>
     /// The launch budget, in seconds, for a review launch whose vendor gets one — Kiro and OpenCode,
     /// which both own a per-launch isolated directory that a wedged child would strand. Null for every
     /// other launch, which keeps their behaviour byte-identical.
@@ -582,6 +579,9 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         : ctx.IsBorrowedSnapshot          ? AcpUnattendedInteractionPolicy.Fail
         : descriptor.UnattendedInteractionPolicy;
 
+    /// <summary>
+    /// Fail-closed validation + build of the review-flow MCP list, run as the FIRST thing in
+    /// <see cref="StartAsync"/> — before <c>_connectionSource</c> can spawn a child. Returns
     /// <see langword="null"/> for a non-review launch; for a review flow it throws unless the launch
     /// is safe to run unattended AND has a deliverable result channel AND every allowlist entry is an
     /// auto-approvable read-only server, then returns the built list. Work-location safety is

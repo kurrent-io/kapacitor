@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using Capacitor.Cli.Daemon.Pty.Unix;
 
 namespace Capacitor.Cli.Tests.Unit.Daemon;
@@ -109,7 +110,7 @@ public class UnixSpawnerThreadTests {
 
     static async Task<int> ReadPidLineAsync(Process host) {
         var line = await host.StandardOutput.ReadLineAsync() ?? throw new InvalidOperationException("no PID line from host");
-        return int.Parse(line["PID=".Length..]);
+        return int.Parse(line["PID=".Length..], CultureInfo.InvariantCulture);
     }
 
     // Sibling-project resolution: the test assembly and the host live at

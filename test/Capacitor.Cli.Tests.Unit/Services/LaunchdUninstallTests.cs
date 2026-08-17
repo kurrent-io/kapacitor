@@ -4,7 +4,7 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 
 /// <summary>
 /// Spec §3.4: a non-zero <c>bootout</c> is not automatically a failure — the label may simply already be
-/// unloaded. These drive <see cref="LaunchdServiceManager.Uninstall"/> through the injected launchctl runner
+/// unloaded. These drive <see cref="LaunchdServiceManager.Uninstall(string, out string?)"/> through the injected launchctl runner
 /// and a temp <c>HOME</c> so the plist path is real and its presence/absence is assertable.
 /// </summary>
 [NotInParallel("HomeEnvVarMutation")]

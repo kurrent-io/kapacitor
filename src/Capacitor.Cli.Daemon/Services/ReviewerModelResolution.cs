@@ -105,8 +105,8 @@ internal static class ReviewerModelSyntax {
 /// </summary>
 internal static class ReviewerModelResolvers {
     /// <summary>The reviewer-model preflight RPC PROTOCOL version this daemon speaks — returned verbatim
-    /// as <see cref="ReviewerModelResolveResponseV1.PolicyVersion"/> and compared by the server against
-    /// the <see cref="ReviewerModelResolveRequestV1.ExpectedPolicyVersion"/> it sent, so a mismatched
+    /// as <see cref="Capacitor.Cli.Core.ReviewerModelResolveResponseV1.PolicyVersion"/> and compared by the server against
+    /// the <see cref="Capacitor.Cli.Core.ReviewerModelResolveRequestV1.ExpectedPolicyVersion"/> it sent, so a mismatched
     /// protocol version on either side fails the preflight CLOSED (never silently trusted). This is the
     /// RPC-envelope version, distinct from a per-vendor resolver's <see cref="IReviewerModelResolver.PolicyVersion"/>
     /// (which the daemon advertises on its capability and echoes on the post-launch resolved report).

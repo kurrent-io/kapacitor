@@ -90,7 +90,7 @@ public class OpenCodeMemoryIndexLiveCertTests {
     /// never appear, presenting as a code defect. (It is also the flag the DAEMON passes deliberately,
     /// for the opposite reason: to keep a hosted agent from being captured twice.)</para>
     ///
-    /// <para><see cref="MemoryIndexLiveCertHarness.ResolveOnPath"/> is called explicitly rather than left
+    /// <para><see cref="MemoryIndexLiveCertHarness.ResolveOnPath(string)"/> is called explicitly rather than left
     /// to <c>RunProcessAsync</c>'s own resolution, because <c>Process.Start</c> tries a bare filename
     /// against the working directory FIRST — and the working directory here is a throwaway cert
     /// worktree. Resolving up front pins the exact binary this cert reports on.</para>

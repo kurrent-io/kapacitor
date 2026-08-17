@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Text;
 using Capacitor.Cli.Services;
 
@@ -21,6 +22,7 @@ public partial class ServiceFilesTests {
     }
 
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task WriteOwnerOnly_writes_the_content_and_leaves_it_owner_only() {
         var dir  = TempDir("write");
         var path = Path.Combine(dir, "unit.plist");
@@ -42,6 +44,7 @@ public partial class ServiceFilesTests {
     /// Without this, a platform that already wrote 0600 would make the whole file pass while the write
     /// path did nothing.</summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task The_default_write_mode_is_world_readable_so_the_fix_is_load_bearing() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
 
@@ -60,6 +63,7 @@ public partial class ServiceFilesTests {
     /// <summary>Overwriting an existing world-readable unit ends up owner-only rather than inheriting the
     /// old mode, and no staging file is left beside it.</summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task WriteOwnerOnly_overwrites_a_world_readable_unit_and_leaves_no_staging_file() {
         var dir  = TempDir("overwrite");
         var path = Path.Combine(dir, "unit.plist");
@@ -92,6 +96,7 @@ public partial class ServiceFilesTests {
     [Arguments(0u)]
     [Arguments(0x3Fu)]    // umask 077
     [Arguments(0x1FFu)]   // umask 777
+    [UnsupportedOSPlatform("windows")]
     public async Task WriteOwnerOnly_produces_exactly_owner_read_write_under_any_umask(uint mask) {
         Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
 
@@ -106,7 +111,7 @@ public partial class ServiceFilesTests {
             // The property that actually matters to launchd: the owner can still read it.
             await Assert.That(await File.ReadAllTextAsync(path)).IsEqualTo("SECRET-COMMAND");
         } finally {
-            umask(previous);
+            _ = umask(previous);
             try { Directory.Delete(dir, true); } catch { /* best-effort */ }
         }
     }
@@ -139,6 +144,7 @@ public partial class ServiceFilesTests {
     /// <summary>Installing into a directory other local accounts can write is refused: owner-only mode on
     /// the unit is no protection if someone else can replace the unit and choose what the daemon runs.</summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task WriteOwnerOnly_refuses_a_world_writable_directory() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
 
@@ -222,8 +228,8 @@ public partial class ServiceFilesTests {
         mgr.WriteUnitFiles(Spec());
 
         await Assert.That(seen.Count).IsEqualTo(2);
-        await Assert.That(seen.Any(f => f.Path.EndsWith(".task.xml") && Equals(f.Encoding, Encoding.Unicode))).IsTrue();
-        await Assert.That(seen.Any(f => f.Path.EndsWith(".cmd") && Equals(f.Encoding, Encoding.UTF8))).IsTrue();
+        await Assert.That(seen.Any(f => f.Path.EndsWith(".task.xml", StringComparison.Ordinal) && Equals(f.Encoding, Encoding.Unicode))).IsTrue();
+        await Assert.That(seen.Any(f => f.Path.EndsWith(".cmd", StringComparison.Ordinal) && Equals(f.Encoding, Encoding.UTF8))).IsTrue();
     }
 
     static ServiceSpec Spec() => new(

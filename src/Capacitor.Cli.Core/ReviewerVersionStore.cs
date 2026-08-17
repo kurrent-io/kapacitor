@@ -181,7 +181,7 @@ public static class ReviewerVersionAffirmations {
     /// </summary>
     /// <para><b>Byte-identical to the normalization <c>CliVersionAllowed</c> applied before it moved
     /// here — deliberately, and do not "tidy" a <c>.Trim()</c> back in.</b> An earlier revision added
-    /// one, on the reasoning that trimming is harmless. It is not: <see cref="Version.TryParse"/>
+    /// one, on the reasoning that trimming is harmless. It is not: <see cref="Version.TryParse(string?, out Version?)"/>
     /// already tolerates surrounding whitespace, so the trim changes nothing on its own — but it lets
     /// <c>TrimStart('v','V')</c> reach a <c>v</c> it could not otherwise see, so <c>" v1.2.3"</c> flips
     /// from REFUSED to allowed (measured). For the certification gate that is a silent widening of what

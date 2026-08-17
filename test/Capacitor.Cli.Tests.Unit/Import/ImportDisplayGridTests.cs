@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Tests.Helpers;
 
 namespace Capacitor.Cli.Tests.Unit.Import;
 
@@ -116,14 +117,8 @@ public class ImportDisplayGridTests {
     );
 
     static string CaptureNonTtyOutput(Action<ImportCommand.ImportDisplay> render) {
-        var sw      = new StringWriter();
-        var prevOut = Console.Out;
-        Console.SetOut(sw);
-        try {
-            render(new() { Tty = false });
-        } finally {
-            Console.SetOut(prevOut);
-        }
-        return sw.ToString();
+        using var capture = ConsoleOutput.StartCapture();
+        render(new() { Tty = false });
+        return capture.GetCapturedOutput();
     }
 }

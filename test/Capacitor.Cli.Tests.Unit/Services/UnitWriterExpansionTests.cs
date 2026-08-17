@@ -237,8 +237,8 @@ public class UnitWriterExpansionTests {
     // ── Windows: cmd metacharacters, which %-doubling alone does not neutralise ──
 
     /// <summary>
-    /// `foo&calc.exe` contains no space and no percent, so the old quote-when-it-has-a-space rule emitted it
-    /// bare and cmd read `&` as a command separator — in a file the OS runs at every logon.
+    /// `foo&amp;calc.exe` contains no space and no percent, so the old quote-when-it-has-a-space rule emitted it
+    /// bare and cmd read `&amp;` as a command separator — in a file the OS runs at every logon.
     /// </summary>
     [Test]
     [Arguments("8&calc.exe")]

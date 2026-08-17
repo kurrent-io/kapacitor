@@ -100,7 +100,7 @@ internal record AgentInstance(
     /// <see cref="System.Threading.Interlocked.CompareExchange(ref int,int,int)"/>, so dedupe is
     /// structural rather than dependent on today's call-site ordering. Set by
     /// <see cref="AgentOrchestrator.FinalizeAgentRunAsync"/>'s verdict arm; read (via a plain
-    /// <see cref="System.Threading.Volatile.Read(ref int)"/>, no claim) by
+    /// <see cref="System.Threading.Volatile"/> read, no claim) by
     /// <see cref="AgentOrchestrator.StopAgentCoreAsync"/> to suppress a racing stop's non-failure
     /// "Completed" transition once a verdict has already been reported — the factory's
     /// pre-registration reclassification (design spec §3.2) has no <see cref="AgentInstance"/> to
@@ -193,7 +193,7 @@ internal record AgentInstance(
     /// is held across a delivery, and a delivery can block for an unbounded time on a healthy-looking
     /// transport — the PTY path ends in <c>UnixPtyProcess.WriteAsync</c>, a raw <c>write(2)</c> on the
     /// pty master with no timeout and no cancellation, which parks forever if the child stops draining
-    /// its stdin. The graceful-stop wait in <see cref="StopAgentCoreAsync"/> is exactly this case: it
+    /// its stdin. The graceful-stop wait in <see cref="AgentOrchestrator.StopAgentCoreAsync"/> is exactly this case: it
     /// is waiting on the very process that only its OWN next action (terminate) can unblock, so that
     /// wait is bounded. The delivery's own ENTRY wait onto this gate (<see
     /// cref="AgentOrchestrator.HandleSendInput"/>) is exempt from this rule — it is the holder class,
@@ -230,7 +230,7 @@ internal record AgentInstance(
     public int ReapClaimed;
 
     /// <summary><see cref="ReapClaimed"/> as a bool, through a
-    /// <see cref="System.Threading.Volatile.Read(ref int)"/> — the un-gated absolute-lifetime claim
+    /// <see cref="System.Threading.Volatile"/> read — the un-gated absolute-lifetime claim
     /// path writes it outside any lock, so a plain field read is not guaranteed to observe it.</summary>
     public bool IsReapClaimed => Volatile.Read(ref ReapClaimed) != 0;
 
@@ -344,15 +344,15 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     // Phase B (D4): durable PID records + this daemon's logical identity/epoch for
     // crash-survivor reaping. Initialized in the ctor from config.
-    AgentPidRecordStore? _pidRecords;
-    AgentKillQuarantine? _quarantine;
-    OrphanReaper?        _orphanReaper;
+    readonly AgentPidRecordStore? _pidRecords;
+    readonly AgentKillQuarantine? _quarantine;
+    readonly OrphanReaper?        _orphanReaper;
 
     // Tail-of-PTY capture for a FAILED launch, under the same per-daemon record root as the PID
     // records ({state}/{name}/agents/failed/) — survives worktree teardown for post-mortem.
-    FailedLaunchLog?     _failedLaunchLog;
-    string               _daemonId    = "";
-    string               _daemonEpoch = "";
+    readonly FailedLaunchLog?     _failedLaunchLog;
+    readonly string               _daemonId    = "";
+    readonly string               _daemonEpoch = "";
 
     // Phase B2-b (sequenced-settlement design §4.2.4): the durable positive-death-evidence outbox.
     // Fed at every CONFIRMED-gone seam — the OrphanReaper record pass (Hook A), the quarantine drain
@@ -2430,7 +2430,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// re-registration (finding 2).
     ///
     /// <para>Both signals are read with proper cross-thread ordering — the flag via
-    /// <see cref="System.Threading.Volatile.Read(ref int)"/>, the verdict via the runtime's
+    /// <see cref="System.Threading.Volatile"/>, the verdict via the runtime's
     /// lock-synchronised <see cref="AcpHostedAgentRuntime.ReadVerdict"/> — and ORed because the
     /// verdict is PUBLISHED (at reap-claim time) strictly before the finalizer's CAS flips the flag,
     /// so a same-tick emitter could otherwise read the flag as still 0 while the verdict already
@@ -3804,7 +3804,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// Re-registers this daemon's live agents with the server (AgentRegistered +
     /// AgentStatusChanged) so per-session ownership is restored after a (re-)connect. Wired into
     /// <see cref="ServerConnection.ReRegisterAgentsHook"/> and awaited inside
-    /// <see cref="ServerConnection.RegisterDaemon"/> BEFORE readiness is restored — so a
+    /// <see cref="ServerConnection.RegisterDaemonAsync"/> BEFORE readiness is restored — so a
     /// permission invoke gated on <c>IsReady</c> can't fire before ownership recovery.
     ///
     /// Each agent's re-registration is retried a bounded number of times before giving up, so a

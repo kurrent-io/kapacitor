@@ -8,7 +8,7 @@ namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
 /// Option B task 4: covers the orchestrator wiring that ties tasks 1–3 into the launch/
-/// teardown lifecycle — <see cref="AgentOrchestrator.HandleLaunchAgent"/>'s post-registration ACP
+/// teardown lifecycle — <c>AgentOrchestrator.HandleLaunchAgent</c>'s post-registration ACP
 /// bind + forwarder start, and <see cref="AgentOrchestrator"/>'s teardown path's bounded final-drain
 /// before <c>EndAgentSession</c>. Reuses the shared <see cref="AgentOrchestratorVendorTests"/> test
 /// seam (<c>BuildOrchestrator</c>, <c>CaptureServerConnection</c>) — the ACP-specific capture fields
@@ -61,7 +61,7 @@ public partial class AgentOrchestratorVendorTests {
 
             var registerIndex    = server.AcpCallOrder.IndexOf("register:agent-acp-bind");
             var bindIndex        = server.AcpCallOrder.IndexOf("bind:agent-acp-bind");
-            var firstEventsIndex = server.AcpCallOrder.FindIndex(e => e.StartsWith("events:agent-acp-bind:"));
+            var firstEventsIndex = server.AcpCallOrder.FindIndex(e => e.StartsWith("events:agent-acp-bind:", StringComparison.Ordinal));
 
             await Assert.That(registerIndex).IsGreaterThanOrEqualTo(0);
             await Assert.That(bindIndex).IsGreaterThan(registerIndex);
@@ -189,7 +189,7 @@ public partial class AgentOrchestratorVendorTests {
             await Assert.That(server.AcpEventsCalls.SelectMany(c => c.Envelopes).Any(e => e.Text == "final words")).IsTrue();
 
             // Ordering: every events call precedes EndAgentSession.
-            var lastEventsIndex = server.AcpCallOrder.FindLastIndex(e => e.StartsWith("events:"));
+            var lastEventsIndex = server.AcpCallOrder.FindLastIndex(e => e.StartsWith("events:", StringComparison.Ordinal));
             var endSessionIndex = server.AcpCallOrder.IndexOf($"endSession:{cmd.AgentId}");
 
             await Assert.That(lastEventsIndex).IsGreaterThanOrEqualTo(0);
@@ -262,7 +262,7 @@ public partial class AgentOrchestratorVendorTests {
     /// <summary>
     /// Qodo #4: a drain that misses its budget must not leave the forwarder's <c>RunTask</c> running
     /// forever in the background. The per-agent CTS created at launch is cancelled specifically on
-    /// drain-timeout (<see cref="AgentOrchestrator.FinalDrainAcpTranscriptAsync"/>) — this test proves
+    /// drain-timeout (<c>AgentOrchestrator.FinalDrainAcpTranscriptAsync</c>) — this test proves
     /// that cancellation actually reaches the forwarder's blocked send (via
     /// <c>SendAcpEventsAsync</c>'s <c>ct</c> parameter, which the test double now honors like a real
     /// hub invoke would) so <c>RunTask</c> completes ON ITS OWN, without the test manually releasing
@@ -319,7 +319,7 @@ public partial class AgentOrchestratorVendorTests {
     /// <c>ConnectionRetry</c> gating can block across a reconnect outage; if the agent's WHOLE
     /// lifecycle (launch → exit → finalize → cleanup) runs to completion while that bind is still
     /// in flight, the late bind resolving afterwards must NOT register a binding for the now-dead
-    /// agent — <see cref="AgentOrchestrator.StartAcpForwardingAsync"/>'s liveness check (per-agent
+    /// agent — <c>AgentOrchestrator.StartAcpForwardingAsync</c>'s liveness check (per-agent
     /// CTS cancelled + <c>agent</c> no longer tracked) must abort before ever reaching
     /// <c>RegisterAcpBinding</c>, and the finalizer's own unconditional
     /// <c>UnregisterAcpBinding(agent.Id)</c> must leave nothing registered even if it ran first.

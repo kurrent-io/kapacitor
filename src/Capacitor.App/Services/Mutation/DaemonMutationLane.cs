@@ -373,7 +373,7 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
             MutationRequest request, IDaemonObservation observation, string? attemptId,
             Func<MutationOutcome> onFullEvidence, CancellationToken ct) {
         var deadline = _time.GetUtcNow() + DetachedConfirmWindow;
-        var lastLeg = UnreachableLeg;
+        string lastLeg;
         while (true) {
             // Marker-first: a refusing daemon never attaches, so checking the marker before evidence
             // can never produce a false Refused, while evidence-first could let a pre-existing

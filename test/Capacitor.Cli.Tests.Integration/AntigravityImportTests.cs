@@ -31,7 +31,6 @@ public class AntigravityImportTests : IDisposable {
         try { Directory.Delete(_home, recursive: true); } catch { /* best effort */ }
     }
 
-    string BrainDir(string convId) => BrainDir("antigravity", convId);
     string BrainDir(string productSub, string convId) =>
         Path.Combine(_home, ".gemini", productSub, "brain", convId);
 

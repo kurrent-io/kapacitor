@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -14,11 +15,18 @@ namespace Capacitor.Cli.Tests.Unit;
 /// acceptable retry is one the server has provably refused before doing anything: the structured
 /// reviewer_vendor_required code on a vendor-less, model-less catalog start.
 /// </summary>
+[NotInParallel(nameof(TokenStoreProfileTests))]
 public class ReviewerVendorFallbackTests {
     // The wire shape TryParseCodedError accepts: a JSON object with a non-empty string "error"
     // plus a string "message" — the CLI-side reading of the server's FlowReviewerResultError.
     const string VendorRequired =
         """{"error":"reviewer_vendor_required","message":"no reviewer vendor was requested and the definition names none"}""";
+
+    static string TokensDir  => PathHelpers.ConfigPath("tokens");
+    static string LegacyPath => PathHelpers.ConfigPath("tokens.json");
+
+    [Before(Test)]
+    public void Cleanup() => SharedConfigDirCleanup.ClearTokenAndProfileState(LegacyPath, TokensDir);
 
     // === The pure trigger ===
 

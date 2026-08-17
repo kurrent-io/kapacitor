@@ -188,12 +188,12 @@ internal sealed partial class PiRpcProcess : IPiRpcProcess {
     /// promises for a call after disposal.</para>
     /// </summary>
     public async Task WriteLineAsync(string json, CancellationToken ct) {
-        if (IsDisposed) throw new ObjectDisposedException(nameof(PiRpcProcess));
+        ObjectDisposedException.ThrowIf(IsDisposed, this);
 
         await _stdinGate.WaitAsync(ct).ConfigureAwait(false);
 
         try {
-            if (IsDisposed) throw new ObjectDisposedException(nameof(PiRpcProcess));
+            ObjectDisposedException.ThrowIf(IsDisposed, this);
 
             await _process.StandardInput.WriteAsync((json + "\n").AsMemory(), ct).ConfigureAwait(false);
             await _process.StandardInput.FlushAsync(ct).ConfigureAwait(false);

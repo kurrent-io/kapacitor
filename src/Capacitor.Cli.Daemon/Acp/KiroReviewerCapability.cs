@@ -86,7 +86,7 @@ internal static class KiroReviewerCapability {
     }
 
     /// <summary>
-    /// The coded refusal an operator can act on. Separated from <see cref="Decide"/> so the two
+    /// The coded refusal an operator can act on. Separated from <see cref="Decide(bool, string?, string?)"/> so the two
     /// cannot disagree about WHY a launch was denied. The disabled text is the acceptance artifact
     /// for the risk in this type's summary, so its content is asserted, not just its presence.
     /// </summary>

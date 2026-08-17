@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 
+using Capacitor.Tests.Helpers;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 /// <summary>`kcap daemon start -d` gates the spawn on the embedded daemon digest,
@@ -34,23 +35,17 @@ public class DetachedDigestGateTests {
 
     [Test, NotInParallel]
     public async Task Directive_with_placeholder_digest_writes_the_stderr_line_exactly_once() {
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
+        using var capture = ConsoleOutput.StartErrorCapture();
 
-        try {
-            Console.SetError(capturedErr);
 
-            var exit = DaemonCommands.DetachedDigestGate("/nonexistent",
-                k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
+        var exit = DaemonCommands.DetachedDigestGate("/nonexistent",
+            k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
 
-            await Assert.That(exit).IsEqualTo(43);
+        await Assert.That(exit).IsEqualTo(43);
 
-            var lines = capturedErr.ToString()
-                .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        var lines = capture.GetCapturedError()
+            .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
 
-            await Assert.That(lines).IsEquivalentTo(["daemon_start_reason=package_inconsistent"]);
-        } finally {
-            Console.SetError(originalErr);
-        }
+        await Assert.That(lines).IsEquivalentTo(["daemon_start_reason=package_inconsistent"]);
     }
 }

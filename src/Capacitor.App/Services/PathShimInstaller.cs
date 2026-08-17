@@ -104,7 +104,7 @@ public sealed class PathShimInstaller(IProcessRunner runner, ILoginShellProbe pr
         return "an unexpected filesystem entry";
     }
 
-    /// argv for `osascript`: the target is passed as an `-- <target>` argv element and read back
+    /// argv for `osascript`: the target is passed as an <c>-- &lt;target&gt;</c> argv element and read back
     /// via `quoted form of item 1 of argv` — never string-interpolated into the script source, so
     /// spaces/quotes/backslashes/etc. in the path can't break out of the shell command. `ln -s` is
     /// non-forcing: a race lands as a failed creation, never a clobber.

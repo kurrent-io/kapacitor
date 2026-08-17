@@ -62,7 +62,7 @@ public class UnreachableErrorTests {
 
         // Belt and braces against a lone \r on a terminal: the payload must not open a segment either.
         var segments = line.Split('\n', '\r');
-        await Assert.That(segments.Any(s => s.StartsWith("[kcap] everything is fine"))).IsFalse();
+        await Assert.That(segments.Any(s => s.StartsWith("[kcap] everything is fine", StringComparison.Ordinal))).IsFalse();
     }
 
     [Test]

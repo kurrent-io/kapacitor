@@ -24,7 +24,7 @@ namespace Capacitor.Cli.Commands;
 /// are no-ops here (the watcher already tails the transcript continuously).
 ///
 /// Fail-open throughout — a kcap/server problem must never disrupt the Antigravity IDE. The
-/// session-start POST goes through <see cref="AgentHookPoster.PostOrSpoolAsync"/> (Task
+/// session-start POST goes through <see cref="AgentHookPoster.PostOrSpoolAsync(string, string, string, string, HookSpool, string, string)"/> (Task
 /// 6): a lapsed/outage POST is durably spooled for a later drain, and the watcher still spawns
 /// (<see cref="SpawnGateForTest"/>) — capture must not depend on lifecycle-POST delivery.
 /// Antigravity conversation ids are dashed UUIDs; kcap canonicalizes them to the DASHLESS form

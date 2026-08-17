@@ -1,7 +1,8 @@
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core;
+using Capacitor.Tests.Helpers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -961,39 +962,33 @@ public class ImportVisibilityTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(404));
         StubAllHookEndpoints();
 
-        var originalError = Console.Error;
-        var stderrWriter   = new StringWriter();
+        using var capture = ConsoleOutput.StartErrorCapture();
 
         int exitCode;
-        try {
-            Console.SetError(stderrWriter);
 
-            // If autoSkipExclusions didn't force the non-interactive branch, and this process
-            // happened to look like an interactive TTY, this call could block forever on
-            // Console.ReadLine(). It must not, regardless of ambient TTY state.
-            var task = ImportCommand.HandleImport(
-                baseUrl: _server.Url!,
-                filterCwd: null,
-                minLines: 1,
-                sources: [new ClaudeImportSource(projectsDir)],
-                scope: new ImportScope.All(),
-                skipConfirmation: true,
-                autoSkipExclusions: true
-            );
+        // If autoSkipExclusions didn't force the non-interactive branch, and this process
+        // happened to look like an interactive TTY, this call could block forever on
+        // Console.ReadLine(). It must not, regardless of ambient TTY state.
+        var task = ImportCommand.HandleImport(
+            baseUrl: _server.Url!,
+            filterCwd: null,
+            minLines: 1,
+            sources: [new ClaudeImportSource(projectsDir)],
+            scope: new ImportScope.All(),
+            skipConfirmation: true,
+            autoSkipExclusions: true
+        );
 
-            var winner    = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(15)));
-            var timedOut  = !ReferenceEquals(winner, task);
-            await Assert.That(timedOut).IsFalse(); // did not time out / hang on stdin
+        var winner    = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(15)));
+        var timedOut  = !ReferenceEquals(winner, task);
+        await Assert.That(timedOut).IsFalse(); // did not time out / hang on stdin
 
-            exitCode = await task;
-        } finally {
-            Console.SetError(originalError);
-        }
+        exitCode = await task;
 
         await Assert.That(exitCode).IsEqualTo(0);
-        await Assert.That(stderrWriter.ToString()).Contains("Auto-skipping");
+        await Assert.That(capture.GetCapturedError()).Contains("Auto-skipping");
 
         // Never actually asked the user to include the excluded path.
-        await Assert.That(stderrWriter.ToString()).DoesNotContain("Include");
+        await Assert.That(capture.GetCapturedError()).DoesNotContain("Include");
     }
 }

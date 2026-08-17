@@ -1,3 +1,4 @@
+using System.Globalization;
 using Capacitor.Cli.Commands;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -18,7 +19,7 @@ public class EndedAtResolverTests : IDisposable {
         var ts = EndedAtResolvers.CopilotShutdownTimestamp(path);
 
         await Assert.That(ts).IsNotNull();
-        await Assert.That(ts!.Value).IsEqualTo(DateTimeOffset.Parse("2026-06-12T10:00:30.000Z"));
+        await Assert.That(ts!.Value).IsEqualTo(DateTimeOffset.Parse("2026-06-12T10:00:30.000Z", CultureInfo.InvariantCulture));
     }
 
     [Test]
@@ -32,6 +33,6 @@ public class EndedAtResolverTests : IDisposable {
 
         var ts = EndedAtResolvers.LastTimestampFromJsonl(path);
 
-        await Assert.That(ts!.Value).IsEqualTo(DateTimeOffset.Parse("2026-06-12T10:09:00.000Z"));
+        await Assert.That(ts!.Value).IsEqualTo(DateTimeOffset.Parse("2026-06-12T10:09:00.000Z", CultureInfo.InvariantCulture));
     }
 }

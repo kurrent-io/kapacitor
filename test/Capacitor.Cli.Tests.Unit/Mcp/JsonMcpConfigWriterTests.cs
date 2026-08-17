@@ -10,7 +10,7 @@ public class JsonMcpConfigWriterTests {
     // In-memory marker double: treats an entry as kcap-owned iff its key starts with "kcap-".
     sealed class FakeMarker : IMcpMarker {
         readonly HashSet<string> _owned = [];
-        public bool Owns(string cfg, string name, JsonNode entry) => name.StartsWith("kcap-");
+        public bool Owns(string cfg, string name, JsonNode entry) => name.StartsWith("kcap-", StringComparison.Ordinal);
         public void Record(string cfg, IReadOnlyList<KeyValuePair<string, JsonNode?>> entries) { foreach (var (n, _) in entries) _owned.Add(n); }
         public IEnumerable<string> Owned(string cfg) => _owned;
         public void Clear(string cfg) => _owned.Clear();

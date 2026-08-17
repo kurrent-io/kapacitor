@@ -253,7 +253,7 @@ public class CliTelemetryTests {
         await Assert.That(CliTelemetry.Enabled).IsFalse();
         await Assert.That(sink).IsEmpty();
         await Assert.That(TelemetryDeviceId.ReadPersisted()).IsNull();
-        await Assert.That(TelemetryState.PersistedEnabled()).IsEqualTo((bool?)false);
+        await Assert.That(TelemetryState.PersistedEnabled()).IsFalse();
 
         // The disabled facade must not resurrect anything on the exit-time flush either.
         await CliTelemetry.FlushAndClose();

@@ -55,7 +55,7 @@ public class AntigravityMemoryIndexLiveCertTests {
     /// reply and failing the nonce assertion for a reason unrelated to what this cert
     /// certifies.</para>
     ///
-    /// <para><see cref="MemoryIndexLiveCertHarness.ResolveOnPath"/> is called explicitly rather than
+    /// <para><see cref="MemoryIndexLiveCertHarness.ResolveOnPath(string)"/> is called explicitly rather than
     /// left to <c>RunProcessAsync</c>'s own internal resolution, because <c>Process.Start</c> tries
     /// a bare filename against the working directory FIRST — and the working directory here is a
     /// throwaway cert worktree, not this assembly's output folder, so a shadowing <c>agy</c> could

@@ -9,7 +9,7 @@ namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
 /// Phase A (tasks A5 + A6): the borrowed-launch branch in
-/// <see cref="AgentOrchestrator.HandleLaunchAgent"/> and — the reason A5 and A6 ship together —
+/// <c>AgentOrchestrator.HandleLaunchAgent</c> and — the reason A5 and A6 ship together —
 /// the failed-launch cleanup guard.
 ///
 /// THE TOP SAFETY INVARIANT: a borrowed cwd is the user's REAL checkout. It must NEVER be

@@ -14,10 +14,9 @@ namespace Capacitor.Cli.Core.OpenCode;
 /// canonical agentId (= childSid) → <c>AgentSubsession-{parent}-{childSid}</c>, which lines
 /// up with the agentId the server surfaced from the parent's <c>task</c> tool call.
 ///
-/// Shared by the live watcher (<see cref="T:Capacitor.Cli.Commands.WatchCommand"/>) and the
-/// session-end teardown so both speak one wire contract. The
-/// <c>/hooks/subagent-{start,stop}</c> bodies are the vendor-agnostic shape the server's
-/// shared handlers accept.
+/// Shared by the live watcher (<c>WatchCommand</c>) and the session-end teardown so both
+/// speak one wire contract. The <c>/hooks/subagent-{start,stop}</c> bodies are the
+/// vendor-agnostic shape the server's shared handlers accept.
 /// </summary>
 public static class OpenCodeSubagentDiscovery {
     /// <summary>Nested dir for a parent transcript's child sessions: <c>&lt;dir&gt;/&lt;parentSid&gt;/</c>.</summary>

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Capacitor.Cli.Daemon.Services;
 
@@ -96,7 +97,7 @@ public class CodexSessionRolloutLocatorTests {
     // below could not express "older than spawn".
     static string WriteRollout(string sessionsRoot, string uuid, string cwd, DateTime creationUtc) {
         var local = creationUtc.ToLocalTime();
-        var dir   = Path.Combine(sessionsRoot, local.ToString("yyyy"), local.ToString("MM"), local.ToString("dd"));
+        var dir   = Path.Combine(sessionsRoot, local.ToString("yyyy", CultureInfo.InvariantCulture), local.ToString("MM", CultureInfo.InvariantCulture), local.ToString("dd", CultureInfo.InvariantCulture));
         Directory.CreateDirectory(dir);
         var file = Path.Combine(dir, $"rollout-{local:yyyy-MM-dd}T{local:HH-mm-ss}-{uuid}.jsonl");
         File.WriteAllText(file, Meta(cwd) + "\n");

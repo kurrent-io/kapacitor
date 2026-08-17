@@ -29,7 +29,7 @@ public class SqliteNativeResolverTests {
         }
     }
 
-    /// <summary>The resolver's asset name must match release.yml's `<base>-<rid>.<ext>`.</summary>
+    /// <summary>The resolver's asset name must match release.yml's `<c>&lt;base&gt;-&lt;rid&gt;.&lt;ext&gt;</c>`.</summary>
     [Test]
     public async Task asset_names_follow_release_naming_convention() {
         foreach (var (rid, a) in SqliteNativeResolver.Assets) {

@@ -108,7 +108,7 @@ public class PiMemoryIndexLiveCertTests {
     /// recording anything (<c>if (string.IsNullOrWhiteSpace(file)) return 0;</c>), so there is no hook
     /// and the negative control would again pass vacuously.</para>
     ///
-    /// <para><see cref="MemoryIndexLiveCertHarness.ResolveOnPath"/> is called explicitly for the same
+    /// <para><see cref="MemoryIndexLiveCertHarness.ResolveOnPath(string)"/> is called explicitly for the same
     /// reason as the OpenCode cert: <c>Process.Start</c> tries a bare filename against the working
     /// directory before consulting PATH, and the working directory here is a throwaway cert
     /// worktree.</para>

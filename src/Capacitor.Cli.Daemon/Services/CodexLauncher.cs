@@ -215,7 +215,7 @@ internal sealed partial class CodexLauncher(
     /// <summary>
     /// Real, fail-closed MCP isolation for a review-flow reviewer: disables EVERY server the
     /// reviewer would otherwise inherit — from the user's <c>$CODEX_HOME/config.toml</c> AND from
-    /// active native plugins (both reported by <see cref="ReadInheritedMcpServerNames"/> via
+    /// active native plugins (both reported by <see cref="ReadInheritedMcpServers"/> via
     /// <c>codex mcp list --json</c>) — so only the servers we explicitly whitelist afterwards load.
     ///
     /// All disables go in ONE <c>-c mcp_servers={ … }</c> TOML-value override rather than per-server
@@ -356,7 +356,7 @@ internal sealed partial class CodexLauncher(
         }
     }
 
-    /// Append `-m <model>` unless the model is empty or the "default" no-override sentinel.
+    /// Append `-m &lt;model&gt;` unless the model is empty or the "default" no-override sentinel.
     /// "default" is the sentinel from the flow/agent dispatch; passing it as `-m default` is
     /// rejected by Codex on a ChatGPT account ("The 'default' model is not supported when using
     /// Codex with a ChatGPT account") and silently yields an empty turn. Omitting -m makes Codex

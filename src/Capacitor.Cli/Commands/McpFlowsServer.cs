@@ -1476,8 +1476,8 @@ static class McpFlowsServer {
     /// current round reaches a <see cref="TerminalRoundStatuses"/> value, or <see cref="PollCap"/> elapses.
     ///
     /// <para>Deliberately NOT a reuse of <see cref="PollUntilTerminalAsync"/>: it must render through
-    /// <see cref="FormatStatusResponse"/> — the same envelope a <c>wait:false</c> call renders — never
-    /// <see cref="FormatPolledRoundResult"/>'s round-submission shape. Reusing it would make the tool's
+    /// <see cref="FormatStatusResponse(string, out IReadOnlyList{string})"/> — the same envelope a <c>wait:false</c> call renders — never
+    /// <see cref="FormatPolledRoundResult(JsonObject, string, out IReadOnlyList{string})"/>'s round-submission shape. Reusing it would make the tool's
     /// response shape depend on whether <c>wait</c> was set.</para></summary>
     static async Task<PollResult> PollStatusUntilTerminalAsync(
             HttpClient client, string apiRoot, string flowRunId, string toolName, FlowRetryClock clock, SettlementBackoff backoff) {

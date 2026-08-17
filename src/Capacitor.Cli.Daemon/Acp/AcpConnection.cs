@@ -125,7 +125,7 @@ internal sealed partial class AcpConnection : IAsyncDisposable {
     /// never a null-result success, which would falsely claim we performed an operation (e.g. an
     /// <c>fs/*</c>/<c>terminal/*</c> request) we never actually served. A handler that intends a
     /// successful EMPTY result must return an explicit <see cref="JsonElement"/> (e.g. an empty
-    /// object via <see cref="JsonSerializer.SerializeToElement"/>), never <see langword="null"/>.
+    /// object via <see cref="JsonSerializer.SerializeToElement{T}(T, System.Text.Json.Serialization.Metadata.JsonTypeInfo{T})"/>), never <see langword="null"/>.
     ///
     /// Typed <see cref="JsonElement"/>? rather than <c>object?</c> (PR #244 review, Fix #3): the
     /// old <c>object?</c> contract let a handler return an un-serialized CLR object that
@@ -134,7 +134,7 @@ internal sealed partial class AcpConnection : IAsyncDisposable {
     /// propagated up through <see cref="DispatchLineAsync"/>'s broad catch (log-and-skip) and the
     /// agent's request was left with NO response at all, wedging its wait on this id forever. A
     /// handler must now build its own <see cref="JsonElement"/> (typically via
-    /// <see cref="JsonSerializer.SerializeToElement"/> against a registered
+    /// <see cref="JsonSerializer.SerializeToElement{T}(T, System.Text.Json.Serialization.Metadata.JsonTypeInfo{T})"/> against a registered
     /// <see cref="CapacitorJsonContext"/> type) so the shape is AOT-safe and can't fail to
     /// serialize at the write site.
     /// </summary>

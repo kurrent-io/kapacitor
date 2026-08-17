@@ -548,7 +548,7 @@ internal sealed partial class ClaudeLauncher(
         var tmp = path + ".tmp-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N");
 
         var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write };
-        if (createMode is { } m) options.UnixCreateMode = m;
+        if (createMode is { } m && !OperatingSystem.IsWindows()) options.UnixCreateMode = m;
 
         try {
             using (var fs = new FileStream(tmp, options))

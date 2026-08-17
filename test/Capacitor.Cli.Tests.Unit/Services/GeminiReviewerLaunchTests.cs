@@ -411,7 +411,7 @@ public class GeminiReviewerLaunchTests {
         AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(
             argv, isReviewFlow: true, Identity, reviewGate: Identity.ResultChannelWireName);
 
-        await Assert.That(argv).HasCount().EqualTo(6);
+        await Assert.That(argv).Count().IsEqualTo(6);
     }
 
     [Test]
@@ -423,7 +423,7 @@ public class GeminiReviewerLaunchTests {
 
         AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(argv, isReviewFlow: false, Identity, reviewGate: null);
 
-        await Assert.That(argv).HasCount().EqualTo(4);
+        await Assert.That(argv).Count().IsEqualTo(4);
     }
 
     /// <summary>A wrong approval VALUE is rejected, not just a missing option — `default` would silently

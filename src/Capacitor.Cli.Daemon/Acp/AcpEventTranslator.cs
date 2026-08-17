@@ -12,7 +12,7 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// envelope (see <c>docs/ai688-option-b-canonical-surfacing-design.md</c>). Deliberately does
 /// NOT aggregate chunk streams, correlate multi-update tool-call state, assign real sequence
 /// numbers, or forward anything — those are handled elsewhere (aggregation/seq assignment is
-/// runtime-owned; <paramref name="seq"/>/<paramref name="timestampIso"/> below are caller-supplied
+/// runtime-owned; <c>seq</c>/<c>timestampIso</c> below are caller-supplied
 /// inputs, not derived here). <see cref="Translate"/> never throws: an unmappable/dropped kind
 /// returns <see langword="null"/> rather than fabricating an empty envelope.
 /// </summary>

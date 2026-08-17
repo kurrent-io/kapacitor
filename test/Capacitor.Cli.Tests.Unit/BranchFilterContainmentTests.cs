@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -188,6 +189,7 @@ public class BranchFilterContainmentTests {
     /// '=' too, so `filter=evil=x` selects this driver — a branch can reach it.</para>
     /// </summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task An_equals_in_a_driver_name_is_contained_rather_than_refused() {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX filter script with a shebang");
 
@@ -226,6 +228,7 @@ public class BranchFilterContainmentTests {
     /// nothing.
     /// </summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task CreateAsync_does_not_run_a_branch_supplied_smudge_filter() {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX filter script with a shebang");
 
@@ -275,6 +278,7 @@ public class BranchFilterContainmentTests {
     /// applied, so this refuses instead of guessing. The control proves plain git really does run it.</para>
     /// </summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task A_driver_name_that_is_not_valid_utf8_is_refused_rather_than_missed() {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX filter script with a shebang");
 

@@ -144,10 +144,10 @@ public sealed partial class ConsentFlipClaims(string path, string? configPath = 
         var fd = -1;
         try {
             fd = open(dir, 0 /* O_RDONLY */);
-            if (fd >= 0) fsync(fd);
+            if (fd >= 0) _ = fsync(fd);
         } catch { /* durability hardening only — never break a claim write */
         } finally {
-            if (fd >= 0) close(fd);
+            if (fd >= 0) _ = close(fd);
         }
     }
 

@@ -268,8 +268,8 @@ internal sealed class OpenCodeImportSource : IImportSource {
         // run cancelled at any point never marks the ledger complete.
         if (cancellation is not null) {
             ExceptionDispatchInfo.Capture(cancellation).Throw();
-        } else if (ct.IsCancellationRequested) {
-            throw new OperationCanceledException(ct);
+        } else {
+            ct.ThrowIfCancellationRequested();
         }
 
         if (!endOk) return ImportOutcome.Failed;

@@ -8,7 +8,7 @@ namespace Capacitor.Cli.Tests.Unit.Telemetry;
 /// <summary>
 /// Drives `kcap config set telemetry` through the real public entry point,
 /// <see cref="ConfigCommand.HandleAsync"/>, to cover the COMPOSITION of
-/// <see cref="ConfigCommand.TryApplyTelemetry"/> and <see cref="ConfigCommand.Set"/> that
+/// <see cref="ConfigCommand.TryApplyTelemetry"/> and <c>ConfigCommand.Set</c> that
 /// <see cref="ConfigTelemetryKeyTests"/> cannot: that class calls <c>TryApplyTelemetry</c>
 /// directly, so it stays green even if the early <c>return 0;</c> right after the telemetry
 /// branch in <c>Set</c> went missing. Without that return, execution would fall through into

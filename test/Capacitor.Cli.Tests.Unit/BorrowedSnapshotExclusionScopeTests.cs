@@ -199,7 +199,6 @@ public class BorrowedSnapshotExclusionScopeTests {
         if (!TempIsCaseSensitive()) {
             // Not skipped silently: on a case-insensitive volume `a` and `A` ARE one directory, so the
             // property under test does not exist there and asserting it would be meaningless.
-            await Assert.That(true).IsTrue();
             return;
         }
 
@@ -399,7 +398,6 @@ public class BorrowedSnapshotExclusionScopeTests {
     public async Task Snapshot_root_symlinked_inside_the_source_is_refused() {
         if (OperatingSystem.IsWindows()) {
             // Windows needs Developer Mode or elevation to create a symlink.
-            await Assert.That(true).IsTrue();
             return;
         }
 
@@ -491,7 +489,6 @@ public class BorrowedSnapshotExclusionScopeTests {
     [Test]
     public async Task Snapshot_root_reaching_the_source_through_an_ancestor_symlink_is_refused() {
         if (OperatingSystem.IsWindows()) {
-            await Assert.That(true).IsTrue();
             return;
         }
 

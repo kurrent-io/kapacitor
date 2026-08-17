@@ -77,7 +77,7 @@ public class ShutdownTranscriptSpoolTests {
                 return Task.FromResult(DrainOutcome.Delivered);
             }, () => false, CancellationToken.None);
 
-            await Assert.That(replayed).HasCount().EqualTo(1);
+            await Assert.That(replayed).Count().IsEqualTo(1);
             var node  = System.Text.Json.Nodes.JsonNode.Parse(replayed[0])!;
             var lines = node["lines"]!.AsArray().Select(l => l!.GetValue<string>()).ToList();
             await Assert.That(lines).IsEquivalentTo(["{\"line\":2}", "{\"line\":3}"]);

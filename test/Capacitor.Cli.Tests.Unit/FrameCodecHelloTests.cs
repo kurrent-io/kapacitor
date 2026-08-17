@@ -81,7 +81,9 @@ public class FrameCodecHelloTests {
 
     [Test]
     public async Task Hello_frame_values_are_stable_wire_bytes() {
+#pragma warning disable TUnitAssertions0005
         await Assert.That((byte)FrameType.Hello).IsEqualTo((byte)15);
         await Assert.That((byte)FrameType.HelloReply).IsEqualTo((byte)75);
+#pragma warning restore TUnitAssertions0005
     }
 }

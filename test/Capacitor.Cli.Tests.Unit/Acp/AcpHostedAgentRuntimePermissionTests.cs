@@ -173,7 +173,7 @@ public class AcpHostedAgentRuntimePermissionTests {
 
     /// <summary>
     /// Spec-review Finding 3(b): the runtime disposing (connection closing) WHILE a
-    /// <c>session/request_permission</c> is genuinely pending — <paramref name="requestInteraction"/>
+    /// <c>session/request_permission</c> is genuinely pending — <c>requestInteraction</c>
     /// never completes on its own — must resolve the pending request to the well-formed ACP
     /// <c>cancelled</c> response exactly once, not hang forever and not surface as an unhandled
     /// exception anywhere in the dispose path. <see cref="AcpHostedAgentRuntime.DisposeAsync"/>

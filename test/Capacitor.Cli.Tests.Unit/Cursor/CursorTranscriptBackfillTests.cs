@@ -18,7 +18,7 @@ public class CursorTranscriptBackfillTests {
 
         string? postedBody = null;
         using var handler = new RecordingHandler(
-            getResponse: r => r.RequestUri!.AbsolutePath.EndsWith("/last-line")
+            getResponse: r => r.RequestUri!.AbsolutePath.EndsWith("/last-line", StringComparison.Ordinal)
                 ? new HttpResponseMessage(HttpStatusCode.NoContent) : null, // resume from 0
             postCapture: (_, b) => { postedBody = b; return new HttpResponseMessage(HttpStatusCode.OK); });
         using var client = new HttpClient(handler);
@@ -44,7 +44,7 @@ public class CursorTranscriptBackfillTests {
 
         string? postedBody = null;
         using var handler = new RecordingHandler(
-            getResponse: r => r.RequestUri!.AbsolutePath.EndsWith("/last-line")
+            getResponse: r => r.RequestUri!.AbsolutePath.EndsWith("/last-line", StringComparison.Ordinal)
                 ? new HttpResponseMessage(HttpStatusCode.NoContent) : null,
             postCapture: (_, b) => { postedBody = b; return new HttpResponseMessage(HttpStatusCode.OK); });
         using var client = new HttpClient(handler);
@@ -83,7 +83,7 @@ public class CursorTranscriptBackfillTests {
 
         var postCount = 0;
         using var client = new HttpClient(new RecordingHandler(
-            r => r.RequestUri!.AbsolutePath.EndsWith("/last-line") ? new HttpResponseMessage(HttpStatusCode.NoContent) : null,
+            r => r.RequestUri!.AbsolutePath.EndsWith("/last-line", StringComparison.Ordinal) ? new HttpResponseMessage(HttpStatusCode.NoContent) : null,
             (_, _) => { postCount++; return new HttpResponseMessage(HttpStatusCode.OK); }));
         var stats = await CursorTranscriptBackfill.RunAsync(client, "http://s", sessionId, transcript, () => false, CancellationToken.None);
 
@@ -107,7 +107,7 @@ public class CursorTranscriptBackfillTests {
         var postCount = 0;
         using var handler = new RecordingHandler(
             getResponse: r => {
-                if (r.RequestUri!.AbsolutePath.EndsWith("/last-line")) {
+                if (r.RequestUri!.AbsolutePath.EndsWith("/last-line", StringComparison.Ordinal)) {
                     // A concurrent watcher-side rewrite-guard trip lands exactly here — between
                     // the early check (already passed, since the marker didn't exist yet) and
                     // the POST below.
@@ -135,7 +135,7 @@ public class CursorTranscriptBackfillTests {
         var postCount = 0;
         using var handler = new RecordingHandler(
             getResponse: r => {
-                if (r.RequestUri!.AbsolutePath.EndsWith("/last-line")) {
+                if (r.RequestUri!.AbsolutePath.EndsWith("/last-line", StringComparison.Ordinal)) {
                     // A concurrent beforeSubmitPrompt hook creates its ordering barrier exactly
                     // here — after the early check, before the POST.
                     CursorMarkers.CreateBarrier(sessionId, DateTimeOffset.UtcNow);
@@ -175,7 +175,7 @@ public class CursorTranscriptBackfillTests {
         string? postedBody = null;
         string? postedPath = null;
         using var handler = new RecordingHandler(
-            getResponse: req => req.RequestUri!.AbsolutePath.EndsWith("/last-line")
+            getResponse: req => req.RequestUri!.AbsolutePath.EndsWith("/last-line", StringComparison.Ordinal)
                 ? new HttpResponseMessage(HttpStatusCode.OK) {
                     Content = new StringContent("""{"last_line_number":1}""")
                 }

@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using Capacitor.App.Services.Onboarding;
 
 namespace Capacitor.App.Tests.Unit;
@@ -191,6 +192,7 @@ public class ConsentFlipClaimsTests {
     }
 
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task Write_failure_when_directory_is_read_only_returns_false() {
         Skip.When(OperatingSystem.IsWindows(), "chmod-based read-only directory is POSIX-only.");
 

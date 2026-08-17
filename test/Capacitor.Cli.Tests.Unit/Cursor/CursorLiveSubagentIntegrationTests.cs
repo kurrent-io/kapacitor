@@ -122,7 +122,7 @@ public class CursorLiveSubagentIntegrationTests {
                 var body = req.Content is null ? "" : await req.Content.ReadAsStringAsync();
                 var path = req.RequestUri!.AbsolutePath;
                 Sent.Add($"{path}|{body}");
-                if (path.StartsWith("/hooks/")) RouteOrder.Add(path.Replace("/hooks/", ""));
+                if (path.StartsWith("/hooks/", StringComparison.Ordinal)) RouteOrder.Add(path.Replace("/hooks/", ""));
 
                 // Watermark GET — always 404 so the backfill always resumes from 0 and posts
                 // whatever's on disk right now.
@@ -178,7 +178,7 @@ public class CursorLiveSubagentIntegrationTests {
             );
 
         public string SentToHook(string segment) =>
-            Sent.Last(s => s.StartsWith($"/hooks/{segment}")).Split('|', 2)[1];
+            Sent.Last(s => s.StartsWith($"/hooks/{segment}", StringComparison.Ordinal)).Split('|', 2)[1];
 
         public void Dispose() {
             Client.Dispose();

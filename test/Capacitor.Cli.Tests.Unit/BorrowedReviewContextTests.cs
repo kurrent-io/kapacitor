@@ -441,7 +441,7 @@ public class BorrowedReviewContextTests {
 
             await Assert.That(ex!.Message)
                 .StartsWith("borrowed_snapshot_review_context_unsafe_storage_path");
-            await Assert.That(Directory.GetFileSystemEntries(external).Select(Path.GetFileName))
+            await Assert.That(Directory.GetFileSystemEntries(external).Select(p => Path.GetFileName(p)))
                 .IsEquivalentTo(["sentinel"]);
             await Assert.That(File.ReadAllText(Path.Combine(external, "sentinel")))
                 .IsEqualTo("keep-me");

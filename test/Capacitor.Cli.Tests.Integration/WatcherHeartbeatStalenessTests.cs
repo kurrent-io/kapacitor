@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using Capacitor.Cli.Core;
 
@@ -66,7 +67,7 @@ public class WatcherHeartbeatStalenessTests {
 
     static void WriteStaleWatcherFiles(string key, string pidFile, int pid) {
         var longAgo = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(5);
-        File.WriteAllText(pidFile, pid.ToString());
+        File.WriteAllText(pidFile, pid.ToString(CultureInfo.InvariantCulture));
         WatcherHeartbeat.Touch(Path.Combine(TempDir, $"{key}.started"), longAgo);
         WatcherHeartbeat.Touch(Cli.WatcherManager.GetHeartbeatFilePath(key), longAgo);
     }
@@ -92,7 +93,7 @@ public class WatcherHeartbeatStalenessTests {
         using var dummy = StartDummyProcess();
 
         try {
-            File.WriteAllText(pidFile, dummy.Id.ToString());
+            File.WriteAllText(pidFile, dummy.Id.ToString(CultureInfo.InvariantCulture));
             var now = DateTimeOffset.UtcNow;
             WatcherHeartbeat.Touch(Path.Combine(TempDir, $"{key}.started"), now - TimeSpan.FromMinutes(5));
             WatcherHeartbeat.Touch(Cli.WatcherManager.GetHeartbeatFilePath(key), now);
@@ -111,7 +112,7 @@ public class WatcherHeartbeatStalenessTests {
 
         try {
             // Just spawned: started marker is fresh, no heartbeat written yet.
-            File.WriteAllText(pidFile, dummy.Id.ToString());
+            File.WriteAllText(pidFile, dummy.Id.ToString(CultureInfo.InvariantCulture));
             WatcherHeartbeat.Touch(Path.Combine(TempDir, $"{key}.started"), DateTimeOffset.UtcNow);
 
             await Assert.That(Cli.WatcherManager.IsWatcherAlive(key)).IsTrue();
@@ -138,7 +139,7 @@ public class WatcherHeartbeatStalenessTests {
             // Simulate a successful respawn: fresh pid (this test process — always alive)
             // + fresh heartbeat/started markers, so a losing concurrent caller's re-check
             // under the lock sees a healthy watcher and skips.
-            File.WriteAllText(Path.Combine(TempDir, $"{spawnedKey}.pid"), Environment.ProcessId.ToString());
+            File.WriteAllText(Path.Combine(TempDir, $"{spawnedKey}.pid"), Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
             var now = DateTimeOffset.UtcNow;
             WatcherHeartbeat.Touch(Path.Combine(TempDir, $"{spawnedKey}.started"), now);
             WatcherHeartbeat.Touch(Cli.WatcherManager.GetHeartbeatFilePath(spawnedKey), now);
@@ -182,7 +183,7 @@ public class WatcherHeartbeatStalenessTests {
         var started   = Path.Combine(TempDir, $"{key}.started");
 
         try {
-            File.WriteAllText(pidFile, dummy.Id.ToString());
+            File.WriteAllText(pidFile, dummy.Id.ToString(CultureInfo.InvariantCulture));
             WatcherHeartbeat.Touch(started, DateTimeOffset.UtcNow);
             WatcherHeartbeat.Touch(heartbeat, DateTimeOffset.UtcNow);
 
@@ -227,7 +228,7 @@ public class WatcherHeartbeatStalenessTests {
         Cli.WatcherManager.SpawnOverrideForTesting = _ => { spawned = true; return Task.CompletedTask; };
 
         try {
-            File.WriteAllText(pidFile, dummy.Id.ToString());
+            File.WriteAllText(pidFile, dummy.Id.ToString(CultureInfo.InvariantCulture));
             var now = DateTimeOffset.UtcNow;
             WatcherHeartbeat.Touch(Path.Combine(TempDir, $"{key}.started"), now - TimeSpan.FromMinutes(5));
             WatcherHeartbeat.Touch(Cli.WatcherManager.GetHeartbeatFilePath(key), now);

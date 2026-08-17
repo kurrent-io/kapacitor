@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Eval;
@@ -677,7 +678,7 @@ public class EvalServiceTests {
     public async Task Truncate_shortens_to_max_and_appends_remainder_marker() {
         var s = EvalService.Truncate(new('x', 600), 500);
 
-        await Assert.That(s.StartsWith(new string('x', 500))).IsTrue();
+        await Assert.That(s.StartsWith(new string('x', 500), StringComparison.Ordinal)).IsTrue();
         await Assert.That(s).Contains("… (100 more chars)");
     }
 
@@ -797,7 +798,7 @@ public class EvalServiceTests {
                     RetainerGitHubId = 7,
                     SourceSessionId  = "src",
                     SourceEvalRunId  = "rA",
-                    RetainedAt       = DateTimeOffset.Parse("2026-05-01T00:00:00Z")
+                    RetainedAt       = DateTimeOffset.Parse("2026-05-01T00:00:00Z", CultureInfo.InvariantCulture)
                 },
                 // Old-server row — no fact_hash; must be filtered out.
                 new JudgeFact {
@@ -805,7 +806,7 @@ public class EvalServiceTests {
                     Fact             = "fact-B-no-hash",
                     SourceSessionId  = "src",
                     SourceEvalRunId  = "rB",
-                    RetainedAt       = DateTimeOffset.Parse("2026-05-02T00:00:00Z")
+                    RetainedAt       = DateTimeOffset.Parse("2026-05-02T00:00:00Z", CultureInfo.InvariantCulture)
                 }
             ],
             ["plan_adherence"] = [
@@ -816,7 +817,7 @@ public class EvalServiceTests {
                     RetainerGitHubId = 8,
                     SourceSessionId  = "src",
                     SourceEvalRunId  = "rC",
-                    RetainedAt       = DateTimeOffset.Parse("2026-05-03T00:00:00Z")
+                    RetainedAt       = DateTimeOffset.Parse("2026-05-03T00:00:00Z", CultureInfo.InvariantCulture)
                 }
             ]
         };

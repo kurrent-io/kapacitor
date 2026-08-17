@@ -542,7 +542,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
         return null;
     }
 
-    /// Classification (spec §4.3): unit_present && canonical binary_path == canonical
+    /// Classification (spec §4.3): unit_present &amp;&amp; canonical binary_path == canonical
     /// install_binary_path is the ONLY same-binary case — path equality is not installer
     /// provenance, so both kinds carry TakeoverDisclosure. A blank/whitespace path (e.g. a
     /// foreign/hand-edited plist) is never treated as a match.

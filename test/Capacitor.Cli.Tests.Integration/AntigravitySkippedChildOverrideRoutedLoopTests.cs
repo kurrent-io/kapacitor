@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.RegularExpressions;
 using Capacitor.Cli.Commands;
+using Capacitor.Tests.Helpers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -109,15 +110,9 @@ public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
     }
 
     static async Task<string> CaptureStdoutAsync(Func<Task> action) {
-        var original = Console.Out;
-        var sw       = new StringWriter();
-        Console.SetOut(sw);
-        try {
-            await action();
-        } finally {
-            Console.SetOut(original);
-        }
-        return sw.ToString();
+        using var capture = ConsoleOutput.StartCapture();
+        await action();
+        return capture.GetCapturedOutput();
     }
 
     static bool LineMatches(string text, string label, int value) =>

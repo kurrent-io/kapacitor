@@ -1,3 +1,4 @@
+using System.Globalization;
 using Capacitor.Cli.Commands;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -32,8 +33,6 @@ public class AntigravityImportSourceTests {
     // same fixtures serve the agy CLI root ("antigravity-cli") for the dual-root tests.
     const string GuiSub = "antigravity";
     const string CliSub = "antigravity-cli";
-
-    static string BrainDir(string home, string convId) => BrainDirUnder(home, GuiSub, convId);
 
     static string BrainDirUnder(string home, string productSub, string convId) =>
         Path.Combine(home, ".gemini", productSub, "brain", convId);
@@ -89,7 +88,7 @@ public class AntigravityImportSourceTests {
             var root = discovered[0];
             await Assert.That(root.SessionId).IsEqualTo(Dashless(Root));
             await Assert.That(root.Vendor).IsEqualTo("antigravity");
-            await Assert.That(root.FirstTimestamp).IsEqualTo(DateTimeOffset.Parse("2026-07-02T19:00:00Z"));
+            await Assert.That(root.FirstTimestamp).IsEqualTo(DateTimeOffset.Parse("2026-07-02T19:00:00Z", CultureInfo.InvariantCulture));
 
             var children = (List<string>)root.SourceMeta!["Children"]!;
             await Assert.That(children).Contains(Child);

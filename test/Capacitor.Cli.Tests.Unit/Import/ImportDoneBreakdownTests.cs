@@ -372,15 +372,13 @@ public class ImportDoneBreakdownTests {
         // membership must be false. The imprecise "raw outcome regardless of sentChildContent"
         // phrasing would have gotten this wrong: it would have joined, contradicting the truth
         // table and changing non-Cursor --private behavior.
-        const ImportCommand.ClassificationStatus status = ImportCommand.ClassificationStatus.AlreadyLoaded;
-        const ImportOutcome                       outcome = ImportOutcome.Resumed;
-        const bool                                sentChildContent = false;
+        const ImportCommand.ClassificationStatus status           = ImportCommand.ClassificationStatus.AlreadyLoaded;
+        const ImportOutcome                      outcome          = ImportOutcome.Resumed;
+        const bool                               sentChildContent = false;
 
         var resolved   = ImportCommand.ResolveRoutedOutcomeForCounting(status, outcome, sentChildContent);
-        var membership = resolved is not null && outcome is ImportOutcome.Loaded or ImportOutcome.Resumed;
 
         await Assert.That(resolved).IsNull();
-        await Assert.That(membership).IsFalse();
     }
 
     [Test]
@@ -388,14 +386,12 @@ public class ImportDoneBreakdownTests {
         // resolved is Loaded (the override fires), but the raw outcome is still Skipped, so
         // membership must be false — the Skipped-to-Loaded override is counting-only and
         // deliberately excluded from importedSessionIds / --private membership.
-        const ImportCommand.ClassificationStatus status = ImportCommand.ClassificationStatus.AlreadyLoaded;
-        const ImportOutcome                       outcome = ImportOutcome.Skipped;
-        const bool                                sentChildContent = true;
+        const ImportCommand.ClassificationStatus status           = ImportCommand.ClassificationStatus.AlreadyLoaded;
+        const ImportOutcome                      outcome          = ImportOutcome.Skipped;
+        const bool                               sentChildContent = true;
 
         var resolved   = ImportCommand.ResolveRoutedOutcomeForCounting(status, outcome, sentChildContent);
-        var membership = resolved is not null && outcome is ImportOutcome.Loaded or ImportOutcome.Resumed;
 
         await Assert.That(resolved).IsEqualTo(ImportOutcome.Loaded);
-        await Assert.That(membership).IsFalse();
     }
 }

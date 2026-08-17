@@ -1,3 +1,4 @@
+using System.Globalization;
 using Capacitor.Cli.Daemon.Pty.Unix;
 
 namespace Capacitor.Cli.Tests.Unit.Daemon;
@@ -96,7 +97,7 @@ public class UnixPtyProcessSpawnTests {
         await foreach (var chunk in proc.ReadOutputAsync(cts.Token)) {
             buffer.Append(System.Text.Encoding.UTF8.GetString(chunk));
             var match = System.Text.RegularExpressions.Regex.Match(buffer.ToString(), @"CHILD:(\d+):DONE");
-            if (match.Success) return int.Parse(match.Groups[1].Value);
+            if (match.Success) return int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
         }
 
         return -1;

@@ -33,7 +33,7 @@ public interface IMcpMarker {
 /// across refresh-healing and uninstall — v1's literal <c>command == "kcap"</c> ownership test
 /// would strand it. Migration is safe and lazy: a v1 marker (JSON array of names) reads as
 /// fingerprint-less entries that keep the legacy command check, and the next
-/// <see cref="Record"/> rewrites the file as v2.</para>
+/// <see cref="Record(string, IReadOnlyList{KeyValuePair{string, JsonNode?}})"/> rewrites the file as v2.</para>
 /// </summary>
 public sealed class McpMarker(string harness, Func<string, string>? markerPathFor = null) : IMcpMarker {
     const int Version = 2;

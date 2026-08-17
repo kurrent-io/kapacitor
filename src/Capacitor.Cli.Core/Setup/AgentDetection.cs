@@ -14,10 +14,10 @@ namespace Capacitor.Cli.Core.Setup;
 /// (<see cref="KiroHome"/>, <see cref="PiAgentDir"/>, <see cref="OpenCodeConfigDir"/>,
 /// <see cref="XdgConfigHome"/>, <see cref="XdgDataHome"/>, <see cref="GeminiCliHome"/>,
 /// <see cref="CopilotHome"/>, <see cref="Platform"/>, <see cref="AppData"/>) is its OWN resolved
-/// value here — <see cref="Detect"/> passes each straight into a vendor's no-fallback <c>*Pure</c>
+/// value here — <see cref="AgentDetection.Detect"/> passes each straight into a vendor's no-fallback <c>*Pure</c>
 /// helper, so a null override is genuinely UNSET rather than a request to fall through to the real
 /// process environment or OS globals underneath. <see cref="Home"/> is resolved to a concrete
-/// non-null value by <see cref="FromEnvironment"/>, and every helper's pure core takes it as-is —
+/// non-null value by <see cref="AgentDetection.FromEnvironment"/>, and every helper's pure core takes it as-is —
 /// none of them re-derives it from a real user-profile read.
 /// </summary>
 public sealed record AgentDetectionInputs(

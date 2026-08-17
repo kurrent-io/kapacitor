@@ -18,13 +18,13 @@ namespace Capacitor.Cli.Daemon.Services;
 /// rejected) or anything unrecognized — propagates to the caller (→ the bridge
 /// denies).
 ///
-/// The transient-disconnect loop is bounded only by <paramref name="ct"/> (daemon shutdown). The
+/// The transient-disconnect loop is bounded only by <c>ct</c> (daemon shutdown). The
 /// caller's shutdown token is excluded from the transient classification, so a
 /// shutdown <see cref="OperationCanceledException"/> propagates rather than
 /// being retried.
 ///
-/// A caller may additionally supply <paramref name="isRetriableServerError"/> +
-/// <paramref name="maxServerErrorRetries"/> to retry a BOUNDED number of times on specific
+/// A caller may additionally supply <c>isRetriableServerError</c> +
+/// <c>maxServerErrorRetries</c> to retry a BOUNDED number of times on specific
 /// server-rejection exceptions (the "Caller is not the daemon owning session"
 /// <c>HubException</c> that can appear briefly after a reconnect, before per-agent
 /// re-registration has restored ownership — retrying past that window avoids a spurious deny).

@@ -76,7 +76,7 @@ public class LoginShellProbeTests {
         var path = await probe.TerminalPathAsync(CancellationToken.None);
 
         await Assert.That(path).IsEqualTo("/usr/bin:/bin");
-        await Assert.That(runner.Calls).HasCount().EqualTo(1);
+        await Assert.That(runner.Calls).Count().IsEqualTo(1);
         await Assert.That(runner.Calls[0].FileName).IsEqualTo("/bin/bash");
         await Assert.That(runner.Calls[0].Args[0]).IsEqualTo("-lic");
         await Assert.That(runner.Calls[0].Options.Timeout).IsEqualTo(TimeSpan.FromSeconds(5));
@@ -92,7 +92,7 @@ public class LoginShellProbeTests {
         var path = await probe.TerminalPathAsync(CancellationToken.None);
 
         await Assert.That(path).IsEqualTo("/usr/bin:/bin");
-        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+        await Assert.That(runner.Calls).Count().IsEqualTo(2);
         await Assert.That(runner.Calls[1].Args[0]).IsEqualTo("-lc");
     }
 
@@ -106,7 +106,7 @@ public class LoginShellProbeTests {
         var path = await probe.TerminalPathAsync(CancellationToken.None);
 
         await Assert.That(path).IsEqualTo("/usr/bin:/bin");
-        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+        await Assert.That(runner.Calls).Count().IsEqualTo(2);
         await Assert.That(runner.Calls[1].Args[0]).IsEqualTo("-lc");
     }
 
@@ -120,7 +120,7 @@ public class LoginShellProbeTests {
         var path = await probe.TerminalPathAsync(CancellationToken.None);
 
         await Assert.That(path).IsEqualTo("/usr/bin:/bin");
-        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+        await Assert.That(runner.Calls).Count().IsEqualTo(2);
         await Assert.That(runner.Calls[1].Args[0]).IsEqualTo("-lc");
     }
 
@@ -156,7 +156,7 @@ public class LoginShellProbeTests {
         var path = await probe.TerminalPathAsync(CancellationToken.None);
 
         await Assert.That(path).IsNull();
-        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+        await Assert.That(runner.Calls).Count().IsEqualTo(2);
     }
 
     [Test]
@@ -169,7 +169,7 @@ public class LoginShellProbeTests {
         var path = await probe.TerminalPathAsync(CancellationToken.None);
 
         await Assert.That(path).IsNull();
-        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+        await Assert.That(runner.Calls).Count().IsEqualTo(2);
     }
 
     [Test]
@@ -184,7 +184,7 @@ public class LoginShellProbeTests {
 
         await Assert.That(first).IsEqualTo(second);
         await Assert.That(callsAfterFirst).IsEqualTo(1);
-        await Assert.That(runner.Calls).HasCount().EqualTo(1);
+        await Assert.That(runner.Calls).Count().IsEqualTo(1);
     }
 
     // A determined "both ran, neither worked" null IS cacheable (unlike a process-start failure,
@@ -202,7 +202,7 @@ public class LoginShellProbeTests {
         await probe.TerminalPathAsync(CancellationToken.None);
 
         await Assert.That(callsAfterFirst).IsEqualTo(2);
-        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+        await Assert.That(runner.Calls).Count().IsEqualTo(2);
     }
 
     // A process-start failure means the question was never actually asked — unlike a determined
@@ -216,13 +216,13 @@ public class LoginShellProbeTests {
 
         var first = await probe.TerminalPathAsync(CancellationToken.None);
         await Assert.That(first).IsNull();
-        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+        await Assert.That(runner.Calls).Count().IsEqualTo(2);
 
         runner.Enqueue(new ProcessResult(0, Wrap("/usr/bin:/bin"), "", false));
         var second = await probe.TerminalPathAsync(CancellationToken.None);
 
         await Assert.That(second).IsEqualTo("/usr/bin:/bin");
-        await Assert.That(runner.Calls).HasCount().EqualTo(3); // one more call — a real retry, not a cache hit
+        await Assert.That(runner.Calls).Count().IsEqualTo(3); // one more call — a real retry, not a cache hit
     }
 
     // A caller cancelling their own wait must not cancel or corrupt the shared probe — the next
@@ -243,7 +243,7 @@ public class LoginShellProbeTests {
         var result = await probe.TerminalPathAsync(CancellationToken.None);
 
         await Assert.That(result).IsEqualTo("/usr/bin:/bin");
-        await Assert.That(runner.Calls).HasCount().EqualTo(1); // the one shared attempt, never retried
+        await Assert.That(runner.Calls).Count().IsEqualTo(1); // the one shared attempt, never retried
     }
 
     // --- KcapOnPathAsync ---
@@ -285,13 +285,13 @@ public class LoginShellProbeTests {
 
         var first = await probe.KcapOnPathAsync(CancellationToken.None);
         await Assert.That(first).IsNull();
-        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+        await Assert.That(runner.Calls).Count().IsEqualTo(2);
 
         runner.Enqueue(new ProcessResult(0, Wrap("FOUND"), "", false));
         var second = await probe.KcapOnPathAsync(CancellationToken.None);
 
         await Assert.That(second).IsTrue();
-        await Assert.That(runner.Calls).HasCount().EqualTo(3);
+        await Assert.That(runner.Calls).Count().IsEqualTo(3);
     }
 
     [Test]
@@ -314,7 +314,7 @@ public class LoginShellProbeTests {
         await probe.KcapOnPathAsync(CancellationToken.None);
         await probe.KcapOnPathAsync(CancellationToken.None);
 
-        await Assert.That(runner.Calls).HasCount().EqualTo(1);
+        await Assert.That(runner.Calls).Count().IsEqualTo(1);
     }
 
     // Regression (Finding 10): the post-install probe must never reuse the pre-install cached
@@ -328,16 +328,16 @@ public class LoginShellProbeTests {
 
         var cached = await probe.KcapOnPathAsync(CancellationToken.None);
         await Assert.That(cached).IsFalse();
-        await Assert.That(runner.Calls).HasCount().EqualTo(1);
+        await Assert.That(runner.Calls).Count().IsEqualTo(1);
 
         var fresh = await probe.KcapOnPathAsync(CancellationToken.None, forceRefresh: true);
         await Assert.That(fresh).IsTrue();
-        await Assert.That(runner.Calls).HasCount().EqualTo(2); // a real second runner invocation
+        await Assert.That(runner.Calls).Count().IsEqualTo(2); // a real second runner invocation
 
         // Repopulated: a later non-forced call reads the fresh value without re-running.
         var second = await probe.KcapOnPathAsync(CancellationToken.None);
         await Assert.That(second).IsTrue();
-        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+        await Assert.That(runner.Calls).Count().IsEqualTo(2);
     }
 
     // --- caching is independent per question ---
@@ -352,13 +352,13 @@ public class LoginShellProbeTests {
         await probe.TerminalPathAsync(CancellationToken.None);
         await probe.KcapOnPathAsync(CancellationToken.None);
 
-        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+        await Assert.That(runner.Calls).Count().IsEqualTo(2);
 
         // Both now cached independently — repeating either issues no further calls.
         await probe.TerminalPathAsync(CancellationToken.None);
         await probe.KcapOnPathAsync(CancellationToken.None);
 
-        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+        await Assert.That(runner.Calls).Count().IsEqualTo(2);
     }
 
     // --- KcapPathAsync ---
@@ -455,7 +455,7 @@ public class LoginShellProbeTests {
         await probe.KcapPathAsync(CancellationToken.None);
         await probe.KcapPathAsync(CancellationToken.None);
 
-        await Assert.That(runner.Calls).HasCount().EqualTo(1);
+        await Assert.That(runner.Calls).Count().IsEqualTo(1);
     }
 
     [Test]
@@ -470,16 +470,16 @@ public class LoginShellProbeTests {
 
         var cached = await probe.KcapPathAsync(CancellationToken.None);
         await Assert.That(cached).IsNull();
-        await Assert.That(runner.Calls).HasCount().EqualTo(1);
+        await Assert.That(runner.Calls).Count().IsEqualTo(1);
 
         var fresh = await probe.KcapPathAsync(CancellationToken.None, forceRefresh: true);
         await Assert.That(fresh).IsEqualTo(target);
-        await Assert.That(runner.Calls).HasCount().EqualTo(2); // a real second runner invocation
+        await Assert.That(runner.Calls).Count().IsEqualTo(2); // a real second runner invocation
 
         // Repopulated: a later non-forced call reads the fresh value without re-running.
         var second = await probe.KcapPathAsync(CancellationToken.None);
         await Assert.That(second).IsEqualTo(target);
-        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+        await Assert.That(runner.Calls).Count().IsEqualTo(2);
     }
 
     [Test]
@@ -494,12 +494,12 @@ public class LoginShellProbeTests {
 
         var first = await probe.KcapPathAsync(CancellationToken.None);
         await Assert.That(first).IsNull();
-        await Assert.That(runner.Calls).HasCount().EqualTo(2);
+        await Assert.That(runner.Calls).Count().IsEqualTo(2);
 
         runner.Enqueue(new ProcessResult(0, Wrap(target), "", false));
         var second = await probe.KcapPathAsync(CancellationToken.None);
 
         await Assert.That(second).IsEqualTo(target);
-        await Assert.That(runner.Calls).HasCount().EqualTo(3);
+        await Assert.That(runner.Calls).Count().IsEqualTo(3);
     }
 }

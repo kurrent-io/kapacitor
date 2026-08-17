@@ -397,7 +397,7 @@ internal partial class AgentOrchestrator {
     /// Recomputed on local attach/detach/resize and on a server-origin web resize. Caller
     /// holds <see cref="AgentInstance.SinksLock"/>; no-op when no viewer has a reported size.
     /// </summary>
-    void ClampPtyLocked(AgentInstance agent) {
+    static void ClampPtyLocked(AgentInstance agent) {
         ushort c = 0, r = 0;
 
         foreach (var d in agent.ClientDims.Values) {

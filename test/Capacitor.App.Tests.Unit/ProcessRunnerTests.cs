@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using Capacitor.App.Services;
 
@@ -152,7 +153,7 @@ public class ProcessRunnerTests {
             CancellationToken.None);
 
         await Assert.That(result.TimedOut).IsTrue();
-        var grandchildPid = int.Parse(result.Stdout.Trim());
+        var grandchildPid = int.Parse(result.Stdout.Trim(), CultureInfo.InvariantCulture);
         try {
             var grandchild = Process.GetProcessById(grandchildPid); // throws if already dead
             await Assert.That(grandchild.HasExited).IsFalse();
@@ -174,7 +175,7 @@ public class ProcessRunnerTests {
             CancellationToken.None);
 
         await Assert.That(result.TimedOut).IsTrue();
-        var grandchildPid = int.Parse(result.Stdout.Trim());
+        var grandchildPid = int.Parse(result.Stdout.Trim(), CultureInfo.InvariantCulture);
         await WaitUntilAsync(() => !IsAlive(grandchildPid), TimeSpan.FromSeconds(5), "the grandchild to die with the tree");
     }
 
@@ -194,7 +195,7 @@ public class ProcessRunnerTests {
                 cts.Token);
 
             await WaitUntilAsync(() => File.Exists(startedMarker), TimeSpan.FromSeconds(5), "the grandchild to start and record its PID");
-            grandchildPid = int.Parse((await File.ReadAllTextAsync(startedMarker)).Trim());
+            grandchildPid = int.Parse((await File.ReadAllTextAsync(startedMarker)).Trim(), CultureInfo.InvariantCulture);
             cts.Cancel();
 
             await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);

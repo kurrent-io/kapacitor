@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
@@ -155,6 +156,7 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
     /// reviewer, not by the test process. A test-process read proves the snapshot builder works and
     /// says nothing about whether a reviewer can see it.</para></summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task ReviewFlow_AgainstRealCursorAgentAcp_CallsResultMcp_WithZeroInteractionRequests() {
         Skip.Unless(
             Environment.GetEnvironmentVariable(LiveGateEnvVar) == "1",

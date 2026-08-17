@@ -16,14 +16,14 @@ public class SequencedCommandProcessorTests {
             a => { lock (Acks) Acks.Add(a); return Task.CompletedTask; },
             r => { lock (Rejects) Rejects.Add(r); return Task.CompletedTask; },
             NullLogger.Instance, bound);
-        public SequencedItem Launch(long seq, string epoch = "e1", string id = "cmd", string agent = "a")
+        public static SequencedItem Launch(long seq, string epoch = "e1", string id = "cmd", string agent = "a")
             => new(SequencedKind.Launch, epoch, seq, id + seq, agent + seq);
     }
 
     [Test] public async Task Exact_next_commands_execute_serially_and_advance_the_watermark() {
         var h = new Harness(); await using var p = h.P();
-        await p.SubmitAsync(h.Launch(1), () => { h.ExecOrder.Enqueue(1); return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)); });
-        await p.SubmitAsync(h.Launch(2), () => { h.ExecOrder.Enqueue(2); return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)); });
+        await p.SubmitAsync(Harness.Launch(1), () => { h.ExecOrder.Enqueue(1); return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)); });
+        await p.SubmitAsync(Harness.Launch(2), () => { h.ExecOrder.Enqueue(2); return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)); });
         await Assert.That(p.LastProcessedSeq).IsEqualTo(2L);
         await Assert.That(h.ExecOrder.ToArray()).IsEquivalentTo(new[] { 1L, 2L });
     }
@@ -38,12 +38,12 @@ public class SequencedCommandProcessorTests {
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         // Item 1 is submitted but its execution BLOCKS (simulating a launch parked on consent).
-        var t1 = p.SubmitAsync(h.Launch(1),
+        var t1 = p.SubmitAsync(Harness.Launch(1),
             async () => { await gate.Task; return new CommandOutcome(CommandOutcomeKind.LaunchExecuted); });
 
         // Item 2 is submitted while item 1 is still executing/blocked — its ACCEPTANCE must still
         // complete synchronously and in order (no WrongNext), proving the caller need not await t1.
-        var t2 = p.SubmitAsync(h.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        var t2 = p.SubmitAsync(Harness.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
 
         await Assert.That(p.HighestAcceptedSeq).IsEqualTo(2L); // both accepted, in wire order
         await Assert.That(h.Rejects).IsEmpty();                // no WrongNext — 2 was next when it arrived
@@ -56,14 +56,14 @@ public class SequencedCommandProcessorTests {
     [Test] public async Task Out_of_order_command_is_not_accepted() {
         var h = new Harness(); await using var p = h.P();
         var ran = false;
-        await p.SubmitAsync(h.Launch(2), () => { ran = true; return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)); });
+        await p.SubmitAsync(Harness.Launch(2), () => { ran = true; return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)); });
         await Assert.That(p.HighestAcceptedSeq).IsEqualTo(0L); // Seq 2 while next is 1 -> not accepted
         await Assert.That(ran).IsFalse();
     }
 
     [Test] public async Task Execute_fault_becomes_internal_error_and_still_advances_the_watermark() {
         var h = new Harness(); await using var p = h.P();
-        await p.SubmitAsync(h.Launch(1), () => throw new InvalidOperationException("boom"));
+        await p.SubmitAsync(Harness.Launch(1), () => throw new InvalidOperationException("boom"));
         await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);
         await Assert.That(h.Rejects.Single().Reason).IsEqualTo(CommandRejectedReason.InternalError);
     }
@@ -78,13 +78,13 @@ public class SequencedCommandProcessorTests {
         var gate    = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         // Item 1 accepted + enqueued; its execute BLOCKS mid-flight (still draining).
-        var t1 = p.SubmitAsync(h.Launch(1),
+        var t1 = p.SubmitAsync(Harness.Launch(1),
             async () => { started.SetResult(); await gate.Task; return new CommandOutcome(CommandOutcomeKind.LaunchExecuted); });
         await started.Task;                 // item 1 is dequeued and executing
 
         // Complete the lane while item 1 drains, then submit item 2 -> TryWrite fails -> SynthesizeErrorLocked.
         p.CompleteLaneForTest();
-        var t2 = p.SubmitAsync(h.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        var t2 = p.SubmitAsync(Harness.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
         await t2;                           // the synthesized terminal completes immediately
         var afterSynth = p.LastProcessedSeq;
         await Assert.That(afterSynth).IsEqualTo(0L);   // synth at N=2 did NOT skip past the still-draining N=1
@@ -101,7 +101,7 @@ public class SequencedCommandProcessorTests {
     // completing instead of waiting for the 60s status-report reconcile. Exactly one ack per settle.
     [Test] public async Task Fresh_terminal_command_emits_exactly_one_proactive_processed_ack() {
         var h = new Harness(); await using var p = h.P();
-        await p.SubmitAsync(h.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "a", "sess")));
+        await p.SubmitAsync(Harness.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "a", "sess")));
 
         var ack = h.Acks.Single();                                               // exactly one, no duplicate involved
         await Assert.That(ack.Epoch).IsEqualTo("e1");
@@ -138,7 +138,7 @@ public class SequencedCommandProcessorTests {
     [Test] public async Task Duplicate_of_a_processed_command_is_acked_with_outcome_and_live_state_not_reexecuted() {
         var h = new Harness(); await using var p = h.P();
         var runs = 0;
-        var item = h.Launch(1);
+        var item = Harness.Launch(1);
         await p.SubmitAsync(item, () => { runs++; return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "a", "sess")); });
         await p.SubmitAsync(item, () => { runs++; return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)); });
         await Assert.That(runs).IsEqualTo(1);                                    // no re-execution
@@ -146,7 +146,7 @@ public class SequencedCommandProcessorTests {
         // Two acks: [0] the proactive settle ack from the lane, [1] the duplicate-replay ack. Both are
         // Processed and carry the SAME cached outcome. Settlement lost-ack redelivery (D1): [1] is now the FROZEN ack [0] published
         // (get-or-freeze), not a fresh build — so it is byte-identical rather than merely equal-by-value.
-        await Assert.That(h.Acks).HasCount().EqualTo(2);
+        await Assert.That(h.Acks).Count().IsEqualTo(2);
         await Assert.That(h.Acks[0].State).IsEqualTo(CommandAckState.Processed);  // proactive
         var ack = h.Acks[1];                                                      // duplicate replay
         await Assert.That(ack.State).IsEqualTo(CommandAckState.Processed);
@@ -157,7 +157,7 @@ public class SequencedCommandProcessorTests {
 
     [Test] public async Task Different_command_id_at_an_accepted_seq_is_a_duplicate_collision() {
         var h = new Harness(); await using var p = h.P();
-        await p.SubmitAsync(h.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(Harness.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
         // Same Seq, different CommandId:
         await p.SubmitAsync(new SequencedItem(SequencedKind.Launch, "e1", 1, "OTHER", "a1"),
             () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
@@ -166,40 +166,40 @@ public class SequencedCommandProcessorTests {
 
     [Test] public async Task Backpressure_rejects_when_the_cache_is_full_and_ack_prefix_reopens_capacity() {
         var h = new Harness(); await using var p = h.P(bound: 2);
-        await p.SubmitAsync(h.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
-        await p.SubmitAsync(h.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
-        await p.SubmitAsync(h.Launch(3), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(Harness.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(Harness.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(Harness.Launch(3), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
         await Assert.That(h.Rejects.Single().Reason).IsEqualTo(CommandRejectedReason.Backpressure);
         await Assert.That(p.HighestAcceptedSeq).IsEqualTo(2L);       // 3 not accepted (unacked identity kept)
 
         p.AckPrefix(new AckProcessedPrefix("e1", 2));                // retire <= 2
-        await p.SubmitAsync(h.Launch(3), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(Harness.Launch(3), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
         await Assert.That(p.LastProcessedSeq).IsEqualTo(3L);
     }
 
     [Test] public async Task AckPrefix_rejects_over_ahead_regressing_and_stale_epoch_without_eviction() {
         var h = new Harness(); await using var p = h.P();
-        await p.SubmitAsync(h.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(Harness.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
         p.AckPrefix(new AckProcessedPrefix("e1", 5));   // over-ahead (> LastProcessedSeq) -> ignored
         p.AckPrefix(new AckProcessedPrefix("WRONG", 1));// stale epoch -> ignored
         await Assert.That(h.Acks.Count).IsEqualTo(1);   // only the proactive settle ack so far
         // A duplicate is still answerable (identity not evicted) — that adds the SECOND ack:
-        await p.SubmitAsync(h.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(Harness.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
         await Assert.That(h.Acks.Count).IsEqualTo(2);
         await Assert.That(h.Acks[1].State).IsEqualTo(CommandAckState.Processed);
     }
 
     [Test] public async Task Non_next_future_seq_is_rejected_wrong_next_without_accepting() {
         var h = new Harness(); await using var p = h.P();
-        await p.SubmitAsync(h.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
-        await p.SubmitAsync(h.Launch(3), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted))); // gap
+        await p.SubmitAsync(Harness.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(Harness.Launch(3), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted))); // gap
         await Assert.That(h.Rejects.Single().Reason).IsEqualTo(CommandRejectedReason.WrongNext);
         await Assert.That(p.HighestAcceptedSeq).IsEqualTo(1L);
     }
 
     [Test] public async Task Execution_time_daemon_capacity_rejection_advances_watermark_and_emits_reject() {
         var h = new Harness(); await using var p = h.P();
-        await p.SubmitAsync(h.Launch(1), () => Task.FromResult(
+        await p.SubmitAsync(Harness.Launch(1), () => Task.FromResult(
             new CommandOutcome(CommandOutcomeKind.LaunchRejected, "a", RejectReason: CommandRejectedReason.DaemonCapacity)));
         await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);        // rejected-as-item is terminal
         await Assert.That(h.Rejects.Single().Reason).IsEqualTo(CommandRejectedReason.DaemonCapacity);
@@ -211,14 +211,14 @@ public class SequencedCommandProcessorTests {
     // (fail) for exactly the lost-rejection case the identity cache exists to answer.
     [Test] public async Task Duplicate_of_a_capacity_rejected_launch_carries_the_daemon_capacity_wire_token() {
         var h = new Harness(); await using var p = h.P();
-        var item = h.Launch(1);
+        var item = Harness.Launch(1);
         await p.SubmitAsync(item, () => Task.FromResult(
             new CommandOutcome(CommandOutcomeKind.LaunchRejected, "a", RejectReason: CommandRejectedReason.DaemonCapacity)));
         await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
 
         // [0] is the proactive settle ack, [1] the duplicate replay — BOTH must carry the wire token,
         // since they are built from the same cached outcome by the one shared builder.
-        await Assert.That(h.Acks).HasCount().EqualTo(2);
+        await Assert.That(h.Acks).Count().IsEqualTo(2);
         await Assert.That(h.Acks[0].RejectionReason).IsEqualTo("daemon_capacity");   // proactive
         var ack = h.Acks[1];                                                          // duplicate replay
         await Assert.That(ack.State).IsEqualTo(CommandAckState.Processed);
@@ -228,11 +228,11 @@ public class SequencedCommandProcessorTests {
 
     [Test] public async Task Duplicate_of_a_semantically_rejected_launch_carries_the_semantic_wire_token() {
         var h = new Harness(); await using var p = h.P();
-        var item = h.Launch(1);
+        var item = Harness.Launch(1);
         await p.SubmitAsync(item, () => Task.FromResult(
             new CommandOutcome(CommandOutcomeKind.LaunchRejected, "a", RejectReason: CommandRejectedReason.Semantic)));
         await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
-        await Assert.That(h.Acks).HasCount().EqualTo(2);                              // proactive + duplicate replay
+        await Assert.That(h.Acks).Count().IsEqualTo(2);                              // proactive + duplicate replay
         await Assert.That(h.Acks[0].RejectionReason).IsEqualTo("semantic");
         await Assert.That(h.Acks[1].RejectionReason).IsEqualTo("semantic");
     }
@@ -305,7 +305,7 @@ public class SequencedCommandProcessorTests {
         // throw and never resolves Done. Verified by reverting the fix, where an unbounded await pinned
         // the whole suite until the harness timeout. A CI job that times out is a much worse signal than
         // a named assertion, so the wait is capped and the failure message says what it means.
-        var settled = p.SubmitAsync(h.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        var settled  = p.SubmitAsync(Harness.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
         var finished = await Task.WhenAny(settled, Task.Delay(TimeSpan.FromSeconds(10)));
         await Assert.That(finished == settled)
             .IsTrue().Because("the lane faulted on the liveness throw and never resolved the submitter's Done");
@@ -316,7 +316,7 @@ public class SequencedCommandProcessorTests {
 
         // The lane is still alive: a following command still executes and advances the watermark.
         var second = false;
-        await p.SubmitAsync(h.Launch(2), () => { second = true; return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)); });
+        await p.SubmitAsync(Harness.Launch(2), () => { second = true; return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)); });
         await Assert.That(second).IsTrue();
         await Assert.That(p.LastProcessedSeq).IsEqualTo(2L);
     }
@@ -333,7 +333,7 @@ public class SequencedCommandProcessorTests {
             r => { lock (h.Rejects) h.Rejects.Add(r); return Task.CompletedTask; },
             NullLogger.Instance);
 
-        var item = h.Launch(1);
+        var item = Harness.Launch(1);
         await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
 
         throwOnRead = true;
@@ -372,7 +372,7 @@ public class SequencedCommandProcessorTests {
             NullLogger.Instance);
 
         // A LaunchRejected outcome takes the rejection-send path.
-        var settled = p.SubmitAsync(h.Launch(1), () => Task.FromResult(
+        var settled = p.SubmitAsync(Harness.Launch(1), () => Task.FromResult(
             new CommandOutcome(CommandOutcomeKind.LaunchRejected, "a1", null, CommandRejectedReason.DaemonCapacity)));
         var finished = await Task.WhenAny(settled, Task.Delay(TimeSpan.FromSeconds(10)));
         await Assert.That(finished == settled)
@@ -384,7 +384,7 @@ public class SequencedCommandProcessorTests {
         await Assert.That(h.Acks.Count(a => a.State == CommandAckState.Processed)).IsEqualTo(1);
 
         // The lane is still alive for the next command.
-        await p.SubmitAsync(h.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(Harness.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
         await Assert.That(p.LastProcessedSeq).IsEqualTo(2L);
     }
 
@@ -433,7 +433,7 @@ public class SequencedCommandProcessorTests {
             new ThrowingLogger());
 
         // An execution fault takes the LogWarning path, where the logger throws.
-        var settled = p.SubmitAsync(h.Launch(1), () => throw new InvalidOperationException("boom"));
+        var settled  = p.SubmitAsync(Harness.Launch(1), () => throw new InvalidOperationException("boom"));
         var finished = await Task.WhenAny(settled, Task.Delay(TimeSpan.FromSeconds(10)));
         await Assert.That(finished == settled)
             .IsTrue().Because("the lane faulted on the logger throw and never resolved the submitter's Done");
@@ -444,7 +444,7 @@ public class SequencedCommandProcessorTests {
         await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);
 
         // And the lane survived for the next command.
-        await p.SubmitAsync(h.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(Harness.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
         await Assert.That(p.LastProcessedSeq).IsEqualTo(2L);
     }
 
@@ -472,7 +472,7 @@ public class SequencedCommandProcessorTests {
 
         // Liveness recovered: a re-delivery completes the freeze and sends (the success path logs nothing).
         p.RedeliverUnretiredProcessedAcks();
-        await Assert.That(acks).HasCount().EqualTo(1);
+        await Assert.That(acks).Count().IsEqualTo(1);
         await Assert.That(acks[0].State).IsEqualTo(CommandAckState.Processed);
     }
 
@@ -533,10 +533,10 @@ public class SequencedCommandProcessorTests {
     // A duplicate of a non-rejected (executed) command has no cached reject reason -> null RejectionReason.
     [Test] public async Task Duplicate_of_an_executed_launch_has_no_rejection_reason() {
         var h = new Harness(); await using var p = h.P();
-        var item = h.Launch(1);
+        var item = Harness.Launch(1);
         await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "a", "sess")));
         await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
-        await Assert.That(h.Acks).HasCount().EqualTo(2);                              // proactive + duplicate replay
+        await Assert.That(h.Acks).Count().IsEqualTo(2);                              // proactive + duplicate replay
         await Assert.That(h.Acks[0].RejectionReason).IsNull();
         await Assert.That(h.Acks[1].RejectionReason).IsNull();
     }
@@ -561,7 +561,7 @@ public class SequencedCommandProcessorTests {
         // reuses the winner, so Dead is never consumed.
         await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
 
-        await Assert.That(acks).HasCount().EqualTo(2);
+        await Assert.That(acks).Count().IsEqualTo(2);
         await Assert.That(acks[0].CurrentState).IsEqualTo(AgentLiveness.Live);   // proactive freeze
         await Assert.That(acks[1].CurrentState).IsEqualTo(AgentLiveness.Live);   // duplicate: FROZEN, not Dead
         await Assert.That(acks[0]).IsEqualTo(acks[1]);                            // byte-identical DTO
@@ -589,13 +589,13 @@ public class SequencedCommandProcessorTests {
 
         // A later status tick / reconnect re-delivers: the freeze now succeeds and the ack goes out.
         p.RedeliverUnretiredProcessedAcks();
-        await Assert.That(acks).HasCount().EqualTo(1);
+        await Assert.That(acks).Count().IsEqualTo(1);
         await Assert.That(acks[0].State).IsEqualTo(CommandAckState.Processed);
         await Assert.That(acks[0].CurrentState).IsEqualTo(AgentLiveness.Live);
 
         // A subsequent re-delivery re-sends the SAME frozen value verbatim (no further liveness read).
         p.RedeliverUnretiredProcessedAcks();
-        await Assert.That(acks).HasCount().EqualTo(2);
+        await Assert.That(acks).Count().IsEqualTo(2);
         await Assert.That(acks[1]).IsEqualTo(acks[0]);
     }
 
@@ -604,24 +604,24 @@ public class SequencedCommandProcessorTests {
     /// their re-sends stop, leaving only the unretired suffix.</summary>
     [Test] public async Task Redelivery_re_sends_the_unretired_suffix_and_a_validated_prefix_stops_it() {
         var h = new Harness(); await using var p = h.P();
-        await p.SubmitAsync(h.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
-        await p.SubmitAsync(h.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
-        await Assert.That(h.Acks).HasCount().EqualTo(2);                 // two proactive settle acks
+        await p.SubmitAsync(Harness.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(Harness.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await Assert.That(h.Acks).Count().IsEqualTo(2);                 // two proactive settle acks
 
         // A re-delivery re-sends BOTH unretired terminal acks.
         p.RedeliverUnretiredProcessedAcks();
-        await Assert.That(h.Acks).HasCount().EqualTo(4);
+        await Assert.That(h.Acks).Count().IsEqualTo(4);
 
         // The server confirms the prefix up to 1 → seq 1 is retired (evicted); only seq 2 remains.
         p.AckPrefix(new AckProcessedPrefix("e1", 1));
         p.RedeliverUnretiredProcessedAcks();
-        await Assert.That(h.Acks).HasCount().EqualTo(5);                 // +1, only the unretired suffix
+        await Assert.That(h.Acks).Count().IsEqualTo(5);                 // +1, only the unretired suffix
         await Assert.That(h.Acks[4].Seq).IsEqualTo(2L);
 
         // Confirm the full prefix → nothing left to re-deliver.
         p.AckPrefix(new AckProcessedPrefix("e1", 2));
         p.RedeliverUnretiredProcessedAcks();
-        await Assert.That(h.Acks).HasCount().EqualTo(5);                 // no change
+        await Assert.That(h.Acks).Count().IsEqualTo(5);                 // no change
     }
 
     /// <summary>Task 7 (re-delivery never blocks the lane under a send fault): a throwing sendAck is
@@ -648,7 +648,7 @@ public class SequencedCommandProcessorTests {
         // Transport recovers; the next re-delivery lands the frozen ack.
         Volatile.Write(ref fail, false);
         p.RedeliverUnretiredProcessedAcks();
-        await Assert.That(acks).HasCount().EqualTo(1);
+        await Assert.That(acks).Count().IsEqualTo(1);
         await Assert.That(acks[0].State).IsEqualTo(CommandAckState.Processed);
     }
 }

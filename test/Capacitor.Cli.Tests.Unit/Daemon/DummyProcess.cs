@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 
 namespace Capacitor.Cli.Tests.Unit.Daemon;
 
@@ -23,7 +24,7 @@ internal sealed partial class DummyProcess : IDisposable {
         // between echoes (≈ N seconds), so the dummy reliably stays alive on a CI runner.
         var psi = OperatingSystem.IsWindows()
             ? new ProcessStartInfo("cmd.exe", $"/c ping -n {seconds + 1} 127.0.0.1 >NUL")
-            : new ProcessStartInfo("sleep", seconds.ToString());
+            : new ProcessStartInfo("sleep", seconds.ToString(CultureInfo.InvariantCulture));
 
         psi.UseShellExecute = false;
 

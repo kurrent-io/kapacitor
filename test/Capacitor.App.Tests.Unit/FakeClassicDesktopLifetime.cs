@@ -23,7 +23,7 @@ namespace Capacitor.App.Tests.Unit;
 public class FakeClassicDesktopLifetime : DispatchProxy {
     public ShutdownMode ShutdownMode { get; private set; }
     public Window? MainWindow { get; private set; }
-    public readonly List<int> ShutdownCalls = [];
+    public List<int> ShutdownCalls { get; } = [];
 
     protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) {
         switch (targetMethod?.Name) {

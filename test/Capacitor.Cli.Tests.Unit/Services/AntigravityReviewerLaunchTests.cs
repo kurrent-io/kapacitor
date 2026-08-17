@@ -22,7 +22,7 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 public class AntigravityReviewerLaunchTests {
     static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(10);
 
-    /// <summary>A path, never a created directory — <see cref="BuildTurnPsi"/> is pure, so the argv
+    /// <summary>A path, never a created directory — <see cref="AntigravityHostedAgentRuntimeFactory.BuildTurnPsi"/> is pure, so the argv
     /// assertions below run identically on every platform (the real per-launch home is POSIX-only).</summary>
     const string HomePath = "/tmp/kcap-antigravity-home";
 

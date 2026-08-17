@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 namespace Capacitor.Cli.Daemon.Services;
 
 /// <summary>
-/// Daemon-facing wrapper around <see cref="CodexConfigToml.TrustWorktree"/> that
+/// Daemon-facing wrapper around <see cref="CodexConfigToml.TrustWorktree(string, out System.Exception?, string?)"/> that
 /// pre-trusts a worktree in <c>~/.codex/config.toml</c> so Codex doesn't prompt on
 /// every hook execution. The read-modify-write plumbing lives in Core; this layer
 /// only adds the daemon's structured logging on failure.

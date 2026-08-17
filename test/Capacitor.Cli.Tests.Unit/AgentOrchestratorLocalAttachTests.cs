@@ -875,7 +875,7 @@ public partial class AgentOrchestratorVendorTests {
     /// observable while it is still live, rather than racing its cleanup.</summary>
     sealed class ParkedReadStream : Stream {
         public override ValueTask<int> ReadAsync(Memory<byte> b, CancellationToken ct = default) =>
-            new(Task.Delay(Timeout.Infinite, ct).ContinueWith(_ => 0, TaskContinuationOptions.ExecuteSynchronously));
+            new(Task.Delay(Timeout.Infinite, ct).ContinueWith(_ => 0, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default));
 
         public override int  Read(byte[] b, int o, int c) => throw new NotSupportedException();
         public override void Write(byte[] b, int o, int c) { }
@@ -950,7 +950,10 @@ public partial class AgentOrchestratorVendorTests {
         public override long Position { get => 0; set { } }
         public override long Seek(long o, SeekOrigin s) => throw new NotSupportedException();
         public override void SetLength(long v) => throw new NotSupportedException();
-        protected override void Dispose(bool disposing) { if (disposing) { readSide.Dispose(); writeSide.Dispose(); } }
+        protected override void Dispose(bool disposing) {
+            if (disposing) { readSide.Dispose(); writeSide.Dispose(); }
+            base.Dispose(disposing);
+        }
     }
 
     /// A no-op local sink used only as a stable key to seed AgentInstance.ClientDims in resize

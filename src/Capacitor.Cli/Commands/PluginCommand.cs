@@ -2009,7 +2009,6 @@ public static class PluginCommand {
         var settingsPath = GetArg(args, "--gemini-settings-path") ?? env.GeminiSettingsJson;
 
         var hooksFailed = false;
-        var mcpFailed = false;
 
         // Hooks live in the shared settings.json — only removable if the file exists.
         if (File.Exists(settingsPath)) {
@@ -2036,7 +2035,7 @@ public static class PluginCommand {
         // kcap-owned. On an absent file it's a no-op (Unchanged) that still clears the marker and
         // never creates a config file.
         var mcpChange = HarnessMcpProjections.Gemini.Unregister(settingsPath);
-        mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
+        var mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
 
         if (mcpChange == JsonMcpConfigWriter.Change.Updated) {
             await env.Stdout.WriteLineAsync($"Gemini MCP servers removed ({settingsPath}).");

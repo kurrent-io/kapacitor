@@ -154,9 +154,9 @@ public class AcpInteractionBridgeTests {
     /// entirely from the wire frame (the ACP spec for this method is spec-derived, NOT
     /// probe-confirmed; see <c>docs/acp-probe-findings.md</c>) yields <c>parsed.Options == null</c>.
     /// PRE-FIX this NRE'd inside <c>.Select(...)</c>/<c>MapPermissionDecision</c>, which
-    /// <see cref="HandlePermissionAsync"/>'s own try/catch does NOT cover (it only wraps the
+    /// <c>HandlePermissionAsync</c>'s own try/catch does NOT cover (it only wraps the
     /// deserialize step and the <c>requestInteraction</c> call) — so the exception propagated all
-    /// the way out to <see cref="AcpConnection.HandleServerRequestAsync"/>'s generic catch-all,
+    /// the way out to <c>AcpConnection.HandleServerRequestAsync</c>'s generic catch-all,
     /// which answers with a bare JSON-RPC "Internal error" (-32603) instead of the well-formed ACP
     /// <c>cancelled</c> outcome every other malformed-input path in this bridge produces. This test
     /// proves an omitted <c>options</c> field degrades to <c>cancelled</c> instead.
@@ -251,7 +251,7 @@ public class AcpInteractionBridgeTests {
     }
 
     /// <summary>
-    /// Qodo daemon-review Q2: <see cref="AcpHostedAgentRuntime"/> used to wire
+    /// Qodo daemon-review Q2: <see cref="Capacitor.Cli.Daemon.Services.AcpHostedAgentRuntime"/> used to wire
     /// <c>OnServerRequest</c> with <c>_sessionId ?? ""</c> — a server→client request handled before
     /// <c>session/new</c>'s response assigns <c>_sessionId</c> (the read loop can start before that
     /// completes) forwarded an <see cref="AcpInteractionRequest"/> with <c>AcpSessionId == ""</c>,

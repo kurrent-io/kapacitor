@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
@@ -43,7 +44,7 @@ public class AntigravitySessionStartTests : IDisposable {
         var dir = PathHelpers.ConfigPath("watchers");
         Directory.CreateDirectory(dir);
         var pidFile = Path.Combine(dir, $"{conversationId}.pid");
-        File.WriteAllText(pidFile, Environment.ProcessId.ToString());
+        File.WriteAllText(pidFile, Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
         _pidFiles.Add(pidFile);
     }
 

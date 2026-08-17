@@ -99,7 +99,7 @@ public class McpFlowResultServerTests {
 
         await Assert.That(isError).IsFalse();
         await Assert.That(text).IsEqualTo("Result recorded. You may end your reply now.");
-        await Assert.That(delays).HasCount().EqualTo(1);
+        await Assert.That(delays).Count().IsEqualTo(1);
         await Assert.That(delays[0]).IsEqualTo(TimeSpan.FromSeconds(3));
     }
 
@@ -117,8 +117,8 @@ public class McpFlowResultServerTests {
         await Assert.That(text).Contains("no round awaiting a result");
         await Assert.That(text).Contains("Retry this tool call");
         await Assert.That(text).Contains("does not read the transcript");
-        await Assert.That(delays).HasCount().EqualTo(4); // 5 attempts = 4 delays
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(5);
+        await Assert.That(delays).Count().IsEqualTo(4); // 5 attempts = 4 delays
+        await Assert.That(server.LogEntries.Count).IsEqualTo(5);
     }
 
     [Test]
@@ -134,8 +134,8 @@ public class McpFlowResultServerTests {
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("Discard this result entirely");
         await Assert.That(text).DoesNotContain("Retry this tool call");
-        await Assert.That(delays).HasCount().EqualTo(0);
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(delays).Count().IsEqualTo(0);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(1);
     }
 
     [Test]
@@ -151,8 +151,8 @@ public class McpFlowResultServerTests {
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("catching up");
         await Assert.That(text).Contains("try again in a few minutes");
-        await Assert.That(delays).HasCount().EqualTo(0);
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(delays).Count().IsEqualTo(0);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(1);
     }
 
     [Test]
@@ -168,7 +168,7 @@ public class McpFlowResultServerTests {
         await Assert.That(missingToken.Text).Contains("round_token");
         await Assert.That(badKind.IsError).IsTrue();
         await Assert.That(noFindings.IsError).IsTrue();
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(0);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(0);
     }
 
     [Test]
@@ -218,10 +218,10 @@ public class McpFlowResultServerTests {
 
         await Assert.That(isError).IsFalse();
         await Assert.That(text).Contains("Message sent to the flow driver");
-        await Assert.That(delays).HasCount().EqualTo(2);
+        await Assert.That(delays).Count().IsEqualTo(2);
 
         var bodies = server.LogEntries.Select(e => e.RequestMessage.Body!).ToList();
-        await Assert.That(bodies).HasCount().EqualTo(3);
+        await Assert.That(bodies).Count().IsEqualTo(3);
         foreach (var b in bodies) {
             await Assert.That(b).Contains("msg-stable");
         }
@@ -241,8 +241,8 @@ public class McpFlowResultServerTests {
 
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("this flow run is already closed");
-        await Assert.That(delays).HasCount().EqualTo(0);
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(delays).Count().IsEqualTo(0);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(1);
     }
 
     [Test]
@@ -256,7 +256,7 @@ public class McpFlowResultServerTests {
 
         await Assert.That(isError).IsTrue();
         await Assert.That(text).IsEqualTo("Error: text must be a non-empty string.");
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(0);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(0);
     }
 
     [Test]
@@ -272,7 +272,7 @@ public class McpFlowResultServerTests {
 
         await Assert.That(isError).IsTrue();
         await Assert.That(text).IsEqualTo("Error: text must be a non-empty string.");
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(0);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(0);
     }
 
     [Test]
@@ -290,8 +290,8 @@ public class McpFlowResultServerTests {
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("not registered yet");
         await Assert.That(text).DoesNotContain("FINDINGS");
-        await Assert.That(delays).HasCount().EqualTo(4); // 5 attempts = 4 delays
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(5);
+        await Assert.That(delays).Count().IsEqualTo(4); // 5 attempts = 4 delays
+        await Assert.That(server.LogEntries.Count).IsEqualTo(5);
     }
 
     [Test]
@@ -309,8 +309,8 @@ public class McpFlowResultServerTests {
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("catching up");
         await Assert.That(text).Contains("try again in a few minutes");
-        await Assert.That(delays).HasCount().EqualTo(0);
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(delays).Count().IsEqualTo(0);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(1);
     }
 
     [Test]

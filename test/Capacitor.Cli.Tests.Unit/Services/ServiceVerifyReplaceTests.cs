@@ -287,7 +287,7 @@ public class ServiceVerifyReplaceTests {
             var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = null };
             var time    = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(false, null, null, null)); // never well-formed
 
             var sut = new ServiceVerify(manager, _ => ManualOwnerPid, Hello, time, forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
@@ -314,7 +314,7 @@ public class ServiceVerifyReplaceTests {
             var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = null, UninstallSucceeds = false };
             var time    = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(false, null, null, null));
 
             var sut = new ServiceVerify(manager, _ => null, Hello, time,
@@ -360,7 +360,7 @@ public class ServiceVerifyReplaceTests {
             var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, InitialUnitPresent = true, InitialJobPid = ManualOwnerPid };
             var time    = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => ManualOwnerPid, Hello, time, forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
@@ -420,7 +420,7 @@ public class ServiceVerifyReplaceTests {
             var manager = new OrphanPlistManager(reUninstallRemovesPlist: true);
             var time    = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
             var sut = new ServiceVerify(manager, _ => manager.Bootstrapped ? manager.RunningPid : null, Hello, time,

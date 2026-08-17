@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using System.Text.Json;
 using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Services;
@@ -27,10 +28,13 @@ namespace Capacitor.Cli.Tests.Unit;
 public class WorkspaceMcpNeutralizationLiveCertTests {
     const string Gate = "KCAP_WORKSPACE_MCP_CERT";
 
-    static void SkipUnlessGated() =>
+    static void SkipUnlessGated() {
         Skip.Unless(Environment.GetEnvironmentVariable(Gate) == "1",
             $"Gated live certification of branch-authored MCP containment — set {Gate}=1 to run "
           + "(requires `kiro-cli` on PATH; spends no model turn, the spawn happens at session setup).");
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The hostile-repo fixture's payload script is a POSIX executable shell script.");
+    }
 
     /// <summary>
     /// Positive control FIRST. A cert that only asserts "no marker" is worthless if the vendor stopped
@@ -38,6 +42,7 @@ public class WorkspaceMcpNeutralizationLiveCertTests {
     /// rotted. So the same hostile config is driven in a RAW worktree, and the marker MUST appear there.
     /// </summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task Kiro_spawns_a_branch_authored_server_when_the_worktree_is_not_neutralized() {
         SkipUnlessGated();
 
@@ -54,6 +59,7 @@ public class WorkspaceMcpNeutralizationLiveCertTests {
 
     /// <summary>The actual claim: the same repo, through the production creation path, does not spawn.</summary>
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task Kiro_does_not_spawn_it_from_a_worktree_created_by_WorktreeManager() {
         SkipUnlessGated();
 
@@ -75,6 +81,7 @@ public class WorkspaceMcpNeutralizationLiveCertTests {
     /// an earlier version derived it from the worktree with relative path arithmetic, which silently broke
     /// when the control and the subject sat at different depths and made the control unfireable.
     /// The marker lands OUTSIDE the worktree, so neutralization can never be credited for its absence.</summary>
+    [UnsupportedOSPlatform("windows")]
     static (string repo, string marker) HostileRepo() {
         var repo = Path.Combine(Path.GetTempPath(), "kcap-cert-repo-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(repo);

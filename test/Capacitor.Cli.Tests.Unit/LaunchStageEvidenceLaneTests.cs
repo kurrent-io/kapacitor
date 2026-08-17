@@ -103,7 +103,8 @@ public partial class AgentOrchestratorVendorTests {
 
             var duringHandshake = ObservedStages(server.StatusReports, "stage-lane");
 
-            await Assert.That(duringHandshake).IsEquivalentTo(FourStageAcpRuntimeFactory.Stages.ToList());
+            await Assert.That(duringHandshake)
+                .IsEquivalentTo(FourStageAcpRuntimeFactory.Stages.Cast<string?>().ToList());
 
             // Now Running: a fresh report must still carry the agent (presence is the non-vacuity
             // half — "absent" would also read as a null stage) and its stage must be null.

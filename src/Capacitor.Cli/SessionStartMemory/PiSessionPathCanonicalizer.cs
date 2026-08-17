@@ -6,7 +6,7 @@ namespace Capacitor.Cli.SessionStartMemory;
 internal static class PiSessionPathCanonicalizer {
     public static bool TryHash(string? input, out string? hash) {
         hash = null;
-        if (string.IsNullOrEmpty(input) || input.IndexOf('\0') >= 0 || !Path.IsPathRooted(input)) return false;
+        if (string.IsNullOrEmpty(input) || input.Contains('\0') || !Path.IsPathRooted(input)) return false;
         try {
             var full = Path.GetFullPath(input);
             var root = Path.GetPathRoot(full);

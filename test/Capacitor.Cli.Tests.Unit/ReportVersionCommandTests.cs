@@ -156,7 +156,7 @@ public class ReportVersionCommandTests : IDisposable {
     // store. Order-independent, so it does not depend on the runner's test ordering.
     static string LeakMarker => Path.Combine(TokensDir, "report-version-leak-guard.json");
 
-    async Task AssertTokenStoreClearedThenSeedAsync() {
+    static async Task AssertTokenStoreClearedThenSeedAsync() {
         await Assert.That(File.Exists(LeakMarker)).IsFalse();
         Directory.CreateDirectory(TokensDir);
         await File.WriteAllTextAsync(LeakMarker, "{}");

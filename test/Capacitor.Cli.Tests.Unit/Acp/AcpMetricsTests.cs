@@ -13,18 +13,15 @@ namespace Capacitor.Cli.Tests.Unit.Acp;
 /// </summary>
 public class AcpMetricsTests {
     [Test]
-    public async Task AllCounters_CanBeIncremented_WithoutThrowing() {
-        AcpMetrics.Launches.Add(1);
-        AcpMetrics.SessionsStarted.Add(1);
-        AcpMetrics.RecordBlockingRequest("permission");
-        AcpMetrics.RecordBlockingRequest("elicitation");
-        AcpMetrics.RecordFailure("handshake");
-        AcpMetrics.RecordElicitationUnrenderable("malformed_schema");
-
-        // Reaching here without an exception IS the assertion — AcpMetrics has no other
-        // externally-observable state to assert on for the "doesn't throw" half of this test.
-        await Assert.That(true).IsTrue();
-    }
+    public async Task AllCounters_CanBeIncremented_WithoutThrowing() =>
+        await Assert.That(() => {
+            AcpMetrics.Launches.Add(1);
+            AcpMetrics.SessionsStarted.Add(1);
+            AcpMetrics.RecordBlockingRequest("permission");
+            AcpMetrics.RecordBlockingRequest("elicitation");
+            AcpMetrics.RecordFailure("handshake");
+            AcpMetrics.RecordElicitationUnrenderable("malformed_schema");
+        }).ThrowsNothing();
 
     [Test]
     public async Task RecordBlockingRequest_PublishesAMeasurement_TaggedWithKind() {

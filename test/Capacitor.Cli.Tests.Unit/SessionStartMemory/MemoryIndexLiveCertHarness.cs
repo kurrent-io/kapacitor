@@ -20,7 +20,7 @@ namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 /// <para>Claude's and Cursor's certs keep their own copies of this scaffold: they are gated, hence
 /// never exercised by CI, so refactoring them blind is the bigger risk. Migration is a follow-up.</para>
 /// </summary>
-internal static class MemoryIndexLiveCertHarness {
+internal static partial class MemoryIndexLiveCertHarness {
     public const string ServerUrlEnvVar = "KCAP_URL";
 
     static readonly TimeSpan ProcessTimeout = TimeSpan.FromSeconds(120);
@@ -575,8 +575,8 @@ internal static class MemoryIndexLiveCertHarness {
           + $"PATH searched: {pathValue}");
     }
 
-    [DllImport("libc", EntryPoint = "access", SetLastError = true)]
-    static extern int LibcAccess(string pathname, int mode);
+    [LibraryImport("libc", EntryPoint = "access", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int LibcAccess(string pathname, int mode);
 
     const int X_OK = 1;
 
@@ -600,6 +600,7 @@ internal static class MemoryIndexLiveCertHarness {
     /// <c>kcap</c> shadow the binary.</para>
     /// </summary>
     static bool IsExecutableFile(string path) {
+        if (OperatingSystem.IsWindows()) return false;
         if (!File.Exists(path)) return false;
 
         try {

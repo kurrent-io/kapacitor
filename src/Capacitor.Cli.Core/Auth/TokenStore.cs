@@ -396,12 +396,12 @@ public static class TokenStore {
         // file lock — otherwise a peer refreshing with the same rotated-out WorkOS
         // refresh token would invalidate the session.
         if (tokens is { Provider: "workos", RefreshToken: not null, ClientId: not null }) {
-            return await RefreshWithCrossProcessLockAsync(profile, tokens, RefreshWorkOSAsync);
+            return await RefreshWithCrossProcessLockAsync(profile, tokens, RefreshWorkOSAsync, cancellationToken: ct);
         }
 
         // GitHub: refresh via server's /auth/refresh endpoint
         if (tokens.Provider is "GitHubApp") {
-            return await RefreshWithCrossProcessLockAsync(profile, tokens, RefreshGitHubAsync);
+            return await RefreshWithCrossProcessLockAsync(profile, tokens, RefreshGitHubAsync, cancellationToken: ct);
         }
 
         return null;

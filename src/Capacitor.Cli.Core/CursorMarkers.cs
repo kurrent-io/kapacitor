@@ -22,7 +22,7 @@ public static class CursorMarkers {
     /// Per-CHILD marker path recording that this subagent's <c>subagent-start</c> was durably
     /// acknowledged (2xx), either via its own live POST or a later spool-drain replay. Keyed on
     /// the child's own dashless session id (not the parent) — mirrors
-    /// <see cref="CursorLiveSubagentLinker"/>'s marker keying.
+    /// <c>CursorLiveSubagentLinker</c>'s marker keying.
     /// </summary>
     public static string SubagentStartAckPath(string childSessionId) =>
         Path.Combine(PathHelpers.ConfigPath("cursor-subagent-start-ack"), $"{childSessionId}.json");
@@ -52,7 +52,7 @@ public static class CursorMarkers {
     /// keeps the FIRST reason/timestamp unless the existing marker is corrupt/unreadable, in which
     /// case it's replaced.
     ///
-    /// Best-effort: this is called mid-drain-loop (<see cref="CursorRewriteGuard.Reject"/>), which
+    /// Best-effort: this is called mid-drain-loop (<c>CursorRewriteGuard.Reject</c>), which
     /// has no broad exception handler above it, so any write failure here (permissions, disk full,
     /// read-only volume) must never throw — it's caught and logged instead. The caller's
     /// Verify*/Reject return value is what actually stops delivery; a lost marker only means a
@@ -131,7 +131,7 @@ public static class CursorMarkers {
 
     /// <summary>
     /// Touches the per-session hook heartbeat at <paramref name="now"/>. Called at the top of
-    /// EVERY <see cref="Capacitor.Cli.Commands.CursorHookCommand"/>
+    /// EVERY <c>Capacitor.Cli.Commands.CursorHookCommand</c>
     /// invocation that carries a session id — including telemetry-only hooks — so the
     /// heartbeat reflects "Cursor is still firing hooks for this session" independent of
     /// whether the tailing watcher is itself alive. Reuses <see cref="WatcherHeartbeat.Touch"/>.

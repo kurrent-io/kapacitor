@@ -98,12 +98,13 @@ public partial class AgentOrchestratorVendorTests {
     /// <see cref="CancellationTokenSource.CreateLinkedTokenSource(CancellationToken)"/>, which is a LIVE link
     /// (a registered callback, not a snapshot), so cancelling after a launch was submitted still cancels the
     /// token threaded into the consent gate.</summary>
-    sealed class CancellableHostLifetime : IHostApplicationLifetime {
+    sealed class CancellableHostLifetime : IHostApplicationLifetime, IDisposable {
         public readonly CancellationTokenSource Cts = new();
         public CancellationToken ApplicationStarted  => CancellationToken.None;
         public CancellationToken ApplicationStopping => Cts.Token;
         public CancellationToken ApplicationStopped  => CancellationToken.None;
         public void StopApplication() => Cts.Cancel();
+        public void Dispose() => Cts.Dispose();
     }
 
     /// <summary>A pty double backed by a real, test-owned child process whose TerminateAsync actually kills
@@ -253,7 +254,7 @@ public partial class AgentOrchestratorVendorTests {
             await SpinUntilAsync(() => server.Acks.Count > 0, Bounded);
 
             await Assert.That(server.Rejects).IsEmpty();
-            await Assert.That(server.Acks).HasCount().EqualTo(1); // exactly one terminal answer
+            await Assert.That(server.Acks).Count().IsEqualTo(1); // exactly one terminal answer
             await Assert.That(server.Acks[0].State).IsEqualTo(CommandAckState.Processed);
             await Assert.That(server.Acks[0].OutcomeKind).IsEqualTo(CommandOutcomeKind.LaunchExecuted);
             await Assert.That(server.Acks[0].Seq).IsEqualTo(1L);
@@ -280,12 +281,12 @@ public partial class AgentOrchestratorVendorTests {
 
         await SpinUntilAsync(() => server.Acks.Count > 0, Bounded);
 
-        await Assert.That(server.Rejects).HasCount().EqualTo(1);           // exactly one terminal answer
+        await Assert.That(server.Rejects).Count().IsEqualTo(1);           // exactly one terminal answer
         await Assert.That(server.Rejects[0].Reason).IsEqualTo(CommandRejectedReason.Semantic);
-        await Assert.That(server.Acks).HasCount().EqualTo(1);
+        await Assert.That(server.Acks).Count().IsEqualTo(1);
         await Assert.That(server.Acks[0].OutcomeKind).IsEqualTo(CommandOutcomeKind.LaunchRejected);
         await Assert.That(server.Acks[0].RejectionReason).IsEqualTo("semantic");
-        await Assert.That(server.LaunchFaileds).HasCount().EqualTo(1);     // legacy LaunchFailed lane, unaffected
+        await Assert.That(server.LaunchFaileds).Count().IsEqualTo(1);     // legacy LaunchFailed lane, unaffected
 
         // Denied before any worktree/PTY side effects — the vendor path never runs.
         await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(0);
@@ -302,8 +303,9 @@ public partial class AgentOrchestratorVendorTests {
         var gate = new LaunchConsentGate(store, new LaunchConsentDecisionLog(dir, NullLogger.Instance),
             new CancelingPrompter(), new FakeTimeProvider(), NullLogger<LaunchConsentGate>.Instance);
 
-        var lifetime = new CancellableHostLifetime();
-        var server   = new SeqCaptureServerConnection();
+        // Declared before orch, so orch — which holds a live linked registration — disposes first.
+        using var lifetime = new CancellableHostLifetime();
+        var server         = new SeqCaptureServerConnection();
         await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(),
             new Dictionary<string, IHostedAgentLauncher>(), consentGate: gate, lifetime: lifetime);
         var epoch = orch.DaemonEpochForTest;
@@ -314,10 +316,10 @@ public partial class AgentOrchestratorVendorTests {
 
         await SpinUntilAsync(() => server.Acks.Count > 0, Bounded);
 
-        await Assert.That(server.Acks).HasCount().EqualTo(1);  // exactly one terminal answer — no double answer
+        await Assert.That(server.Acks).Count().IsEqualTo(1);  // exactly one terminal answer — no double answer
         await Assert.That(server.Acks[0].State).IsEqualTo(CommandAckState.Processed);
         await Assert.That(server.Acks[0].OutcomeKind).IsEqualTo(CommandOutcomeKind.InternalError);
-        await Assert.That(server.Rejects).HasCount().EqualTo(1);
+        await Assert.That(server.Rejects).Count().IsEqualTo(1);
         await Assert.That(server.Rejects[0].Reason).IsEqualTo(CommandRejectedReason.InternalError);
     }
 

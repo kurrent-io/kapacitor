@@ -61,7 +61,7 @@ internal interface IAgyTurnDiagnostics {
 /// than a vendor that silently disappears from the list.</para>
 ///
 /// <para><b>No borrowed lane</b> — no <c>sandbox-exec</c> substrate here, so
-/// <see cref="SupportsBorrowedReviewFlow"/> stays false and a borrowed request fails closed to an
+/// <see cref="AcpVendorDescriptor.SupportsBorrowedReviewFlow"/> stays false and a borrowed request fails closed to an
 /// owned worktree, exactly as Kiro and Claude do.</para>
 /// </summary>
 /// <param name="turnSource">Test seam ONLY. Production passes null, which spawns the real

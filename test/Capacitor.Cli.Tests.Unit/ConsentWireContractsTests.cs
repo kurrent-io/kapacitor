@@ -58,8 +58,10 @@ public class ConsentWireContractsTests {
 
     [Test]
     public async Task V2_frame_values_are_pinned_and_codec_roundtrips_them() {
+#pragma warning disable TUnitAssertions0005
         await Assert.That((byte)FrameType.ConsentSubscribeV2).IsEqualTo((byte)17);
         await Assert.That((byte)FrameType.ConsentResolveV2).IsEqualTo((byte)18);
+#pragma warning restore TUnitAssertions0005
 
         using var ms = new MemoryStream();
         await FrameCodec.WriteAsync(ms, LocalFrame.ConsentJson(FrameType.ConsentResolveV2, "{\"x\":1}"), CancellationToken.None);

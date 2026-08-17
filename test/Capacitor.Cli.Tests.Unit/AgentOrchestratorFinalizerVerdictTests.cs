@@ -10,7 +10,7 @@ namespace Capacitor.Cli.Tests.Unit;
 /// The orchestrator's finalizer verdict arm — the registered-agent report seam. When an ACP
 /// reviewer's launch-window reap verdict (published by
 /// <see cref="AcpHostedAgentRuntime.TryStartReap"/>) is observed by
-/// <see cref="AgentOrchestrator.FinalizeAgentRunAsync"/> for an agent that already registered
+/// <c>AgentOrchestrator.FinalizeAgentRunAsync</c> for an agent that already registered
 /// (post-successful-<c>StartAsync</c>, so the factory's own reclassification never had the chance
 /// to fire — see <see cref="Report_sent_exactly_once_across_factory_and_finalizer"/>'s Part A),
 /// the finalizer reports it as its FIRST action — before the process-exit wait — exactly once,

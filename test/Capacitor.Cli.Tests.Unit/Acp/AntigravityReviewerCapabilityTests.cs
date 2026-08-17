@@ -199,6 +199,7 @@ public class AntigravityReviewerCapabilityTests {
     /// pointing a hosted operator at <c>KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER</c> would send them to a
     /// setting that has no bearing on their launch. It is doubly untrue now that the switch defaults to
     /// enabled and this vendor's floor is seeded whenever <c>agy</c> resolves.</para>
+    /// </summary>
     [Test]
     public async Task TheNoMinimumReason_SendsTheOperatorToARestartOrTheAffirmVerb() {
         var reason = Reason(AntigravityReviewerDecision.VersionNoMinimum, "1.1.10", null);

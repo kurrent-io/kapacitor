@@ -1,6 +1,7 @@
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core;
+using Capacitor.Tests.Helpers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -64,30 +65,24 @@ public class CodexSessionStartHandshakeOnPostFailureTests : IDisposable {
             }
             """;
 
-        var originalOut  = Console.Out;
-        var stdoutWriter = new StringWriter();
-        Console.SetOut(stdoutWriter);
+        using var capture = ConsoleOutput.StartCapture();
 
-        try {
-            var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
+        var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
 
-            // The rejection is still reported — this is not "pretend it worked".
-            await Assert.That(exit).IsEqualTo(1);
+        // The rejection is still reported — this is not "pretend it worked".
+        await Assert.That(exit).IsEqualTo(1);
 
-            // ...but Codex still got a parseable handshake rather than nothing at all.
-            var stdout = stdoutWriter.ToString();
-            await Assert.That(stdout).IsNotEmpty();
+        // ...but Codex still got a parseable handshake rather than nothing at all.
+        var stdout = capture.GetCapturedOutput();
+        await Assert.That(stdout).IsNotEmpty();
 
-            var doc = System.Text.Json.JsonDocument.Parse(stdout);
-            await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
+        var doc = System.Text.Json.JsonDocument.Parse(stdout);
+        await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
 
-            // And the POST really was attempted and really was rejected, so the assertions above are
-            // about the Failed path and not some earlier short-circuit.
-            var requests = _server.FindLogEntries(
-                Request.Create().WithPath("/hooks/session-start/codex").UsingPost());
-            await Assert.That(requests.Count).IsEqualTo(1);
-        } finally {
-            Console.SetOut(originalOut);
-        }
+        // And the POST really was attempted and really was rejected, so the assertions above are
+        // about the Failed path and not some earlier short-circuit.
+        var requests = _server.FindLogEntries(
+            Request.Create().WithPath("/hooks/session-start/codex").UsingPost());
+        await Assert.That(requests.Count).IsEqualTo(1);
     }
 }

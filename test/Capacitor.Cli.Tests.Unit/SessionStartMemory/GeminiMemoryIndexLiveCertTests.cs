@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using System.Text.Json.Nodes;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -139,8 +140,11 @@ public class GeminiMemoryIndexLiveCertTests {
     /// evidence closes it.</para>
     /// </summary>
     [Test, NotInParallel]
+    [UnsupportedOSPlatform("windows")]
     public async Task Failed_session_start_post_still_delivers_the_index_to_a_real_gemini_session() {
         Gate();
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The recorder shim below is a POSIX executable shell script.");
 
         var original = await MemoryIndexLiveCertHarness.ReadDisableMemoryIndexAsync();
         await Assert.That(original is true).IsFalse();
@@ -268,6 +272,7 @@ public class GeminiMemoryIndexLiveCertTests {
         readonly string _root;
         readonly string _log;
 
+        [UnsupportedOSPlatform("windows")]
         public HookRecorder() {
             _root = Directory.CreateTempSubdirectory($"kcap-{VendorLabel}-hook-recorder-").FullName;
             _log  = Directory.CreateDirectory(Path.Combine(_root, "log")).FullName;

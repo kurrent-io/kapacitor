@@ -107,7 +107,7 @@ public class McpAnalyticsServerTests : IDisposable {
 
             var tools = response["result"]?["tools"]?.AsArray();
             await Assert.That(tools).IsNotNull();
-            await Assert.That(tools!.Select(t => t?["name"]?.GetValue<string>()).ToArray())
+            await Assert.That(tools!.Select(t => t?["name"]?.GetValue<string>()!).ToArray())
                 .IsEquivalentTo(new[] { "get_analytics_schema", "query_analytics" });
 
             // Hard gate: agents must be steered to fetch the schema before writing SQL.

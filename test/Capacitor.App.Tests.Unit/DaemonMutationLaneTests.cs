@@ -1,6 +1,7 @@
 using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
 using Capacitor.Cli.Core;
+using Capacitor.Tests.Helpers;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.App.Tests.Unit;
@@ -427,7 +428,7 @@ public class DaemonMutationLaneTests {
 
         await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
         await Assert.That(cli.InstallVerifiedCallCount).IsEqualTo(1);
-        await Assert.That(cli.LastInstallReplace).IsEqualTo(false);
+        await Assert.That(cli.LastInstallReplace).IsFalse();
 
         await lane.DisposeAsync();
     }
@@ -442,7 +443,7 @@ public class DaemonMutationLaneTests {
 
         await Assert.That(outcome).IsEqualTo(new MutationOutcome.Succeeded());
         await Assert.That(cli.InstallVerifiedCallCount).IsEqualTo(1);
-        await Assert.That(cli.LastInstallReplace).IsEqualTo(true);
+        await Assert.That(cli.LastInstallReplace).IsTrue();
 
         await lane.DisposeAsync();
     }
@@ -545,7 +546,7 @@ public class DaemonMutationLaneTests {
         var disposeTask = lane.DisposeAsync().AsTask(); // drains B's queued slot synchronously, before _lifetime.Cancel()
 
         var ex = await Assert.ThrowsAsync<OperationCanceledException>(() => tB);
-        await Assert.That(ex.CancellationToken).IsEqualTo(CancellationToken.None);
+        await Assert.That(ex!.CancellationToken).IsEqualTo(CancellationToken.None);
 
         gateA.SetResult("9.9.9");
         await Assert.ThrowsAsync<OperationCanceledException>(() => tA);
@@ -587,18 +588,12 @@ public class DaemonMutationLaneTests {
 
         var disposeTask = lane.DisposeAsync().AsTask(); // still awaiting the owned action
 
-        var originalError = Console.Error;
-        var stderrWriter = new StringWriter();
-        try {
-            Console.SetError(stderrWriter);
-            gate.SetResult("9.9.9"); // unblocks the (now waiterless) owned action into its pre-Dispatch cancellation throw
-        } finally {
-            Console.SetError(originalError);
-        }
+        using var capture = ConsoleOutput.StartErrorCapture();
+        gate.SetResult("9.9.9"); // unblocks the (now waiterless) owned action into its pre-Dispatch cancellation throw
 
         await disposeTask.WaitAsync(Bounded);
 
-        await Assert.That(stderrWriter.ToString()).Contains("waiterless cancellation");
+        await Assert.That(capture.GetCapturedError()).Contains("waiterless cancellation");
         await AssertChannelEmptyAsync(channel); // shutdown is not actionable evidence
     }
 
@@ -609,20 +604,13 @@ public class DaemonMutationLaneTests {
         var channel = new OutcomeChannel();
         var lane = MakeLane(factory, channel: channel);
 
-        var originalError = Console.Error;
-        var stderrWriter = new StringWriter();
-        MutationOutcome outcome;
-        try {
-            Console.SetError(stderrWriter);
-            outcome = await lane.RunAsync(Req(), CancellationToken.None);
-        } finally {
-            Console.SetError(originalError);
-        }
+        using var capture = ConsoleOutput.StartErrorCapture();
+        var outcome = await lane.RunAsync(Req(), CancellationToken.None);
 
         // N2: the exception type/message stay ONLY in the log line — the outcome itself carries a
         // named, stable exit code and reason token, never a leaked exception identity.
         await Assert.That(outcome).IsEqualTo(new MutationOutcome.Failed(DaemonMutationLane.UnexpectedExitCode, "internal_error", RecoverySurface.Attention));
-        await Assert.That(stderrWriter.ToString()).Contains(nameof(InvalidOperationException));
+        await Assert.That(capture.GetCapturedError()).Contains(nameof(InvalidOperationException));
 
         var envelope = await NextEnvelopeAsync(channel);
         await Assert.That(envelope.Outcome).IsEqualTo(outcome);
@@ -645,17 +633,11 @@ public class DaemonMutationLaneTests {
         await cts.CancelAsync();
         await Assert.ThrowsAsync<OperationCanceledException>(() => t); // detaches — zero waiters remain on the owned slot
 
-        var originalError = Console.Error;
-        var stderrWriter = new StringWriter();
-        try {
-            Console.SetError(stderrWriter);
-            gate.SetResult("9.9.9"); // action still runs to a normal Succeeded outcome with nobody left to observe it
-        } finally {
-            Console.SetError(originalError);
-        }
+        using var capture = ConsoleOutput.StartErrorCapture();
+        gate.SetResult("9.9.9"); // action still runs to a normal Succeeded outcome with nobody left to observe it
 
         await Assert.That(cli.StartVerifiedCallCount).IsEqualTo(1); // the action still completed
-        await Assert.That(stderrWriter.ToString()).Contains("waiterless Succeeded");
+        await Assert.That(capture.GetCapturedError()).Contains("waiterless Succeeded");
 
         await lane.DisposeAsync();
     }

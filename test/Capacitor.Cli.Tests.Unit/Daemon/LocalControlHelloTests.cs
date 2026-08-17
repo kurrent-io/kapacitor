@@ -12,7 +12,7 @@ namespace Capacitor.Cli.Tests.Unit.Daemon;
 
 /// <summary>
 /// End-to-end coverage of the Hello/HelloReply frame pair over a REAL Unix-domain socket —
-/// the same <see cref="LocalControlServer.HandleConnectionAsync"/> routing switch a real
+/// the same <c>LocalControlServer.HandleConnectionAsync</c> routing switch a real
 /// `kcap` client talks to. The harness mirrors <c>LaunchConsentIpcTests</c> (temp
 /// DaemonLockPaths override, socket-file poll, Windows guard) but builds its own minimal
 /// AgentOrchestrator, since none of these tests exercise Spawn/Attach/Stop — the

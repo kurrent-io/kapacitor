@@ -160,7 +160,7 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
 
     /// <summary>
     /// Overrides the script the NEXT <c>session/prompt</c> request will run: the fake emits
-    /// <paramref name="updates"/> (each already a full <c>session/update</c> notification envelope —
+    /// <paramref name="updateNotifications"/> (each already a full <c>session/update</c> notification envelope —
     /// build them with <see cref="BuildSessionUpdateNotification"/> or one of the
     /// <c>Build*Update</c> helpers) as raw frames, in order, then answers the request with
     /// <paramref name="result"/>. Call this before sending the request whose behavior you want to
@@ -315,7 +315,7 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
 
     /// <summary>
     /// When set, every <c>session/prompt</c> request's RESPONSE (not the queued updates, if any) is
-    /// held back until <paramref name="gate"/> completes — the fake still records the call
+    /// held back until <c>gate</c> completes — the fake still records the call
     /// immediately (so <see cref="ReceivedCalls"/> observes it right away), it just doesn't answer.
     /// Models a real agent mid-turn: used by Fix E tests to prove
     /// <c>AcpHostedAgentRuntime.StartAsync</c>/<c>SendUserInputAsync</c> return promptly WITHOUT
@@ -327,7 +327,7 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
 
     /// <summary>
     /// Test plan item 9: when set, a <c>session/set_config_option</c> request's RESPONSE is
-    /// held back until <paramref name="gate"/>'s task completes — mirrors
+    /// held back until <c>gate</c>'s task completes — mirrors
     /// <see cref="HoldPromptResponses"/> exactly. The fake still records the call immediately (so
     /// <see cref="ReceivedCalls"/> observes it right away via <c>DispatchLineAsync</c>'s
     /// <c>Record</c> call, which runs before this method is ever reached), it just doesn't answer

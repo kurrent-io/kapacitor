@@ -99,7 +99,7 @@ public static class GeminiPaths {
     /// id). A subagent that itself spawns subagents gets its OWN nested dir the same way —
     /// <c>&lt;chats&gt;/&lt;subId&gt;/&lt;grandSubId&gt;.jsonl</c> — so deeper invocations are
     /// discovered by recursing into each descendant's own directory, not by assuming a flat
-    /// layout (see <see cref="GeminiSubagentDiscovery.EnumerateDescendantFiles"/>).
+    /// layout (see <see cref="GeminiSubagentDiscovery.EnumerateDescendantFiles(string)"/>).
     /// <paramref name="parentSessionId"/> is the DASHED form from the parent transcript's
     /// header, matching the on-disk directory name.
     /// </summary>

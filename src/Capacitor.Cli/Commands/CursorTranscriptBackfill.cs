@@ -7,7 +7,7 @@ namespace Capacitor.Cli.Commands;
 
 /// <summary>
 /// One-shot transcript-line backfill. Reads the shared transcript watermark
-/// for <paramref name="sessionId"/> (<c>GET /api/sessions/{sid}/last-line</c>
+/// for <c>sessionId</c> (<c>GET /api/sessions/{sid}/last-line</c>
 /// — the same route every transcript-driven normalizer uses), opens the
 /// JSONL transcript file, and POSTs every line past the watermark as a
 /// single batch to <c>POST /hooks/transcript</c> with

@@ -59,7 +59,7 @@ public class CrashReporterTests {
 
     [Test]
     public async Task FormatEntry_ToleratesNullCommand() {
-        var entry = CrashReporter.FormatEntry(null, new Exception("x"), DateTimeOffset.UtcNow);
+        var entry = CrashReporter.FormatEntry(null, new InvalidOperationException("x"), DateTimeOffset.UtcNow);
         await Assert.That(entry).Contains("command=?");
     }
 }

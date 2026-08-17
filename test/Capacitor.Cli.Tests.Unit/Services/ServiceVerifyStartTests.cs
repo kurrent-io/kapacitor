@@ -1,5 +1,6 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Services;
+using Capacitor.Tests.Helpers;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
@@ -156,7 +157,7 @@ public class ServiceVerifyStartTests {
             var manager = new FakeServiceManager();
             var time = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(false, null, null, null));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, time, forwardBudget: TimeSpan.FromSeconds(2));
@@ -179,7 +180,7 @@ public class ServiceVerifyStartTests {
             var manager = new FakeServiceManager { RunningPid = 111 };
             var time = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
             var sut = new ServiceVerify(manager, _ => 222, Hello, time, forwardBudget: TimeSpan.FromSeconds(2));
@@ -202,7 +203,7 @@ public class ServiceVerifyStartTests {
             var manager = new FakeServiceManager();
 
             // Old daemon: well-formed hello, but no capability data at all.
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, null, "0.9.0", null));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System);
@@ -222,7 +223,7 @@ public class ServiceVerifyStartTests {
             var manager = new FakeServiceManager { RemainsLoadedAfterStop = true, StopError = "launchctl bootout: 5: Input/output error" };
             var time = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(false, null, null, null));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
@@ -256,7 +257,7 @@ public class ServiceVerifyStartTests {
             var manager = new FakeServiceManager { ProbeUnknownAfterStop = true, StopError = "launchctl bootout: 5: Input/output error" };
             var time = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(false, null, null, null));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
@@ -396,7 +397,7 @@ public class ServiceVerifyStartTests {
             var manager = new FakeServiceManager();
             string? phaseAtCommit = null;
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
             // A crash between verify-success and marker removal must be recoverable as "committed →
@@ -463,12 +464,10 @@ public class ServiceVerifyStartTests {
         bool unitPresent, string expectedReason) {
         var dir = Directory.CreateTempSubdirectory().FullName;
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
-        var originalErr = Console.Error;
-        var capturedErr = new StringWriter();
         try {
             var manager = new FakeServiceManager { UnitPresent = unitPresent };
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
@@ -476,18 +475,21 @@ public class ServiceVerifyStartTests {
                 plistExists: _ => false,
                 gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
 
-            Console.SetError(capturedErr);
-            var exit = await sut.StartVerifiedAsync(Id);
-            Console.SetError(originalErr);
+            int    exit;
+            string capturedErr;
+
+            using (var capture = ConsoleOutput.StartErrorCapture()) {
+                exit        = await sut.StartVerifiedAsync(Id);
+                capturedErr = capture.GetCapturedError();
+            }
 
             await Assert.That(exit).IsEqualTo(VerifyExit.StartGate);
-            var lines = capturedErr.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            var lines = capturedErr.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
             await Assert.That(lines).Contains($"start_gate_reason={expectedReason}");
             await Assert.That(manager.Calls.Count).IsEqualTo(1);
             await Assert.That(manager.Calls.All(c => c == "query")).IsTrue();
             await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
         } finally {
-            Console.SetError(originalErr);
             DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
@@ -545,7 +547,7 @@ public class ServiceVerifyStartTests {
         try {
             var manager = new FakeServiceManager();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
             // A truncated/malformed plist — exactly the foreign-writer race Phase B's own re-check
@@ -572,7 +574,7 @@ public class ServiceVerifyStartTests {
         try {
             var manager = new FakeServiceManager();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
             // A duplicate EnvironmentVariables key — never written by LaunchdUnit.Plist itself, so
@@ -668,7 +670,7 @@ public class ServiceVerifyStartTests {
             var stopPhases = new List<string?>();
             manager.OnStop = id => stopPhases.Add(ServiceTxnMarker.Read(id)?.Phase);
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
@@ -704,7 +706,7 @@ public class ServiceVerifyStartTests {
             var manager = new FakeServiceManager { Started = true, RemainsLoadedUntilSecondStop = true };
             var time = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
@@ -811,7 +813,7 @@ public class ServiceVerifyStartTests {
             var manager = new FakeServiceManager();
             var readPlistCalls = 0;
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
@@ -836,7 +838,7 @@ public class ServiceVerifyStartTests {
             // generic Start() would.
             var manager = new FakeServiceManager { LoadedBeforeBootstrapOnly = true };
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
                 Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
             var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,

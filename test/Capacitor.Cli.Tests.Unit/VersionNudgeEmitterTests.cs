@@ -103,7 +103,7 @@ public class VersionNudgeEmitterTests {
     [Test]
     public async Task Fragment_is_plain_text_not_json() {
         var result = VersionNudgeEmitter.BuildFragment(ResponseWithVersion("0.6.5"), "0.6.3")!;
-        await Assert.That(result.TrimStart().StartsWith("{")).IsFalse();
+        await Assert.That(result.TrimStart().StartsWith('{')).IsFalse();
         await Assert.That(result).DoesNotContain("hookSpecificOutput");
     }
 

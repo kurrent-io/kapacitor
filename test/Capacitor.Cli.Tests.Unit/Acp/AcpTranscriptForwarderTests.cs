@@ -33,7 +33,7 @@ public class AcpTranscriptForwarderTests {
     static Channel<AcpEventEnvelope> NewChannel() =>
         Channel.CreateUnbounded<AcpEventEnvelope>();
 
-    AcpTranscriptForwarder NewForwarder(
+    static AcpTranscriptForwarder NewForwarder(
             Func<AcpEventEnvelope[], CancellationToken, Task<AcpBatchAck>> send,
             ChannelReader<AcpEventEnvelope>                                envelopes
         ) => new(send, InitialEnvelope, envelopes, NullLogger.Instance, FastRetryDelay, FastRetryDelay);
@@ -337,7 +337,7 @@ public class AcpTranscriptForwarderTests {
         channel.Writer.TryWrite(NewTextEnvelope("a"));
         channel.Writer.Complete();
 
-        Task<AcpBatchAck> Send(AcpEventEnvelope[] batch, CancellationToken _) =>
+        static Task<AcpBatchAck> Send(AcpEventEnvelope[] batch, CancellationToken _) =>
             Task.FromResult(new AcpBatchAck(batch[^1].Seq, batch[^1].Seq));
 
         var forwarder = NewForwarder(Send, channel.Reader);
@@ -355,7 +355,7 @@ public class AcpTranscriptForwarderTests {
         var channel = NewChannel(); // never completed, never written to — RunAsync would hang on it
         using var cts = new CancellationTokenSource();
 
-        Task<AcpBatchAck> Send(AcpEventEnvelope[] batch, CancellationToken _) =>
+        static Task<AcpBatchAck> Send(AcpEventEnvelope[] batch, CancellationToken _) =>
             Task.FromResult(new AcpBatchAck(batch[^1].Seq, batch[^1].Seq));
 
         var forwarder = NewForwarder(Send, channel.Reader);

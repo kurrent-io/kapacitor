@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Unit.Acp;
@@ -32,6 +33,7 @@ public class KiroReviewerVersionStoreTests {
     }
 
     [Test]
+    [UnsupportedOSPlatform("windows")]
     public async Task TheRecord_IsOwnerOnly() {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX file-mode semantics.");
 

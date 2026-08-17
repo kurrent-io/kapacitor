@@ -143,7 +143,7 @@ public class MachineAuthTests : IDisposable {
         var second = await MachineTokenProvider.GetTokenAsync(credential, null, CancellationToken.None);
 
         await Assert.That(second.Token).IsEqualTo("tok_cached");
-        await Assert.That(_server.LogEntries.Count()).IsEqualTo(1)
+        await Assert.That(_server.LogEntries.Count).IsEqualTo(1)
             .Because("the whole point of the in-memory cache is not re-minting per call");
     }
 
@@ -165,7 +165,7 @@ public class MachineAuthTests : IDisposable {
         var refreshed = await MachineTokenProvider.GetTokenAsync(credential, rejectedToken: first.Token, CancellationToken.None);
 
         await Assert.That(refreshed.Token).IsNotNull();
-        await Assert.That(_server.LogEntries.Count()).IsEqualTo(2)
+        await Assert.That(_server.LogEntries.Count).IsEqualTo(2)
             .Because("the cached token was the one the server refused, so it had to be re-minted");
     }
 
@@ -285,7 +285,7 @@ public class MachineAuthTests : IDisposable {
         await Assert.That(result.Token).IsNull();
         await Assert.That(result.Problem!).Contains("https");
         await Assert.That(result.Problem!).DoesNotContain("sekrit");
-        await Assert.That(_server.LogEntries.Count()).IsEqualTo(0)
+        await Assert.That(_server.LogEntries.Count).IsEqualTo(0)
             .Because("the credential must not leave the process at all when the endpoint is untrusted");
     }
 
@@ -306,7 +306,7 @@ public class MachineAuthTests : IDisposable {
 
         await Assert.That(result.Token).IsNull();
         await Assert.That(result.Problem!).Contains("https");
-        await Assert.That(_server.LogEntries.Count()).IsEqualTo(0);
+        await Assert.That(_server.LogEntries.Count).IsEqualTo(0);
     }
 
     /// <summary>Loopback over http is the deliberate carve-out — a credential cannot leave the machine.</summary>
@@ -350,7 +350,7 @@ public class MachineAuthTests : IDisposable {
 
         var b = await MachineTokenProvider.GetTokenAsync(new MachineCredential("client_B", "s"), null, CancellationToken.None);
 
-        await Assert.That(_server.LogEntries.Count()).IsEqualTo(2)
+        await Assert.That(_server.LogEntries.Count).IsEqualTo(2)
             .Because("a different client id must mint its own token, not inherit the cached one");
         await Assert.That(b.Token).IsNotNull();
     }
@@ -375,7 +375,7 @@ public class MachineAuthTests : IDisposable {
 
         // Two tokens in sequence from the mint endpoint, via a WireMock scenario state machine.
         _server.Given(Request.Create().WithPath("/oauth2/token").UsingPost())
-            .InScenario("mint").WhenStateIs(null).WillSetStateTo("second")
+            .InScenario("mint").WhenStateIs(null!).WillSetStateTo("second")
             .RespondWith(Response.Create().WithStatusCode(200)
                 .WithHeader("Content-Type", "application/json")
                 .WithBody("{\"access_token\":\"tok_1\",\"expires_in\":3600}"));

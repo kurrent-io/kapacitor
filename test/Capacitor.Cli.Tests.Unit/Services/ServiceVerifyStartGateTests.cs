@@ -58,7 +58,7 @@ public class ServiceVerifyStartGateTests {
     public async Task Digest_mismatch_at_canonical_sibling_is_package_inconsistent_elsewhere_foreign() {
         // placeholder digest in test builds → Matches() false for any file:
         var unit = new Dictionary<string, string> { ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt" };
-        string? Env(string k) => k switch {
+        static string? Env(string k) => k switch {
             "KCAP_CONSENT_SEED_DEFAULT" => "prompt", _ => null };
 
         var same = ServiceVerify.EvaluateStartGate(unit, "/opt/kcap/kcap-daemon", "/opt/kcap/kcap-daemon", Env);
@@ -96,7 +96,7 @@ public class ServiceVerifyStartGateTests {
             ["KCAP_URL"] = "https://s.example",              // unit resolves S
             ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
         };
-        string? Env(string k) => k switch {
+        static string? Env(string k) => k switch {
             "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
             "KCAP_PROFILE" => "a",
             "KCAP_EXPECT_SERVER_URL" => "https://t.example",  // fresh invocation expects T
@@ -116,7 +116,7 @@ public class ServiceVerifyStartGateTests {
             ["KCAP_URL"] = "https://s.example",
             ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
         };
-        string? Env(string k) => k switch {
+        static string? Env(string k) => k switch {
             "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
             "KCAP_PROFILE" => "a",
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",
@@ -135,7 +135,7 @@ public class ServiceVerifyStartGateTests {
             ["KCAP_URL"] = "https://s.example",
             ["KCAP_EXPECT_SERVER_URL"] = "",
         };
-        string? Env(string k) => k switch {
+        static string? Env(string k) => k switch {
             "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
             "KCAP_PROFILE" => "a",
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",
@@ -154,7 +154,7 @@ public class ServiceVerifyStartGateTests {
             ["KCAP_PROFILE"] = "a",
             ["KCAP_URL"] = "https://s.example",
         };
-        string? Env(string k) => k switch {
+        static string? Env(string k) => k switch {
             "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
             "KCAP_PROFILE" => "a",
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",
@@ -171,7 +171,7 @@ public class ServiceVerifyStartGateTests {
             ["KCAP_URL"] = "https://s.example",
             ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
         };
-        string? Env(string k) => k switch {
+        static string? Env(string k) => k switch {
             "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",
             // no KCAP_PROFILE at all
@@ -188,7 +188,7 @@ public class ServiceVerifyStartGateTests {
             ["KCAP_URL"] = "https://s.example",
             ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
         };
-        string? Env(string k) => k switch {
+        static string? Env(string k) => k switch {
             "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
             "KCAP_PROFILE" => "a",
             // no KCAP_EXPECT_SERVER_URL at all
@@ -206,7 +206,7 @@ public class ServiceVerifyStartGateTests {
             ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
             ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
         };
-        string? Env(string k) => k switch {
+        static string? Env(string k) => k switch {
             "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
             "KCAP_PROFILE" => "a",
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",
@@ -230,7 +230,7 @@ public class ServiceVerifyStartGateTests {
             ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
             // no KCAP_URL — forces the BakedProfileServerUrl fallback that reads config.json
         };
-        string? Env(string k) => k switch {
+        static string? Env(string k) => k switch {
             "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
             "KCAP_PROFILE" => "work",
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",
@@ -256,7 +256,7 @@ public class ServiceVerifyStartGateTests {
             ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
             // no KCAP_URL — forces the BakedProfileServerUrl fallback that reads config.json
         };
-        string? Env(string k) => k switch {
+        static string? Env(string k) => k switch {
             "KCAP_CONSENT_SEED_DEFAULT" => "prompt",
             "KCAP_PROFILE" => "work",
             "KCAP_EXPECT_SERVER_URL" => "https://s.example",

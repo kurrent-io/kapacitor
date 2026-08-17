@@ -51,7 +51,7 @@ namespace Capacitor.Cli.Daemon.Services;
 /// resilience beyond this remains.
 ///
 /// Out of scope here: building/emitting the <c>SessionStarted</c> envelope (it is passed
-/// in pre-built as <paramref name="initialEnvelope"/>) or calling <c>AcpSessionStarted</c> — the bind
+/// in pre-built as <c>initialEnvelope</c>) or calling <c>AcpSessionStarted</c> — the bind
 /// always precedes starting this forwarder. This forwarder also never emits a <c>session_ended</c>
 /// envelope; the server's <c>EndAgentSession</c> is the sole <c>SessionEnded</c> owner.
 /// </summary>

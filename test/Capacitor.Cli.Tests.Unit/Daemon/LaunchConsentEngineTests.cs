@@ -3,7 +3,7 @@ using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Unit.Daemon;
 
-internal class LaunchConsentEngineTests {
+internal sealed class LaunchConsentEngineTests {
     static LaunchConsentInput Input(
         string? requester = "user_abc", bool owner = false, string kind = "agent",
         string repo = "/Users/me/dev/proj", string vendor = "claude", string? requesterDisplay = null)
