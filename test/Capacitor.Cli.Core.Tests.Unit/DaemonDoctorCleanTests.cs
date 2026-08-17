@@ -10,17 +10,10 @@ namespace Capacitor.Cli.Core.Tests.Unit;
 /// </summary>
 [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
 public class DaemonDoctorCleanTests {
-    static string NewDir() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-doctor-clean-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-
-        return dir;
-    }
-
     [Test]
     public async Task RemovingMarkers_DropsEntryFromEnumeration_EvenWhenLockLingers() {
-        var dir = NewDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var dir = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(dir.Path);
 
         try {
             const string name = "ai1409";
@@ -47,14 +40,13 @@ public class DaemonDoctorCleanTests {
             await Assert.That(File.Exists(DaemonLockPaths.LockPath(name))).IsTrue();
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ }
         }
     }
 
     [Test]
     public async Task BareLockLeftover_IsNeverListed() {
-        var dir = NewDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var dir = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(dir.Path);
 
         try {
             const string name = "agy-cert";
@@ -69,7 +61,6 @@ public class DaemonDoctorCleanTests {
             await Assert.That(DaemonLockPaths.EnumerateNames()).DoesNotContain(name);
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ }
         }
     }
 }

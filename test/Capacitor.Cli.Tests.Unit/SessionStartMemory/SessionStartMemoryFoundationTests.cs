@@ -149,91 +149,81 @@ public class SessionStartMemoryFoundationTests {
 
     [Test]
     public async Task Lease_store_has_one_winner_and_fences_stale_owner() {
-        var root = TempDir();
-        try {
-            var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 23, 0, 0, 0, TimeSpan.Zero));
-            var store = new SessionStartMemoryLeaseStore(root, time);
-            var first = await store.TryBeginAsync(new string('a', 64), TimeSpan.FromSeconds(1));
-            var blocked = await store.TryBeginAsync(new string('a', 64), TimeSpan.FromSeconds(1));
-            await Assert.That(first).IsNotNull();
-            await Assert.That(blocked).IsNull();
+        using var root = new TempDir();
+        var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 23, 0, 0, 0, TimeSpan.Zero));
+        var store = new SessionStartMemoryLeaseStore(root.Path, time);
+        var first = await store.TryBeginAsync(new string('a', 64), TimeSpan.FromSeconds(1));
+        var blocked = await store.TryBeginAsync(new string('a', 64), TimeSpan.FromSeconds(1));
+        await Assert.That(first).IsNotNull();
+        await Assert.That(blocked).IsNull();
 
-            time.Advance(TimeSpan.FromSeconds(31));
-            var replacement = await store.TryBeginAsync(new string('a', 64), TimeSpan.FromSeconds(1));
-            await Assert.That(replacement).IsNotNull();
-            await Assert.That(await store.CompleteAsync(first!, SessionStartMemoryDisposition.Ready, TimeSpan.FromSeconds(1))).IsFalse();
-            await Assert.That(await store.CompleteAsync(replacement!, SessionStartMemoryDisposition.Ready, TimeSpan.FromSeconds(1))).IsTrue();
-            await Assert.That(await store.TryBeginAsync(new string('a', 64), TimeSpan.FromSeconds(1))).IsNull();
-        } finally { Directory.Delete(root, recursive: true); }
+        time.Advance(TimeSpan.FromSeconds(31));
+        var replacement = await store.TryBeginAsync(new string('a', 64), TimeSpan.FromSeconds(1));
+        await Assert.That(replacement).IsNotNull();
+        await Assert.That(await store.CompleteAsync(first!, SessionStartMemoryDisposition.Ready, TimeSpan.FromSeconds(1))).IsFalse();
+        await Assert.That(await store.CompleteAsync(replacement!, SessionStartMemoryDisposition.Ready, TimeSpan.FromSeconds(1))).IsTrue();
+        await Assert.That(await store.TryBeginAsync(new string('a', 64), TimeSpan.FromSeconds(1))).IsNull();
     }
 
     [Test]
     public async Task Concurrent_lease_attempts_have_exactly_one_winner() {
-        var root = TempDir();
-        try {
-            var key = new string('d', 64);
-            var attempts = Enumerable.Range(0, 16)
-                .Select(_ => new SessionStartMemoryLeaseStore(root).TryBeginAsync(key, TimeSpan.FromSeconds(2)));
-            var winners = (await Task.WhenAll(attempts)).Count(static lease => lease is not null);
+        using var root = new TempDir();
+        var key = new string('d', 64);
+        var attempts = Enumerable.Range(0, 16)
+            .Select(_ => new SessionStartMemoryLeaseStore(root.Path).TryBeginAsync(key, TimeSpan.FromSeconds(2)));
+        var winners = (await Task.WhenAll(attempts)).Count(static lease => lease is not null);
 
-            await Assert.That(winners).IsEqualTo(1);
-        } finally { Directory.Delete(root, recursive: true); }
+        await Assert.That(winners).IsEqualTo(1);
     }
 
     [Test]
     public async Task Completion_guarantee_expires_at_thirty_day_sweep_boundary() {
-        var root = TempDir();
-        try {
-            var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 23, 0, 0, 0, TimeSpan.Zero));
-            var store = new SessionStartMemoryLeaseStore(root, time);
-            var key = new string('e', 64);
-            var lease = await store.TryBeginAsync(key, TimeSpan.FromSeconds(1));
-            await store.CompleteAsync(lease!, SessionStartMemoryDisposition.Ready, TimeSpan.FromSeconds(1));
+        using var root = new TempDir();
+        var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 23, 0, 0, 0, TimeSpan.Zero));
+        var store = new SessionStartMemoryLeaseStore(root.Path, time);
+        var key = new string('e', 64);
+        var lease = await store.TryBeginAsync(key, TimeSpan.FromSeconds(1));
+        await store.CompleteAsync(lease!, SessionStartMemoryDisposition.Ready, TimeSpan.FromSeconds(1));
 
-            time.Advance(TimeSpan.FromDays(30) - TimeSpan.FromTicks(1));
-            await Assert.That(await store.TryBeginAsync(key, TimeSpan.FromSeconds(1))).IsNull();
-            time.Advance(TimeSpan.FromTicks(1));
-            await store.SweepAsync(TimeSpan.FromSeconds(1));
-            await Assert.That(await store.TryBeginAsync(key, TimeSpan.FromSeconds(1))).IsNotNull();
-        } finally { Directory.Delete(root, recursive: true); }
+        time.Advance(TimeSpan.FromDays(30) - TimeSpan.FromTicks(1));
+        await Assert.That(await store.TryBeginAsync(key, TimeSpan.FromSeconds(1))).IsNull();
+        time.Advance(TimeSpan.FromTicks(1));
+        await store.SweepAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(await store.TryBeginAsync(key, TimeSpan.FromSeconds(1))).IsNotNull();
     }
 
     [Test]
     public async Task Sweep_advances_past_poison_record() {
-        var root = TempDir();
-        try {
-            var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 23, 0, 0, 0, TimeSpan.Zero));
-            var store = new SessionStartMemoryLeaseStore(root, time);
-            foreach (var key in new[] { new string('a', 64), new string('c', 64) }) {
-                var lease = await store.TryBeginAsync(key, TimeSpan.FromSeconds(1));
-                await store.CompleteAsync(lease!, SessionStartMemoryDisposition.Ready, TimeSpan.FromSeconds(1));
-            }
-            var poison = Path.Combine(root, new string('b', 64) + ".json");
-            await File.WriteAllTextAsync(poison, "not-json");
-            time.Advance(TimeSpan.FromDays(30));
+        using var root = new TempDir();
+        var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 23, 0, 0, 0, TimeSpan.Zero));
+        var store = new SessionStartMemoryLeaseStore(root.Path, time);
+        foreach (var key in new[] { new string('a', 64), new string('c', 64) }) {
+            var lease = await store.TryBeginAsync(key, TimeSpan.FromSeconds(1));
+            await store.CompleteAsync(lease!, SessionStartMemoryDisposition.Ready, TimeSpan.FromSeconds(1));
+        }
+        var poison = root.PathTo(new string('b', 64) + ".json");
+        await File.WriteAllTextAsync(poison, "not-json");
+        time.Advance(TimeSpan.FromDays(30));
 
-            await store.SweepAsync(TimeSpan.FromSeconds(1));
+        await store.SweepAsync(TimeSpan.FromSeconds(1));
 
-            await Assert.That(File.Exists(Path.Combine(root, new string('a', 64) + ".json"))).IsFalse();
-            await Assert.That(File.Exists(poison)).IsTrue();
-            await Assert.That(File.Exists(Path.Combine(root, new string('c', 64) + ".json"))).IsFalse();
-        } finally { Directory.Delete(root, recursive: true); }
+        await Assert.That(File.Exists(root.PathTo(new string('a', 64) + ".json"))).IsFalse();
+        await Assert.That(File.Exists(poison)).IsTrue();
+        await Assert.That(File.Exists(root.PathTo(new string('c', 64) + ".json"))).IsFalse();
     }
 
     [Test]
     public async Task Retry_pending_obeys_cooldown_and_then_heals() {
-        var root = TempDir();
-        try {
-            var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 23, 0, 0, 0, TimeSpan.Zero));
-            var store = new SessionStartMemoryLeaseStore(root, time);
-            var key = new string('b', 64);
-            var lease = await store.TryBeginAsync(key, TimeSpan.FromSeconds(1));
-            await Assert.That(await store.RetryAsync(lease!, null, TimeSpan.FromSeconds(1))).IsTrue();
-            await Assert.That(await store.TryBeginAsync(key, TimeSpan.FromSeconds(1))).IsNull();
+        using var root = new TempDir();
+        var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 23, 0, 0, 0, TimeSpan.Zero));
+        var store = new SessionStartMemoryLeaseStore(root.Path, time);
+        var key = new string('b', 64);
+        var lease = await store.TryBeginAsync(key, TimeSpan.FromSeconds(1));
+        await Assert.That(await store.RetryAsync(lease!, null, TimeSpan.FromSeconds(1))).IsTrue();
+        await Assert.That(await store.TryBeginAsync(key, TimeSpan.FromSeconds(1))).IsNull();
 
-            time.Advance(TimeSpan.FromSeconds(5));
-            await Assert.That(await store.TryBeginAsync(key, TimeSpan.FromSeconds(1))).IsNotNull();
-        } finally { Directory.Delete(root, recursive: true); }
+        time.Advance(TimeSpan.FromSeconds(5));
+        await Assert.That(await store.TryBeginAsync(key, TimeSpan.FromSeconds(1))).IsNotNull();
     }
 
     [Test]
@@ -300,23 +290,21 @@ public class SessionStartMemoryFoundationTests {
 
     [Test]
     public async Task Orchestrator_returns_ready_fragment_only_to_commit_winner() {
-        var root = TempDir();
-        try {
-            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
-                (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK,
-                    "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]"))));
-            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
-            var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Claude, "session", null,
-                true, true, SessionLifecycleReason.New, true);
-            var request = new SessionStartMemoryContextRequest(
-                "https://example.test", null, false, TimeSpan.FromSeconds(1), CancellationToken.None);
+        using var root = new TempDir();
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK,
+                "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]"))));
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Claude, "session", null,
+            true, true, SessionLifecycleReason.New, true);
+        var request = new SessionStartMemoryContextRequest(
+            "https://example.test", null, false, TimeSpan.FromSeconds(1), CancellationToken.None);
 
-            var first = await orchestrator.GetFragmentAsync(lifecycle, request);
-            var repeated = await orchestrator.GetFragmentAsync(lifecycle, request);
+        var first = await orchestrator.GetFragmentAsync(lifecycle, request);
+        var repeated = await orchestrator.GetFragmentAsync(lifecycle, request);
 
-            await Assert.That(first).Contains("- s: d");
-            await Assert.That(repeated).IsNull();
-        } finally { Directory.Delete(root, recursive: true); }
+        await Assert.That(first).Contains("- s: d");
+        await Assert.That(repeated).IsNull();
     }
 
     // A caller can only discover its fragment is undeliverable AFTER the fetch has run (Copilot's
@@ -329,51 +317,47 @@ public class SessionStartMemoryFoundationTests {
     // past the store's 1h backoff cap rather than asserting an instant second attempt.
     [Test]
     public async Task A_refused_commit_gate_releases_the_lease_so_a_later_start_still_injects() {
-        var root = TempDir();
-        try {
-            var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 29, 0, 0, 0, TimeSpan.Zero));
-            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
-                (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK,
-                    "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]"))));
-            var orchestrator = new SessionStartMemoryOrchestrator(
-                new SessionStartMemoryLeaseStore(root, time), provider);
-            var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Copilot, "3f2504e0-4f89-41d3-9a0c-0305e82c3301", null,
-                true, true, SessionLifecycleReason.New, true);
-            var request = new SessionStartMemoryContextRequest(
-                "https://example.test", null, false, TimeSpan.FromSeconds(1), CancellationToken.None);
+        using var root = new TempDir();
+        var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 29, 0, 0, 0, TimeSpan.Zero));
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK,
+                "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]"))));
+        var orchestrator = new SessionStartMemoryOrchestrator(
+            new SessionStartMemoryLeaseStore(root.Path, time), provider);
+        var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Copilot, "3f2504e0-4f89-41d3-9a0c-0305e82c3301", null,
+            true, true, SessionLifecycleReason.New, true);
+        var request = new SessionStartMemoryContextRequest(
+            "https://example.test", null, false, TimeSpan.FromSeconds(1), CancellationToken.None);
 
-            var refused = await orchestrator.GetFragmentAsync(lifecycle, request, _ => Task.FromResult(false));
+        var refused = await orchestrator.GetFragmentAsync(lifecycle, request, _ => Task.FromResult(false));
 
-            time.Advance(TimeSpan.FromHours(2));
+        time.Advance(TimeSpan.FromHours(2));
 
-            var retried = await orchestrator.GetFragmentAsync(lifecycle, request, _ => Task.FromResult(true));
+        var retried = await orchestrator.GetFragmentAsync(lifecycle, request, _ => Task.FromResult(true));
 
-            await Assert.That(refused).IsNull();
-            await Assert.That(retried).Contains("- s: d");
-        } finally { Directory.Delete(root, recursive: true); }
+        await Assert.That(refused).IsNull();
+        await Assert.That(retried).Contains("- s: d");
     }
 
     // The gate must not become a second way to lose the fragment: granted behaves exactly as the
     // ungated path, including still being once-per-session.
     [Test]
     public async Task A_granted_commit_gate_commits_the_lease_exactly_as_the_ungated_path() {
-        var root = TempDir();
-        try {
-            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
-                (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK,
-                    "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]"))));
-            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
-            var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Copilot, "3f2504e0-4f89-41d3-9a0c-0305e82c3301", null,
-                true, true, SessionLifecycleReason.New, true);
-            var request = new SessionStartMemoryContextRequest(
-                "https://example.test", null, false, TimeSpan.FromSeconds(1), CancellationToken.None);
+        using var root = new TempDir();
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK,
+                "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]"))));
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Copilot, "3f2504e0-4f89-41d3-9a0c-0305e82c3301", null,
+            true, true, SessionLifecycleReason.New, true);
+        var request = new SessionStartMemoryContextRequest(
+            "https://example.test", null, false, TimeSpan.FromSeconds(1), CancellationToken.None);
 
-            var first = await orchestrator.GetFragmentAsync(lifecycle, request, _ => Task.FromResult(true));
-            var repeated = await orchestrator.GetFragmentAsync(lifecycle, request, _ => Task.FromResult(true));
+        var first = await orchestrator.GetFragmentAsync(lifecycle, request, _ => Task.FromResult(true));
+        var repeated = await orchestrator.GetFragmentAsync(lifecycle, request, _ => Task.FromResult(true));
 
-            await Assert.That(first).Contains("- s: d");
-            await Assert.That(repeated).IsNull();
-        } finally { Directory.Delete(root, recursive: true); }
+        await Assert.That(first).Contains("- s: d");
+        await Assert.That(repeated).IsNull();
     }
 
     const string OneMemoryJson =
@@ -394,45 +378,41 @@ public class SessionStartMemoryFoundationTests {
     // re-charged — every turn, and would steadily bias the conversation.
     [Test]
     public async Task Kiro_repeated_agent_spawn_injects_once_then_yields_nothing() {
-        var root = TempDir();
-        try {
-            var calls = 0;
-            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
-                (_, _) => {
-                    Interlocked.Increment(ref calls);
-                    return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson)));
-                });
-            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
+        using var root = new TempDir();
+        var calls = 0;
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+            (_, _) => {
+                Interlocked.Increment(ref calls);
+                return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson)));
+            });
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
 
-            var first  = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
-            var second = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
-            var third  = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+        var first  = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+        var second = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+        var third  = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
 
-            await Assert.That(first).Contains("- s: d");
-            await Assert.That(second).IsNull();
-            await Assert.That(third).IsNull();
+        await Assert.That(first).Contains("- s: d");
+        await Assert.That(second).IsNull();
+        await Assert.That(third).IsNull();
 
-            // Not merely "no output" — no repeat FETCH either, or every prompt would still pay the call.
-            await Assert.That(calls).IsEqualTo(1);
-        } finally { Directory.Delete(root, recursive: true); }
+        // Not merely "no output" — no repeat FETCH either, or every prompt would still pay the call.
+        await Assert.That(calls).IsEqualTo(1);
     }
 
     // A genuinely new Kiro session brings a new session id, hence a new lease key. No Kiro-specific
     // "is this new?" logic exists or should: identity is the whole mechanism.
     [Test]
     public async Task Kiro_distinct_session_ids_inject_independently() {
-        var root = TempDir();
-        try {
-            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
-                (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson))));
-            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
+        using var root = new TempDir();
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson))));
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
 
-            var a = await orchestrator.GetFragmentAsync(KiroLifecycle("session-a"), KiroRequest());
-            var b = await orchestrator.GetFragmentAsync(KiroLifecycle("session-b"), KiroRequest());
+        var a = await orchestrator.GetFragmentAsync(KiroLifecycle("session-a"), KiroRequest());
+        var b = await orchestrator.GetFragmentAsync(KiroLifecycle("session-b"), KiroRequest());
 
-            await Assert.That(a).Contains("- s: d");
-            await Assert.That(b).Contains("- s: d");
-        } finally { Directory.Delete(root, recursive: true); }
+        await Assert.That(a).Contains("- s: d");
+        await Assert.That(b).Contains("- s: d");
     }
 
     // A transient server failure must NOT burn the session's one injection — a later prompt's
@@ -440,48 +420,44 @@ public class SessionStartMemoryFoundationTests {
     // past the store's 1h cap rather than asserting an instant retry.
     [Test]
     public async Task Kiro_retryable_failure_lets_a_later_prompt_still_inject() {
-        var root = TempDir();
-        try {
-            var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 29, 0, 0, 0, TimeSpan.Zero));
-            var calls = 0;
-            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
-                (_, _) => Task.FromResult(new HttpClient(new StaticHandler(
-                    Interlocked.Increment(ref calls) == 1 ? HttpStatusCode.InternalServerError : HttpStatusCode.OK,
-                    OneMemoryJson))));
-            var orchestrator = new SessionStartMemoryOrchestrator(
-                new SessionStartMemoryLeaseStore(root, time), provider);
+        using var root = new TempDir();
+        var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 29, 0, 0, 0, TimeSpan.Zero));
+        var calls = 0;
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(
+                Interlocked.Increment(ref calls) == 1 ? HttpStatusCode.InternalServerError : HttpStatusCode.OK,
+                OneMemoryJson))));
+        var orchestrator = new SessionStartMemoryOrchestrator(
+            new SessionStartMemoryLeaseStore(root.Path, time), provider);
 
-            var failed = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+        var failed = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
 
-            time.Advance(TimeSpan.FromHours(2));
+        time.Advance(TimeSpan.FromHours(2));
 
-            var recovered = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+        var recovered = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
 
-            await Assert.That(failed).IsNull();
-            await Assert.That(recovered).Contains("- s: d");
-        } finally { Directory.Delete(root, recursive: true); }
+        await Assert.That(failed).IsNull();
+        await Assert.That(recovered).Contains("- s: d");
     }
 
     // A successful-but-empty index must still COMMIT, or a team with no memories yet would re-fetch on
     // every single Kiro prompt forever.
     [Test]
     public async Task Kiro_a_successful_empty_index_still_suppresses_later_prompts() {
-        var root = TempDir();
-        try {
-            var calls = 0;
-            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
-                (_, _) => {
-                    Interlocked.Increment(ref calls);
-                    return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.NoContent, "")));
-                });
-            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
+        using var root = new TempDir();
+        var calls = 0;
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+            (_, _) => {
+                Interlocked.Increment(ref calls);
+                return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.NoContent, "")));
+            });
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
 
-            await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
-            var second = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+        await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+        var second = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
 
-            await Assert.That(second).IsNull();
-            await Assert.That(calls).IsEqualTo(1);
-        } finally { Directory.Delete(root, recursive: true); }
+        await Assert.That(second).IsNull();
+        await Assert.That(calls).IsEqualTo(1);
     }
 
     // A losing agentSpawn callback must be fenced by a lease that is genuinely HELD — not merely
@@ -495,48 +471,46 @@ public class SessionStartMemoryFoundationTests {
     // release the winner. No timeout participates in the passing path.
     [Test]
     public async Task Kiro_agent_spawns_arriving_while_the_lease_is_held_are_fenced_out() {
-        var root = TempDir();
-        try {
-            var fetches       = 0;
-            var winnerHolding = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var releaseWinner = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var root = new TempDir();
+        var fetches       = 0;
+        var winnerHolding = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseWinner = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
-                async (_, ct) => {
-                    Interlocked.Increment(ref fetches);
-                    winnerHolding.TrySetResult();
-                    // Held until the losers have been through. The timeout is a suite-safety net only:
-                    // it is never reached on the passing path, and reaching it fails the test anyway
-                    // (the losers would no longer be contending for a held lease).
-                    await releaseWinner.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+            async (_, ct) => {
+                Interlocked.Increment(ref fetches);
+                winnerHolding.TrySetResult();
+                // Held until the losers have been through. The timeout is a suite-safety net only:
+                // it is never reached on the passing path, and reaching it fails the test anyway
+                // (the losers would no longer be contending for a held lease).
+                await releaseWinner.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
 
-                    return new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson));
-                });
-            var store = new SessionStartMemoryLeaseStore(root);
+                return new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson));
+            });
+        var store = new SessionStartMemoryLeaseStore(root.Path);
 
-            var winner = Task.Run(() => new SessionStartMemoryOrchestrator(store, provider)
-                .GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest(20)));
+        var winner = Task.Run(() => new SessionStartMemoryOrchestrator(store, provider)
+            .GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest(20)));
 
-            // The winner is now inside its fetch, holding the lease.
-            await winnerHolding.Task;
+        // The winner is now inside its fetch, holding the lease.
+        await winnerHolding.Task;
 
-            var losers = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ =>
-                new SessionStartMemoryOrchestrator(store, provider)
-                    .GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest(20))));
+        var losers = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ =>
+            new SessionStartMemoryOrchestrator(store, provider)
+                .GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest(20))));
 
-            // The winner is provably STILL inside its fetch, so the lease was genuinely held for the
-            // whole of the losers' run — this is what separates the test from the sequential case.
-            await Assert.That(winner.IsCompleted).IsFalse();
+        // The winner is provably STILL inside its fetch, so the lease was genuinely held for the
+        // whole of the losers' run — this is what separates the test from the sequential case.
+        await Assert.That(winner.IsCompleted).IsFalse();
 
-            // Every loser was refused while that lease was held — and none of them fetched.
-            await Assert.That(losers.All(r => r is null)).IsTrue();
-            await Assert.That(fetches).IsEqualTo(1);
+        // Every loser was refused while that lease was held — and none of them fetched.
+        await Assert.That(losers.All(r => r is null)).IsTrue();
+        await Assert.That(fetches).IsEqualTo(1);
 
-            releaseWinner.TrySetResult();
+        releaseWinner.TrySetResult();
 
-            await Assert.That(await winner).Contains("- s: d");
-            await Assert.That(fetches).IsEqualTo(1);
-        } finally { Directory.Delete(root, recursive: true); }
+        await Assert.That(await winner).Contains("- s: d");
+        await Assert.That(fetches).IsEqualTo(1);
     }
 
     // Exactly what AntigravityHookCommand.LifecycleFor builds: PreInvocation fires once per
@@ -554,47 +528,43 @@ public class SessionStartMemoryFoundationTests {
     // re-injected — and re-charged — on every invocation within the same conversation.
     [Test]
     public async Task Antigravity_repeated_pre_invocation_injects_once_and_does_not_refetch() {
-        var root = TempDir();
-        try {
-            var fetches = 0;
-            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
-                (_, _) => {
-                    Interlocked.Increment(ref fetches);
-                    return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson)));
-                });
-            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
+        using var root = new TempDir();
+        var fetches = 0;
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+            (_, _) => {
+                Interlocked.Increment(ref fetches);
+                return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson)));
+            });
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
 
-            // A real GUID — Antigravity is on the fail-closed identity arm, which normalizes any
-            // non-GUID id to null and would short-circuit before the lease is ever consulted,
-            // making this whole test pass vacuously without proving anything.
-            const string sessionId = "e80c33bfc10f4d2fb626b0043f488fc0";
+        // A real GUID — Antigravity is on the fail-closed identity arm, which normalizes any
+        // non-GUID id to null and would short-circuit before the lease is ever consulted,
+        // making this whole test pass vacuously without proving anything.
+        const string sessionId = "e80c33bfc10f4d2fb626b0043f488fc0";
 
-            var first  = await orchestrator.GetFragmentAsync(AntigravityLifecycle(sessionId), AntigravityRequest());
-            var second = await orchestrator.GetFragmentAsync(AntigravityLifecycle(sessionId), AntigravityRequest());
+        var first  = await orchestrator.GetFragmentAsync(AntigravityLifecycle(sessionId), AntigravityRequest());
+        var second = await orchestrator.GetFragmentAsync(AntigravityLifecycle(sessionId), AntigravityRequest());
 
-            await Assert.That(first).Contains("- s: d");
-            await Assert.That(second).IsNull();
-            // The lease must prevent the WORK, not merely the output. One fetch, not two.
-            await Assert.That(fetches).IsEqualTo(1);
-        } finally { Directory.Delete(root, recursive: true); }
+        await Assert.That(first).Contains("- s: d");
+        await Assert.That(second).IsNull();
+        // The lease must prevent the WORK, not merely the output. One fetch, not two.
+        await Assert.That(fetches).IsEqualTo(1);
     }
 
     [Test]
     public async Task Antigravity_distinct_conversations_each_inject_once() {
-        var root = TempDir();
-        try {
-            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
-                (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson))));
-            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
+        using var root = new TempDir();
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+            (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson))));
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
 
-            var a = await orchestrator.GetFragmentAsync(
-                AntigravityLifecycle("e80c33bfc10f4d2fb626b0043f488fc0"), AntigravityRequest());
-            var b = await orchestrator.GetFragmentAsync(
-                AntigravityLifecycle("5450cb7feaf841189dec0ebd0018f024"), AntigravityRequest());
+        var a = await orchestrator.GetFragmentAsync(
+            AntigravityLifecycle("e80c33bfc10f4d2fb626b0043f488fc0"), AntigravityRequest());
+        var b = await orchestrator.GetFragmentAsync(
+            AntigravityLifecycle("5450cb7feaf841189dec0ebd0018f024"), AntigravityRequest());
 
-            await Assert.That(a).Contains("- s: d");
-            await Assert.That(b).Contains("- s: d");
-        } finally { Directory.Delete(root, recursive: true); }
+        await Assert.That(a).Contains("- s: d");
+        await Assert.That(b).Contains("- s: d");
     }
 
     [Test]
@@ -611,31 +581,23 @@ public class SessionStartMemoryFoundationTests {
 
     [Test]
     public async Task Disabled_request_does_not_fetch_or_write_a_lease_record() {
-        var root = TempDir();
-        try {
-            var clientCalls = 0;
-            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null), (_, _) => {
-                clientCalls++;
-                return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.NoContent, "")));
-            });
-            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
-            var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Claude, "session", null,
-                true, true, SessionLifecycleReason.New, false);
+        using var root = new TempDir();
+        var clientCalls = 0;
+        var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null), (_, _) => {
+            clientCalls++;
+            return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.NoContent, "")));
+        });
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Claude, "session", null,
+            true, true, SessionLifecycleReason.New, false);
 
-            var fragment = await orchestrator.GetFragmentAsync(lifecycle,
-                new SessionStartMemoryContextRequest(
-                    "https://example.test", null, true, TimeSpan.FromSeconds(1), CancellationToken.None));
+        var fragment = await orchestrator.GetFragmentAsync(lifecycle,
+            new SessionStartMemoryContextRequest(
+                "https://example.test", null, true, TimeSpan.FromSeconds(1), CancellationToken.None));
 
-            await Assert.That(fragment).IsNull();
-            await Assert.That(clientCalls).IsEqualTo(0);
-            await Assert.That(Directory.EnumerateFiles(root)).IsEmpty();
-        } finally { Directory.Delete(root, recursive: true); }
-    }
-
-    static string TempDir() {
-        var path = Path.Combine(Path.GetTempPath(), "kcap-memory-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(path);
-        return path;
+        await Assert.That(fragment).IsNull();
+        await Assert.That(clientCalls).IsEqualTo(0);
+        await Assert.That(Directory.EnumerateFiles(root.Path)).IsEmpty();
     }
 
     sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider {

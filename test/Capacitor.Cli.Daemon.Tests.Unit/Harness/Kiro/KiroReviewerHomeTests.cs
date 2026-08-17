@@ -10,18 +10,13 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Kiro;
 /// multi-daemon sweep case is the one a previous design got backwards.
 /// </summary>
 public class KiroReviewerHomeTests {
-    static string TempStateDir() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-kiro-home-tests-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        return dir;
-    }
-
     [Test]
     public async Task Create_MakesAnEmptyOwnerOnlyDirectory() {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The reviewer home is POSIX-only: CreateOwnerOnly refuses a platform where the transcript directory cannot be made owner-only.");
 
-        var home = KiroReviewerHome.Create(TempStateDir(), "epochA", "launch1");
+        using var tmp = new TempDir();
+        var home = KiroReviewerHome.Create(tmp.Path, "epochA", "launch1");
 
         await Assert.That(Directory.Exists(home)).IsTrue();
 
@@ -39,10 +34,10 @@ public class KiroReviewerHomeTests {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The reviewer home is POSIX-only: CreateOwnerOnly refuses a platform where the transcript directory cannot be made owner-only.");
 
-        var stateDir = TempStateDir();
-        var stale    = KiroReviewerHome.Create(stateDir, "epochA", "launch1");
+        using var tmp = new TempDir();
+        var stale    = KiroReviewerHome.Create(tmp.Path, "epochA", "launch1");
 
-        KiroReviewerHome.SweepStale(stateDir, "epochB", NullLogger.Instance);
+        KiroReviewerHome.SweepStale(tmp.Path, "epochB", NullLogger.Instance);
 
         await Assert.That(Directory.Exists(stale)).IsFalse();
     }
@@ -56,10 +51,10 @@ public class KiroReviewerHomeTests {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The reviewer home is POSIX-only: CreateOwnerOnly refuses a platform where the transcript directory cannot be made owner-only.");
 
-        var stateDir = TempStateDir();
-        var live     = KiroReviewerHome.Create(stateDir, "epochB", "launch2");
+        using var tmp = new TempDir();
+        var live     = KiroReviewerHome.Create(tmp.Path, "epochB", "launch2");
 
-        KiroReviewerHome.SweepStale(stateDir, "epochB", NullLogger.Instance);
+        KiroReviewerHome.SweepStale(tmp.Path, "epochB", NullLogger.Instance);
 
         await Assert.That(Directory.Exists(live)).IsTrue();
     }
@@ -75,8 +70,9 @@ public class KiroReviewerHomeTests {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The reviewer home is POSIX-only: CreateOwnerOnly refuses a platform where the transcript directory cannot be made owner-only.");
 
-        var mine     = TempStateDir();
-        var peer     = TempStateDir();
+        using var tmp = new TempDir();
+        var mine     = tmp.CreateDir("mine");
+        var peer     = tmp.CreateDir("peer");
         var peerLive = KiroReviewerHome.Create(peer, "peerEpoch", "launch9");
 
         KiroReviewerHome.SweepStale(mine, "myEpoch", NullLogger.Instance);
@@ -90,8 +86,9 @@ public class KiroReviewerHomeTests {
         // containment check it asserts is platform-independent, so skipping it on Windows would drop
         // real coverage for no reason.
 
-        var stateDir = TempStateDir();
-        var outside  = TempStateDir();
+        using var tmp = new TempDir();
+        var stateDir = tmp.CreateDir("state");
+        var outside  = tmp.CreateDir("outside");
         var victim   = Path.Combine(outside, "not-ours");
         Directory.CreateDirectory(victim);
 
@@ -109,8 +106,9 @@ public class KiroReviewerHomeTests {
     public async Task Delete_RemovesRealContentButDoesNotFollowALinkOut() {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX symlink and file-mode semantics.");
 
-        var stateDir = TempStateDir();
-        var outside  = TempStateDir();
+        using var tmp = new TempDir();
+        var stateDir = tmp.CreateDir("state");
+        var outside  = tmp.CreateDir("outside");
         var canary   = Path.Combine(outside, "canary.txt");
         await File.WriteAllTextAsync(canary, "keep me");
 
@@ -139,11 +137,11 @@ public class KiroReviewerHomeTests {
     public async Task Create_DoesNotInheritAPreviousHomesContents() {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX file-mode semantics.");
 
-        var stateDir = TempStateDir();
-        var first    = KiroReviewerHome.Create(stateDir, "epochA", "launch1");
+        using var tmp = new TempDir();
+        var first    = KiroReviewerHome.Create(tmp.Path, "epochA", "launch1");
         await File.WriteAllTextAsync(Path.Combine(first, "leftover.jsonl"), "previous review context");
 
-        var second = KiroReviewerHome.Create(stateDir, "epochA", "launch1");
+        var second = KiroReviewerHome.Create(tmp.Path, "epochA", "launch1");
 
         await Assert.That(second).IsEqualTo(first);
         await Assert.That(Directory.GetFileSystemEntries(second).Length).IsEqualTo(0);
@@ -158,8 +156,9 @@ public class KiroReviewerHomeTests {
     public async Task Delete_DoesNotFollowALinkAtTheHomePathItself() {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX symlink semantics.");
 
-        var stateDir = TempStateDir();
-        var outside  = TempStateDir();
+        using var tmp = new TempDir();
+        var stateDir = tmp.CreateDir("state");
+        var outside  = tmp.CreateDir("outside");
         var canary   = Path.Combine(outside, "canary.txt");
         await File.WriteAllTextAsync(canary, "keep me");
 
@@ -184,14 +183,14 @@ public class KiroReviewerHomeTests {
     public async Task Create_ThrowsWhenAnExistingDirectoryIsNotOwnerOnly() {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX file-mode semantics.");
 
-        var stateDir = TempStateDir();
-        var root     = KiroReviewerHome.RootFor(stateDir);
+        using var tmp = new TempDir();
+        var root     = KiroReviewerHome.RootFor(tmp.Path);
         Directory.CreateDirectory(root);
         File.SetUnixFileMode(root, UnixFileMode.UserRead | UnixFileMode.UserWrite |
                                    UnixFileMode.UserExecute | UnixFileMode.OtherRead |
                                    UnixFileMode.OtherExecute);
 
-        await Assert.That(() => KiroReviewerHome.Create(stateDir, "epochA", "launch1"))
+        await Assert.That(() => KiroReviewerHome.Create(tmp.Path, "epochA", "launch1"))
             .Throws<InvalidOperationException>()
             .WithMessageContaining("kiro_reviewer_home_not_owner_only");
     }

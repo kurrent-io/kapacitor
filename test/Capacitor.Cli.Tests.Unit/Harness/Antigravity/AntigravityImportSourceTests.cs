@@ -24,12 +24,6 @@ public class AntigravityImportSourceTests {
     // they resolve on-disk brain-dir transcript paths.
     static string Dashless(string id) => Guid.Parse(id).ToString("N");
 
-    static string NewHome() {
-        var home = Path.Combine(Path.GetTempPath(), "kcap-agimp-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(home);
-        return home;
-    }
-
     // The GUI product subdir. `WriteTranscriptUnder`/`AppendInvokeUnder` take the subdir so the
     // same fixtures serve the agy CLI root ("antigravity-cli") for the dual-root tests.
     const string GuiSub = "antigravity";
@@ -71,136 +65,124 @@ public class AntigravityImportSourceTests {
 
     [Test]
     public async Task Discover_returns_roots_only_and_attaches_children() {
-        var home = NewHome();
-        try {
-            WriteTranscript(home, Root, UserLine("2026-07-02T19:00:00Z"));
-            WriteTranscript(home, Child, UserLine("2026-07-02T19:01:00Z"));
-            AppendInvoke(home, Root, Child); // Root invokes Child as a subagent
+        using var home = new TempDir();
+        WriteTranscript(home.Path, Root, UserLine("2026-07-02T19:00:00Z"));
+        WriteTranscript(home.Path, Child, UserLine("2026-07-02T19:01:00Z"));
+        AppendInvoke(home.Path, Root, Child); // Root invokes Child as a subagent
 
-            var source = new AntigravityImportSource(home: home, geminiCliHome: "");
-            await Assert.That(source.IsAvailable).IsTrue();
+        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        await Assert.That(source.IsAvailable).IsTrue();
 
-            var discovered = await source.DiscoverAsync(
-                new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
-                CancellationToken.None);
+        var discovered = await source.DiscoverAsync(
+            new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
+            CancellationToken.None);
 
-            // Only Root is a top-level session; Child is imported under it.
-            await Assert.That(discovered.Count).IsEqualTo(1);
-            var root = discovered[0];
-            await Assert.That(root.SessionId).IsEqualTo(Dashless(Root));
-            await Assert.That(root.Vendor).IsEqualTo("antigravity");
-            await Assert.That(root.FirstTimestamp).IsEqualTo(DateTimeOffset.Parse("2026-07-02T19:00:00Z", CultureInfo.InvariantCulture));
+        // Only Root is a top-level session; Child is imported under it.
+        await Assert.That(discovered.Count).IsEqualTo(1);
+        var root = discovered[0];
+        await Assert.That(root.SessionId).IsEqualTo(Dashless(Root));
+        await Assert.That(root.Vendor).IsEqualTo("antigravity");
+        await Assert.That(root.FirstTimestamp).IsEqualTo(DateTimeOffset.Parse("2026-07-02T19:00:00Z", CultureInfo.InvariantCulture));
 
-            var children = (List<string>)root.SourceMeta!["Children"]!;
-            await Assert.That(children).Contains(Child);
-        } finally { Directory.Delete(home, recursive: true); }
+        var children = (List<string>)root.SourceMeta!["Children"]!;
+        await Assert.That(children).Contains(Child);
     }
 
     [Test]
     public async Task Discover_nests_transitive_descendants_under_the_top_level_root() {
-        var home = NewHome();
-        try {
-            // Chain Root ← Child ← Grand. Only Root is a session; Child *and* Grand import under it.
-            WriteTranscript(home, Root,  UserLine("2026-07-02T19:00:00Z"));
-            WriteTranscript(home, Child, UserLine("2026-07-02T19:01:00Z"));
-            WriteTranscript(home, Grand, UserLine("2026-07-02T19:02:00Z"));
-            AppendInvoke(home, Root,  Child);
-            AppendInvoke(home, Child, Grand);
+        using var home = new TempDir();
+        // Chain Root ← Child ← Grand. Only Root is a session; Child *and* Grand import under it.
+        WriteTranscript(home.Path, Root,  UserLine("2026-07-02T19:00:00Z"));
+        WriteTranscript(home.Path, Child, UserLine("2026-07-02T19:01:00Z"));
+        WriteTranscript(home.Path, Grand, UserLine("2026-07-02T19:02:00Z"));
+        AppendInvoke(home.Path, Root,  Child);
+        AppendInvoke(home.Path, Child, Grand);
 
-            var source = new AntigravityImportSource(home: home, geminiCliHome: "");
-            var discovered = await source.DiscoverAsync(
-                new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
-                CancellationToken.None);
+        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var discovered = await source.DiscoverAsync(
+            new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
+            CancellationToken.None);
 
-            await Assert.That(discovered.Count).IsEqualTo(1);
-            await Assert.That(discovered[0].SessionId).IsEqualTo(Dashless(Root));
-            var children = (List<string>)discovered[0].SourceMeta!["Children"]!;
-            await Assert.That(children.OrderBy(x => x).ToList()).IsEquivalentTo(new List<string> { Child, Grand }.OrderBy(x => x).ToList());
-        } finally { Directory.Delete(home, recursive: true); }
+        await Assert.That(discovered.Count).IsEqualTo(1);
+        await Assert.That(discovered[0].SessionId).IsEqualTo(Dashless(Root));
+        var children = (List<string>)discovered[0].SourceMeta!["Children"]!;
+        await Assert.That(children.OrderBy(x => x).ToList()).IsEquivalentTo(new List<string> { Child, Grand }.OrderBy(x => x).ToList());
     }
 
     // G1: an agy conversation lives under antigravity-cli/brain. Before dual-root discovery it was
     // invisible to `kcap import --antigravity`; this is the core gap the bundle closes.
     [Test]
     public async Task Discover_finds_a_conversation_under_the_agy_CLI_root() {
-        var home = NewHome();
-        try {
-            WriteTranscriptUnder(home, CliSub, CliRoot, UserLine("2026-07-02T19:00:00Z"));
+        using var home = new TempDir();
+        WriteTranscriptUnder(home.Path, CliSub, CliRoot, UserLine("2026-07-02T19:00:00Z"));
 
-            var source = new AntigravityImportSource(home: home, geminiCliHome: "");
-            await Assert.That(source.IsAvailable).IsTrue(); // available on the CLI root alone
+        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        await Assert.That(source.IsAvailable).IsTrue(); // available on the CLI root alone
 
-            var discovered = await source.DiscoverAsync(
-                new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
-                CancellationToken.None);
+        var discovered = await source.DiscoverAsync(
+            new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
+            CancellationToken.None);
 
-            await Assert.That(discovered.Count).IsEqualTo(1);
-            await Assert.That(discovered[0].SessionId).IsEqualTo(Dashless(CliRoot));
-            // The session carries its own product root so children resolve under antigravity-cli.
-            await Assert.That((string)discovered[0].SourceMeta!["ProductRoot"]!)
-                .EndsWith(CliSub);
-            // ...and the transcript path it surfaces is under the CLI root, not the GUI's.
-            await Assert.That((string)discovered[0].SourceMeta!["TranscriptPath"]!)
-                .Contains(Path.Combine(CliSub, "brain"));
-        } finally { Directory.Delete(home, recursive: true); }
+        await Assert.That(discovered.Count).IsEqualTo(1);
+        await Assert.That(discovered[0].SessionId).IsEqualTo(Dashless(CliRoot));
+        // The session carries its own product root so children resolve under antigravity-cli.
+        await Assert.That((string)discovered[0].SourceMeta!["ProductRoot"]!)
+            .EndsWith(CliSub);
+        // ...and the transcript path it surfaces is under the CLI root, not the GUI's.
+        await Assert.That((string)discovered[0].SourceMeta!["TranscriptPath"]!)
+            .Contains(Path.Combine(CliSub, "brain"));
     }
 
     // Both roots populated: every session from each appears, once. UUIDs are unique so there is no
     // cross-root collision or dedup to get wrong.
     [Test]
     public async Task Discover_returns_sessions_from_BOTH_roots() {
-        var home = NewHome();
-        try {
-            WriteTranscript(home, Root, UserLine("2026-07-02T19:00:00Z"));            // GUI
-            WriteTranscriptUnder(home, CliSub, CliRoot, UserLine("2026-07-02T19:05:00Z")); // agy CLI
+        using var home = new TempDir();
+        WriteTranscript(home.Path, Root, UserLine("2026-07-02T19:00:00Z"));            // GUI
+        WriteTranscriptUnder(home.Path, CliSub, CliRoot, UserLine("2026-07-02T19:05:00Z")); // agy CLI
 
-            var source = new AntigravityImportSource(home: home, geminiCliHome: "");
-            var discovered = await source.DiscoverAsync(
-                new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
-                CancellationToken.None);
+        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var discovered = await source.DiscoverAsync(
+            new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
+            CancellationToken.None);
 
-            await Assert.That(discovered.Select(d => d.SessionId).OrderBy(x => x).ToList())
-                .IsEquivalentTo(new List<string> { Dashless(Root), Dashless(CliRoot) }.OrderBy(x => x).ToList());
-        } finally { Directory.Delete(home, recursive: true); }
+        await Assert.That(discovered.Select(d => d.SessionId).OrderBy(x => x).ToList())
+            .IsEquivalentTo(new List<string> { Dashless(Root), Dashless(CliRoot) }.OrderBy(x => x).ToList());
     }
 
     // A subagent chain under the CLI root nests exactly as under the GUI root — the per-root parent
     // map is complete because chains never cross roots.
     [Test]
     public async Task Discover_nests_a_subagent_under_the_agy_CLI_root() {
-        var home = NewHome();
-        try {
-            WriteTranscriptUnder(home, CliSub, CliRoot,  UserLine("2026-07-02T19:00:00Z"));
-            WriteTranscriptUnder(home, CliSub, CliChild, UserLine("2026-07-02T19:01:00Z"));
-            AppendInvokeUnder(home, CliSub, CliRoot, CliChild);
+        using var home = new TempDir();
+        WriteTranscriptUnder(home.Path, CliSub, CliRoot,  UserLine("2026-07-02T19:00:00Z"));
+        WriteTranscriptUnder(home.Path, CliSub, CliChild, UserLine("2026-07-02T19:01:00Z"));
+        AppendInvokeUnder(home.Path, CliSub, CliRoot, CliChild);
 
-            var source = new AntigravityImportSource(home: home, geminiCliHome: "");
-            var discovered = await source.DiscoverAsync(
-                new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
-                CancellationToken.None);
+        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var discovered = await source.DiscoverAsync(
+            new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
+            CancellationToken.None);
 
-            await Assert.That(discovered.Count).IsEqualTo(1); // only the root is a session
-            await Assert.That(discovered[0].SessionId).IsEqualTo(Dashless(CliRoot));
-            var children = (List<string>)discovered[0].SourceMeta!["Children"]!;
-            await Assert.That(children).Contains(CliChild);
-        } finally { Directory.Delete(home, recursive: true); }
+        await Assert.That(discovered.Count).IsEqualTo(1); // only the root is a session
+        await Assert.That(discovered[0].SessionId).IsEqualTo(Dashless(CliRoot));
+        var children = (List<string>)discovered[0].SourceMeta!["Children"]!;
+        await Assert.That(children).Contains(CliChild);
     }
 
     [Test]
     public async Task Discover_honors_the_session_filter() {
-        var home = NewHome();
-        try {
-            WriteTranscript(home, SessA, UserLine("2026-07-02T19:00:00Z"));
-            WriteTranscript(home, SessB, UserLine("2026-07-02T19:00:00Z"));
+        using var home = new TempDir();
+        WriteTranscript(home.Path, SessA, UserLine("2026-07-02T19:00:00Z"));
+        WriteTranscript(home.Path, SessB, UserLine("2026-07-02T19:00:00Z"));
 
-            var source = new AntigravityImportSource(home: home, geminiCliHome: "");
-            var discovered = await source.DiscoverAsync(
-                new DiscoveryFilters(FilterCwd: null, FilterSession: SessB, Since: null, MinLines: 0),
-                CancellationToken.None);
+        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var discovered = await source.DiscoverAsync(
+            new DiscoveryFilters(FilterCwd: null, FilterSession: SessB, Since: null, MinLines: 0),
+            CancellationToken.None);
 
-            await Assert.That(discovered.Count).IsEqualTo(1);
-            await Assert.That(discovered[0].SessionId).IsEqualTo(Dashless(SessB));
-        } finally { Directory.Delete(home, recursive: true); }
+        await Assert.That(discovered.Count).IsEqualTo(1);
+        await Assert.That(discovered[0].SessionId).IsEqualTo(Dashless(SessB));
     }
 
     [Test]
@@ -213,18 +195,16 @@ public class AntigravityImportSourceTests {
         const string dashed = "11110000-0000-4000-8000-000000000001";
         var dashless = Guid.Parse(dashed).ToString("N");
 
-        var home = NewHome();
-        try {
-            WriteTranscript(home, dashed, UserLine("2026-07-02T19:00:00Z"));
+        using var home = new TempDir();
+        WriteTranscript(home.Path, dashed, UserLine("2026-07-02T19:00:00Z"));
 
-            var source = new AntigravityImportSource(home: home, geminiCliHome: "");
-            var discovered = await source.DiscoverAsync(
-                new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
-                CancellationToken.None);
+        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        var discovered = await source.DiscoverAsync(
+            new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
+            CancellationToken.None);
 
-            await Assert.That(discovered.Count).IsEqualTo(1);
-            await Assert.That(discovered[0].SessionId).IsEqualTo(dashless);
-        } finally { Directory.Delete(home, recursive: true); }
+        await Assert.That(discovered.Count).IsEqualTo(1);
+        await Assert.That(discovered[0].SessionId).IsEqualTo(dashless);
     }
 
     [Test]
@@ -232,25 +212,23 @@ public class AntigravityImportSourceTests {
         const string dashed = "11110000-0000-4000-8000-000000000001";
         var dashless = Guid.Parse(dashed).ToString("N");
 
-        var home = NewHome();
-        try {
-            WriteTranscript(home, dashed, UserLine("2026-07-02T19:00:00Z"));
-            var source = new AntigravityImportSource(home: home, geminiCliHome: "");
+        using var home = new TempDir();
+        WriteTranscript(home.Path, dashed, UserLine("2026-07-02T19:00:00Z"));
+        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
 
-            // Dashed input matches.
-            var byDashed = await source.DiscoverAsync(
-                new DiscoveryFilters(FilterCwd: null, FilterSession: dashed, Since: null, MinLines: 0),
-                CancellationToken.None);
-            await Assert.That(byDashed.Count).IsEqualTo(1);
-            await Assert.That(byDashed[0].SessionId).IsEqualTo(dashless);
+        // Dashed input matches.
+        var byDashed = await source.DiscoverAsync(
+            new DiscoveryFilters(FilterCwd: null, FilterSession: dashed, Since: null, MinLines: 0),
+            CancellationToken.None);
+        await Assert.That(byDashed.Count).IsEqualTo(1);
+        await Assert.That(byDashed[0].SessionId).IsEqualTo(dashless);
 
-            // Dashless input (the form live capture reports) also matches.
-            var byDashless = await source.DiscoverAsync(
-                new DiscoveryFilters(FilterCwd: null, FilterSession: dashless, Since: null, MinLines: 0),
-                CancellationToken.None);
-            await Assert.That(byDashless.Count).IsEqualTo(1);
-            await Assert.That(byDashless[0].SessionId).IsEqualTo(dashless);
-        } finally { Directory.Delete(home, recursive: true); }
+        // Dashless input (the form live capture reports) also matches.
+        var byDashless = await source.DiscoverAsync(
+            new DiscoveryFilters(FilterCwd: null, FilterSession: dashless, Since: null, MinLines: 0),
+            CancellationToken.None);
+        await Assert.That(byDashless.Count).IsEqualTo(1);
+        await Assert.That(byDashless[0].SessionId).IsEqualTo(dashless);
     }
 
     [Test]
@@ -270,13 +248,11 @@ public class AntigravityImportSourceTests {
 
     [Test]
     public async Task Discover_is_empty_when_no_antigravity_data() {
-        var home = NewHome();
-        try {
-            var source = new AntigravityImportSource(home: home, geminiCliHome: "");
-            await Assert.That(source.IsAvailable).IsFalse();
-            var discovered = await source.DiscoverAsync(
-                new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
-            await Assert.That(discovered.Count).IsEqualTo(0);
-        } finally { Directory.Delete(home, recursive: true); }
+        using var home = new TempDir();
+        var source = new AntigravityImportSource(home: home.Path, geminiCliHome: "");
+        await Assert.That(source.IsAvailable).IsFalse();
+        var discovered = await source.DiscoverAsync(
+            new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
+        await Assert.That(discovered.Count).IsEqualTo(0);
     }
 }

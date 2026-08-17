@@ -20,9 +20,6 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// gate deleted — hence the positional assertions).</para>
 /// </summary>
 public class WorktreeMetadataGateTests {
-    static string TempRepo() =>
-        Path.Combine(Path.GetTempPath(), "kcap-gate-" + Guid.NewGuid().ToString("N")[..12]);
-
     // RunContinuationsAsynchronously: without it a SetResult can run the waiter's continuation inline
     // on this thread, which would make the ordering below prove nothing.
     static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -78,22 +75,17 @@ public class WorktreeMetadataGateTests {
 
     [Test]
     public async Task Second_mutation_on_the_same_repo_waits_for_the_first() {
-        var repo = TempRepo();
-        await AssertSecondWaitsForFirst(repo, repo);
+        using var repo = new TempDir();
+        await AssertSecondWaitsForFirst(repo.Path, repo.Path);
     }
 
     [Test]
     public async Task Equivalent_spellings_of_one_repo_share_a_gate() {
-        var repo = TempRepo();
-        Directory.CreateDirectory(repo);
+        using var repo = new TempDir();
 
-        try {
-            // Same directory, spelled with a "." segment and a trailing separator: the key is the
-            // normalised full path, so these must exclude each other.
-            await AssertSecondWaitsForFirst(repo, Path.Combine(repo, ".") + Path.DirectorySeparatorChar);
-        } finally {
-            try { Directory.Delete(repo, recursive: true); } catch { /* best effort */ }
-        }
+        // Same directory, spelled with a "." segment and a trailing separator: the key is the
+        // normalised full path, so these must exclude each other.
+        await AssertSecondWaitsForFirst(repo.Path, repo.PathTo(".") + Path.DirectorySeparatorChar);
     }
 
     [Test]
@@ -103,17 +95,13 @@ public class WorktreeMetadataGateTests {
         // hand these two spellings different gates and leave one repository unguarded.
         if (OperatingSystem.IsWindows()) return; // creating a symlink needs elevation on Windows
 
-        var root   = TempRepo();
-        var real   = Path.Combine(root, "real");
-        var alias  = Path.Combine(root, "alias");
+        using var root = new TempDir();
+        var real   = root.PathTo("real");
+        var alias  = root.PathTo("alias");
         Directory.CreateDirectory(real);
 
-        try {
-            Directory.CreateSymbolicLink(alias, real);
-            await AssertSecondWaitsForFirst(real, alias);
-        } finally {
-            try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
-        }
+        Directory.CreateSymbolicLink(alias, real);
+        await AssertSecondWaitsForFirst(real, alias);
     }
 
     [Test]
@@ -122,30 +110,27 @@ public class WorktreeMetadataGateTests {
         // must exclude each other even though their paths differ. Keying on the checkout path (rather
         // than rev-parse --git-common-dir) lets these run concurrently — the exact unguarded add this
         // change exists to prevent.
-        var root   = TempRepo();
-        var main   = Path.Combine(root, "main");
-        var linked = Path.Combine(root, "linked");
+        using var root = new TempDir();
+        var main   = root.PathTo("main");
+        var linked = root.PathTo("linked");
         Directory.CreateDirectory(main);
 
-        try {
-            Git(main, "init", "-q", ".");
-            Git(main, "config", "user.email", "t@t");
-            Git(main, "config", "user.name", "t");
-            File.WriteAllText(Path.Combine(main, "a.txt"), "a");
-            Git(main, "add", "-A");
-            Git(main, "commit", "-q", "-m", "init");
-            Git(main, "worktree", "add", "-q", linked, "-b", "side");
+        Git(main, "init", "-q", ".");
+        Git(main, "config", "user.email", "t@t");
+        Git(main, "config", "user.name", "t");
+        File.WriteAllText(Path.Combine(main, "a.txt"), "a");
+        Git(main, "add", "-A");
+        Git(main, "commit", "-q", "-m", "init");
+        Git(main, "worktree", "add", "-q", linked, "-b", "side");
 
-            await AssertSecondWaitsForFirst(main, linked);
-        } finally {
-            try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
-        }
+        await AssertSecondWaitsForFirst(main, linked);
     }
 
     [Test]
     public async Task Mutations_on_different_repos_are_not_serialised() {
-        var repoA = TempRepo();
-        var repoB = TempRepo();
+        using var tmp = new TempDir();
+        var repoA = tmp.PathTo("repoA");
+        var repoB = tmp.PathTo("repoB");
 
         var aEntered = Signal();
         var bEntered = Signal();
@@ -170,13 +155,13 @@ public class WorktreeMetadataGateTests {
 
     [Test]
     public async Task Gate_is_released_when_the_mutation_throws() {
-        var repo = TempRepo();
+        using var repo = new TempDir();
 
         await Assert.That(async () => await WorktreeManager.WithWorktreeMetadataGate(
-            repo, () => throw new InvalidOperationException("git failed"))).Throws<InvalidOperationException>();
+            repo.Path, () => throw new InvalidOperationException("git failed"))).Throws<InvalidOperationException>();
 
         // A leaked permit would hang the next launch on this repo forever, so prove the gate reopens.
-        await WorktreeManager.WithWorktreeMetadataGate(repo, () => Task.CompletedTask)
+        await WorktreeManager.WithWorktreeMetadataGate(repo.Path, () => Task.CompletedTask)
             .WaitAsync(TimeSpan.FromSeconds(30));
     }
 

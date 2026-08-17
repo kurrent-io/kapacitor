@@ -53,24 +53,25 @@ public class WorkItemsNudgeEmitterTests {
         await Assert.That(nudge).Contains("never invent an id");
     }
 
-    static string CodexConfigWithWorkItems() {
-        var dir = Directory.CreateTempSubdirectory("kcap-nudge-resolve-").FullName;
-        var path = Path.Combine(dir, "config.toml");
-        File.WriteAllText(path, "[mcp_servers.kcap-workitems]\ncommand = \"kcap\"\nargs = [\"mcp\", \"workitems\"]\n");
-        return path;
-    }
+    static string CodexConfigWithWorkItems(TempDir tmp) =>
+        tmp.CreateFile("config.toml",
+            "[mcp_servers.kcap-workitems]\ncommand = \"kcap\"\nargs = [\"mcp\", \"workitems\"]\n");
 
     [Test]
     public async Task Resolve_returns_null_when_opted_out() {
+        using var tmp = new TempDir();
+
         // Opt-out wins even for an available harness.
         await Assert.That(WorkItemsNudgeEmitter.Resolve(
-            SessionStartHarness.Codex, "s1", optedOut: true, codexConfigPath: CodexConfigWithWorkItems())).IsNull();
+            SessionStartHarness.Codex, "s1", optedOut: true, codexConfigPath: CodexConfigWithWorkItems(tmp))).IsNull();
     }
 
     [Test]
     public async Task Resolve_returns_the_nudge_for_an_available_harness() {
+        using var tmp = new TempDir();
+
         var nudge = WorkItemsNudgeEmitter.Resolve(
-            SessionStartHarness.Codex, "s1", optedOut: false, codexConfigPath: CodexConfigWithWorkItems());
+            SessionStartHarness.Codex, "s1", optedOut: false, codexConfigPath: CodexConfigWithWorkItems(tmp));
         await Assert.That(nudge).IsNotNull();
         await Assert.That(nudge!).Contains("`s1`");
     }

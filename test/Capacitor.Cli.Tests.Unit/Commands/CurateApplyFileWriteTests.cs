@@ -4,31 +4,24 @@ using Capacitor.Cli.Core.Curation;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class CurateApplyFileWriteTests {
-    static string NewTempDir() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-curate-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        return dir;
-    }
-
     [Test]
     public async Task WriteFileAtomic_writes_content_and_leaves_no_tmp() {
-        var dir  = NewTempDir();
-        var path = Path.Combine(dir, "AGENTS.md");
+        using var dir = new TempDir();
+        var path = dir.PathTo("AGENTS.md");
 
         CurateCommand.WriteFileAtomic(path, "hello\n");
 
         await Assert.That(await File.ReadAllTextAsync(path)).IsEqualTo("hello\n");
         await Assert.That(File.Exists(path + ".tmp")).IsFalse();
-        Directory.Delete(dir, recursive: true);
     }
 
     [Test]
     public async Task ResolveAndDeduplicateTargets_writes_symlink_target_and_preserves_link() {
         if (OperatingSystem.IsWindows()) return;
 
-        var dir    = NewTempDir();
-        var agents = Path.Combine(dir, "AGENTS.md");
-        var claude = Path.Combine(dir, "CLAUDE.md");
+        using var dir = new TempDir();
+        var agents = dir.PathTo("AGENTS.md");
+        var claude = dir.PathTo("CLAUDE.md");
         await File.WriteAllTextAsync(agents, "old\n");
         File.CreateSymbolicLink(claude, agents);         // CLAUDE.md -> AGENTS.md
 
@@ -47,15 +40,14 @@ public class CurateApplyFileWriteTests {
 
         await Assert.That(await File.ReadAllTextAsync(agents)).IsEqualTo("new\n");        // original updated
         await Assert.That(new FileInfo(claude).LinkTarget).IsNotNull();                    // CLAUDE.md still a symlink
-        Directory.Delete(dir, recursive: true);
     }
 
     [Test]
     public async Task WriteFileAtomic_preserves_existing_unix_mode() {
         if (OperatingSystem.IsWindows()) return;
 
-        var dir  = NewTempDir();
-        var path = Path.Combine(dir, "CLAUDE.md");
+        using var dir = new TempDir();
+        var path = dir.PathTo("CLAUDE.md");
         await File.WriteAllTextAsync(path, "old\n");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
         var before = File.GetUnixFileMode(path);
@@ -64,6 +56,5 @@ public class CurateApplyFileWriteTests {
 
         await Assert.That(File.GetUnixFileMode(path)).IsEqualTo(before);
         await Assert.That(await File.ReadAllTextAsync(path)).IsEqualTo("new\n");
-        Directory.Delete(dir, recursive: true);
     }
 }

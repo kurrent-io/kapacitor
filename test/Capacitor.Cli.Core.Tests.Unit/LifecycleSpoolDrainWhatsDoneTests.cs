@@ -26,28 +26,24 @@ public class LifecycleSpoolDrainWhatsDoneTests : IDisposable {
 
     public void Dispose() => _server.Stop();
 
-    static string TmpDir() => Path.Combine(Path.GetTempPath(), $"kcap-wd-{Guid.NewGuid():N}");
-
     [Test]
     public async Task fires_for_a_non_claude_vendor_session_end_with_generate_whats_done() {
         _server.Given(Request.Create().WithPath("/hooks/session-end/kiro").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"generate_whats_done":true}"""));
 
-        var dir = TmpDir();
-        try {
-            var life = new HookSpool(Path.Combine(dir, "spool"));
-            var tx   = new TranscriptSpool(Path.Combine(dir, "tx"));
-            life.Append(Sid, "session-end/kiro", $$"""{"session_id":"{{Sid}}"}""");
+        using var tmp = new TempDir();
+        var life = new HookSpool(tmp.Path);
+        var tx   = new TranscriptSpool(tmp.PathTo("tx"));
+        life.Append(Sid, "session-end/kiro", $$"""{"session_id":"{{Sid}}"}""");
 
-            var calls = new List<(string SessionId, string Vendor)>();
-            using var client = new HttpClient();
-            using var cts    = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await LifecycleSpoolDrain.RunAsync(client, _server.Url!, life, tx, currentSessionId: null,
-                budget: TimeSpan.FromSeconds(5), ct: cts.Token,
-                onWhatsDoneRequested: (sid, vendor) => calls.Add((sid, vendor)));
+        var calls = new List<(string SessionId, string Vendor)>();
+        using var client = new HttpClient();
+        using var cts    = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await LifecycleSpoolDrain.RunAsync(client, _server.Url!, life, tx, currentSessionId: null,
+            budget: TimeSpan.FromSeconds(5), ct: cts.Token,
+            onWhatsDoneRequested: (sid, vendor) => calls.Add((sid, vendor)));
 
-            await Assert.That(calls).IsEquivalentTo([(Sid, "kiro")]);
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(calls).IsEquivalentTo([(Sid, "kiro")]);
     }
 
     [Test]
@@ -55,21 +51,19 @@ public class LifecycleSpoolDrainWhatsDoneTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-end").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"generate_whats_done":true}"""));
 
-        var dir = TmpDir();
-        try {
-            var life = new HookSpool(Path.Combine(dir, "spool"));
-            var tx   = new TranscriptSpool(Path.Combine(dir, "tx"));
-            life.Append(Sid, "session-end", $$"""{"session_id":"{{Sid}}"}""");
+        using var tmp = new TempDir();
+        var life = new HookSpool(tmp.Path);
+        var tx   = new TranscriptSpool(tmp.PathTo("tx"));
+        life.Append(Sid, "session-end", $$"""{"session_id":"{{Sid}}"}""");
 
-            var calls = new List<(string SessionId, string Vendor)>();
-            using var client = new HttpClient();
-            using var cts    = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await LifecycleSpoolDrain.RunAsync(client, _server.Url!, life, tx, currentSessionId: null,
-                budget: TimeSpan.FromSeconds(5), ct: cts.Token,
-                onWhatsDoneRequested: (sid, vendor) => calls.Add((sid, vendor)));
+        var calls = new List<(string SessionId, string Vendor)>();
+        using var client = new HttpClient();
+        using var cts    = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await LifecycleSpoolDrain.RunAsync(client, _server.Url!, life, tx, currentSessionId: null,
+            budget: TimeSpan.FromSeconds(5), ct: cts.Token,
+            onWhatsDoneRequested: (sid, vendor) => calls.Add((sid, vendor)));
 
-            await Assert.That(calls).IsEquivalentTo([(Sid, "claude")]);
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(calls).IsEquivalentTo([(Sid, "claude")]);
     }
 
     [Test]
@@ -77,21 +71,19 @@ public class LifecycleSpoolDrainWhatsDoneTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-end/kiro").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
-        var dir = TmpDir();
-        try {
-            var life = new HookSpool(Path.Combine(dir, "spool"));
-            var tx   = new TranscriptSpool(Path.Combine(dir, "tx"));
-            life.Append(Sid, "session-end/kiro", $$"""{"session_id":"{{Sid}}"}""");
+        using var tmp = new TempDir();
+        var life = new HookSpool(tmp.Path);
+        var tx   = new TranscriptSpool(tmp.PathTo("tx"));
+        life.Append(Sid, "session-end/kiro", $$"""{"session_id":"{{Sid}}"}""");
 
-            var fired = false;
-            using var client = new HttpClient();
-            using var cts    = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await LifecycleSpoolDrain.RunAsync(client, _server.Url!, life, tx, currentSessionId: null,
-                budget: TimeSpan.FromSeconds(5), ct: cts.Token,
-                onWhatsDoneRequested: (_, _) => fired = true);
+        var fired = false;
+        using var client = new HttpClient();
+        using var cts    = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await LifecycleSpoolDrain.RunAsync(client, _server.Url!, life, tx, currentSessionId: null,
+            budget: TimeSpan.FromSeconds(5), ct: cts.Token,
+            onWhatsDoneRequested: (_, _) => fired = true);
 
-            await Assert.That(fired).IsFalse();
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(fired).IsFalse();
     }
 
     [Test]
@@ -99,21 +91,19 @@ public class LifecycleSpoolDrainWhatsDoneTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-start/kiro").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"generate_whats_done":true}"""));
 
-        var dir = TmpDir();
-        try {
-            var life = new HookSpool(Path.Combine(dir, "spool"));
-            var tx   = new TranscriptSpool(Path.Combine(dir, "tx"));
-            life.Append(Sid, "session-start/kiro", $$"""{"session_id":"{{Sid}}"}""");
+        using var tmp = new TempDir();
+        var life = new HookSpool(tmp.Path);
+        var tx   = new TranscriptSpool(tmp.PathTo("tx"));
+        life.Append(Sid, "session-start/kiro", $$"""{"session_id":"{{Sid}}"}""");
 
-            var fired = false;
-            using var client = new HttpClient();
-            using var cts    = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await LifecycleSpoolDrain.RunAsync(client, _server.Url!, life, tx, currentSessionId: null,
-                budget: TimeSpan.FromSeconds(5), ct: cts.Token,
-                onWhatsDoneRequested: (_, _) => fired = true);
+        var fired = false;
+        using var client = new HttpClient();
+        using var cts    = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await LifecycleSpoolDrain.RunAsync(client, _server.Url!, life, tx, currentSessionId: null,
+            budget: TimeSpan.FromSeconds(5), ct: cts.Token,
+            onWhatsDoneRequested: (_, _) => fired = true);
 
-            await Assert.That(fired).IsFalse();
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(fired).IsFalse();
     }
 
     [Test]
@@ -121,20 +111,18 @@ public class LifecycleSpoolDrainWhatsDoneTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-end/kiro").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"generate_whats_done":true}"""));
 
-        var dir = TmpDir();
-        try {
-            var life = new HookSpool(Path.Combine(dir, "spool"));
-            var tx   = new TranscriptSpool(Path.Combine(dir, "tx"));
-            life.Append(Sid, "session-end/kiro", $$"""{"session_id":"{{Sid}}"}""");
+        using var tmp = new TempDir();
+        var life = new HookSpool(tmp.Path);
+        var tx   = new TranscriptSpool(tmp.PathTo("tx"));
+        life.Append(Sid, "session-end/kiro", $$"""{"session_id":"{{Sid}}"}""");
 
-            using var client = new HttpClient();
-            using var cts    = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            // No onWhatsDoneRequested — the daemon's periodic drain and callers that don't need
-            // the side effect may omit it; this must never throw.
-            await LifecycleSpoolDrain.RunAsync(client, _server.Url!, life, tx, currentSessionId: null,
-                budget: TimeSpan.FromSeconds(5), ct: cts.Token);
+        using var client = new HttpClient();
+        using var cts    = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        // No onWhatsDoneRequested — the daemon's periodic drain and callers that don't need
+        // the side effect may omit it; this must never throw.
+        await LifecycleSpoolDrain.RunAsync(client, _server.Url!, life, tx, currentSessionId: null,
+            budget: TimeSpan.FromSeconds(5), ct: cts.Token);
 
-            await Assert.That(life.HasBacklog(Sid)).IsFalse();
-        } finally { try { Directory.Delete(dir, true); } catch { } }
+        await Assert.That(life.HasBacklog(Sid)).IsFalse();
     }
 }

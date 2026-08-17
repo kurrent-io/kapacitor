@@ -19,14 +19,11 @@ public class TelemetryClientTests {
         }
     }
 
-    static string NewSpoolPath() =>
-        Path.Combine(Path.GetTempPath(), $"kcap-client-{Guid.NewGuid():N}", "spool.jsonl");
-
     static TelemetryEvent Event(string name) =>
         new(name, new JsonObject { ["source"] = "cli" }, DateTimeOffset.UnixEpoch);
 
-    static TelemetryClient Client(StubHandler handler, out TelemetrySpool spool) {
-        spool = new TelemetrySpool(NewSpoolPath());
+    static TelemetryClient Client(StubHandler handler, string spoolPath, out TelemetrySpool spool) {
+        spool = new TelemetrySpool(spoolPath);
         return new TelemetryClient(handler, spool, "phc_test", "https://phog.example");
     }
 
@@ -47,7 +44,8 @@ public class TelemetryClientTests {
     [Test]
     public async Task Flush_with_empty_queue_makes_no_request() {
         var handler = new StubHandler(HttpStatusCode.OK);
-        var client  = Client(handler, out _);
+        using var tmp = TempDir.WithPathTo("spool.jsonl", out var spoolPath);
+        var client  = Client(handler, spoolPath, out _);
 
         await client.FlushAsync("device-1", null, TimeSpan.FromSeconds(2));
 
@@ -57,7 +55,8 @@ public class TelemetryClientTests {
     [Test]
     public async Task Flush_posts_queued_events() {
         var handler = new StubHandler(HttpStatusCode.OK);
-        var client  = Client(handler, out _);
+        using var tmp = TempDir.WithPathTo("spool.jsonl", out var spoolPath);
+        var client  = Client(handler, spoolPath, out _);
         client.Enqueue(Event("cli_command"));
 
         var ok = await client.FlushAsync("device-1", null, TimeSpan.FromSeconds(2));
@@ -71,7 +70,8 @@ public class TelemetryClientTests {
     [Test]
     public async Task Successful_flush_empties_the_queue() {
         var handler = new StubHandler(HttpStatusCode.OK);
-        var client  = Client(handler, out _);
+        using var tmp = TempDir.WithPathTo("spool.jsonl", out var spoolPath);
+        var client  = Client(handler, spoolPath, out _);
         client.Enqueue(Event("cli_command"));
 
         await client.FlushAsync("device-1", null, TimeSpan.FromSeconds(2));
@@ -83,7 +83,8 @@ public class TelemetryClientTests {
     [Test]
     public async Task Failed_flush_spills_to_the_spool() {
         var handler = new StubHandler(HttpStatusCode.ServiceUnavailable);
-        var client  = Client(handler, out var spool);
+        using var tmp = TempDir.WithPathTo("spool.jsonl", out var spoolPath);
+        var client  = Client(handler, spoolPath, out var spool);
         client.Enqueue(Event("cli_command"));
 
         var ok = await client.FlushAsync("device-1", null, TimeSpan.FromSeconds(2));
@@ -95,7 +96,8 @@ public class TelemetryClientTests {
     [Test]
     public async Task Network_exception_spills_rather_than_propagating() {
         var handler = new StubHandler(HttpStatusCode.OK, new HttpRequestException("offline"));
-        var client  = Client(handler, out var spool);
+        using var tmp = TempDir.WithPathTo("spool.jsonl", out var spoolPath);
+        var client  = Client(handler, spoolPath, out var spool);
         client.Enqueue(Event("cli_command"));
 
         var ok = await client.FlushAsync("device-1", null, TimeSpan.FromSeconds(2));
@@ -107,7 +109,8 @@ public class TelemetryClientTests {
     [Test]
     public async Task Spooled_events_are_replayed_on_the_next_flush() {
         var failing = new StubHandler(HttpStatusCode.ServiceUnavailable);
-        var spool   = new TelemetrySpool(NewSpoolPath());
+        using var tmp = TempDir.WithPathTo("spool.jsonl", out var spoolPath);
+        var spool   = new TelemetrySpool(spoolPath);
 
         var first = new TelemetryClient(failing, spool, "phc_test", "https://phog.example");
         first.Enqueue(Event("offline_event"));
@@ -129,7 +132,8 @@ public class TelemetryClientTests {
     [Test]
     public async Task Repeated_failures_do_not_duplicate_spooled_events() {
         var handler = new StubHandler(HttpStatusCode.ServiceUnavailable);
-        var client  = Client(handler, out var spool);
+        using var tmp = TempDir.WithPathTo("spool.jsonl", out var spoolPath);
+        var client  = Client(handler, spoolPath, out var spool);
         client.Enqueue(Event("cli_command"));
 
         await client.FlushAsync("device-1", null, TimeSpan.FromSeconds(2));
@@ -151,7 +155,8 @@ public class TelemetryClientTests {
     [Test]
     public async Task Budget_already_exhausted_by_drain_and_build_spills_without_a_request() {
         var handler = new StubHandler(HttpStatusCode.OK);
-        var spool   = new TelemetrySpool(NewSpoolPath());
+        using var tmp = TempDir.WithPathTo("spool.jsonl", out var spoolPath);
+        var spool   = new TelemetrySpool(spoolPath);
         var clock   = new FakeTimeProvider(TimeSpan.FromSeconds(10));
         var client  = new TelemetryClient(handler, spool, "phc_test", "https://phog.example", clock);
         client.Enqueue(Event("cli_command"));
@@ -169,7 +174,8 @@ public class TelemetryClientTests {
     [Test]
     public async Task Budget_with_time_remaining_after_drain_and_build_still_posts() {
         var handler = new StubHandler(HttpStatusCode.OK);
-        var spool   = new TelemetrySpool(NewSpoolPath());
+        using var tmp = TempDir.WithPathTo("spool.jsonl", out var spoolPath);
+        var spool   = new TelemetrySpool(spoolPath);
         var clock   = new FakeTimeProvider(TimeSpan.FromMilliseconds(1));
         var client  = new TelemetryClient(handler, spool, "phc_test", "https://phog.example", clock);
         client.Enqueue(Event("cli_command"));
@@ -183,7 +189,8 @@ public class TelemetryClientTests {
     [Test]
     public async Task Org_group_reaches_the_payload() {
         var handler = new StubHandler(HttpStatusCode.OK);
-        var client  = Client(handler, out _);
+        using var tmp = TempDir.WithPathTo("spool.jsonl", out var spoolPath);
+        var client  = Client(handler, spoolPath, out _);
         client.Enqueue(Event("cli_command"));
 
         await client.FlushAsync("device-1", "acme", TimeSpan.FromSeconds(2));

@@ -15,10 +15,9 @@ namespace Capacitor.Cli.Daemon.Tests.Unit;
 /// </summary>
 [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
 public class DaemonLockTests {
-    static string CreateScratchDir() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-lock-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+    static TempDir CreateScratchDir() {
+        var dir = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(dir.Path);
 
         return dir;
     }
@@ -27,7 +26,7 @@ public class DaemonLockTests {
 
     [Test]
     public async Task TryAcquire_OnFreshSlot_ReturnsLockWithFreshInstanceId() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             var l = DaemonLock.TryAcquire("alpha");
@@ -53,13 +52,12 @@ public class DaemonLockTests {
             await Assert.That(reacquired!.InstanceId).IsNotEqualTo(expected);
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
     [Test]
     public async Task TryAcquire_OnSameName_WhileHeld_Fails() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             using var first = DaemonLock.TryAcquire("alpha");
@@ -69,13 +67,12 @@ public class DaemonLockTests {
             await Assert.That(second).IsNull();
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
     [Test]
     public async Task TryAcquire_DifferentNames_BothSucceed() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             using var alpha = DaemonLock.TryAcquire("alpha");
@@ -86,13 +83,12 @@ public class DaemonLockTests {
             await Assert.That(alpha!.InstanceId).IsNotEqualTo(beta!.InstanceId);
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
     [Test]
     public async Task Dispose_ReleasesLock_AllowingReAcquisition() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             var first = DaemonLock.TryAcquire("alpha");
@@ -108,7 +104,6 @@ public class DaemonLockTests {
             await Assert.That(second!.InstanceId).IsNotEqualTo(firstId);
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -121,7 +116,7 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task Dispose_DoesNotDeleteLockFile() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             var l        = DaemonLock.TryAcquire("alpha")!;
@@ -134,7 +129,6 @@ public class DaemonLockTests {
             await Assert.That(File.Exists(lockPath)).IsTrue();
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -146,7 +140,7 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task Dispose_DoesNotDeletePidFile_IfItPointsToSomeoneElsesPid() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             var l       = DaemonLock.TryAcquire("alpha")!;
@@ -163,7 +157,6 @@ public class DaemonLockTests {
             await Assert.That(File.ReadAllText(pidPath)).StartsWith("99999");
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -176,7 +169,7 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task TryAcquire_WritesPidFile_WithPidAndStableStartToken() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             using var l = DaemonLock.TryAcquire("alpha");
@@ -192,7 +185,6 @@ public class DaemonLockTests {
             await Assert.That(lines[1]).IsEqualTo(ProcessStartToken.ForCurrent());
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -203,7 +195,7 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task TryAcquire_WritesVersionMarker() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             using var l = DaemonLock.TryAcquire("alpha", "0.4.11+sha.abc1234");
@@ -212,7 +204,6 @@ public class DaemonLockTests {
             await Assert.That(DaemonVersionMarker.TryRead("alpha")).IsEqualTo("0.4.11+sha.abc1234");
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -223,7 +214,7 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task TryAcquire_StillSucceeds_WhenVersionMarkerWriteFails() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             // Plant a directory where the marker file would go, so the atomic
@@ -236,13 +227,12 @@ public class DaemonLockTests {
             await Assert.That(l!.InstanceId).IsNotEmpty();
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
     [Test]
     public async Task Dispose_DeletesVersionMarker_WhenPidStillOurs() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             var l = DaemonLock.TryAcquire("alpha", "0.4.11")!;
@@ -253,7 +243,6 @@ public class DaemonLockTests {
             await Assert.That(File.Exists(DaemonLockPaths.VersionPath("alpha"))).IsFalse();
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -265,7 +254,7 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task Dispose_DoesNotDeleteVersionMarker_IfPidPointsToSomeoneElse() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             var l = DaemonLock.TryAcquire("alpha", "0.4.10")!;
@@ -279,13 +268,12 @@ public class DaemonLockTests {
             await Assert.That(DaemonVersionMarker.TryRead("alpha")).IsEqualTo("0.4.11");
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
     [Test]
     public async Task TryAcquire_AfterStaleLockFileLeftBehind_StillAcquires() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             // Simulate a daemon that died without cleanup: lockfile exists,
@@ -299,7 +287,6 @@ public class DaemonLockTests {
             await Assert.That(l!.InstanceId).IsNotEqualTo("stale-instance-id");
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -313,7 +300,7 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task TryAcquire_WhenPriorHolderLeftStalePidFile_ReportsUncleanExit() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             // A well-formed PID file from a prior holder that never cleaned up.
@@ -326,7 +313,6 @@ public class DaemonLockTests {
             await Assert.That(l.PriorHolderPid).IsEqualTo(424242);
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -337,7 +323,7 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task TryAcquire_WhenStalePidFileUnparseable_StillReportsUncleanExit_WithNullPid() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             DaemonLockPaths.EnsureDirectory();
@@ -349,7 +335,6 @@ public class DaemonLockTests {
             await Assert.That(l.PriorHolderPid).IsNull();
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -363,7 +348,7 @@ public class DaemonLockTests {
     public async Task TryAcquire_WhenStalePidFilePresentButUnreadable_ReportsUncleanExit_WithNullPid() {
         if (OperatingSystem.IsWindows()) return; // Unix permission model only
 
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             DaemonLockPaths.EnsureDirectory();
@@ -381,13 +366,12 @@ public class DaemonLockTests {
         } finally {
             Restore();
             try { File.SetUnixFileMode(DaemonLockPaths.PidPath("alpha"), UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch { /* best-effort */ }
-            Directory.Delete(dir, recursive: true);
         }
     }
 
     [Test]
     public async Task TryAcquire_OnFreshSlot_ReportsCleanPriorExit() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             using var l = DaemonLock.TryAcquire("alpha");
@@ -396,7 +380,6 @@ public class DaemonLockTests {
             await Assert.That(l.PriorHolderPid).IsNull();
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -407,7 +390,7 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task TryAcquire_AfterCleanDispose_ReportsCleanPriorExit() {
-        var dir = CreateScratchDir();
+        using var dir = CreateScratchDir();
 
         try {
             DaemonLock.TryAcquire("alpha")!.Dispose();
@@ -418,7 +401,6 @@ public class DaemonLockTests {
             await Assert.That(l.PriorHolderPid).IsNull();
         } finally {
             Restore();
-            Directory.Delete(dir, recursive: true);
         }
     }
 }

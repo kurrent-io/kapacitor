@@ -4,22 +4,21 @@ using Capacitor.Cli.Core.Telemetry;
 namespace Capacitor.Cli.Core.Tests.Unit.Telemetry;
 
 public class TelemetrySpoolTests {
-    static string NewPath() =>
-        Path.Combine(Path.GetTempPath(), $"kcap-spool-{Guid.NewGuid():N}", "telemetry-spool.jsonl");
-
     static TelemetryEvent Event(string name) =>
         new(name, new JsonObject { ["source"] = "cli" }, DateTimeOffset.UnixEpoch);
 
     [Test]
     public async Task Drain_of_missing_file_is_empty() {
-        var spool = new TelemetrySpool(NewPath());
+        using var tmp = TempDir.WithPathTo("telemetry-spool.jsonl", out var spoolPath);
+        var spool = new TelemetrySpool(spoolPath);
 
         await Assert.That(spool.DrainAll().Count).IsEqualTo(0);
     }
 
     [Test]
     public async Task Appended_events_round_trip() {
-        var spool = new TelemetrySpool(NewPath());
+        using var tmp = TempDir.WithPathTo("telemetry-spool.jsonl", out var spoolPath);
+        var spool = new TelemetrySpool(spoolPath);
         spool.Append([Event("a"), Event("b")]);
 
         var drained = spool.DrainAll();
@@ -32,7 +31,7 @@ public class TelemetrySpoolTests {
 
     [Test]
     public async Task Appends_accumulate_across_instances() {
-        var path = NewPath();
+        using var tmp = TempDir.WithPathTo("telemetry-spool.jsonl", out var path);
         new TelemetrySpool(path).Append([Event("a")]);
         new TelemetrySpool(path).Append([Event("b")]);
 
@@ -41,7 +40,7 @@ public class TelemetrySpoolTests {
 
     [Test]
     public async Task Clear_empties_the_spool() {
-        var path  = NewPath();
+        using var tmp = TempDir.WithPathTo("telemetry-spool.jsonl", out var path);
         var spool = new TelemetrySpool(path);
         spool.Append([Event("a")]);
         spool.Clear();
@@ -51,8 +50,7 @@ public class TelemetrySpoolTests {
 
     [Test]
     public async Task Corrupt_lines_are_skipped_not_fatal() {
-        var path = NewPath();
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var tmp = TempDir.WithPathTo("telemetry-spool.jsonl", out var path);
         File.WriteAllText(path, "{ not json\n");
         var spool = new TelemetrySpool(path);
         spool.Append([Event("good")]);
@@ -65,8 +63,7 @@ public class TelemetrySpoolTests {
 
     [Test]
     public async Task Type_mismatched_fields_are_skipped_not_fatal() {
-        var path = NewPath();
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var tmp = TempDir.WithPathTo("telemetry-spool.jsonl", out var path);
         // Structurally valid JSON with a wrong field type: GetValue<string>() throws
         // InvalidOperationException, not JsonException, so a narrow filter lets it escape.
         File.WriteAllText(path, "{\"event\":123,\"timestamp\":\"1970-01-01T00:00:00+00:00\",\"properties\":{}}\n");
@@ -82,7 +79,7 @@ public class TelemetrySpoolTests {
     // Drop-oldest keeps the newest events, which are the ones most likely to still matter.
     [Test]
     public async Task Oldest_events_are_dropped_past_the_cap() {
-        var path  = NewPath();
+        using var tmp = TempDir.WithPathTo("telemetry-spool.jsonl", out var path);
         var spool = new TelemetrySpool(path, maxEvents: 10);
 
         for (var i = 0; i < 25; i++) spool.Append([Event($"e{i}")]);

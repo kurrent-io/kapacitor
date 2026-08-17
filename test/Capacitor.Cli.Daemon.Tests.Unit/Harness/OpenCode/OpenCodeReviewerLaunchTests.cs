@@ -11,19 +11,17 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.OpenCode;
 /// which for this vendor is the whole trust vector, since <c>opencode acp</c> has no trust argv. An
 /// argv assertion here would certify nothing.
 /// </summary>
-public class OpenCodeReviewerLaunchTests {
+public class OpenCodeReviewerLaunchTests : IDisposable {
     const string InstalledVersion = "1.18.9";
 
-    static string StateDir() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-oc-launch-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        return dir;
-    }
+    readonly TempDir _stateDir = new();
 
-    static DaemonConfig EnabledConfig(string? stateDir = null) {
+    public void Dispose() => _stateDir.Dispose();
+
+    DaemonConfig EnabledConfig(string? stateDir = null) {
         var config = new DaemonConfig {
             OpenCodeUnattendedReviewerEnabled = true,
-            StateDir = stateDir ?? StateDir(),
+            StateDir = stateDir ?? _stateDir.Path,
             Name = "test-daemon",
             DaemonEpoch = "epoch-1"
         };
@@ -46,7 +44,7 @@ public class OpenCodeReviewerLaunchTests {
         DaemonBridgeUrl: null, CapacitorPath: "/usr/local/bin/kcap")
         with { McpAllowlist = mcpAllowlist };
 
-    static System.Diagnostics.ProcessStartInfo Psi(
+    System.Diagnostics.ProcessStartInfo Psi(
             bool isReviewFlow, DaemonConfig? config = null, string[]? mcpAllowlist = null) =>
         AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
             AcpVendorDescriptors.OpenCode, config ?? EnabledConfig(), Ctx(isReviewFlow, mcpAllowlist),
@@ -177,7 +175,7 @@ public class OpenCodeReviewerLaunchTests {
     public async Task AReviewLaunch_GetsAnEmptyIsolatedConfigDirectory() {
         SkipOnWindows();
 
-        var stateDir = StateDir();
+        var stateDir = _stateDir.Path;
         var psi = Psi(isReviewFlow: true, EnabledConfig(stateDir));
 
         var dir = psi.Environment[OpenCodeLaunchEnvironment.ConfigDirVariable];
@@ -229,7 +227,7 @@ public class OpenCodeReviewerLaunchTests {
 
         var config = new DaemonConfig {
             OpenCodeUnattendedReviewerEnabled = false,
-            StateDir = StateDir(), Name = "test-daemon", DaemonEpoch = "epoch-1"
+            StateDir = _stateDir.Path, Name = "test-daemon", DaemonEpoch = "epoch-1"
         };
 
         await Assert.That(() => Psi(isReviewFlow: true, config))
@@ -247,7 +245,7 @@ public class OpenCodeReviewerLaunchTests {
 
         var config = new DaemonConfig {
             OpenCodeUnattendedReviewerEnabled = true,
-            StateDir = StateDir(), Name = "test-daemon", DaemonEpoch = "epoch-1"
+            StateDir = _stateDir.Path, Name = "test-daemon", DaemonEpoch = "epoch-1"
         };
 
         await Assert.That(() => Psi(isReviewFlow: true, config))

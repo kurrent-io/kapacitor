@@ -12,11 +12,6 @@ namespace Capacitor.Cli.Core.Tests.Unit;
 /// reference assemblies, so a build compiles whether or not they are actually loadable at run time
 /// on Windows. Only running this code on the Windows CI leg proves it.</summary>
 public class ConfigFileLockTests {
-    // Never created — Acquire only hashes the canonical path — but unique per test so parallel
-    // tests never contend for one another's mutex.
-    static string NewConfigPath() =>
-        Path.Combine(Path.GetTempPath(), "kcap-cfg-lock-tests", Guid.NewGuid().ToString("N"), "config.json");
-
     /// A Mutex is thread-affine: WaitOne and ReleaseMutex must run on the same thread, and an await
     /// between them can resume on a different pool thread (ReleaseMutex then throws). Production has
     /// the same constraint — see ConfigMutator. So every lock body here runs on its own dedicated
@@ -48,7 +43,7 @@ public class ConfigFileLockTests {
 
     [Test]
     public async Task The_lock_is_acquirable_released_and_reacquirable() {
-        var path = NewConfigPath();
+        using var tmp = TempDir.WithPathTo("config.json", out var path);
 
         // On Windows this is the MutexAcl.Create path: a DACL'd Global\ mutex. A missing or
         // unloadable System.Threading.AccessControl surfaces here and nowhere earlier.
@@ -62,7 +57,7 @@ public class ConfigFileLockTests {
 
     [Test]
     public async Task A_second_acquirer_of_the_same_path_times_out_while_the_lock_is_held() {
-        var path = NewConfigPath();
+        using var tmp = TempDir.WithPathTo("config.json", out var path);
         Exception? contender = null;
 
         var failure = await OnItsOwnThreadAsync(() => {
@@ -80,8 +75,9 @@ public class ConfigFileLockTests {
 
     [Test]
     public async Task Distinct_config_paths_do_not_share_a_lock() {
-        var held  = NewConfigPath();
-        var other = NewConfigPath();
+        using var tmp = new TempDir();
+        var held  = tmp.PathTo("held");
+        var other = tmp.PathTo("other");
         Exception? contender = null;
 
         var failure = await OnItsOwnThreadAsync(() => {
@@ -105,7 +101,7 @@ public class ConfigFileLockTests {
     /// OperatingSystem.IsWindows() guard across the lambda boundary into the thread body below.
     [SupportedOSPlatform("windows")]
     static async Task AssertGlobalMutexDaclAsync() {
-        var path = NewConfigPath();
+        using var tmp = TempDir.WithPathTo("config.json", out var path);
         // Deliberately recomputed rather than shared with ConfigFileLock: the name IS the
         // cross-process, cross-VERSION contract (the class doc records a past rename that silently
         // lost mutual exclusion), and a shared helper would make this test agree with whatever the

@@ -12,14 +12,12 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Kiro;
 /// — not on a round's outcome. A round that completes proves nothing about whether a tool was
 /// trusted if the model never called it.
 /// </summary>
-public class KiroReviewerLaunchTests {
+public class KiroReviewerLaunchTests : IDisposable {
     const string InstalledVersion = "2.16.0";
 
-    static string StateDir() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-kiro-launch-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        return dir;
-    }
+    readonly TempDir _stateDir = new();
+
+    public void Dispose() => _stateDir.Dispose();
 
     static DaemonConfig EnabledConfig(string stateDir) {
         var config = new DaemonConfig {
@@ -63,7 +61,7 @@ public class KiroReviewerLaunchTests {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
-        var value = TrustValue(Psi(isReviewFlow: true, EnabledConfig(StateDir())));
+        var value = TrustValue(Psi(isReviewFlow: true, EnabledConfig(_stateDir.Path)));
 
         await Assert.That(value.Split(',')).Contains("fs_read");
         await Assert.That(value.Split(',')).Contains("thinking");
@@ -81,7 +79,7 @@ public class KiroReviewerLaunchTests {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
-        var psi   = Psi(isReviewFlow: true, EnabledConfig(StateDir()), mcpAllowlist: ["kcap-review"]);
+        var psi   = Psi(isReviewFlow: true, EnabledConfig(_stateDir.Path), mcpAllowlist: ["kcap-review"]);
         var value = TrustValue(psi);
 
         // Assert the exact @server/tool PAIRS. Checking "kcap-review" and "/{tool}" separately would
@@ -110,7 +108,7 @@ public class KiroReviewerLaunchTests {
         // no trust argv, which is exactly the assertion that should hold on a platform where the
         // reviewer is unavailable. Skipping it there would drop the coverage that matters most.
 
-        var psi = Psi(isReviewFlow: false, EnabledConfig(StateDir()));
+        var psi = Psi(isReviewFlow: false, EnabledConfig(_stateDir.Path));
 
         await Assert.That(psi.ArgumentList.Contains("--trust-tools")).IsFalse();
         await Assert.That(psi.Environment.ContainsKey("KIRO_HOME")).IsFalse();
@@ -121,7 +119,7 @@ public class KiroReviewerLaunchTests {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
-        var psi = Psi(isReviewFlow: true, EnabledConfig(StateDir()));
+        var psi = Psi(isReviewFlow: true, EnabledConfig(_stateDir.Path));
 
         await Assert.That(psi.Environment.ContainsKey("KIRO_HOME")).IsTrue();
 
@@ -146,7 +144,7 @@ public class KiroReviewerLaunchTests {
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
         var config = new DaemonConfig {
-            StateDir = StateDir(), Name = "test-daemon", KiroUnattendedReviewerEnabled = false
+            StateDir = _stateDir.Path, Name = "test-daemon", KiroUnattendedReviewerEnabled = false
         };
 
         await Assert.That(() => Psi(isReviewFlow: true, config))
@@ -164,7 +162,7 @@ public class KiroReviewerLaunchTests {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only.");
 
-        var stateDir = StateDir();
+        var stateDir = _stateDir.Path;
         var config = new DaemonConfig { StateDir = stateDir, Name = "test-daemon", DaemonEpoch = "epoch-1" };
 
         // Seeded exactly as a real boot seeds it, which is now unconditional.
@@ -190,7 +188,7 @@ public class KiroReviewerLaunchTests {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
-        var config = EnabledConfig(StateDir());
+        var config = EnabledConfig(_stateDir.Path);
 
         var psi = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
             AcpVendorDescriptors.Kiro, config, Ctx(isReviewFlow: true),
@@ -209,7 +207,7 @@ public class KiroReviewerLaunchTests {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
-        var config = EnabledConfig(StateDir());
+        var config = EnabledConfig(_stateDir.Path);
 
         await Assert.That(() => AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
                 AcpVendorDescriptors.Kiro, config, Ctx(isReviewFlow: true),
@@ -229,7 +227,7 @@ public class KiroReviewerLaunchTests {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
-        var config = EnabledConfig(StateDir());
+        var config = EnabledConfig(_stateDir.Path);
         config.KiroReviewerLaunchTimeoutSeconds = 1;
 
         // Streams that never yield a frame: the child is up, the pipe is open, nothing arrives.
@@ -301,7 +299,7 @@ public class KiroReviewerLaunchTests {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only.");
 
-        var config = EnabledConfig(StateDir());
+        var config = EnabledConfig(_stateDir.Path);
         var agent  = new FakeAcpAgent();
         var conn   = new CaptureServerConnection();
 
@@ -355,7 +353,7 @@ public class KiroReviewerLaunchTests {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only.");
 
-        var config = EnabledConfig(StateDir());
+        var config = EnabledConfig(_stateDir.Path);
         var agent  = new FakeAcpAgent();
         var conn   = new CaptureServerConnection();
         var child  = new AliveSilentProcess();

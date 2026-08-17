@@ -24,15 +24,11 @@ public class BorrowAuthorizerTests {
 
     [Test]
     public async Task GitRooted_cwd_with_empty_allowlist_is_allowed() {
-        var repo = MakeTempRepo();
-        try {
-            var result = await new BorrowAuthorizer(new DaemonConfig()).AuthorizeBorrowAsync(repo);
+        using var repo = MakeTempRepo();
+        var result = await new BorrowAuthorizer(new DaemonConfig()).AuthorizeBorrowAsync(repo.Path);
 
-            await Assert.That(result.Allowed).IsTrue();
-            await Assert.That(result.CanonicalGitRoot).IsEqualTo(BorrowAuthorizer.Canonicalize(repo));
-        } finally {
-            Directory.Delete(repo, recursive: true);
-        }
+        await Assert.That(result.Allowed).IsTrue();
+        await Assert.That(result.CanonicalGitRoot).IsEqualTo(BorrowAuthorizer.Canonicalize(repo.Path));
     }
 
     [Test]
@@ -67,19 +63,18 @@ public class BorrowAuthorizerTests {
 
     [Test]
     public async Task Symlinked_cwd_resolving_into_allowed_git_root_is_allowed() {
-        var repo       = MakeTempRepo();
+        using var repo = MakeTempRepo();
         var linkParent = Directory.CreateTempSubdirectory("kcap-borrow-link-");
         var link       = Path.Combine(linkParent.FullName, "link-to-repo");
         try {
-            Directory.CreateSymbolicLink(link, repo);
+            Directory.CreateSymbolicLink(link, repo.Path);
 
             var result = await new BorrowAuthorizer(new DaemonConfig()).AuthorizeBorrowAsync(link);
 
             await Assert.That(result.Allowed).IsTrue();
-            await Assert.That(result.CanonicalCwd).IsEqualTo(BorrowAuthorizer.Canonicalize(repo));
+            await Assert.That(result.CanonicalCwd).IsEqualTo(BorrowAuthorizer.Canonicalize(repo.Path));
         } finally {
             linkParent.Delete(recursive: true);
-            Directory.Delete(repo, recursive: true);
         }
     }
 
@@ -170,12 +165,11 @@ public class BorrowAuthorizerTests {
         }
     }
 
-    static string MakeTempRepo() {
-        var root = Path.Combine(Path.GetTempPath(), "kcap-borrow-repo-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(root);
-        Run(root, "init", "-q");
+    static TempDir MakeTempRepo() {
+        var repo = new TempDir();
+        Run(repo.Path, "init", "-q");
 
-        return root;
+        return repo;
     }
 
     static void Run(string cwd, params string[] args) {

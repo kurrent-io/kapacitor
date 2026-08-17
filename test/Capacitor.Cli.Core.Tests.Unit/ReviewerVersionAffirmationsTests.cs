@@ -221,33 +221,27 @@ public class ReviewerVersionAffirmationsTests {
 /// Gemini's gate, which is the exact failure the gate exists to prevent.
 /// </summary>
 public class ReviewerVersionStoreVendorKeyingTests {
-    static string TempStateDir() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-reviewer-store-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        return dir;
-    }
-
     [Test]
     public async Task EachVendorHasItsOwnRecord() {
-        var dir = TempStateDir();
+        using var dir = new TempDir();
 
-        new ReviewerVersionStore(dir, "kiro").Affirm("2.16.0");
+        new ReviewerVersionStore(dir.Path, "kiro").Affirm("2.16.0");
 
-        await Assert.That(new ReviewerVersionStore(dir, "kiro").Affirmed).IsEqualTo("2.16.0");
-        await Assert.That(new ReviewerVersionStore(dir, "gemini").Affirmed).IsNull()
+        await Assert.That(new ReviewerVersionStore(dir.Path, "kiro").Affirmed).IsEqualTo("2.16.0");
+        await Assert.That(new ReviewerVersionStore(dir.Path, "gemini").Affirmed).IsNull()
             .Because("affirming one vendor's build must not clear another vendor's gate");
-        await Assert.That(ReviewerVersionStore.RecordExists(dir, "gemini")).IsFalse();
+        await Assert.That(ReviewerVersionStore.RecordExists(dir.Path, "gemini")).IsFalse();
     }
 
     [Test]
     public async Task TwoVendorsCanBeAffirmedIndependently() {
-        var dir = TempStateDir();
+        using var dir = new TempDir();
 
-        new ReviewerVersionStore(dir, "kiro").Affirm("2.16.0");
-        new ReviewerVersionStore(dir, "gemini").Affirm("0.54.0");
+        new ReviewerVersionStore(dir.Path, "kiro").Affirm("2.16.0");
+        new ReviewerVersionStore(dir.Path, "gemini").Affirm("0.54.0");
 
-        await Assert.That(new ReviewerVersionStore(dir, "kiro").Affirmed).IsEqualTo("2.16.0");
-        await Assert.That(new ReviewerVersionStore(dir, "gemini").Affirmed).IsEqualTo("0.54.0");
+        await Assert.That(new ReviewerVersionStore(dir.Path, "kiro").Affirmed).IsEqualTo("2.16.0");
+        await Assert.That(new ReviewerVersionStore(dir.Path, "gemini").Affirmed).IsEqualTo("0.54.0");
     }
 
     /// <summary>

@@ -26,9 +26,22 @@ public sealed class TempDir : IDisposable {
         return System.IO.Path.Combine(parts);
     }
 
+    /// <summary>A temp dir together with the path of one entry under it — for the common case of a
+    /// test that needs a single absent path and never refers to the directory again:
+    /// <c>using var tmp = TempDir.WithPathTo("config.json", out var path);</c>. Nothing is created.</summary>
+    // callerFilePath is forwarded, not re-captured: taking the ctor's default here would name every
+    // such directory after this file instead of the calling suite.
+    public static TempDir WithPathTo(string relativePath, out string path, [CallerFilePath] string callerFilePath = "") {
+        var dir = new TempDir(callerFilePath);
+        path = dir.PathTo(relativePath);
+        return dir;
+    }
+
     /// <summary>Creates a directory (and any missing parents) and returns its path.</summary>
-    public string CreateDir(params ReadOnlySpan<string> segments) =>
-        Directory.CreateDirectory(PathTo(segments)).FullName;
+    public string CreateDir(params ReadOnlySpan<string> segments) {
+        var path = PathTo(segments);
+        return Directory.CreateDirectory(path).FullName;
+    }
 
     /// <summary>Writes a file (creating any missing parent directories) and returns its path.</summary>
     public string CreateFile(string relativePath, string content = "") {

@@ -13,7 +13,11 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
     nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
     nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
 ])]
-public class CliTelemetryTests {
+public class CliTelemetryTests : IDisposable {
+    readonly TempDir _stateDir = new();
+
+    public void Dispose() => _stateDir.Dispose();
+
     // CliTelemetry holds process-global static state (Enabled, TestSink, ...). A prior test
     // elsewhere in the suite (e.g. one that persists `telemetry off`) can leave Enabled=false
     // behind via CliTelemetry.DiscardAndDisable — reset before touching TestSink so every test
@@ -24,14 +28,13 @@ public class CliTelemetryTests {
 
     // Side effect: also points TelemetryDeviceId at a fresh, colocated file, so every Initialize()
     // call below mints its own device id rather than reading a leftover from another test.
-    static string NewStatePath() {
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-facade-{Guid.NewGuid():N}");
-        TelemetryDeviceId.PathOverride = Path.Combine(dir, "telemetry-device.json");
-        return Path.Combine(dir, "telemetry.json");
+    static string StatePath(TempDir tmp) {
+        TelemetryDeviceId.PathOverride = tmp.PathTo("telemetry-device.json");
+        return tmp.PathTo("telemetry.json");
     }
 
-    static List<TelemetryEvent> StartCapturing(string command = "setup", string? serverUrl = null) {
-        TelemetryState.PathOverride = NewStatePath();
+    List<TelemetryEvent> StartCapturing(string command = "setup", string? serverUrl = null) {
+        TelemetryState.PathOverride = StatePath(_stateDir);
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
         CliTelemetry.Initialize(command, serverUrl, loggedIn: false);
@@ -43,7 +46,7 @@ public class CliTelemetryTests {
 
     [Test]
     public async Task Capture_records_the_event_with_shared_properties() {
-        // StartCapturing() always begins from a brand-new device state file (fresh NewStatePath()),
+        // StartCapturing() always begins from a brand-new device state file (this test's own _stateDir),
         // so Initialize's first-run notice fires and "cli_first_run" lands in the sink too (see
         // First_run_emits_cli_first_run_once_per_device below) — filter by name rather than assume
         // this is the only event, the same way Record_command_emits_cli_command_with_exit_code does.
@@ -105,7 +108,8 @@ public class CliTelemetryTests {
 
     [Test]
     public async Task Disabled_telemetry_captures_nothing() {
-        TelemetryState.PathOverride = NewStatePath();
+        using var tmp = new TempDir();
+        TelemetryState.PathOverride = StatePath(tmp);
         TelemetryState.SetEnabled(false);
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
@@ -138,7 +142,8 @@ public class CliTelemetryTests {
 
     [Test]
     public async Task First_run_emits_cli_first_run_once_per_device() {
-        var path = NewStatePath();
+        using var tmp = new TempDir();
+        var path = StatePath(tmp);
 
         TelemetryState.PathOverride = path;
         var firstSink = new List<TelemetryEvent>();
@@ -161,7 +166,8 @@ public class CliTelemetryTests {
     // human-invoked, reportable command afterward must still see it.
     [Test]
     public async Task Mcp_server_initialise_does_not_consume_the_first_run_notice() {
-        var path = NewStatePath();
+        using var tmp = new TempDir();
+        var path = StatePath(tmp);
 
         TelemetryState.PathOverride = path;
         var mcpSink = new List<TelemetryEvent>();
@@ -186,7 +192,8 @@ public class CliTelemetryTests {
     // TelemetryDeviceId.GetOrCreate at all when TelemetrySettings.Resolve says disabled.
     [Test]
     public async Task Initialize_never_mints_a_device_id_while_opted_out_via_persisted_config() {
-        TelemetryState.PathOverride = NewStatePath();
+        using var tmp = new TempDir();
+        TelemetryState.PathOverride = StatePath(tmp);
         TelemetryState.SetEnabled(false);
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
@@ -207,7 +214,8 @@ public class CliTelemetryTests {
     // [NotInParallel] lock — no other suite in this run touches the real KCAP_TELEMETRY var.
     [Test]
     public async Task Kcap_telemetry_env_var_overrides_a_persisted_off_and_mints_a_device_id() {
-        TelemetryState.PathOverride = NewStatePath();
+        using var tmp = new TempDir();
+        TelemetryState.PathOverride = StatePath(tmp);
         TelemetryState.SetEnabled(false);
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
@@ -235,7 +243,8 @@ public class CliTelemetryTests {
     // rather than leaving it to survive to this process's own ProcessExit flush.
     [Test]
     public async Task Opting_out_via_config_tears_down_telemetry_in_the_same_process_and_deletes_the_id() {
-        var path = NewStatePath();
+        using var tmp = new TempDir();
+        var path = StatePath(tmp);
         TelemetryState.PathOverride = path;
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
