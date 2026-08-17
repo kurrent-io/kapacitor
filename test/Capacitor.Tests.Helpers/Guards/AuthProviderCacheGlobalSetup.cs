@@ -19,10 +19,10 @@ namespace Capacitor.Tests.Helpers.Guards;
 /// asserts never happens — a deterministic CI failure that never reproduced locally.</para>
 /// </summary>
 public class AuthProviderCacheGlobalSetup {
-    static readonly string StoreFile = Path.Combine(
-        Path.GetTempPath(),
-        "kcap-authprovider-tests-" + Guid.NewGuid().ToString("N")[..8] + ".json"
-    );
+    static readonly TempDir Dir = new();
+
+    // Path only — an absent store IS the clean state every test starts from.
+    static string StoreFile => Dir.PathTo("auth-provider-cache.json");
 
     [BeforeEvery(Assembly)]
     public static void PinStore() => AuthProviderCache.OverridePathForTesting = StoreFile;
@@ -37,6 +37,6 @@ public class AuthProviderCacheGlobalSetup {
     [AfterEvery(Assembly)]
     public static void CleanupStore() {
         AuthProviderCache.OverridePathForTesting = null;
-        try { File.Delete(StoreFile); } catch { /* best effort */ }
+        Dir.Dispose();
     }
 }

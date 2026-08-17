@@ -17,23 +17,20 @@ namespace Capacitor.Tests.Helpers.Guards;
 /// "simplify" this back to [Before(Assembly)].
 /// </summary>
 public class RepoPathStoreGlobalSetup {
-    public static readonly string SharedConfigDir = Path.Combine(
-        Path.GetTempPath(),
-        "kcap-repopathstore-tests-" + Guid.NewGuid().ToString("N")[..8]
-    );
+    static readonly TempDir Dir = new();
+
+    public static string SharedConfigDir => Dir.Path;
 
     [ModuleInitializer]
     [SuppressMessage("Usage", "CA2255", Justification =
         "The rule's own point -- a module initializer is for application code -- is what makes it the "
       + "right tool here: this is the only thing that runs before the test host touches PathHelpers.")]
-    internal static void SetConfigDir() {
-        Directory.CreateDirectory(SharedConfigDir);
+    internal static void SetConfigDir() =>
         Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", SharedConfigDir);
-    }
 
     [AfterEvery(Assembly)]
     public static void CleanupConfigDir() {
         Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
-        try { Directory.Delete(SharedConfigDir, recursive: true); } catch { /* best effort */ }
+        Dir.Dispose();
     }
 }

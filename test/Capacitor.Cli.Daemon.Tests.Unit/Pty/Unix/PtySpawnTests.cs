@@ -1,4 +1,5 @@
 using Capacitor.Cli.Daemon.Pty.Unix;
+using TUnit.Core.Enums;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Pty.Unix;
 
@@ -10,8 +11,6 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Pty.Unix;
 public class PtySpawnTests {
     [Test]
     public async Task Successful_spawn_returns_a_reapable_child_and_a_captured_identity() {
-        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
-
         var plan = Preflight("/bin/sleep", ["sleep", "5"]);
         try {
             var rc = Spawn(plan, out var result);
@@ -31,9 +30,8 @@ public class PtySpawnTests {
     }
 
     [Test]
+    [RunOn(OS.Linux)]
     public async Task Missing_original_path_fails_at_preflight_no_child_forked() {
-        if (!OperatingSystem.IsLinux()) return;
-
         var rc = UnixPtyInterop.pty_preflight("/no/such/binary-" + Guid.NewGuid(), ["x", null], EmptyEnvp(), 1, out var plan);
         await Assert.That(rc).IsEqualTo(-1);
         await Assert.That(plan).IsEqualTo(IntPtr.Zero);
@@ -41,17 +39,17 @@ public class PtySpawnTests {
     }
 
     [Test]
+    [RunOn(OS.Linux)]
     public async Task Child_side_exec_failure_reports_failed_step_exec_and_reaps_cleanly() {
-        if (!OperatingSystem.IsLinux()) return;
-
         // Build a valid EXEC_PATH plan, then remove the file between preflight and spawn so
         // the FORK succeeds but the exec fails inside the child. Force EXEC_PATH explicitly:
         // an EXEC_FD plan holds an open fd to the (still-linked) inode, so deleting the path
         // would NOT make the fd-based exec fail — only a path-based re-resolution at exec
         // time observes the deletion.
-        var path = DummyProcess.CopyExecuteOnly("/bin/true");
-        var plan = Preflight(path, [path], execveatSupported: 0);
-        File.Delete(path);
+        using var tmp  = new TempDir();
+        var       path = DummyProcess.CopyExecuteOnly(tmp, "/bin/true");
+        var       plan = Preflight(path, [path], execveatSupported: 0);
+        File.Delete(path); // the test's own action, not cleanup: exec must observe the missing path
         try {
             var rc = Spawn(plan, out var result);
             await Assert.That(rc).IsEqualTo(-1);
@@ -64,9 +62,8 @@ public class PtySpawnTests {
     }
 
     [Test]
+    [RunOn(OS.Linux)]
     public async Task Bad_cwd_reports_failed_step_chdir() {
-        if (!OperatingSystem.IsLinux()) return;
-
         var plan = Preflight("/bin/true", ["true"]);
         try {
             var rc = Spawn(plan, out var result, cwd: "/no/such/directory-" + Guid.NewGuid());
@@ -76,9 +73,8 @@ public class PtySpawnTests {
     }
 
     [Test]
+    [RunOn(OS.Linux)]
     public async Task Getppid_mismatch_self_kills_and_reports_parent_died() {
-        if (!OperatingSystem.IsLinux()) return;
-
         // Passing a deliberately WRONG expected_parent simulates "the real daemon died and I was
         // reparented" without actually killing anything — the child must self-kill and the
         // parent must see failed_step=parent_died, NEVER a false success.
@@ -91,9 +87,8 @@ public class PtySpawnTests {
     }
 
     [Test]
+    [RunOn(OS.Linux | OS.MacOs)]
     public async Task Cancel_fd_during_handshake_kills_and_reaps_returns_cancelled() {
-        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
-
         // A readable cancel_fd during the handshake must deterministically win over a child that
         // would otherwise exec successfully: pty_spawn polls {errpipe, cancel_fd} and MUST take
         // the cancel arm (kill + reap the child, return -1 / PTY_STEP_CANCELLED) rather than read
@@ -123,9 +118,8 @@ public class PtySpawnTests {
     }
 
     [Test]
+    [RunOn(OS.Linux | OS.MacOs)]
     public async Task Capture_binding_a_fast_exiting_child_never_yields_a_recycled_identity() {
-        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
-
         // Spawn something that exits IMMEDIATELY (`sleep 0` — used instead of /bin/true so
         // this runs identically on both platforms: this environment's macOS has no /bin/true
         // at all, only /usr/bin/true, while /bin/sleep is present on both). The captured
@@ -144,9 +138,8 @@ public class PtySpawnTests {
     }
 
     [Test]
+    [RunOn(OS.Linux | OS.MacOs)]
     public async Task Successful_spawn_marks_the_pty_master_fd_close_on_exec() {
-        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
-
         // Regression (spec §3.0a): forkpty returns the master bare, so without an explicit
         // FD_CLOEXEC on it every child the daemon spawns afterwards inherits a live read/write
         // descriptor onto this PTY agent's terminal — crossing an isolation boundary the daemon

@@ -19,20 +19,17 @@ namespace Capacitor.Tests.Helpers.Guards;
 /// See <c>DaemonPathsIsolationTests</c> for the regression this guards.</para>
 /// </summary>
 public class DaemonPathsGlobalSetup {
-    public static readonly string SharedDaemonsDir = Path.Combine(
-        Path.GetTempPath(),
-        "kcap-daemons-tests-" + Guid.NewGuid().ToString("N")[..8]
-    );
+    static readonly TempDir Dir = new();
+
+    public static string SharedDaemonsDir => Dir.Path;
 
     [BeforeEvery(Assembly)]
-    public static void PinDaemonsDir() {
-        Directory.CreateDirectory(SharedDaemonsDir);
+    public static void PinDaemonsDir() =>
         Environment.SetEnvironmentVariable(DaemonLockPaths.DaemonsDirEnvVar, SharedDaemonsDir);
-    }
 
     [AfterEvery(Assembly)]
     public static void CleanupDaemonsDir() {
         Environment.SetEnvironmentVariable(DaemonLockPaths.DaemonsDirEnvVar, null);
-        try { Directory.Delete(SharedDaemonsDir, recursive: true); } catch { /* best effort */ }
+        Dir.Dispose();
     }
 }

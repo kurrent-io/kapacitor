@@ -10,22 +10,16 @@ namespace Capacitor.Tests.Helpers.Guards;
 /// no per-test override, and no window where a test falls back to the real dir.
 /// </summary>
 public class McpMarkerGlobalSetup {
-    public static readonly string SharedMarkerRoot = Path.Combine(
-        Path.GetTempPath(),
-        "kcap-mcp-markers-tests-" + Guid.NewGuid().ToString("N")[..8]
-    );
+    static readonly TempDir Dir = new();
+
+    public static string SharedMarkerRoot => Dir.Path;
 
     [BeforeEvery(Assembly)]
-    public static void PinCentralMarkerRoot() {
-        Directory.CreateDirectory(SharedMarkerRoot);
-        McpMarker.OverrideCentralRootForTesting(SharedMarkerRoot);
-    }
+    public static void PinCentralMarkerRoot() => McpMarker.OverrideCentralRootForTesting(SharedMarkerRoot);
 
     // Delete the temp root but leave the override pinned: a late/background McpMarker call after
     // teardown then just recreates a file under the (removed) temp root, never the real ~/.kcap —
     // nulling the override here would reopen that real-home fallback window.
     [AfterEvery(Assembly)]
-    public static void CleanupCentralMarkerRoot() {
-        try { Directory.Delete(SharedMarkerRoot, recursive: true); } catch { /* best effort */ }
-    }
+    public static void CleanupCentralMarkerRoot() => Dir.Dispose();
 }

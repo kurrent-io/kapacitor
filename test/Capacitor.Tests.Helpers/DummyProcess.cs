@@ -48,19 +48,20 @@ public sealed partial class DummyProcess : IDisposable {
     }
 
     /// <summary>Writes a native no-op ELF-less "script" is not enough for the shebang tests — this
-    /// writes a real shebang script `#!/abs/interp [optarg]\n&lt;body&gt;` that just `exit`s, chmod +x.</summary>
-    public static string WriteShebangScript(string interpAbsPath, string? optArg, string body) {
-        var path = Path.Combine(Path.GetTempPath(), "kcap-shim-" + Guid.NewGuid().ToString("N")[..8] + ".sh");
+    /// writes a real shebang script `#!/abs/interp [optarg]\n&lt;body&gt;` that just `exit`s, chmod +x.
+    /// Lives in the caller's <paramref name="dir"/>, which owns the cleanup.</summary>
+    public static string WriteShebangScript(
+            TempDir dir, string name, string interpAbsPath, string? optArg, string body) {
         var shebang = optArg is null ? $"#!{interpAbsPath}\n" : $"#!{interpAbsPath} {optArg}\n";
-        File.WriteAllText(path, shebang + body);
+        var path    = dir.CreateFile(name, shebang + body);
         MakeExecutable(path);
         return path;
     }
 
     /// <summary>A native executable that's readable but chmod 0111 (execute-only, no read bit) —
     /// exercises the "EXEC_PATH plans need no readable fd" §5 case.</summary>
-    public static string CopyExecuteOnly(string sourceAbsPath) {
-        var path = Path.Combine(Path.GetTempPath(), "kcap-shim-x-" + Guid.NewGuid().ToString("N")[..8]);
+    public static string CopyExecuteOnly(TempDir dir, string sourceAbsPath) {
+        var path = dir.PathTo("exec-only");
         File.Copy(sourceAbsPath, path, overwrite: true);
         Chmod(path, 0b001_001_001); // 0111
         return path;
@@ -69,19 +70,19 @@ public sealed partial class DummyProcess : IDisposable {
     /// <summary>A copy of a real binary with the setuid bit set — never actually exec'd (privileged
     /// preflight must classify it uncontained and the test never runs it as a real setuid binary,
     /// avoiding any real privilege escalation risk in CI).</summary>
-    public static string CopySetuid(string sourceAbsPath) {
-        var path = Path.Combine(Path.GetTempPath(), "kcap-shim-suid-" + Guid.NewGuid().ToString("N")[..8]);
+    public static string CopySetuid(TempDir dir, string sourceAbsPath) {
+        var path = dir.PathTo("setuid-copy");
         File.Copy(sourceAbsPath, path, overwrite: true);
         Chmod(path, 0b100_111_101_101 /* 04755 */);
         return path;
     }
 
-    /// <summary>Two temp directories, each containing an executable named <paramref name="name"/>
+    /// <summary>Two directories, each containing an executable named <paramref name="name"/>
     /// that behaves differently (one is a copy of /bin/true, the other /bin/false) — for asserting
     /// which PATH a resolution actually used.</summary>
-    public static (string daemonDir, string childDir) TwoDistinctPathDirsWithDifferentTarget(string name) {
-        var daemonDir = Directory.CreateTempSubdirectory("kcap-daemon-path-").FullName;
-        var childDir  = Directory.CreateTempSubdirectory("kcap-child-path-").FullName;
+    public static (string daemonDir, string childDir) TwoDistinctPathDirsWithDifferentTarget(TempDir dir, string name) {
+        var daemonDir = dir.CreateDir("daemon-path");
+        var childDir  = dir.CreateDir("child-path");
         File.Copy("/bin/true",  Path.Combine(daemonDir, name));
         File.Copy("/bin/false", Path.Combine(childDir, name));
         MakeExecutable(Path.Combine(daemonDir, name));
@@ -89,17 +90,17 @@ public sealed partial class DummyProcess : IDisposable {
         return (daemonDir, childDir);
     }
 
-    /// <summary>A temp directory containing a single real, non-privileged executable named
+    /// <summary>A directory containing a single real, non-privileged executable named
     /// <paramref name="name"/> (a +x copy of /bin/true) — so an ABSOLUTE PATH component actually
     /// resolves the target. Used to prove that an empty/relative SIBLING element (not a missing
     /// target) is what forces uncontained; without a resolvable absolute component the test would
     /// pass on `!resolved` alone and never exercise the empty-field detection.</summary>
-    public static string PathDirWithTarget(string name) {
-        var dir    = Directory.CreateTempSubdirectory("kcap-path-").FullName;
-        var target = Path.Combine(dir, name);
+    public static string PathDirWithTarget(TempDir dir, string name) {
+        var pathDir = dir.CreateDir("path-with-target");
+        var target  = Path.Combine(pathDir, name);
         File.Copy("/bin/true", target);
         MakeExecutable(target);
-        return dir;
+        return pathDir;
     }
 
     public static void MakeExecutablePublic(string path) => MakeExecutable(path);
