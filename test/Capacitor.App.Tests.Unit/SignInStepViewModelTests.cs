@@ -93,7 +93,7 @@ public class SignInStepViewModelTests {
                 Runs++;
 
                 return Operation(intent, ct);
-            }, Claims);
+            });
             Vm = new SignInStepViewModel(Service, Connect, bridges, Claims, AppState, Opener);
         }
 

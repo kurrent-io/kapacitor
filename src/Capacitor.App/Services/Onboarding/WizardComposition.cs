@@ -76,7 +76,7 @@ internal static class WizardComposition {
     internal static WizardGraph BuildGraph(WizardGraphOptions options) {
         var claims = options.Claims;
         var cli    = new LateBoundKcapCli(options.ResolveCli, options.CliPath);
-        var auth   = new WizardAuthService(BuildOperation(options.Bridges, claims, options.Operation), claims);
+        var auth   = new WizardAuthService(BuildOperation(options.Bridges, claims, options.Operation));
 
         var connect  = new ConnectStepViewModel();
         var signIn   = new SignInStepViewModel(auth, connect, options.Bridges, claims, options.AppState, options.UrlOpener);

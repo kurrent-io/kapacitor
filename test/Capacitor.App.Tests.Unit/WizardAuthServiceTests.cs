@@ -59,7 +59,7 @@ public class WizardAuthServiceTests {
     [Test]
     public async Task No_attempt_has_run_yet_so_current_is_null_and_the_service_is_quiesced() {
         var (claims, _) = TempClaims();
-        var service = new WizardAuthService((_, _) => Task.FromResult<AuthResult>(Committed(Acme)), claims);
+        var service = new WizardAuthService((_, _) => Task.FromResult<AuthResult>(Committed(Acme)));
 
         await Assert.That(service.Current).IsNull();
         await service.QuiescedAsync().WaitAsync(TimeSpan.FromSeconds(5));
@@ -72,7 +72,7 @@ public class WizardAuthServiceTests {
         var service = new WizardAuthService((intent, _) => {
             seen = intent;
             return Task.FromResult<AuthResult>(Committed(Acme));
-        }, claims);
+        });
 
         var attempt = service.Begin(new ConnectIntent.Paste("acme.example"));
         var result  = await attempt.Result.WaitAsync(TimeSpan.FromSeconds(5));
@@ -86,7 +86,7 @@ public class WizardAuthServiceTests {
     public async Task Begin_while_an_attempt_is_live_throws() {
         var (claims, _) = TempClaims();
         var gate = new TaskCompletionSource<AuthResult>();
-        var service = new WizardAuthService((_, _) => gate.Task, claims);
+        var service = new WizardAuthService((_, _) => gate.Task);
 
         var attempt = service.Begin(new ConnectIntent.Create());
 
@@ -104,7 +104,7 @@ public class WizardAuthServiceTests {
         var service = new WizardAuthService((_, _) => {
             starts++;
             return starts == 1 ? gate.Task : Task.FromResult<AuthResult>(Committed(Work));
-        }, claims);
+        });
 
         var first = service.Begin(new ConnectIntent.Create());
         gate.SetResult(new AuthResult.Failed("nope"));
@@ -132,11 +132,10 @@ public class WizardAuthServiceTests {
     }
 
     [Test]
-    public async Task The_service_exposes_the_same_hook_bound_to_its_own_claims_store() {
+    public async Task The_arming_hook_binds_to_the_claims_store_it_was_built_over() {
         var (claims, _) = TempClaims();
-        var service = new WizardAuthService((_, _) => Task.FromResult<AuthResult>(Committed(Acme)), claims);
 
-        await service.BeforeCommit([Acme], CancellationToken.None);
+        await WizardAuthService.ArmingHook(claims)([Acme], CancellationToken.None);
 
         await Assert.That(claims.Pending()).IsEquivalentTo([new ConsentFlipClaim(Acme.Profile, Acme.CanonicalServer)]);
     }
@@ -182,7 +181,7 @@ public class WizardAuthServiceTests {
         var (claims, dir) = ReadOnlyClaims();
         var published = false;
         var service = new WizardAuthService(
-            (_, ct) => ScriptedCommitAsync(WizardAuthService.ArmingHook(claims), [Acme], () => published = true, ct), claims);
+            (_, ct) => ScriptedCommitAsync(WizardAuthService.ArmingHook(claims), [Acme], () => published = true, ct));
 
         SetWritable(dir, false);
         try {
@@ -204,7 +203,7 @@ public class WizardAuthServiceTests {
         File.WriteAllText(claimsPath, "{not json");
         var claims  = new ConsentFlipClaims(claimsPath, Path.Combine(Path.GetDirectoryName(claimsPath)!, "config.json"));
         var service = new WizardAuthService(
-            (_, ct) => ScriptedCommitAsync(WizardAuthService.ArmingHook(claims), [Acme], () => { }, ct), claims);
+            (_, ct) => ScriptedCommitAsync(WizardAuthService.ArmingHook(claims), [Acme], () => { }, ct));
 
         var result = await service.Begin(new ConnectIntent.Create()).Result.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -223,7 +222,7 @@ public class WizardAuthServiceTests {
             started.SetResult();
             await Task.Delay(Timeout.Infinite, ct);
             return Committed(Acme);
-        }, claims);
+        });
 
         var attempt = service.Begin(new ConnectIntent.Create());
         await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -245,7 +244,7 @@ public class WizardAuthServiceTests {
             started.SetResult();
             await cancelSeen.Task;
             return Committed(Acme);
-        }, claims);
+        });
 
         var attempt = service.Begin(new ConnectIntent.Create());
         await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -258,7 +257,7 @@ public class WizardAuthServiceTests {
     public async Task QuiescedAsync_waits_for_a_live_attempt_to_settle() {
         var (claims, _) = TempClaims();
         var gate = new TaskCompletionSource<AuthResult>();
-        var service = new WizardAuthService((_, _) => gate.Task, claims);
+        var service = new WizardAuthService((_, _) => gate.Task);
 
         service.Begin(new ConnectIntent.Create());
         var quiesced = service.QuiescedAsync();
@@ -274,7 +273,7 @@ public class WizardAuthServiceTests {
     [Test]
     public async Task An_operation_that_throws_is_reported_as_failed() {
         var (claims, _) = TempClaims();
-        var service = new WizardAuthService((_, _) => throw new InvalidOperationException("boom"), claims);
+        var service = new WizardAuthService((_, _) => throw new InvalidOperationException("boom"));
 
         var result = await service.Begin(new ConnectIntent.Create()).Result.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -285,7 +284,7 @@ public class WizardAuthServiceTests {
     [Test]
     public async Task Cancelling_a_settled_attempt_is_a_no_op() {
         var (claims, _) = TempClaims();
-        var service = new WizardAuthService((_, _) => Task.FromResult<AuthResult>(Committed(Acme)), claims);
+        var service = new WizardAuthService((_, _) => Task.FromResult<AuthResult>(Committed(Acme)));
 
         var attempt = service.Begin(new ConnectIntent.Create());
         await attempt.Result.WaitAsync(TimeSpan.FromSeconds(5));

@@ -50,14 +50,10 @@ public sealed class AuthAttempt {
 /// stays free of auth mechanics.
 /// </summary>
 public sealed class WizardAuthService(
-        Func<ConnectIntent, CancellationToken, Task<AuthResult>> runOperation,
-        ConsentFlipClaims                                        claims) {
+        Func<ConnectIntent, CancellationToken, Task<AuthResult>> runOperation) {
     readonly Lock _gate = new();
 
     AuthAttempt? _current;
-
-    /// The decision-7 hook the composition root hands each façade it builds for this service.
-    public Func<IReadOnlyList<AuthIdentity>, CancellationToken, Task> BeforeCommit { get; } = ArmingHook(claims);
 
     public AuthAttempt? Current {
         get {
