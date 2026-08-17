@@ -5,8 +5,8 @@ namespace Capacitor.App.Services;
 public sealed record CliInfo(string? Path, string? Version);
 
 /// Where the app finds `kcap` to shell out to (spec §3.1, decision 1: everything through the
-/// CLI). Pure given its env/filesystem seams, so DaemonClientService.CreateDefaultAsync and every
-/// later lifecycle feature resolve through the same logic.
+/// CLI). Pure given its env/filesystem seams, so the lifecycle graph, the wizard and every later
+/// feature resolve through the same logic.
 public static class CliResolver {
     /// KCAP_APP_CLI_PATH (dev seam, app-shell design decision 6) → *(future: bundle-relative
     /// path arm lands here)* → "kcap" on PATH.

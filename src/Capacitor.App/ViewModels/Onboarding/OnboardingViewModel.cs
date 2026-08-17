@@ -70,6 +70,29 @@ public sealed class OnboardingViewModel : ReactiveObject {
         CloseRequested?.Invoke();
     }
 
+    /// <summary>
+    /// Jump straight to a step (the Sign-in step's retarget answer). Goes through the SAME
+    /// serialized gate and the same <see cref="IWizardStep.CanLeaveAsync"/> veto as a button
+    /// transition. False = refused: a navigation is already in flight, or that step isn't part of
+    /// this run (an inapplicable step was filtered out at construction).
+    /// </summary>
+    internal bool TryGoTo(WizardStepId id) {
+        if (_navigating) return false;
+
+        var target = -1;
+        for (var i = 0; i < Steps.Count && target < 0; i++) {
+            if (Steps[i].Id == id) target = i;
+        }
+
+        if (target < 0) return false;
+        if (target == _index) return true; // already there — nothing to transition
+
+        Navigating = true; // claimed here, released by GoToAsync's finally
+        _ = GoToAsync(target);
+
+        return true;
+    }
+
     async Task NavigateAsync(WizardNavigation direction) {
         if (_navigating) return; // defense in depth — canExecute already blocks a bound button
         Navigating = true;
@@ -82,12 +105,30 @@ public sealed class OnboardingViewModel : ReactiveObject {
             }
 
             // Clamp, don't trust the arithmetic — a corrupted _index must never throw here.
-            _index = Math.Clamp(_index + (direction == WizardNavigation.Back ? -1 : 1), 0, Steps.Count - 1);
-            Current = Steps[_index];
-            await SafeEnterAsync(Current);
+            await MoveToAsync(Math.Clamp(_index + (direction == WizardNavigation.Back ? -1 : 1), 0, Steps.Count - 1));
         } finally {
             Navigating = false;
         }
+    }
+
+    // The gate is already held by TryGoTo; direction is reported to the leaving step as the move it
+    // actually is, so a step that vetoes going forward still vetoes a jump forward.
+    async Task GoToAsync(int target) {
+        try {
+            var direction = target < _index ? WizardNavigation.Back : WizardNavigation.Next;
+            if (!await SafeCanLeaveAsync(Current, direction)) return;
+
+            await MoveToAsync(target);
+        } finally {
+            Navigating = false;
+        }
+    }
+
+    // Caller holds the Navigating gate and the leaving step has already released it.
+    async Task MoveToAsync(int index) {
+        _index = index;
+        Current = Steps[_index];
+        await SafeEnterAsync(Current);
     }
 
     // A throwing veto must not crash the app — treat it the same as an honest "no".

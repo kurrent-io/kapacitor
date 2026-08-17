@@ -24,10 +24,14 @@ public sealed class LateBoundLocalControlOps(Func<ILocalControlOps> bind) : ILoc
         bind().ResolveConsentAsync(resolve, ct);
 }
 
-/// <see cref="IKcapCli"/> rebound per call, for the same reason: profile, canonical server and
-/// daemon name are all still being written while the wizard is open.
-public sealed class LateBoundKcapCli(Func<IKcapCli> bind) : IKcapCli {
-    public string? CliPath => bind().CliPath;
+/// <summary>
+/// <see cref="IKcapCli"/> rebound per CALL, for the same reason: profile, canonical server and
+/// daemon name are all still being written while the wizard is open. <see cref="CliPath"/> is the
+/// exception — the binary can't move mid-wizard, and it is read from UI bindings, which must not
+/// pay a config load per get.
+/// </summary>
+public sealed class LateBoundKcapCli(Func<IKcapCli> bind, string? cliPath) : IKcapCli {
+    public string? CliPath => cliPath;
 
     public Task<string?> VersionAsync(CancellationToken ct) => bind().VersionAsync(ct);
 

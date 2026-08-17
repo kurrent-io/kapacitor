@@ -107,6 +107,7 @@ static class WizardFixtures {
 
         public (string Profile, string Server, string DaemonName) Identity = ("default", "https://acme.example", "daemon-a");
         public bool ShimApplicable = true;
+        public string? CliPath = "/opt/kcap/bin/kcap";
         public string? ShimTarget = "/opt/kcap/bin/kcap";
         public AgentDetectionResult Detected = VendorDetection.Build("claude");
 
@@ -151,6 +152,7 @@ static class WizardFixtures {
                     return Task.FromResult(Detected);
                 };
             },
+            CliPath: CliPath,
             ShimApplicable: ShimApplicable,
             ShimTarget: ShimTarget,
             DefaultDaemonName: "daemon-a",
@@ -248,17 +250,77 @@ public class WizardStartupTests {
         });
     }
 
+    /// spec §6a: past the cap the handoff proceeds, but it must SAY the lane is still live —
+    /// otherwise the graph comes up driving automatic actions against a child that is still running.
     [Test]
-    public async Task Handoff_proceeds_past_the_cap_when_the_lane_never_quiesces() {
+    public async Task Handoff_past_the_cap_reports_an_unquiesced_lane_and_closes_auto_actions() {
         var never = new TaskCompletionSource();
         var channel = new OutcomeChannel();
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        await AppUnderTest.HandoffAfterWizardAsync(auth: null, () => never.Task, TimeSpan.FromMilliseconds(50), channel)
+        var quiesced = await AppUnderTest
+            .HandoffAfterWizardAsync(auth: null, () => never.Task, TimeSpan.FromMilliseconds(50), channel)
             .WaitAsync(TimeSpan.FromSeconds(5));
 
         await Assert.That(sw.ElapsedMilliseconds).IsLessThan(5000);
+        await Assert.That(quiesced).IsFalse();
+        // Even a Complete gate builds the degraded graph while the lane still owns a live action.
+        await Assert.That(AppUnderTest.AutoActionsPermanentlyClosed(new GateResult.Complete(), quiesced)).IsTrue();
         _ = channel.ConsumeAsync(CancellationToken.None); // past the cap the channel is still handed over
+    }
+
+    [Test]
+    public async Task Handoff_within_the_cap_reports_a_quiesced_lane_and_leaves_auto_actions_open() {
+        var quiesced = await AppUnderTest
+            .HandoffAfterWizardAsync(auth: null, () => Task.CompletedTask, Cap, new OutcomeChannel())
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(quiesced).IsTrue();
+        await Assert.That(AppUnderTest.AutoActionsPermanentlyClosed(new GateResult.Complete(), quiesced)).IsFalse();
+        // An incomplete gate still closes them, quiesced or not.
+        await Assert.That(AppUnderTest.AutoActionsPermanentlyClosed(new GateResult.Incomplete(GateReason.NoToken), quiesced))
+            .IsTrue();
+    }
+
+    [Test]
+    public async Task An_unquiesced_lane_is_announced_exactly_once_and_a_quiesced_one_says_nothing() {
+        var announced = new FakeLifecycleSurface();
+        var silent = new FakeLifecycleSurface();
+
+        AppUnderTest.AnnounceUnquiescedLane(announced, laneQuiesced: false);
+        AppUnderTest.AnnounceUnquiescedLane(silent, laneQuiesced: true);
+
+        await Assert.That(announced.AttentionMessages).IsEquivalentTo([AppUnderTest.LaneStillBusyAttention]);
+        await Assert.That(silent.AttentionMessages).IsEmpty();
+        await Assert.That(announced.StatusMessages).IsEmpty();
+    }
+
+    /// The mirror of the post-boundary ordering test, for the WITHIN-cap path: the channel stays
+    /// wizard-owned until the lane's own quiesce completes — the transfer is the last step.
+    [Test]
+    public async Task Handoff_transfers_only_after_the_lane_quiesces_within_the_cap() {
+        var quiesce = new TaskCompletionSource();
+        var channel = new OutcomeChannel();
+        using var cts = new CancellationTokenSource();
+
+        var wizardConsumer = AppUnderTest.ConsumeMutationOutcomesAsync(
+            channel, new FakeLifecycleSurface(), WizardFixtures.NeverRunMutation,
+            WizardFixtures.FixedTerminalPath("/usr/bin"), () => null, cts.Token);
+
+        var handoff = AppUnderTest.HandoffAfterWizardAsync(
+            auth: null, () => quiesce.Task, TimeSpan.FromSeconds(30), channel);
+        await Task.Delay(50);
+
+        await Assert.That(handoff.IsCompleted).IsFalse();
+        Assert.Throws<InvalidOperationException>(() => { _ = channel.ConsumeAsync(CancellationToken.None); });
+
+        quiesce.SetResult();
+
+        await Assert.That(await handoff.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+        _ = channel.ConsumeAsync(CancellationToken.None); // transferred only now
+
+        await cts.CancelAsync();
+        await wizardConsumer.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     [Test]
@@ -473,14 +535,20 @@ public class WizardStartupTests {
     public async Task The_daemon_step_reads_status_through_a_freshly_resolved_cli() {
         await AvaloniaSession.DispatchAsync(async () => {
             using var harness = new WizardFixtures.GraphHarness();
+            harness.Operation = (_, _) => Task.FromResult<AuthResult>(
+                new AuthResult.Committed("default", "https://acme.example:443", AuthProvider.None, "someone", []));
+            harness.Cli.StatusBehavior = _ => Task.FromResult<ServiceSnapshot?>(null);
 
             var graph = WizardComposition.BuildGraph(harness.Options());
             var daemon = graph.Steps.OfType<DaemonStepViewModel>().Single();
+            var signIn = graph.Steps.OfType<SignInStepViewModel>().Single();
+            await signIn.SignInAsync().WaitAsync(TimeSpan.FromSeconds(5)); // the row's own precondition
 
             await daemon.RefreshAsync(CancellationToken.None);
             var afterFirst = harness.CliFactoryCalls;
             await daemon.RefreshAsync(CancellationToken.None);
 
+            // Every status read rebinds — a name written by the Defaults step lands on the next one.
             await Assert.That(afterFirst).IsGreaterThan(0);
             await Assert.That(harness.CliFactoryCalls).IsGreaterThan(afterFirst);
 
@@ -577,6 +645,7 @@ public class WizardStartupTests {
     public async Task A_missing_cli_is_the_summary_note_for_every_step_that_needs_one() {
         await AvaloniaSession.DispatchAsync(async () => {
             using var harness = new WizardFixtures.GraphHarness();
+            harness.CliPath = null;
             harness.Cli.CliPath = null;
 
             var graph = WizardComposition.BuildGraph(harness.Options());
@@ -627,6 +696,82 @@ public class WizardStartupTests {
         });
     }
 
+    // ── the shim step's pre-probe (latency the shipping default must not pay) ─
+
+    [Test]
+    [Arguments(false, "/opt/kcap/bin/kcap")] // not macOS: the answer can't change the outcome
+    [Arguments(true, null)]                  // no linkable target: same
+    public async Task The_path_probe_is_skipped_when_it_cannot_change_the_shim_decision(bool isMacOs, string? target) {
+        var probes = 0;
+
+        var applicable = await AppUnderTest.ResolveShimApplicableAsync(isMacOs, target, _ => {
+            probes++;
+            return Task.FromResult<bool?>(false);
+        }, CancellationToken.None);
+
+        await Assert.That(applicable).IsFalse();
+        await Assert.That(probes).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(false, true)]  // kcap is NOT on the terminal PATH — the step has something to offer
+    [Arguments(true, false)]  // already on PATH
+    [Arguments(null, false)]  // unknown probe: never offer on an inconclusive read
+    public async Task On_macos_with_a_target_the_probe_decides(bool? onPath, bool expected) {
+        var probes = 0;
+
+        var applicable = await AppUnderTest.ResolveShimApplicableAsync(true, "/opt/kcap/bin/kcap", _ => {
+            probes++;
+            return Task.FromResult(onPath);
+        }, CancellationToken.None);
+
+        await Assert.That(applicable).IsEqualTo(expected);
+        await Assert.That(probes).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task A_probe_failure_is_unknown_but_a_quit_during_it_propagates() {
+        var applicable = await AppUnderTest.ResolveShimApplicableAsync(
+            true, "/opt/kcap/bin/kcap", _ => throw new InvalidOperationException("probe boom"), CancellationToken.None);
+
+        await Assert.That(applicable).IsFalse(); // degraded to unknown, never "offer it anyway"
+
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        // A quit mid-probe must not go on to build a wizard window — same rule as the gate's.
+        await Assert.ThrowsAsync<OperationCanceledException>(() => AppUnderTest.ResolveShimApplicableAsync(
+            true, "/opt/kcap/bin/kcap", ct => Task.FromCanceled<bool?>(ct), cts.Token));
+    }
+
+    // ── the sign-in step's retarget answer ────────────────────────────────────
+
+    [Test]
+    public async Task A_retarget_prefills_the_connect_step_and_navigates_back_to_it() {
+        await AvaloniaSession.DispatchAsync(async () => {
+            using var harness = new WizardFixtures.GraphHarness();
+            harness.Operation = (_, _) => Task.FromResult<AuthResult>(new AuthResult.Retarget("acme"));
+
+            var graph = WizardComposition.BuildGraph(harness.Options());
+            var connect = graph.Steps.OfType<ConnectStepViewModel>().Single();
+            var signIn = graph.Steps.OfType<SignInStepViewModel>().Single();
+            await graph.ViewModel.PendingEnterForTesting;
+
+            graph.ViewModel.TryGoTo(WizardStepId.SignIn);
+            await WizardFixtures.WaitUntilAsync(
+                () => graph.ViewModel.Current.Id == WizardStepId.SignIn, what: "the jump to the sign-in step");
+
+            await signIn.SignInAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await WizardFixtures.WaitUntilAsync(
+                () => graph.ViewModel.Current.Id == WizardStepId.Connect, what: "the retarget navigation");
+
+            await Assert.That(connect.ServerInputText).IsEqualTo("acme");
+            await Assert.That(connect.Choice).IsEqualTo(ConnectChoice.Paste);
+
+            return true;
+        }).WaitAsync(TimeSpan.FromSeconds(30));
+    }
+
     // ── late binding (the adapters the daemon step is composed over) ──────────
 
     [Test]
@@ -656,7 +801,8 @@ public class WizardStartupTests {
         var first = new FakeKcapCli { CliPath = "/one/kcap" };
         var second = new FakeKcapCli { CliPath = "/two/kcap" };
         var current = first;
-        var cli = new LateBoundKcapCli(() => current);
+        var binds = 0;
+        var cli = new LateBoundKcapCli(() => { binds++; return current; }, "/opt/kcap/bin/kcap");
 
         await cli.ServiceStatusAsync(CancellationToken.None);
         current = second;
@@ -664,7 +810,10 @@ public class WizardStartupTests {
 
         await Assert.That(first.StatusCallCount).IsEqualTo(1);
         await Assert.That(second.StatusCallCount).IsEqualTo(1);
-        await Assert.That(cli.CliPath).IsEqualTo("/two/kcap");
+        // CliPath is the captured binary — a UI binding must not pay a config load per get.
+        await Assert.That(cli.CliPath).IsEqualTo("/opt/kcap/bin/kcap");
+        _ = cli.CliPath;
+        await Assert.That(binds).IsEqualTo(2); // the two status calls only
     }
 
     // ── window/dialog routing ─────────────────────────────────────────────────

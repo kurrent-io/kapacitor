@@ -7,14 +7,16 @@ using AppUnderTest = Capacitor.App.App;
 
 namespace Capacitor.App.Tests.Unit;
 
-/// Task 15 decision-2 carve-out: App.StartAsync evaluates OnboardingGate.EvaluateAsync() FIRST and
-/// derives whether the lifecycle graph's auto-actions stay open (Complete) or close permanently
-/// (Incomplete). StartAsync itself needs a real daemon/profile — not a unit-test seam, same reason
-/// AppStartupTests drives extracted statics instead (see that file's own header comment) — so this
-/// exercises the two pure seams App exposes for the carve-out: AutoActionsPermanentlyClosed (the
-/// gate→flag switch) and ResolveConsentFlipIdentity (the ConsentFlipCoordinator identity delegate,
-/// MUST-WIRE 1). DaemonLifecycleControllerTests covers the controller-level ctor param behavior
-/// (fake lane, no gate involved) — this file is the App-level wiring half only.
+/// The decision-2 carve-out: App.StartAsync evaluates the onboarding gate FIRST (one resolve, via
+/// OnboardingGate.EvaluateAsync) and branches — Complete builds the daemon graph with auto-actions
+/// open, Incomplete opens the wizard instead and, if it is still Incomplete when the wizard closes,
+/// builds that same graph with auto-actions closed permanently. StartAsync itself needs a real
+/// daemon/profile — not a unit-test seam, same reason AppStartupTests drives extracted statics
+/// instead (see that file's own header comment) — so this exercises the two pure seams App exposes
+/// for the carve-out: AutoActionsPermanentlyClosed (the gate→flag switch) and
+/// ResolveConsentFlipIdentity (the ConsentFlipCoordinator identity delegate, MUST-WIRE 1).
+/// WizardStartupTests owns the wizard-mode half; DaemonLifecycleControllerTests covers the
+/// controller-level ctor param behavior (fake lane, no gate involved).
 ///
 /// [NotInParallel]: shares OnboardingGateTests' one real config.json under the assembly-wide
 /// KCAP_CONFIG_DIR (see OnboardingGateGlobalSetup) — same isolation rule, same shared resource.

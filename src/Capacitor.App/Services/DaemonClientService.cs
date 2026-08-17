@@ -143,20 +143,15 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
         _                                            => new(false, outcome.GetType().Name),
     };
 
+    /// <summary>
     /// Resolves the daemon name ONCE via the same chain DaemonCommands.ResolveName uses, so the
     /// watched daemon and the started daemon can never diverge (spec §5). `runMutation` is the
     /// app-lifetime DaemonMutationLane's RunAsync, injected by the composition root so this
-    /// factory never spawns a process of its own.
-    public static async Task<DaemonClientService> CreateDefaultAsync(
-            Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
-        await AppConfig.ResolveActiveProfile([]);
-
-        return CreateResolved(runMutation);
-    }
-
-    /// The same construction over the profile the caller ALREADY resolved: the app resolves once
-    /// per graph build (for the onboarding gate) and builds from that same resolution, so the gate
-    /// verdict and the daemon identity can never diverge on a concurrently-changing profile.
+    /// factory never spawns a process of its own. Built over the profile the caller ALREADY
+    /// resolved: the app resolves once per graph build (evaluating the onboarding gate) and builds
+    /// from that same resolution, so the gate verdict and the daemon identity can never diverge on
+    /// a concurrently-changing profile.
+    /// </summary>
     public static DaemonClientService CreateResolved(
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
         var name = DaemonNameResolver.Resolve([], AppConfig.ResolvedProfile?.Profile?.Daemon?.Name);
@@ -170,8 +165,8 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
     /// CURRENTLY resolved profile/server (re-read on every call, never captured once — a profile
     /// resolved after this service was constructed must still be honored) and hands it to
     /// `runMutation`; a caller that cannot bind a canonical server never reaches it (binding
-    /// ruling 1). Extracted from CreateDefaultAsync — whose own AppConfig.ResolveActiveProfile
-    /// call touches real config I/O — so this request-building logic stays unit-testable on its own.
+    /// ruling 1). Extracted from CreateResolved — whose daemon-name resolution reads real config —
+    /// so this request-building logic stays unit-testable on its own.
     internal static Func<CancellationToken, Task<MutationOutcome>> BuildStartDaemon(
             string daemonName, Func<ResolvedProfile?> resolveProfile,
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) =>

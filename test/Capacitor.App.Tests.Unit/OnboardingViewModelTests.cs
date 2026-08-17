@@ -360,4 +360,97 @@ public class OnboardingViewModelTests {
 
         await Assert.That(currentId).IsEqualTo(WizardStepId.SignIn); // transition still landed
     }
+
+    // ── TryGoTo: the Sign-in step's retarget jump ────────────────────────────
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task TryGoTo_jumps_backwards_and_enters_the_target_step() {
+        var (accepted, currentId, entered) = await AvaloniaSession.DispatchAsync(async () => {
+            var connect = new FakeWizardStep(WizardStepId.Connect);
+            var signIn = new FakeWizardStep(WizardStepId.SignIn);
+            var vm = new OnboardingViewModel([connect, signIn]);
+            await vm.PendingEnterForTesting;
+            await vm.NextCommand.Execute().ToTask(); // now on Sign-in
+
+            var ok = vm.TryGoTo(WizardStepId.Connect);
+            await WaitForIdleAsync(vm);
+
+            return (ok, vm.Current.Id, connect.EnterCount);
+        });
+
+        await Assert.That(accepted).IsTrue();
+        await Assert.That(currentId).IsEqualTo(WizardStepId.Connect);
+        await Assert.That(entered).IsEqualTo(2); // the initial entry plus the jump
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task TryGoTo_consults_the_current_steps_veto_like_any_transition() {
+        var (accepted, currentId) = await AvaloniaSession.DispatchAsync(async () => {
+            var connect = new FakeWizardStep(WizardStepId.Connect);
+            var signIn = new FakeWizardStep(WizardStepId.SignIn) { CanLeave = (_, _) => Task.FromResult(false) };
+            var vm = new OnboardingViewModel([connect, signIn]);
+            await vm.PendingEnterForTesting;
+            await vm.NextCommand.Execute().ToTask(); // now on Sign-in, which refuses to leave
+
+            var ok = vm.TryGoTo(WizardStepId.Connect);
+            await WaitForIdleAsync(vm);
+
+            return (ok, vm.Current.Id);
+        });
+
+        await Assert.That(accepted).IsTrue();  // the jump was admitted...
+        await Assert.That(currentId).IsEqualTo(WizardStepId.SignIn); // ...and then vetoed by the step
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task TryGoTo_is_refused_while_another_navigation_is_in_flight() {
+        var (secondAttempt, currentId) = await AvaloniaSession.DispatchAsync(async () => {
+            var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var connect = new FakeWizardStep(WizardStepId.Connect) { CanLeave = (_, _) => gate.Task };
+            var signIn = new FakeWizardStep(WizardStepId.SignIn);
+            var done = new FakeWizardStep(WizardStepId.Done);
+            var vm = new OnboardingViewModel([connect, signIn, done]);
+            await vm.PendingEnterForTesting;
+
+            var first = vm.NextCommand.Execute().ToTask(); // parks inside Connect's CanLeaveAsync
+            var refused = vm.TryGoTo(WizardStepId.Done);
+
+            gate.SetResult(true);
+            await first;
+            await WaitForIdleAsync(vm);
+
+            return (refused, vm.Current.Id);
+        }).WaitAsync(TimeSpan.FromSeconds(20));
+
+        await Assert.That(secondAttempt).IsFalse();
+        await Assert.That(currentId).IsEqualTo(WizardStepId.SignIn); // only the first navigation landed
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task TryGoTo_refuses_a_step_that_is_not_part_of_this_run() {
+        var accepted = await AvaloniaSession.DispatchAsync(async () => {
+            var connect = new FakeWizardStep(WizardStepId.Connect);
+            var shim = new FakeWizardStep(WizardStepId.Shim) { Applicable = false };
+            var vm = new OnboardingViewModel([shim, connect]);
+            await vm.PendingEnterForTesting;
+
+            return vm.TryGoTo(WizardStepId.Shim);
+        });
+
+        await Assert.That(accepted).IsFalse();
+    }
+
+    // TryGoTo's navigation is fire-and-forget by design (it answers the caller immediately), so
+    // tests wait for the shared gate to reopen rather than for a task they were never handed.
+    static async Task WaitForIdleAsync(OnboardingViewModel vm) {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (!CanExecute(vm.NextCommand)) {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException("the wizard never went idle");
+            await Task.Delay(10);
+        }
+    }
 }

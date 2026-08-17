@@ -469,7 +469,7 @@ public class DaemonClientServiceTests {
     }
 
     // Task 10: DaemonClientService.BuildStartDaemon is the extracted request-building seam
-    // CreateDefaultAsync wires to the real AppConfig.ResolvedProfile — this drives it directly
+    // CreateResolved wires to the real AppConfig.ResolvedProfile — this drives it directly
     // against a scripted profile resolver, proving the main-window Start path produces a
     // DetachedStart MutationRequest through the lane rather than any direct process spawn.
     [Test]

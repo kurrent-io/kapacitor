@@ -118,17 +118,26 @@ public partial class App : Application {
             _lane = lane;
 
             var gate = await ResolveAndEvaluateGateAsync(_shutdown.Token);
+            // A graph built while the lane still owns a live action must not also drive automatic
+            // ones (spec §6a) — only the wizard's own handoff can answer this with anything but true.
+            var laneQuiesced = true;
 
             // spec decision 2: an incomplete gate builds NO daemon graph at all — the wizard owns
             // the app until it closes, and the graph is then built against a FRESH resolution,
             // because the wizard is exactly what may have changed the answer.
             if (gate is GateResult.Incomplete) {
-                await RunWizardModeAsync(desktop, lane, channel, laneRunner, laneProbe);
+                laneQuiesced = await RunWizardModeAsync(desktop, lane, channel, laneRunner, laneProbe);
                 if (_shutdown.IsCancellationRequested) return; // quit during onboarding — nothing left to build
                 gate = await ResolveAndEvaluateGateAsync(_shutdown.Token);
             }
 
-            BuildDaemonGraph(desktop, lane, channel, gate);
+            BuildDaemonGraph(desktop, lane, channel, gate, laneQuiesced);
+        } catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) {
+            // A quit landing mid-startup (gate evaluation, the wizard's PATH probe, the post-wizard
+            // re-resolve) is not a startup failure: the shutdown path already owns teardown, and an
+            // error window here would both lie and outlive the quit.
+            _wizardWindow = null;
+            _wizardAuth = null;
         } catch (Exception ex) {
             // BEFORE any await: a shutdown request can arrive while cleanup below is still
             // awaiting (or if the helper itself throws), and the deferred path reads this.
@@ -137,6 +146,9 @@ public partial class App : Application {
             // when the failure hit, no tray will ever exist to bring it back, so hide-on-close
             // must not intercept anything from here on — every close on this path is a real one.
             if (_coordinator is not null) _coordinator.QuitInProgress = true;
+            // No orphan wizard beside the error window: it is a dead shell once startup has failed,
+            // and its own close path (the handoff) is exactly what did not run.
+            if (_wizardWindow is { IsVisible: true } wizard) wizard.Close();
             Console.Error.WriteLine($"kcap app failed to start: {ex}");
             await HandleStartupFailureAsync(
                 desktop, ex, _service, _shutdown, [_tray, _trayVm, _promptCoordinator, _consent, _activity, _pause], _lifecycle, _lane);
@@ -158,27 +170,23 @@ public partial class App : Application {
         }
     }
 
-    // The ONE resolution a graph build stands on: the gate verdict and the daemon identity are read
-    // off the same AppConfig.ResolvedProfile, and the post-wizard build re-runs this rather than
-    // reusing a startup value the wizard may have invalidated.
-    internal static async Task<GateResult> ResolveAndEvaluateGateAsync(CancellationToken ct) {
-        await AppConfig.ResolveActiveProfile([]);
-        var resolvedProfile = AppConfig.ResolvedProfile;
-
-        return await EvaluateGateSafelyAsync(
-            token => OnboardingGate.EvaluateResolvedAsync(resolvedProfile?.ProfileName, resolvedProfile?.Profile, token),
-            ct);
-    }
+    // The ONE resolve+evaluate composition (OnboardingGate.EvaluateAsync), wrapped in the
+    // never-brick degrade: the gate verdict and the daemon identity are read off the same
+    // AppConfig.ResolvedProfile it sets, and the post-wizard build re-runs this rather than reusing
+    // a startup value the wizard may have invalidated.
+    internal static Task<GateResult> ResolveAndEvaluateGateAsync(CancellationToken ct) =>
+        EvaluateGateSafelyAsync(OnboardingGate.EvaluateAsync, ct);
 
     // The steady-state graph, over the resolution the gate was evaluated on (never a second resolve).
     void BuildDaemonGraph(
             IClassicDesktopStyleApplicationLifetime desktop, DaemonMutationLane lane, OutcomeChannel channel,
-            GateResult gate) {
+            GateResult gate, bool laneQuiesced) {
         var service = DaemonClientService.CreateResolved(lane.RunAsync);
 
-        // Incomplete after the wizard (abandoned, or sign-in skipped) is the carve-out arm: the
-        // graph is built with every lifecycle auto-action closed and the shim auto-offer suppressed.
-        var autoActionsPermanentlyClosed = AutoActionsPermanentlyClosed(gate);
+        // Incomplete after the wizard (abandoned, or sign-in skipped) is the carve-out arm, and so
+        // is a lane that outran the handoff cap: the graph comes up with every lifecycle
+        // auto-action closed and the shim auto-offer suppressed.
+        var autoActionsPermanentlyClosed = AutoActionsPermanentlyClosed(gate, laneQuiesced);
 
         // One LocalControlOps and one AppNotifier for the whole app: the tray menu and the
         // window rows share a single stop/open-in-web code path (spec §7) and a single
@@ -208,6 +216,9 @@ public partial class App : Application {
 
         consentFlip.Start();
         _consentFlip = consentFlip;
+
+        // Said once, here, because nothing else in the app would: the graph is up but deliberately degraded.
+        AnnounceUnquiescedLane(lifecycleSurface, laneQuiesced);
 
         // Composition-root outcome consumer: shares lifecycle's own surface/probe/CliVersion and the lane itself, so a Takeover accept re-mutates through the same gate.
         _ = ConsumeMutationOutcomesAsync(
@@ -266,14 +277,16 @@ public partial class App : Application {
 
     // Wizard-first mode (spec decision 2): no service, no tray, no lifecycle controller, no
     // coordinators — just the wizard, the app-lifetime lane, and the SAME outcome consumer over a
-    // wizard-local surface. Returns once the wizard has closed AND the channel has been handed on.
-    async Task RunWizardModeAsync(
+    // wizard-local surface. Returns once the wizard has closed AND the channel has been handed on;
+    // false means the lane outran the handoff cap and the graph must close its auto-actions.
+    async Task<bool> RunWizardModeAsync(
             IClassicDesktopStyleApplicationLifetime desktop, DaemonMutationLane lane, OutcomeChannel channel,
             IProcessRunner runner, ILoginShellProbe probe) {
         var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists);
         // Same rule as the shim coordinator's: only a resolved ABSOLUTE path is linkable.
         var shimTarget = cliPath is not null && Path.IsPathRooted(cliPath) ? cliPath : null;
-        var kcapOnPath = await ProbeKcapOnPathSafelyAsync(probe, _shutdown.Token);
+        var shimApplicable = await ResolveShimApplicableAsync(
+            OperatingSystem.IsMacOS(), shimTarget, ct => probe.KcapOnPathAsync(ct), _shutdown.Token);
         var bridges = WizardComposition.BuildBridges(action => Dispatcher.UIThread.Post(action));
         var surface = new WizardLifecycleSurface(ConfirmLifecyclePromptAsync, action => Dispatcher.UIThread.Post(action));
 
@@ -292,7 +305,8 @@ public partial class App : Application {
             UrlOpener: new ShellUrlOpener(),
             Probe: probe,
             DetectionFeed: AgentsStepViewModel.BuildDetectionFeed,
-            ShimApplicable: ShimStepViewModel.ComputeApplicable(OperatingSystem.IsMacOS(), shimTarget, kcapOnPath),
+            CliPath: cliPath,
+            ShimApplicable: shimApplicable,
             ShimTarget: shimTarget,
             DefaultDaemonName: ResolveConsentFlipIdentity().DaemonName,
             Time: TimeProvider.System,
@@ -309,17 +323,35 @@ public partial class App : Application {
             channel, surface, lane.RunAsync, probe.TerminalPathAsync, () => null, _shutdown.Token);
 
         await WaitForWizardCloseAsync(graph.ViewModel, _shutdown.Token);
-        await HandoffAfterWizardAsync(graph.Auth, () => lane.QuiescedAsync(CancellationToken.None), QuiesceShutdownCap, channel);
+        var quiesced = await HandoffAfterWizardAsync(
+            graph.Auth, () => lane.QuiescedAsync(CancellationToken.None), QuiesceShutdownCap, channel);
 
         _wizardAuth = null;
         _wizardWindow = null;
         if (window.IsVisible) window.Close(); // shutdown ended the wait with the window still up
+
+        return quiesced;
     }
 
-    // A probe failure reads as unknown, never as "offer it anyway" — ComputeApplicable's own null rule.
-    static async Task<bool?> ProbeKcapOnPathSafelyAsync(ILoginShellProbe probe, CancellationToken ct) {
+    /// The shim step's applicability, without paying for an answer that cannot matter: the probe
+    /// costs a login-shell spawn, and on every non-macOS machine (and every machine with no
+    /// resolved absolute CLI) <see cref="ShimStepViewModel.ComputeApplicable"/> is already false.
+    internal static async Task<bool> ResolveShimApplicableAsync(
+            bool isMacOs, string? shimTarget, Func<CancellationToken, Task<bool?>> probeKcapOnPath, CancellationToken ct) {
+        if (!isMacOs || shimTarget is null) return false;
+
+        return ShimStepViewModel.ComputeApplicable(
+            isMacOs, shimTarget, await ProbeKcapOnPathSafelyAsync(probeKcapOnPath, ct).ConfigureAwait(true));
+    }
+
+    // A probe failure reads as unknown, never as "offer it anyway" — ComputeApplicable's own null
+    // rule. A cancellation matching the caller's token is a quit, not an unknown: it propagates, so
+    // no wizard window is built after the app has started shutting down (EvaluateGateSafelyAsync's rule).
+    static async Task<bool?> ProbeKcapOnPathSafelyAsync(Func<CancellationToken, Task<bool?>> probe, CancellationToken ct) {
         try {
-            return await probe.KcapOnPathAsync(ct).ConfigureAwait(true);
+            return await probe(ct).ConfigureAwait(true);
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            throw;
         } catch (Exception ex) {
             Console.Error.WriteLine($"kcap: PATH probe failed — skipping the command-line tool step: {ex.Message}");
             return null;
@@ -369,15 +401,18 @@ public partial class App : Application {
     /// The close boundary, in order (spec decision 2): end the sign-in and await its terminal
     /// answer — pre-boundary that is <c>Cancelled</c> with nothing durable, past it the façade
     /// still publishes and answers <c>Committed</c>, and the graph must not be built against a
-    /// half-written config either way — then wait the lane out under the existing cap (past it,
-    /// proceed: the lane still owns the live action and the carve-out arm surfaces it), and only
-    /// then hand the outcome channel to the root consumer.
+    /// half-written config either way — then wait the lane out under the existing cap, and only
+    /// then hand the outcome channel to the root consumer. False = the cap was reached with the
+    /// lane still holding a live action (spec §6a: proceed, but the graph must then close its
+    /// automatic actions rather than race the child that is still running).
     /// </summary>
-    internal static async Task HandoffAfterWizardAsync(
+    internal static async Task<bool> HandoffAfterWizardAsync(
             WizardAuthService? auth, Func<Task> laneQuiescedAsync, TimeSpan cap, OutcomeChannel channel) {
         await CancelAndAwaitAuthAsync(auth).ConfigureAwait(false);
-        await AwaitQuiescedAsync(laneQuiescedAsync, cap).ConfigureAwait(false);
+        var quiesced = await AwaitQuiescedAsync(laneQuiescedAsync, cap).ConfigureAwait(false);
         channel.TransferConsumer();
+
+        return quiesced;
     }
 
     // AuthAttempt.Result never faults (an operation that throws arrives as Failed), so this is a
@@ -502,11 +537,12 @@ public partial class App : Application {
 
     // The MainWindowCoordinator's window factory, split out of StartAsync so a test can drive
     // "build VM+window, assign, and Show()" against a fake service without needing a real
-    // daemon/profile (CreateDefaultAsync does real config I/O). This is also the actual bug fix:
-    // Avalonia's StartWithClassicDesktopLifetime calls
+    // daemon/profile (the profile resolution behind the graph does real config I/O). This is also
+    // the actual bug fix: Avalonia's StartWithClassicDesktopLifetime calls
     // ShowMainWindow() exactly ONCE, synchronously, right after Start — and at that moment
-    // desktop.MainWindow is still null, because CreateDefaultAsync genuinely awaits (config.json
-    // read). By the time this continuation resumes and assigns desktop.MainWindow, nothing else
+    // desktop.MainWindow is still null, because startup genuinely awaits (the config.json read
+    // behind the gate, and in wizard-first mode the whole wizard). By the time this
+    // continuation resumes and assigns desktop.MainWindow, nothing else
     // will ever call .Show() for us, so this method must call it explicitly. Show() on an
     // already-visible window is a no-op, so this stays correct even if a future edit changes the
     // timing such that ShowMainWindow() DOES still see a non-null MainWindow.
@@ -533,7 +569,7 @@ public partial class App : Application {
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
         var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists);
         var runner  = new DaemonClientService.ProcessRunner();
-        var profile = AppConfig.ResolvedProfile; // already resolved by CreateDefaultAsync above
+        var profile = AppConfig.ResolvedProfile; // the ONE resolution the gate was evaluated on
         var probe   = new LoginShellProbe(runner, Environment.GetEnvironmentVariable);
         var canonicalServer = ServerIdentity.Canonicalize(profile?.ServerUrl);
         // Shared with the probe above (not re-resolved) — decision 7's PATH overlay on `install`
@@ -588,6 +624,20 @@ public partial class App : Application {
 
     // Decision 2's carve-out switch: Incomplete is the only gate outcome that closes auto-actions.
     internal static bool AutoActionsPermanentlyClosed(GateResult gate) => gate is GateResult.Incomplete;
+
+    // spec §6a's post-cap rule: a lane that outran the handoff cap still owns a live child, so the
+    // graph comes up degraded whatever the gate said — a second automatic mutation would race it.
+    internal static bool AutoActionsPermanentlyClosed(GateResult gate, bool laneQuiesced) =>
+        AutoActionsPermanentlyClosed(gate) || !laneQuiesced;
+
+    internal const string LaneStillBusyAttention =
+        "A daemon operation is still finishing — automatic actions are disabled.";
+
+    // The other half of the post-cap rule: closing auto-actions silently would leave a degraded app
+    // that never says so. Exactly one line, and only when the cap actually fired.
+    internal static void AnnounceUnquiescedLane(ILifecycleSurface surface, bool laneQuiesced) {
+        if (!laneQuiesced) surface.Attention(LaneStillBusyAttention);
+    }
 
     // A gate-evaluation exception must never brick startup — degrades to Incomplete (fail-safe: the app still launches, with auto-actions closed) instead of throwing.
     internal static async Task<GateResult> EvaluateGateSafelyAsync(
@@ -878,8 +928,9 @@ public partial class App : Application {
     //
     // 1. QuitInProgress is flagged on EVERY pass — including the confirmed one, which is why this
     //    runs before the guard below. A coordinator that only comes into existence BETWEEN the
-    //    passes (quit or an OS logout arriving while CreateDefaultAsync is still in flight, with
-    //    StartAsync's continuation then building the window during the deferred disposal's await)
+    //    passes (quit or an OS logout arriving while startup is still resolving — or still showing
+    //    the wizard — with StartAsync's continuation then building the window during the deferred
+    //    disposal's await)
     //    would otherwise still have hide-on-close armed when the second pass closes the windows:
     //    the window cancels its own close, DoShutdown aborts with windows still open, and every
     //    later quit early-returns on _shutdownConfirmed — an app that can only be force-quit.
@@ -951,9 +1002,13 @@ public partial class App : Application {
     // §3.6's cap: QuiescedAsync itself is unbounded (it just waits for the gate), so this is what
     // keeps a stuck internal mutation from hanging shutdown forever — DisposeAsync's own eventual
     // lifetime-cancel is still the backstop if the cap is reached. Static + delegate-shaped so a
-    // test can drive it without a live controller.
-    internal static async Task AwaitQuiescedAsync(Func<Task> quiescedAsync, TimeSpan cap) {
-        await Task.WhenAny(quiescedAsync(), Task.Delay(cap)).ConfigureAwait(false);
+    // test can drive it without a live controller. Returns which arm won: false = the cap fired
+    // with work still live, which the wizard handoff turns into a degraded (auto-actions closed)
+    // graph. A dead heat reads as false — never claim quiescence that wasn't observed.
+    internal static async Task<bool> AwaitQuiescedAsync(Func<Task> quiescedAsync, TimeSpan cap) {
+        var quiesced = quiescedAsync();
+
+        return await Task.WhenAny(quiesced, Task.Delay(cap)).ConfigureAwait(false) == quiesced;
     }
 
     // Split out of DisposeAndShutdownAsync so a test can pin the ordering with a recording list.

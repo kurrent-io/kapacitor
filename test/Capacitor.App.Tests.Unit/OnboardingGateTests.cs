@@ -287,10 +287,11 @@ public class OnboardingGateTests {
 
     // ── EvaluateResolvedAsync: the shared-resolution seam (Codex P1) ────────
 
-    // App.StartAsync now resolves ONCE (via DaemonClientService.CreateDefaultAsync) and hands that
-    // SAME identity to EvaluateResolvedAsync — proving it never re-resolves is what rules out the
-    // race the P1 finding described: a concurrent active-profile change between two independent
-    // resolves evaluating the gate against a different profile than the one the daemon graph built.
+    // App.StartAsync resolves ONCE (EvaluateAsync's own resolve, which the daemon graph is then
+    // built from) and hands that SAME identity to EvaluateResolvedAsync — proving it never
+    // re-resolves is what rules out the race the P1 finding described: a concurrent active-profile
+    // change between two independent resolves evaluating the gate against a different profile than
+    // the one the daemon graph built.
     [Test]
     public async Task EvaluateResolvedAsync_never_re_resolves_ignoring_a_config_change_after_capture() {
         WriteConfig(SingleProfileConfig(

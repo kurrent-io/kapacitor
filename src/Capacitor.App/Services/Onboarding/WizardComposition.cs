@@ -40,6 +40,7 @@ internal sealed record WizardGraphOptions(
     IUrlOpener                                                                   UrlOpener,
     ILoginShellProbe                                                             Probe,
     Func<ILoginShellProbe, Func<CancellationToken, Task<AgentDetectionResult>>>  DetectionFeed,
+    string?                                                                      CliPath,
     bool                                                                         ShimApplicable,
     string?                                                                      ShimTarget,
     string?                                                                      DefaultDaemonName,
@@ -74,7 +75,7 @@ internal static class WizardComposition {
 
     internal static WizardGraph BuildGraph(WizardGraphOptions options) {
         var claims = options.Claims;
-        var cli    = new LateBoundKcapCli(options.ResolveCli);
+        var cli    = new LateBoundKcapCli(options.ResolveCli, options.CliPath);
         var auth   = new WizardAuthService(BuildOperation(options.Bridges, claims, options.Operation), claims);
 
         var connect  = new ConnectStepViewModel();
@@ -99,7 +100,12 @@ internal static class WizardComposition {
         var done = new DoneStepViewModel(() => Summarize(configured, cli.CliPath is not null));
         IWizardStep[] steps = [.. configured, done];
 
-        return new WizardGraph(new OnboardingViewModel(steps, options.ShutdownToken, options.Surface), auth, steps);
+        var wizard = new OnboardingViewModel(steps, options.ShutdownToken, options.Surface);
+        // A WorkOS "I already have a workspace" prefills the Connect step; without the navigation
+        // the prefill would sit on a page the user is not looking at.
+        signIn.RetargetRequested += _ => wizard.TryGoTo(WizardStepId.Connect);
+
+        return new WizardGraph(wizard, auth, steps);
     }
 
     /// The Done step's rows: what each earlier step reached and — when it didn't — why it was skipped.

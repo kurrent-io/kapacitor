@@ -17,12 +17,12 @@ namespace Capacitor.App.Tests.Unit;
 /// kicks off App.StartAsync fire-and-forget and returns immediately; Avalonia's
 /// StartWithClassicDesktopLifetime calls ShowMainWindow() exactly ONCE, synchronously, right
 /// after Start — and at that moment desktop.MainWindow was still null, because
-/// DaemonClientService.CreateDefaultAsync genuinely awaits real config I/O. By the time the
-/// continuation resumed and assigned desktop.MainWindow, nothing else ever called .Show() —
-/// the app booted a dispatcher loop showing nothing.
+/// startup genuinely awaits real config I/O (and, in wizard-first mode, the whole wizard). By the
+/// time the continuation resumed and assigned desktop.MainWindow, nothing else ever called .Show()
+/// — the app booted a dispatcher loop showing nothing.
 ///
-/// CreateDefaultAsync itself needs a real profile/daemon and isn't a seam a unit test can drive,
-/// so this exercises the closest testable seam: App.BuildAndShowMainWindow (internal, exposed to
+/// That composition needs a real profile/daemon and isn't a seam a unit test can drive, so this
+/// exercises the closest testable seam: App.BuildAndShowMainWindow (internal, exposed to
 /// this assembly via InternalsVisibleTo) is the exact "build VM+window, assign, and Show()"
 /// continuation extracted out of StartAsync — this test proves THAT method actually leaves the
 /// window visible, against a fake service, without needing a real desktop lifetime or daemon.
@@ -562,7 +562,7 @@ public class AppStartupTests {
     /// Regression coverage for an Important finding in review: QuitInProgress used to be set
     /// AFTER OnShutdownRequested's `_shutdownConfirmed` guard, so a coordinator that came into
     /// existence BETWEEN the two passes was never flagged. Shape: a quit (or an OS logout) lands
-    /// while CreateDefaultAsync is still in flight — pass 1 sees a null coordinator — and
+    /// while startup is still resolving (or still showing the wizard) — pass 1 sees a null coordinator — and
     /// StartAsync's continuation then builds the window during the deferred disposal's await.
     /// Pass 2 closed the windows with hide-on-close still armed: the window cancelled its own
     /// close, and (decompiler-verified) DoShutdown aborts once a close is cancelled with windows

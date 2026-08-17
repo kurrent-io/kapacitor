@@ -29,6 +29,9 @@ public static class OnboardingGate {
     /// </summary>
     public static bool ValidServerUrl(string? url) => ServerIdentity.Canonicalize(url) is not null;
 
+    /// The ONE resolve-then-evaluate composition (App.ResolveAndEvaluateGateAsync wraps this in its
+    /// never-brick degrade): the daemon graph is then built from the very AppConfig.ResolvedProfile
+    /// this call published, so the verdict and the graph identity can never name different profiles.
     public static async Task<GateResult> EvaluateAsync(CancellationToken ct) {
         // Daemon-style resolution — no repo/git discovery, matching decision 1's "local" scope.
         await AppConfig.ResolveActiveProfile([]);
@@ -36,10 +39,9 @@ public static class OnboardingGate {
         return await EvaluateResolvedAsync(resolved?.ProfileName, resolved?.Profile, ct);
     }
 
-    /// Shares a resolution the CALLER already performed (App.StartAsync: DaemonClientService.
-    /// CreateDefaultAsync's own AppConfig.ResolveActiveProfile) instead of resolving a second
-    /// time — two independent resolves racing a concurrent active-profile change could otherwise
-    /// evaluate the gate against a different profile than the one the daemon graph builds for.
+    /// Evaluates a resolution the caller already holds instead of resolving a second time — two
+    /// independent resolves racing a concurrent active-profile change could otherwise evaluate the
+    /// gate against a different profile than the one the daemon graph builds for.
     public static async Task<GateResult> EvaluateResolvedAsync(string? profileName, Profile? profile, CancellationToken ct) {
         if (profile is null || string.IsNullOrEmpty(profileName)) {
             return new GateResult.Incomplete(GateReason.NoProfile);
