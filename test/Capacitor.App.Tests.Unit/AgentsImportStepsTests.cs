@@ -171,7 +171,7 @@ public class AgentsStepViewModelTests {
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Retry_only_reinstalls_the_one_row_the_other_success_stands() {
-        var (codexStatus, cursorStatus, callCount) = await AvaloniaSession.DispatchAsync(async () => {
+        var (codexStatus, cursorStatus, callCount, satisfied) = await AvaloniaSession.DispatchAsync(async () => {
             var h = new Harness();
             h.Row("Codex").IsSelected  = true;
             h.Row("Cursor").IsSelected = true;
@@ -182,12 +182,13 @@ public class AgentsStepViewModelTests {
             h.Cli.PluginInstallBehavior = (_, _) => Task.FromResult(new ProcessResult(0, "", "", false));
             await h.Row("Codex").RetryCommand.Execute().ToTask();
 
-            return (h.Row("Codex").Status, h.Row("Cursor").Status, h.Cli.PluginInstallCallCount);
+            return (h.Row("Codex").Status, h.Row("Cursor").Status, h.Cli.PluginInstallCallCount, h.Vm.Satisfied);
         });
 
         await Assert.That(codexStatus).IsEqualTo(AgentInstallStatus.Succeeded);
         await Assert.That(cursorStatus).IsEqualTo(AgentInstallStatus.Succeeded);
         await Assert.That(callCount).IsEqualTo(3); // 2 initial + 1 retry
+        await Assert.That(satisfied).IsTrue(); // the retried row flipping green makes every selected row green
     }
 
     [Test]
@@ -302,6 +303,7 @@ public class ImportStepViewModelTests {
     public async Task Run_is_disabled_until_the_scoped_text_field_is_filled_in() {
         var (everythingOk, orgBlank, orgFilled, repoBlank, repoFilled) = await AvaloniaSession.DispatchAsync(() => {
             var h = new Harness();
+            h.Row("Claude Code").IsSelected = true; // isolates the scope gate from the vendor-selection gate
 
             var everythingOk = CanExecute(h.Vm.RunCommand); // default scope
 
@@ -327,6 +329,72 @@ public class ImportStepViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
+    public async Task Run_is_disabled_when_no_vendor_is_selected() {
+        var (noneSelected, oneSelected) = await AvaloniaSession.DispatchAsync(() => {
+            var h = new Harness();
+
+            var noneSelected = CanExecute(h.Vm.RunCommand);
+            h.Row("Claude Code").IsSelected = true;
+            var oneSelected = CanExecute(h.Vm.RunCommand);
+
+            return (noneSelected, oneSelected);
+        });
+
+        // Empty VendorFlags means "import everything" to the CLI — the opposite of unchecking every box.
+        await Assert.That(noneSelected).IsFalse();
+        await Assert.That(oneSelected).IsTrue();
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_direct_run_with_no_vendor_selected_never_calls_ImportAsync() {
+        var callCount = await AvaloniaSession.DispatchAsync(async () => {
+            var h = new Harness(); // valid scope (Everything) and a real CLI, but zero vendors selected
+
+            await h.Vm.RunAsync();
+
+            return h.Cli.ImportCallCount;
+        });
+
+        await Assert.That(callCount).IsEqualTo(0);
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_direct_run_with_a_blank_scope_field_never_calls_ImportAsync() {
+        var callCount = await AvaloniaSession.DispatchAsync(async () => {
+            var h = new Harness();
+            h.Row("Claude Code").IsSelected = true;
+            h.Vm.Scope = ImportScopeChoice.Org; // OrgText left blank
+
+            await h.Vm.RunAsync();
+
+            return h.Cli.ImportCallCount;
+        });
+
+        await Assert.That(callCount).IsEqualTo(0);
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_thrown_exception_sets_a_visible_status_with_the_retry_hint() {
+        var status = await AvaloniaSession.DispatchAsync(async () => {
+            var h = new Harness();
+            h.Row("Claude Code").IsSelected = true;
+            h.Cli.ImportBehavior = (_, _, _) => throw new InvalidOperationException("spawn failed");
+
+            await h.Vm.RunCommand.Execute().ToTask();
+
+            return h.Vm.Status;
+        });
+
+        await Assert.That(status).IsNotNull();
+        await Assert.That(status).Contains("spawn failed");
+        await Assert.That(status).Contains(ImportStepViewModel.RetryHint);
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
     public async Task Everything_scope_argv_carries_only_the_selected_vendor_flags() {
         var request = await AvaloniaSession.DispatchAsync(async () => {
             var h = new Harness();
@@ -348,6 +416,7 @@ public class ImportStepViewModelTests {
     public async Task Org_scope_argv_carries_the_org_text() {
         var request = await AvaloniaSession.DispatchAsync(async () => {
             var h = new Harness();
+            h.Row("Claude Code").IsSelected = true;
             h.Vm.Scope   = ImportScopeChoice.Org;
             h.Vm.OrgText = "acme";
 
@@ -365,6 +434,7 @@ public class ImportStepViewModelTests {
     public async Task Repo_scope_argv_carries_the_owner_slash_name_text() {
         var request = await AvaloniaSession.DispatchAsync(async () => {
             var h = new Harness();
+            h.Row("Claude Code").IsSelected = true;
             h.Vm.Scope    = ImportScopeChoice.Repo;
             h.Vm.RepoText = "acme/widgets";
 
@@ -382,6 +452,7 @@ public class ImportStepViewModelTests {
     public async Task Log_is_bounded_to_500_lines_with_a_drop_notice_once_truncation_starts() {
         var (count, truncated, first, last) = await AvaloniaSession.DispatchAsync(async () => {
             var h = new Harness();
+            h.Row("Claude Code").IsSelected = true;
             h.Cli.ImportBehavior = (_, onLine, _) => {
                 for (var i = 1; i <= 510; i++) onLine(new StreamedLine(ProcessStreamKind.Stdout, $"line {i}"));
 
@@ -404,6 +475,7 @@ public class ImportStepViewModelTests {
     public async Task Completion_appends_the_retry_hint_on_success() {
         var status = await AvaloniaSession.DispatchAsync(async () => {
             var h = new Harness();
+            h.Row("Claude Code").IsSelected = true;
             h.Cli.ImportBehavior = (_, _, _) => Task.FromResult(new StreamingResult(0, false, []));
 
             await h.Vm.RunCommand.Execute().ToTask();
@@ -419,6 +491,7 @@ public class ImportStepViewModelTests {
     public async Task Completion_appends_the_retry_hint_on_failure_too() {
         var status = await AvaloniaSession.DispatchAsync(async () => {
             var h = new Harness();
+            h.Row("Claude Code").IsSelected = true;
             h.Cli.ImportBehavior = (_, _, _) => Task.FromResult(new StreamingResult(1, false, []));
 
             await h.Vm.RunCommand.Execute().ToTask();
@@ -434,6 +507,7 @@ public class ImportStepViewModelTests {
     public async Task A_failed_run_never_blocks_leaving() {
         var canLeave = await AvaloniaSession.DispatchAsync(async () => {
             var h = new Harness();
+            h.Row("Claude Code").IsSelected = true;
             h.Cli.ImportBehavior = (_, _, _) => Task.FromResult(new StreamingResult(1, false, []));
             await h.Vm.RunCommand.Execute().ToTask();
 
@@ -448,6 +522,7 @@ public class ImportStepViewModelTests {
     public async Task Cancel_button_stops_the_run_and_reports_cancellation_without_the_retry_hint() {
         var status = await AvaloniaSession.DispatchAsync(async () => {
             var h = new Harness();
+            h.Row("Claude Code").IsSelected = true;
             var started = new TaskCompletionSource();
             h.Cli.ImportBehavior = async (_, _, ct) => {
                 started.TrySetResult();
@@ -473,6 +548,7 @@ public class ImportStepViewModelTests {
     public async Task CanLeaveAsync_kills_a_running_import_and_never_vetoes() {
         var (canLeave, status) = await AvaloniaSession.DispatchAsync(async () => {
             var h = new Harness();
+            h.Row("Claude Code").IsSelected = true;
             var started = new TaskCompletionSource();
             h.Cli.ImportBehavior = async (_, _, ct) => {
                 started.TrySetResult();
@@ -516,6 +592,7 @@ public class ImportStepViewModelTests {
     public async Task Satisfied_only_after_a_run_completes_with_exit_zero() {
         var (afterFailure, afterSuccess) = await AvaloniaSession.DispatchAsync(async () => {
             var h = new Harness();
+            h.Row("Claude Code").IsSelected = true;
             h.Cli.ImportBehavior = (_, _, _) => Task.FromResult(new StreamingResult(1, false, []));
             await h.Vm.RunCommand.Execute().ToTask();
             var afterFailure = h.Vm.Satisfied;

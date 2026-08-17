@@ -60,15 +60,11 @@ public sealed class ImportStepViewModel : ReactiveObject, IWizardStep {
 
         Vendors = AgentVendors.All.Select(v => new ImportVendorRow(v)).ToList();
 
-        var idle = this.WhenAnyValue(x => x.Busy, busy => !busy);
-        var scopeValid = this.WhenAnyValue(x => x.Scope, x => x.OrgText, x => x.RepoText,
-            (scope, org, repo) => scope switch {
-                ImportScopeChoice.Everything => true,
-                ImportScopeChoice.Org        => !string.IsNullOrWhiteSpace(org),
-                ImportScopeChoice.Repo       => !string.IsNullOrWhiteSpace(repo),
-                _                            => false,
-            });
-        var canRun = idle.CombineLatest(scopeValid, (i, v) => i && v && CliAvailable);
+        var idle        = this.WhenAnyValue(x => x.Busy, busy => !busy);
+        var scopeValid  = this.WhenAnyValue(x => x.Scope, x => x.OrgText, x => x.RepoText, (_, _, _) => IsScopeValid());
+        var anySelected = Vendors.Select(v => v.WhenAnyValue(x => x.IsSelected)).CombineLatest()
+            .Select(flags => flags.Any(selected => selected));
+        var canRun = Observable.CombineLatest(idle, scopeValid, anySelected, (i, v, a) => i && v && a && CliAvailable);
 
         RunCommand    = ReactiveCommand.CreateFromTask(RunAsync, canRun);
         CancelCommand = ReactiveCommand.Create(() => _cts?.Cancel());
@@ -179,7 +175,11 @@ public sealed class ImportStepViewModel : ReactiveObject, IWizardStep {
     }
 
     async Task RunCoreAsync() {
+        // Mirrors canRun's gating — a direct call (tests, or a future non-button trigger) must not
+        // bypass any of it.
         if (!CliAvailable) return;
+        if (!IsScopeValid()) return;
+        if (!Vendors.Any(v => v.IsSelected)) return; // empty VendorFlags means "import everything" to the CLI — never silently do that
 
         Log.Clear();
         Truncated = false;
@@ -199,12 +199,22 @@ public sealed class ImportStepViewModel : ReactiveObject, IWizardStep {
                         + " " + RetryHint;
         } catch (OperationCanceledException) {
             Status = "Import cancelled."; // the user chose to stop — no retry hint, unlike a real failure
+        } catch (Exception ex) {
+            Satisfied = false;
+            Status    = $"Import failed: {ex.Message} {RetryHint}";
         } finally {
             Busy = false;
             _cts?.Dispose();
             _cts = null;
         }
     }
+
+    bool IsScopeValid() => Scope switch {
+        ImportScopeChoice.Everything => true,
+        ImportScopeChoice.Org        => !string.IsNullOrWhiteSpace(OrgText),
+        ImportScopeChoice.Repo       => !string.IsNullOrWhiteSpace(RepoText),
+        _                            => false,
+    };
 
     string? OrgOrRepoValue() => Scope switch {
         ImportScopeChoice.Org  => OrgText,
