@@ -8,20 +8,12 @@ using System.Text.RegularExpressions;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Codex;
 
 /// <summary>
-/// Schema conformance for the <c>codex app-server</c> protocol. Pins the subset
-/// of the protocol schema the runtime depends on (<see cref="CodexAppServerSchemaSubset"/>) and, on a
-/// machine with <c>codex</c> installed, regenerates that schema from the binary and diffs it against
-/// the vendored pin — so a version that changes a depended-on shape fails HERE instead of silently at
-/// launch.
-///
-/// <para>Two arms: a CI-safe arm that validates the committed pin documents every depended-on shape
-/// (no binary needed — CI has no <c>codex</c>), and a binary-gated arm that catches real upstream
-/// drift (auto-skips when the binary is absent — never a silent pass). Part (b) — the behavioural Q1
-/// isolation / Q2 sandbox probes — lives with the live smoke, not here.</para>
-///
-/// <para>Regenerate the pin after an intended Codex bump (having re-vetted the behavioural probes):
-/// <c>KCAP_CODEX_SCHEMA_PIN_UPDATE=1</c> with <c>codex</c> on PATH rewrites it from the installed
-/// binary through the exact extractor the diff uses.</para>
+/// Guards the <c>codex app-server</c> protocol shapes the runtime depends on
+/// (<see cref="CodexAppServerSchemaSubset"/>) against upstream drift — a changed shape fails here
+/// rather than silently at launch. The binary-gated arm auto-skips when <c>codex</c> is absent, never
+/// passing silently; regenerate the pin after an intended bump with
+/// <c>KCAP_CODEX_SCHEMA_PIN_UPDATE=1</c>. Behavioural conformance (the isolation / sandbox probes)
+/// lives with the live smoke, not here.
 /// </summary>
 public class CodexAppServerSchemaConformanceTests {
     const string PinUpdateEnvVar = "KCAP_CODEX_SCHEMA_PIN_UPDATE";

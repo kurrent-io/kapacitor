@@ -4,13 +4,10 @@ using System.Text.Json.Nodes;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Codex;
 
 /// <summary>
-/// Extracts and canonicalizes the subset of the <c>codex app-server</c> protocol JSON schema that the
-/// app-server runtime layer actually reads, so a Codex version that changes a depended-on shape is
-/// caught by a diff instead of failing silently at launch. The full protocol schema drifts benignly
-/// across versions (0.147 adds <c>threadSection/*</c>; the combined schema already carries 557 defs),
-/// so a whole-file diff would be noise — this pins only the byte-stable set the app-server protocol
-/// spike verified, closed over its <c>#/definitions/*</c> refs so a change to any referenced shape is
-/// pinned too.
+/// Extracts and canonicalizes the subset of the <c>codex app-server</c> protocol schema the runtime
+/// reads. The full schema drifts benignly across versions (0.147 adds <c>threadSection/*</c>; 557
+/// defs), so a whole-file diff is noise — this pins only the spike-verified depended-on set, closed
+/// over its <c>#/definitions/*</c> refs so a referenced shape's change is caught too.
 /// </summary>
 internal static class CodexAppServerSchemaSubset {
     /// <summary>The combined all-types schema the generator emits (a <c>definitions</c> map of the
@@ -50,9 +47,8 @@ internal static class CodexAppServerSchemaSubset {
 
     static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
 
-    /// <summary>Reads a <c>generate-json-schema --out</c> directory and returns the canonical pin
-    /// object <c>{ codexVersion, combinedDefs, standalone }</c>, every nested object key sorted so
-    /// re-serialization is order-stable within a process.</summary>
+    /// <summary>The canonical pin <c>{ codexVersion, combinedDefs, standalone }</c> from a
+    /// <c>generate-json-schema --out</c> dir — keys sorted so serialization is order-stable.</summary>
     public static JsonObject Extract(string schemaDir, string codexVersion) {
         var combinedPath = Path.Combine(schemaDir, CombinedSchemaFileName);
         if (!File.Exists(combinedPath))
@@ -85,9 +81,8 @@ internal static class CodexAppServerSchemaSubset {
         };
     }
 
-    /// <summary>Indented serialization — writes the committed pin and, applied to both sides through
-    /// <see cref="Canonical"/>, provides a by-value comparison whose string equality is reliable
-    /// because both operands are re-serialized in the same process.</summary>
+    /// <summary>Indented serialization. Via <see cref="Canonical"/> it gives a by-value comparison:
+    /// both operands are re-serialized in-process, so string equality is reliable.</summary>
     public static string Serialize(JsonNode node) => node.ToJsonString(Indented);
 
     /// <summary>Canonical string form of a node (keys sorted, indented) for by-value comparison.</summary>
