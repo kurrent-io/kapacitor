@@ -49,14 +49,13 @@ public class AgentOrchestratorLocalAttachTests {
     [Test]
     public async Task Claude_borrowed_cwd_prepare_writes_no_repo_files() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
 
         var launcher = new ClaudeLauncher(LauncherCfg(), NullLogger<ClaudeLauncher>.Instance);
-        launcher.Prepare(CtxFor(dir));
+        launcher.Prepare(CtxFor(tmp.Path));
 
-        await Assert.That(File.Exists(Path.Combine(dir, ".mcp.json"))).IsFalse();
-        await Assert.That(File.Exists(Path.Combine(dir, ".claude", "settings.local.json"))).IsFalse();
-        await Assert.That(Directory.Exists(Path.Combine(dir, ".claude"))).IsFalse();
+        await Assert.That(File.Exists(tmp.PathTo(".mcp.json"))).IsFalse();
+        await Assert.That(File.Exists(tmp.PathTo(".claude", "settings.local.json"))).IsFalse();
+        await Assert.That(Directory.Exists(tmp.PathTo(".claude"))).IsFalse();
     }
 
     [Test]
@@ -114,14 +113,13 @@ public class AgentOrchestratorLocalAttachTests {
     [Test]
     public async Task Owned_worktree_cleanup_still_removes_it() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
 
         var server = new CaptureServerConnection();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
 
         var agent = new AgentInstance(
-            "owned-1", null, "", null, dir, "claude",
-            new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo(dir, "", dir, IsStandalone: true), new CancellationTokenSource()
+            "owned-1", null, "", null, tmp.Path, "claude",
+            new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo(tmp.Path, "", tmp.Path, IsStandalone: true), new CancellationTokenSource()
         ) {
             Work = WorkLocation.OwnedWorktree
         };
@@ -129,13 +127,12 @@ public class AgentOrchestratorLocalAttachTests {
         orch.RegisterAgentForTest(agent);
         await orch.CleanupAgentForTest("owned-1");
 
-        await Assert.That(Directory.Exists(dir)).IsFalse();
+        await Assert.That(Directory.Exists(tmp.Path)).IsFalse();
     }
 
     [Test]
     public async Task Private_spawn_makes_no_server_calls_and_omits_hosted_agent_env() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
 
         var server    = new TripwireServerConnection();
         var pty       = new EnvCapturingPtyFactory();
@@ -149,7 +146,7 @@ public class AgentOrchestratorLocalAttachTests {
         readBuf.Position = 0;
         using var client = new DuplexTestStream(readBuf, new MemoryStream());
 
-        var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate: true, dir, ["--model", "opus"], 80, 24);
+        var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate: true, tmp.Path, ["--model", "opus"], 80, 24);
         await orch.HandleLocalSpawnAsync(spawn, client, default);
 
         // Let the fire-and-forget read loop + cleanup finish, then assert no server call landed.
@@ -191,7 +188,6 @@ public class AgentOrchestratorLocalAttachTests {
     [Test]
     public async Task Registered_spawn_calls_server_and_sets_hosted_env() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
 
         var server    = new TripwireServerConnection();
         var pty       = new EnvCapturingPtyFactory();
@@ -204,7 +200,7 @@ public class AgentOrchestratorLocalAttachTests {
         readBuf.Position = 0;
         using var client = new DuplexTestStream(readBuf, new MemoryStream());
 
-        var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate: false, dir, ["--model", "opus"], 80, 24);
+        var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate: false, tmp.Path, ["--model", "opus"], 80, 24);
         await orch.HandleLocalSpawnAsync(spawn, client, default);
 
         var deadline = DateTime.UtcNow.AddSeconds(5);
@@ -393,7 +389,6 @@ public class AgentOrchestratorLocalAttachTests {
     [NotInParallel]
     public async Task Registered_spawn_env_includes_daemon_bridge_url_and_preserves_api_key() {
         using var tmp = new TempDir();
-        var dir     = tmp.Path;
         var prevKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
         Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-test-key");
 
@@ -411,7 +406,7 @@ public class AgentOrchestratorLocalAttachTests {
                 readBuf.Position = 0;
                 using var client = new DuplexTestStream(readBuf, new MemoryStream());
 
-                var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate: false, dir, [], 80, 24);
+                var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate: false, tmp.Path, [], 80, 24);
                 await orch.HandleLocalSpawnAsync(spawn, client, default);
 
                 var deadline = DateTime.UtcNow.AddSeconds(5);
@@ -886,7 +881,6 @@ public class AgentOrchestratorLocalAttachTests {
     [Test]
     public async Task Local_spawn_builds_its_activity_clock_through_the_shared_factory() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
         using var cts = new CancellationTokenSource();
 
         var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = new SpyHostedAgentLauncher("claude", "spy-claude") };
@@ -896,7 +890,7 @@ public class AgentOrchestratorLocalAttachTests {
             new TripwireServerConnection(), new FixedPtyProcessFactory(new OneChunkThenBlockPtyProcess()), launchers);
 
         using var client = new DuplexTestStream(new ParkedReadStream(), new MemoryStream());
-        var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate: false, dir, [], 80, 24);
+        var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate: false, tmp.Path, [], 80, 24);
 
         var spawnTask = orch.HandleLocalSpawnAsync(spawn, client, cts.Token);
 

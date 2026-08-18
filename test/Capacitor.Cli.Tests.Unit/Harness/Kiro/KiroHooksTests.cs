@@ -17,7 +17,7 @@ public class KiroHooksTests {
     [Test]
     public async Task inject_adds_agentspawn_hook_and_preserves_cloned_agent_fields() {
         using var tmp = new TempDir();
-        var agentPath = Path.Combine(tmp.Path, "agents", "kcap.json");
+        var agentPath = tmp.PathTo("agents", "kcap.json");
         Directory.CreateDirectory(Path.GetDirectoryName(agentPath)!);
 
         // A cloned default agent: real tools/prompt + an empty hooks block.
@@ -47,7 +47,7 @@ public class KiroHooksTests {
     [Test]
     public async Task inject_is_idempotent() {
         using var tmp = new TempDir();
-        var agentPath = Path.Combine(tmp.Path, "agents", "kcap.json");
+        var agentPath = tmp.PathTo("agents", "kcap.json");
         Directory.CreateDirectory(Path.GetDirectoryName(agentPath)!);
         await File.WriteAllTextAsync(agentPath, """{"name":"kcap","hooks":{}}""");
 
@@ -62,13 +62,13 @@ public class KiroHooksTests {
     [Test]
     public async Task inject_missing_file_returns_false() {
         using var tmp = new TempDir();
-        await Assert.That(PluginCommand.InjectKiroHooksIntoAgent(Path.Combine(tmp.Path, "nope.json"))).IsFalse();
+        await Assert.That(PluginCommand.InjectKiroHooksIntoAgent(tmp.PathTo("nope.json"))).IsFalse();
     }
 
     [Test]
     public async Task marker_records_and_restores_previous_default() {
         using var tmp = new TempDir();
-        var agentPath = Path.Combine(tmp.Path, "agents", "kcap.json");
+        var agentPath = tmp.PathTo("agents", "kcap.json");
         Directory.CreateDirectory(Path.GetDirectoryName(agentPath)!);
 
         KiroHooksInstaller.WriteMarker(agentPath, "kiro_default");
@@ -84,7 +84,7 @@ public class KiroHooksTests {
     [Test]
     public async Task remove_deletes_agent_file_and_marker() {
         using var tmp = new TempDir();
-        var agentPath = Path.Combine(tmp.Path, "agents", "kcap.json");
+        var agentPath = tmp.PathTo("agents", "kcap.json");
         Directory.CreateDirectory(Path.GetDirectoryName(agentPath)!);
         await File.WriteAllTextAsync(agentPath, "{}");
         KiroHooksInstaller.WriteMarker(agentPath, "kiro_default");
@@ -98,7 +98,7 @@ public class KiroHooksTests {
     [Test]
     public async Task remove_without_install_reports_nothing_removed() {
         using var tmp = new TempDir();
-        var agentPath = Path.Combine(tmp.Path, "agents", "kcap.json");
+        var agentPath = tmp.PathTo("agents", "kcap.json");
 
         await Assert.That(PluginCommand.RemoveKiroHooks(agentPath)).IsFalse();
     }
@@ -106,7 +106,7 @@ public class KiroHooksTests {
     [Test]
     public async Task is_installed_detects_pre_marker_installs_from_file_content() {
         using var tmp = new TempDir();
-        var agentsDir = Path.Combine(tmp.Path, "agents");
+        var agentsDir = tmp.PathTo("agents");
         var agentPath = Path.Combine(agentsDir, "kcap.json");
 
         Directory.CreateDirectory(agentsDir);

@@ -39,8 +39,7 @@ public class DaemonKillTests {
         if (OperatingSystem.IsWindows()) return; // POSIX process spawn below
 
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
 
         Process? proc = null;
         try {

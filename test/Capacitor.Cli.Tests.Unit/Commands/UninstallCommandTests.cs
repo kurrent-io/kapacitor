@@ -347,10 +347,9 @@ public class UninstallCommandTests {
         // Fake project: a temp dir with a .git directory makes GitRepository.FindRoot
         // return it as the working tree root.
         using var tmp = new TempDir();
-        var projectDir = tmp.Path;
-        Directory.CreateDirectory(Path.Combine(projectDir, ".git"));
+        Directory.CreateDirectory(tmp.PathTo(".git"));
 
-        var projectClaude = Path.Combine(projectDir, ".claude", "settings.local.json");
+        var projectClaude = tmp.PathTo(".claude", "settings.local.json");
         Directory.CreateDirectory(Path.GetDirectoryName(projectClaude)!);
         await File.WriteAllTextAsync(projectClaude, """
             {
@@ -359,7 +358,7 @@ public class UninstallCommandTests {
             }
             """);
 
-        var projectCodex = Path.Combine(projectDir, ".codex", "hooks.json");
+        var projectCodex = tmp.PathTo(".codex", "hooks.json");
         Directory.CreateDirectory(Path.GetDirectoryName(projectCodex)!);
         await File.WriteAllTextAsync(projectCodex, """
             {
@@ -374,7 +373,7 @@ public class UninstallCommandTests {
 
         var originalCwd = Environment.CurrentDirectory;
         try {
-            Environment.CurrentDirectory = projectDir;
+            Environment.CurrentDirectory = tmp.Path;
 
             var exit = await UninstallCommand.HandleAsync(["uninstall", "--yes", "--project", "--keep-config"]);
             await Assert.That(exit).IsEqualTo(0);
@@ -403,12 +402,11 @@ public class UninstallCommandTests {
 
         // A scratch dir with NO .git anywhere up the tree.
         using var tmp = new TempDir();
-        var noRepoDir = tmp.Path;
         var originalCwd = Environment.CurrentDirectory;
         using var capture = ConsoleOutput.StartErrorCapture();
 
         try {
-            Environment.CurrentDirectory = noRepoDir;
+            Environment.CurrentDirectory = tmp.Path;
 
             var exit = await UninstallCommand.HandleAsync(["uninstall", "--yes", "--project"]);
             await Assert.That(exit).IsEqualTo(1);

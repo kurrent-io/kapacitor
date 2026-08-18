@@ -7,7 +7,7 @@ public class CursorHooksWriterTests {
     [Test]
     public async Task fresh_install_writes_all_eight_events() {
         using var tmp = new TempDir();
-        var hooksPath = Path.Combine(tmp.Path, "hooks.json");
+        var hooksPath = tmp.PathTo("hooks.json");
 
         var ok = PluginCommand.InstallCursorHooks(hooksPath);
         await Assert.That(ok).IsTrue();
@@ -29,7 +29,7 @@ public class CursorHooksWriterTests {
     [Test]
     public async Task install_preserves_user_authored_entries() {
         using var tmp = new TempDir();
-        var hooksPath = Path.Combine(tmp.Path, "hooks.json");
+        var hooksPath = tmp.PathTo("hooks.json");
         await File.WriteAllTextAsync(hooksPath, """
             {"version":1,"hooks":{"sessionStart":[{"command":"/usr/local/bin/other"}]}}
         """);
@@ -45,7 +45,7 @@ public class CursorHooksWriterTests {
     [Test]
     public async Task install_replaces_existing_kcap_entries() {
         using var tmp = new TempDir();
-        var hooksPath = Path.Combine(tmp.Path, "hooks.json");
+        var hooksPath = tmp.PathTo("hooks.json");
         await File.WriteAllTextAsync(hooksPath, """
             {"version":1,"hooks":{"sessionStart":[{"command":"kcap hook --cursor --legacy"}]}}
         """);
@@ -63,18 +63,18 @@ public class CursorHooksWriterTests {
     [Test]
     public async Task install_stamps_marker() {
         using var tmp = new TempDir();
-        var hooksPath = Path.Combine(tmp.Path, "hooks.json");
+        var hooksPath = tmp.PathTo("hooks.json");
         PluginCommand.InstallCursorHooks(hooksPath);
-        await Assert.That(File.Exists(Path.Combine(tmp.Path, ".kcap-hooks-version"))).IsTrue();
+        await Assert.That(File.Exists(tmp.PathTo(".kcap-hooks-version"))).IsTrue();
     }
 
     [Test]
     public async Task remove_strips_kcap_entries_and_marker() {
         using var tmp = new TempDir();
-        var hooksPath = Path.Combine(tmp.Path, "hooks.json");
+        var hooksPath = tmp.PathTo("hooks.json");
         PluginCommand.InstallCursorHooks(hooksPath);
         var removed = PluginCommand.RemoveCursorHooks(hooksPath);
         await Assert.That(removed).IsTrue();
-        await Assert.That(File.Exists(Path.Combine(tmp.Path, ".kcap-hooks-version"))).IsFalse();
+        await Assert.That(File.Exists(tmp.PathTo(".kcap-hooks-version"))).IsFalse();
     }
 }

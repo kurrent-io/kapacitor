@@ -78,13 +78,12 @@ public class DaemonStatusWiringTests {
     [Test]
     public async Task AgentOrchestrator_resolved_via_DI_shares_the_one_registered_notifier() {
         using var tmp = new TempDir();
-        var stateDir = tmp.Path;
 
         var services = new ServiceCollection();
         services.AddSingleton(new DaemonConfig {
             Name         = "wiring-orch-test",
             ServerUrl    = "http://127.0.0.1:1",
-            StateDir     = stateDir,
+            StateDir     = tmp.Path,
             WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-wiring-orch-wt-" + Guid.NewGuid().ToString("N")[..8]),
         });
         services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
@@ -102,8 +101,8 @@ public class DaemonStatusWiringTests {
             new Dictionary<string, IHostedAgentRuntimeFactory>());
         services.AddSingleton<IHostApplicationLifetime>(new NoopHostLifetime());
         services.AddSingleton(sp => new LaunchConsentGate(
-            new LaunchConsentStore(stateDir, NullLogger.Instance),
-            new LaunchConsentDecisionLog(stateDir, NullLogger.Instance),
+            new LaunchConsentStore(tmp.Path, NullLogger.Instance),
+            new LaunchConsentDecisionLog(tmp.Path, NullLogger.Instance),
             prompter: null,
             TimeProvider.System,
             sp.GetRequiredService<ILogger<LaunchConsentGate>>()));

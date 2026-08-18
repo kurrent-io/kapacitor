@@ -432,9 +432,8 @@ public class DaemonRunnerCursorAvailabilityTests {
     [Test]
     public async Task AdvertisementGuard_DetectsAReintroducedBuildIdentityGate() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
 
-        var file = Path.Combine(dir, "DaemonRunner.cs");
+        var file = tmp.PathTo("DaemonRunner.cs");
         await File.WriteAllLinesAsync(file, [
             "// a comment naming TryMatchValidatedBuild must NOT count",
             "var artifact = CursorBorrowedReviewValidation.TryMatchValidatedBuild(cliPath);",

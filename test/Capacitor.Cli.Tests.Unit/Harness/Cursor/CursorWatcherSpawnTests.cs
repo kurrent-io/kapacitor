@@ -120,7 +120,7 @@ public class CursorWatcherSpawnTests {
             using var client   = new HttpClient(handler);
             var child  = NewSessionId();
             var parent = NewSessionId();
-            var childFile = Path.Combine(tmp.Path, $"{child}.jsonl");
+            var childFile = tmp.PathTo($"{child}.jsonl");
             await File.WriteAllTextAsync(childFile, """{"role":"assistant","message":{"content":[]}}""" + "\n");
             CursorMarkers.Quarantine(parent, "test");
 
@@ -131,7 +131,7 @@ public class CursorWatcherSpawnTests {
             // never fires.)
             CursorMarkers.MarkSubagentStartAcked(child);
 
-            var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
+            var spool = new HookSpool(tmp.PathTo("spool"));
             await CursorHookCommand.HandleSubagentChildEventAsync(
                 client, "http://s", spool, child, "afterAgentThought", childFile, parent, "task",
                 budgetExpired: () => false, ct: CancellationToken.None);
@@ -158,7 +158,7 @@ public class CursorWatcherSpawnTests {
 
             var child  = NewSessionId();
             var parent = NewSessionId();
-            var childFile = Path.Combine(tmp.Path, $"{child}.jsonl");
+            var childFile = tmp.PathTo($"{child}.jsonl");
             await File.WriteAllTextAsync(childFile, """{"role":"assistant","message":{"content":[]}}""" + "\n");
 
             // Seed the persisted link so TryLoadLink activates the divert without re-running the
@@ -178,7 +178,7 @@ public class CursorWatcherSpawnTests {
                     : new HttpResponseMessage(HttpStatusCode.OK);
             });
             using var client = new HttpClient(handler);
-            var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
+            var spool = new HookSpool(tmp.PathTo("spool"));
 
             // Seed the undelivered subagent-start DIRECTLY (as a prior transient POST failure
             // would have left it), rather than producing one by driving the child's own
@@ -235,7 +235,7 @@ public class CursorWatcherSpawnTests {
 
             var child     = NewSessionId();
             var parent    = NewSessionId();
-            var childFile = Path.Combine(tmp.Path, $"{child}.jsonl");
+            var childFile = tmp.PathTo($"{child}.jsonl");
             await File.WriteAllTextAsync(childFile, """{"role":"assistant","message":{"content":[]}}""" + "\n");
 
             // Pre-link the child to its parent so every hook for `child` diverts through
@@ -258,7 +258,7 @@ public class CursorWatcherSpawnTests {
                     : new HttpResponseMessage(HttpStatusCode.OK);
             });
             using var client = new HttpClient(handler);
-            var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
+            var spool = new HookSpool(tmp.PathTo("spool"));
 
             var childFileEscaped = childFile.Replace(@"\", @"\\");
 
@@ -312,7 +312,7 @@ public class CursorWatcherSpawnTests {
 
             var child     = NewSessionId();
             var parent    = NewSessionId();
-            var childFile = Path.Combine(tmp.Path, $"{child}.jsonl");
+            var childFile = tmp.PathTo($"{child}.jsonl");
             await File.WriteAllTextAsync(childFile, """{"role":"assistant","message":{"content":[]}}""" + "\n");
 
             // Subagent-start was acked in an EARLIER process invocation (durable marker) — the
@@ -321,7 +321,7 @@ public class CursorWatcherSpawnTests {
 
             using var handler = new StubHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK));
             using var client  = new HttpClient(handler);
-            var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
+            var spool = new HookSpool(tmp.PathTo("spool"));
 
             await CursorHookCommand.HandleSubagentChildEventAsync(
                 client, "http://s", spool, child, "postToolUse", childFile, parent, "task",
@@ -347,13 +347,13 @@ public class CursorWatcherSpawnTests {
 
             var child     = NewSessionId();
             var parent    = NewSessionId();
-            var childFile = Path.Combine(tmp.Path, $"{child}.jsonl");
+            var childFile = tmp.PathTo($"{child}.jsonl");
             await File.WriteAllTextAsync(childFile, """{"role":"assistant","message":{"content":[]}}""" + "\n");
             // No CursorMarkers.MarkSubagentStartAcked call — never acked.
 
             using var handler = new StubHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK));
             using var client  = new HttpClient(handler);
-            var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
+            var spool = new HookSpool(tmp.PathTo("spool"));
 
             await CursorHookCommand.HandleSubagentChildEventAsync(
                 client, "http://s", spool, child, "postToolUse", childFile, parent, "task",

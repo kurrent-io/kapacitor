@@ -120,8 +120,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Happy_bootstrap_writes_marker_before_start_and_deletes_it_after_verified_success() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager();
             var phaseAtStart = "";
@@ -152,8 +151,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Readiness_never_satisfied_rolls_back_and_reports_readiness_timeout() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager();
             var time = new FakeTimeProvider();
@@ -176,8 +174,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Ownership_mismatch_never_satisfies_the_predicate_and_never_uninstalls() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager { RunningPid = 111 };
             var time = new FakeTimeProvider();
@@ -200,8 +197,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Start_accepts_a_capability_incompatible_hello() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager();
 
@@ -221,8 +217,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Rollback_reserve_exhausted_while_still_loaded_is_restore_verification() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager { RemainsLoadedAfterStop = true, StopError = "launchctl bootout: 5: Input/output error" };
             var time = new FakeTimeProvider();
@@ -256,8 +251,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Rollback_reserve_exhausted_while_still_unknown_is_rollback_budget() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager { ProbeUnknownAfterStop = true, StopError = "launchctl bootout: 5: Input/output error" };
             var time = new FakeTimeProvider();
@@ -282,8 +276,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Predicate_holding_once_is_not_enough_a_failed_final_recheck_still_rolls_back() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager();
             var time = new FakeTimeProvider();
@@ -310,8 +303,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Final_recheck_gets_the_reserved_confirm_slice_when_the_primary_lands_near_the_deadline() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager();
             var time = new FakeTimeProvider();
@@ -340,8 +332,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task A_late_hello_never_hands_a_hung_query_a_second_full_budget() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var time = new FakeTimeProvider();
             var start = time.GetUtcNow();
@@ -373,8 +364,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Final_recheck_at_a_different_incarnation_rolls_back_instead_of_committing() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             // A new job pid on every observation (KeepAlive respawn between the primary check and the
             // final recheck): each check owns, but the pinned incarnation never survives to the
@@ -401,8 +391,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Start_success_records_committed_phase_before_deleting_the_marker() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager();
             string? phaseAtCommit = null;
@@ -473,8 +462,7 @@ public class ServiceVerifyStartTests {
     public async Task Phase_a_absence_evidence_disambiguates_directive_missing_from_evidence_unreadable(
         bool unitPresent, string expectedReason) {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager { UnitPresent = unitPresent };
 
@@ -508,8 +496,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Plist_drift_between_phase_a_and_phase_b_rolls_back_to_29_without_ever_starting() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             // Loaded at the fresh query — the gated path must boot it out (never kickstart it)
             // before re-checking evidence immediately ahead of bootstrap.
@@ -555,8 +542,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Malformed_plist_at_phase_a_is_evidence_unreadable_and_touches_nothing() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager();
 
@@ -583,8 +569,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Duplicate_key_plist_at_phase_a_is_evidence_unreadable_and_touches_nothing() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager();
 
@@ -628,8 +613,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Garbage_plist_at_phase_b_recheck_is_treated_as_drift_and_rolls_back() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager { Started = true };
             var stopPhases = new List<string?>();
@@ -670,8 +654,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Phase_b_bootout_failure_never_kickstarts_the_stale_loaded_definition() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             // Loaded at the fresh query, and the FIRST Stop (Phase B's boot-out) reports an error —
             // a foreign writer or a launchd hiccup. The gate must never fall through to the ungated
@@ -712,8 +695,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Bootstrap_only_after_confirmed_bootout_a_lying_success_exit_still_rolls_back() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             // Stop() reports SUCCESS (no error) — the launchctl exit code alone — but the label is
             // still Loaded on every query until Rollback's own re-attempted bootout. Bootstrapping
@@ -751,8 +733,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Post_readiness_recheck_detects_plist_drift_after_confirmed_ready_and_rolls_back_to_29() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager();
 
@@ -792,8 +773,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Post_readiness_recheck_detects_digest_drift_after_confirmed_ready_and_rolls_back_to_29() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager();
 
@@ -827,8 +807,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Ungated_start_never_runs_the_post_readiness_recheck() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager();
             var readPlistCalls = 0;
@@ -850,8 +829,7 @@ public class ServiceVerifyStartTests {
     [Test]
     public async Task Bootstrap_only_never_kickstarts_a_label_that_turned_loaded_just_before_it() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             // Pre-mutation query sees Absent (no Phase B boot-out needed), but a foreign writer
             // loads the label in the window right before the gate's own bootstrap-only call —

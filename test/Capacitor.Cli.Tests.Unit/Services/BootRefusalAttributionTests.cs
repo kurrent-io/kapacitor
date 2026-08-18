@@ -159,8 +159,7 @@ public class BootRefusalAttributionTests {
     [Test, NotInParallel]
     public async Task Readiness_timeout_with_matching_marker_attributes_exactly_once_and_consumes_it() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         using var capture = ConsoleOutput.StartErrorCapture();
         try {
 
@@ -204,8 +203,7 @@ public class BootRefusalAttributionTests {
     [Test, NotInParallel]
     public async Task Readiness_timeout_with_hello_never_well_formed_still_observes_pid_via_direct_query() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         using var capture = ConsoleOutput.StartErrorCapture();
         try {
 
@@ -249,8 +247,7 @@ public class BootRefusalAttributionTests {
     [Test, NotInParallel]
     public async Task Preclear_failure_disables_attribution_but_the_mutation_still_proceeds() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         using var capture = ConsoleOutput.StartErrorCapture();
         try {
 

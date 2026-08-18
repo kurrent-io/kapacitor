@@ -10,12 +10,12 @@ public class PluginCommandClaudeTests {
     [Test]
     public async Task InstallPlugin_stamps_marker_on_success() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "settings.json");
+        var settingsPath = tmp.PathTo("settings.json");
 
         var ok = SetupCommand.InstallPlugin(settingsPath, "/some/marketplace");
         await Assert.That(ok).IsTrue();
 
-        var marker = Path.Combine(tmp.Path, ClaudePluginInstaller.MarkerFileName);
+        var marker = tmp.PathTo(ClaudePluginInstaller.MarkerFileName);
         await Assert.That(File.Exists(marker)).IsTrue();
         await Assert.That((await File.ReadAllTextAsync(marker)).Trim())
             .IsEqualTo(CapacitorVersion.Current());

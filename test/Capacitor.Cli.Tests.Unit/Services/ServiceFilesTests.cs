@@ -51,13 +51,12 @@ public partial class ServiceFilesTests {
     [UnsupportedOSPlatform("windows")]
     public async Task WriteOwnerOnly_overwrites_a_world_readable_unit_and_leaves_no_staging_file() {
         using var tmp = new TempDir();
-        var dir  = tmp.Path;
-        var path = Path.Combine(dir, "unit.plist");
+        var path = tmp.PathTo("unit.plist");
         await File.WriteAllTextAsync(path, "old");
         ServiceFiles.WriteOwnerOnly(path, "new");
 
         await Assert.That(await File.ReadAllTextAsync(path)).IsEqualTo("new");
-        await Assert.That(Directory.GetFiles(dir).Length).IsEqualTo(1)
+        await Assert.That(Directory.GetFiles(tmp.Path).Length).IsEqualTo(1)
             .Because("the staging file must be moved, not left beside the unit");
 
         Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
@@ -106,8 +105,7 @@ public partial class ServiceFilesTests {
     [Test]
     public async Task WriteOwnerOnly_removes_the_live_unit_when_the_final_check_fails() {
         using var tmp = new TempDir();
-        var dir  = tmp.Path;
-        var path = Path.Combine(dir, "unit.plist");
+        var path = tmp.PathTo("unit.plist");
         var ex = Assert.Throws<InvalidOperationException>(() => ServiceFiles.WriteOwnerOnly(
             path, "SECRET-COMMAND", null,
             verifyFinal: _ => throw new InvalidOperationException("mode could not be guaranteed")));
@@ -115,7 +113,7 @@ public partial class ServiceFilesTests {
         await Assert.That(ex!.Message).Contains("guaranteed");
         await Assert.That(File.Exists(path)).IsFalse()
             .Because("a failed install must not leave a unit at the path launchd reads");
-        await Assert.That(Directory.GetFiles(dir)).IsEmpty()
+        await Assert.That(Directory.GetFiles(tmp.Path)).IsEmpty()
             .Because("the staging file must not survive either");
     }
 
@@ -127,21 +125,20 @@ public partial class ServiceFilesTests {
         Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
 
         using var tmp = new TempDir();
-        var dir = tmp.Path;
         try {
-            File.SetUnixFileMode(dir,
+            File.SetUnixFileMode(tmp.Path,
                 UnixFileMode.UserRead  | UnixFileMode.UserWrite  | UnixFileMode.UserExecute |
                 UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute);
 
             var ex = Assert.Throws<InvalidOperationException>(
-                () => ServiceFiles.WriteOwnerOnly(Path.Combine(dir, "unit.plist"), "x"));
+                () => ServiceFiles.WriteOwnerOnly(tmp.PathTo("unit.plist"), "x"));
 
             await Assert.That(ex!.Message).Contains("writable");
-            await Assert.That(File.Exists(Path.Combine(dir, "unit.plist"))).IsFalse();
+            await Assert.That(File.Exists(tmp.PathTo("unit.plist"))).IsFalse();
         } finally {
             // Restored before the TempDir is disposed — the recursive delete needs the mode back.
             try {
-                File.SetUnixFileMode(dir,
+                File.SetUnixFileMode(tmp.Path,
                     UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             } catch { /* best-effort */ }
         }

@@ -8,8 +8,7 @@ public class ServiceTxnLockTests {
     [Test]
     public async Task Acquire_release_and_probe() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             await Assert.That(ServiceTxnLock.IsHeld("a")).IsFalse();
             var l = ServiceTxnLock.TryAcquire("a", TimeSpan.Zero);

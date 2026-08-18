@@ -11,7 +11,7 @@ public class OpenCodeExtensionInstallerTests {
     [Test]
     public async Task install_writes_plugin_and_marker() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "plugins", "kcap.ts");
+        var path = tmp.PathTo("plugins", "kcap.ts");
 
         var ok = OpenCodeExtensionInstaller.Install(path);
         await Assert.That(ok).IsTrue();
@@ -32,7 +32,7 @@ public class OpenCodeExtensionInstallerTests {
     [Test]
     public async Task is_installed_true_when_only_marker_present() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "plugins", "kcap.ts");
+        var path = tmp.PathTo("plugins", "kcap.ts");
         var dir  = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(dir);
         // Marker present but no kcap.ts (user deleted the file, kept the dir).
@@ -45,7 +45,7 @@ public class OpenCodeExtensionInstallerTests {
     [Test]
     public async Task remove_deletes_plugin_and_marker() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "plugins", "kcap.ts");
+        var path = tmp.PathTo("plugins", "kcap.ts");
         OpenCodeExtensionInstaller.Install(path);
 
         var removed = OpenCodeExtensionInstaller.Remove(path);
@@ -57,7 +57,7 @@ public class OpenCodeExtensionInstallerTests {
     [Test]
     public async Task remove_returns_false_when_absent() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "plugins", "kcap.ts");
+        var path = tmp.PathTo("plugins", "kcap.ts");
 
         await Assert.That(OpenCodeExtensionInstaller.Remove(path)).IsFalse();
     }

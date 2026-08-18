@@ -6,7 +6,7 @@ public class StatusCommandHooksTests {
     [Test]
     public async Task DetectsClaudePlugin_when_enabled() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "settings.json");
+        var       path = tmp.PathTo("settings.json");
 
         await File.WriteAllTextAsync(path, """
             { "enabledPlugins": { "kcap@kcap": true } }
@@ -18,7 +18,7 @@ public class StatusCommandHooksTests {
     [Test]
     public async Task DetectsClaudePlugin_disabled_when_false() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "settings.json");
+        var       path = tmp.PathTo("settings.json");
 
         await File.WriteAllTextAsync(path, """
             { "enabledPlugins": { "kcap@kcap": false } }
@@ -30,7 +30,7 @@ public class StatusCommandHooksTests {
     [Test]
     public async Task DetectsClaudePlugin_missing_when_file_absent() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "settings.json");
+        var       path = tmp.PathTo("settings.json");
 
         await Assert.That(StatusCommand.IsClaudePluginInstalled(path)).IsFalse();
     }
@@ -38,7 +38,7 @@ public class StatusCommandHooksTests {
     [Test]
     public async Task DetectsCodexHooks_when_kcap_command_present() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         await File.WriteAllTextAsync(path, """
             {
@@ -56,7 +56,7 @@ public class StatusCommandHooksTests {
     [Test]
     public async Task DetectsCodexHooks_missing_when_no_kcap_command() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         await File.WriteAllTextAsync(path, """
             {
@@ -74,7 +74,7 @@ public class StatusCommandHooksTests {
     [Test]
     public async Task DetectsCodexHooks_missing_when_file_absent() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         await Assert.That(StatusCommand.IsCodexHooksInstalled(path)).IsFalse();
     }
@@ -83,7 +83,7 @@ public class StatusCommandHooksTests {
     [Test]
     public async Task DetectsCodexHooks_returns_false_for_numeric_command_field() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         await File.WriteAllTextAsync(path, """
             {

@@ -563,10 +563,9 @@ public class WorktreeManagerTests {
     public async Task Snapshot_removes_stale_head_alias_using_destination_case_policy() {
         var (upstream, clone) = MakeUpstreamWithSideRef("refs/pull/94/head", out _);
         using var tmp = new TempDir();
-        var root = tmp.Path;
         WorktreeInfo? snapshot = null;
         try {
-            Skip.When(!WorktreeManager.ProbeCaseSensitiveFileSystem(root),
+            Skip.When(!WorktreeManager.ProbeCaseSensitiveFileSystem(tmp.Path),
                 "The stale spelling is distinct only on a case-sensitive filesystem.");
 
             File.WriteAllText(Path.Combine(clone, "Alias.txt"), "old committed spelling");
@@ -576,7 +575,7 @@ public class WorktreeManagerTests {
             File.WriteAllText(Path.Combine(clone, "alias.txt"), "new staged spelling");
 
             var manager = new WorktreeManager(
-                new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
+                new DaemonConfig { WorktreeRoot = tmp.Path }, NullLogger<WorktreeManager>.Instance);
             snapshot = await manager.CreateBorrowedSnapshotAsync(
                 clone, "review", CancellationToken.None);
 

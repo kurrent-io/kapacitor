@@ -12,13 +12,13 @@ public class KiroSettingsTests {
     [Test]
     public async Task read_default_agent_is_null_when_file_absent() {
         using var tmp = new TempDir();
-        await Assert.That(KiroSettings.ReadDefaultAgent(Path.Combine(tmp.Path, "cli.json"))).IsNull();
+        await Assert.That(KiroSettings.ReadDefaultAgent(tmp.PathTo("cli.json"))).IsNull();
     }
 
     [Test]
     public async Task set_default_creates_file_and_read_round_trips() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "settings", "cli.json");
+        var settingsPath = tmp.PathTo("settings", "cli.json");
 
         await Assert.That(KiroSettings.SetDefaultAgent(settingsPath, "kcap")).IsTrue();
         await Assert.That(KiroSettings.ReadDefaultAgent(settingsPath)).IsEqualTo("kcap");
@@ -27,7 +27,7 @@ public class KiroSettingsTests {
     [Test]
     public async Task set_default_preserves_other_keys() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "cli.json");
+        var settingsPath = tmp.PathTo("cli.json");
         await File.WriteAllTextAsync(settingsPath,
             """{"chat.defaultModel":"minimax-m2.5","chat.defaultAgent":"kiro_default","other.flag":true}""");
 
@@ -42,7 +42,7 @@ public class KiroSettingsTests {
     [Test]
     public async Task install_then_restore_round_trip() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "cli.json");
+        var settingsPath = tmp.PathTo("cli.json");
         await File.WriteAllTextAsync(settingsPath, """{"chat.defaultAgent":"kiro_default"}""");
 
         // Install: capture the prior default, flip to kcap.
@@ -59,7 +59,7 @@ public class KiroSettingsTests {
     [Test]
     public async Task set_default_fails_closed_on_valid_json_that_is_not_an_object() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "cli.json");
+        var settingsPath = tmp.PathTo("cli.json");
         // Valid JSON, but an array — must NOT be clobbered into {chat.defaultAgent}.
         await File.WriteAllTextAsync(settingsPath, "[1,2,3]");
 
@@ -70,7 +70,7 @@ public class KiroSettingsTests {
     [Test]
     public async Task set_default_fails_closed_on_malformed_file() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "cli.json");
+        var settingsPath = tmp.PathTo("cli.json");
         await File.WriteAllTextAsync(settingsPath, "{ not json ");
 
         await Assert.That(KiroSettings.SetDefaultAgent(settingsPath, "kcap")).IsFalse();

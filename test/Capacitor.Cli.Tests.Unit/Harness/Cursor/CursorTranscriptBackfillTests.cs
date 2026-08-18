@@ -11,7 +11,7 @@ public class CursorTranscriptBackfillTests {
     [Test]
     public async Task Backfill_holds_unterminated_final_line_mid_session() {
         using var tmp = new TempDir();
-        var transcript = Path.Combine(tmp.Path, "t.jsonl");
+        var transcript = tmp.PathTo("t.jsonl");
         // Two complete lines + a half-written third with NO trailing newline.
         await File.WriteAllTextAsync(transcript,
             "{\"role\":\"user\",\"message\":{\"content\":[]}}\n{\"role\":\"assistant\",\"message\":{\"content\":[]}}\n{\"role\":\"user\",\"mess");
@@ -34,7 +34,7 @@ public class CursorTranscriptBackfillTests {
     [Test]
     public async Task Backfill_consumes_unterminated_final_line_on_finalDrain_when_complete() {
         using var tmp = new TempDir();
-        var transcript = Path.Combine(tmp.Path, "t.jsonl");
+        var transcript = tmp.PathTo("t.jsonl");
         // Two complete lines + a THIRD complete JSON record with no trailing newline —
         // finalDrain (sessionEnd pre-end drain) must consume it via ConsumeIfComplete rather
         // than stranding a valid final record just because the agent process died before the
@@ -61,7 +61,7 @@ public class CursorTranscriptBackfillTests {
     public async Task Backfill_noops_when_quarantined() {
         var sessionId = NewSessionId();
         using var tmp = new TempDir();
-        var transcript = Path.Combine(tmp.Path, "t.jsonl");
+        var transcript = tmp.PathTo("t.jsonl");
         await File.WriteAllTextAsync(transcript, "{\"role\":\"user\",\"message\":{\"content\":[]}}\n");
         CursorMarkers.Quarantine(sessionId, "rewrite detected");
 
@@ -77,7 +77,7 @@ public class CursorTranscriptBackfillTests {
     public async Task Backfill_holds_when_barrier_pending() {
         var sessionId = NewSessionId();
         using var tmp = new TempDir();
-        var transcript = Path.Combine(tmp.Path, "t.jsonl");
+        var transcript = tmp.PathTo("t.jsonl");
         await File.WriteAllTextAsync(transcript, "{\"role\":\"user\",\"message\":{\"content\":[]}}\n");
         CursorMarkers.CreateBarrier(sessionId, DateTimeOffset.UtcNow);
 
@@ -101,7 +101,7 @@ public class CursorTranscriptBackfillTests {
     public async Task Backfill_rechecks_quarantine_immediately_before_the_POST_even_if_set_during_the_watermark_probe() {
         var sessionId = NewSessionId();
         using var tmp = new TempDir();
-        var transcript = Path.Combine(tmp.Path, "t.jsonl");
+        var transcript = tmp.PathTo("t.jsonl");
         await File.WriteAllTextAsync(transcript, "{\"role\":\"user\",\"message\":{\"content\":[]}}\n");
 
         var postCount = 0;
@@ -129,7 +129,7 @@ public class CursorTranscriptBackfillTests {
     public async Task Backfill_rechecks_barrier_immediately_before_the_POST_even_if_created_during_the_watermark_probe() {
         var sessionId = NewSessionId();
         using var tmp = new TempDir();
-        var transcript = Path.Combine(tmp.Path, "t.jsonl");
+        var transcript = tmp.PathTo("t.jsonl");
         await File.WriteAllTextAsync(transcript, "{\"role\":\"user\",\"message\":{\"content\":[]}}\n");
 
         var postCount = 0;
@@ -169,7 +169,7 @@ public class CursorTranscriptBackfillTests {
     [Test]
     public async Task RunAsync_resumes_from_last_line_number_plus_one_and_posts_single_batch() {
         using var tmp = new TempDir();
-        var transcript = Path.Combine(tmp.Path, "t.jsonl");
+        var transcript = tmp.PathTo("t.jsonl");
         await File.WriteAllLinesAsync(transcript, ["line0", "line1", "line2", "line3"]);
 
         string? postedBody = null;
@@ -212,7 +212,7 @@ public class CursorTranscriptBackfillTests {
         // exists but no lines have been accepted yet. Treat as resumeFrom=0,
         // not as failure.
         using var tmp = new TempDir();
-        var transcript = Path.Combine(tmp.Path, "t.jsonl");
+        var transcript = tmp.PathTo("t.jsonl");
         await File.WriteAllLinesAsync(transcript, ["line0", "line1"]);
 
         using var handler = new RecordingHandler(
@@ -231,7 +231,7 @@ public class CursorTranscriptBackfillTests {
     [Test]
     public async Task RunAsync_does_not_post_when_budget_already_expired() {
         using var tmp = new TempDir();
-        var transcript = Path.Combine(tmp.Path, "t.jsonl");
+        var transcript = tmp.PathTo("t.jsonl");
         await File.WriteAllLinesAsync(transcript, ["a", "b", "c"]);
 
         var postCount = 0;
@@ -258,7 +258,7 @@ public class CursorTranscriptBackfillTests {
     [Test]
     public async Task RunAsync_returns_failed_on_POST_non_2xx() {
         using var tmp = new TempDir();
-        var transcript = Path.Combine(tmp.Path, "t.jsonl");
+        var transcript = tmp.PathTo("t.jsonl");
         await File.WriteAllLinesAsync(transcript, ["a", "b", "c"]);
 
         using var handler = new RecordingHandler(
@@ -277,7 +277,7 @@ public class CursorTranscriptBackfillTests {
     [Test]
     public async Task RunAsync_fails_open_on_watermark_GET_5xx() {
         using var tmp = new TempDir();
-        var transcript = Path.Combine(tmp.Path, "t.jsonl");
+        var transcript = tmp.PathTo("t.jsonl");
         await File.WriteAllLinesAsync(transcript, ["a", "b"]);
 
         using var handler = new RecordingHandler(

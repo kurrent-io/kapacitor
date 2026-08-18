@@ -54,10 +54,9 @@ public class PiHostedRuntimeLiveCertTests {
             "The gated probe git-inits a throwaway worktree with plain POSIX `git`; not exercised on Windows.");
 
         using var tmp = new TempDir();
-        var worktreeDir = tmp.Path;
-        RunGit(worktreeDir, "init", "-q");
-        RunGit(worktreeDir, "config", "user.email", "test@example.com");
-        RunGit(worktreeDir, "config", "user.name", "Test");
+        RunGit(tmp.Path, "init", "-q");
+        RunGit(tmp.Path, "config", "user.email", "test@example.com");
+        RunGit(tmp.Path, "config", "user.name", "Test");
 
         // A real (console) logger factory rather than NullLoggerFactory — PiRpcHostedAgentRuntime logs
         // at Warning/Debug on handshake and translation faults, so a real logger is the only way this
@@ -89,8 +88,8 @@ public class PiHostedRuntimeLiveCertTests {
         var ctx = new RuntimeStartContext(
             AgentId: "ai-894-pi-hosted-live",
             Vendor: "pi",
-            SourceRepoPath: worktreeDir,
-            Worktree: new WorktreeInfo(Path: worktreeDir, Branch: "", SourceRepo: worktreeDir),
+            SourceRepoPath: tmp.Path,
+            Worktree: new WorktreeInfo(Path: tmp.Path, Branch: "", SourceRepo: tmp.Path),
             Prompt: prompt,
             Model: null,
             Effort: null,

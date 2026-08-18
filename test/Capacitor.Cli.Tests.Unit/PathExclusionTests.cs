@@ -27,7 +27,7 @@ public class PathExclusionTests {
     [Test]
     public async Task IsExcluded_matches_descendant() {
         using var tmp = new TempDir();
-        var       sub = Path.Combine(tmp.Path, "sub", "deeper");
+        var       sub = tmp.PathTo("sub", "deeper");
         Directory.CreateDirectory(sub);
 
         await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path])).IsTrue();
@@ -37,8 +37,8 @@ public class PathExclusionTests {
     public async Task IsExcluded_does_not_match_sibling_with_shared_prefix() {
         // /tmp/foo vs /tmp/foobar — must NOT match
         using var tmp    = new TempDir();
-        var       foo    = Path.Combine(tmp.Path, "foo");
-        var       foobar = Path.Combine(tmp.Path, "foobar");
+        var       foo    = tmp.PathTo("foo");
+        var       foobar = tmp.PathTo("foobar");
         Directory.CreateDirectory(foo);
         Directory.CreateDirectory(foobar);
 
@@ -48,7 +48,7 @@ public class PathExclusionTests {
     [Test]
     public async Task IsExcluded_ignores_trailing_separator_on_entry() {
         using var tmp = new TempDir();
-        var       sub = Path.Combine(tmp.Path, "child");
+        var       sub = tmp.PathTo("child");
         Directory.CreateDirectory(sub);
 
         await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path + Path.DirectorySeparatorChar])).IsTrue();
@@ -60,7 +60,7 @@ public class PathExclusionTests {
         // returns "..scratch", which our containment check must not treat as a
         // parent-directory reference.
         using var tmp = new TempDir();
-        var       sub = Path.Combine(tmp.Path, "..scratch");
+        var       sub = tmp.PathTo("..scratch");
         Directory.CreateDirectory(sub);
 
         await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path])).IsTrue();
@@ -69,7 +69,7 @@ public class PathExclusionTests {
     [Test]
     public async Task IsExcluded_matches_deeper_descendant_under_dotdot_named_intermediate() {
         using var tmp = new TempDir();
-        var       sub = Path.Combine(tmp.Path, "..data", "session");
+        var       sub = tmp.PathTo("..data", "session");
         Directory.CreateDirectory(sub);
 
         await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path])).IsTrue();
@@ -78,7 +78,7 @@ public class PathExclusionTests {
     [Test]
     public async Task IsExcluded_matches_any_entry() {
         using var tmp = new TempDir();
-        var       sub = Path.Combine(tmp.Path, "child");
+        var       sub = tmp.PathTo("child");
         Directory.CreateDirectory(sub);
 
         await Assert.That(PathExclusion.IsExcluded(sub, ["/nonexistent/path", tmp.Path])).IsTrue();

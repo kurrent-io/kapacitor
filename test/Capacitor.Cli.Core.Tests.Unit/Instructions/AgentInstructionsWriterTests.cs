@@ -6,7 +6,7 @@ public class AgentInstructionsWriterTests {
     [Test]
     public async Task Write_creates_file_with_marked_block() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "copilot-instructions.md");
+        var path = tmp.PathTo("copilot-instructions.md");
 
         var change = AgentInstructionsWriter.Write(path, KcapAgentInstructions.Body);
 
@@ -20,7 +20,7 @@ public class AgentInstructionsWriterTests {
     [Test]
     public async Task Write_is_idempotent() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "copilot-instructions.md");
+        var path = tmp.PathTo("copilot-instructions.md");
 
         await Assert.That(AgentInstructionsWriter.Write(path, KcapAgentInstructions.Body))
             .IsEqualTo(AgentInstructionsWriter.Change.Updated);
@@ -31,7 +31,7 @@ public class AgentInstructionsWriterTests {
     [Test]
     public async Task Write_preserves_user_content() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "copilot-instructions.md");
+        var path = tmp.PathTo("copilot-instructions.md");
         await File.WriteAllTextAsync(path, "# My rules\n\nAlways use tabs.\n");
 
         AgentInstructionsWriter.Write(path, KcapAgentInstructions.Body);
@@ -46,7 +46,7 @@ public class AgentInstructionsWriterTests {
     [Test]
     public async Task Write_refreshes_stale_block_in_place() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "copilot-instructions.md");
+        var path = tmp.PathTo("copilot-instructions.md");
         var staleBlock = AgentInstructionsWriter.BeginMarker + "\nOLD kcap text\n" + AgentInstructionsWriter.EndMarker;
         await File.WriteAllTextAsync(path, "# My rules\n\n" + staleBlock + "\n\nMore user notes.\n");
 
@@ -64,7 +64,7 @@ public class AgentInstructionsWriterTests {
     [Test]
     public async Task Remove_strips_block_but_keeps_user_content() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "copilot-instructions.md");
+        var path = tmp.PathTo("copilot-instructions.md");
         await File.WriteAllTextAsync(path, "# My rules\n\nAlways use tabs.\n");
         AgentInstructionsWriter.Write(path, KcapAgentInstructions.Body);
 
@@ -80,7 +80,7 @@ public class AgentInstructionsWriterTests {
     [Test]
     public async Task Remove_deletes_file_when_only_our_block() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "copilot-instructions.md");
+        var path = tmp.PathTo("copilot-instructions.md");
         AgentInstructionsWriter.Write(path, KcapAgentInstructions.Body);
 
         var change = AgentInstructionsWriter.Remove(path);
@@ -92,7 +92,7 @@ public class AgentInstructionsWriterTests {
     [Test]
     public async Task Remove_is_unchanged_when_no_block() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "copilot-instructions.md");
+        var path = tmp.PathTo("copilot-instructions.md");
         await File.WriteAllTextAsync(path, "# My rules\n");
 
         await Assert.That(AgentInstructionsWriter.Remove(path)).IsEqualTo(AgentInstructionsWriter.Change.Unchanged);
@@ -110,7 +110,7 @@ public class AgentInstructionsWriterTests {
     [Test]
     public async Task Write_fails_on_orphan_begin_marker_instead_of_duplicating() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "copilot-instructions.md");
+        var path = tmp.PathTo("copilot-instructions.md");
         // BEGIN marker but no END (truncation / hand-edit / merge conflict).
         var orphan = "# rules\n\n" + AgentInstructionsWriter.BeginMarker + "\nhalf a block, no end\n";
         await File.WriteAllTextAsync(path, orphan);
@@ -124,7 +124,7 @@ public class AgentInstructionsWriterTests {
     [Test]
     public async Task Remove_fails_on_orphan_begin_marker() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "copilot-instructions.md");
+        var path = tmp.PathTo("copilot-instructions.md");
         var orphan = AgentInstructionsWriter.BeginMarker + "\nhalf a block, no end\n";
         await File.WriteAllTextAsync(path, orphan);
 
@@ -137,7 +137,7 @@ public class AgentInstructionsWriterTests {
     [Test]
     public async Task Write_fails_on_multiple_begin_markers_instead_of_corrupting() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "copilot-instructions.md");
+        var path = tmp.PathTo("copilot-instructions.md");
         // A prose mention of the begin marker ABOVE a real block → two BEGIN markers in the file.
         // "first BEGIN … first END" would span (and delete) the user prose in between — refuse instead.
         var content = "# notes\n\nkcap delimits its block with " + AgentInstructionsWriter.BeginMarker + "\n\n"

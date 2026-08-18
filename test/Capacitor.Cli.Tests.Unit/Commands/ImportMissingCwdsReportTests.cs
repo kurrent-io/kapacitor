@@ -7,12 +7,11 @@ public class ImportMissingCwdsReportTests {
     [Test, NotInParallel]
     public async Task Reports_missing_cwds_with_session_count_and_sample() {
         using var tmp = new TempDir();
-        var existing = tmp.Path;
         var sessionCwds = new Dictionary<string, string>(StringComparer.Ordinal) {
             ["s1"] = "/does/not/exist/repo-a",
             ["s2"] = "/does/not/exist/repo-a", // dup cwd → 1 distinct path, 2 sessions
             ["s3"] = "/does/not/exist/repo-b",
-            ["s4"] = existing,
+            ["s4"] = tmp.Path,
         };
 
         var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d));
@@ -20,7 +19,7 @@ public class ImportMissingCwdsReportTests {
         await Assert.That(output).Contains("3 sessions reference 2 distinct paths that no longer exist on disk");
         await Assert.That(output).Contains("/does/not/exist/repo-a");
         await Assert.That(output).Contains("/does/not/exist/repo-b");
-        await Assert.That(output).DoesNotContain(existing); // existing dir not reported
+        await Assert.That(output).DoesNotContain(tmp.Path); // existing dir not reported
         await Assert.That(output).Contains("kcap remap");
     }
 
@@ -39,9 +38,8 @@ public class ImportMissingCwdsReportTests {
     [Test, NotInParallel]
     public async Task Stays_silent_when_all_cwds_exist() {
         using var tmp = new TempDir();
-        var existing = tmp.Path;
         var sessionCwds = new Dictionary<string, string>(StringComparer.Ordinal) {
-            ["s1"] = existing,
+            ["s1"] = tmp.Path,
         };
 
         var output = Capture(d => ImportCommand.ReportMissingCwds(sessionCwds, cwdRemap: null, d));

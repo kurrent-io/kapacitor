@@ -9,7 +9,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task InstallCodexHooks_writes_all_six_events() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         var ok = PluginCommand.InstallCodexHooks(path);
         await Assert.That(ok).IsTrue();
@@ -33,7 +33,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task PermissionRequest_hook_uses_long_timeout_so_dashboard_decision_isnt_killed() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         PluginCommand.InstallCodexHooks(path);
 
@@ -53,7 +53,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task InstallCodexHooks_preserves_other_top_level_keys() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         await File.WriteAllTextAsync(path, """{"some_other_setting": true}""");
 
@@ -67,7 +67,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task InstallCodexHooks_overwrites_existing_kcap_entries() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         // Seed with the pre-consolidation marker `kcap codex-hook` plus an
         // unrelated user-authored sibling. Install must rewrite the kcap entry
@@ -102,7 +102,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task InstallCodexHooks_rewrites_pre_rename_kapacitor_marker() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         // Pre-rename installs left `kapacitor codex-hook` entries behind.
         // Install must rewrite them to the consolidated `kcap hook --codex`
@@ -134,7 +134,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task RemoveCodexHooks_clears_all_kcap_entries() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         PluginCommand.InstallCodexHooks(path);
         var ok = PluginCommand.RemoveCodexHooks(path);
@@ -162,7 +162,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task InstallCodexHooks_tolerates_numeric_command_field_in_existing_entry() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         // Entry whose inner hook has `command: 42` (a number, not a string).
         await File.WriteAllTextAsync(path, """
@@ -189,7 +189,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task RemoveCodexHooks_tolerates_numeric_command_field_in_existing_entry() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         // Mix: a malformed entry (number command) and a real kcap entry.
         await File.WriteAllTextAsync(path, """
@@ -234,8 +234,8 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task Install_copies_known_skills_with_kcap_prefix() {
         using var tmp    = new TempDir();
-        var       source = Path.Combine(tmp.Path, "skills");
-        var       target = Path.Combine(tmp.Path, "agents-skills");
+        var       source = tmp.PathTo("skills");
+        var       target = tmp.PathTo("agents-skills");
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
             WriteSkill(source, name, $"---\nname: {name}\n---\n{name} body");
         }
@@ -252,8 +252,8 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task Install_copies_all_five_known_skills() {
         using var tmp    = new TempDir();
-        var       source = Path.Combine(tmp.Path, "skills");
-        var       target = Path.Combine(tmp.Path, "agents-skills");
+        var       source = tmp.PathTo("skills");
+        var       target = tmp.PathTo("agents-skills");
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
             WriteSkill(source, name, $"---\nname: {name}\n---\n{name} body");
         }
@@ -285,8 +285,8 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task Install_returns_false_when_known_folder_missing() {
         using var tmp    = new TempDir();
-        var       source = Path.Combine(tmp.Path, "skills");
-        var       target = Path.Combine(tmp.Path, "agents-skills");
+        var       source = tmp.PathTo("skills");
+        var       target = tmp.PathTo("agents-skills");
 
         // Write four of the five expected names — leave validate-plan missing.
         WriteSkill(source, "recap",   "r");
@@ -316,8 +316,8 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task Install_overwrites_existing_kcap_skill() {
         using var tmp    = new TempDir();
-        var       source = Path.Combine(tmp.Path, "skills");
-        var       target = Path.Combine(tmp.Path, "agents-skills");
+        var       source = tmp.PathTo("skills");
+        var       target = tmp.PathTo("agents-skills");
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
             WriteSkill(source, name, $"---\nname: {name}\n---\n{(name == "recap" ? "new recap" : $"{name} body")}");
         }
@@ -334,8 +334,8 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task Install_preserves_foreign_skills() {
         using var tmp    = new TempDir();
-        var       source = Path.Combine(tmp.Path, "skills");
-        var       target = Path.Combine(tmp.Path, "agents-skills");
+        var       source = tmp.PathTo("skills");
+        var       target = tmp.PathTo("agents-skills");
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
             WriteSkill(source, name, $"---\nname: {name}\n---\n{name} body");
         }
@@ -352,8 +352,8 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task Install_returns_false_for_missing_source() {
         using var tmp    = new TempDir();
-        var       source = Path.Combine(tmp.Path, "nonexistent");
-        var       target = Path.Combine(tmp.Path, "agents-skills");
+        var       source = tmp.PathTo("nonexistent");
+        var       target = tmp.PathTo("agents-skills");
 
         var ok = AgentsSkillsInstaller.Install(source, target);
         await Assert.That(ok).IsFalse();
@@ -362,7 +362,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task Remove_deletes_known_skills_only() {
         using var tmp    = new TempDir();
-        var       target = Path.Combine(tmp.Path, "agents-skills");
+        var       target = tmp.PathTo("agents-skills");
         WriteSkill(target, "kcap-recap",  "recap");
         WriteSkill(target, "kcap-errors", "errors");
         WriteSkill(target, "user-skill",  "user content");
@@ -378,7 +378,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task Remove_returns_false_when_nothing_to_remove() {
         using var tmp    = new TempDir();
-        var       target = Path.Combine(tmp.Path, "agents-skills");
+        var       target = tmp.PathTo("agents-skills");
         Directory.CreateDirectory(target);
 
         var result = AgentsSkillsInstaller.Remove(target);
@@ -464,12 +464,12 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task InstallCodexHooks_stamps_marker_on_success() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         var ok = PluginCommand.InstallCodexHooks(path);
         await Assert.That(ok).IsTrue();
 
-        var marker = Path.Combine(tmp.Path, CodexHooksInstaller.MarkerFileName);
+        var marker = tmp.PathTo(CodexHooksInstaller.MarkerFileName);
         await Assert.That(File.Exists(marker)).IsTrue();
         await Assert.That((await File.ReadAllTextAsync(marker)).Trim())
             .IsEqualTo(CapacitorVersion.Current());
@@ -478,14 +478,14 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task RemoveCodexHooks_deletes_marker_when_kcap_entries_were_removed() {
         using var tmp  = new TempDir();
-        var       path = Path.Combine(tmp.Path, "hooks.json");
+        var       path = tmp.PathTo("hooks.json");
 
         PluginCommand.InstallCodexHooks(path);
-        await Assert.That(File.Exists(Path.Combine(tmp.Path, CodexHooksInstaller.MarkerFileName))).IsTrue();
+        await Assert.That(File.Exists(tmp.PathTo(CodexHooksInstaller.MarkerFileName))).IsTrue();
 
         var changed = PluginCommand.RemoveCodexHooks(path);
         await Assert.That(changed).IsTrue();
-        await Assert.That(File.Exists(Path.Combine(tmp.Path, CodexHooksInstaller.MarkerFileName))).IsFalse();
+        await Assert.That(File.Exists(tmp.PathTo(CodexHooksInstaller.MarkerFileName))).IsFalse();
     }
 
     static PluginEnvironment TestEnv(

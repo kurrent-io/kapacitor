@@ -184,8 +184,7 @@ public class ConfigMutatorTests {
     [Test]
     public async Task TryLoadPure_parent_replaced_by_a_file_is_failure_not_absence() {
         using var tmp = new TempDir();
-        var root = tmp.Path;
-        var parentAsFile = Path.Combine(root, "not-a-directory");
+        var parentAsFile = tmp.PathTo("not-a-directory");
         await File.WriteAllTextAsync(parentAsFile, "i am a file, not a directory");
         var path = Path.Combine(parentAsFile, "config.json");
 
@@ -200,8 +199,7 @@ public class ConfigMutatorTests {
     [Test]
     public async Task TryLoadPure_grandparent_replaced_by_a_file_is_failure_not_absence() {
         using var tmp = new TempDir();
-        var root = tmp.Path;
-        var grandparentAsFile = Path.Combine(root, "not-a-directory");
+        var grandparentAsFile = tmp.PathTo("not-a-directory");
         await File.WriteAllTextAsync(grandparentAsFile, "i am a file, not a directory");
         var path = Path.Combine(grandparentAsFile, "child", "config.json");
 
@@ -219,9 +217,8 @@ public class ConfigMutatorTests {
         Skip.When(OperatingSystem.IsWindows(), "symlink creation needs elevated privilege on Windows CI");
 
         using var tmp = new TempDir();
-        var root = tmp.Path;
-        var link = Path.Combine(root, "danglink");
-        Directory.CreateSymbolicLink(link, Path.Combine(root, "never-created-target"));
+        var link = tmp.PathTo("danglink");
+        Directory.CreateSymbolicLink(link, tmp.PathTo("never-created-target"));
         var path = Path.Combine(link, "config.json");
 
         var ok = ConfigMutator.TryLoadPure(path, out var config);
@@ -238,9 +235,8 @@ public class ConfigMutatorTests {
         Skip.When(OperatingSystem.IsWindows(), "symlink creation needs elevated privilege on Windows CI");
 
         using var tmp = new TempDir();
-        var root = tmp.Path;
-        var path = Path.Combine(root, "config.json");
-        File.CreateSymbolicLink(path, Path.Combine(root, "never-created-target"));
+        var path = tmp.PathTo("config.json");
+        File.CreateSymbolicLink(path, tmp.PathTo("never-created-target"));
 
         var ok = ConfigMutator.TryLoadPure(path, out var config);
 
@@ -253,8 +249,7 @@ public class ConfigMutatorTests {
     [Test]
     public async Task TryLoadPure_missing_parent_directory_is_still_absence() {
         using var tmp = new TempDir();
-        var root = tmp.Path;
-        var path = Path.Combine(root, "never-created", "config.json");
+        var path = tmp.PathTo("never-created", "config.json");
 
         var ok = ConfigMutator.TryLoadPure(path, out var config);
 

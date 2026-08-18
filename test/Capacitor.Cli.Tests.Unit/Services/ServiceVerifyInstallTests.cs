@@ -113,11 +113,10 @@ public class ServiceVerifyInstallTests : IDisposable {
     [Test]
     public async Task Viability_abort_missing_binary_touches_nothing() {
         using var tmp = new TempDir();
-        var dir = tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager();
-            var missingPath = Path.Combine(dir, "does-not-exist-kcap-daemon");
+            var missingPath = tmp.PathTo("does-not-exist-kcap-daemon");
             var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
 
             var exit = await sut.InstallVerifiedAsync(Spec(missingPath), replace: false, ExpectedVersion);

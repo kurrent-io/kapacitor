@@ -1608,14 +1608,13 @@ public class AgentOrchestratorVendorTests {
     [Test]
     public async Task Server_launch_denied_under_deny_default_sends_coded_launch_failed() {
         using var tmp  = new TempDir();
-        var dir        = tmp.Path;
         var server     = new CaptureServerConnection();
         var ptyFactory = new SpyPtyProcessFactory();
         var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
 
         var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
 
-        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, consentGate: AgentOrchestratorHarness.DenyDefaultGate(dir));
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, ptyFactory, launchers, consentGate: AgentOrchestratorHarness.DenyDefaultGate(tmp.Path));
 
         var cmd = new LaunchAgentCommand(
             AgentId: "agent-consent-deny",

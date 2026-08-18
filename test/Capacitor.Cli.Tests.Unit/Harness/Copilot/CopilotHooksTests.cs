@@ -16,7 +16,7 @@ public class CopilotHooksTests {
     [Test]
     public async Task fresh_install_writes_all_subscribed_events_with_embedded_event_names() {
         using var tmp = new TempDir();
-        var hooksPath = Path.Combine(tmp.Path, "hooks", "kcap.json");
+        var hooksPath = tmp.PathTo("hooks", "kcap.json");
 
         var ok = PluginCommand.InstallCopilotHooks(hooksPath);
         await Assert.That(ok).IsTrue();
@@ -42,7 +42,7 @@ public class CopilotHooksTests {
     [Test]
     public async Task install_writes_marker_and_remove_deletes_file_and_marker() {
         using var tmp = new TempDir();
-        var hooksPath = Path.Combine(tmp.Path, "hooks", "kcap.json");
+        var hooksPath = tmp.PathTo("hooks", "kcap.json");
 
         PluginCommand.InstallCopilotHooks(hooksPath);
 
@@ -60,7 +60,7 @@ public class CopilotHooksTests {
     [Test]
     public async Task remove_without_install_reports_nothing_removed() {
         using var tmp = new TempDir();
-        var hooksPath = Path.Combine(tmp.Path, "hooks", "kcap.json");
+        var hooksPath = tmp.PathTo("hooks", "kcap.json");
 
         await Assert.That(PluginCommand.RemoveCopilotHooks(hooksPath)).IsFalse();
     }
@@ -68,7 +68,7 @@ public class CopilotHooksTests {
     [Test]
     public async Task is_installed_detects_pre_marker_installs_from_file_content() {
         using var tmp = new TempDir();
-        var hooksDir  = Path.Combine(tmp.Path, "hooks");
+        var hooksDir  = tmp.PathTo("hooks");
         var hooksPath = Path.Combine(hooksDir, "kcap.json");
 
         Directory.CreateDirectory(hooksDir);
@@ -96,7 +96,7 @@ public class CopilotHooksTests {
     [Test]
     public async Task has_capacitor_hooks_for_requires_every_event() {
         using var tmp = new TempDir();
-        var hooksPath = Path.Combine(tmp.Path, "hooks", "kcap.json");
+        var hooksPath = tmp.PathTo("hooks", "kcap.json");
 
         PluginCommand.InstallCopilotHooks(hooksPath);
 

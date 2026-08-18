@@ -220,9 +220,8 @@ public class CodexImportTests {
             .RespondWith(Response.Create().WithStatusCode(404));
 
         using var tmp = new TempDir();
-        var dir = tmp.Path;
 
-        var path = Path.Combine(dir, "rollout.jsonl");
+        var path = tmp.PathTo("rollout.jsonl");
         // Filename-derived sessionId we'll pass in: 019e0322...c3ea861 (dashless).
         // Inner payload.id is a different UUID — the validator must catch this.
         await File.WriteAllLinesAsync(path, [
@@ -258,9 +257,8 @@ public class CodexImportTests {
             .RespondWith(Response.Create().WithStatusCode(404));
 
         using var tmp = new TempDir();
-        var dir = tmp.Path;
 
-        var path = Path.Combine(dir, "rollout.jsonl");
+        var path = tmp.PathTo("rollout.jsonl");
         // Filename uuid (dashless) and session_meta payload.id (dashed) refer to
         // the same GUID — validator must let this through to the server probe.
         await File.WriteAllLinesAsync(path, [

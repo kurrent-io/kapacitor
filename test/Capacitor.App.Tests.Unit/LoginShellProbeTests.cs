@@ -421,10 +421,9 @@ public class LoginShellProbeTests {
 
     [Test]
     public async Task KcapPathAsync_directory_is_null() {
-        using var tmp = new TempDir();
-        var dir = tmp.Path;
-        var runner = new FakeProcessRunner();
-        runner.Enqueue(new ProcessResult(0, Wrap(dir), "", false));
+        using var tmp    = new TempDir();
+        var       runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, Wrap(tmp.Path), "", false));
         var probe = Probe(runner);
 
         await Assert.That(await probe.KcapPathAsync(CancellationToken.None)).IsNull();

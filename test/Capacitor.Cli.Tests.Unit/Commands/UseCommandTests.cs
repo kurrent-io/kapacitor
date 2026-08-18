@@ -73,7 +73,7 @@ public class UseCommandTests {
     public async Task Use_Save_WritesRepoConfig() {
         var configPath = AppConfig.GetConfigPath();
         using var tmp = new TempDir();
-        var repoRoot = Path.Combine(tmp.Path, "repo");
+        var repoRoot = tmp.PathTo("repo");
         Directory.CreateDirectory(repoRoot);
 
         var initial = new ProfileConfig {

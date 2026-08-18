@@ -107,13 +107,12 @@ public class CodexSessionRolloutLocatorTests {
     [Test]
     public async Task TryLocate_returns_dashless_session_id_of_the_matching_rollout() {
         using var tmp = new TempDir();
-        var root = tmp.Path;
         var spawn = DateTime.UtcNow;
         var uuid  = "019f0022-1702-7a02-a630-edbfb043add4";
-        var wt    = Path.Combine(root, "worktree");
-        WriteRollout(root, uuid, wt, creationUtc: spawn);
+        var wt    = tmp.PathTo("worktree");
+        WriteRollout(tmp.Path, uuid, wt, creationUtc: spawn);
 
-        var id = CodexSessionRolloutLocator.TryLocate(root, wt, spawn.AddSeconds(-1));
+        var id = CodexSessionRolloutLocator.TryLocate(tmp.Path, wt, spawn.AddSeconds(-1));
 
         await Assert.That(id).IsEqualTo(uuid.Replace("-", ""));
     }
@@ -123,13 +122,12 @@ public class CodexSessionRolloutLocatorTests {
     [Test]
     public async Task TryLocateWinner_returns_matching_id_and_file_path() {
         using var tmp = new TempDir();
-        var root = tmp.Path;
         var spawn = DateTime.UtcNow;
         var uuid  = "019f0022-1702-7a02-a630-edbfb043add4";
-        var wt    = Path.Combine(root, "worktree");
-        var file  = WriteRollout(root, uuid, wt, creationUtc: spawn);
+        var wt    = tmp.PathTo("worktree");
+        var file  = WriteRollout(tmp.Path, uuid, wt, creationUtc: spawn);
 
-        var winner = CodexSessionRolloutLocator.TryLocateWinner(root, wt, spawn.AddSeconds(-1));
+        var winner = CodexSessionRolloutLocator.TryLocateWinner(tmp.Path, wt, spawn.AddSeconds(-1));
 
         await Assert.That(winner?.Path).IsEqualTo(file);
         await Assert.That(winner?.SessionId).IsEqualTo(uuid.Replace("-", ""));
@@ -138,11 +136,10 @@ public class CodexSessionRolloutLocatorTests {
     [Test]
     public async Task TryLocateWinner_returns_null_when_no_rollout_matches() {
         using var tmp = new TempDir();
-        var root = tmp.Path;
         var spawn = DateTime.UtcNow;
-        WriteRollout(root, "019f0022-1702-7a02-a630-edbfb043add4", "/some/other/cwd", creationUtc: spawn);
+        WriteRollout(tmp.Path, "019f0022-1702-7a02-a630-edbfb043add4", "/some/other/cwd", creationUtc: spawn);
 
-        var winner = CodexSessionRolloutLocator.TryLocateWinner(root, Path.Combine(root, "worktree"), spawn.AddSeconds(-1));
+        var winner = CodexSessionRolloutLocator.TryLocateWinner(tmp.Path, tmp.PathTo("worktree"), spawn.AddSeconds(-1));
 
         await Assert.That(winner).IsNull();
     }
@@ -150,11 +147,10 @@ public class CodexSessionRolloutLocatorTests {
     [Test]
     public async Task TryLocate_ignores_a_foreign_cwd_rollout() {
         using var tmp = new TempDir();
-        var root = tmp.Path;
         var spawn = DateTime.UtcNow;
-        WriteRollout(root, "019f0022-1702-7a02-a630-edbfb043add4", "/some/other/cwd", creationUtc: spawn);
+        WriteRollout(tmp.Path, "019f0022-1702-7a02-a630-edbfb043add4", "/some/other/cwd", creationUtc: spawn);
 
-        var id = CodexSessionRolloutLocator.TryLocate(root, Path.Combine(root, "worktree"), spawn.AddSeconds(-1));
+        var id = CodexSessionRolloutLocator.TryLocate(tmp.Path, tmp.PathTo("worktree"), spawn.AddSeconds(-1));
 
         await Assert.That(id).IsNull();
     }
@@ -202,17 +198,16 @@ public class CodexSessionRolloutLocatorTests {
         // appending to must NOT be mistaken for the freshly-spawned reviewer. Its recent writes
         // are irrelevant (the locator never reads last-write); only its old creation stamp counts.
         using var tmp = new TempDir();
-        var root = tmp.Path;
         var spawn = DateTime.UtcNow;
-        var wt    = Path.Combine(root, "worktree");
+        var wt    = tmp.PathTo("worktree");
 
         const string olderUuid = "019f0022-0000-7a02-a630-edbfb043add4";
-        WriteRollout(root, olderUuid, wt, creationUtc: spawn.AddMinutes(-10));
+        WriteRollout(tmp.Path, olderUuid, wt, creationUtc: spawn.AddMinutes(-10));
 
         const string newerUuid = "019f0022-1111-7a02-a630-edbfb043add5";
-        WriteRollout(root, newerUuid, wt, creationUtc: spawn.AddSeconds(2));
+        WriteRollout(tmp.Path, newerUuid, wt, creationUtc: spawn.AddSeconds(2));
 
-        var id = CodexSessionRolloutLocator.TryLocate(root, wt, spawn);
+        var id = CodexSessionRolloutLocator.TryLocate(tmp.Path, wt, spawn);
 
         await Assert.That(id).IsEqualTo(newerUuid.Replace("-", ""));
     }
@@ -222,13 +217,12 @@ public class CodexSessionRolloutLocatorTests {
         // Same shape as above minus the reviewer's own rollout: nothing eligible remains, so
         // TryLocate must not fall back to the stale pre-spawn match.
         using var tmp = new TempDir();
-        var root = tmp.Path;
         var spawn = DateTime.UtcNow;
-        var wt    = Path.Combine(root, "worktree");
+        var wt    = tmp.PathTo("worktree");
 
-        WriteRollout(root, "019f0022-0000-7a02-a630-edbfb043add4", wt, creationUtc: spawn.AddMinutes(-10));
+        WriteRollout(tmp.Path, "019f0022-0000-7a02-a630-edbfb043add4", wt, creationUtc: spawn.AddMinutes(-10));
 
-        var id = CodexSessionRolloutLocator.TryLocate(root, wt, spawn);
+        var id = CodexSessionRolloutLocator.TryLocate(tmp.Path, wt, spawn);
 
         await Assert.That(id).IsNull();
     }
@@ -241,17 +235,16 @@ public class CodexSessionRolloutLocatorTests {
         // the reviewer's own rollout is always created at/after its own spawn, so the
         // at/after candidate must win.
         using var tmp = new TempDir();
-        var root = tmp.Path;
         var spawn = DateTime.UtcNow;
-        var wt    = Path.Combine(root, "worktree");
+        var wt    = tmp.PathTo("worktree");
 
         const string beforeUuid = "019f0022-2222-7a02-a630-edbfb043add6";
-        WriteRollout(root, beforeUuid, wt, creationUtc: spawn.AddSeconds(-3));
+        WriteRollout(tmp.Path, beforeUuid, wt, creationUtc: spawn.AddSeconds(-3));
 
         const string afterUuid = "019f0022-3333-7a02-a630-edbfb043add7";
-        WriteRollout(root, afterUuid, wt, creationUtc: spawn.AddSeconds(2));
+        WriteRollout(tmp.Path, afterUuid, wt, creationUtc: spawn.AddSeconds(2));
 
-        var id = CodexSessionRolloutLocator.TryLocate(root, wt, spawn);
+        var id = CodexSessionRolloutLocator.TryLocate(tmp.Path, wt, spawn);
 
         await Assert.That(id).IsEqualTo(afterUuid.Replace("-", ""));
     }

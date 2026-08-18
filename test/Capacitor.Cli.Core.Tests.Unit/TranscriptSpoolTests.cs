@@ -29,10 +29,10 @@ public class TranscriptSpoolTests {
     [Test]
     public async Task Append_marks_needs_import_when_the_live_write_fails() {
         using var tmp = new TempDir();
-        Directory.CreateDirectory(tmp.Path);
         // Make the live spool path a DIRECTORY so File.AppendAllText throws, while the spool
         // The directory itself stays writable so the sibling needs-import marker can still persist.
-        Directory.CreateDirectory(tmp.PathTo($"{Sid}.transcript.jsonl"));
+        tmp.CreateDir($"{Sid}.transcript.jsonl");
+
         var spool = new TranscriptSpool(tmp.Path);
         var r = spool.Append(Sid, """{"lines":["a"],"line_numbers":[0]}""");
         // No silent drop: a failed write is surfaced as needs-import, never a phantom Appended.

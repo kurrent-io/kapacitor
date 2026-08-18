@@ -25,7 +25,7 @@ public class PluginCommandOpenCodeTests {
     [Test]
     public async Task Install_opencode_with_if_installed_is_noop_when_not_installed() {
         using var tmp = new TempDir();
-        var pluginPath = Path.Combine(tmp.Path, "plugins", "kcap.ts");
+        var pluginPath = tmp.PathTo("plugins", "kcap.ts");
 
         var exit = await PluginCommand.HandleAsync(
             ["plugin", "install", "--opencode", "--opencode-plugin-path", pluginPath, "--if-installed"],
@@ -40,7 +40,7 @@ public class PluginCommandOpenCodeTests {
     [Test]
     public async Task Install_opencode_with_if_installed_refreshes_existing_plugin() {
         using var tmp = new TempDir();
-        var dir = Path.Combine(tmp.Path, "plugins");
+        var dir = tmp.PathTo("plugins");
         Directory.CreateDirectory(dir);
         var pluginPath = Path.Combine(dir, "kcap.ts");
         // Seed a stale kcap.ts with NO version marker (pre-marker install). The
@@ -64,7 +64,7 @@ public class PluginCommandOpenCodeTests {
     [Test]
     public async Task Install_opencode_if_installed_recreates_plugin_when_file_missing_but_marker_current() {
         using var tmp = new TempDir();
-        var dir = Path.Combine(tmp.Path, "plugins");
+        var dir = tmp.PathTo("plugins");
         Directory.CreateDirectory(dir);
         var pluginPath = Path.Combine(dir, "kcap.ts");
         // Marker at the CURRENT version but NO kcap.ts on disk (user deleted it). IsInstalled is true
@@ -88,7 +88,7 @@ public class PluginCommandOpenCodeTests {
         using var _   = new EnvScope("OPENCODE_CONFIG_DIR", null);
         using var __  = new EnvScope("XDG_CONFIG_HOME", null);
         using var tmp = new TempDir();
-        var dir = Path.Combine(tmp.Path, "plugins");
+        var dir = tmp.PathTo("plugins");
         Directory.CreateDirectory(dir);
         var pluginPath = Path.Combine(dir, "kcap.ts");
         var marker  = Path.Combine(dir, ".kcap-extension-version");

@@ -6,7 +6,7 @@ public class OpenCodeImportLedgerTests {
     [Test]
     public async Task records_and_reports_complete_only_for_matching_fingerprint_and_server() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "ledger.json");
+        var path = tmp.PathTo("ledger.json");
         const string url = "https://srv.example";
 
         var ledger = OpenCodeImportLedger.Load(path);
@@ -25,7 +25,7 @@ public class OpenCodeImportLedgerTests {
     [Test]
     public async Task load_tolerates_missing_or_corrupt_file() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "nope.json");
+        var path = tmp.PathTo("nope.json");
         await Assert.That(OpenCodeImportLedger.Load(path).IsComplete("u", "s", "fp")).IsFalse();
         await File.WriteAllTextAsync(path, "{ not json");
         await Assert.That(OpenCodeImportLedger.Load(path).IsComplete("u", "s", "fp")).IsFalse();

@@ -24,7 +24,7 @@ public class OpenCodeSubagentDiscoveryTests {
         await Assert.That(OpenCodeSubagentDiscovery.EnumerateSubagentFiles(lonely).Count).IsEqualTo(0);
 
         var parent = tmp.CreateFile("ses_parent.jsonl", "");
-        var nested = Path.Combine(tmp.Path, "ses_parent");
+        var nested = tmp.PathTo("ses_parent");
         Directory.CreateDirectory(nested);
         File.WriteAllText(Path.Combine(nested, "ses_child1.jsonl"), "");
         File.WriteAllText(Path.Combine(nested, "ses_child2.jsonl"), "");
@@ -36,7 +36,7 @@ public class OpenCodeSubagentDiscoveryTests {
     public async Task ResolveAgentType_ReadsInfoAgent_ElseFallsBackToSubagent() {
         using var tmp = new TempDir();
 
-        var withAgent = Path.Combine(tmp.Path, "c1.jsonl");
+        var withAgent = tmp.PathTo("c1.jsonl");
         File.WriteAllText(withAgent,
             "{\"info\":{\"role\":\"user\",\"id\":\"m1\"},\"parts\":[]}\n" +
             "{\"info\":{\"role\":\"assistant\",\"id\":\"m2\",\"agent\":\"general\"},\"parts\":[]}\n");

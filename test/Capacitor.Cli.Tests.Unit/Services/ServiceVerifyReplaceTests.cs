@@ -84,11 +84,10 @@ public class ServiceVerifyReplaceTests : IDisposable {
     }
 
     (string Dir, string DaemonPath) SetUpViableInstall() {
-        var dir = _tmp.Path;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
-        var daemonPath = Path.Combine(dir, "kcap-daemon");
+        DaemonLockPaths.OverrideDirectoryForTesting(_tmp.Path);
+        var daemonPath = _tmp.PathTo("kcap-daemon");
         File.WriteAllText(daemonPath, "");
-        return (dir, daemonPath);
+        return (_tmp.Path, daemonPath);
     }
 
     static ServiceSpec Spec(string daemonPath) =>

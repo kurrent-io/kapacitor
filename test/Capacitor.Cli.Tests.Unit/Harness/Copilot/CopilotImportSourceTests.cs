@@ -19,10 +19,10 @@ public class CopilotImportSourceTests {
         using var tmp = new TempDir();
         WriteSession(tmp.Path, Sid1, cwd: "/work/a");
         // Failed-startup scaffolding: workspace.yaml but no events.jsonl.
-        Directory.CreateDirectory(Path.Combine(tmp.Path, Sid2));
-        await File.WriteAllTextAsync(Path.Combine(tmp.Path, Sid2, "workspace.yaml"), $"id: {Sid2}\ncwd: /work/b\n");
+        Directory.CreateDirectory(tmp.PathTo(Sid2));
+        await File.WriteAllTextAsync(tmp.PathTo(Sid2, "workspace.yaml"), $"id: {Sid2}\ncwd: /work/b\n");
 
-        var source   = new CopilotImportSource(tmp.Path, legacyDirOverride: Path.Combine(tmp.Path, "none"));
+        var source   = new CopilotImportSource(tmp.Path, legacyDirOverride: tmp.PathTo("none"));
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
 
         await Assert.That(sessions.Count).IsEqualTo(1);
@@ -39,7 +39,7 @@ public class CopilotImportSourceTests {
             name: "Create a file hello.txt containing 'hello world'",
             createdAt: "2026-06-10T20:23:25.556Z");
 
-        var source   = new CopilotImportSource(tmp.Path, legacyDirOverride: Path.Combine(tmp.Path, "none"));
+        var source   = new CopilotImportSource(tmp.Path, legacyDirOverride: tmp.PathTo("none"));
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
 
         await Assert.That(sessions.Count).IsEqualTo(1);
@@ -51,8 +51,8 @@ public class CopilotImportSourceTests {
     [Test]
     public async Task discovery_prefers_current_root_over_legacy_for_same_session() {
         using var tmp = new TempDir();
-        var current = Path.Combine(tmp.Path, "session-state");
-        var legacy  = Path.Combine(tmp.Path, "history-session-state");
+        var current = tmp.PathTo("session-state");
+        var legacy  = tmp.PathTo("history-session-state");
 
         WriteSession(current, Sid1, cwd: "/work/current");
         WriteSession(legacy, Sid1, cwd: "/work/legacy");
@@ -74,7 +74,7 @@ public class CopilotImportSourceTests {
         WriteSession(tmp.Path, Sid1, cwd: "/work/a");
         WriteSession(tmp.Path, Sid2, cwd: "/work/b");
 
-        var source = new CopilotImportSource(tmp.Path, legacyDirOverride: Path.Combine(tmp.Path, "none"));
+        var source = new CopilotImportSource(tmp.Path, legacyDirOverride: tmp.PathTo("none"));
 
         var byDashed = await source.DiscoverAsync(new DiscoveryFilters(null, Sid1, null, 0), CancellationToken.None);
         await Assert.That(byDashed.Count).IsEqualTo(1);
@@ -91,7 +91,7 @@ public class CopilotImportSourceTests {
         WriteSession(tmp.Path, Sid1, cwd: "/work/a");
         WriteSession(tmp.Path, Sid2, cwd: null);   // no workspace.yaml cwd
 
-        var source  = new CopilotImportSource(tmp.Path, legacyDirOverride: Path.Combine(tmp.Path, "none"));
+        var source  = new CopilotImportSource(tmp.Path, legacyDirOverride: tmp.PathTo("none"));
         var matched = await source.DiscoverAsync(new DiscoveryFilters("/work/a", null, null, 0), CancellationToken.None);
 
         await Assert.That(matched.Count).IsEqualTo(1);
@@ -104,7 +104,7 @@ public class CopilotImportSourceTests {
         WriteSession(tmp.Path, Sid1, cwd: "/work/a", createdAt: "2026-06-01T10:00:00Z");
         WriteSession(tmp.Path, Sid2, cwd: "/work/b", createdAt: "2026-06-09T10:00:00Z");
 
-        var source  = new CopilotImportSource(tmp.Path, legacyDirOverride: Path.Combine(tmp.Path, "none"));
+        var source  = new CopilotImportSource(tmp.Path, legacyDirOverride: tmp.PathTo("none"));
         var matched = await source.DiscoverAsync(
             new DiscoveryFilters(null, null, new DateOnly(2026, 6, 5), 0), CancellationToken.None);
 
@@ -116,9 +116,9 @@ public class CopilotImportSourceTests {
     public async Task workspace_yaml_parser_tolerates_missing_file_and_colon_values() {
         using var tmp = new TempDir();
 
-        await Assert.That(CopilotWorkspaceYaml.TryRead(Path.Combine(tmp.Path, "absent.yaml"))).IsNull();
+        await Assert.That(CopilotWorkspaceYaml.TryRead(tmp.PathTo("absent.yaml"))).IsNull();
 
-        var path = Path.Combine(tmp.Path, "workspace.yaml");
+        var path = tmp.PathTo("workspace.yaml");
         await File.WriteAllTextAsync(path, """
             id: 4ae28a73-dd66-46ac-81d2-be94b5e87079
             cwd: /private/tmp/work
@@ -145,7 +145,7 @@ public class CopilotImportSourceTests {
         // unquoting, the literal quotes leak into imported session titles.
         using var tmp = new TempDir();
 
-        var path = Path.Combine(tmp.Path, "workspace.yaml");
+        var path = tmp.PathTo("workspace.yaml");
         await File.WriteAllTextAsync(path, """
             id: e18d0fe8-95e1-4bd3-87e1-54318e4f3c54
             cwd: '/private/tmp/quoted dir'

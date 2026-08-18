@@ -85,7 +85,7 @@ public class CursorSubagentStaleStateTests {
         using var tmp = new TempDir();
         var child  = NewSessionId();
         var parent = NewSessionId();
-        var childFile = Path.Combine(tmp.Path, $"{child}.jsonl");
+        var childFile = tmp.PathTo($"{child}.jsonl");
         await File.WriteAllTextAsync(childFile, """{"role":"assistant","message":{"content":[]}}""" + "\n");
 
         var spawned = new List<string>();
@@ -102,7 +102,7 @@ public class CursorSubagentStaleStateTests {
                     : new HttpResponseMessage(HttpStatusCode.OK);
             });
             using var client = new HttpClient(handler);
-            var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
+            var spool = new HookSpool(tmp.PathTo("spool"));
 
             await CursorHookCommand.HandleCore(
                 client, "http://s",
@@ -159,7 +159,7 @@ public class CursorSubagentStaleStateTests {
                     : new HttpResponseMessage(HttpStatusCode.OK);
             });
             using var client = new HttpClient(handler);
-            var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
+            var spool = new HookSpool(tmp.PathTo("spool"));
 
             // Drive the REAL CALLER, not the divert directly. That matters: the leading remedy
             // changes the caller (make SaveLink report success and fail open before the start is
@@ -212,7 +212,7 @@ public class CursorSubagentStaleStateTests {
                     : new HttpResponseMessage(HttpStatusCode.OK);
             });
             using var client = new HttpClient(handler);
-            var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
+            var spool = new HookSpool(tmp.PathTo("spool"));
 
             // Again through the REAL CALLER — see the note in the test above.
             await CursorHookCommand.HandleCore(
@@ -252,7 +252,7 @@ public class CursorSubagentStaleStateTests {
     /// to) plus the child's transcript path.
     /// </summary>
     static (string Parent, string Child, string ChildPath) SeedLinkedPair(TempDir tmp, string prompt) {
-        var root = Path.Combine(tmp.Path, "agent-transcripts");
+        var root = tmp.PathTo("agent-transcripts");
         Directory.CreateDirectory(root);
 
         var parentRaw = Guid.NewGuid().ToString();

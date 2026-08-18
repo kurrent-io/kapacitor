@@ -13,7 +13,7 @@ public class PiMcpExtensionInstallerTests {
     [Test]
     public async Task install_writes_extension_and_marker() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "extensions", "kcap-mcp.ts");
+        var path = tmp.PathTo("extensions", "kcap-mcp.ts");
 
         var ok = PiMcpExtensionInstaller.Install(path);
         await Assert.That(ok).IsTrue();
@@ -26,7 +26,7 @@ public class PiMcpExtensionInstallerTests {
     [Test]
     public async Task embedded_bridge_has_the_required_shape() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "extensions", "kcap-mcp.ts");
+        var path = tmp.PathTo("extensions", "kcap-mcp.ts");
         PiMcpExtensionInstaller.Install(path);
 
         var content = await File.ReadAllTextAsync(path);
@@ -75,7 +75,7 @@ public class PiMcpExtensionInstallerTests {
     [Test]
     public async Task is_installed_true_when_only_marker_present() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "extensions", "kcap-mcp.ts");
+        var path = tmp.PathTo("extensions", "kcap-mcp.ts");
         var dir  = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(dir);
         await File.WriteAllTextAsync(Path.Combine(dir, PiMcpExtensionInstaller.MarkerFileName), "9.9.9");
@@ -87,7 +87,7 @@ public class PiMcpExtensionInstallerTests {
     [Test]
     public async Task remove_deletes_extension_and_marker() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "extensions", "kcap-mcp.ts");
+        var path = tmp.PathTo("extensions", "kcap-mcp.ts");
         PiMcpExtensionInstaller.Install(path);
 
         var removed = PiMcpExtensionInstaller.Remove(path);
@@ -99,7 +99,7 @@ public class PiMcpExtensionInstallerTests {
     [Test]
     public async Task remove_returns_false_when_absent() {
         using var tmp = new TempDir();
-        var path = Path.Combine(tmp.Path, "extensions", "kcap-mcp.ts");
+        var path = tmp.PathTo("extensions", "kcap-mcp.ts");
 
         await Assert.That(PiMcpExtensionInstaller.Remove(path)).IsFalse();
     }

@@ -16,10 +16,10 @@ public class KiroImportSourceTests {
         using var tmp = new TempDir();
 
         await File.WriteAllTextAsync(
-            Path.Combine(tmp.Path, $"{Dashed}.jsonl"),
+            tmp.PathTo($"{Dashed}.jsonl"),
             """{"version":"v1","kind":"Prompt","data":{"message_id":"m1","content":[{"kind":"text","data":"hi"}]}}""" + "\n");
         await File.WriteAllTextAsync(
-            Path.Combine(tmp.Path, $"{Dashed}.json"),
+            tmp.PathTo($"{Dashed}.json"),
             """{"cwd":"/work","title":"Hi there","created_at":"2026-06-17T10:30:00Z","session_state":{"rts_model_state":{"model_info":{"model_id":"auto"}}}}""");
 
         var src = new KiroImportSource(sessionsDirOverride: tmp.Path);
@@ -40,7 +40,7 @@ public class KiroImportSourceTests {
     [Test]
     public async Task discovery_session_filter_matches_dashless_id() {
         using var tmp = new TempDir();
-        await File.WriteAllTextAsync(Path.Combine(tmp.Path, $"{Dashed}.jsonl"), "{}\n");
+        await File.WriteAllTextAsync(tmp.PathTo($"{Dashed}.jsonl"), "{}\n");
 
         var src = new KiroImportSource(sessionsDirOverride: tmp.Path);
 

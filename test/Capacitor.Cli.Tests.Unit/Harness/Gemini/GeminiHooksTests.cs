@@ -23,7 +23,7 @@ public class GeminiHooksTests {
     [Test]
     public async Task fresh_install_merges_lifecycle_events() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "settings.json");
+        var settingsPath = tmp.PathTo("settings.json");
 
         var ok = PluginCommand.InstallGeminiHooks(settingsPath);
         await Assert.That(ok).IsTrue();
@@ -38,7 +38,7 @@ public class GeminiHooksTests {
     [Test]
     public async Task install_preserves_user_hooks_and_other_settings() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "settings.json");
+        var settingsPath = tmp.PathTo("settings.json");
         await File.WriteAllTextAsync(settingsPath, """
             {"security":{"auth":{"selectedType":"oauth-personal"}},"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}
             """);
@@ -58,7 +58,7 @@ public class GeminiHooksTests {
     [Test]
     public async Task reinstall_does_not_duplicate_the_kcap_entry() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "settings.json");
+        var settingsPath = tmp.PathTo("settings.json");
 
         PluginCommand.InstallGeminiHooks(settingsPath);
         PluginCommand.InstallGeminiHooks(settingsPath);
@@ -74,7 +74,7 @@ public class GeminiHooksTests {
     [Test]
     public async Task remove_deletes_only_kcap_hooks() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "settings.json");
+        var settingsPath = tmp.PathTo("settings.json");
         await File.WriteAllTextAsync(settingsPath, """
             {"security":{"auth":{"selectedType":"oauth-personal"}},"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}
             """);
@@ -93,7 +93,7 @@ public class GeminiHooksTests {
     [Test]
     public async Task install_leaves_malformed_settings_untouched() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "settings.json");
+        var settingsPath = tmp.PathTo("settings.json");
 
         // A shared settings.json that is half-written / not valid JSON, but carries
         // user content we must never destroy by "starting fresh".
@@ -109,7 +109,7 @@ public class GeminiHooksTests {
     [Test]
     public async Task install_leaves_non_object_settings_untouched() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "settings.json");
+        var settingsPath = tmp.PathTo("settings.json");
 
         // Valid JSON, but not an object — still not something we can safely merge into.
         const string original = "[1, 2, 3]";
@@ -126,7 +126,7 @@ public class GeminiHooksTests {
     [Test]
     public async Task IsInstalled_true_via_marker_file() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "settings.json");
+        var settingsPath = tmp.PathTo("settings.json");
 
         GeminiHooksInstaller.WriteMarker(settingsPath);   // marker only — no settings.json written
 
@@ -136,7 +136,7 @@ public class GeminiHooksTests {
     [Test]
     public async Task IsInstalled_true_via_settings_hooks_when_marker_absent() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "settings.json");
+        var settingsPath = tmp.PathTo("settings.json");
 
         PluginCommand.InstallGeminiHooks(settingsPath);    // merges kcap hooks into settings.json
         GeminiHooksInstaller.DeleteMarker(settingsPath);   // force the settings-scan fallback
@@ -147,7 +147,7 @@ public class GeminiHooksTests {
     [Test]
     public async Task IsInstalled_false_when_no_marker_and_no_kcap_hooks() {
         using var tmp = new TempDir();
-        var settingsPath = Path.Combine(tmp.Path, "settings.json");
+        var settingsPath = tmp.PathTo("settings.json");
 
         // Real settings.json with a user hook but no kcap entry, and no marker.
         await File.WriteAllTextAsync(settingsPath, """

@@ -16,7 +16,7 @@ public class CodexPathsHomeIsolationTests {
 
             Environment.SetEnvironmentVariable("CODEX_HOME", null);
             Environment.SetEnvironmentVariable("HOME", tmp.Path);
-            await Assert.That(CodexPaths.Home()).IsEqualTo(Path.Combine(tmp.Path, ".codex"));
+            await Assert.That(CodexPaths.Home()).IsEqualTo(tmp.PathTo(".codex"));
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
             Environment.SetEnvironmentVariable("CODEX_HOME", originalCodexHome);
@@ -33,7 +33,7 @@ public class CodexPathsHomeIsolationTests {
             _ = CodexPaths.Sessions;
             Environment.SetEnvironmentVariable("CODEX_HOME", null);
             Environment.SetEnvironmentVariable("HOME", tmp.Path);
-            await Assert.That(CodexPaths.Sessions).IsEqualTo(Path.Combine(tmp.Path, ".codex", "sessions"));
+            await Assert.That(CodexPaths.Sessions).IsEqualTo(tmp.PathTo(".codex", "sessions"));
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
             Environment.SetEnvironmentVariable("CODEX_HOME", originalCodexHome);
@@ -50,7 +50,7 @@ public class CodexPathsHomeIsolationTests {
             _ = CodexPaths.UserHooksJson;
             Environment.SetEnvironmentVariable("CODEX_HOME", null);
             Environment.SetEnvironmentVariable("HOME", tmp.Path);
-            await Assert.That(CodexPaths.UserHooksJson).IsEqualTo(Path.Combine(tmp.Path, ".codex", "hooks.json"));
+            await Assert.That(CodexPaths.UserHooksJson).IsEqualTo(tmp.PathTo(".codex", "hooks.json"));
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
             Environment.SetEnvironmentVariable("CODEX_HOME", originalCodexHome);
