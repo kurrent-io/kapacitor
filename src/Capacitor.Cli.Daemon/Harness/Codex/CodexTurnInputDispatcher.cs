@@ -8,7 +8,7 @@ internal readonly record struct CodexTurnStarted(string TurnId, string? Status);
 
 /// <summary>
 /// The single serializer for interactive hosted-Codex input. The app server accepts a concurrent
-/// <c>turn/start</c> without error (AI-1760 Q13 — it does NOT serialize turns for you), so
+/// <c>turn/start</c> without error — the protocol spike proved it does NOT serialize turns for you — so
 /// serialization has to live on our side: every input surface enqueues here and ONE dispatcher drains,
 /// choosing <c>turn/start</c> when idle and <c>turn/steer</c> when a turn is active.
 ///
@@ -198,7 +198,7 @@ internal sealed class CodexTurnInputDispatcher {
             }
             item.Ack.TrySetResult(); // accepted onto the active turn before it completed
         } catch (CodexAppServerRpcException rpc) when (rpc.Code == -32600 && !item.RetriedAsStart) {
-            // The turn ended before the steer landed (AI-1760 Q13). Retry this same input EXACTLY ONCE
+            // The turn ended before the steer landed (spike Q13). Retry this same input EXACTLY ONCE
             // as a turn/start — force the lifecycle idle for the missed turn so the retry can't re-steer.
             lock (_gate) {
                 item.RetriedAsStart = true;

@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Codex;
 
 /// <summary>
-/// The interactive input serializer (AI-1762 §2.2). Drives <see cref="CodexTurnInputDispatcher"/>
+/// The interactive input serializer (the app-server input design). Drives <see cref="CodexTurnInputDispatcher"/>
 /// against a channel-synchronized fake send-sink so each turn/start and turn/steer response — and each
 /// turn/completed notification — is released at a controlled moment, exercising the completion-window
 /// orderings deterministically (no sleeps).
