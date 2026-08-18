@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Commands;
@@ -189,9 +188,7 @@ internal sealed partial class CodexLauncher(
         // Fail-closed: if the inherited set can't be enumerated, DisableInheritedMcpServers
         // throws and the launch is rejected rather than proceeding with nothing disabled.
         if (ctx.IsReviewFlow) {
-            DisableInheritedMcpServers(args, ctx);
-            AddFlowResultServer(args, ctx);
-            AddAllowlistServers(args, ctx);
+            AppendMcpIsolationArgs(args, ctx, appServer: false);
         }
 
         AddModelArg(args, ctx.Model);
@@ -212,6 +209,34 @@ internal sealed partial class CodexLauncher(
         }
 
         return new([.. args], McpConfigPath: null);
+    }
+
+    /// <summary>The shared MCP-isolation pass used by both transports: disable every inherited
+    /// server, force-enable the flow-result server, materialize the allowlist. <paramref name="appServer"/>
+    /// additionally stamps <c>default_tools_approval_mode="approve"</c> on each whitelisted server —
+    /// required only for the <c>codex app-server</c> transport, where the first tool call otherwise
+    /// raises an approval that wedges the turn even under <c>approvalPolicy: never</c> (the PTY TUI
+    /// does not). Emitting them here (rather than duplicating the isolation in the app-server builder)
+    /// keeps the two transports' overrides byte-identical apart from that one arm.</summary>
+    void AppendMcpIsolationArgs(List<string> args, LauncherContext ctx, bool appServer) {
+        DisableInheritedMcpServers(args, ctx);
+        AddFlowResultServer(args, ctx, appServer);
+        AddAllowlistServers(args, ctx, appServer);
+    }
+
+    /// <summary>Builds the argv passed to <c>codex app-server</c> (the tokens after the
+    /// <c>app-server</c> subcommand) for a hosted review-flow reviewer: <c>--disable apps</c> — the
+    /// <c>codex_apps</c> ChatGPT-connector runtime is not an <c>mcp_servers</c> entry and bypasses the
+    /// disable table, so it must be turned off explicitly — plus the shared MCP-isolation <c>-c</c>
+    /// overrides (with the per-whitelisted-server approval-mode arm). Sandbox, approval, model and
+    /// effort are per-turn protocol parameters on the app-server transport, not argv, so none appear
+    /// here.</summary>
+    public IReadOnlyList<string> BuildAppServerLaunchArgs(LauncherContext ctx) {
+        var args = new List<string> { "--disable", "apps" };
+
+        if (ctx.IsReviewFlow) AppendMcpIsolationArgs(args, ctx, appServer: true);
+
+        return args;
     }
 
     /// <summary>
@@ -297,7 +322,7 @@ internal sealed partial class CodexLauncher(
     /// <summary>Registers the reviewer-side result-submission server. Skipped (zero
     /// servers — the recursion-safe default) when the daemon has no server URL or kcap path;
     /// the reviewer then falls back to the transcript marker per the prompt contract.</summary>
-    void AddFlowResultServer(List<string> args, LauncherContext ctx) {
+    void AddFlowResultServer(List<string> args, LauncherContext ctx, bool appServer) {
         if (string.IsNullOrWhiteSpace(config.ServerUrl) || string.IsNullOrWhiteSpace(config.CapacitorPath)) return;
 
         const string name = "kcap-flow-result";
@@ -314,6 +339,7 @@ internal sealed partial class CodexLauncher(
         args.Add($"mcp_servers.{name}.args=[{TomlString("mcp")},{TomlString("flow-result")}]");
         args.Add("-c");
         args.Add($"mcp_servers.{name}.env={{KCAP_URL={TomlString(config.ServerUrl)},KCAP_FLOW_AGENT_ID={TomlString(ctx.AgentId)}}}");
+        AddAppServerApprovalMode(args, name, appServer);
     }
 
     /// <summary> D-c: materializes the flow definition's <see cref="LauncherContext.McpAllowlist"/>
@@ -324,7 +350,7 @@ internal sealed partial class CodexLauncher(
     /// Allowlist servers get KCAP_URL only — never KCAP_FLOW_AGENT_ID, which is exclusive to
     /// the flow-result submission channel. Skipped (same as the flow-result server) when the
     /// daemon has no server URL or kcap path configured.</summary>
-    void AddAllowlistServers(List<string> args, LauncherContext ctx) {
+    void AddAllowlistServers(List<string> args, LauncherContext ctx, bool appServer) {
         if (string.IsNullOrWhiteSpace(config.ServerUrl) || string.IsNullOrWhiteSpace(config.CapacitorPath)) return;
 
         foreach (var name in ctx.McpAllowlist ?? []) {
@@ -355,7 +381,20 @@ internal sealed partial class CodexLauncher(
             args.Add($"mcp_servers.{id}.args=[{argsList}]");
             args.Add("-c");
             args.Add($"mcp_servers.{id}.env={{KCAP_URL={TomlString(config.ServerUrl)}}}");
+            AddAppServerApprovalMode(args, id, appServer);
         }
+    }
+
+    /// <summary>On the app-server transport only, pre-approve a whitelisted server's tools:
+    /// <c>codex app-server</c> raises an approval on the FIRST tool call of an untrusted MCP server
+    /// even under <c>approvalPolicy: never</c>, which would wedge an unattended reviewer's turn.
+    /// <c>default_tools_approval_mode="approve"</c> suppresses it (<c>trust_level</c> does not).
+    /// A no-op for the PTY transport.</summary>
+    static void AddAppServerApprovalMode(List<string> args, string serverId, bool appServer) {
+        if (!appServer) return;
+
+        args.Add("-c");
+        args.Add($"mcp_servers.{serverId}.default_tools_approval_mode=\"approve\"");
     }
 
     /// Append `-m &lt;model&gt;` unless the model is empty or the "default" no-override sentinel.
@@ -415,35 +454,9 @@ internal sealed partial class CodexLauncher(
     /// backslashes, double quotes, and control characters. TOML basic strings forbid
     /// raw control chars, so an unescaped tab/newline/CR would yield invalid TOML and
     /// fail the Codex `-c` config parse. Covers Windows paths and arbitrary URLs.
-    static string TomlString(string value) {
-        var sb = new StringBuilder(value.Length + 2);
-        sb.Append('"');
-
-        foreach (var c in value) {
-            switch (c) {
-                case '\\': sb.Append("\\\\"); break;
-                case '"':  sb.Append("\\\""); break;
-                case '\b': sb.Append("\\b");  break;
-                case '\t': sb.Append("\\t");  break;
-                case '\n': sb.Append("\\n");  break;
-                case '\f': sb.Append("\\f");  break;
-                case '\r': sb.Append("\\r");  break;
-                default:
-                    // Remaining C0 controls (and DEL) have no short escape — emit \uXXXX.
-                    if (c < ' ' || c == (char)0x7f) {
-                        sb.Append("\\u").Append(((int)c).ToString("X4"));
-                    } else {
-                        sb.Append(c);
-                    }
-
-                    break;
-            }
-        }
-
-        sb.Append('"');
-
-        return sb.ToString();
-    }
+    // Shared with the codex app-server argv builder so the two transports encode -c overrides
+    // identically; the implementation lives in CodexToml.
+    static string TomlString(string value) => CodexToml.String(value);
 
     /// Local launch: emit the mandatory daemon-level flags Codex always needs, then append
     /// the user's verbatim post-`--` args. A user duplicate of a mandatory flag is rejected

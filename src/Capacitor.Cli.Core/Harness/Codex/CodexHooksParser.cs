@@ -34,15 +34,26 @@ public static class CodexHooksParser {
         foreach (var hook in hooks) {
             if (hook?["command"] is JsonValue jv &&
                 jv.TryGetValue<string>(out var cmd) &&
-                (cmd.Contains("kcap hook --codex",      StringComparison.Ordinal)
-              || cmd.Contains("kcap codex-hook",        StringComparison.Ordinal)
-              || cmd.Contains("kapacitor codex-hook",   StringComparison.Ordinal))) {
+                IsCapacitorCodexHookCommand(cmd)) {
                 return true;
             }
         }
 
         return false;
     }
+
+    /// <summary>
+    /// Returns true if <paramref name="command"/> invokes the kcap Codex hook dispatcher —
+    /// the current <c>kcap hook --codex</c> marker or the two earlier forms
+    /// (<c>kcap codex-hook</c>, <c>kapacitor codex-hook</c>). The single source of truth for
+    /// "is this a kcap-owned Codex hook", shared by the hooks.json preflight and the
+    /// app-server <c>hooks/list</c> trust classifier.
+    /// </summary>
+    public static bool IsCapacitorCodexHookCommand(string? command) =>
+        command is not null &&
+        (command.Contains("kcap hook --codex",    StringComparison.Ordinal)
+      || command.Contains("kcap codex-hook",      StringComparison.Ordinal)
+      || command.Contains("kapacitor codex-hook", StringComparison.Ordinal));
 
     /// <summary>
     /// Returns true if every event in <paramref name="events"/> has at least one
