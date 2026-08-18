@@ -726,6 +726,5 @@ internal static partial class MemoryIndexLiveCertHarness {
     /// Creates a throwaway working directory for a cert turn. It must be a fresh directory so the
     /// harness genuinely starts a NEW session and the sessionStart path under test actually fires.
     /// </summary>
-    public static DirectoryInfo NewCertWorktree(string vendorLabel) =>
-        Directory.CreateTempSubdirectory($"kcap-{vendorLabel}-memory-live-");
+    public static TempDir NewCertWorktree(string vendorLabel) => new(vendorLabel);
 }

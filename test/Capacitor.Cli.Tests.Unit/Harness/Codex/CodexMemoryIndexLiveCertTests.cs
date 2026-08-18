@@ -82,18 +82,14 @@ public class CodexMemoryIndexLiveCertTests {
     /// temp directory, not a repo.</para>
     /// </summary>
     static async Task<string> RunCodexAsync(string prompt) {
-        var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
+        using var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
 
-        try {
-            var (exitCode, stdout, stderr) = await MemoryIndexLiveCertHarness.RunProcessAsync(
-                "codex", ["exec", "--skip-git-repo-check", "-"], worktree.FullName, stdin: prompt);
+        var (exitCode, stdout, stderr) = await MemoryIndexLiveCertHarness.RunProcessAsync(
+            "codex", ["exec", "--skip-git-repo-check", "-"], worktree.Path, stdin: prompt);
 
-            await Console.Out.WriteLineAsync($"[{VendorLabel}-memory-live] codex exit={exitCode} stderr={stderr}");
-            await Assert.That(exitCode).IsEqualTo(0);
+        await Console.Out.WriteLineAsync($"[{VendorLabel}-memory-live] codex exit={exitCode} stderr={stderr}");
+        await Assert.That(exitCode).IsEqualTo(0);
 
-            return MemoryIndexLiveCertHarness.ExtractAssistantAnswer(stdout);
-        } finally {
-            try { worktree.Delete(recursive: true); } catch { /* best-effort */ }
-        }
+        return MemoryIndexLiveCertHarness.ExtractAssistantAnswer(stdout);
     }
 }

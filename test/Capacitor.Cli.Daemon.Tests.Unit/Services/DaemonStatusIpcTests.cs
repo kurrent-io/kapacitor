@@ -89,18 +89,18 @@ public class DaemonStatusIpcTests {
     /// mirrors <c>AgentStatusSnapshotTests.Build</c> — for the pure write-path exception test
     /// below, which drives <see cref="DaemonStatusIpc.HandleSubscribeAsync"/> directly against a
     /// fake stream instead of a real connection.</summary>
-    static (AgentOrchestrator Orchestrator, DaemonStatusIpc StatusIpc, string StateDir) BuildBareStatusIpc(string name) {
-        var stateDir = Directory.CreateTempSubdirectory("kcap-status-ipc-throw-state-").FullName;
-        var store       = new LaunchConsentStore(stateDir, NullLogger.Instance);
+    static (AgentOrchestrator Orchestrator, DaemonStatusIpc StatusIpc, TempDir StateDir) BuildBareStatusIpc(string name) {
+        var stateDir = new TempDir();
+        var store       = new LaunchConsentStore(stateDir.Path, NullLogger.Instance);
         var broker      = new LaunchConsentBroker();
-        var decisionLog = new LaunchConsentDecisionLog(stateDir, NullLogger.Instance);
+        var decisionLog = new LaunchConsentDecisionLog(stateDir.Path, NullLogger.Instance);
         var gate        = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         var config = new DaemonConfig {
             Name         = name,
             ServerUrl    = "http://127.0.0.1:1",
-            StateDir     = stateDir,
-            WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-status-ipc-throw-wt-" + Guid.NewGuid().ToString("N")[..8]),
+            StateDir     = stateDir.Path,
+            WorktreeRoot = stateDir.PathTo("worktrees"),
         };
 
         var notifier         = new DaemonStatusNotifier();
@@ -125,7 +125,7 @@ public class DaemonStatusIpcTests {
     sealed record Harness(
         LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection,
         DaemonConfig Config, string SockPath, DaemonStatusNotifier Notifier, DaemonStatusIpc StatusIpc,
-        string StateDir) {
+        TempDir StateDir) {
         int _serverStopped;
 
         /// Re-entrant-safe: the shutdown test stops the server itself (to observe the
@@ -138,17 +138,17 @@ public class DaemonStatusIpcTests {
     }
 
     static async Task<Harness> StartAsync(string daemonName, CancellationToken ct) {
-        var stateDir = Directory.CreateTempSubdirectory("kcap-status-ipc-state-").FullName;
-        var store       = new LaunchConsentStore(stateDir, NullLogger.Instance);
+        var stateDir = new TempDir();
+        var store       = new LaunchConsentStore(stateDir.Path, NullLogger.Instance);
         var broker      = new LaunchConsentBroker();
-        var decisionLog = new LaunchConsentDecisionLog(stateDir, NullLogger.Instance);
+        var decisionLog = new LaunchConsentDecisionLog(stateDir.Path, NullLogger.Instance);
         var gate        = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         var config = new DaemonConfig {
             Name         = daemonName,
             ServerUrl    = "http://127.0.0.1:1",
-            StateDir     = stateDir,
-            WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-status-ipc-wt-" + Guid.NewGuid().ToString("N")[..8]),
+            StateDir     = stateDir.Path,
+            WorktreeRoot = stateDir.PathTo("worktrees"),
         };
         var consentIpc  = new LaunchConsentIpc(broker, store, config, NullLogger<LaunchConsentIpc>.Instance);
 
@@ -185,7 +185,7 @@ public class DaemonStatusIpcTests {
         await h.StopServerOnceAsync(CancellationToken.None);
         h.Server.Dispose();
         await h.Connection.DisposeAsync();
-        try { Directory.Delete(h.StateDir, true); } catch { /* best-effort */ }
+        h.StateDir.Dispose();
     }
 
     /// Wraps a test body with the temp-dir DaemonLockPaths override + harness lifecycle, mirroring
@@ -483,7 +483,7 @@ public class DaemonStatusIpcTests {
             }
         } finally {
             await orchestrator.DisposeAsync();
-            try { Directory.Delete(stateDir, true); } catch { /* best-effort */ }
+            stateDir.Dispose();
         }
     }
 

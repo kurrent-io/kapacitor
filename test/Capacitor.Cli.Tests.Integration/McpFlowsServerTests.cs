@@ -963,56 +963,52 @@ public class McpFlowsServerTests : IDisposable {
 
         // Two separate git checkouts: the one the process is launched in (the parent's, inherited)
         // and the one the running harness reports as its project (the driver's own worktree).
-        var driverRepo = Path.Combine(Path.GetTempPath(), $"kcap-flows-driver-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(driverRepo);
+        using var driverTmp = new TempDir();
+        var driverRepo = driverTmp.CreateDir("driver");
         InitGitRepo(driverRepo);
 
+        using var proc = SpawnMcpServerWithSession(
+            inheritedParentSession,
+            workingDirectory:  _cwdDir,      // the launching (parent) checkout — inherited, wrong
+            harnessSessionId:  runningDriverSession,
+            harnessProjectDir: driverRepo);  // the driver's own checkout — correct
+
         try {
-            using var proc = SpawnMcpServerWithSession(
-                inheritedParentSession,
-                workingDirectory:  _cwdDir,      // the launching (parent) checkout — inherited, wrong
-                harnessSessionId:  runningDriverSession,
-                harnessProjectDir: driverRepo);  // the driver's own checkout — correct
+            var args = new JsonObject {
+                ["kind"]         = "code-review",
+                ["target_kind"]  = "pr",
+                ["target_ref"]   = "42",
+                ["target_title"] = "Some PR",
+                ["context"]      = "Review this."
+            };
 
-            try {
-                var args = new JsonObject {
-                    ["kind"]         = "code-review",
-                    ["target_kind"]  = "pr",
-                    ["target_ref"]   = "42",
-                    ["target_title"] = "Some PR",
-                    ["context"]      = "Review this."
-                };
+            var response = await SendRequest(proc, ToolsCallRequest(3, "start_review_flow", args));
+            await Assert.That(response["result"]?["isError"]?.GetValue<bool>()).IsNotEqualTo(true);
 
-                var response = await SendRequest(proc, ToolsCallRequest(3, "start_review_flow", args));
-                await Assert.That(response["result"]?["isError"]?.GetValue<bool>()).IsNotEqualTo(true);
+            var hits = _server.FindLogEntries(
+                Request.Create().WithPath("/api/flows/review/start/v2").UsingPost());
+            await Assert.That(hits.Count).IsEqualTo(1);
 
-                var hits = _server.FindLogEntries(
-                    Request.Create().WithPath("/api/flows/review/start/v2").UsingPost());
-                await Assert.That(hits.Count).IsEqualTo(1);
+            var body = JsonNode.Parse(hits[0].RequestMessage.Body ?? "")!.AsObject();
 
-                var body = JsonNode.Parse(hits[0].RequestMessage.Body ?? "")!.AsObject();
+            // The running driver's session, dash-stripped — NOT the inherited one.
+            await Assert.That(body["requesting_session_id"]?.GetValue<string>())
+                .IsEqualTo("11111111222233334444555555555555");
+            await Assert.That(body["requesting_session_id"]?.GetValue<string>())
+                .IsNotEqualTo(inheritedParentSession);
 
-                // The running driver's session, dash-stripped — NOT the inherited one.
-                await Assert.That(body["requesting_session_id"]?.GetValue<string>())
-                    .IsEqualTo("11111111222233334444555555555555");
-                await Assert.That(body["requesting_session_id"]?.GetValue<string>())
-                    .IsNotEqualTo(inheritedParentSession);
-
-                // The driver's checkout, not the directory the process was launched in. Compared by
-                // the unique directory name because macOS resolves the temp path through a symlink.
-                var driverRepoName = Path.GetFileName(driverRepo);
-                var parentRepoName = Path.GetFileName(_cwdDir);
-                foreach (var field in (string[])["requesting_cwd", "requesting_repo_root", "repo_path"]) {
-                    var value = body[field]?.GetValue<string>();
-                    await Assert.That(value).IsNotNull();
-                    await Assert.That(value!.Contains(driverRepoName, StringComparison.OrdinalIgnoreCase)).IsTrue();
-                    await Assert.That(value.Contains(parentRepoName, StringComparison.OrdinalIgnoreCase)).IsFalse();
-                }
-            } finally {
-                await ShutdownAsync(proc);
+            // The driver's checkout, not the directory the process was launched in. Compared by
+            // the unique directory name because macOS resolves the temp path through a symlink.
+            var driverRepoName = Path.GetFileName(driverRepo);
+            var parentRepoName = Path.GetFileName(_cwdDir);
+            foreach (var field in (string[])["requesting_cwd", "requesting_repo_root", "repo_path"]) {
+                var value = body[field]?.GetValue<string>();
+                await Assert.That(value).IsNotNull();
+                await Assert.That(value!.Contains(driverRepoName, StringComparison.OrdinalIgnoreCase)).IsTrue();
+                await Assert.That(value.Contains(parentRepoName, StringComparison.OrdinalIgnoreCase)).IsFalse();
             }
         } finally {
-            try { Directory.Delete(driverRepo, recursive: true); } catch { /* best effort */ }
+            await ShutdownAsync(proc);
         }
     }
 

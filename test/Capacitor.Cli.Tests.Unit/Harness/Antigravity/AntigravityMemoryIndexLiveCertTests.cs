@@ -79,7 +79,7 @@ public class AntigravityMemoryIndexLiveCertTests {
         await Assert.That(original is true).IsFalse();
 
         var nonce    = MemoryIndexLiveCertHarness.NewNonce();
-        var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
+        using var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
         var memoryId = await SaveNonceOrCleanUpAsync(nonce, worktree);
 
         try {
@@ -88,7 +88,7 @@ public class AntigravityMemoryIndexLiveCertTests {
             // was a stale installed binary.
             await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "agy", ["--version"]);
 
-            var (exitCode, stdout, _) = await RunAgyAsync(worktree.FullName, MemoryIndexLiveCertHarness.PositivePrompt);
+            var (exitCode, stdout, _) = await RunAgyAsync(worktree.Path, MemoryIndexLiveCertHarness.PositivePrompt);
 
             LogInjectedStepEvidence(nonce, stdout);
 
@@ -103,7 +103,6 @@ public class AntigravityMemoryIndexLiveCertTests {
             await Assert.That(exitCode).IsEqualTo(0);
             await Assert.That(MemoryIndexLiveCertHarness.ExtractAssistantAnswer(stdout)).Contains(nonce);
         } finally {
-            TryDelete(worktree);
             await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
         }
     }
@@ -119,20 +118,19 @@ public class AntigravityMemoryIndexLiveCertTests {
         var original = await MemoryIndexLiveCertHarness.ReadDisableMemoryIndexAsync();
 
         var nonce    = MemoryIndexLiveCertHarness.NewNonce();
-        var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
+        using var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
         var memoryId = await SaveNonceOrCleanUpAsync(nonce, worktree);
 
         try {
             await MemoryIndexLiveCertHarness.SetDisableMemoryIndexAsync(true);
 
-            var (exitCode, stdout, _) = await RunAgyAsync(worktree.FullName, MemoryIndexLiveCertHarness.NegativePrompt);
+            var (exitCode, stdout, _) = await RunAgyAsync(worktree.Path, MemoryIndexLiveCertHarness.NegativePrompt);
 
             LogInjectedStepEvidence(nonce, stdout);
 
             await Assert.That(exitCode).IsEqualTo(0);
             await Assert.That(MemoryIndexLiveCertHarness.ExtractAssistantAnswer(stdout)).DoesNotContain(nonce);
         } finally {
-            TryDelete(worktree);
             // Nested: the restore THROWS on a failed or unconfirmed write, and that must not skip
             // the archive — a leaked nonce corrupts every later cert's injected index.
             try {
@@ -158,16 +156,12 @@ public class AntigravityMemoryIndexLiveCertTests {
 
     /// <summary>Saves the nonce memory, deleting the worktree if the save throws — the memory is the
     /// expensive thing to leak, but a save failure must not also strand a temp directory.</summary>
-    static async Task<string> SaveNonceOrCleanUpAsync(string nonce, DirectoryInfo worktree) {
+    static async Task<string> SaveNonceOrCleanUpAsync(string nonce, TempDir worktree) {
         try {
             return await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
         } catch {
-            TryDelete(worktree);
+            worktree.Dispose();
             throw;
         }
-    }
-
-    static void TryDelete(DirectoryInfo dir) {
-        try { dir.Delete(recursive: true); } catch { /* best-effort */ }
     }
 }

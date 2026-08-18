@@ -42,24 +42,24 @@ public class LaunchConsentIpcTests {
     }
 
     sealed record Harness(
-        LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection,
+        TempDir StateDir, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection,
         LaunchConsentStore Store, LaunchConsentBroker Broker, LaunchConsentGate Gate, string SockPath);
 
     static async Task<Harness> StartAsync(
             string daemonName, LaunchConsentDefault def, int promptTimeoutSeconds, CancellationToken ct
         ) {
-        var stateDir = Directory.CreateTempSubdirectory("kcap-consent-ipc-state-").FullName;
-        var store = new LaunchConsentStore(stateDir, NullLogger.Instance);
+        var stateDir = new TempDir();
+        var store = new LaunchConsentStore(stateDir.Path, NullLogger.Instance);
         store.TryReplace(new LaunchConsentPolicy(def, promptTimeoutSeconds, []), out _);
         var broker = new LaunchConsentBroker();
-        var decisionLog = new LaunchConsentDecisionLog(stateDir, NullLogger.Instance);
+        var decisionLog = new LaunchConsentDecisionLog(stateDir.Path, NullLogger.Instance);
         var gate = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         var config = new DaemonConfig {
             Name         = daemonName,
             ServerUrl    = "http://127.0.0.1:1",
-            StateDir     = stateDir,
-            WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-consent-ipc-wt-" + Guid.NewGuid().ToString("N")[..8]),
+            StateDir     = stateDir.Path,
+            WorktreeRoot = stateDir.PathTo("worktrees"),
         };
         var consentIpc = new LaunchConsentIpc(broker, store, config, NullLogger<LaunchConsentIpc>.Instance);
 
@@ -83,7 +83,7 @@ public class LaunchConsentIpcTests {
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (!File.Exists(sockPath) && DateTime.UtcNow < deadline) await Task.Delay(20, ct);
 
-        return new Harness(server, orchestrator, connection, store, broker, gate, sockPath);
+        return new Harness(stateDir, server, orchestrator, connection, store, broker, gate, sockPath);
     }
 
     static async Task StopAsync(Harness h) {
@@ -91,6 +91,7 @@ public class LaunchConsentIpcTests {
         await h.Server.StopAsync(CancellationToken.None);
         h.Server.Dispose();
         await h.Connection.DisposeAsync();
+        h.StateDir.Dispose();
     }
 
     /// Wraps a test body with the temp-dir DaemonLockPaths override + harness lifecycle, mirroring

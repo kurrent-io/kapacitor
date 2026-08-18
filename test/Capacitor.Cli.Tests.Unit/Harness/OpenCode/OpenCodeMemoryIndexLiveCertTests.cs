@@ -190,7 +190,7 @@ public class OpenCodeMemoryIndexLiveCertTests {
         await Assert.That(original is true).IsFalse();
 
         var nonce    = MemoryIndexLiveCertHarness.NewNonce();
-        var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
+        using var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
         var memoryId = await SaveNonceOrCleanUpAsync(nonce, worktree);
 
         try {
@@ -202,14 +202,14 @@ public class OpenCodeMemoryIndexLiveCertTests {
             // Establish that there IS something for the model to reproduce before spending a turn.
             // Without this the cert intermittently reports an index-propagation race as a delivery
             // defect — observed, and the most expensive kind of false failure.
-            await Assert.That(await WaitForNonceInIndexAsync(nonce, worktree.FullName))
+            await Assert.That(await WaitForNonceInIndexAsync(nonce, worktree.Path))
                 .IsTrue()
                 .Because("the nonce memory never became visible in GET /api/memories/index, so a model "
                        + "turn could not prove anything either way — this is a save/propagation "
                        + "problem, NOT evidence about the system transform");
 
             var (exitCode, stdout, _) =
-                await RunOpenCodeAsync(worktree.FullName, MemoryIndexLiveCertHarness.PositivePrompt);
+                await RunOpenCodeAsync(worktree.Path, MemoryIndexLiveCertHarness.PositivePrompt);
 
             LogInjectionEvidence(nonce, stdout);
 
@@ -229,7 +229,6 @@ public class OpenCodeMemoryIndexLiveCertTests {
                        + "of the nonce means it did, and the model mistranscribed it — see "
                        + $"{ModelEnvVar}");
         } finally {
-            TryDelete(worktree);
             await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
         }
     }
@@ -245,21 +244,20 @@ public class OpenCodeMemoryIndexLiveCertTests {
         var original = await MemoryIndexLiveCertHarness.ReadDisableMemoryIndexAsync();
 
         var nonce    = MemoryIndexLiveCertHarness.NewNonce();
-        var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
+        using var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
         var memoryId = await SaveNonceOrCleanUpAsync(nonce, worktree);
 
         try {
             await MemoryIndexLiveCertHarness.SetDisableMemoryIndexAsync(true);
 
             var (exitCode, stdout, _) =
-                await RunOpenCodeAsync(worktree.FullName, MemoryIndexLiveCertHarness.NegativePrompt);
+                await RunOpenCodeAsync(worktree.Path, MemoryIndexLiveCertHarness.NegativePrompt);
 
             LogInjectionEvidence(nonce, stdout);
 
             await Assert.That(exitCode).IsEqualTo(0);
             await Assert.That(ExtractModelText(stdout)).DoesNotContain(nonce);
         } finally {
-            TryDelete(worktree);
             // Nested: the restore THROWS on a failed or unconfirmed write, and that must not skip the
             // archive — a leaked nonce corrupts every later cert's injected index.
             try {
@@ -284,16 +282,12 @@ public class OpenCodeMemoryIndexLiveCertTests {
 
     /// <summary>Saves the nonce memory, deleting the worktree if the save throws — the memory is the
     /// expensive thing to leak, but a save failure must not also strand a temp directory.</summary>
-    static async Task<string> SaveNonceOrCleanUpAsync(string nonce, DirectoryInfo worktree) {
+    static async Task<string> SaveNonceOrCleanUpAsync(string nonce, TempDir worktree) {
         try {
             return await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
         } catch {
-            TryDelete(worktree);
+            worktree.Dispose();
             throw;
         }
-    }
-
-    static void TryDelete(DirectoryInfo dir) {
-        try { dir.Delete(recursive: true); } catch { /* best-effort */ }
     }
 }

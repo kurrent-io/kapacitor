@@ -224,16 +224,11 @@ public class MemoryIndexLiveCertHarnessTests {
 
     [Test]
     public async Task A_cert_worktree_is_a_fresh_empty_directory() {
-        var first  = MemoryIndexLiveCertHarness.NewCertWorktree("probe");
-        var second = MemoryIndexLiveCertHarness.NewCertWorktree("probe");
+        using var first  = MemoryIndexLiveCertHarness.NewCertWorktree("probe");
+        using var second = MemoryIndexLiveCertHarness.NewCertWorktree("probe");
 
-        try {
-            await Assert.That(first.FullName).IsNotEqualTo(second.FullName);
-            await Assert.That(first.EnumerateFileSystemInfos()).IsEmpty();
-        } finally {
-            try { first.Delete(recursive: true); } catch { /* best-effort */ }
-            try { second.Delete(recursive: true); } catch { /* best-effort */ }
-        }
+        await Assert.That(first.Path).IsNotEqualTo(second.Path);
+        await Assert.That(Directory.EnumerateFileSystemEntries(first.Path)).IsEmpty();
     }
 
     // 13 cert memories leaked into the live index because archive_memory was sent `memory_id` (what

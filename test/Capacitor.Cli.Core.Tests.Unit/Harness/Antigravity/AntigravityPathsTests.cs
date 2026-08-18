@@ -85,16 +85,12 @@ public class AntigravityPathsTests {
     [Arguments(true,  true,  true)]  // both
     public async Task IsInstalled_is_true_when_EITHER_product_root_exists(
             bool gui, bool cli, bool expected) {
-        var home = Path.Combine(Path.GetTempPath(), "kcap-ag-" + Guid.NewGuid().ToString("N"));
-        try {
-            // geminiCliHome: "" forces home-based resolution (no env read).
-            if (gui) Directory.CreateDirectory(Path.Combine(home, ".gemini", "antigravity"));
-            if (cli) Directory.CreateDirectory(Path.Combine(home, ".gemini", "antigravity-cli"));
+        using var tmp = new TempDir();
+        // geminiCliHome: "" forces home-based resolution (no env read).
+        if (gui) tmp.CreateDir(".gemini", "antigravity");
+        if (cli) tmp.CreateDir(".gemini", "antigravity-cli");
 
-            await Assert.That(AntigravityPaths.IsInstalled(home: home, geminiCliHome: "")).IsEqualTo(expected);
-        } finally {
-            if (Directory.Exists(home)) Directory.Delete(home, recursive: true);
-        }
+        await Assert.That(AntigravityPaths.IsInstalled(home: tmp.Path, geminiCliHome: "")).IsEqualTo(expected);
     }
 
     [Test]

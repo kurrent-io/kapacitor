@@ -14,6 +14,7 @@ namespace Capacitor.Cli.Tests.Integration;
 [NotInParallel]
 public class PermissionRequestWatcherSelfHealTests {
     static readonly TempDir Tmp = new();
+    static readonly TempDir Transcripts = new();
     static string TempDir => Tmp.Path;
 
     static string? _previousWatcherDir;
@@ -30,12 +31,12 @@ public class PermissionRequestWatcherSelfHealTests {
         // started with KCAP_WATCHER_DIR set isn't left altered for later test classes.
         Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", _previousWatcherDir);
         Tmp.Dispose();
+        Transcripts.Dispose();
     }
 
     static (string sessionId, string transcriptPath, string pidFile) NewSession() {
         var sessionId      = $"permreq{Guid.NewGuid():N}";
-        var transcriptPath = Path.Combine(Path.GetTempPath(), $"{sessionId}.jsonl");
-        File.WriteAllText(transcriptPath, "");
+        var transcriptPath = Transcripts.CreateFile($"{sessionId}.jsonl");
 
         return (sessionId, transcriptPath, Path.Combine(TempDir, $"{sessionId}.pid"));
     }
@@ -49,16 +50,13 @@ public class PermissionRequestWatcherSelfHealTests {
             ["cwd"]             = "/tmp/test"
         };
 
-        try {
-            await PermissionRequestCommand.TryEnsureWatcher("http://localhost:0", sessionId, node);
+        await PermissionRequestCommand.TryEnsureWatcher("http://localhost:0", sessionId, node);
 
-            await Assert.That(File.Exists(pidFile)).IsTrue();
-            var lines = await File.ReadAllLinesAsync(pidFile);
-            await Assert.That(int.TryParse(lines[0].Trim(), out _)).IsTrue();
-        } finally {
-            await Cli.WatcherManager.KillWatcher(sessionId);
-            File.Delete(transcriptPath);
-        }
+        await Assert.That(File.Exists(pidFile)).IsTrue();
+        var lines = await File.ReadAllLinesAsync(pidFile);
+        await Assert.That(int.TryParse(lines[0].Trim(), out _)).IsTrue();
+
+        await Cli.WatcherManager.KillWatcher(sessionId);
     }
 
     [Test]
@@ -72,31 +70,25 @@ public class PermissionRequestWatcherSelfHealTests {
             ["agent_id"]        = "agent-123"
         };
 
-        try {
-            await PermissionRequestCommand.TryEnsureWatcher("http://localhost:0", sessionId, node);
+        await PermissionRequestCommand.TryEnsureWatcher("http://localhost:0", sessionId, node);
 
-            await Assert.That(File.Exists(pidFile)).IsFalse();
-        } finally {
-            await Cli.WatcherManager.KillWatcher(sessionId);
-            File.Delete(transcriptPath);
-        }
+        await Assert.That(File.Exists(pidFile)).IsFalse();
+
+        await Cli.WatcherManager.KillWatcher(sessionId);
     }
 
     [Test]
     public async Task SkipsWatcher_WhenTranscriptPathMissing() {
-        var (sessionId, transcriptPath, pidFile) = NewSession();
+        var (sessionId, _, pidFile) = NewSession();
 
         var node = new JsonObject {
             ["cwd"] = "/tmp/test"
         };
 
-        try {
-            await PermissionRequestCommand.TryEnsureWatcher("http://localhost:0", sessionId, node);
+        await PermissionRequestCommand.TryEnsureWatcher("http://localhost:0", sessionId, node);
 
-            await Assert.That(File.Exists(pidFile)).IsFalse();
-        } finally {
-            await Cli.WatcherManager.KillWatcher(sessionId);
-            File.Delete(transcriptPath);
-        }
+        await Assert.That(File.Exists(pidFile)).IsFalse();
+
+        await Cli.WatcherManager.KillWatcher(sessionId);
     }
 }

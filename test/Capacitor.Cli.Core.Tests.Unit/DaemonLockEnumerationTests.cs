@@ -10,9 +10,8 @@ namespace Capacitor.Cli.Core.Tests.Unit;
 public class DaemonLockEnumerationTests {
     [Test]
     public async Task EnumerateNames_DerivesFromMarkers_NotFromBareLock() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-enum-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
 
         try {
             // alpha has both lock and pid (a live/recently-live daemon — always writes .pid).
@@ -20,10 +19,10 @@ public class DaemonLockEnumerationTests {
             //   that must NOT be listed — the lock file cannot be safely deleted, so listing
             //   it would re-surface the entry on every run (the bug this exclusion fixes).
             // gamma has only a pid (orphan from before migration).
-            File.WriteAllText(Path.Combine(dir, "alpha.lock"), "instance-1");
-            File.WriteAllText(Path.Combine(dir, "alpha.pid"),  "12345");
-            File.WriteAllText(Path.Combine(dir, "beta.lock"),  "instance-2");
-            File.WriteAllText(Path.Combine(dir, "gamma.pid"),  "67890");
+            tmp.CreateFile("alpha.lock", "instance-1");
+            tmp.CreateFile("alpha.pid",  "12345");
+            tmp.CreateFile("beta.lock",  "instance-2");
+            tmp.CreateFile("gamma.pid",  "67890");
 
             var names = DaemonLockPaths.EnumerateNames();
 
@@ -33,19 +32,17 @@ public class DaemonLockEnumerationTests {
             await Assert.That(names).DoesNotContain("beta");
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ }
         }
     }
 
     [Test]
     public async Task EnumerateNames_DeduplicatesNamesAppearingInMultipleMarkers() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-enum-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
 
         try {
-            File.WriteAllText(Path.Combine(dir, "alpha.pid"),     "12345");
-            File.WriteAllText(Path.Combine(dir, "alpha.version"), "0.11.7");
+            tmp.CreateFile("alpha.pid",     "12345");
+            tmp.CreateFile("alpha.version", "0.11.7");
 
             var names = DaemonLockPaths.EnumerateNames();
 
@@ -53,7 +50,6 @@ public class DaemonLockEnumerationTests {
             await Assert.That(names[0]).IsEqualTo("alpha");
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ }
         }
     }
 }

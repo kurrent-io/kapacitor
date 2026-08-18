@@ -42,17 +42,16 @@ public class KiroMemoryIndexLiveCertTests {
 
         // Worktree first: it is local and can throw (permissions, disk, temp state), and creating it
         // after the remote save would strand a real memory outside the archive-protecting try.
-        var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
+        using var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
         var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
 
         try {
             await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "kiro-cli", ["--version"]);
 
-            var answer = await RunKiroAsync(worktree.FullName, MemoryIndexLiveCertHarness.PositivePrompt);
+            var answer = await RunKiroAsync(worktree.Path, MemoryIndexLiveCertHarness.PositivePrompt);
 
             await Assert.That(answer).Contains(nonce);
         } finally {
-            TryDelete(worktree);
             await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
         }
     }
@@ -71,17 +70,16 @@ public class KiroMemoryIndexLiveCertTests {
         var nonce = MemoryIndexLiveCertHarness.NewNonce();
 
         // Worktree before the remote save, for the same reason as the positive cert above.
-        var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
+        using var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
         var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
 
         try {
             await MemoryIndexLiveCertHarness.SetDisableMemoryIndexAsync(true);
 
-            var answer = await RunKiroAsync(worktree.FullName, MemoryIndexLiveCertHarness.NegativePrompt);
+            var answer = await RunKiroAsync(worktree.Path, MemoryIndexLiveCertHarness.NegativePrompt);
 
             await Assert.That(answer).DoesNotContain(nonce);
         } finally {
-            TryDelete(worktree);
             // Nested: the restore THROWS on a failed or unconfirmed write, and that must not
             // be allowed to skip the archive — a leaked nonce corrupts every later cert's index.
             try {
@@ -106,9 +104,5 @@ public class KiroMemoryIndexLiveCertTests {
         await Assert.That(exitCode).IsEqualTo(0);
 
         return MemoryIndexLiveCertHarness.ExtractAssistantAnswer(stdout);
-    }
-
-    static void TryDelete(DirectoryInfo dir) {
-        try { dir.Delete(recursive: true); } catch { /* best-effort */ }
     }
 }

@@ -23,11 +23,10 @@ public class AgentOrchestratorLocalAttachTests {
 
     // Consent: a fresh, throwaway consent store/broker pair — these pre-existing LocalControlServer
     // tests don't exercise consent at all, so the wiring only needs to satisfy the ctor.
-    static LaunchConsentIpc TestConsentIpc(DaemonConfig config) {
-        var dir = Directory.CreateTempSubdirectory("kcap-consent-ipc-").FullName;
+    static LaunchConsentIpc TestConsentIpc(DaemonConfig config, string stateDir) {
         return new LaunchConsentIpc(
             new LaunchConsentBroker(),
-            new LaunchConsentStore(dir, NullLogger.Instance),
+            new LaunchConsentStore(stateDir, NullLogger.Instance),
             config,
             NullLogger<LaunchConsentIpc>.Instance);
     }
@@ -599,6 +598,7 @@ public class AgentOrchestratorLocalAttachTests {
 
         // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
         using var sockDir = new TempDir("aola");
+        using var consentDir = new TempDir("aolac");
         DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
@@ -616,7 +616,7 @@ public class AgentOrchestratorLocalAttachTests {
             });
 
             var config = new DaemonConfig { Name = "test", ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(config), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
+            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(config, consentDir.Path), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
             var sockPath = LocalSocketPaths.Socket("test");
@@ -650,6 +650,7 @@ public class AgentOrchestratorLocalAttachTests {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
         using var sockDir = new TempDir("aola");
+        using var consentDir = new TempDir("aolac");
         DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
@@ -667,7 +668,7 @@ public class AgentOrchestratorLocalAttachTests {
             });
 
             var config = new DaemonConfig { Name = "test", ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(config), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
+            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(config, consentDir.Path), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
             var sockPath = LocalSocketPaths.Socket("test");
@@ -700,6 +701,7 @@ public class AgentOrchestratorLocalAttachTests {
     /// </summary>
     static async Task<LocalFrame?> StopV2OverRealSocketAsync(string daemonName, bool force, string agentId) {
         using var sockDir = new TempDir("aola");
+        using var consentDir = new TempDir("aolac");
         DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
@@ -712,7 +714,7 @@ public class AgentOrchestratorLocalAttachTests {
             orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
 
             var config = new DaemonConfig { Name = daemonName, ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(config), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
+            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(config, consentDir.Path), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
             var sockPath = LocalSocketPaths.Socket(daemonName);

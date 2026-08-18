@@ -50,7 +50,7 @@ public class GeminiMemoryIndexLiveCertTests {
         await Assert.That(original is true).IsFalse();
 
         var nonce    = MemoryIndexLiveCertHarness.NewNonce();
-        var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
+        using var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
         var memoryId = await SaveNonceOrCleanUpAsync(nonce, worktree);
 
         try {
@@ -59,14 +59,13 @@ public class GeminiMemoryIndexLiveCertTests {
             // stale installed binary.
             await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "gemini", ["--version"]);
 
-            var (exitCode, answer) = await RunGeminiAsync(worktree.FullName, MemoryIndexLiveCertHarness.PositivePrompt);
+            var (exitCode, answer) = await RunGeminiAsync(worktree.Path, MemoryIndexLiveCertHarness.PositivePrompt);
 
             // Turn completion is part of the contract, not incidental: it is what verifies that a
             // hookSpecificOutput-only payload does not disturb Gemini's decision channel.
             await Assert.That(exitCode).IsEqualTo(0);
             await Assert.That(answer).Contains(nonce);
         } finally {
-            TryDelete(worktree);
             await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
         }
     }
@@ -82,13 +81,13 @@ public class GeminiMemoryIndexLiveCertTests {
         var original = await MemoryIndexLiveCertHarness.ReadDisableMemoryIndexAsync();
 
         var nonce    = MemoryIndexLiveCertHarness.NewNonce();
-        var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
+        using var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
         var memoryId = await SaveNonceOrCleanUpAsync(nonce, worktree);
 
         try {
             await MemoryIndexLiveCertHarness.SetDisableMemoryIndexAsync(true);
 
-            var (exitCode, answer) = await RunGeminiAsync(worktree.FullName, MemoryIndexLiveCertHarness.NegativePrompt);
+            var (exitCode, answer) = await RunGeminiAsync(worktree.Path, MemoryIndexLiveCertHarness.NegativePrompt);
 
             // Turn completion is asserted FIRST, and it is what stops this control being vacuous: a
             // turn that never ran trivially contains no nonce. Observed for real — before
@@ -98,7 +97,6 @@ public class GeminiMemoryIndexLiveCertTests {
             await Assert.That(exitCode).IsEqualTo(0);
             await Assert.That(answer).DoesNotContain(nonce);
         } finally {
-            TryDelete(worktree);
             // Nested: the restore THROWS on a failed or unconfirmed write, and that must not skip the
             // archive — a leaked nonce corrupts every later cert's index.
             try {
@@ -173,14 +171,14 @@ public class GeminiMemoryIndexLiveCertTests {
         };
 
         var nonce    = MemoryIndexLiveCertHarness.NewNonce();
-        var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
+        using var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
         var memoryId = await SaveNonceOrCleanUpAsync(nonce, worktree);
 
         try {
             await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "gemini", ["--version"]);
 
             var (exitCode, answer) = await RunGeminiAsync(
-                worktree.FullName, MemoryIndexLiveCertHarness.PositivePrompt, viaProxy);
+                worktree.Path, MemoryIndexLiveCertHarness.PositivePrompt, viaProxy);
 
             // The invocations that delivered the index, identified by the nonce in the context Gemini
             // itself was handed. There is no substitution here: these ARE hooks Gemini ran.
@@ -215,18 +213,17 @@ public class GeminiMemoryIndexLiveCertTests {
             await Assert.That(exitCode).IsEqualTo(0);
             await Assert.That(answer).Contains(nonce);
         } finally {
-            TryDelete(worktree);
             await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
         }
     }
 
     /// <summary>Saves the nonce memory, deleting the worktree if the save throws — the memory is the
     /// expensive thing to leak, but a save failure must not also strand a temp directory.</summary>
-    static async Task<string> SaveNonceOrCleanUpAsync(string nonce, DirectoryInfo worktree) {
+    static async Task<string> SaveNonceOrCleanUpAsync(string nonce, TempDir worktree) {
         try {
             return await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
         } catch {
-            TryDelete(worktree);
+            worktree.Dispose();
             throw;
         }
     }
@@ -349,7 +346,4 @@ public class GeminiMemoryIndexLiveCertTests {
         return (exitCode, MemoryIndexLiveCertHarness.ExtractAssistantAnswer(stdout));
     }
 
-    static void TryDelete(DirectoryInfo dir) {
-        try { dir.Delete(recursive: true); } catch { /* best-effort */ }
-    }
 }

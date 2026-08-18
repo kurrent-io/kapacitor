@@ -34,33 +34,26 @@ public class AgentStatusSnapshotTests {
         public HttpClient CreateClient(string name) => new();
     }
 
-    /// <summary>Bundles the orchestrator with the two temp directories <see cref="Build"/> creates,
-    /// so callers can delete them once done — <see cref="Directory.CreateTempSubdirectory"/> leaves
-    /// its directory on disk until something explicitly removes it.</summary>
-    sealed record Fixture(AgentOrchestrator Orchestrator, DaemonStatusNotifier Notifier, string StateDir, string WorktreeRoot) {
+    sealed record Fixture(AgentOrchestrator Orchestrator, DaemonStatusNotifier Notifier, TempDir Tmp) {
         public async Task CleanupAsync() {
             await Orchestrator.DisposeAsync();
-            try { Directory.Delete(StateDir, true); } catch { /* best-effort */ }
-            // Never actually created by these tests (no PTY spawn touches it), but delete
-            // defensively in case a future test starts using it.
-            if (Directory.Exists(WorktreeRoot)) {
-                try { Directory.Delete(WorktreeRoot, true); } catch { /* best-effort */ }
-            }
+            Tmp.Dispose();
         }
     }
 
     static Fixture Build() {
-        var stateDir = Directory.CreateTempSubdirectory("kcap-status-snapshot-state-").FullName;
-        var store       = new LaunchConsentStore(stateDir, NullLogger.Instance);
+        var tmp         = new TempDir();
+        var stateDir    = tmp.CreateDir("state");
+        var worktreeRoot = tmp.PathTo("worktrees");
+        var store       = new LaunchConsentStore(stateDir.Path, NullLogger.Instance);
         var broker      = new LaunchConsentBroker();
-        var decisionLog = new LaunchConsentDecisionLog(stateDir, NullLogger.Instance);
+        var decisionLog = new LaunchConsentDecisionLog(stateDir.Path, NullLogger.Instance);
         var gate        = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
-        var worktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-status-snapshot-wt-" + Guid.NewGuid().ToString("N")[..8]);
 
         var config = new DaemonConfig {
             Name         = "status-snapshot-test",
             ServerUrl    = "http://127.0.0.1:1",
-            StateDir     = stateDir,
+            StateDir     = stateDir.Path,
             WorktreeRoot = worktreeRoot,
         };
 
@@ -76,7 +69,7 @@ public class AgentStatusSnapshotTests {
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate, statusNotifier: notifier);
 
-        return new Fixture(orchestrator, notifier, stateDir, worktreeRoot);
+        return new Fixture(orchestrator, notifier, tmp);
     }
 
     [Test]

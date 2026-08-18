@@ -40,20 +40,20 @@ public class ConsentRulesPutV2Tests {
         public RestartOutcome Restart() => RestartOutcome.NoOp;
     }
 
-    sealed record Harness(LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection, DaemonConfig Config, string SockPath);
+    sealed record Harness(TempDir StateDir, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection, DaemonConfig Config, string SockPath);
 
     static async Task<Harness> StartAsync(string daemonName, CancellationToken ct, string serverUrl = "http://127.0.0.1:1") {
-        var stateDir = Directory.CreateTempSubdirectory("kcap-putv2-ipc-state-").FullName;
-        var store       = new LaunchConsentStore(stateDir, NullLogger.Instance);
+        var stateDir = new TempDir();
+        var store       = new LaunchConsentStore(stateDir.Path, NullLogger.Instance);
         var broker      = new LaunchConsentBroker();
-        var decisionLog = new LaunchConsentDecisionLog(stateDir, NullLogger.Instance);
+        var decisionLog = new LaunchConsentDecisionLog(stateDir.Path, NullLogger.Instance);
         var gate        = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         var config = new DaemonConfig {
             Name         = daemonName,
             ServerUrl    = serverUrl,
-            StateDir     = stateDir,
-            WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-putv2-ipc-wt-" + Guid.NewGuid().ToString("N")[..8]),
+            StateDir     = stateDir.Path,
+            WorktreeRoot = stateDir.PathTo("worktrees"),
         };
         var consentIpc  = new LaunchConsentIpc(broker, store, config, NullLogger<LaunchConsentIpc>.Instance);
 
@@ -77,7 +77,7 @@ public class ConsentRulesPutV2Tests {
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (!File.Exists(sockPath) && DateTime.UtcNow < deadline) await Task.Delay(20, ct);
 
-        return new Harness(server, orchestrator, connection, config, sockPath);
+        return new Harness(stateDir, server, orchestrator, connection, config, sockPath);
     }
 
     static async Task StopAsync(Harness h) {
@@ -85,6 +85,7 @@ public class ConsentRulesPutV2Tests {
         await h.Server.StopAsync(CancellationToken.None);
         h.Server.Dispose();
         await h.Connection.DisposeAsync();
+        h.StateDir.Dispose();
     }
 
     /// Wraps a test body with the temp-dir DaemonLockPaths override + harness lifecycle, mirroring
@@ -124,7 +125,7 @@ public class ConsentRulesPutV2Tests {
     }
 
     static string? ReadConsentFile(Harness h) {
-        var path = Path.Combine(h.Config.StateDir!, "consent.json");
+        var path = h.StateDir.PathTo("consent.json");
         return File.Exists(path) ? File.ReadAllText(path) : null;
     }
 

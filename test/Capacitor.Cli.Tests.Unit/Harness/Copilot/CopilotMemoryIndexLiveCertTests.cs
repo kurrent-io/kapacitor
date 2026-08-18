@@ -79,18 +79,14 @@ public class CopilotMemoryIndexLiveCertTests {
     /// on this machine for no benefit.
     /// </summary>
     static async Task<string> RunCopilotAsync(string prompt) {
-        var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
+        using var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
 
-        try {
-            var (exitCode, stdout, stderr) = await MemoryIndexLiveCertHarness.RunProcessAsync(
-                "copilot", ["-p", prompt], worktree.FullName);
+        var (exitCode, stdout, stderr) = await MemoryIndexLiveCertHarness.RunProcessAsync(
+            "copilot", ["-p", prompt], worktree.Path);
 
-            await Console.Out.WriteLineAsync($"[{VendorLabel}-memory-live] copilot exit={exitCode} stderr={stderr}");
-            await Assert.That(exitCode).IsEqualTo(0);
+        await Console.Out.WriteLineAsync($"[{VendorLabel}-memory-live] copilot exit={exitCode} stderr={stderr}");
+        await Assert.That(exitCode).IsEqualTo(0);
 
-            return MemoryIndexLiveCertHarness.ExtractAssistantAnswer(stdout);
-        } finally {
-            try { worktree.Delete(recursive: true); } catch { /* best-effort */ }
-        }
+        return MemoryIndexLiveCertHarness.ExtractAssistantAnswer(stdout);
     }
 }

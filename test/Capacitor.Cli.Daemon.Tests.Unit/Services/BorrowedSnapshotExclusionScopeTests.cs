@@ -17,40 +17,25 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 public class BorrowedSnapshotExclusionScopeTests {
     // ---------- fixture ----------
 
-    sealed record Fixture(string Source, string SnapshotRoot) : IDisposable {
-        public void Dispose() {
-            TryDelete(Source);
-            TryDelete(SnapshotRoot);
-        }
-
-        static void TryDelete(string path) {
-            try { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); } catch { }
-        }
+    sealed record Fixture(TempDir Tmp, TempDirHandle Source, TempDirHandle SnapshotRoot) : IDisposable {
+        public void Dispose() => Tmp.Dispose();
     }
 
     static Fixture NewFixture(params (string Path, string Content)[] tracked) {
-        var stem = Guid.NewGuid().ToString("N")[..8];
-        var source = Path.Combine(Path.GetTempPath(), "kcap-excl-src-" + stem);
-        var snapshotRoot = Path.Combine(Path.GetTempPath(), "kcap-excl-wt-" + stem);
-        Directory.CreateDirectory(source);
-        Directory.CreateDirectory(snapshotRoot);
+        var tmp = new TempDir();
+        var source = tmp.CreateDir("source");
+        var snapshotRoot = tmp.CreateDir("snapshot");
 
         Git(source, "init", "-q");
         Git(source, "config", "user.email", "test@example.com");
         Git(source, "config", "user.name", "Test");
         // A file at the root so the repo has content independent of the paths under test.
-        Write(source, "README.md", "readme");
-        foreach (var (path, content) in tracked) Write(source, path, content);
+        source.CreateFile("README.md", "readme");
+        foreach (var (path, content) in tracked) source.CreateFile(path.Replace('/', Path.DirectorySeparatorChar), content);
         Git(source, "add", "-A");
         Git(source, "commit", "-q", "-m", "fixture");
 
-        return new Fixture(source, snapshotRoot);
-    }
-
-    static void Write(string root, string relative, string content) {
-        var full = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));
-        Directory.CreateDirectory(Path.GetDirectoryName(full)!);
-        File.WriteAllText(full, content);
+        return new Fixture(tmp, source, snapshotRoot);
     }
 
     static WorktreeManager NewManager(Fixture fixture) =>
@@ -62,7 +47,7 @@ public class BorrowedSnapshotExclusionScopeTests {
             fixture.Source,
             relativeCwd.Length == 0
                 ? fixture.Source
-                : Path.Combine(fixture.Source, relativeCwd.Replace('/', Path.DirectorySeparatorChar)),
+                : fixture.Source.PathTo(relativeCwd.Replace('/', Path.DirectorySeparatorChar)),
             null, CancellationToken.None);
 
     static bool ExistsInSnapshot(WorktreeInfo snapshot, string relative) =>
@@ -94,14 +79,10 @@ public class BorrowedSnapshotExclusionScopeTests {
     /// from the OS: a case-sensitive APFS volume on macOS and a case-insensitive mount on Linux both
     /// exist, and several assertions here are only meaningful on one side of that.</summary>
     static bool TempIsCaseSensitive() {
-        var dir = Path.Combine(Path.GetTempPath(), "kcap-case-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(dir);
-        try {
-            File.WriteAllText(Path.Combine(dir, "probe"), "");
-            return !File.Exists(Path.Combine(dir, "PROBE"));
-        } finally {
-            try { Directory.Delete(dir, recursive: true); } catch { }
-        }
+        using var tmp = new TempDir();
+
+        tmp.CreateFile("probe");
+        return !File.Exists(tmp.PathTo("PROBE"));
     }
 
     // ---------- 1. Codex sub-cwd, with a root-cwd positive control ----------
@@ -220,7 +201,7 @@ public class BorrowedSnapshotExclusionScopeTests {
     [Test]
     public async Task Show_prefix_bytes_agree_with_the_paths_ls_files_reports() {
         using var fixture = NewFixture(("src/cli/keep.txt", "keep"));
-        var cwd = Path.Combine(fixture.Source, "src", "cli");
+        var cwd = fixture.Source.PathTo("src", "cli");
 
         var prefix = await WorktreeManager.ReadGitRelativeCwdAsync(
             fixture.Source, cwd, CancellationToken.None);
@@ -341,7 +322,7 @@ public class BorrowedSnapshotExclusionScopeTests {
         // In the SOURCE index but not in HEAD — so it is absent from the destination's index, which is
         // checked out at HEAD. Intersecting the skip-worktree batch against the SOURCE index instead
         // would batch this path and fail update-index on a perfectly legitimate snapshot.
-        Write(fixture.Source, "src/.mcp.json", "{}");
+        fixture.Source.CreateFile("src/.mcp.json", "{}");
         Git(fixture.Source, "add", "src/.mcp.json");
 
         var snapshot = await SnapshotAsync(fixture, "src");
@@ -396,7 +377,7 @@ public class BorrowedSnapshotExclusionScopeTests {
         }
 
         using var fixture = NewFixture();
-        var inside = Path.Combine(fixture.Source, "nested-worktrees");
+        var inside = fixture.Source.PathTo("nested-worktrees");
         Directory.CreateDirectory(inside);
         using var tmp = new TempDir();
         var link = tmp.PathTo("link");
@@ -447,7 +428,7 @@ public class BorrowedSnapshotExclusionScopeTests {
         try {
             var target = snapshot.SnapshotRoot!;
 
-            Write(fixture.Source, ".mcp.json/child", "{}");
+            fixture.Source.CreateFile(".mcp.json/child", "{}");
             Git(fixture.Source, "add", "-A");
             Git(fixture.Source, "commit", "-q", "-m", "config as a directory");
 
@@ -467,7 +448,7 @@ public class BorrowedSnapshotExclusionScopeTests {
         // A nested repository inside the source tree. `rev-parse` run there reports the NESTED repo's
         // work-tree top, so its prefix is in a different namespace from the source's ls-files output —
         // and matching one against the other is exactly the invariant this derivation exists to hold.
-        var nested = Path.Combine(fixture.Source, "vendored");
+        var nested = fixture.Source.PathTo("vendored");
         Directory.CreateDirectory(nested);
         Git(nested, "init", "-q");
 
@@ -488,7 +469,7 @@ public class BorrowedSnapshotExclusionScopeTests {
         // The link is an ANCESTOR of the configured root, and the configured root's own deepest existing
         // component is an ordinary directory. Resolving only that deepest component returns the lexical
         // path and the containment check passes — which is the bug this covers.
-        var inside = Path.Combine(fixture.Source, "nested", "existing");
+        var inside = fixture.Source.PathTo("nested", "existing");
         Directory.CreateDirectory(inside);
         using var tmp = new TempDir();
         var link = tmp.PathTo("link");
@@ -515,7 +496,7 @@ public class BorrowedSnapshotExclusionScopeTests {
             // it replaced took only a target-side path, leaving no way to obtain the git prefix except
             // by re-deriving it from the target filesystem.
             await manager.SyncFromSourceAsync(
-                fixture.Source, Path.Combine(fixture.Source, "src"),
+                fixture.Source, fixture.Source.PathTo("src"),
                 snapshot.SnapshotRoot!, [], CancellationToken.None);
 
             await Assert.That(ExistsInSnapshot(snapshot, "src/.mcp.json")).IsFalse();
@@ -536,8 +517,8 @@ public class BorrowedSnapshotExclusionScopeTests {
 
             // A config appearing between rounds is the case that matters: the refresh must exclude it
             // using the prefix computed at CREATION, since it has only a target-side path of its own.
-            Write(fixture.Source, "src/.mcp.json", "{}");
-            Write(fixture.Source, ".mcp.json", "{}");
+            fixture.Source.CreateFile("src/.mcp.json", "{}");
+            fixture.Source.CreateFile(".mcp.json", "{}");
             Git(fixture.Source, "add", "-A");
             Git(fixture.Source, "commit", "-q", "-m", "adds config");
 
