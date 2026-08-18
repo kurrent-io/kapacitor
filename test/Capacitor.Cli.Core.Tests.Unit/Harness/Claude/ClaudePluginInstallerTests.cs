@@ -45,8 +45,8 @@ public class ClaudePluginInstallerTests {
         var location = tmp.CreateDir("npm-kcap", "kcap");
         location.CreateFile(".mcp.json", "{}");
         tmp.CreateFile(["plugins", "known_marketplaces.json"], $$"""
-            { "kcap": { "source": { "source": "directory", "path": {{JsonValue.Create(location).ToJsonString()}} },
-                        "installLocation": {{JsonValue.Create(location).ToJsonString()}} } }
+            { "kcap": { "source": { "source": "directory", "path": {{JsonValue.Create(location.Path).ToJsonString()}} },
+                        "installLocation": {{JsonValue.Create(location.Path).ToJsonString()}} } }
             """);
 
         await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsTrue();
@@ -67,7 +67,7 @@ public class ClaudePluginInstallerTests {
         checkout.CreateFile(".mcp.json", "{}"); // stale clone still ships the payload
         tmp.CreateFile(["plugins", "known_marketplaces.json"], $$"""
             { "kcap": { "source": { "source": "github", "repo": "kurrent-io/kcap-cli" },
-                        "installLocation": {{JsonValue.Create(checkout).ToJsonString()}} } }
+                        "installLocation": {{JsonValue.Create(checkout.Path).ToJsonString()}} } }
             """);
 
         await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsFalse();
@@ -87,7 +87,7 @@ public class ClaudePluginInstallerTests {
         File.WriteAllText(Path.Combine(tmp.CreateDir("plugins"),
                                        "installed_plugins.json"), $$"""
             { "version": 2, "plugins": { "kcap@kcap": [
-                { "scope": "project", "installPath": {{JsonValue.Create(install).ToJsonString()}}, "version": "1.0.0" } ] } }
+                { "scope": "project", "installPath": {{JsonValue.Create(install.Path).ToJsonString()}}, "version": "1.0.0" } ] } }
             """);
 
         await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsFalse();
@@ -110,11 +110,11 @@ public class ClaudePluginInstallerTests {
         var pluginsDir = tmp.CreateDir("plugins");
         pluginsDir.CreateFile("installed_plugins.json", $$"""
             { "version": 2, "plugins": { "kcap@kcap": [
-                { "scope": "project", "installPath": {{JsonValue.Create(install).ToJsonString()}}, "version": "1.0.0" } ] } }
+                { "scope": "project", "installPath": {{JsonValue.Create(install.Path).ToJsonString()}}, "version": "1.0.0" } ] } }
             """);
         pluginsDir.CreateFile("known_marketplaces.json", $$"""
             { "kcap": { "source": { "source": "directory" },
-                        "installLocation": {{JsonValue.Create(checkout).ToJsonString()}} } }
+                        "installLocation": {{JsonValue.Create(checkout.Path).ToJsonString()}} } }
             """);
 
         await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsFalse();
@@ -127,11 +127,12 @@ public class ClaudePluginInstallerTests {
         var settingsPath = WriteEnabledSettings(tmp.Path);
         var install = tmp.CreateDir("plugins", "cache", "kcap", "kcap", "1.0.0");
         install.CreateFile(".mcp.json", "{}");
-        File.WriteAllText(Path.Combine(tmp.CreateDir("plugins"),
-                                       "installed_plugins.json"), $$"""
-            { "version": 1, "plugins": { "kcap@kcap":
-                { "installPath": {{JsonValue.Create(install).ToJsonString()}}, "version": "1.0.0" } } }
-            """);
+        var plugins = tmp.CreateDir("plugins");
+        plugins.CreateFile("installed_plugins.json", $$"""
+           { "version": 1, "plugins": { "kcap@kcap":
+               { "installPath": {{JsonValue.Create(install.Path).ToJsonString()}}, "version": "1.0.0" } } }
+           """
+        );
 
         await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsTrue();
     }
@@ -161,7 +162,7 @@ public class ClaudePluginInstallerTests {
         var settingsPath = tmp.CreateFile("settings.json", $$"""
             { "enabledPlugins": { "kcap@kcap": true },
               "extraKnownMarketplaces": { "kcap": { "source": {
-                  "source": "directory", "path": {{JsonValue.Create(source).ToJsonString()}} } } } }
+                  "source": "directory", "path": {{JsonValue.Create(source.Path).ToJsonString()}} } } } }
             """);
 
         await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsFalse();

@@ -11,6 +11,12 @@ namespace Capacitor.Tests.Helpers;
 /// <para>Owns nothing: the <see cref="TempDir"/> it came from deletes the whole tree. Constructing one
 /// directly wraps an existing directory (a production-returned path, say) and does NOT create it —
 /// only <see cref="CreateDir"/> creates.</para>
+///
+/// <para><b>Pass <see cref="Path"/> explicitly to anything generic.</b> The implicit conversion only
+/// fires for a parameter typed <c>string</c>; a generic parameter infers <c>TempDirHandle</c> instead,
+/// because inference beats a user-defined conversion. <c>JsonValue.Create(dir)</c> therefore compiles
+/// and serialises the struct — <c>{"Path":"…"}</c>, not the path — so it must be
+/// <c>JsonValue.Create(dir.Path)</c>. Non-generic string parameters need nothing.</para>
 /// </summary>
 public readonly record struct TempDirHandle(string Path) {
     public static implicit operator string(TempDirHandle dir) => dir.Path;
