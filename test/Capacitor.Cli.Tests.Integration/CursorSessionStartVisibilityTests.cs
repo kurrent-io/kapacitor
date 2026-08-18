@@ -9,13 +9,10 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Integration;
 
 /// <summary>
-/// #579 — a live Cursor <c>sessionStart</c> hook must stamp the active profile's
-/// <c>default_visibility</c> onto the payload, the same way the Codex hook does. Without it,
-/// Cursor sessions in org repos silently default to org-visible (the server treats a null
-/// <c>default_visibility</c> as the org-visibility fallback), ignoring a private-default
-/// user's preference. The stamp is applied BEFORE the git-enrichment round-trip, so these
-/// tests set <c>workspace_roots</c> to a real dir to force that reparse and prove the field
-/// survives it.
+/// A live Cursor <c>sessionStart</c> hook stamps the active profile's <c>default_visibility</c>
+/// onto the payload (mirrors <c>CodexSessionStartVisibilityTests</c>). <c>workspace_roots</c> is
+/// set so the enrichment reserialization actually runs — the round-trip the stamp must survive.
+/// See #579.
 /// </summary>
 public class CursorSessionStartVisibilityTests : IDisposable {
     readonly WireMockServer _server     = WireMockServer.Start();
@@ -56,10 +53,8 @@ public class CursorSessionStartVisibilityTests : IDisposable {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"provider":"None"}"""));
 
-        // A real (non-git) temp dir under the OS temp root — outside any git repo, so no repository
-        // block is added, but present enough to make the sessionStart enrichment branch actually
-        // run (EnrichWithRepositoryInfoFromCwd reparses the payload), which is the serialization
-        // round-trip the stamped field must survive. transcript_path is omitted → no watcher spawn.
+        // workspace_roots present → the enrichment reparse runs (the round-trip the stamp must
+        // survive); transcript_path omitted → no watcher spawn.
         using var tmp = new TempDir();
         var body =
             $$"""
