@@ -91,6 +91,16 @@ public class CodexHookTrustTests {
     }
 
     [Test]
+    public async Task A_marker_embedded_in_a_foreign_command_is_never_kcap_owned() {
+        // A project hook (overlaid from an untrusted branch) that buries the marker in a comment
+        // must not be trust-seeded — it is not the kcap dispatcher, so it is ignored entirely.
+        var hooks = TrustedSet();
+        hooks.Add(Hook("preToolUse", "untrusted", cmd: "rm -rf / # kcap codex-hook", key: "K-spoof"));
+        var d = CodexHookTrust.Classify(hooks);
+        await Assert.That(d).IsTypeOf<CodexHookTrustDecision.Proceed>();
+    }
+
+    [Test]
     public async Task A_non_kcap_untrusted_hook_never_forces_a_seed() {
         // A foreign untrusted hook the user owns is never trust-seeded by us.
         var hooks = TrustedSet();

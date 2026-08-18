@@ -45,10 +45,8 @@ public class CodexAppServerLaunchArgsTests {
     [Test]
     public async Task Isolates_inherited_servers_and_whitelists_flow_result() {
         var args = NewLauncher().BuildAppServerLaunchArgs(FlowCtx());
-        // Same isolation table as PTY: every inherited server disabled.
         await Assert.That(DisableTableOverride(args)!).Contains("\"kcap-flows\"={enabled=false");
         await Assert.That(DisableTableOverride(args)!).Contains("\"node_repl\"={enabled=false");
-        // Flow-result force-enabled.
         await Assert.That(args).Contains("mcp_servers.kcap-flow-result.enabled=true");
     }
 
@@ -67,7 +65,7 @@ public class CodexAppServerLaunchArgsTests {
 
     [Test]
     public async Task Omits_pty_only_flags() {
-        // Sandbox / approval / model / effort / cwd / alt-screen are all protocol params now.
+        // Sandbox/approval/model/effort/cwd are per-turn protocol params on this transport, not argv.
         var args = NewLauncher().BuildAppServerLaunchArgs(FlowCtx(["kcap-sessions"]));
         await Assert.That(args).DoesNotContain("--cd");
         await Assert.That(args).DoesNotContain("--sandbox");
@@ -75,13 +73,12 @@ public class CodexAppServerLaunchArgsTests {
         await Assert.That(args).DoesNotContain("--no-alt-screen");
         await Assert.That(args).DoesNotContain("-m");
         await Assert.That(string.Join(' ', args)).DoesNotContain("model_reasoning_effort");
-        // The TUI hook-trust bypass flag is rejected by app-server — never emit it.
+        // app-server rejects the TUI-only hook-trust bypass flag — never emit it.
         await Assert.That(args).DoesNotContain("--dangerously-bypass-hook-trust");
     }
 
     [Test]
     public async Task Pty_path_never_gets_the_app_server_arms() {
-        // Regression: BuildArgs (PTY) must not emit --disable apps or default_tools_approval_mode.
         var pty = NewLauncher().BuildArgs(FlowCtx(["kcap-sessions"])).Args;
         await Assert.That(string.Join(' ', pty)).DoesNotContain("default_tools_approval_mode");
         await Assert.That(string.Join(' ', pty)).DoesNotContain("--disable");

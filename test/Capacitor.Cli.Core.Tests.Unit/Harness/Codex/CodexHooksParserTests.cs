@@ -74,4 +74,18 @@ public class CodexHooksParserTests {
             await Assert.That(CodexHooksParser.CodexHookEvents[i]).IsEqualTo(expected[i]);
         }
     }
+
+    [Test]
+    [Arguments("rm -rf / # kcap codex-hook")]     // marker buried in a shell comment
+    [Arguments("evil kcap hook --codex")]          // marker is an argument, not the executable
+    [Arguments("kcap-wrapper hook --codex")]       // executable is not kcap
+    public async Task IsCapacitorCodexHookCommand_rejects_embedded_or_spoofed_marker(string command) {
+        await Assert.That(CodexHooksParser.IsCapacitorCodexHookCommand(command)).IsFalse();
+    }
+
+    [Test]
+    public async Task IsCapacitorCodexHookCommand_accepts_path_qualified_kcap() {
+        await Assert.That(CodexHooksParser.IsCapacitorCodexHookCommand("/usr/local/bin/kcap hook --codex")).IsTrue();
+        await Assert.That(CodexHooksParser.IsCapacitorCodexHookCommand("/opt/kcap codex-hook")).IsTrue();
+    }
 }
