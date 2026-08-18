@@ -32,6 +32,32 @@ public class CodexTurnInputDispatcherTests {
     }
 
     [Test]
+    public async Task Pending_turn_start_counts_as_in_flight() {
+        var sink = new FakeTurnSink();
+        var d    = Dispatcher(sink);
+
+        var ack = d.EnqueueAsync("hello");
+        await sink.NextStart(); // dispatched; the turn/start response has NOT arrived yet
+
+        await Assert.That(d.TurnInFlight).IsTrue();                       // a hung start is in-flight (wedge ceiling)
+        await Assert.That(d.WaitForSettledAsync().IsCompleted).IsFalse(); // and not settled
+        await Assert.That(ack.IsCompleted).IsFalse();
+    }
+
+    [Test]
+    public async Task Cancelling_an_input_token_faults_that_dispatch() {
+        var sink = new FakeTurnSink();
+        var d    = Dispatcher(sink);
+        using var cts = new CancellationTokenSource();
+
+        var ack = d.EnqueueAsync("hello", cts.Token);
+        await sink.NextStart(); // dispatched; delegate awaiting the (cancellable) send
+        await cts.CancelAsync();
+
+        await Assert.That(async () => await ack.WaitAsync(Guard)).Throws<OperationCanceledException>();
+    }
+
+    [Test]
     public async Task Active_input_dispatches_as_turn_steer() {
         var sink = new FakeTurnSink();
         var d    = Dispatcher(sink);
@@ -176,9 +202,12 @@ public class CodexTurnInputDispatcherTests {
         await Assert.That(d.TurnInFlight).IsFalse();
         await Assert.That(d.CurrentTurnId).IsNull();
         await d.WaitForSettledAsync().WaitAsync(Guard); // settled, never hangs on a ghost-active turn
-        bool wentActive;
-        lock (flips) wentActive = flips.Contains(true);
-        await Assert.That(wentActive).IsFalse(); // never signalled in-flight — no resurrection
+
+        // In-flight went true (start dispatched) then false (fault); the guarded continuation must not
+        // flip it back to true — a resurrected turn would.
+        bool endedInFlight;
+        lock (flips) endedInFlight = flips.Count > 0 && flips[^1];
+        await Assert.That(endedInFlight).IsFalse();
     }
 
     [Test]
@@ -209,6 +238,7 @@ public class CodexTurnInputDispatcherTests {
         public Task<CodexTurnStarted> Start(string text, CancellationToken ct) {
             Interlocked.Increment(ref _startCount);
             var call = new StartCall(text);
+            ct.Register(() => call.Response.TrySetCanceled(ct)); // honour the dispatch token like the real send
             _starts.Writer.TryWrite(call);
             return call.Response.Task;
         }
@@ -216,6 +246,7 @@ public class CodexTurnInputDispatcherTests {
         public Task Steer(string turnId, string text, CancellationToken ct) {
             Interlocked.Increment(ref _steerCount);
             var call = new SteerCall(turnId, text);
+            ct.Register(() => call.Response.TrySetCanceled(ct));
             _steers.Writer.TryWrite(call);
             return call.Response.Task;
         }

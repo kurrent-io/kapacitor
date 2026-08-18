@@ -184,7 +184,7 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         _clock?.ClearLaunchStage();
 
         if (!string.IsNullOrEmpty(_launch.InitialPrompt))
-            await _dispatcher.EnqueueAsync(_launch.InitialPrompt).ConfigureAwait(false);
+            await _dispatcher.EnqueueAsync(_launch.InitialPrompt, linked.Token).ConfigureAwait(false);
     }
 
     async Task SpawnAndInitializeAsync(string? hookStateSeed, CancellationToken ct) {

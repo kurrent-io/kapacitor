@@ -7,20 +7,14 @@ namespace Capacitor.Cli.Daemon.Harness.Codex;
 internal readonly record struct CodexTurnStarted(string TurnId, string? Status);
 
 /// <summary>
-/// The single serializer for interactive hosted-Codex input. The app server accepts a concurrent
-/// <c>turn/start</c> without error — the protocol spike proved it does NOT serialize turns for you — so
-/// serialization has to live on our side: every input surface enqueues here and ONE dispatcher drains,
-/// choosing <c>turn/start</c> when idle and <c>turn/steer</c> when a turn is active.
+/// Serializes interactive hosted-Codex input. The app server accepts a concurrent <c>turn/start</c>
+/// without error — it does NOT serialize turns for you — so the daemon must: input enqueues and one
+/// dispatcher chooses <c>turn/start</c> (idle) or <c>turn/steer</c> (active).
 ///
-/// <para>Two orthogonal fields, deliberately not one flat state, because a notification can arrive
-/// while a request is in flight: <see cref="_pending"/> (the request whose JSON-RPC response is still
-/// outstanding, driven only by that response) and <see cref="_lifecycle"/> (Idle/Active, driven only
-/// by <c>turn/completed</c>). The dispatcher invariant is on <see cref="_pending"/>: it dispatches the
-/// head input only when nothing is pending, so two inputs can never both observe idle and double-start
-/// (the exact hazard the server would accept). A steer the server rejects with <c>-32600</c> ("no
-/// active turn") is retried EXACTLY ONCE as a <c>turn/start</c> — in the dispatcher, never the
-/// enqueuing surface — and never dropped. An input is acknowledged only after the dispatch that
-/// actually carried it succeeds.</para>
+/// <para>Two orthogonal fields, not one flat state, because a notification can arrive mid-request:
+/// <see cref="_pending"/> (driven by the request response) and <see cref="_lifecycle"/> (driven by
+/// <c>turn/completed</c>). The trap: a steer the server rejects with <c>-32600</c> ("no active turn")
+/// is retried EXACTLY ONCE as a <c>turn/start</c>, in the dispatcher, never dropped.</para>
 /// </summary>
 internal sealed class CodexTurnInputDispatcher {
     // Sends turn/start with the input as the initial prompt; returns the started turn once the RESPONSE
@@ -57,17 +51,21 @@ internal sealed class CodexTurnInputDispatcher {
         _onTurnInFlight = onTurnInFlight;
     }
 
-    /// <summary>True while a turn is live — the runtime's turn-in-flight signal.</summary>
-    public bool TurnInFlight { get { lock (_gate) return _lifecycle != Lifecycle.Idle; } }
+    /// <summary>True while a turn is live — including a <c>turn/start</c> whose response hasn't landed
+    /// yet, so a hung start counts as in-flight (the reaper's turn-wedge ceiling must see it, matching
+    /// the old "arm the clock before sending turn/start" behaviour).</summary>
+    public bool TurnInFlight { get { lock (_gate) return InFlightLocked(); } }
 
     /// <summary>The active turn id, or null when idle — the target for a <c>turn/interrupt</c>.</summary>
     public string? CurrentTurnId { get { lock (_gate) return _lifecycle == Lifecycle.Active ? _activeTurnId : null; } }
 
     /// <summary>Enqueues one input and returns a task that completes when the dispatch carrying it
     /// (a <c>turn/start</c> or an accepted <c>turn/steer</c>) succeeds — the "wait for write" contract.
-    /// Faults if that dispatch errors or the runtime is torn down.</summary>
-    public Task EnqueueAsync(string text) {
-        var item = new InputItem(text);
+    /// Faults if that dispatch errors or the runtime is torn down. An optional per-input token (the
+    /// launch's linked token for the initial prompt) is linked into that input's dispatch so cancelling
+    /// it aborts the send.</summary>
+    public Task EnqueueAsync(string text, CancellationToken ct = default) {
+        var item = new InputItem(text, ct);
         lock (_gate) _queue.Enqueue(item);
         PumpDispatch();
         return item.Ack.Task;
@@ -158,6 +156,7 @@ internal sealed class CodexTurnInputDispatcher {
                 }
             }
 
+            SignalTransitions(); // a pending turn/start is already in-flight — signal before awaiting it
             if (asSteer) await DispatchSteerAsync(item, turnId).ConfigureAwait(false);
             else         await DispatchStartAsync(item).ConfigureAwait(false);
         }
@@ -170,8 +169,9 @@ internal sealed class CodexTurnInputDispatcher {
     }
 
     async Task DispatchStartAsync(InputItem item) {
+        using var linked = LinkInputToken(item);
         try {
-            var started = await _startTurn(item.Text, _ct).ConfigureAwait(false);
+            var started = await _startTurn(item.Text, linked?.Token ?? _ct).ConfigureAwait(false);
             bool carried = false;
             lock (_gate) {
                 // FaultAll may have run during the await; if so the item is already faulted and the
@@ -200,8 +200,9 @@ internal sealed class CodexTurnInputDispatcher {
     }
 
     async Task DispatchSteerAsync(InputItem item, string turnId) {
+        using var linked = LinkInputToken(item);
         try {
-            await _steerTurn(turnId, item.Text, _ct).ConfigureAwait(false);
+            await _steerTurn(turnId, item.Text, linked?.Token ?? _ct).ConfigureAwait(false);
             bool carried = false;
             lock (_gate) {
                 if (!_faulted) { _pending = Pending.None; _queue.Dequeue(); carried = true; }
@@ -227,6 +228,11 @@ internal sealed class CodexTurnInputDispatcher {
         SignalTransitions();
     }
 
+    // Links a per-input token (e.g. the launch's linked token on the initial prompt) with the
+    // runtime-wide token; null when the input carried no cancellable token, so the caller uses _ct.
+    CancellationTokenSource? LinkInputToken(InputItem item) =>
+        item.Ct.CanBeCanceled ? CancellationTokenSource.CreateLinkedTokenSource(_ct, item.Ct) : null;
+
     void FailHead(InputItem item, Exception ex) {
         lock (_gate) {
             _pending = Pending.None;
@@ -237,6 +243,10 @@ internal sealed class CodexTurnInputDispatcher {
 
     bool IsSettledLocked() => _lifecycle == Lifecycle.Idle && _pending == Pending.None && _queue.Count == 0;
 
+    // In-flight spans from a turn/start being SENT (pending Start) through the active turn, matching the
+    // old clock's turn/start-to-turn/completed window — a pending Steer implies Active, so it's covered.
+    bool InFlightLocked() => _lifecycle == Lifecycle.Active || _pending == Pending.Start;
+
     // Fires the in-flight callback on a real change and releases any settled waiters — both OUTSIDE the
     // lock so a callback can never re-enter the dispatcher under it.
     void SignalTransitions() {
@@ -245,7 +255,7 @@ internal sealed class CodexTurnInputDispatcher {
         List<TaskCompletionSource>? settled = null;
 
         lock (_gate) {
-            inFlight = _lifecycle != Lifecycle.Idle;
+            inFlight = InFlightLocked();
             if (inFlight != _lastInFlight) { _lastInFlight = inFlight; fireInFlight = true; }
             if (IsSettledLocked() && _settledWaiters.Count > 0) {
                 settled = [.. _settledWaiters];
@@ -268,8 +278,9 @@ internal sealed class CodexTurnInputDispatcher {
     // An item is only ever touched by the single active dispatch loop (the _dispatching guard admits
     // exactly one), so its mutable RetriedAsStart needs no synchronization — the per-iteration lock
     // acquisitions fence the one write against the next iteration's read.
-    sealed class InputItem(string text) {
+    sealed class InputItem(string text, CancellationToken ct) {
         public string Text { get; } = text;
+        public CancellationToken Ct { get; } = ct;
         public TaskCompletionSource Ack { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool RetriedAsStart { get; set; }
     }

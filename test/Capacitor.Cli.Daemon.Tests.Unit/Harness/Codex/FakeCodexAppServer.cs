@@ -2,6 +2,7 @@ using System.IO.Pipelines;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon.Harness.Codex;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -167,10 +168,9 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
             }
 
             case "turn/steer":
-                LastSteerExpectedTurnId = Str(@params, "expectedTurnId");
-                if (@params.ValueKind == JsonValueKind.Object && @params.TryGetProperty("input", out var steerInput)
-                    && steerInput.ValueKind == JsonValueKind.Array && steerInput.GetArrayLength() > 0)
-                    LastSteerText = Str(steerInput[0], "text");
+                LastSteerExpectedTurnId = @params.Str("expectedTurnId");
+                if (@params.Arr("input") is { } steerInput && steerInput.GetArrayLength() > 0)
+                    LastSteerText = steerInput[0].Str("text");
                 await RespondAsync(id, new JsonObject { ["accepted"] = true }, ct);
                 break;
 
