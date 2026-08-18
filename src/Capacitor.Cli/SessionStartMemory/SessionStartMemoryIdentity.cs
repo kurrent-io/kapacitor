@@ -38,6 +38,7 @@ internal static class SessionStartMemoryIdentity {
         SessionStartHarness.Pi => "pi",
         SessionStartHarness.OpenCode => "opencode",
         SessionStartHarness.Antigravity => "antigravity",
+        SessionStartHarness.Dsh => "dsh",
         _ => throw new ArgumentOutOfRangeException(nameof(harness))
     };
 

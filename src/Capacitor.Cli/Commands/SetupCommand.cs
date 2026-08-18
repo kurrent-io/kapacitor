@@ -649,7 +649,7 @@ public static class SetupCommand {
             autoSkipExclusions:      inv.AutoSkipExclusions,
             defaultVisibility:       inv.DefaultVisibility);
 
-    /// <summary>The nine supported import sources — mirrors Program.cs's `kcap import` construction.</summary>
+    /// <summary>The ten supported import sources — mirrors Program.cs's `kcap import` construction.</summary>
     static IReadOnlyList<IImportSource> BuildImportSources() => new IImportSource[] {
         new ClaudeImportSource(),
         new CodexImportSource(),
@@ -660,6 +660,7 @@ public static class SetupCommand {
         new PiImportSource(),
         new OpenCodeImportSource(),
         new AntigravityImportSource(),
+        new DshImportSource(),
     };
 
     static async Task<(string ServerUrl, string? PreAuthToken, string Provider, bool LoginComplete)?> RunDiscoveryAsync(

@@ -12,7 +12,7 @@ public static class VendorSelection {
         public bool HasError => Error is not null;
     }
 
-    static readonly string[] KnownVendorFlags = ["--claude", "--codex", "--cursor", "--copilot", "--gemini", "--kiro", "--pi", "--opencode", "--antigravity"];
+    static readonly string[] KnownVendorFlags = ["--claude", "--codex", "--cursor", "--copilot", "--gemini", "--kiro", "--pi", "--opencode", "--antigravity", "--dsh"];
 
     public static Result Parse(string[] args) {
         var vendors = new HashSet<string>(StringComparer.Ordinal);
@@ -28,6 +28,7 @@ public static class VendorSelection {
                 case "--pi":      vendors.Add("pi");      break;
                 case "--opencode": vendors.Add("opencode"); break;
                 case "--antigravity": vendors.Add("antigravity"); break;
+                case "--dsh":     vendors.Add("dsh");     break;
             }
         }
 
@@ -39,7 +40,7 @@ public static class VendorSelection {
             if (!a.StartsWith("--")) continue;
             if (Array.IndexOf(KnownVendorFlags, a) >= 0) continue;
 
-            if (a.StartsWith("--cursor-") || a.StartsWith("--claude-") || a.StartsWith("--codex-") || a.StartsWith("--copilot-") || a.StartsWith("--gemini-") || a.StartsWith("--kiro-") || a.StartsWith("--pi-") || a.StartsWith("--opencode-") || a.StartsWith("--antigravity-")) {
+            if (a.StartsWith("--cursor-") || a.StartsWith("--claude-") || a.StartsWith("--codex-") || a.StartsWith("--copilot-") || a.StartsWith("--gemini-") || a.StartsWith("--kiro-") || a.StartsWith("--pi-") || a.StartsWith("--opencode-") || a.StartsWith("--antigravity-") || a.StartsWith("--dsh-")) {
                 return new(vendors, $"Unknown source option: {a}.");
             }
         }
@@ -48,7 +49,7 @@ public static class VendorSelection {
         foreach (var a in args) {
             if (!a.StartsWith("--")) continue;
             if (Array.IndexOf(KnownVendorFlags, a) >= 0) continue;
-            if (a.StartsWith("--cursor-") || a.StartsWith("--claude-") || a.StartsWith("--codex-") || a.StartsWith("--copilot-") || a.StartsWith("--gemini-") || a.StartsWith("--kiro-") || a.StartsWith("--pi-") || a.StartsWith("--opencode-") || a.StartsWith("--antigravity-")) continue;
+            if (a.StartsWith("--cursor-") || a.StartsWith("--claude-") || a.StartsWith("--codex-") || a.StartsWith("--copilot-") || a.StartsWith("--gemini-") || a.StartsWith("--kiro-") || a.StartsWith("--pi-") || a.StartsWith("--opencode-") || a.StartsWith("--antigravity-") || a.StartsWith("--dsh-")) continue;
 
             string? hint = null;
             var bestDist = int.MaxValue;

@@ -11,7 +11,8 @@ internal enum SessionStartHarness {
     Kiro,
     Pi,
     OpenCode,
-    Antigravity
+    Antigravity,
+    Dsh
 }
 
 internal enum SessionLifecycleReason { New, Resume, Reopen, Fork, Compact, RepeatedTurnCallback, Unknown }
