@@ -54,8 +54,8 @@ public class CodexAppServerSchemaConformanceTests {
 
         // The posture depends on these enum tokens being accepted verbatim (SandboxPolicy variant
         // discriminators and the kebab-case approval strings).
-        await AssertContainsAll(combined["SandboxPolicy"], "readOnly", "workspaceWrite", "dangerFullAccess");
-        await AssertContainsAll(combined["AskForApproval"], "never", "on-request", "untrusted");
+        await AssertEnumMembers(combined["SandboxPolicy"], "readOnly", "workspaceWrite", "dangerFullAccess");
+        await AssertEnumMembers(combined["AskForApproval"], "never", "on-request", "untrusted");
     }
 
     // ── CI-safe arm: the diff actually catches a depended-on shape change ───────────────────────
@@ -77,12 +77,12 @@ public class CodexAppServerSchemaConformanceTests {
 
     [Test]
     public async Task Installed_codex_schema_matches_the_vendored_pin() {
-        var (found, version) = TryResolveCodexVersion();
+        var (found, version) = await TryResolveCodexVersionAsync();
         Skip.When(!found,
             "codex not resolvable on PATH — the schema-drift check needs a local codex install (shared CI has none).");
 
         using var outDir = new TempDir();
-        GenerateSchema(outDir.Path);
+        await GenerateSchemaAsync(outDir.Path);
         var fresh = CodexAppServerSchemaSubset.Extract(outDir.Path, version);
 
         if (Environment.GetEnvironmentVariable(PinUpdateEnvVar) == "1") {
@@ -114,10 +114,37 @@ public class CodexAppServerSchemaConformanceTests {
         await Assert.That(missing).IsEmpty();
     }
 
-    static async Task AssertContainsAll(JsonNode? def, params string[] tokens) {
-        var canonical = CodexAppServerSchemaSubset.Canonical(def);
-        var missing   = tokens.Where(t => !canonical.Contains(t, StringComparison.Ordinal)).ToList();
+    // Asserts the tokens are real enum MEMBERS of the pinned def (values inside some "enum": [...]),
+    // not just substrings of its serialized JSON — so a token that appears in a description string
+    // can't satisfy the check.
+    static async Task AssertEnumMembers(JsonNode? def, params string[] tokens) {
+        var members = EnumValues(def);
+        var missing = tokens.Where(t => !members.Contains(t)).ToList();
         await Assert.That(missing).IsEmpty();
+    }
+
+    static HashSet<string> EnumValues(JsonNode? node) {
+        var acc = new HashSet<string>(StringComparer.Ordinal);
+        Collect(node, acc);
+        return acc;
+
+        static void Collect(JsonNode? n, HashSet<string> acc) {
+            switch (n) {
+                case JsonObject o:
+                    foreach (var (key, value) in o) {
+                        if (key == "enum" && value is JsonArray items) {
+                            foreach (var item in items)
+                                if (item is JsonValue v && v.TryGetValue<string>(out var s)) acc.Add(s);
+                        } else {
+                            Collect(value, acc);
+                        }
+                    }
+                    break;
+                case JsonArray a:
+                    foreach (var x in a) Collect(x, acc);
+                    break;
+            }
+        }
     }
 
     /// <summary>Per-key by-value comparison of the two pinnable sections; a readable report of the
@@ -159,38 +186,54 @@ public class CodexAppServerSchemaConformanceTests {
     static string PinPath([CallerFilePath] string here = "") =>
         Path.Combine(Path.GetDirectoryName(here)!, "AppServerSchema", "codex-app-server-subset.pin.json");
 
-    static (bool Found, string Version) TryResolveCodexVersion() {
+    static async Task<(bool Found, string Version)> TryResolveCodexVersionAsync() {
+        Process process;
         try {
-            var psi = new ProcessStartInfo("codex", ["--version"]) {
+            var started = Process.Start(new ProcessStartInfo("codex", ["--version"]) {
                 RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
-            };
-            using var process = Process.Start(psi);
-            if (process is null) return (false, "");
-
-            var stdout = process.StandardOutput.ReadToEnd();
-            process.WaitForExit((int) ProcessGuard.TotalMilliseconds);
-
-            var match = Regex.Match(stdout, @"\d+\.\d+\.\d+");
-            return (true, match.Success ? match.Value : stdout.Trim());
+            });
+            if (started is null) return (false, "");
+            process = started;
         } catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or FileNotFoundException) {
             return (false, ""); // codex not on PATH
         }
+
+        using (process) {
+            var (stdout, _, _) = await ReadToExitAsync(process);
+            var match = Regex.Match(stdout, @"\d+\.\d+\.\d+");
+            // codex present but no parseable version → treat as not-found and skip, rather than run the
+            // drift arm with an empty, misleading version stamp.
+            return match.Success ? (true, match.Value) : (false, "");
+        }
     }
 
-    static void GenerateSchema(string outDir) {
-        var psi = new ProcessStartInfo("codex", ["app-server", "generate-json-schema", "--out", outDir]) {
+    static async Task GenerateSchemaAsync(string outDir) {
+        using var process = Process.Start(new ProcessStartInfo("codex", ["app-server", "generate-json-schema", "--out", outDir]) {
             RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
-        };
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException("codex app-server generate-json-schema did not start.");
+        }) ?? throw new InvalidOperationException("codex app-server generate-json-schema did not start.");
 
-        var stderr = process.StandardError.ReadToEnd(); // small; the schema is written to files, not stdout
-        if (!process.WaitForExit((int) ProcessGuard.TotalMilliseconds)) {
-            try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+        var (_, stderr, timedOut) = await ReadToExitAsync(process);
+        if (timedOut)
             throw new InvalidOperationException("codex app-server generate-json-schema timed out.");
-        }
         if (process.ExitCode != 0)
             throw new InvalidOperationException(
                 $"codex app-server generate-json-schema exited {process.ExitCode}: {stderr}");
+    }
+
+    // Drains stdout AND stderr concurrently while waiting for exit, so a full pipe on either stream
+    // can never deadlock a WaitForExit (the classic single-stream-then-wait trap). On timeout the
+    // process tree is killed and TimedOut is returned.
+    static async Task<(string Stdout, string Stderr, bool TimedOut)> ReadToExitAsync(Process process) {
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+
+        using var cts = new CancellationTokenSource(ProcessGuard);
+        try {
+            await process.WaitForExitAsync(cts.Token);
+        } catch (OperationCanceledException) {
+            try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+            return ("", "", true);
+        }
+        return (await stdoutTask, await stderrTask, false);
     }
 }

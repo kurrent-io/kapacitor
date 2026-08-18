@@ -20,7 +20,9 @@ internal static class CodexAppServerSchemaSubset {
 
     /// <summary>Root defs in the combined schema the runtime reads. The extractor closes over their
     /// <c>#/definitions/*</c> refs, so a change to a referenced shape is pinned too. Mirrors the exact
-    /// requests/responses/notifications <c>CodexAppServerHostedAgentRuntime</c> issues and parses.</summary>
+    /// requests/responses/notifications <c>CodexAppServerHostedAgentRuntime</c> issues and parses.
+    /// Types outside this set and its ref-closure are intentionally NOT tracked — an unrelated upstream
+    /// addition must not fail the pin; that is the whole point of pinning a subset.</summary>
     public static readonly IReadOnlyList<string> RootDefs = [
         "InitializeParams",
         "ThreadStartParams",   "ThreadStartResponse",
