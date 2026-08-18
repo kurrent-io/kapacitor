@@ -64,6 +64,42 @@ public class FileSystemOverlayTests {
         await Assert.That(Directory.Exists(Path.Combine(tmp.Dest, "loop"))).IsFalse();
     }
 
+    [Test]
+    public async Task OverlayDirectory_does_not_recurse_into_nested_git_worktree() {
+        using var tmp = new OverlayDirs();
+
+        // A normal config subdir IS copied.
+        var commands = Path.Combine(tmp.Source, "commands");
+        Directory.CreateDirectory(commands);
+        File.WriteAllText(Path.Combine(commands, "cmd.md"), "do a thing");
+
+        // A nested worktree (marked by a .git pointer FILE) must NOT be recursed into — this is the
+        // .claude/worktrees/<x> shape that ballooned the overlay to gigabytes and wedged the daemon.
+        var nested = Path.Combine(tmp.Source, "worktrees", "feature-x");
+        Directory.CreateDirectory(nested);
+        File.WriteAllText(Path.Combine(nested, ".git"), "gitdir: /repo/.git/worktrees/feature-x");
+        File.WriteAllText(Path.Combine(nested, "huge.bin"), "pretend this is gigabytes");
+
+        FileSystemOverlay.OverlayDirectory(tmp.Source, tmp.Dest);
+
+        await Assert.That(File.Exists(Path.Combine(tmp.Dest, "commands", "cmd.md"))).IsTrue();
+        await Assert.That(File.Exists(Path.Combine(tmp.Dest, "worktrees", "feature-x", "huge.bin"))).IsFalse();
+    }
+
+    [Test]
+    public async Task OverlayDirectory_does_not_recurse_into_nested_git_repo() {
+        using var tmp = new OverlayDirs();
+
+        // A regular nested repo, marked by a .git DIRECTORY, must also be skipped.
+        var repo = Path.Combine(tmp.Source, "vendored");
+        Directory.CreateDirectory(Path.Combine(repo, ".git"));
+        File.WriteAllText(Path.Combine(repo, "code.cs"), "class C {}");
+
+        FileSystemOverlay.OverlayDirectory(tmp.Source, tmp.Dest);
+
+        await Assert.That(File.Exists(Path.Combine(tmp.Dest, "vendored", "code.cs"))).IsFalse();
+    }
+
     sealed class OverlayDirs : IDisposable {
         readonly TempDir _root = new();
 

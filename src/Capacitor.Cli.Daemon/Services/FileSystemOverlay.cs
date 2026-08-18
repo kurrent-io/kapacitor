@@ -19,6 +19,13 @@ internal static class FileSystemOverlay {
         }
 
         foreach (var dir in Directory.GetDirectories(source, "*", skipReparsePoints)) {
+            // Never recurse into a nested git working tree / repo. A dotfile overlay copies local
+            // config (settings, commands, skills) — never a checked-out repo. Some setups keep whole
+            // worktrees under .claude/worktrees/ (the superpowers using-git-worktrees convention); a
+            // repo root can hold hundreds, and recursing in copies gigabytes into the agent worktree
+            // and wedges the daemon for many minutes per launch. A ".git" entry marks one — a
+            // directory for a normal repo, a pointer file for a linked worktree.
+            if (Path.Exists(Path.Combine(dir, ".git"))) continue;
             OverlayDirectory(dir, Path.Combine(dest, Path.GetFileName(dir)));
         }
     }
