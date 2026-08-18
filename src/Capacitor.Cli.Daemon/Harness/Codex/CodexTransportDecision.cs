@@ -17,7 +17,7 @@ internal static class CodexTransportDecision {
     public const string Pty        = "pty";
 
     /// <summary>Spike-pinned minimum Codex version whose app-server method set + behavioural
-    /// containment probes are verified (AI-1760). A lower build runs PTY even under an app-server
+    /// containment probes are verified. A lower build runs PTY even under an app-server
     /// selection.</summary>
     public const string VersionFloor = "0.146.0";
 
