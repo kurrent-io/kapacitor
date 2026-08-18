@@ -93,9 +93,11 @@ internal sealed class CodexTurnInputDispatcher {
                 if (turnId is not null) _completedBeforeStartResp = turnId;
                 return;
             }
+            // A null turn id means "the active turn completed" (the notification omitted it) — accept it
+            // for whatever is active; a non-null id that doesn't match the active turn is stale.
             if (turnId is not null && _activeTurnId is not null
                 && !string.Equals(_activeTurnId, turnId, StringComparison.Ordinal))
-                return; // a stale completion from another turn
+                return;
             _lifecycle    = Lifecycle.Idle;
             _activeTurnId = null;
         }
@@ -248,6 +250,9 @@ internal sealed class CodexTurnInputDispatcher {
     enum Pending   { None, Start, Steer }
     enum Lifecycle { Idle, Active }
 
+    // An item is only ever touched by the single active dispatch loop (the _dispatching guard admits
+    // exactly one), so its mutable RetriedAsStart needs no synchronization — the per-iteration lock
+    // acquisitions fence the one write against the next iteration's read.
     sealed class InputItem(string text) {
         public string Text { get; } = text;
         public TaskCompletionSource Ack { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
