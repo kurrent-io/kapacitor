@@ -43,6 +43,17 @@ public class AcpPermissionPresetPolicyTests {
     }
 
     [Test]
+    [Arguments(null)]
+    [Arguments("")]
+    [Arguments("   ")]
+    public async Task Preset_with_a_null_or_blank_vendor_is_rejected_not_thrown(string? vendor) {
+        // The policy now runs BEFORE the orchestrator's vendor null-guard, so RoutedVendors.Contains
+        // must tolerate the null/blank vendor a LaunchAgentCommand can carry across the unenforced
+        // SignalR boundary — a clean rejection, never a throw.
+        await Assert.That(AcpPermissionPresetPolicy.RejectionReason(Cmd(vendor: vendor!))).StartsWith("acp_preset_wrong_vendor:");
+    }
+
+    [Test]
     [Arguments(LaunchKind.ReviewFlow)]
     [Arguments(LaunchKind.Review)]
     public async Task Preset_on_a_non_interactive_launch_is_rejected(LaunchKind kind) {

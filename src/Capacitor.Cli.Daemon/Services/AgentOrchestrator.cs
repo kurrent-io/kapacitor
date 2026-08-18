@@ -1537,6 +1537,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         var isReview      = cmd.Kind == LaunchKind.Review;
         var isReviewFlow  = cmd.Kind == LaunchKind.ReviewFlow;
 
+        // A caller-selected ACP permission preset is a pure, side-effect-free rejection (wrong-vendor /
+        // non-interactive / borrowed / unknown token), validated BEFORE the consent gate: an ineligible
+        // preset must fail the launch WITHOUT first prompting the owner or holding the serialized command
+        // lane for the consent timeout on a launch that can never proceed.
+        if (AcpPermissionPresetPolicy.RejectionReason(cmd) is { } presetRejection) {
+            await _server.LaunchFailedAsync(cmd.AgentId, presetRejection);
+
+            return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
+        }
+
         // Owner consent gate. Server-driven launches only — the local 0600 socket path
         // (HandleLocalSpawnAsync) is the owner's by construction and never consults this.
         // NOTE: in prompt mode this can hold the sequenced slot up to PromptTimeoutSeconds (≤300s,
@@ -1614,15 +1624,6 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // rather than being silently dropped or silently honoured.
         if (CodexPosturePolicy.RejectionReason(cmd) is { } postureRejection) {
             await _server.LaunchFailedAsync(cmd.AgentId, postureRejection);
-
-            return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
-        }
-
-        // A caller-selected ACP permission preset is validated here too — same pre-side-effect
-        // guarantee: a preset on a non-ACP-routed, non-interactive or borrowed launch fails the launch
-        // rather than being silently dropped or honoured.
-        if (AcpPermissionPresetPolicy.RejectionReason(cmd) is { } presetRejection) {
-            await _server.LaunchFailedAsync(cmd.AgentId, presetRejection);
 
             return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
         }

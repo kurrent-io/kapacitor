@@ -709,23 +709,14 @@ internal sealed partial class AcpInteractionBridge(
     static string OutcomeLabel(JsonElement mapped) =>
         mapped.GetProperty("outcome").GetProperty("outcome").GetString() ?? "cancelled";
 
-    static string? TryGetToolTitle(JsonElement toolCall) =>
-        toolCall.ValueKind == JsonValueKind.Object && toolCall.TryGetProperty("title", out var t) && t.ValueKind == JsonValueKind.String
-            ? t.GetString()
-            : null;
+    static string? TryGetToolTitle(JsonElement toolCall)  => toolCall.Str("title");
 
-    static string? TryGetToolCallId(JsonElement toolCall) =>
-        toolCall.ValueKind == JsonValueKind.Object && toolCall.TryGetProperty("toolCallId", out var id) && id.ValueKind == JsonValueKind.String
-            ? id.GetString()
-            : null;
+    static string? TryGetToolCallId(JsonElement toolCall) => toolCall.Str("toolCallId");
 
     /// <summary>The ACP <c>toolCall.kind</c> token, or null when the frame carries none (defensive,
     /// mirroring <see cref="TryGetToolTitle"/>). A kind-less frame — e.g. kiro-cli's, which carries
     /// only <c>{toolCallId, title}</c> — therefore never matches a preset and keeps prompting.</summary>
-    static string? TryGetToolKind(JsonElement toolCall) =>
-        toolCall.ValueKind == JsonValueKind.Object && toolCall.TryGetProperty("kind", out var k) && k.ValueKind == JsonValueKind.String
-            ? k.GetString()
-            : null;
+    static string? TryGetToolKind(JsonElement toolCall)   => toolCall.Str("kind");
 
     // ── LoggerMessage source-generated methods ──────────────────────────────────────────────────
     // Payload-free by construction: kind ("permission"/"elicitation") and decision

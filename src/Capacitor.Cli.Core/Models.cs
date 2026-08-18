@@ -1491,16 +1491,10 @@ public sealed record ExplicitReviewerModelResolvedV1(
     string PolicyVersion,
     string EquivalenceKey);
 
-/// <summary>
-/// Daemon -> server (hub method <c>NotifyAcpAutoApproval</c>): one FIRE-AND-FORGET audit notice that
-/// a launch-time permission preset auto-approved an ACP <c>session/request_permission</c> without a
-/// human. The server validates every field (null-safe shape check, then bounds/allowlists), resolves
-/// the bound ACP session under its terminal-ordering gate, and appends ONE audit event per target
-/// stream. Audit-only and fail-open on the server; the CLI sends it fire-and-forget and swallows any
-/// send fault (missing-method included) so a mixed-version rollout never surfaces it as a failure.
-/// Matches the server wire record shape EXACTLY (field name / type / nullability) — the snake_case
-/// name binding means a rename on either side silently breaks the wire.
-/// </summary>
+/// <summary>Daemon → server (<c>NotifyAcpAutoApproval</c>): a fire-and-forget audit notice that a
+/// launch-time permission preset auto-approved one ACP <c>session/request_permission</c> without a
+/// human. Wire shape must match the server's record EXACTLY — the snake_case name binding means a
+/// rename on either side silently breaks it.</summary>
 public sealed record AcpAutoApprovalNotice(
     string  AgentId,
     string  AcpSessionId,
