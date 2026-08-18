@@ -7,8 +7,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit;
 public class DaemonLockAwaitTests {
     [Test]
     public async Task Await_acquires_after_holder_releases() {
-        var dir = Directory.CreateTempSubdirectory("kcap-lock-");
-        DaemonLockPaths.OverrideDirectoryForTesting(dir.FullName);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var first = DaemonLock.TryAcquire("await-test");
             await Assert.That(first).IsNotNull();
@@ -26,14 +26,13 @@ public class DaemonLockAwaitTests {
             await releaser;
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            dir.Delete(true);
         }
     }
 
     [Test]
     public async Task Await_returns_null_if_never_released() {
-        var dir = Directory.CreateTempSubdirectory("kcap-lock-");
-        DaemonLockPaths.OverrideDirectoryForTesting(dir.FullName);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var first = DaemonLock.TryAcquire("held");
             await Assert.That(first).IsNotNull();
@@ -44,7 +43,6 @@ public class DaemonLockAwaitTests {
             first!.Dispose();
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            dir.Delete(true);
         }
     }
 }

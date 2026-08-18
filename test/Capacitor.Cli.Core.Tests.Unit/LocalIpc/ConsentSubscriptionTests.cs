@@ -100,15 +100,15 @@ public class ConsentSubscriptionTests {
 
     /// Runs `body` against an isolated socket dir with a scripted server listening for `name`.
     static async Task WithServerAsync(ConnScript[] scripts, Func<string, Task> body) {
-        var sockDir = Directory.CreateTempSubdirectory("kcap-csx-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
+        using var sockDir = new TempDir("csub");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var name = "csx-" + Guid.NewGuid().ToString("N")[..6];
             await using var server = new ScriptedOpsServer(LocalSocketPaths.Socket(name), scripts);
             await body(name);
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
     }
 
@@ -161,14 +161,13 @@ public class ConsentSubscriptionTests {
     public async Task Failed_connect_ends_without_subscribed() {
         if (OperatingSystem.IsWindows()) return;
 
-        var sockDir = Directory.CreateTempSubdirectory("kcap-csx-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var sockDir = new TempDir("csub");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var events = await CollectAsync("csx-none", TimeSpan.FromSeconds(5));
             await Assert.That(events.Count).IsEqualTo(0);
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
     }
 

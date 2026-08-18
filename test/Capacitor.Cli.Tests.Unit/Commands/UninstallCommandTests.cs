@@ -649,6 +649,8 @@ public class UninstallCommandTests {
     }
 
     sealed class Fixture : IAsyncDisposable {
+        TempDir? _tempDir;
+
         public required string Home      { get; init; }
         public required string ConfigDir { get; init; }
 
@@ -656,18 +658,19 @@ public class UninstallCommandTests {
         public string? OriginalConfigDir { get; init; }
 
         public static Task<Fixture> CreateAsync() {
-            var home      = Directory.CreateTempSubdirectory("kcap-uninstall-home-").FullName;
-            var configDir = Path.Combine(home, ".config", "kcap");
+            var tmp = new TempDir();
+            var configDir = Path.Combine(tmp.Path, ".config", "kcap");
             Directory.CreateDirectory(configDir);
 
             var f = new Fixture {
-                Home              = home,
+                Home              = tmp.Path,
                 ConfigDir         = configDir,
                 OriginalHome      = Environment.GetEnvironmentVariable("HOME"),
                 OriginalConfigDir = Environment.GetEnvironmentVariable("KCAP_CONFIG_DIR"),
+                _tempDir          = tmp
             };
 
-            Environment.SetEnvironmentVariable("HOME", home);
+            Environment.SetEnvironmentVariable("HOME", tmp.Path);
             // Pin the config dir under the test home so uninstall's
             // Directory.Delete only touches the test's temp tree, never the
             // assembly-wide config dir pinned by RepoPathStoreGlobalSetup.
@@ -679,7 +682,7 @@ public class UninstallCommandTests {
         public ValueTask DisposeAsync() {
             Environment.SetEnvironmentVariable("HOME", OriginalHome);
             Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", OriginalConfigDir);
-            try { Directory.Delete(Home, recursive: true); } catch { /* best effort */ }
+            _tempDir?.Dispose();
             return ValueTask.CompletedTask;
         }
     }

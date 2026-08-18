@@ -198,10 +198,10 @@ public class AntigravityReviewerLiveCertTests {
     /// re-derived here: the argv assertions above run against the vector the OS actually got.</para>
     /// </summary>
     sealed class LiveHarness : IDisposable {
-        readonly string _root;
+        readonly TempDir _tmp;
 
-        LiveHarness(string root, string worktree, DaemonConfig config) {
-            _root    = root;
+        LiveHarness(TempDir tmp, string worktree, DaemonConfig config) {
+            _tmp     = tmp;
             Worktree = worktree;
             Config   = config;
         }
@@ -212,18 +212,14 @@ public class AntigravityReviewerLiveCertTests {
         internal List<SpawnedRound> Spawns { get; } = [];
 
         internal static LiveHarness Create() {
-            var root     = Directory.CreateTempSubdirectory("kcap-agy-cert-").FullName;
-            var worktree = Path.Combine(root, "wt");
-            var stateDir = Path.Combine(root, "state");
-
-            Directory.CreateDirectory(worktree);
-            Directory.CreateDirectory(stateDir);
+            var tmp      = new TempDir("agyc");
+            var worktree = tmp.CreateDir("wt");
+            var stateDir = tmp.CreateDir("state");
 
             // Something to be reviewing. The prompts deliberately never ask for it — a cert that
             // depended on the model reading a file would be measuring the model, not the reviewer —
             // but an empty cwd is not a review-shaped launch.
-            File.WriteAllText(Path.Combine(worktree, "subject.txt"),
-                              "int Add(int a, int b) => a - b;\n");
+            worktree.CreateFile("subject.txt", "int Add(int a, int b) => a - b;\n");
 
             var config = new DaemonConfig {
                 AntigravityPath                       = Environment.GetEnvironmentVariable("KCAP_ANTIGRAVITY_PATH") is
@@ -244,7 +240,7 @@ public class AntigravityReviewerLiveCertTests {
                 AntigravityHostedAgentRuntimeFactory.ReviewerStateDir(config),
                 DaemonRunner.AntigravityVendor, enabled: true, config.AntigravityPath);
 
-            return new LiveHarness(root, worktree, config);
+            return new LiveHarness(tmp, worktree, config);
         }
 
         internal Task<HostedRuntimeStart> LaunchAsync(string prompt) {
@@ -332,7 +328,7 @@ public class AntigravityReviewerLiveCertTests {
                     catch { /* best-effort — the runtime owns these; this is the leak backstop */ }
                 }
 
-            try { Directory.Delete(_root, recursive: true); } catch { /* temp dir */ }
+            _tmp.Dispose();
         }
     }
 }

@@ -127,12 +127,11 @@ public class ClaudePluginInstallerTests {
         var settingsPath = WriteEnabledSettings(tmp.Path);
         var install = tmp.CreateDir("plugins", "cache", "kcap", "kcap", "1.0.0");
         install.CreateFile(".mcp.json", "{}");
-        var plugins = tmp.CreateDir("plugins");
-        plugins.CreateFile("installed_plugins.json", $$"""
-           { "version": 1, "plugins": { "kcap@kcap":
-               { "installPath": {{JsonValue.Create(install.Path).ToJsonString()}}, "version": "1.0.0" } } }
-           """
-        );
+
+        tmp.CreateFile(["plugins", "installed_plugins.json"], $$"""
+            { "version": 1, "plugins": { "kcap@kcap":
+                { "installPath": {{JsonValue.Create(install.Path).ToJsonString()}}, "version": "1.0.0" } } }
+            """);
 
         await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsTrue();
     }

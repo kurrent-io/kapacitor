@@ -90,8 +90,9 @@ public class LocalControlProbeTests {
     /// [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")] + Windows guard,
     /// since those must be visible on the test method itself.
     static async Task RunAsync(string daemonName, Func<Harness, CancellationToken, Task> body) {
-        var sockDir = Directory.CreateTempSubdirectory("kcap-probe-sock-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
+        using var sockDir = new TempDir("lcp");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         Harness? h = null;
@@ -102,7 +103,6 @@ public class LocalControlProbeTests {
         } finally {
             if (h is not null) await StopAsync(h);
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
         }
     }
 
@@ -179,8 +179,8 @@ public class LocalControlProbeTests {
     public async Task Probe_treats_a_structurally_degenerate_snapshot_as_a_snapshot_failure_not_a_throw() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
-        var sockDir = Directory.CreateTempSubdirectory("kcap-probe-degenerate-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var sockDir = new TempDir("lcp");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var name = "probe-degenerate";
             var helloJson = JsonSerializer.Serialize(
@@ -214,7 +214,6 @@ public class LocalControlProbeTests {
             await Assert.That(r.IdentityConsistent).IsFalse();
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
         }
     }
 
@@ -228,8 +227,8 @@ public class LocalControlProbeTests {
     public async Task Hello_without_ids_is_never_consistent_even_with_a_valid_snapshot() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
-        var sockDir = Directory.CreateTempSubdirectory("kcap-probe-noids-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var sockDir = new TempDir("lcp");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var name = "probe-noids";
             var helloJson = JsonSerializer.Serialize(
@@ -262,7 +261,6 @@ public class LocalControlProbeTests {
             await Assert.That(r.IdentityConsistent).IsFalse(); // ...but consistency still fails closed
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
         }
     }
 }

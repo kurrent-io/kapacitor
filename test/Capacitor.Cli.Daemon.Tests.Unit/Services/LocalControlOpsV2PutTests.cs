@@ -91,8 +91,9 @@ public class LocalControlOpsV2PutTests {
     /// ConsentRulesPutV2Tests.RunAsync, and hands the body a LocalControlOps pointed at the same
     /// daemon name so it can drive Put/Get through the real client under test.
     static async Task RunAsync(string daemonName, Func<Harness, LocalControlOps, CancellationToken, Task> body, string serverUrl = "http://127.0.0.1:1") {
-        var sockDir = Directory.CreateTempSubdirectory("kcap-lcov2-sock-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
+        using var sockDir = new TempDir("lcov");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         Harness? h = null;
@@ -107,7 +108,6 @@ public class LocalControlOpsV2PutTests {
         } finally {
             if (h is not null) await StopAsync(h);
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
         }
     }
 

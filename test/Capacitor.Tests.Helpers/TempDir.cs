@@ -12,12 +12,13 @@ namespace Capacitor.Tests.Helpers;
 public sealed class TempDir : IDisposable {
     public string Path { get; }
 
-    public TempDir([CallerFilePath] string callerFilePath = "") {
-        Path = Directory.CreateTempSubdirectory(Prefix(callerFilePath)).FullName;
+    /// <param name="hint">Names the directory instead of the caller's file — for callers that need a
+    /// shorter path than the default gives.</param>
+    public TempDir(string? hint = null, [CallerFilePath] string callerFilePath = "") {
+        Path = Directory.CreateTempSubdirectory(Prefix(hint ?? Stem(callerFilePath))).FullName;
     }
 
-    // Every path/file operation lives on TempDirHandle and is reached through here, so the two types
-    // cannot drift apart. TempDir adds only ownership: the temp root, and deleting it on dispose.
+    // All path/file work lives on TempDirHandle; TempDir adds only ownership.
     TempDirHandle Root => new(Path);
 
     /// <summary>Path of an entry under this directory, from its path segments. Nothing is created —
@@ -30,7 +31,7 @@ public sealed class TempDir : IDisposable {
     // callerFilePath is forwarded, not re-captured: taking the ctor's default here would name every
     // such directory after this file instead of the calling suite.
     public static TempDir WithPathTo(string relativePath, out string path, [CallerFilePath] string callerFilePath = "") {
-        var dir = new TempDir(callerFilePath);
+        var dir = new TempDir(callerFilePath: callerFilePath);
         path = dir.PathTo(relativePath);
         return dir;
     }
@@ -58,14 +59,16 @@ public sealed class TempDir : IDisposable {
     // Windows tests create nested content under here, so the hint must not eat the path budget.
     const int MaxHintLength = 20;
 
-    static string Prefix(string callerFilePath) {
-        var stem = System.IO.Path.GetFileNameWithoutExtension(callerFilePath);
-
-        if (stem.EndsWith("Tests", StringComparison.Ordinal)) stem = stem[..^5];
-
-        var hint = new string(stem.Where(char.IsAsciiLetterOrDigit).Take(MaxHintLength).ToArray())
+    static string Prefix(string hint) {
+        var clean = new string(hint.Where(char.IsAsciiLetterOrDigit).Take(MaxHintLength).ToArray())
             .ToLowerInvariant();
 
-        return hint.Length == 0 ? "kcap-test-" : $"kcap-test-{hint}-";
+        return clean.Length == 0 ? "kcap-test-" : $"kcap-test-{clean}-";
+    }
+
+    static string Stem(string callerFilePath) {
+        var stem = System.IO.Path.GetFileNameWithoutExtension(callerFilePath);
+
+        return stem.EndsWith("Tests", StringComparison.Ordinal) ? stem[..^5] : stem;
     }
 }

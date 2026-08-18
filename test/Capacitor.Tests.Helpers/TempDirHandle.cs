@@ -1,22 +1,12 @@
 namespace Capacitor.Tests.Helpers;
 
 /// <summary>
-/// A directory that can make its own children — the return of <see cref="TempDir.CreateDir"/>.
+/// A directory that makes its own children — what <see cref="TempDir.CreateDir"/> returns. Converts
+/// implicitly to its path, so it still goes anywhere the path string did. Owns nothing; the
+/// <see cref="TempDir"/> it came from deletes the tree. The public constructor does not create.
 ///
-/// <para>Converts implicitly to its path, so it goes wherever a directory string went before:
-/// <c>Production(dir)</c>, <c>Path.Combine(dir, x)</c>, <c>File.Exists(dir)</c>. What it adds is the
-/// half that used to be written by hand — <c>dir.CreateFile("a.json", body)</c> instead of a
-/// <c>Path.Combine</c> plus a <c>File.WriteAllText</c>.</para>
-///
-/// <para>Owns nothing: the <see cref="TempDir"/> it came from deletes the whole tree. Constructing one
-/// directly wraps an existing directory (a production-returned path, say) and does NOT create it —
-/// only <see cref="CreateDir"/> creates.</para>
-///
-/// <para><b>Pass <see cref="Path"/> explicitly to anything generic.</b> The implicit conversion only
-/// fires for a parameter typed <c>string</c>; a generic parameter infers <c>TempDirHandle</c> instead,
-/// because inference beats a user-defined conversion. <c>JsonValue.Create(dir)</c> therefore compiles
-/// and serialises the struct — <c>{"Path":"…"}</c>, not the path — so it must be
-/// <c>JsonValue.Create(dir.Path)</c>. Non-generic string parameters need nothing.</para>
+/// <para>Pass <see cref="Path"/> explicitly to generic APIs: inference beats a user-defined conversion,
+/// so <c>JsonValue.Create(dir)</c> compiles and serialises the struct instead of the path.</para>
 /// </summary>
 public readonly record struct TempDirHandle(string Path) {
     public static implicit operator string(TempDirHandle dir) => dir.Path;
@@ -41,15 +31,14 @@ public readonly record struct TempDirHandle(string Path) {
     public string CreateFile(string relativePath, string content = "") =>
         Write(PathTo(relativePath), content);
 
-    /// <summary>As <see cref="CreateFile(string,string)"/>, from path segments — so a nested file needs
-    /// no <c>Path.Combine</c> at the call site: <c>dir.CreateFile(["events", "events.jsonl"], body)</c>.</summary>
+    /// <summary>As <see cref="CreateFile(string,string)"/>, from path segments:
+    /// <c>dir.CreateFile(["events", "events.jsonl"], body)</c>.</summary>
     public string CreateFile(ReadOnlySpan<string> segments, string content = "") =>
         Write(PathTo(segments), content);
 
     /// <summary>As <see cref="CreateFile(string,string)"/> for line-oriented content:
     /// <c>dir.CreateFile("events.jsonl", [lineA, lineB])</c>.</summary>
-    // File.WriteAllLines, not a join: it terminates the LAST line too, and the JSONL fixtures here
-    // are parsed by production readers that treat a final unterminated line as incomplete.
+    // WriteAllLines, not a join: it terminates the last line, which the JSONL readers require.
     public string CreateFile(string relativePath, string[] lines) {
         var path = PathTo(relativePath);
 

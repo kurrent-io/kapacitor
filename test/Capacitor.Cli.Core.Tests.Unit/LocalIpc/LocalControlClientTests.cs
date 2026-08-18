@@ -146,8 +146,9 @@ public class LocalControlClientTests {
     static async Task<List<LocalControlEvent>> RunClientAsync(
             ConnScript[] scripts, Func<List<LocalControlEvent>, bool> until,
             Action<LocalControlClient>? configure = null, TimeProvider? time = null) {
-        var sockDir = Directory.CreateTempSubdirectory("kcap-lcc-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
+        using var sockDir = new TempDir("lcc");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var name = "lcc-" + Guid.NewGuid().ToString("N")[..6];
             await using var server = new ScriptedServer(LocalSocketPaths.Socket(name), scripts);
@@ -169,7 +170,6 @@ public class LocalControlClientTests {
             return events;
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
     }
 
@@ -223,8 +223,8 @@ public class LocalControlClientTests {
     public async Task Missing_socket_classifies_as_unreachable() {
         if (OperatingSystem.IsWindows()) return;
 
-        var sockDir = Directory.CreateTempSubdirectory("kcap-lcc-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var sockDir = new TempDir("lcc");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var client = new LocalControlClient("lcc-none") { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
             var events = new List<LocalControlEvent>();
@@ -236,7 +236,6 @@ public class LocalControlClientTests {
             await Assert.That(((LocalControlEvent.Unreachable)events[^1]).Reason).IsEqualTo("daemon_unreachable");
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
     }
 
@@ -387,8 +386,8 @@ public class LocalControlClientTests {
     public async Task Transport_failure_has_null_daemon_version() {
         if (OperatingSystem.IsWindows()) return;
 
-        var sockDir = Directory.CreateTempSubdirectory("kcap-lcc-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var sockDir = new TempDir("lcc");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var client = new LocalControlClient("lcc-none-v") { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
             var events = new List<LocalControlEvent>();
@@ -402,7 +401,6 @@ public class LocalControlClientTests {
             await Assert.That(unreachable.DaemonVersion).IsNull();
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
     }
 
@@ -426,8 +424,8 @@ public class LocalControlClientTests {
     public async Task Breaking_out_of_the_enumeration_after_connected_disposes_the_subscribe_socket() {
         if (OperatingSystem.IsWindows()) return;
 
-        var sockDir = Directory.CreateTempSubdirectory("kcap-lcc-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var sockDir = new TempDir("lcc");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var name = "lcc-" + Guid.NewGuid().ToString("N")[..6];
             var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -450,7 +448,6 @@ public class LocalControlClientTests {
             await closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
     }
 
@@ -461,8 +458,8 @@ public class LocalControlClientTests {
     public async Task Cancellation_landing_exactly_at_cycle_success_never_yields_connected() {
         if (OperatingSystem.IsWindows()) return;
 
-        var sockDir = Directory.CreateTempSubdirectory("kcap-lcc-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var sockDir = new TempDir("lcc");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var name = "lcc-" + Guid.NewGuid().ToString("N")[..6];
             var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -487,7 +484,6 @@ public class LocalControlClientTests {
             await closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
     }
 
@@ -496,8 +492,8 @@ public class LocalControlClientTests {
     public async Task Cancellation_ends_the_enumeration_cleanly() {
         if (OperatingSystem.IsWindows()) return;
 
-        var sockDir = Directory.CreateTempSubdirectory("kcap-lcc-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var sockDir = new TempDir("lcc");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var client = new LocalControlClient("lcc-cxl") { RetryDelays = [TimeSpan.FromSeconds(30)] };
             using var cts = new CancellationTokenSource();
@@ -518,7 +514,6 @@ public class LocalControlClientTests {
             await Assert.That(events.Count).IsEqualTo(2); // nothing fabricated after cancel
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
     }
 
@@ -527,8 +522,8 @@ public class LocalControlClientTests {
     public async Task Cancellation_mid_stream_ends_the_enumeration_cleanly() {
         if (OperatingSystem.IsWindows()) return;
 
-        var sockDir = Directory.CreateTempSubdirectory("kcap-lcc-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var sockDir = new TempDir("lcc");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var name = "lcc-" + Guid.NewGuid().ToString("N")[..6];
             await using var server = new ScriptedServer(LocalSocketPaths.Socket(name),
@@ -554,7 +549,6 @@ public class LocalControlClientTests {
             await Assert.That(events.OfType<LocalControlEvent.Unreachable>().Any()).IsFalse();
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
     }
 
@@ -573,8 +567,8 @@ public class LocalControlClientTests {
         //    schedule that failed to reset would need far longer than the poll deadline below,
         //    so WaitForServedAsync's own "eventually reaches N" assertion fails cleanly instead
         //    of racing a tight tolerance.
-        var sockDir = Directory.CreateTempSubdirectory("kcap-lcc-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var sockDir = new TempDir("lcc");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var name = "lcc-" + Guid.NewGuid().ToString("N")[..6];
             // cycle0 fails (index0 delay), cycle1 fails with the SAME reason (index1 delay —
@@ -626,7 +620,6 @@ public class LocalControlClientTests {
             await Assert.That(events.OfType<LocalControlEvent.Connected>().Count()).IsEqualTo(2);
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
     }
 

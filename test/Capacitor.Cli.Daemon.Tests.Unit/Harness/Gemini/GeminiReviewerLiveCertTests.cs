@@ -129,49 +129,43 @@ public class GeminiReviewerLiveCertTests {
     /// </summary>
     static async Task<ProbeOutcome> RunProbeAsync(
             string project, string allowlist, string injectAs, string[] hostileRepoNames) {
-        var root = Directory.CreateTempSubdirectory("kcap-gemini-cert-").FullName;
-        try {
-            var ws = Path.Combine(root, "ws");
-            Directory.CreateDirectory(Path.Combine(ws, ".gemini"));
+        using var tmp = new TempDir("geminc");
+        var ws = tmp.CreateDir("ws");
+        var gemini = ws.CreateDir(".gemini");
 
-            var server  = WriteMarkerMcpServer(root);
-            var markers = new Dictionary<string, string>();
+        var server  = WriteMarkerMcpServer(tmp.Path);
+        var markers = new Dictionary<string, string>();
 
-            string MarkerFor(string label) {
-                var path = Path.Combine(root, $"marker-{label}.log");
-                markers[label] = path;
-                return path;
-            }
-
-            // The repository's OWN declarations, which Gemini reads at process start under inherited trust.
-            if (hostileRepoNames.Length > 0)
-                await File.WriteAllTextAsync(
-                    Path.Combine(ws, ".gemini", "settings.json"),
-                    JsonSerializer.Serialize(new {
-                        mcpServers = hostileRepoNames.ToDictionary(
-                            n => n,
-                            n => new { command = "python3", args = new[] { server },
-                                       env = new Dictionary<string, string> {
-                                           ["KCAP_CERT_MARKER"] = MarkerFor($"hostile-{Array.IndexOf(hostileRepoNames, n)}") } })
-                    }));
-
-            var injectedMarker = MarkerFor("injected");
-            var drive = await DriveGeminiAsync(ws, project, allowlist, injectAs, server, injectedMarker);
-
-            var injectedBody = File.Exists(injectedMarker) ? await File.ReadAllTextAsync(injectedMarker) : "";
-            var hostileRan   = markers.Where(kv => kv.Key.StartsWith("hostile-", StringComparison.Ordinal) && File.Exists(kv.Value))
-                                      .Select(kv => kv.Key).ToList();
-
-            Console.WriteLine($"[gemini-cert] session={drive.SessionEstablished} turn={drive.TurnCompleted} "
-                            + $"injected_spawned={injectedBody.Length > 0} "
-                            + $"tool_called={injectedBody.Contains("TOOL_CALLED")} "
-                            + $"hostile_ran=[{string.Join(",", hostileRan)}] detail={drive.Detail}");
-
-            return new(injectedBody.Length > 0, injectedBody.Contains("TOOL_CALLED"), hostileRan,
-                       drive.SessionEstablished, drive.TurnCompleted, drive.Detail);
-        } finally {
-            try { Directory.Delete(root, recursive: true); } catch { /* temp dir */ }
+        string MarkerFor(string label) {
+            var path = tmp.PathTo($"marker-{label}.log");
+            markers[label] = path;
+            return path;
         }
+
+        // The repository's OWN declarations, which Gemini reads at process start under inherited trust.
+        if (hostileRepoNames.Length > 0)
+                gemini.CreateFile("settings.json", JsonSerializer.Serialize(new {
+                    mcpServers = hostileRepoNames.ToDictionary(
+                        n => n,
+                        n => new { command = "python3", args = new[] { server },
+                                   env = new Dictionary<string, string> {
+                                       ["KCAP_CERT_MARKER"] = MarkerFor($"hostile-{Array.IndexOf(hostileRepoNames, n)}") } })
+                }));
+
+        var injectedMarker = MarkerFor("injected");
+        var drive = await DriveGeminiAsync(ws, project, allowlist, injectAs, server, injectedMarker);
+
+        var injectedBody = File.Exists(injectedMarker) ? await File.ReadAllTextAsync(injectedMarker) : "";
+        var hostileRan   = markers.Where(kv => kv.Key.StartsWith("hostile-", StringComparison.Ordinal) && File.Exists(kv.Value))
+                                  .Select(kv => kv.Key).ToList();
+
+        Console.WriteLine($"[gemini-cert] session={drive.SessionEstablished} turn={drive.TurnCompleted} "
+                        + $"injected_spawned={injectedBody.Length > 0} "
+                        + $"tool_called={injectedBody.Contains("TOOL_CALLED")} "
+                        + $"hostile_ran=[{string.Join(",", hostileRan)}] detail={drive.Detail}");
+
+        return new(injectedBody.Length > 0, injectedBody.Contains("TOOL_CALLED"), hostileRan,
+                   drive.SessionEstablished, drive.TurnCompleted, drive.Detail);
     }
 
     /// <summary>A minimal stdio MCP server that records its lifecycle to a marker file. Python because it is

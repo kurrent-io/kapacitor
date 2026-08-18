@@ -270,20 +270,18 @@ public class GeminiMemoryIndexLiveCertTests {
     /// cannot re-enter itself.</para>
     /// </summary>
     sealed class HookRecorder : IDisposable {
-        readonly string _root;
+        readonly TempDir _root = new();
         readonly string _log;
 
         [UnsupportedOSPlatform("windows")]
         public HookRecorder() {
-            _root = Directory.CreateTempSubdirectory($"kcap-{VendorLabel}-hook-recorder-").FullName;
-            _log  = Directory.CreateDirectory(Path.Combine(_root, "log")).FullName;
+            _log = _root.CreateDir("log");
 
-            BinDir = Directory.CreateDirectory(Path.Combine(_root, "bin")).FullName;
+            var bin = _root.CreateDir("bin");
+            BinDir  = bin;
 
-            var real  = MemoryIndexLiveCertHarness.ResolveOnPath("kcap");
-            var shim  = Path.Combine(BinDir, "kcap");
-
-            File.WriteAllText(shim,
+            var real = MemoryIndexLiveCertHarness.ResolveOnPath("kcap");
+            var shim = bin.CreateFile("kcap",
                 $"""
                  #!/bin/sh
                  # Anything that is not a hook — notably the long-lived `kcap mcp <server>` stdio
@@ -329,9 +327,7 @@ public class GeminiMemoryIndexLiveCertTests {
             try { return File.ReadAllText(path); } catch { return ""; }
         }
 
-        public void Dispose() {
-            try { Directory.Delete(_root, recursive: true); } catch { /* best-effort */ }
-        }
+        public void Dispose() => _root.Dispose();
     }
 
     /// <summary>Runs one non-interactive Gemini turn. <c>--approval-mode plan</c> keeps it read-only so

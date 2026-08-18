@@ -597,8 +597,9 @@ public class AgentOrchestratorLocalAttachTests {
     public async Task Attach_over_the_real_socket_refuses_a_hosted_agent_with_no_terminal() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
-        var sockDir = Directory.CreateTempSubdirectory("kcap-sock-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
+        using var sockDir = new TempDir("aola");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         LocalControlServer? listener = null;
@@ -640,7 +641,6 @@ public class AgentOrchestratorLocalAttachTests {
             if (orch is not null) await orch.DisposeAsync();
             if (listener is not null) { await listener.StopAsync(CancellationToken.None); listener.Dispose(); }
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
         }
     }
 
@@ -649,8 +649,8 @@ public class AgentOrchestratorLocalAttachTests {
     public async Task Local_socket_list_round_trips_registered_agents_over_a_real_socket() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
-        var sockDir = Directory.CreateTempSubdirectory("kcap-sock-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var sockDir = new TempDir("aola");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         LocalControlServer? listener = null;
@@ -689,7 +689,6 @@ public class AgentOrchestratorLocalAttachTests {
             if (orch is not null) await orch.DisposeAsync();
             if (listener is not null) { await listener.StopAsync(CancellationToken.None); listener.Dispose(); }
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
         }
     }
 
@@ -700,8 +699,8 @@ public class AgentOrchestratorLocalAttachTests {
     /// isolation; only a real connection proves the server's frame switch wires them together.
     /// </summary>
     static async Task<LocalFrame?> StopV2OverRealSocketAsync(string daemonName, bool force, string agentId) {
-        var sockDir = Directory.CreateTempSubdirectory("kcap-sock-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var sockDir = new TempDir("aola");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         LocalControlServer? listener = null;
@@ -732,7 +731,6 @@ public class AgentOrchestratorLocalAttachTests {
             if (orch is not null) await orch.DisposeAsync();
             if (listener is not null) { await listener.StopAsync(CancellationToken.None); listener.Dispose(); }
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
         }
     }
 

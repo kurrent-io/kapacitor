@@ -20,7 +20,7 @@ public class McpReviewContextServerIntegrationTests {
         listener.Prefixes.Add($"http://127.0.0.1:{port}/{token}/");
         listener.Start();
         var manifest = "{\"schemaVersion\":1,\"entries\":[]}";
-        var configDir = Directory.CreateTempSubdirectory("kcap-context-config-").FullName;
+        using var configDir = new TempDir();
         var requests = 0;
         var serve = Task.Run(async () => {
             var context = await listener.GetContextAsync();
@@ -35,7 +35,7 @@ public class McpReviewContextServerIntegrationTests {
             context.Response.Close();
         });
 
-        using var process = Spawn(capability, configDir);
+        using var process = Spawn(capability, configDir.Path);
         try {
             var initialize = await Send(process, new JsonObject {
                 ["jsonrpc"] = "2.0", ["id"] = 1, ["method"] = "initialize",
@@ -66,12 +66,11 @@ public class McpReviewContextServerIntegrationTests {
             await Assert.That(called["result"]!["content"]![0]!["text"]!.GetValue<string>())
                 .IsEqualTo(manifest);
             await Assert.That(requests).IsEqualTo(1);
-            await Assert.That(Directory.GetFileSystemEntries(configDir)).IsEmpty()
+            await Assert.That(Directory.GetFileSystemEntries(configDir.Path)).IsEmpty()
                 .Because("context mode must bypass auth/config and update-check state");
         } finally {
             try { process.StandardInput.Close(); } catch { }
             if (!process.WaitForExit(3000)) process.Kill(entireProcessTree: true);
-            try { Directory.Delete(configDir, true); } catch { }
         }
     }
 

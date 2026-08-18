@@ -150,8 +150,9 @@ public class LocalControlOpsTests {
     /// Runs `body` against an ops client wired to a scripted server in an isolated socket dir.
     static async Task WithOpsAsync(
             ConnScript[] scripts, Func<LocalControlOps, Task> body, Action<LocalControlOps>? configure = null) {
-        var sockDir = Directory.CreateTempSubdirectory("kcap-lco-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
+        using var sockDir = new TempDir("lco");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var name = "lco-" + Guid.NewGuid().ToString("N")[..6];
             await using var server = new ScriptedOpsServer(LocalSocketPaths.Socket(name), scripts);
@@ -164,7 +165,6 @@ public class LocalControlOpsTests {
             await body(ops);
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
     }
 
@@ -542,8 +542,8 @@ public class LocalControlOpsTests {
     public async Task Connect_failure() {
         if (OperatingSystem.IsWindows()) return;
 
-        var sockDir = Directory.CreateTempSubdirectory("kcap-lco-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var sockDir = new TempDir("lco");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var ops = new LocalControlOps("lco-none") { ConnectTimeout = TimeSpan.FromSeconds(2) };
             var ex = await Assert.ThrowsAsync<LocalControlOpsException>(
@@ -551,7 +551,6 @@ public class LocalControlOpsTests {
             await Assert.That(ex!.Reason).IsEqualTo("daemon_unreachable");
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
     }
 
