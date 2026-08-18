@@ -1241,7 +1241,8 @@ public static class AcpEventKind {
 
     /// <summary>A per-event additive token-usage DELTA (codex app-server <c>thread/tokenUsage/updated</c>,
     /// daemon-converted from cumulative to delta and attributed to the model resolved at that instant).
-    /// Distinct from <see cref="Usage"/>, which is context-window OCCUPANCY (AI-1531 D4), not additive
+    /// Distinct from <see cref="Usage"/>, which is context-window OCCUPANCY (the ACP context-usage
+    /// reading), not additive
     /// billing buckets. The server stamps these buckets into Eventuous <c>$usage</c> metadata so the
     /// existing additive folds (session totals, per-model attribution, cost) count them unchanged. An
     /// older server treats it as an unrecognised Kind (dropped, cursor still advances).</summary>

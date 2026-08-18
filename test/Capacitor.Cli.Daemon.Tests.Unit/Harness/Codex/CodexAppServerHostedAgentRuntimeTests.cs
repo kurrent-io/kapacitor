@@ -96,7 +96,7 @@ public class CodexAppServerHostedAgentRuntimeTests {
     [Test]
     public async Task Envelope_transcript_is_dormant_when_the_gate_is_off() {
         // Default (reviewer path): the notification pump never feeds the buffer, so Envelopes stays empty
-        // even after a turn with usage — the AI-1761 control-plane behavior is byte-unchanged.
+        // even after a turn with usage — the shipped reviewer control-plane behavior is byte-unchanged.
         var fake = new FakeCodexAppServer { EmitUsageOnTurn = (input: 120, output: 40, total: 160) };
         var (runtime, _, _) = Build(_ => fake, Launch()); // emitEnvelopes defaults false
         await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);

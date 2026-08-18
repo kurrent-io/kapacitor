@@ -166,7 +166,8 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
 
     // ── IAcpTranscriptSource (§2.4 envelope transcript) ──────────────────────────────────────────
     // The canonical session id is the app-server thread id (== the rollout filename id and the hook
-    // payload session_id — AI-1760 Q5), read only after the thread/start handshake sets it.
+    // payload session_id, established by the app-server protocol spike), read only after the
+    // thread/start handshake sets it.
 
     /// <inheritdoc cref="IAcpTranscriptSource.AcpSessionId"/>
     public string AcpSessionId => _threadId ?? "";
