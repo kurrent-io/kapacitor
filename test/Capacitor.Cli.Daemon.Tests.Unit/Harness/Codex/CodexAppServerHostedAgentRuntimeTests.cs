@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Harness.Codex;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -30,7 +31,7 @@ public class CodexAppServerHostedAgentRuntimeTests {
     /// <summary>Builds a spawn delegate that hands each spawn a fresh fake (indexed), recording the
     /// seed passed on each call so the restart path is assertable.</summary>
     static (CodexAppServerHostedAgentRuntime Runtime, List<string?> Seeds, Func<int, FakeCodexAppServer> Fake)
-            Build(Func<int, FakeCodexAppServer> fakeFor, CodexAppServerLaunch launch) {
+            Build(Func<int, FakeCodexAppServer> fakeFor, CodexAppServerLaunch launch, bool emitEnvelopes = false) {
         var seeds  = new List<string?>();
         var fakes  = new List<FakeCodexAppServer>();
         var index  = 0;
@@ -44,8 +45,14 @@ public class CodexAppServerHostedAgentRuntimeTests {
         };
 
         var runtime = new CodexAppServerHostedAgentRuntime(
-            spawn, launch, clock: null, NullLogger.Instance);
+            spawn, launch, clock: null, NullLogger.Instance, emitEnvelopeTranscript: emitEnvelopes);
         return (runtime, seeds, i => fakes[i]);
+    }
+
+    static List<AcpEventEnvelope> DrainAvailable(CodexAppServerHostedAgentRuntime runtime) {
+        var list = new List<AcpEventEnvelope>();
+        while (runtime.Envelopes.TryRead(out var e)) list.Add(e);
+        return list;
     }
 
     [Test]
@@ -62,6 +69,42 @@ public class CodexAppServerHostedAgentRuntimeTests {
         await Assert.That(fake.ReceivedMethods).Contains("thread/start");
         await Assert.That(fake.InitializeOptOuts).Contains("item/agentMessage/delta");
         await Assert.That(fake.LastThreadStartSandbox).IsEqualTo("read-only");
+
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Envelope_transcript_emits_a_token_usage_delta_through_the_forward_buffer() {
+        // Gate ON: the real HandleNotification path feeds the mapper + forward buffer, so a turn's usage
+        // notification surfaces as a token_usage envelope on IAcpTranscriptSource.Envelopes.
+        var fake = new FakeCodexAppServer { Model = "gpt-5.3-codex", EmitUsageOnTurn = (input: 120, output: 40, total: 160) };
+        var (runtime, _, _) = Build(_ => fake, Launch(), emitEnvelopes: true);
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await runtime.SendUserInputAsync("go").WaitAsync(HangGuard);
+        await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        // The read loop processes usage BEFORE turn/completed (which unblocked the wait), so it is buffered.
+        var usage = DrainAvailable(runtime).Single(e => e.Kind == AcpEventKind.TokenUsage);
+        await Assert.That(usage.UsageInputTokens).IsEqualTo(120L);
+        await Assert.That(usage.UsageOutputTokens).IsEqualTo(40L);
+        await Assert.That(usage.Model).IsEqualTo("gpt-5.3-codex");
+
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Envelope_transcript_is_dormant_when_the_gate_is_off() {
+        // Default (reviewer path): the notification pump never feeds the buffer, so Envelopes stays empty
+        // even after a turn with usage — the AI-1761 control-plane behavior is byte-unchanged.
+        var fake = new FakeCodexAppServer { EmitUsageOnTurn = (input: 120, output: 40, total: 160) };
+        var (runtime, _, _) = Build(_ => fake, Launch()); // emitEnvelopes defaults false
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await runtime.SendUserInputAsync("go").WaitAsync(HangGuard);
+        await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(DrainAvailable(runtime)).IsEmpty();
 
         await runtime.DisposeAsync();
     }

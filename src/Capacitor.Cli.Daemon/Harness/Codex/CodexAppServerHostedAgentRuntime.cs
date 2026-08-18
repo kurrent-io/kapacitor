@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading.Channels;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
 using Capacitor.Cli.Daemon.Acp;
@@ -41,11 +42,13 @@ internal sealed record CodexAppServerLaunch(
     string                ClientVersion);
 
 /// <summary>
-/// A <see cref="IHostedAgentRuntime"/> that hosts a Codex reviewer over the <c>codex app-server</c>
-/// JSON-RPC protocol instead of the interactive PTY. It is control-plane only: the transcript is
-/// still recorded through the Codex hooks + <c>kcap watch</c> rollout path (which is why the
-/// hook-trust preflight is load-bearing), so this runtime never aggregates transcript from the
-/// protocol stream and <see cref="EmitsTerminalOutput"/> is <see langword="false"/>.
+/// A <see cref="IHostedAgentRuntime"/> that hosts a Codex agent over the <c>codex app-server</c>
+/// JSON-RPC protocol instead of the interactive PTY. It exposes <see cref="IAcpTranscriptSource"/>
+/// (§2.4): every app-server notification is translated by <see cref="CodexNotificationMapper"/> into the
+/// canonical/ephemeral <see cref="AcpEventEnvelope"/> vocabulary and drained through a bounded
+/// <see cref="CodexForwardBuffer"/>, so the envelope transcript — not the hooks + <c>kcap watch</c>
+/// rollout path — is the ingestion source for hosted app-server sessions. <see cref="EmitsTerminalOutput"/>
+/// stays <see langword="false"/> (this is a structured, not terminal, view).
 ///
 /// <para>Lifecycle (<see cref="StartAsync"/>, called by the factory): spawn → <c>initialize</c> →
 /// <c>hooks/list</c> trust preflight (seed + one restart when required) → <c>thread/start</c> →
@@ -57,7 +60,7 @@ internal sealed record CodexAppServerLaunch(
 /// request is a protocol violation — answered with a valid on-the-wire <c>decline</c> (never a
 /// JSON-RPC error, whose turn/process effect is Codex's to define) and logged at Error.</para>
 /// </summary>
-internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRuntime {
+internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscriptSource {
     // Reviewers need lifecycle + usage only; opting out of the high-volume delta streams is a
     // performance choice (the reader always drains regardless — the app-server blocks rather than
     // dropping), not a correctness one.
@@ -71,6 +74,13 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
 
     const string ClientName = "kcap-daemon";
     const int    BackpressureMaxAttempts = 6;
+
+    // §2.4 forward buffer sizing. The capacity trades memory for the SignalR-outage window a canonical
+    // burst can ride before the read loop blocks; the stall timeout bounds that block before a
+    // deterministic terminal fault. `codex.appServer.forwardStallSeconds` (spec-named) maps to the
+    // injectable stall timeout below; the default engages when the caller passes none.
+    const int    ForwardBufferCapacity      = 1024;
+    const double DefaultForwardStallSeconds = 30;
 
     readonly CodexAppServerSpawn  _spawn;
     readonly CodexAppServerLaunch _launch;
@@ -90,6 +100,11 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     // clock, WaitForTurnIdle) is derived from it — the runtime no longer tracks turns itself.
     readonly CodexTurnInputDispatcher _dispatcher;
 
+    // §2.4 envelope transcript: the mapper translates every app-server notification into
+    // canonical/ephemeral envelopes, drained through the bounded forward buffer (IAcpTranscriptSource).
+    readonly CodexNotificationMapper _mapper;
+    readonly CodexForwardBuffer      _forwardBuffer;
+
     CodexAppServerConnection? _connection;
     IAcpProcess?              _process;
     Task                      _runLoop = Task.CompletedTask;
@@ -101,17 +116,32 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     CodexTokenUsage?          _usage;
     int                       _disposed;
 
+    // §2.4 envelope emission is gated OFF until §2.5 activates the envelope-source ingestion (deferred
+    // first-turn, source claim, and the hooks/watch dedup). Feeding the buffer while it is NOT drained
+    // by an attached AcpTranscriptForwarder would fill it and stall the read loop; draining it WITHOUT
+    // the §2.5 dedup would double-ingest a reviewer session (hooks + envelopes). So the transcript
+    // surface (IAcpTranscriptSource, mapper, buffer) ships here dormant; §2.5 flips this one flag
+    // together with the factory's Transcript wiring and the dedup guards.
+    readonly bool _emitEnvelopeTranscript;
+
     public CodexAppServerHostedAgentRuntime(
             CodexAppServerSpawn spawn, CodexAppServerLaunch launch, AgentActivityClock? clock,
-            ILogger logger, TimeProvider? timeProvider = null) {
+            ILogger logger, TimeProvider? timeProvider = null, TimeSpan? forwardStallTimeout = null,
+            bool emitEnvelopeTranscript = false) {
         _spawn   = spawn;
         _launch  = launch;
         _clock   = clock;
         _logger  = logger;
         _time    = timeProvider ?? TimeProvider.System;
+        _emitEnvelopeTranscript = emitEnvelopeTranscript;
         _dispatcher = new CodexTurnInputDispatcher(
             startTurn: IssueTurnStartAsync, steerTurn: IssueTurnSteerAsync,
             logger: logger, ct: _cts.Token, onTurnInFlight: flip => _clock?.SetTurnInFlight(flip));
+        _mapper = new CodexNotificationMapper(() => _resolvedModel, logger);
+        _forwardBuffer = new CodexForwardBuffer(
+            ForwardBufferCapacity,
+            forwardStallTimeout ?? TimeSpan.FromSeconds(DefaultForwardStallSeconds),
+            _cts.Token, OnForwardStall);
     }
 
     // ── IHostedAgentRuntime: identity / lifecycle observables ──────────────────────────────────
@@ -133,6 +163,19 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     /// <summary>Latest cumulative token usage reported over <c>thread/tokenUsage/updated</c>, or null
     /// if none has arrived yet.</summary>
     public CodexTokenUsage? Usage => _usage;
+
+    // ── IAcpTranscriptSource (§2.4 envelope transcript) ──────────────────────────────────────────
+    // The canonical session id is the app-server thread id (== the rollout filename id and the hook
+    // payload session_id — AI-1760 Q5), read only after the thread/start handshake sets it.
+
+    /// <inheritdoc cref="IAcpTranscriptSource.AcpSessionId"/>
+    public string AcpSessionId => _threadId ?? "";
+
+    /// <inheritdoc cref="IAcpTranscriptSource.Cwd"/>
+    string IAcpTranscriptSource.Cwd => _launch.Cwd;
+
+    /// <inheritdoc cref="IAcpTranscriptSource.Envelopes"/>
+    public ChannelReader<AcpEventEnvelope> Envelopes => _forwardBuffer.Reader;
 
     // ── Startup (called by the factory, not part of the interface) ─────────────────────────────
 
@@ -339,10 +382,34 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
                 _usage = ParseUsage(n.Params);
                 _clock?.Advance();
                 break;
+            case "model/rerouted":
+                // The resolved model changed mid-thread; the mapper attributes each subsequent token
+                // delta to the model-at-instant, so per-interval attribution across a reroute is correct.
+                if (n.Params?.Str("model") is { } rerouted) _resolvedModel = rerouted;
+                _clock?.Advance();
+                break;
             default:
                 _clock?.Advance();
                 break;
         }
+
+        // §2.4 envelope transcript: translate every notification into canonical/ephemeral envelopes and
+        // drain them through the forward buffer. Runs on the read-loop thread, so a full buffer blocks
+        // here (a canonical emit) — the intended lossless backpressure onto the app-server's stdout.
+        // Gated off until §2.5 activates envelope-source ingestion (see _emitEnvelopeTranscript).
+        if (_emitEnvelopeTranscript)
+            foreach (var env in _mapper.Map(n.Method, n.Params))
+                _forwardBuffer.Emit(env);
+    }
+
+    // §2.4 stall watchdog: the forward buffer stayed full of canonical envelopes past the stall timeout
+    // (the SignalR leg is wedged). Fault the runtime deterministically rather than wedging the read loop
+    // forever — the truncated canonical tail is reported here, never dropped silently.
+    void OnForwardStall(TimeSpan stallTimeout) {
+        _logger.LogError(
+            "codex app-server: forward buffer stalled for {StallSeconds}s (SignalR forwarding wedged); faulting the session — canonical tail truncated.",
+            stallTimeout.TotalSeconds);
+        _runtimeTerminal.TrySetResult();
     }
 
     /// <summary>
@@ -442,6 +509,7 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         // the loop started) so a ReadOutputAsync consumer never hangs.
         _runtimeTerminal.TrySetResult();
         _dispatcher.FaultAll(new ObjectDisposedException(nameof(CodexAppServerHostedAgentRuntime)));
+        _forwardBuffer.Complete(); // end the envelope stream so a draining forwarder's ReadAllAsync completes
         _cts.Dispose();
     }
 
