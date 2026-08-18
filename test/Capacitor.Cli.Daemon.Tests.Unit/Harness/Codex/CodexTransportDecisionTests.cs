@@ -16,6 +16,10 @@ public class CodexTransportDecisionTests {
     [Arguments("app-server", null, false)]         // unknown version fails toward pty
     [Arguments("app-server", "", false)]           // empty version fails toward pty
     [Arguments("app-server", "not-a-version", false)]
+    [Arguments("app-server", "0.146.0-rc.1", false)] // a prerelease is BELOW the verified release -> pty
+    [Arguments("app-server", "0.147.0-rc.1", false)] // even above the floor, a prerelease is unverified -> pty
+    [Arguments("app-server", "0.146.0+meta", false)] // build metadata makes the token non-clean -> pty
+    [Arguments("app-server", "0.146.x", false)]      // non-numeric patch -> pty
     [Arguments("App-Server", "0.146.0", true)]     // selection is case-insensitive
     [Arguments("  app-server  ", "0.146.0", true)] // trimmed
     [Arguments("app-server", "codex-cli 0.146.0", true)] // tolerant of surrounding text

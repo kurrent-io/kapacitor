@@ -24,12 +24,15 @@ internal delegate Task<(CodexAppServerConnection Connection, IAcpProcess Process
 /// (<c>read-only</c> / <c>workspace-write</c> / <c>danger-full-access</c>), rendered per turn via
 /// <see cref="CodexAppServerPosture.RenderSandboxPolicy"/>.</param>
 /// <param name="Approval">The resolved approval token — always <c>never</c> for a reviewer.</param>
+/// <param name="Effort">The requested reasoning effort, or null for the vendor default; passed on
+/// every <c>turn/start</c> (the app-server carries effort as a per-turn protocol param, not argv).</param>
 /// <param name="WritableRoots">Writable roots for <c>workspace-write</c> (the owned worktree);
 /// ignored for the other sandboxes.</param>
 /// <param name="ClientVersion">Daemon version stamped into <c>initialize.clientInfo.version</c>.</param>
 internal sealed record CodexAppServerLaunch(
     string                Cwd,
     string?               Model,
+    string?               Effort,
     string?               InitialPrompt,
     string                Sandbox,
     string                Approval,
@@ -65,8 +68,6 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         "item/fileChange/outputDelta",
     ];
 
-    // The three critical hook events whose absence fails the launch closed live in CodexHookTrust;
-    // hooks/list is scoped to the reviewer cwd.
     const string ClientName = "kcap-daemon";
     const int    BackpressureMaxAttempts = 6;
 
@@ -78,16 +79,23 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     readonly CancellationTokenSource _cts = new();
 
     readonly object              _turnGate = new();
-    readonly TaskCompletionSource _runLoopEnded = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // Whole-runtime terminal signal: completed exactly once, when the LIVE child's read loop ends
+    // (process death) or on dispose — never for the controlled child teardown during a hook-trust
+    // restart. The orchestrator treats ReadOutputAsync ending as the finalize trigger, so this must
+    // not fire early, and WaitForTurnIdleAsync must unblock on it so a round never outlives the child.
+    readonly TaskCompletionSource _runtimeTerminal = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     CodexAppServerConnection? _connection;
     IAcpProcess?              _process;
     Task                      _runLoop = Task.CompletedTask;
+    CancellationTokenSource?  _childCts;   // per-child read-loop token, so a teardown unblocks the loop
+    volatile bool             _restarting; // true only across the hook-trust seed-and-restart window
 
     string?                   _threadId;
     string?                   _resolvedModel;
-    string?                   _currentTurnId;
-    TaskCompletionSource?     _turnCompleted;
+    string?                   _currentTurnId;      // server turn id once the start response lands; null in the request window
+    TaskCompletionSource?     _turnCompleted;      // the current round's waiter
+    (string TurnId, string? Status)? _pendingCompletion; // an early turn/completed whose id we could not match yet
     CodexTokenUsage?          _usage;
     int                       _disposed;
 
@@ -127,7 +135,8 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     /// Runs the full launch sequence. Throws <see cref="CodexHooksNotInstalledException"/> when a
     /// critical hook is missing (the orchestrator maps it to a LaunchFailed with worktree cleanup);
     /// any other failure between spawn and the thread being established likewise propagates as a
-    /// launch failure — the slot is never half-held with no thread to key on.
+    /// launch failure. The factory disposes this runtime on any such failure, so a spawned child is
+    /// never leaked.
     /// </summary>
     public async Task StartAsync(CancellationToken ct) {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token);
@@ -141,8 +150,15 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
 
             case CodexHookTrustDecision.SeedAndRestart seed:
                 _logger.LogInformation("codex app-server: seeding hook trust and restarting the child.");
-                await TeardownChildAsync().ConfigureAwait(false);
-                await SpawnAndInitializeAsync(seed.StateOverride, linked.Token).ConfigureAwait(false);
+                // The teardown of child 1 is CONTROLLED — its read-loop end must not trip the
+                // whole-runtime terminal signal or fault a (nonexistent) turn, so gate that window.
+                _restarting = true;
+                try {
+                    await TeardownChildAsync().ConfigureAwait(false);
+                    await SpawnAndInitializeAsync(seed.StateOverride, linked.Token).ConfigureAwait(false);
+                } finally {
+                    _restarting = false;
+                }
 
                 if (CodexHookTrust.Classify(await ListHooksAsync(linked.Token).ConfigureAwait(false))
                         is not CodexHookTrustDecision.Proceed)
@@ -174,7 +190,8 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         connection.OnNotification  += HandleNotification;
         connection.OnServerRequest  = DeclineServerRequestAsync;
 
-        _runLoop = RunConnectionAsync(connection);
+        _childCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+        _runLoop  = RunConnectionAsync(connection, _childCts.Token);
         _clock?.SetLaunchStage("spawned");
 
         var initParams = new JsonObject {
@@ -187,15 +204,17 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         _clock?.SetLaunchStage("initialized");
     }
 
-    async Task RunConnectionAsync(CodexAppServerConnection connection) {
+    async Task RunConnectionAsync(CodexAppServerConnection connection, CancellationToken ct) {
         try {
-            await connection.RunAsync(_cts.Token).ConfigureAwait(false);
+            await connection.RunAsync(ct).ConfigureAwait(false);
         } finally {
-            // The transport ended — the child died or was disposed. Fault any pending turn so
-            // WaitForTurnIdleAsync never hangs past the process it was waiting on.
-            _runLoopEnded.TrySetResult();
-            FaultPendingTurn(new ObjectDisposedException(nameof(CodexAppServerHostedAgentRuntime),
-                "codex app-server connection ended with a turn still in flight."));
+            // A controlled teardown for the hook-trust restart is NOT terminal: only the live child's
+            // read loop ending (death) or dispose flips the whole-runtime terminal signal.
+            if (!_restarting) {
+                _runtimeTerminal.TrySetResult();
+                FaultPendingTurn(new ObjectDisposedException(nameof(CodexAppServerHostedAgentRuntime),
+                    "codex app-server connection ended with a turn still in flight."));
+            }
         }
     }
 
@@ -258,16 +277,19 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
             ["approvalPolicy"]    = CodexAppServerPosture.RenderApprovalPolicy(_launch.Approval),
             ["approvalsReviewer"] = CodexAppServerPosture.ApprovalsReviewer,
         };
-        if (!string.IsNullOrEmpty(_launch.Model))
-            turnParams["model"] = _launch.Model;
+        if (!string.IsNullOrEmpty(_launch.Model))  turnParams["model"]  = _launch.Model;
+        if (!string.IsNullOrEmpty(_launch.Effort)) turnParams["effort"] = MapEffort(_launch.Effort);
 
-        // Arm the completion signal BEFORE the turn is on the wire, so a fast turn/completed can't
-        // race in against a null TCS.
+        // Arm the completion signal + the turn-in-flight clock BEFORE the turn is on the wire, so a
+        // fast turn/completed can neither race a null TCS nor leave the clock flipped back to
+        // in-flight after it was cleared.
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_turnGate) {
-            _turnCompleted = completion;
-            _currentTurnId = null;
+            _turnCompleted     = completion;
+            _currentTurnId     = null;
+            _pendingCompletion = null;
         }
+        _clock?.SetTurnInFlight(true);
 
         JsonElement result;
         try {
@@ -278,15 +300,31 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         }
 
         var turnId = result.TryGetProperty("turn", out var turn) ? Str(turn, "id") : null;
-        lock (_turnGate) _currentTurnId = turnId;
+        if (string.IsNullOrEmpty(turnId)) {
+            var ex = new InvalidOperationException("codex app-server: turn/start returned no turn id.");
+            FaultPendingTurn(ex);
+            throw ex;
+        }
 
-        _clock?.SetTurnInFlight(true);
-
-        // A turn that came back already terminal (status != inProgress) completes now — turn/completed
-        // may have raced ahead of the response.
         var status = turn.ValueKind == JsonValueKind.Object ? Str(turn, "status") : null;
-        if (status is not null and not "inProgress")
-            CompleteTurn(turnId, status);
+
+        // Bind the id, then reconcile against anything that raced ahead of this response:
+        //   - a turn/completed that arrived while the id was unknown (stashed), OR
+        //   - a response that itself came back already terminal.
+        bool completeNow = false;
+        string? completeStatus = null;
+        lock (_turnGate) {
+            _currentTurnId = turnId;
+            if (_pendingCompletion is { } pc && string.Equals(pc.TurnId, turnId, StringComparison.Ordinal)) {
+                completeNow = true;
+                completeStatus = pc.Status;
+            } else if (status is not null and not "inProgress") {
+                completeNow = true;
+                completeStatus = status;
+            }
+            _pendingCompletion = null; // discard a stash that was not ours
+        }
+        if (completeNow) CompleteTurn(turnId, completeStatus);
     }
 
     public Task SendUserInputAsync(string text) => StartTurnAsync(text, _cts.Token);
@@ -300,10 +338,10 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         if (tcs is null) return; // no turn in flight
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token);
-        var completed = await Task.WhenAny(tcs.Task, _runLoopEnded.Task,
+        var completed = await Task.WhenAny(tcs.Task, _runtimeTerminal.Task,
             Task.Delay(Timeout.Infinite, linked.Token)).ConfigureAwait(false);
 
-        if (completed == tcs.Task || completed == _runLoopEnded.Task)
+        if (completed == tcs.Task || completed == _runtimeTerminal.Task)
             return; // turn settled, or the child died — either way the round is no longer in flight
 
         await completed.ConfigureAwait(false); // propagate cancellation
@@ -316,8 +354,7 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
             case "turn/completed": {
                 var turnId = n.Params is { } p && p.TryGetProperty("turn", out var turn) ? Str(turn, "id") : null;
                 var status = n.Params is { } p2 && p2.TryGetProperty("turn", out var t2) ? Str(t2, "status") : null;
-                _clock?.SetTurnInFlight(false);
-                CompleteTurn(turnId, status);
+                OnTurnCompletedNotification(turnId, status);
                 break;
             }
             case "thread/tokenUsage/updated":
@@ -330,30 +367,55 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         }
     }
 
-    void CompleteTurn(string? turnId, string? status) {
+    void OnTurnCompletedNotification(string? turnId, string? status) {
         lock (_turnGate) {
-            // Ignore a completion for a turn that is not the one we are waiting on (a stray late
-            // notification from a prior round).
-            if (_currentTurnId is not null && turnId is not null && !string.Equals(_currentTurnId, turnId, StringComparison.Ordinal))
+            if (_currentTurnId is null) {
+                // The turn/start response has not identified the current turn yet. Stash this
+                // completion by id; StartTurnAsync applies it iff it matches, else discards it.
+                if (turnId is not null) _pendingCompletion = (turnId, status);
                 return;
-
-            var tcs = _turnCompleted;
-            _turnCompleted = null;
-            _currentTurnId = null;
-            tcs?.TrySetResult();
+            }
+            if (turnId is not null && !string.Equals(_currentTurnId, turnId, StringComparison.Ordinal))
+                return; // a stale completion from another turn
         }
+        CompleteTurn(turnId, status);
+    }
 
+    /// <summary>The single point that settles the current round: clears the waiter under the lock
+    /// (so exactly one caller wins), then — only if there was a waiter — clears the turn-in-flight
+    /// clock and completes the TCS.</summary>
+    void CompleteTurn(string? turnId, string? status) {
+        TaskCompletionSource? tcs;
+        lock (_turnGate) {
+            if (_currentTurnId is not null && turnId is not null
+                && !string.Equals(_currentTurnId, turnId, StringComparison.Ordinal))
+                return; // not the turn we are waiting on
+
+            tcs = _turnCompleted;
+            _turnCompleted     = null;
+            _currentTurnId     = null;
+            _pendingCompletion = null;
+        }
+        if (tcs is null) return;
+
+        _clock?.SetTurnInFlight(false);
+        tcs.TrySetResult();
         if (status is "failed")
             _logger.LogWarning("codex app-server: turn completed with status=failed.");
     }
 
     void FaultPendingTurn(Exception ex) {
+        TaskCompletionSource? tcs;
         lock (_turnGate) {
-            var tcs = _turnCompleted;
-            _turnCompleted = null;
-            _currentTurnId = null;
-            tcs?.TrySetException(ex);
+            tcs = _turnCompleted;
+            _turnCompleted     = null;
+            _currentTurnId     = null;
+            _pendingCompletion = null;
         }
+        if (tcs is null) return;
+
+        _clock?.SetTurnInFlight(false);
+        tcs.TrySetException(ex);
     }
 
     /// <summary>
@@ -380,7 +442,7 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     // ── Backpressure-bounded request helper ────────────────────────────────────────────────────
 
     /// <summary>Every client→server request goes through a bounded retry on the app-server's
-    /// <c>-32001</c> bounded-ingress rejection (Q8); exhaustion surfaces the RPC error rather than
+    /// <c>-32001</c> bounded-ingress rejection; exhaustion surfaces the RPC error rather than
     /// spinning.</summary>
     async Task<JsonElement> RequestAsync(string method, JsonNode @params, CancellationToken ct) {
         var element = ToElement(@params);
@@ -397,10 +459,16 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
 
     // ── Interface members with no protocol meaning for an unattended reviewer ──────────────────
 
-    public IAsyncEnumerable<byte[]> ReadOutputAsync(CancellationToken ct = default) => Empty(ct);
+    /// <summary>The runtime emits no terminal bytes, but this enumerable must NOT complete until the
+    /// runtime is logically terminal: the orchestrator treats its completion as the finalize
+    /// trigger, so an immediate <c>yield break</c> would finalize (and kill) the reviewer seconds
+    /// after launch. Mirrors the ACP runtime — wait on the whole-runtime terminal signal or the
+    /// caller's cancellation, then end.</summary>
+    public async IAsyncEnumerable<byte[]> ReadOutputAsync([EnumeratorCancellation] CancellationToken ct = default) {
+        var ctTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var reg = ct.Register(() => ctTcs.TrySetResult()).ConfigureAwait(false);
 
-    static async IAsyncEnumerable<byte[]> Empty([EnumeratorCancellation] CancellationToken ct) {
-        await Task.CompletedTask.ConfigureAwait(false);
+        await Task.WhenAny(_runtimeTerminal.Task, ctTcs.Task).ConfigureAwait(false);
         yield break;
     }
 
@@ -442,14 +510,30 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         try { await _cts.CancelAsync().ConfigureAwait(false); } catch { /* best-effort */ }
 
         await TeardownChildAsync().ConfigureAwait(false);
+
+        // Ensure the terminal signal is set even if no read loop ever ran (e.g. spawn failed before
+        // the loop started) so a ReadOutputAsync consumer never hangs.
+        _runtimeTerminal.TrySetResult();
+        FaultPendingTurn(new ObjectDisposedException(nameof(CodexAppServerHostedAgentRuntime)));
         _cts.Dispose();
     }
 
+    /// <summary>Tears down the current child + connection and AWAITS its retiring read loop, so a
+    /// replacement (the hook-trust restart) is never installed while the old loop is still live.</summary>
     async Task TeardownChildAsync() {
         var connection = _connection;
         var process    = _process;
+        var runLoop    = _runLoop;
+        var childCts   = _childCts;
         _connection = null;
         _process    = null;
+        _childCts   = null;
+
+        // Cancel the read loop FIRST so it unblocks from ReadLineAsync (disposing the stream alone
+        // does not reliably unblock a pending pipe read), then await the retiring loop before a
+        // replacement is installed.
+        if (childCts is not null) try { await childCts.CancelAsync().ConfigureAwait(false); } catch { /* best-effort */ }
+        try { await runLoop.WaitAsync(TimeSpan.FromSeconds(5), _time).ConfigureAwait(false); } catch { /* best-effort */ }
 
         if (connection is not null) {
             connection.OnNotification -= HandleNotification;
@@ -457,9 +541,13 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         }
         if (process is not null)
             try { await process.DisposeAsync().ConfigureAwait(false); } catch { /* best-effort */ }
+        childCts?.Dispose();
     }
 
     // ── JSON helpers ───────────────────────────────────────────────────────────────────────────
+
+    static string MapEffort(string effort) =>
+        string.Equals(effort, "max", StringComparison.OrdinalIgnoreCase) ? "xhigh" : effort;
 
     static string? Str(JsonElement o, string name) =>
         o.ValueKind == JsonValueKind.Object && o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String

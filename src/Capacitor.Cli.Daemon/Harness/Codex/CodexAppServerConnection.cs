@@ -273,40 +273,49 @@ internal sealed partial class CodexAppServerConnection : IAsyncDisposable {
     /// exception escape to <see cref="DispatchLineAsync"/>'s log-and-skip catch.
     /// </summary>
     async Task HandleServerRequestAsync(JsonElement root, JsonElement idElement, JsonElement methodElement, CancellationToken ct) {
-        var method        = methodElement.GetString() ?? "";
-        var paramsElement = root.TryGetProperty("params", out var p) ? p.Clone() : (JsonElement?) null;
-
         // Preserve the raw id JsonElement verbatim — inbound ids are not guaranteed to fit our own
         // `long` id space (JSON-RPC allows string/number), so we must not force a parse that could
         // throw and kill the read loop.
         var idClone = idElement.Clone();
 
-        JsonElement? result;
-        AcpError?    error = null;
+        JsonElement? result = null;
+        AcpError?    error;
 
-        var handler = OnServerRequest;
-        if (handler is null) {
-            error  = new AcpError(-32601, $"Method not found: {method}", null);
-            result = null;
+        // A wrong-typed `method` (a number, say) must NOT strand the id: the "always one response"
+        // invariant covers this dispatch/validation path too, so answer -32600 with the original id
+        // rather than letting GetString() throw into DispatchLineAsync's log-and-skip catch.
+        if (methodElement.ValueKind != JsonValueKind.String) {
+            _logger.LogDebug("app-server: inbound server request with non-string method (kind={Kind}); responding -32600",
+                methodElement.ValueKind);
+            error = new AcpError(-32600, "Invalid request: method must be a string", null);
         } else {
-            // The handler contract only needs Method/Params — it never reads Id back — so a
-            // placeholder 0 is safe. The response written back uses `idClone`, the ORIGINAL raw
-            // JsonElement, never this placeholder.
-            var request = new AcpRequest(0, method, paramsElement);
+            var method        = methodElement.GetString() ?? "";
+            var paramsElement = root.TryGetProperty("params", out var p) ? p.Clone() : (JsonElement?) null;
+            error = null;
 
-            try {
-                result = await handler(request, ct).ConfigureAwait(false);
-            } catch (Exception ex) {
-                _logger.LogDebug(ex, "app-server: OnServerRequest handler threw for method={Method}", method);
-                error  = new AcpError(-32603, "Internal error", null);
-                result = null;
-            }
+            var handler = OnServerRequest;
+            if (handler is null) {
+                error  = new AcpError(-32601, $"Method not found: {method}", null);
+            } else {
+                // The handler contract only needs Method/Params — it never reads Id back — so a
+                // placeholder 0 is safe. The response written back uses `idClone`, the ORIGINAL raw
+                // JsonElement, never this placeholder.
+                var request = new AcpRequest(0, method, paramsElement);
 
-            // A handler that ran without throwing but returned null means "I don't handle this
-            // method" — treat it exactly like the no-handler branch, never a null-result success.
-            if (result is null && error is null) {
-                _logger.LogDebug("app-server: OnServerRequest handler declined method={Method}; responding -32601 Method not found", method);
-                error = new AcpError(-32601, $"Method not found: {method}", null);
+                try {
+                    result = await handler(request, ct).ConfigureAwait(false);
+                } catch (Exception ex) {
+                    _logger.LogDebug(ex, "app-server: OnServerRequest handler threw for method={Method}", method);
+                    error  = new AcpError(-32603, "Internal error", null);
+                    result = null;
+                }
+
+                // A handler that ran without throwing but returned null means "I don't handle this
+                // method" — treat it exactly like the no-handler branch, never a null-result success.
+                if (result is null && error is null) {
+                    _logger.LogDebug("app-server: OnServerRequest handler declined method={Method}; responding -32601 Method not found", method);
+                    error = new AcpError(-32601, $"Method not found: {method}", null);
+                }
             }
         }
 
@@ -317,12 +326,12 @@ internal sealed partial class CodexAppServerConnection : IAsyncDisposable {
             // throw before a byte goes out, silently violating that invariant.
             await WriteServerResponseAsync(idClone, result, error, CancellationToken.None).ConfigureAwait(false);
         } catch (Exception ex) {
-            _logger.LogDebug(ex, "app-server: failed to write server-request response for method={Method}; sending internal-error fallback", method);
+            _logger.LogDebug(ex, "app-server: failed to write server-request response (method.kind={Kind}); sending internal-error fallback", methodElement.ValueKind);
 
             try {
                 await WriteServerResponseAsync(idClone, null, new AcpError(-32603, "Internal error", null), CancellationToken.None).ConfigureAwait(false);
             } catch (Exception fallbackEx) {
-                _logger.LogDebug(fallbackEx, "app-server: internal-error fallback response also failed to write for method={Method}", method);
+                _logger.LogDebug(fallbackEx, "app-server: internal-error fallback response also failed to write (method.kind={Kind})", methodElement.ValueKind);
             }
         }
     }

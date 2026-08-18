@@ -23,8 +23,8 @@ public class CodexAppServerHostedAgentRuntimeTests {
         public ValueTask DisposeAsync() { HasExited = true; return ValueTask.CompletedTask; }
     }
 
-    static CodexAppServerLaunch Launch(string? model = null, string? prompt = null, string sandbox = "read-only") =>
-        new(Cwd: "/tmp/wt", Model: model, InitialPrompt: prompt, Sandbox: sandbox,
+    static CodexAppServerLaunch Launch(string? model = null, string? prompt = null, string sandbox = "read-only", string? effort = null) =>
+        new(Cwd: "/tmp/wt", Model: model, Effort: effort, InitialPrompt: prompt, Sandbox: sandbox,
             Approval: "never", WritableRoots: ["/tmp/wt"], ClientVersion: "0.146.0");
 
     /// <summary>Builds a spawn delegate that hands each spawn a fresh fake (indexed), recording the
@@ -201,6 +201,63 @@ public class CodexAppServerHostedAgentRuntimeTests {
         await Assert.ThrowsAsync<NotSupportedException>(() => runtime.SendRawInputAsync([1, 2, 3]));
         await Assert.That(runtime.EmitsTerminalOutput).IsFalse();
 
+        await runtime.DisposeAsync();
+    }
+
+    // The orchestrator treats ReadOutputAsync ending as the finalize trigger, so it must NOT complete
+    // until the runtime is terminal — otherwise every reviewer is killed seconds after launch.
+    [Test]
+    public async Task ReadOutput_does_not_complete_until_the_runtime_is_terminal() {
+        var fake = new FakeCodexAppServer();
+        var (runtime, _, _) = Build(_ => fake, Launch());
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await using var e = runtime.ReadOutputAsync().GetAsyncEnumerator();
+        var moveNext = e.MoveNextAsync().AsTask();
+
+        // Still live: the stream must not end while the runtime is running.
+        var early = await Task.WhenAny(moveNext, Task.Delay(300));
+        await Assert.That(early).IsNotSameReferenceAs(moveNext);
+
+        await runtime.DisposeAsync();
+        // Terminal now: the stream ends (no bytes ever, EmitsTerminalOutput=false).
+        await Assert.That(await moveNext.WaitAsync(HangGuard)).IsFalse();
+    }
+
+    // The hook-trust seed-and-restart tears down child 1; its read-loop end must NOT trip the
+    // whole-runtime terminal signal, or a round on child 2 would report idle immediately.
+    [Test]
+    public async Task A_round_after_the_hook_seed_restart_still_settles_from_turn_completed() {
+        var untrusted = new FakeCodexAppServer {
+            HooksData = FakeCodexAppServer.HookData([
+                ("sessionStart", "kcap hook --codex", "untrusted", "sha256:aa"),
+                ("stop", "kcap hook --codex", "trusted", "sha256:b"),
+                ("permissionRequest", "kcap hook --codex", "trusted", "sha256:c"),
+            ]),
+        };
+        var trusted = new FakeCodexAppServer();
+        var (runtime, _, fakeAt) = Build(i => i == 0 ? untrusted : trusted, Launch());
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await runtime.SendUserInputAsync("review").WaitAsync(HangGuard);
+        await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        // The turn ran against child 2 (the trusted respawn), and the round genuinely settled.
+        await Assert.That(fakeAt(1).ReceivedMethods).Contains("turn/start");
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Requested_effort_is_mapped_and_passed_on_turn_start() {
+        var fake = new FakeCodexAppServer();
+        var (runtime, _, _) = Build(_ => fake, Launch(effort: "max"));
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await runtime.SendUserInputAsync("review").WaitAsync(HangGuard);
+        await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        // "max" maps to "xhigh", mirroring the PTY launcher.
+        await Assert.That(fake.LastTurnEffort).IsEqualTo("xhigh");
         await runtime.DisposeAsync();
     }
 }

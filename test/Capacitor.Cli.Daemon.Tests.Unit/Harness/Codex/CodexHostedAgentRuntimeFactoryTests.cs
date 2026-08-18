@@ -168,6 +168,36 @@ public class CodexHostedAgentRuntimeFactoryTests {
         }
     }
 
+    [Test]
+    [NotInParallel("HomeEnvVarMutation")]
+    public async Task Handshake_failure_disposes_the_spawned_child() {
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        using var home = new TempDir();
+        using var wt   = new TempDir();
+        WriteWorktreeHooks(wt.Path);
+        await using var fake = new FakeCodexAppServer { ThreadId = "" }; // thread/start returns no id -> StartAsync throws
+
+        try {
+            Environment.SetEnvironmentVariable("HOME", home.Path);
+            Environment.SetEnvironmentVariable("CODEX_HOME", System.IO.Path.Combine(home.Path, ".codex"));
+
+            var process = new FakeAcpProcess();
+            CodexAppServerSpawnFactory seam = (_, _, _, _, _, _, _) =>
+                Task.FromResult<(CodexAppServerConnection, IAcpProcess)>((fake.ConnectClient(), process));
+            var factory = Factory(new RecordingPtyFactory(), appServerActive: true, seam);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => factory.StartAsync(Ctx(isReviewFlow: true, wt.Path), CancellationToken.None).WaitAsync(HangGuard));
+
+            // The factory disposed the runtime on the failed handshake, so the spawned child is not leaked.
+            await Assert.That(process.HasExited).IsTrue();
+        } finally {
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            Environment.SetEnvironmentVariable("CODEX_HOME", originalCodexHome);
+        }
+    }
+
     static void WriteWorktreeHooks(string worktreePath) {
         var dir = System.IO.Path.Combine(worktreePath, ".codex");
         System.IO.Directory.CreateDirectory(dir);

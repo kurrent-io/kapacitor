@@ -44,6 +44,7 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
     public readonly List<string>       InitializeOptOuts  = [];
     public string?                     LastThreadStartSandbox;
     public string?                     LastTurnApprovalPolicy;
+    public string?                     LastTurnEffort;
     public JsonElement?                ApprovalResponse; // the client's response to the injected request
     int _turnStartCount;
 
@@ -121,6 +122,8 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
                 }
                 if (@params.ValueKind == JsonValueKind.Object && @params.TryGetProperty("approvalPolicy", out var ap))
                     LastTurnApprovalPolicy = ap.GetString();
+                if (@params.ValueKind == JsonValueKind.Object && @params.TryGetProperty("effort", out var ef))
+                    LastTurnEffort = ef.GetString();
 
                 var turnId = "turn-" + _turnStartCount;
                 await RespondAsync(id, new JsonObject {

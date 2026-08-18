@@ -408,6 +408,33 @@ public class CodexAppServerConnectionTests {
         await SwallowCancellation(runTask);
     }
 
+    [Test]
+    public async Task Wrong_typed_method_on_a_server_request_answers_invalid_request_with_the_id() {
+        await using var harness = new Harness();
+        using var       cts     = new CancellationTokenSource();
+        var             runTask = harness.Connection.RunAsync(cts.Token);
+
+        // A frame with an id but a NUMERIC method must not strand the id — the "always one response"
+        // guarantee covers the dispatch/validation path too.
+        await harness.WriteFrameToConnectionAsync("""{"jsonrpc":"2.0","id":55,"method":123,"params":{}}""");
+
+        var frame = await harness.ReadFrameFromConnectionAsync();
+        using var doc = JsonDocument.Parse(frame);
+        await Assert.That(doc.RootElement.GetProperty("id").GetInt64()).IsEqualTo(55L);
+        await Assert.That(doc.RootElement.TryGetProperty("result", out _)).IsFalse();
+        await Assert.That(doc.RootElement.GetProperty("error").GetProperty("code").GetInt32()).IsEqualTo(-32600);
+
+        // Loop still alive afterward.
+        var tcs = new TaskCompletionSource<AcpNotification>(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Connection.OnNotification += n => tcs.TrySetResult(n);
+        await harness.WriteFrameToConnectionAsync("""{"jsonrpc":"2.0","method":"turn.completed","params":{"threadId":"alive"}}""");
+        var notification = await tcs.Task.WaitAsync(HangGuard);
+        await Assert.That(notification.Params!.Value.GetProperty("threadId").GetString()).IsEqualTo("alive");
+
+        cts.Cancel();
+        await SwallowCancellation(runTask);
+    }
+
     static async Task SwallowCancellation(Task task) {
         try {
             await task.WaitAsync(HangGuard);

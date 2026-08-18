@@ -81,6 +81,7 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
         var launch = new CodexAppServerLaunch(
             Cwd:           ctx.Worktree.Path,
             Model:         ctx.Model,
+            Effort:        ctx.Effort,
             InitialPrompt: ctx.Prompt,
             Sandbox:       sandbox,
             Approval:      approval,
@@ -94,7 +95,15 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
             spawn, launch, ctx.ActivityClock,
             _loggerFactory.CreateLogger<CodexAppServerHostedAgentRuntime>());
 
-        await runtime.StartAsync(ct).ConfigureAwait(false);
+        // StartAsync may spawn a child before it throws (a failed hooks/list, thread/start, or initial
+        // turn on the fail-closed paths). The orchestrator never receives a runtime it did not get a
+        // HostedRuntimeStart for, so dispose it here to avoid leaking a live Codex child.
+        try {
+            await runtime.StartAsync(ct).ConfigureAwait(false);
+        } catch {
+            await runtime.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
         return new HostedRuntimeStart(runtime, McpConfigPath: null);
     }
 

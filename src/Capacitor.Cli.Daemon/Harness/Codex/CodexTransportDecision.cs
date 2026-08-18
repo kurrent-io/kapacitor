@@ -45,22 +45,22 @@ internal static class CodexTransportDecision {
     static (int Major, int Minor, int Patch)? ParseSemver(string? version) {
         if (string.IsNullOrWhiteSpace(version)) return null;
 
-        // Find the first token shaped `<digits>.<digits>[.<digits>]` so trailing/leading words
-        // (a `codex-cli` prefix, a pre-release suffix) do not defeat the parse.
-        foreach (var token in version.Split([' ', '\t', '\r', '\n', '-', '_'], StringSplitOptions.RemoveEmptyEntries)) {
+        // Accept ONLY a clean numeric release token `<digits>.<digits>[.<digits>]` (a `codex-cli`
+        // prefix word is split off on whitespace and ignored). A prerelease or build-metadata tail
+        // (`0.146.0-rc.1`, `0.146.0+meta`) or a non-numeric part makes that token non-clean, so it
+        // is rejected and the caller fails toward PTY — this gate enables the containment-sensitive
+        // transport, so an RC that is BELOW the verified release must never be normalized upward to it.
+        foreach (var token in version.Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries)) {
             var t = token.TrimStart('v', 'V');
             var parts = t.Split('.');
-            if (parts.Length < 2) continue;
-            if (!int.TryParse(parts[0], out var major) || !int.TryParse(parts[1], out var minor)) continue;
+            if (parts.Length is < 2 or > 3) continue;
+            if (!AllDigits(parts[0]) || !AllDigits(parts[1])) continue;
+            if (parts.Length == 3 && !AllDigits(parts[2])) continue;
 
-            var patch = 0;
-            if (parts.Length >= 3) {
-                // Patch may carry a pre-release tail ("0+meta" / "0rc1"); take the leading digits.
-                var digits = new string(parts[2].TakeWhile(char.IsDigit).ToArray());
-                _ = int.TryParse(digits, out patch);
-            }
-            return (major, minor, patch);
+            return (int.Parse(parts[0]), int.Parse(parts[1]), parts.Length == 3 ? int.Parse(parts[2]) : 0);
         }
         return null;
     }
+
+    static bool AllDigits(string s) => s.Length > 0 && s.All(char.IsAsciiDigit);
 }
