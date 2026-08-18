@@ -1,0 +1,60 @@
+# Routine sweeps only — security updates are a separate always-on channel in repo settings. Weekly, not
+# daily: Dependabot rebases an open group PR every run, and each rebase re-runs the whole matrix.
+# No `docker`/`npm` — nothing there is a dependency manifest; see the comments at those pins.
+version: 2
+updates:
+  # CPM: Directory.Packages.props is the single pin, and setup-dotnet keys its restore cache on it.
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    commit-message:
+      prefix: chore
+    groups:
+      # Each ships as one release train on one version string, so a major split across PRs cannot
+      # build — grouped across all update types, and excluded below rather than trusting group order.
+      avalonia:
+        patterns: ["Avalonia*", "ReactiveUI.Avalonia"]
+      tunit:
+        patterns: ["TUnit*"]
+      # Majors stay ungrouped: one is a judgement call, and must not ride along in a batch.
+      nuget-minor-and-patch:
+        patterns: ["*"]
+        exclude-patterns: ["Avalonia*", "ReactiveUI.Avalonia", "TUnit*"]
+        update-types: [minor, patch]
+
+  # Monthly: rollForward latestFeature means every 10.0.1xx SDK already satisfies the pin, so raising
+  # it only raises every developer machine's floor.
+  - package-ecosystem: dotnet-sdk
+    directory: /
+    schedule:
+      interval: monthly
+      time: "05:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    commit-message:
+      prefix: chore
+
+  # All on major tags, so these arrive as majors — each a runner-version question (v5+ of the
+  # GitHub-owned actions needs runner >= 2.327.1), not a rubber stamp.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    commit-message:
+      prefix: chore
+    groups:
+      actions-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]

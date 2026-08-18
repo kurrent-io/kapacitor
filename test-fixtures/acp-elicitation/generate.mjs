@@ -7,6 +7,8 @@
 // export is a variant-discriminator helper only), so the verdict mechanism is ajv 8 compiled
 // against the SDK-shipped schema — recorded here per the design spec's "where the SDK can
 // express that" clause (AI-1733 spec §8, Linear).
+// The exact 1.3.0 in package.json is part of that claim, and CI never runs this generator — so a
+// bump has to be paired with a regeneration by hand. Dependabot is not pointed here.
 //
 // Four-group taxonomy (spec §8):
 //   A: protocol-valid, rendered        — MUST pass schema validation; classifier Renderable.

@@ -185,6 +185,7 @@ jobs:
             daemon-binary: kcap-daemon
           - rid: linux-musl-x64
             os: ubuntu-latest
+            # Dependabot's docker ecosystem does not scan job `container:` — bump by hand.
             container: alpine:3.20
             npm-package: kcap-linux-musl-x64
             cli-binary: kcap
