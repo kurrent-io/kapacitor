@@ -484,17 +484,15 @@ public class SetupCommandTests {
         using var kiro = new TempDir();
         using var anti = new TempDir();
 
-        Directory.CreateDirectory(Path.Combine(kiro.Path, "kiro-skills", "kcap-guided-tour"));
-        await File.WriteAllTextAsync(
-            Path.Combine(kiro.Path, "kiro-skills", "kcap-guided-tour", "SKILL.md"), "skill");
+        kiro.CreateDir("kiro-skills", "kcap-guided-tour");
+        kiro.CreateFile(["kiro-skills", "kcap-guided-tour", "SKILL.md"], "skill");
         await Assert.That(SetupCommand.ShouldOfferGuidedTour(
-            true, Path.Combine(kiro.Path, "none.json"), GuidedTourPaths(kiro.Path))).IsTrue();
+            true, kiro.PathTo("none.json"), GuidedTourPaths(kiro.Path))).IsTrue();
 
-        Directory.CreateDirectory(Path.Combine(anti.Path, "antigravity-skills", "kcap-guided-tour"));
-        await File.WriteAllTextAsync(
-            Path.Combine(anti.Path, "antigravity-skills", "kcap-guided-tour", "SKILL.md"), "skill");
+        anti.CreateDir("antigravity-skills", "kcap-guided-tour");
+        anti.CreateFile(["antigravity-skills", "kcap-guided-tour", "SKILL.md"], "skill");
         await Assert.That(SetupCommand.ShouldOfferGuidedTour(
-            true, Path.Combine(anti.Path, "none.json"), GuidedTourPaths(anti.Path))).IsTrue();
+            true, anti.PathTo("none.json"), GuidedTourPaths(anti.Path))).IsTrue();
     }
 
     [Test]

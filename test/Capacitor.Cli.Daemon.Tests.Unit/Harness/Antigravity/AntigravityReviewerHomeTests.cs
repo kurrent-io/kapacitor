@@ -271,7 +271,7 @@ public class AntigravityReviewerHomeTests {
             await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_home_escaped_root");
 
             // Refused, not merely reported: nothing was written into the operator's tree.
-            await Assert.That(Directory.Exists(Path.Combine(elsewhere.Path, ".gemini"))).IsFalse();
+            await Assert.That(Directory.Exists(elsewhere.PathTo(".gemini"))).IsFalse();
         } finally {
             Environment.SetEnvironmentVariable("GEMINI_CLI_HOME", previous);
         }

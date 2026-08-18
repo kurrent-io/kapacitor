@@ -46,7 +46,7 @@ public class SqliteNativeResolverTests {
         var asset = SqliteNativeResolver.Assets[rid];
 
         // Seed a local mirror (the airgap path) with the pristine native.
-        File.Copy(PristineNativePath(rid), Path.Combine(mirror.Path, asset.AssetName));
+        File.Copy(PristineNativePath(rid), mirror.PathTo(asset.AssetName));
 
         var path = SqliteNativeResolver.EnsureNativeLibrary(rid, mirror.Path, cache.Path, "0.0.0");
 
@@ -68,13 +68,13 @@ public class SqliteNativeResolverTests {
         using var cache  = new TempDir();
         var asset = SqliteNativeResolver.Assets[rid];
 
-        File.WriteAllBytes(Path.Combine(mirror.Path, asset.AssetName), [0xDE, 0xAD, 0xBE, 0xEF]);
+        File.WriteAllBytes(mirror.PathTo(asset.AssetName), [0xDE, 0xAD, 0xBE, 0xEF]);
 
         await Assert.That(() =>
                 SqliteNativeResolver.EnsureNativeLibrary(rid, mirror.Path, cache.Path, "0.0.0"))
             .Throws<DllNotFoundException>();
 
-        var wouldBe = Path.Combine(cache.Path, SqliteNativeResolver.EngineVersion, rid, asset.FileName);
+        var wouldBe = cache.PathTo(SqliteNativeResolver.EngineVersion, rid, asset.FileName);
         await Assert.That(File.Exists(wouldBe)).IsFalse()
             .Because("a failed integrity check must not leave a half-written lib in the cache");
     }

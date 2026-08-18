@@ -395,7 +395,7 @@ public class PluginCommandCodexTests {
         await Assert.That(exit).IsEqualTo(0);
 
         // hooks.json must NOT exist — user never opted in.
-        var hooksPath = Path.Combine(fakeHome.Path, ".codex", "hooks.json");
+        var hooksPath = fakeHome.PathTo(".codex", "hooks.json");
         await Assert.That(File.Exists(hooksPath)).IsFalse();
     }
 
@@ -405,7 +405,7 @@ public class PluginCommandCodexTests {
 
         // Seed hooks.json with a stale 5-second PermissionRequest timeout
         // and NO marker. This is the pre-marker scenario.
-        var codexDir = Path.Combine(fakeHome.Path, ".codex");
+        var codexDir = fakeHome.PathTo(".codex");
         Directory.CreateDirectory(codexDir);
         var hooksPath = Path.Combine(codexDir, "hooks.json");
         await File.WriteAllTextAsync(hooksPath, """
@@ -440,7 +440,7 @@ public class PluginCommandCodexTests {
     public async Task Install_codex_with_if_installed_is_noop_when_marker_matches_current_version() {
         using var fakeHome = new TempDir();
 
-        var codexDir = Path.Combine(fakeHome.Path, ".codex");
+        var codexDir = fakeHome.PathTo(".codex");
         Directory.CreateDirectory(codexDir);
 
         // Pre-seed hooks.json with sentinel content + matching marker.
@@ -536,7 +536,7 @@ public class PluginCommandCodexInstallIntegrationTests {
         using var pluginRoot = new TempDir();
 
         // Plant a fake plugin tree with skills/ present but validate-plan/ missing.
-        var skillsSrc = Path.Combine(pluginRoot.Path, "skills");
+        var skillsSrc = pluginRoot.PathTo("skills");
         Directory.CreateDirectory(skillsSrc);
         foreach (var name in AgentsSkillsInstaller.SourceNames.Where(n => n != "validate-plan")) {
             var dir = Path.Combine(skillsSrc, name);
@@ -551,7 +551,7 @@ public class PluginCommandCodexInstallIntegrationTests {
         await Assert.That(exit).IsEqualTo(1);
 
         // Atomicity contract: hooks.json must NOT exist after a failed install.
-        var hooksPath = Path.Combine(fakeHome.Path, ".codex", "hooks.json");
+        var hooksPath = fakeHome.PathTo(".codex", "hooks.json");
         await Assert.That(File.Exists(hooksPath)).IsFalse();
 
         var stderr = capturedErr.ToString();
@@ -576,7 +576,7 @@ public class PluginCommandCodexInstallIntegrationTests {
 
         // The atomic-install contract: NO hooks.json may exist in the
         // temp HOME after a failed install.
-        var hooksPath = Path.Combine(fakeHome.Path, ".codex", "hooks.json");
+        var hooksPath = fakeHome.PathTo(".codex", "hooks.json");
         await Assert.That(File.Exists(hooksPath)).IsFalse();
 
         var stderr = capturedErr.ToString();
@@ -593,7 +593,7 @@ public class PluginCommandCodexInstallIntegrationTests {
             ["plugin", "install", "--codex"], TestEnv(fakeHome.Path, pluginRoot.Path));
         await Assert.That(exit).IsEqualTo(0);
 
-        var configPath = Path.Combine(fakeHome.Path, ".codex", "config.toml");
+        var configPath = fakeHome.PathTo(".codex", "config.toml");
         var toml       = await File.ReadAllTextAsync(configPath);
         await Assert.That(toml).Contains("[mcp_servers.kcap-review]");
         await Assert.That(toml).Contains("[mcp_servers.kcap-sessions]");

@@ -29,7 +29,7 @@ public class PluginCommandClaudeTests {
         var exit = await PluginCommand.HandleAsync(["plugin", "install", "--if-installed"], env);
         await Assert.That(exit).IsEqualTo(0);
 
-        var settingsPath = Path.Combine(fakeHome.Path, ".claude", "settings.json");
+        var settingsPath = fakeHome.PathTo(".claude", "settings.json");
         await Assert.That(File.Exists(settingsPath)).IsFalse();
     }
 
@@ -39,7 +39,7 @@ public class PluginCommandClaudeTests {
         using var pluginDir = new TempDir();
 
         // Seed pre-marker install: enabledPlugins entry, no marker.
-        var claudeDir = Path.Combine(fakeHome.Path, ".claude");
+        var claudeDir = fakeHome.PathTo(".claude");
         Directory.CreateDirectory(claudeDir);
         var settingsPath = Path.Combine(claudeDir, "settings.json");
         await File.WriteAllTextAsync(settingsPath, """
@@ -67,7 +67,7 @@ public class PluginCommandClaudeTests {
     public async Task Install_claude_with_if_installed_is_noop_when_marker_matches_current_version() {
         using var fakeHome = new TempDir();
 
-        var claudeDir = Path.Combine(fakeHome.Path, ".claude");
+        var claudeDir = fakeHome.PathTo(".claude");
         Directory.CreateDirectory(claudeDir);
         var settingsPath = Path.Combine(claudeDir, "settings.json");
 
@@ -91,7 +91,7 @@ public class PluginCommandClaudeTests {
         var capturedErr     = new StringWriter();
 
         // Seed: marker present so the gate proceeds…
-        var claudeDir = Path.Combine(fakeHome.Path, ".claude");
+        var claudeDir = fakeHome.PathTo(".claude");
         Directory.CreateDirectory(claudeDir);
         await File.WriteAllTextAsync(
             Path.Combine(claudeDir, ClaudePluginInstaller.MarkerFileName),
@@ -129,7 +129,7 @@ public class PluginCommandClaudeTests {
         var       stdout    = new StringWriter();
 
         // Seed a pre-marker install so --if-installed proceeds to refresh.
-        var claudeDir = Path.Combine(fakeHome.Path, ".claude");
+        var claudeDir = fakeHome.PathTo(".claude");
         Directory.CreateDirectory(claudeDir);
         await File.WriteAllTextAsync(Path.Combine(claudeDir, "settings.json"), """
             {
@@ -152,7 +152,7 @@ public class PluginCommandClaudeTests {
     public async Task Remove_claude_deletes_marker() {
         using var fakeHome = new TempDir();
 
-        var claudeDir = Path.Combine(fakeHome.Path, ".claude");
+        var claudeDir = fakeHome.PathTo(".claude");
         Directory.CreateDirectory(claudeDir);
         var settingsPath = Path.Combine(claudeDir, "settings.json");
         await File.WriteAllTextAsync(settingsPath, """

@@ -374,7 +374,7 @@ public class BorrowedReviewContextTests {
         using var repo = NewGitRepo();
         using var root = new TempDir();
         using var external = new TempDir();
-        File.WriteAllText(Path.Combine(external.Path, "sentinel"), "keep-me");
+        external.CreateFile("sentinel", "keep-me");
         var snapshots = root.PathTo("borrowed-snapshots");
         Directory.CreateDirectory(snapshots);
         var sidecar = WorktreeManager.ReviewContextRootFor(
@@ -387,7 +387,7 @@ public class BorrowedReviewContextTests {
 
         await Assert.That(ex!.Message)
             .StartsWith("borrowed_snapshot_review_context_unsafe_storage_path");
-        await Assert.That(File.ReadAllText(Path.Combine(external.Path, "sentinel")))
+        await Assert.That(File.ReadAllText(external.PathTo("sentinel")))
             .IsEqualTo("keep-me");
     }
 
@@ -397,7 +397,7 @@ public class BorrowedReviewContextTests {
         using var repo = NewGitRepo();
         using var root = new TempDir();
         using var external = new TempDir();
-        File.WriteAllText(Path.Combine(external.Path, "sentinel"), "keep-me");
+        external.CreateFile("sentinel", "keep-me");
         Directory.CreateSymbolicLink(
             root.PathTo("borrowed-snapshots"), external.Path);
 
@@ -409,7 +409,7 @@ public class BorrowedReviewContextTests {
             .StartsWith("borrowed_snapshot_review_context_unsafe_storage_path");
         await Assert.That(Directory.GetFileSystemEntries(external.Path).Select(p => Path.GetFileName(p)))
             .IsEquivalentTo(["sentinel"]);
-        await Assert.That(File.ReadAllText(Path.Combine(external.Path, "sentinel")))
+        await Assert.That(File.ReadAllText(external.PathTo("sentinel")))
             .IsEqualTo("keep-me");
 
         // Remove the symlink before TempDir.Dispose recurses into root, so cleanup never

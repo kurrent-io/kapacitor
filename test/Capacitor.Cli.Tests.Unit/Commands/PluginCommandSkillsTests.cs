@@ -31,7 +31,7 @@ public class PluginCommandSkillsTests {
         using var fakeHome   = new TempDir();
         using var pluginRoot = new TempDir();
 
-        var skillsSrc = Path.Combine(pluginRoot.Path, "skills");
+        var skillsSrc = pluginRoot.PathTo("skills");
         Directory.CreateDirectory(skillsSrc);
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
             Directory.CreateDirectory(Path.Combine(skillsSrc, name));
@@ -40,7 +40,7 @@ public class PluginCommandSkillsTests {
                 $"---\nname: {name}\n---\nbody");
         }
 
-        var legacyDir = Path.Combine(fakeHome.Path, ".codex", "skills");
+        var legacyDir = fakeHome.PathTo(".codex", "skills");
         Directory.CreateDirectory(legacyDir);
         Directory.CreateDirectory(Path.Combine(legacyDir, "kcap-recap"));
 
@@ -49,7 +49,7 @@ public class PluginCommandSkillsTests {
             TestEnv(fakeHome.Path, pluginRoot.Path));
         await Assert.That(exit).IsEqualTo(0);
 
-        var target = Path.Combine(fakeHome.Path, ".agents", "skills");
+        var target = fakeHome.PathTo(".agents", "skills");
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
             await Assert.That(Directory.Exists(Path.Combine(target, $"kcap-{name}"))).IsTrue();
         }
@@ -63,7 +63,7 @@ public class PluginCommandSkillsTests {
 
         // Seed a valid plugin source — proves the gate short-circuits
         // BEFORE attempting any work, not because the source is invalid.
-        var skillsSrc = Path.Combine(pluginRoot.Path, "skills");
+        var skillsSrc = pluginRoot.PathTo("skills");
         Directory.CreateDirectory(skillsSrc);
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
             Directory.CreateDirectory(Path.Combine(skillsSrc, name));
@@ -78,7 +78,7 @@ public class PluginCommandSkillsTests {
         await Assert.That(exit).IsEqualTo(0);
 
         // No marker existed → installer must not have run.
-        var target = Path.Combine(fakeHome.Path, ".agents", "skills");
+        var target = fakeHome.PathTo(".agents", "skills");
         await Assert.That(Directory.Exists(target)).IsFalse();
     }
 
@@ -87,7 +87,7 @@ public class PluginCommandSkillsTests {
         using var fakeHome   = new TempDir();
         using var pluginRoot = new TempDir();
 
-        var skillsSrc = Path.Combine(pluginRoot.Path, "skills");
+        var skillsSrc = pluginRoot.PathTo("skills");
         Directory.CreateDirectory(skillsSrc);
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
             Directory.CreateDirectory(Path.Combine(skillsSrc, name));
@@ -97,7 +97,7 @@ public class PluginCommandSkillsTests {
         }
 
         // Pre-seed marker (simulating a prior install).
-        var target = Path.Combine(fakeHome.Path, ".agents", "skills");
+        var target = fakeHome.PathTo(".agents", "skills");
         Directory.CreateDirectory(target);
         await File.WriteAllTextAsync(
             Path.Combine(target, AgentsSkillsInstaller.MarkerFileName),
@@ -127,7 +127,7 @@ public class PluginCommandSkillsTests {
         using var fakeHome   = new TempDir();
         using var pluginRoot = new TempDir();
 
-        var skillsSrc = Path.Combine(pluginRoot.Path, "skills");
+        var skillsSrc = pluginRoot.PathTo("skills");
         Directory.CreateDirectory(skillsSrc);
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
             Directory.CreateDirectory(Path.Combine(skillsSrc, name));
@@ -137,7 +137,7 @@ public class PluginCommandSkillsTests {
         }
 
         // Pre-marker install: kcap-* folder exists, no marker file.
-        var target = Path.Combine(fakeHome.Path, ".agents", "skills");
+        var target = fakeHome.PathTo(".agents", "skills");
         var staleSkill = Path.Combine(target, "kcap-recap");
         Directory.CreateDirectory(staleSkill);
         await File.WriteAllTextAsync(
@@ -169,7 +169,7 @@ public class PluginCommandSkillsTests {
         using var fakeHome   = new TempDir();
         using var pluginRoot = new TempDir();
 
-        var skillsSrc = Path.Combine(pluginRoot.Path, "skills");
+        var skillsSrc = pluginRoot.PathTo("skills");
         Directory.CreateDirectory(skillsSrc);
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
             Directory.CreateDirectory(Path.Combine(skillsSrc, name));
@@ -179,7 +179,7 @@ public class PluginCommandSkillsTests {
         }
 
         // Pre-seed: marker holds the *current* CLI version.
-        var target = Path.Combine(fakeHome.Path, ".agents", "skills");
+        var target = fakeHome.PathTo(".agents", "skills");
         Directory.CreateDirectory(target);
         await File.WriteAllTextAsync(
             Path.Combine(target, AgentsSkillsInstaller.MarkerFileName),
@@ -209,7 +209,7 @@ public class PluginCommandSkillsTests {
         var capturedErr    = new StringWriter();
 
         // Pre-seed marker so the gate proceeds…
-        var target = Path.Combine(fakeHome.Path, ".agents", "skills");
+        var target = fakeHome.PathTo(".agents", "skills");
         Directory.CreateDirectory(target);
         await File.WriteAllTextAsync(
             Path.Combine(target, AgentsSkillsInstaller.MarkerFileName),
@@ -230,8 +230,8 @@ public class PluginCommandSkillsTests {
     public async Task Remove_skills_clears_agents_and_legacy() {
         using var fakeHome = new TempDir();
 
-        var agentsDir = Path.Combine(fakeHome.Path, ".agents", "skills");
-        var legacyDir = Path.Combine(fakeHome.Path, ".codex", "skills");
+        var agentsDir = fakeHome.PathTo(".agents", "skills");
+        var legacyDir = fakeHome.PathTo(".codex", "skills");
         Directory.CreateDirectory(agentsDir);
         Directory.CreateDirectory(legacyDir);
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
