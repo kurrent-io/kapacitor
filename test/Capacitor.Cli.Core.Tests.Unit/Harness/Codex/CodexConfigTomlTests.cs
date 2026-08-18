@@ -10,14 +10,12 @@ public class CodexConfigTomlTests {
     // Injected native-binary path for command assertions - never bless the test runner.
     const string TestBinaryPath = "/opt/kcap-test/bin/kcap";
 
-    static string TempConfig() =>
-        Path.Combine(Directory.CreateTempSubdirectory("kcap-codextoml-").FullName, "config.toml");
-
     // The writer under test rejects symlinked path components (CanonicalConfigPath), and macOS's
     // default temp root lives under /var and /tmp — both symlinks into /private. Resolving the
     // prefix lets these tests run on macOS dev machines too (CI's Linux/Windows tmp is real).
-    static string RealTempConfig() {
-        var dir = Directory.CreateTempSubdirectory("kcap-codextoml-real-").FullName;
+    static string RealTempConfig(TempDir tmp) {
+        // Path.Combine, not PathTo: the segment below is joined to the /private-rewritten prefix.
+        var dir = tmp.Path;
         if (OperatingSystem.IsMacOS() && (dir.StartsWith("/var/", StringComparison.Ordinal) ||
                                           dir.StartsWith("/tmp/", StringComparison.Ordinal)))
             dir = "/private" + dir;
@@ -79,7 +77,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task EnableNetworkAccess_on_missing_config_writes_access_and_proxy_allowlist() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
 
         var change = CodexConfigToml.EnableNetworkAccess(["**.kcap.ai"], path);
 
@@ -96,7 +95,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task EnableNetworkAccess_is_idempotent() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
 
         var first  = CodexConfigToml.EnableNetworkAccess(["**.kcap.ai"], path);
         var second = CodexConfigToml.EnableNetworkAccess(["**.kcap.ai"], path);
@@ -110,25 +110,25 @@ public class CodexConfigTomlTests {
     public async Task EnableNetworkAccess_writes_when_config_path_has_no_directory_component() {
         // GetDirectoryName("config.toml") is empty; CreateDirectory("") would throw and
         // silently turn the write into Change.Failed without the guard.
-        var dir         = Directory.CreateTempSubdirectory("kcap-codextoml-cwd-").FullName;
+        using var tmp   = new TempDir();
         var originalCwd = Environment.CurrentDirectory;
 
         try {
-            Environment.CurrentDirectory = dir;
+            Environment.CurrentDirectory = tmp.Path;
 
             var change = CodexConfigToml.EnableNetworkAccess(["**.kcap.ai"], "config.toml");
 
             await Assert.That(change).IsEqualTo(CodexConfigToml.Change.Updated);
-            await Assert.That(File.Exists(Path.Combine(dir, "config.toml"))).IsTrue();
+            await Assert.That(File.Exists(tmp.PathTo("config.toml"))).IsTrue();
         } finally {
             Environment.CurrentDirectory = originalCwd;
-            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ }
         }
     }
 
     [Test]
     public async Task EnableNetworkAccess_empty_allowlist_is_noop() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
 
         var change = CodexConfigToml.EnableNetworkAccess([], path);
 
@@ -140,7 +140,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task EnableNetworkAccess_fully_open_no_proxy_is_left_untouched() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         File.WriteAllText(path,
             """
             [sandbox_workspace_write]
@@ -156,7 +157,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task EnableNetworkAccess_merges_into_existing_proxy_preserving_user_entries() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         File.WriteAllText(path,
             """
             model = "gpt-5.5"
@@ -186,7 +188,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task EnableNetworkAccess_existing_proxy_without_network_access_turns_it_on() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         File.WriteAllText(path,
             """
             [features.network_proxy]
@@ -206,7 +209,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task EnableNetworkAccess_malformed_config_is_not_overwritten() {
-        var path = TempConfig();
+        using var    tmp     = new TempDir();
+        var          path    = tmp.PathTo("config.toml");
         const string garbage = "{{{ not valid TOML";
         File.WriteAllText(path, garbage);
 
@@ -223,7 +227,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task RegisterKcapMcpServers_on_missing_config_writes_all_servers() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
 
         var change = CodexConfigToml.RegisterKcapMcpServers(path, resolveBinaryPath: () => TestBinaryPath);
 
@@ -249,7 +254,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task RegisterKcapMcpServers_auto_approves_only_read_only_servers() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
 
         CodexConfigToml.RegisterKcapMcpServers(path);
 
@@ -268,7 +274,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task RegisterKcapMcpServers_preserves_existing_entries_without_claiming_or_healing() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         // Pre-existing kcap entries: kcap-review with no approval mode (older install); kcap-sessions
         // where the user deliberately chose "prompt".
         File.WriteAllText(path, """
@@ -292,7 +299,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task RegisterKcapMcpServers_does_not_auto_approve_a_foreign_same_named_entry() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         // A user-authored server that shares the name "kcap-review" but is NOT kcap (different command).
         // The heal must NOT auto-approve it — ownership is keyed off command == "kcap".
         File.WriteAllText(path, """
@@ -310,7 +318,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task RegisterKcapMcpServers_does_not_auto_approve_kcap_named_entry_with_wrong_args() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         // command == "kcap" but args point at the WRITE-capable memory server under the read-only
         // "kcap-review" name. The heal must NOT auto-approve it — args don't match the expected
         // read-only server's args, and the heal never rewrites args.
@@ -331,7 +340,8 @@ public class CodexConfigTomlTests {
     public async Task RegisterKcapMcpServers_emits_snake_case_mcp_servers_table() {
         // Codex config.toml uses the snake_case `mcp_servers` table — NOT the
         // camelCase `mcpServers` key the plugin *descriptor* JSON requires.
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
 
         CodexConfigToml.RegisterKcapMcpServers(path);
 
@@ -345,7 +355,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task RegisterKcapMcpServers_falls_back_to_kcap_when_binary_path_unresolvable() {
-        var path = RealTempConfig();
+        using var tmp = new TempDir();
+        var path = RealTempConfig(tmp);
 
         CodexConfigToml.RegisterKcapMcpServers(path, resolveBinaryPath: () => null);
 
@@ -355,7 +366,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task RegisterKcapMcpServers_heals_owned_entries_across_binary_relayout() {
-        var path = RealTempConfig();
+        using var tmp = new TempDir();
+        var path = RealTempConfig(tmp);
 
         // Fresh install at binary A, then an npm re-layout moves the binary to B. The
         // ownership-ledger fingerprint recorded at A still matches the on-disk entry → heal.
@@ -374,7 +386,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task RegisterKcapMcpServers_never_heals_a_customized_owned_entry() {
-        var path = RealTempConfig();
+        using var tmp = new TempDir();
+        var path = RealTempConfig(tmp);
         CodexConfigToml.RegisterKcapMcpServers(path, resolveBinaryPath: () => "/opt/a/kcap");
 
         // The user edits the owned entry — fingerprint no longer matches, so the relayout
@@ -393,7 +406,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task UnregisterKcapMcpServers_removes_absolute_registered_owned_entries() {
-        var path = RealTempConfig();
+        using var tmp = new TempDir();
+        var path = RealTempConfig(tmp);
         CodexConfigToml.RegisterKcapMcpServers(path, resolveBinaryPath: () => "/opt/a/kcap");
 
         var change = CodexConfigToml.UnregisterKcapMcpServers(path);
@@ -404,7 +418,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task RegisterKcapMcpServers_is_idempotent() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
 
         var first  = CodexConfigToml.RegisterKcapMcpServers(path);
         var second = CodexConfigToml.RegisterKcapMcpServers(path);
@@ -415,7 +430,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task RegisterKcapMcpServers_preserves_user_config_and_servers() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         File.WriteAllText(path,
             """
             model = "gpt-5.5"
@@ -443,7 +459,8 @@ public class CodexConfigTomlTests {
     [Test]
     public async Task RegisterKcapMcpServers_does_not_clobber_existing_kcap_entry() {
         // A user who set an absolute-path command (e.g. for a GUI host) must keep it.
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         File.WriteAllText(path,
             """
             [mcp_servers.kcap-sessions]
@@ -465,7 +482,8 @@ public class CodexConfigTomlTests {
     public async Task RegisterKcapMcpServers_non_table_mcp_servers_is_failure_not_clobber() {
         // A non-table `mcp_servers` value must not be silently replaced (honours the
         // non-destructive contract) — register fails and leaves the file untouched.
-        var path = TempConfig();
+        using var    tmp     = new TempDir();
+        var          path    = tmp.PathTo("config.toml");
         const string content = "mcp_servers = \"oops\"\n";
         File.WriteAllText(path, content);
 
@@ -477,7 +495,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task RegisterKcapMcpServers_malformed_config_is_not_overwritten() {
-        var path = TempConfig();
+        using var    tmp     = new TempDir();
+        var          path    = tmp.PathTo("config.toml");
         const string garbage = "{{{ not valid TOML";
         File.WriteAllText(path, garbage);
 
@@ -491,7 +510,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task UnregisterKcapMcpServers_removes_kcap_entries_and_drops_empty_table() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         CodexConfigToml.RegisterKcapMcpServers(path);
 
         var change = CodexConfigToml.UnregisterKcapMcpServers(path);
@@ -502,7 +522,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task UnregisterKcapMcpServers_preserves_user_servers() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         File.WriteAllText(path,
             """
             [mcp_servers.my-tool]
@@ -525,7 +546,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task UnregisterKcapMcpServers_is_noop_when_absent() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         File.WriteAllText(path, """model = "gpt-5.5" """);
 
         var change = CodexConfigToml.UnregisterKcapMcpServers(path);
@@ -535,7 +557,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task UnregisterKcapMcpServers_preserves_owned_entry_changed_by_user() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         CodexConfigToml.RegisterKcapMcpServers(path);
         var root = ReadToml(path);
         var flows = (TomlTable)((TomlTable)root["mcp_servers"])["kcap-flows"];
@@ -553,7 +576,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task UnregisterKcapMcpServers_corrupt_ledger_preserves_everything() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         CodexConfigToml.RegisterKcapMcpServers(path);
         var ledger = Path.Combine(Path.GetDirectoryName(path)!, "mcp-ownership-v1.json");
         File.WriteAllText(ledger, "not json");
@@ -567,7 +591,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task UnregisterKcapMcpServers_preserves_owned_entry_with_table_array_edit() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         CodexConfigToml.RegisterKcapMcpServers(path);
         var root = ReadToml(path);
         var flows = (TomlTable)((TomlTable)root["mcp_servers"])["kcap-flows"];
@@ -585,7 +610,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task Unregister_without_server_table_relinquishes_stale_claims() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         CodexConfigToml.RegisterKcapMcpServers(path);
         var root = ReadToml(path);
         root.Remove("mcp_servers");
@@ -610,24 +636,21 @@ public class CodexConfigTomlTests {
     [Test]
     public async Task Register_rejects_symlinked_parent_directory() {
         if (OperatingSystem.IsWindows()) return;
-        var root = Path.Combine(Path.GetTempPath(), "kcap-codex-parent-link-" + Guid.NewGuid().ToString("N"));
-        var real = Path.Combine(root, "real");
-        var alias = Path.Combine(root, "alias");
-        Directory.CreateDirectory(real);
+        using var tmp = new TempDir();
+        var real  = tmp.CreateDir("real");
+        var alias = tmp.PathTo("alias");
         Directory.CreateSymbolicLink(alias, real);
-        try {
-            var change = CodexConfigToml.RegisterKcapMcpServers(Path.Combine(alias, "config.toml"));
-            await Assert.That(change).IsEqualTo(CodexConfigToml.Change.Failed);
-            await Assert.That(File.Exists(Path.Combine(real, "config.toml"))).IsFalse();
-        } finally {
-            try { Directory.Delete(root, true); } catch { }
-        }
+
+        var change = CodexConfigToml.RegisterKcapMcpServers(Path.Combine(alias, "config.toml"));
+        await Assert.That(change).IsEqualTo(CodexConfigToml.Change.Failed);
+        await Assert.That(File.Exists(Path.Combine(real, "config.toml"))).IsFalse();
     }
 
     [Test]
     public async Task RegisterKcapMcpServers_writes_owner_only_files_on_unix() {
         if (OperatingSystem.IsWindows()) return;
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
 
         CodexConfigToml.RegisterKcapMcpServers(path);
 
@@ -641,7 +664,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task ReadMcpServerNames_returns_table_keys_sorted_ordinal() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         File.WriteAllText(path, """
             [mcp_servers.node_repl]
             command = "node"
@@ -663,14 +687,16 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task ReadMcpServerNames_missing_file_returns_empty() {
-        var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-codextoml-").FullName, "does-not-exist.toml");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("does-not-exist.toml");   // the dir exists, the file does not
 
         await Assert.That(CodexConfigToml.ReadMcpServerNames(path)).IsEmpty();
     }
 
     [Test]
     public async Task ReadMcpServerNames_no_mcp_servers_table_returns_empty() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         File.WriteAllText(path, """
             model = "gpt-5.3-codex"
             """);
@@ -680,7 +706,8 @@ public class CodexConfigTomlTests {
 
     [Test]
     public async Task ReadMcpServerNames_malformed_toml_returns_empty() {
-        var path = TempConfig();
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("config.toml");
         File.WriteAllText(path, "this is = = not valid [toml");
 
         await Assert.That(CodexConfigToml.ReadMcpServerNames(path)).IsEmpty();

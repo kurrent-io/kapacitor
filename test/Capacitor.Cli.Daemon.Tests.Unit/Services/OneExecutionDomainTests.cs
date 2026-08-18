@@ -125,11 +125,11 @@ public class OneExecutionDomainTests {
     }
 
     static (LaunchConsentGate gate, ParkingPrompter prompter) PromptGateWithParkingPrompter(
-            string dir, int promptTimeoutSeconds = 60) {
-        var store = new LaunchConsentStore(dir, NullLogger.Instance);
+            string stateDir, int promptTimeoutSeconds = 60) {
+        var store = new LaunchConsentStore(stateDir, NullLogger.Instance);
         store.TryReplace(new LaunchConsentPolicy(LaunchConsentDefault.Prompt, promptTimeoutSeconds, []), out _);
         var prompter = new ParkingPrompter();
-        var gate = new LaunchConsentGate(store, new LaunchConsentDecisionLog(dir, NullLogger.Instance),
+        var gate = new LaunchConsentGate(store, new LaunchConsentDecisionLog(stateDir, NullLogger.Instance),
             prompter, new FakeTimeProvider(), NullLogger<LaunchConsentGate>.Instance);
         return (gate, prompter);
     }
@@ -162,8 +162,8 @@ public class OneExecutionDomainTests {
     // and a status-report request (processor-independent) completes freely.
     [Test]
     public async Task Parked_launch_does_not_block_stop_acceptance_or_a_status_report_request() {
-        var dir = Directory.CreateTempSubdirectory("kcap-domain-pump-").FullName;
-        var (gate, prompter) = PromptGateWithParkingPrompter(dir);
+        using var tmp = new TempDir();
+        var (gate, prompter) = PromptGateWithParkingPrompter(tmp.Path);
         var server = new SeqCaptureServerConnection();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(),
             new Dictionary<string, IHostedAgentLauncher>(), consentGate: gate);
@@ -188,15 +188,14 @@ public class OneExecutionDomainTests {
 
         await prompter.ResolveUntilAsync(null, () => orch.BuildStatusReport().LastProcessedSeq >= 2L);
         await WaitHarness.WaitBoundedAsync(stopTask, "the sequenced stop handler never returned");
-        Directory.Delete(dir, true);
     }
 
     // Acceptance ordering still depends only on pump serialization: nothing awaits before SubmitAsync, so
     // back-to-back wire-order seqs are accepted in order with no WrongNext.
     [Test]
     public async Task Back_to_back_sequenced_launches_are_accepted_in_wire_order_with_no_rejection() {
-        var dir = Directory.CreateTempSubdirectory("kcap-domain-order-").FullName;
-        var (gate, prompter) = PromptGateWithParkingPrompter(dir);
+        using var tmp = new TempDir();
+        var (gate, prompter) = PromptGateWithParkingPrompter(tmp.Path);
         var server = new SeqCaptureServerConnection();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(),
             new Dictionary<string, IHostedAgentLauncher>(), consentGate: gate);
@@ -211,7 +210,6 @@ public class OneExecutionDomainTests {
         await Assert.That(server.Rejects).IsEmpty(); // no WrongNext — each was next when it arrived
 
         await prompter.ResolveUntilAsync(null, () => orch.BuildStatusReport().LastProcessedSeq == 2L);
-        Directory.Delete(dir, true);
     }
 
     // Exactly one terminal answer per accepted item — outcome (a) success.
@@ -247,12 +245,12 @@ public class OneExecutionDomainTests {
     // Outcome (b) consent denial.
     [Test]
     public async Task Settlement_consent_denial_is_accepted_before_terminal_with_exactly_one_rejection() {
-        var dir       = Directory.CreateTempSubdirectory("kcap-domain-deny-").FullName;
+        using var tmp = new TempDir();
         var server    = new SeqCaptureServerConnection();
         var claudeSpy = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
         var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), launchers,
-            consentGate: AgentOrchestratorHarness.DenyDefaultGate(dir));
+            consentGate: AgentOrchestratorHarness.DenyDefaultGate(tmp.Path));
         var epoch = orch.DaemonEpochForTest;
 
         await orch.SubmitLaunchAgentForTest(new LaunchAgentCommand(
@@ -278,10 +276,10 @@ public class OneExecutionDomainTests {
     // a hang and never a double answer.
     [Test]
     public async Task Settlement_gate_cancellation_settles_as_lane_failure_with_no_double_answer() {
-        var dir = Directory.CreateTempSubdirectory("kcap-domain-cancel-").FullName;
-        var store = new LaunchConsentStore(dir, NullLogger.Instance);
+        using var tmp = new TempDir();
+        var store = new LaunchConsentStore(tmp.Path, NullLogger.Instance);
         store.TryReplace(new LaunchConsentPolicy(LaunchConsentDefault.Prompt, 60, []), out _);
-        var gate = new LaunchConsentGate(store, new LaunchConsentDecisionLog(dir, NullLogger.Instance),
+        var gate = new LaunchConsentGate(store, new LaunchConsentDecisionLog(tmp.Path, NullLogger.Instance),
             new CancelingPrompter(), new FakeTimeProvider(), NullLogger<LaunchConsentGate>.Instance);
 
         // Declared before orch, so orch — which holds a live linked registration — disposes first.
@@ -310,8 +308,8 @@ public class OneExecutionDomainTests {
     // refused for its format, and must be ordered against a stop that arrives after it.
     [Test]
     public async Task An_unsequenced_stop_after_an_unsequenced_launch_executes_after_it_through_the_handlers() {
-        var dir = Directory.CreateTempSubdirectory("kcap-domain-unseq-").FullName;
-        var (gate, prompter) = PromptGateWithParkingPrompter(dir);
+        using var tmp = new TempDir();
+        var (gate, prompter) = PromptGateWithParkingPrompter(tmp.Path);
         var server = new SeqCaptureServerConnection();
         var logger = new CapturingLogger<AgentOrchestrator>();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(),
@@ -334,7 +332,6 @@ public class OneExecutionDomainTests {
         await WaitHarness.WaitBoundedAsync(orch.DrainLaneForTest(), "the lane never drained the launch and its queued stop");
         await AssertStopExecutedAsync(orch, "victim");
         await Assert.That(orch.ProcessorForTest!.QueuedStopDepth).IsEqualTo(0);
-        Directory.Delete(dir, true);
     }
 
     // The internal-reaping BYPASS: heartbeat reviewer-TTL/idle reaping and local-socket stops call the
@@ -342,8 +339,8 @@ public class OneExecutionDomainTests {
     // reviewer reaping — the exact inversion of what the reaper exists for.
     [Test]
     public async Task Internal_reaping_still_stops_a_live_agent_while_the_lane_is_parked() {
-        var dir = Directory.CreateTempSubdirectory("kcap-domain-bypass-").FullName;
-        var (gate, prompter) = PromptGateWithParkingPrompter(dir);
+        using var tmp = new TempDir();
+        var (gate, prompter) = PromptGateWithParkingPrompter(tmp.Path);
         var server = new SeqCaptureServerConnection();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(),
             new Dictionary<string, IHostedAgentLauncher>(), consentGate: gate);
@@ -360,15 +357,14 @@ public class OneExecutionDomainTests {
 
         prompter.Resolve("parked", false);
         await WaitHarness.WaitBoundedAsync(orch.DrainLaneForTest(), "the lane never drained");
-        Directory.Delete(dir, true);
     }
 
     // The existence pin behind that bypass: a consent-parked launch has created NO registry entry, so the
     // internal paths (which select their targets by enumerating the registry) cannot target it at all.
     [Test]
     public async Task A_consent_parked_launch_has_no_registry_entry_so_internal_paths_cannot_target_it() {
-        var dir = Directory.CreateTempSubdirectory("kcap-domain-exists-").FullName;
-        var (gate, prompter) = PromptGateWithParkingPrompter(dir);
+        using var tmp = new TempDir();
+        var (gate, prompter) = PromptGateWithParkingPrompter(tmp.Path);
         var server = new SeqCaptureServerConnection();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(),
             new Dictionary<string, IHostedAgentLauncher>(), consentGate: gate);
@@ -385,7 +381,6 @@ public class OneExecutionDomainTests {
 
         prompter.Resolve("parked", false);
         await WaitHarness.WaitBoundedAsync(orch.DrainLaneForTest(), "the lane never drained");
-        Directory.Delete(dir, true);
     }
 
     // Pre-settlement regression pin: with NO processor published, an un-seq'd launch executes INLINE and the
@@ -427,8 +422,8 @@ public class OneExecutionDomainTests {
     // overlap that still-running inline work.
     [Test]
     public async Task A_handler_that_saw_a_null_processor_cannot_overlap_the_lanes_first_item() {
-        var dir = Directory.CreateTempSubdirectory("kcap-domain-barrier-").FullName;
-        var (gate, prompter) = PromptGateWithParkingPrompter(dir);
+        using var tmp = new TempDir();
+        var (gate, prompter) = PromptGateWithParkingPrompter(tmp.Path);
         var server = new SeqCaptureServerConnection();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(),
             new Dictionary<string, IHostedAgentLauncher>(), consentGate: gate, deferProcessorPublication: true);
@@ -454,7 +449,6 @@ public class OneExecutionDomainTests {
         await WaitHarness.WaitBoundedAsync(inline, "the inline launch never completed");
         await WaitHarness.WaitBoundedAsync(orch.DrainLaneForTest(), "the lane never started after the inline drain");
         await AssertStopExecutedAsync(orch, "victim");
-        Directory.Delete(dir, true);
     }
 
     // ══ Stop admission (handler level) ═════════════════════════════════════════════════════════════
@@ -492,8 +486,8 @@ public class OneExecutionDomainTests {
     // snapshot, where an in-flight launch is simply absent.
     [Test]
     public async Task With_a_launch_parked_input_and_resize_for_an_unknown_id_drop_and_the_status_report_omits_it() {
-        var dir = Directory.CreateTempSubdirectory("kcap-domain-classify-").FullName;
-        var (gate, prompter) = PromptGateWithParkingPrompter(dir);
+        using var tmp = new TempDir();
+        var (gate, prompter) = PromptGateWithParkingPrompter(tmp.Path);
         var server = new SeqCaptureServerConnection();
         var logger = new CapturingLogger<AgentOrchestrator>();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(),
@@ -521,7 +515,6 @@ public class OneExecutionDomainTests {
 
         prompter.Resolve("in-flight", false);
         await WaitHarness.WaitBoundedAsync(orch.DrainLaneForTest(), "the lane never drained");
-        Directory.Delete(dir, true);
     }
 
     // ══ Shutdown: teardown-reap + next-boot handoff ════════════════════════════════════════════════
@@ -531,8 +524,8 @@ public class OneExecutionDomainTests {
     // Discarding is only safe because teardown reaps the children, so both halves are asserted together.
     [Test]
     public async Task Shutdown_with_live_children_and_queued_stops_discards_the_queue_and_kills_every_child() {
-        var dir = Directory.CreateTempSubdirectory("kcap-domain-teardown-").FullName;
-        var (gate, prompter) = PromptGateWithParkingPrompter(dir);
+        using var tmp = new TempDir();
+        var (gate, prompter) = PromptGateWithParkingPrompter(tmp.Path);
         var server = new SeqCaptureServerConnection();
         var logger = new CapturingLogger<AgentOrchestrator>();
         var orch   = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(),
@@ -568,7 +561,6 @@ public class OneExecutionDomainTests {
         await Assert.That(logger.Entries.Any(e => e.Message.Contains("Stopping agent child-a"))).IsFalse();
         await Assert.That(logger.Entries.Any(e => e.Message.Contains("Stopping agent child-b"))).IsFalse();
         await Assert.That(orch.ProcessorForTest!.QueuedStopDepth).IsEqualTo(0);
-        Directory.Delete(dir, true);
     }
 
     // Layer (b): the handoff. A child that starts after the teardown snapshot survives shutdown WITH its
