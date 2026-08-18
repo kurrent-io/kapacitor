@@ -312,8 +312,10 @@ internal sealed partial class CodexNotificationMapper {
         item.TryGetProperty("arguments", out var a) && a.ValueKind == JsonValueKind.Object ? a.GetRawText() : null;
 
     static string RenderMcpResult(JsonElement item) {
-        if (TryContent(item, "result", out var r)) return r;
+        // Error content wins over result: a failed call that also carries a result body must not render
+        // the result as if it succeeded (keeps the payload consistent with IsMcpError's flag).
         if (TryContent(item, "error", out var e))  return e;
+        if (TryContent(item, "result", out var r)) return r;
         return "";
     }
 

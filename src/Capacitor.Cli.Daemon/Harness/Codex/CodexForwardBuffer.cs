@@ -75,9 +75,12 @@ internal sealed class CodexForwardBuffer : IDisposable {
         try {
             // Blocks the read-loop thread until space frees — the app-server blocks on stdout (lossless).
             _channel.Writer.WriteAsync(env, stall.Token).AsTask().GetAwaiter().GetResult();
-        } catch (OperationCanceledException) when (!_shutdown.IsCancellationRequested) {
-            // Buffer stayed full past the stall timeout → deterministic terminal fault. The undrained
-            // canonical tail is lost by design and reported loudly by onStall (never silently).
+        } catch (OperationCanceledException) {
+            // Shutdown fired mid-wait: we are tearing down, so drop this envelope silently (the session
+            // is ending anyway) rather than propagating out of the read-loop notification handler.
+            if (_shutdown.IsCancellationRequested) return;
+            // Otherwise the buffer stayed full past the stall timeout → deterministic terminal fault. The
+            // undrained canonical tail is lost by design and reported loudly by onStall (never silently).
             if (Interlocked.Exchange(ref _stalled, 1) == 0) _onStall(_stallTimeout);
         }
     }

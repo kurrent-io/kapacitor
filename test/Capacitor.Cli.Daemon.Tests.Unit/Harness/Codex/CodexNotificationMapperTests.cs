@@ -101,6 +101,14 @@ public class CodexNotificationMapperTests {
             """{"item":{"type":"mcpToolCall","id":"m2","server":"srv","tool":"do","status":"failed","error":"nope"}}"""));
         await Assert.That(bad.ToolIsError).IsTrue();
         await Assert.That(bad.ToolResult!).Contains("nope");
+
+        // A failed call carrying BOTH a result and an error must render the error — the payload must stay
+        // consistent with the ToolIsError flag rather than showing the result as if it succeeded.
+        var both = Single(Run(NewMapper(), "item/completed",
+            """{"item":{"type":"mcpToolCall","id":"m3","server":"srv","tool":"do","status":"failed","result":{"ok":true},"error":"boom"}}"""));
+        await Assert.That(both.ToolIsError).IsTrue();
+        await Assert.That(both.ToolResult!).Contains("boom");
+        await Assert.That(both.ToolResult!).DoesNotContain("ok");
     }
 
     [Test]
