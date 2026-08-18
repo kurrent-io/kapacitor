@@ -117,6 +117,37 @@ public class AcpEventEnvelopeWireCompatTests {
         await Assert.That(AcpEventKind.Usage).IsEqualTo("usage");
         await Assert.That(AcpEventKind.SystemNote).IsEqualTo("system_note");
         await Assert.That(AcpEventKind.Plan).IsEqualTo("plan");
+        await Assert.That(AcpEventKind.TokenUsage).IsEqualTo("token_usage");
+    }
+
+    [Test]
+    public async Task TokenUsage_envelope_carries_every_additive_bucket_under_its_snake_case_name() {
+        // The additive-billing delta lane (§2.4). Distinct from the context-occupancy Usage kind —
+        // the server stamps these into $usage metadata. Field-for-field vs the server mirror.
+        var env = new AcpEventEnvelope(
+            Kind:                       AcpEventKind.TokenUsage,
+            Model:                      "gpt-5-codex",
+            UsageInputTokens:           1200,
+            UsageCachedInputTokens:     300,
+            UsageCacheWriteInputTokens: 64,
+            UsageOutputTokens:          450,
+            UsageReasoningTokens:       128);
+
+        var json = JsonSerializer.Serialize(env, CapacitorJsonContext.Default.AcpEventEnvelope);
+        await Assert.That(json).Contains(@"""kind"":""token_usage""");
+        await Assert.That(json).Contains(@"""usage_input_tokens"":1200");
+        await Assert.That(json).Contains(@"""usage_cached_input_tokens"":300");
+        await Assert.That(json).Contains(@"""usage_cache_write_input_tokens"":64");
+        await Assert.That(json).Contains(@"""usage_output_tokens"":450");
+        await Assert.That(json).Contains(@"""usage_reasoning_tokens"":128");
+
+        var back = JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.AcpEventEnvelope);
+        await Assert.That(back.UsageInputTokens).IsEqualTo(1200L);
+        await Assert.That(back.UsageCachedInputTokens).IsEqualTo(300L);
+        await Assert.That(back.UsageCacheWriteInputTokens).IsEqualTo(64L);
+        await Assert.That(back.UsageOutputTokens).IsEqualTo(450L);
+        await Assert.That(back.UsageReasoningTokens).IsEqualTo(128L);
+        await Assert.That(back.Model).IsEqualTo("gpt-5-codex");
     }
 
     [Test]

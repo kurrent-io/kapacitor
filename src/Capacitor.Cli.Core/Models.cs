@@ -1238,6 +1238,14 @@ public static class AcpEventKind {
     /// may keep dropping plan updates until wired). An older server treats it as an unrecognised Kind
     /// (dropped, cursor still advances).</summary>
     public const string Plan               = "plan";
+
+    /// <summary>A per-event additive token-usage DELTA (codex app-server <c>thread/tokenUsage/updated</c>,
+    /// daemon-converted from cumulative to delta and attributed to the model resolved at that instant).
+    /// Distinct from <see cref="Usage"/>, which is context-window OCCUPANCY (AI-1531 D4), not additive
+    /// billing buckets. The server stamps these buckets into Eventuous <c>$usage</c> metadata so the
+    /// existing additive folds (session totals, per-model attribution, cost) count them unchanged. An
+    /// older server treats it as an unrecognised Kind (dropped, cursor still advances).</summary>
+    public const string TokenUsage         = "token_usage";
 }
 
 /// <summary>
@@ -1307,7 +1315,19 @@ public readonly record struct AcpEventEnvelope(
         // item's canonical completed envelope, and the server stamps it into the canonical event's
         // METADATA (the event records are not ours to change).
         bool    Ephemeral         = false,
-        string? ItemId            = null
+        string? ItemId            = null,
+
+        // token_usage — a per-event additive token DELTA (codex app-server). Additive/nullable, so
+        // ContractVersion stays 1: an older server ignores them. The model rides the Model field
+        // above (attributed to the model resolved at the delta's instant — correct across a reroute).
+        // input is GROSS (server converts to net = input − cached before stamping $usage, matching
+        // UsageMetadataHelper's cross-vendor contract). cache-write is the cache-CREATION tier, billed
+        // separately from cached reads. total is derived server-side and not carried.
+        long?   UsageInputTokens       = null,
+        long?   UsageCachedInputTokens = null,
+        long?   UsageCacheWriteInputTokens = null,
+        long?   UsageOutputTokens      = null,
+        long?   UsageReasoningTokens   = null
     );
 
 /// <summary>
