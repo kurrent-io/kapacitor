@@ -480,13 +480,7 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         if (paramsEl is not { } p || p.Obj("tokenUsage") is not { } u || u.Obj("total") is not { } total)
             return null;
 
-        return new CodexTokenUsage(
-            InputTokens:            total.Num("inputTokens")            ?? 0,
-            CachedInputTokens:      total.Num("cachedInputTokens")      ?? 0,
-            CacheWriteInputTokens:  total.Num("cacheWriteInputTokens")  ?? 0,
-            OutputTokens:           total.Num("outputTokens")           ?? 0,
-            ReasoningOutputTokens:  total.Num("reasoningOutputTokens")  ?? 0,
-            TotalTokens:            total.Num("totalTokens")            ?? 0);
+        return CodexTokenUsage.FromTotal(total);
     }
 
     // JsonNode → JsonElement without reflection (AOT-safe): the node writes its own JSON.
@@ -500,4 +494,22 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
 /// drops a billed bucket.</summary>
 internal readonly record struct CodexTokenUsage(
     long InputTokens, long CachedInputTokens, long CacheWriteInputTokens,
-    long OutputTokens, long ReasoningOutputTokens, long TotalTokens);
+    long OutputTokens, long ReasoningOutputTokens, long TotalTokens) {
+
+    /// <summary>Reads a <c>TokenUsageBreakdown</c> object (<c>thread/tokenUsage/updated.total</c> or
+    /// <c>.last</c>). Missing fields read as 0 (the schema defaults <c>cacheWriteInputTokens</c> to 0
+    /// and the others are required).</summary>
+    public static CodexTokenUsage FromTotal(JsonElement total) => new(
+        InputTokens:           total.Num("inputTokens")           ?? 0,
+        CachedInputTokens:     total.Num("cachedInputTokens")     ?? 0,
+        CacheWriteInputTokens: total.Num("cacheWriteInputTokens") ?? 0,
+        OutputTokens:          total.Num("outputTokens")          ?? 0,
+        ReasoningOutputTokens: total.Num("reasoningOutputTokens") ?? 0,
+        TotalTokens:           total.Num("totalTokens")           ?? 0);
+
+    /// <summary>True when every additive bucket is zero — a delta carrying no information, which the
+    /// mapper drops rather than stamping an empty <c>$usage</c>.</summary>
+    public bool IsZero =>
+        InputTokens == 0 && CachedInputTokens == 0 && CacheWriteInputTokens == 0
+     && OutputTokens == 0 && ReasoningOutputTokens == 0 && TotalTokens == 0;
+}
