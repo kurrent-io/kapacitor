@@ -224,6 +224,11 @@ public class CodexAppServerSchemaConformanceTests {
             await process.WaitForExitAsync(cts.Token);
         } catch (OperationCanceledException) {
             try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+            // Observe the reads before returning: once the process is dead the pipes close and both
+            // tasks complete promptly. Leaving them unawaited would let the caller's `using` dispose
+            // the streams mid-read, surfacing as an unobserved ObjectDisposedException.
+            try { await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch { /* best effort — reads may fault on the killed process */ }
             return ("", "", true);
         }
         return (await stdoutTask, await stderrTask, false);
