@@ -1230,6 +1230,14 @@ public static class AcpEventKind {
     /// cursor (verified against <c>CapacitorHub.AcpSessionEvents</c>'s unrecognised-Kind branch), so
     /// a newer daemon degrades to log-only rather than wedging the forwarder.</summary>
     public const string SystemNote         = "system_note";
+
+    /// <summary>A full plan snapshot (codex app-server <c>turn/plan/updated</c>, which always sends
+    /// complete revisions). Canonical, latest-snapshot-wins; the server maps it to
+    /// <c>PlanContentUpdatedEvent</c>, landing envelope-sourced sessions on the same native-plan path
+    /// <c>PlanArtifactExtractor</c> already consumes. Additive for other ACP vendors (their translator
+    /// may keep dropping plan updates until wired). An older server treats it as an unrecognised Kind
+    /// (dropped, cursor still advances).</summary>
+    public const string Plan               = "plan";
 }
 
 /// <summary>
@@ -1285,7 +1293,21 @@ public readonly record struct AcpEventEnvelope(
         long?   ContextWindowTokens = null,
 
         // transcript-authoritative time (ISO-8601); server falls back to now if absent
-        string? TimestampIso      = null
+        string? TimestampIso      = null,
+
+        // Ephemeral live lane (codex app-server envelope transcript). Additive/default-false, so
+        // ContractVersion stays 1: an older server ignores both and its canonical-only path is
+        // unchanged. Ephemeral=true marks a transient live chunk (accumulated content-so-far for its
+        // item) that is relayed but NEVER persisted and carries NO seq — it consumes no canonical
+        // sequence number and is excluded from the dup/gap logic (the server relays it in batch order).
+        // The pure-replacement viewer rule (state[ItemId] = latest ephemeral payload; the item's
+        // canonical completed envelope replaces and finalizes it) makes a dropped/duplicated ephemeral
+        // harmless. ItemId is the app-server item id — the stable key a viewer uses to know which
+        // transient state a completed item supersedes; it rides BOTH the ephemeral envelopes and their
+        // item's canonical completed envelope, and the server stamps it into the canonical event's
+        // METADATA (the event records are not ours to change).
+        bool    Ephemeral         = false,
+        string? ItemId            = null
     );
 
 /// <summary>
