@@ -152,13 +152,9 @@ public static partial class DaemonRunner {
         if (Environment.GetEnvironmentVariable("KCAP_CODEX_TRANSPORT") is { Length: > 0 } envCodexTransport)
             config.CodexTransport = envCodexTransport;
 
-        // Resolve the effective Codex transport ONCE (operator selection AND the version floor) into
-        // the field both the launch router and the certification advertisement read — see
-        // CodexTransportDecision. Only probe when app-server is actually selected, so a PTY daemon
-        // (the default) pays no startup probe.
-        config.CodexAppServerActive =
-            string.Equals(config.CodexTransport?.Trim(), Harness.Codex.CodexTransportDecision.AppServer, StringComparison.OrdinalIgnoreCase)
-            && Harness.Codex.CodexTransportDecision.MeetsFloor(ProbeCliVersion(config.CodexPath));
+        // One resolved fact for both the launch router and the certification advertisement.
+        config.CodexAppServerActive = Harness.Codex.CodexTransportDecision.ResolveActive(
+            config.CodexTransport, () => ProbeCliVersion(config.CodexPath));
 
         if (Environment.GetEnvironmentVariable("KCAP_CURSOR_PATH") is { Length: > 0 } envCursorPath)
             config.CursorPath = envCursorPath;

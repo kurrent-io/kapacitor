@@ -117,12 +117,12 @@ public class CodexHostedAgentRuntimeFactoryTests {
         var originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
         using var home = new TempDir();
         using var wt   = new TempDir();
-        WriteWorktreeHooks(wt.Path);
+        WriteWorktreeHooks(wt);
         await using var fake = new FakeCodexAppServer();
 
         try {
             Environment.SetEnvironmentVariable("HOME", home.Path);
-            Environment.SetEnvironmentVariable("CODEX_HOME", System.IO.Path.Combine(home.Path, ".codex"));
+            Environment.SetEnvironmentVariable("CODEX_HOME", home.PathTo(".codex"));
 
             var pty = new RecordingPtyFactory();
             CodexAppServerSpawnFactory seam = (_, _, _, _, _, _, _) =>
@@ -154,7 +154,7 @@ public class CodexHostedAgentRuntimeFactoryTests {
 
         try {
             Environment.SetEnvironmentVariable("HOME", home.Path);
-            Environment.SetEnvironmentVariable("CODEX_HOME", System.IO.Path.Combine(home.Path, ".codex"));
+            Environment.SetEnvironmentVariable("CODEX_HOME", home.PathTo(".codex"));
 
             CodexAppServerSpawnFactory seam = (_, _, _, _, _, _, _) =>
                 throw new InvalidOperationException("spawn must never be reached when hooks are missing");
@@ -175,12 +175,12 @@ public class CodexHostedAgentRuntimeFactoryTests {
         var originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
         using var home = new TempDir();
         using var wt   = new TempDir();
-        WriteWorktreeHooks(wt.Path);
+        WriteWorktreeHooks(wt);
         await using var fake = new FakeCodexAppServer { ThreadId = "" }; // thread/start returns no id -> StartAsync throws
 
         try {
             Environment.SetEnvironmentVariable("HOME", home.Path);
-            Environment.SetEnvironmentVariable("CODEX_HOME", System.IO.Path.Combine(home.Path, ".codex"));
+            Environment.SetEnvironmentVariable("CODEX_HOME", home.PathTo(".codex"));
 
             var process = new FakeAcpProcess();
             CodexAppServerSpawnFactory seam = (_, _, _, _, _, _, _) =>
@@ -198,15 +198,12 @@ public class CodexHostedAgentRuntimeFactoryTests {
         }
     }
 
-    static void WriteWorktreeHooks(string worktreePath) {
-        var dir = System.IO.Path.Combine(worktreePath, ".codex");
-        System.IO.Directory.CreateDirectory(dir);
-        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "hooks.json"), """
+    static void WriteWorktreeHooks(TempDir worktree) =>
+        worktree.CreateFile([".codex", "hooks.json"], """
             {"hooks":{
                 "SessionStart":[{"hooks":[{"type":"command","command":"kcap hook --codex"}]}],
                 "Stop":[{"hooks":[{"type":"command","command":"kcap hook --codex"}]}],
                 "PermissionRequest":[{"hooks":[{"type":"command","command":"kcap hook --codex"}]}]
             }}
             """);
-    }
 }

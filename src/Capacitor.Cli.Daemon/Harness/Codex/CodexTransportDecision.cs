@@ -24,8 +24,16 @@ internal static class CodexTransportDecision {
     /// <summary>Resolves the effective transport: app-server only when selected AND the installed
     /// build meets <see cref="VersionFloor"/>. An unknown/unparseable version fails toward PTY.</summary>
     public static bool UsesAppServer(string? transport, string? cliVersion) =>
-        string.Equals(transport?.Trim(), AppServer, StringComparison.OrdinalIgnoreCase)
-        && MeetsFloor(cliVersion);
+        IsAppServerSelected(transport) && MeetsFloor(cliVersion);
+
+    /// <summary>Resolves the daemon-wide <c>CodexAppServerActive</c> at startup. The version probe is
+    /// deferred behind the selection check so a PTY daemon (the default) never pays for it — which is
+    /// why this owns the composition rather than the caller evaluating the probe eagerly.</summary>
+    public static bool ResolveActive(string? transport, Func<string?> probeCliVersion) =>
+        IsAppServerSelected(transport) && MeetsFloor(probeCliVersion());
+
+    static bool IsAppServerSelected(string? transport) =>
+        string.Equals(transport?.Trim(), AppServer, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>True when <paramref name="cliVersion"/> parses and is >= <see cref="VersionFloor"/>.
     /// Tolerant of surrounding text (e.g. <c>"codex-cli 0.146.0"</c>) — it extracts the first

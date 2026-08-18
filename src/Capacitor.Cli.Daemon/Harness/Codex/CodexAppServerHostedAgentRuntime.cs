@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Services;
@@ -223,18 +224,17 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         var result     = await RequestAsync("hooks/list", listParams, ct).ConfigureAwait(false);
 
         var entries = new List<CodexHookEntry>();
-        if (result.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array) {
+        if (result.Arr("data") is { } data) {
             foreach (var group in data.EnumerateArray()) {
-                if (!group.TryGetProperty("hooks", out var hooks) || hooks.ValueKind != JsonValueKind.Array)
-                    continue;
+                if (group.Arr("hooks") is not { } hooks) continue;
 
                 foreach (var h in hooks.EnumerateArray()) {
                     entries.Add(new CodexHookEntry(
-                        Key:         Str(h, "key") ?? "",
-                        EventName:   Str(h, "eventName") ?? "",
-                        Command:     Str(h, "command") ?? "",
-                        CurrentHash: Str(h, "currentHash"),
-                        TrustStatus: Str(h, "trustStatus") ?? ""));
+                        Key:         h.Str("key") ?? "",
+                        EventName:   h.Str("eventName") ?? "",
+                        Command:     h.Str("command") ?? "",
+                        CurrentHash: h.Str("currentHash"),
+                        TrustStatus: h.Str("trustStatus") ?? ""));
                 }
             }
         }
@@ -257,8 +257,8 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
 
         var result = await RequestAsync("thread/start", startParams, ct).ConfigureAwait(false);
 
-        _threadId      = result.TryGetProperty("thread", out var thread) ? Str(thread, "id") : null;
-        _resolvedModel = Str(result, "model");
+        _threadId      = result.Obj("thread")?.Str("id");
+        _resolvedModel = result.Str("model");
         _clock?.SetLaunchStage("thread_started");
 
         if (string.IsNullOrEmpty(_threadId))
@@ -299,14 +299,15 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
             throw;
         }
 
-        var turnId = result.TryGetProperty("turn", out var turn) ? Str(turn, "id") : null;
+        var turn   = result.Obj("turn");
+        var turnId = turn?.Str("id");
         if (string.IsNullOrEmpty(turnId)) {
             var ex = new InvalidOperationException("codex app-server: turn/start returned no turn id.");
             FaultPendingTurn(ex);
             throw ex;
         }
 
-        var status = turn.ValueKind == JsonValueKind.Object ? Str(turn, "status") : null;
+        var status = turn?.Str("status");
 
         // Bind the id, then reconcile against anything that raced ahead of this response:
         //   - a turn/completed that arrived while the id was unknown (stashed), OR
@@ -352,9 +353,8 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     void HandleNotification(AcpNotification n) {
         switch (n.Method) {
             case "turn/completed": {
-                var turnId = n.Params is { } p && p.TryGetProperty("turn", out var turn) ? Str(turn, "id") : null;
-                var status = n.Params is { } p2 && p2.TryGetProperty("turn", out var t2) ? Str(t2, "status") : null;
-                OnTurnCompletedNotification(turnId, status);
+                var turn = n.Params is { } p ? p.Obj("turn") : null;
+                OnTurnCompletedNotification(turn?.Str("id"), turn?.Str("status"));
                 break;
             }
             case "thread/tokenUsage/updated":
@@ -549,28 +549,16 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     static string MapEffort(string effort) =>
         string.Equals(effort, "max", StringComparison.OrdinalIgnoreCase) ? "xhigh" : effort;
 
-    static string? Str(JsonElement o, string name) =>
-        o.ValueKind == JsonValueKind.Object && o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
-            ? v.GetString()
-            : null;
-
-    static long Long(JsonElement o, string name) =>
-        o.ValueKind == JsonValueKind.Object && o.TryGetProperty(name, out var v)
-            && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n)
-            ? n : 0;
-
     static CodexTokenUsage? ParseUsage(JsonElement? paramsEl) {
-        if (paramsEl is not { } p || !p.TryGetProperty("tokenUsage", out var u) || u.ValueKind != JsonValueKind.Object)
-            return null;
-        if (!u.TryGetProperty("total", out var total) || total.ValueKind != JsonValueKind.Object)
+        if (paramsEl is not { } p || p.Obj("tokenUsage") is not { } u || u.Obj("total") is not { } total)
             return null;
 
         return new CodexTokenUsage(
-            InputTokens:     Long(total, "inputTokens"),
-            CachedInputTokens: Long(total, "cachedInputTokens"),
-            OutputTokens:    Long(total, "outputTokens"),
-            ReasoningOutputTokens: Long(total, "reasoningOutputTokens"),
-            TotalTokens:     Long(total, "totalTokens"));
+            InputTokens:           total.Num("inputTokens")           ?? 0,
+            CachedInputTokens:     total.Num("cachedInputTokens")     ?? 0,
+            OutputTokens:          total.Num("outputTokens")          ?? 0,
+            ReasoningOutputTokens: total.Num("reasoningOutputTokens") ?? 0,
+            TotalTokens:           total.Num("totalTokens")           ?? 0);
     }
 
     // JsonNode → JsonElement without reflection (AOT-safe): the node writes its own JSON.
