@@ -347,7 +347,7 @@ public class UninstallCommandTests {
         // Fake project: a temp dir with a .git directory makes GitRepository.FindRoot
         // return it as the working tree root.
         using var tmp = new TempDir();
-        Directory.CreateDirectory(tmp.PathTo(".git"));
+        tmp.CreateDir(".git");
 
         var projectClaude = tmp.PathTo(".claude", "settings.local.json");
         Directory.CreateDirectory(Path.GetDirectoryName(projectClaude)!);

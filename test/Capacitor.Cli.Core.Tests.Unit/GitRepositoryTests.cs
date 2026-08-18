@@ -21,7 +21,7 @@ public class GitRepositoryTests {
     [Test]
     public async Task FindRoot_returns_directory_when_dot_git_is_a_file_as_in_worktrees_or_submodules() {
         using var tmp = new TempDir();
-        await File.WriteAllTextAsync(tmp.PathTo(".git"), "gitdir: ../parent/.git/worktrees/x\n");
+        tmp.CreateFile(".git", "gitdir: ../parent/.git/worktrees/x\n");
 
         await Assert.That(GitRepository.FindRoot(tmp.Path)).IsEqualTo(tmp.Path);
     }

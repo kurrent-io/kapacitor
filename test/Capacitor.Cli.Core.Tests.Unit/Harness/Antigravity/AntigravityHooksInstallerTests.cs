@@ -61,7 +61,7 @@ public class AntigravityHooksInstallerTests {
     public async Task Install_throws_when_the_plugin_manifest_cannot_be_written() {
         using var dir = new TempDir();
         var path = dir.PathTo("hooks.json");
-        Directory.CreateDirectory(dir.PathTo(AntigravityHooksInstaller.PluginManifestFileName));
+        dir.CreateDir(AntigravityHooksInstaller.PluginManifestFileName);
 
         await Assert.That(() => AntigravityHooksInstaller.Install(path)).Throws<Exception>();
         // No dead-weight hooks.json / marker left implying a good install.

@@ -19,8 +19,8 @@ public class CopilotImportSourceTests {
         using var tmp = new TempDir();
         WriteSession(tmp.Path, Sid1, cwd: "/work/a");
         // Failed-startup scaffolding: workspace.yaml but no events.jsonl.
-        Directory.CreateDirectory(tmp.PathTo(Sid2));
-        await File.WriteAllTextAsync(tmp.PathTo(Sid2, "workspace.yaml"), $"id: {Sid2}\ncwd: /work/b\n");
+        tmp.CreateDir(Sid2);
+        tmp.CreateFile([Sid2, "workspace.yaml"], $"id: {Sid2}\ncwd: /work/b\n");
 
         var source   = new CopilotImportSource(tmp.Path, legacyDirOverride: tmp.PathTo("none"));
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);

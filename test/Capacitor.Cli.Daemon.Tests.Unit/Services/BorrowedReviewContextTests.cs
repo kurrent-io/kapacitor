@@ -88,9 +88,9 @@ public class BorrowedReviewContextTests {
     public async Task Reserved_path_authored_as_a_directory_fails_closed() {
         using var repo = NewGitRepo();
         using var root = new TempDir();
-        Directory.CreateDirectory(repo.PathTo(".mcp.json"));
+        repo.CreateDir(".mcp.json");
         const string decomposedChild = "cafe\u0301";
-        File.WriteAllText(repo.PathTo(".mcp.json", decomposedChild), "branch data");
+        repo.CreateFile([".mcp.json", decomposedChild], "branch data");
         Git(repo.Path, "add", ".mcp.json/" + decomposedChild);
         Git(repo.Path, "commit", "-q", "-m", "reserved path directory");
 
@@ -170,7 +170,7 @@ public class BorrowedReviewContextTests {
         // considered first — a later, small config must still be admitted in full.
         var oversized = new byte[256 * 1024 + 1];
         var small = "{\"mcpServers\":{\"small\":{}}}"u8.ToArray();
-        Directory.CreateDirectory(repo.PathTo(".cursor"));
+        repo.CreateDir(".cursor");
         await File.WriteAllBytesAsync(repo.PathTo(".cursor", "mcp.json"), oversized);
         await File.WriteAllBytesAsync(repo.PathTo(".mcp.json"), small);
         Git(repo.Path, "add", ".cursor/mcp.json", ".mcp.json");
@@ -466,7 +466,7 @@ public class BorrowedReviewContextTests {
     public async Task Untracked_config_is_omitted_with_affirmative_empty_entries() {
         using var repo = NewGitRepo();
         using var root = new TempDir();
-        File.WriteAllText(repo.PathTo(".mcp.json"), "private untracked bytes");
+        repo.CreateFile(".mcp.json", "private untracked bytes");
         var snapshot = await Manager(root.Path).CreateBorrowedSnapshotAsync(
             repo.Path, "review", CancellationToken.None);
         try {
@@ -484,7 +484,7 @@ public class BorrowedReviewContextTests {
         Git(repo.Path, "init", "-q");
         Git(repo.Path, "config", "user.email", "test@example.com");
         Git(repo.Path, "config", "user.name", "Test");
-        File.WriteAllText(repo.PathTo("tracked.txt"), "tracked");
+        repo.CreateFile("tracked.txt", "tracked");
         Git(repo.Path, "add", "tracked.txt");
         Git(repo.Path, "commit", "-q", "-m", "initial");
         return repo;

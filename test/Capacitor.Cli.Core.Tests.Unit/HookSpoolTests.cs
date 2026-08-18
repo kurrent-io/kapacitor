@@ -72,7 +72,7 @@ public class HookSpoolTests {
     [Test]
     public async Task old_format_lines_without_route_are_skipped() {
         using var tmp = new TempDir();
-        await File.WriteAllTextAsync(tmp.PathTo($"{SidA}.jsonl"),
+        tmp.CreateFile($"{SidA}.jsonl",
             "{\"hook_event_name\":\"sessionEnd\",\"body\":\"x\"}\n");
         var count = 0;
         var spool = new HookSpool(tmp.Path);
@@ -85,7 +85,7 @@ public class HookSpoolTests {
     public async Task recovered_draining_temp_drains_before_live_file() {
         using var tmp = new TempDir();
         // Simulate a crash mid-drain: an older .draining temp + a newer live file.
-        await File.WriteAllTextAsync(tmp.PathTo($"{SidA}.123-1.draining"),
+        tmp.CreateFile($"{SidA}.123-1.draining",
             "{\"route\":\"session-start\",\"body\":\"old\"}\n");
         await Task.Delay(10);
         var spool = new HookSpool(tmp.Path);
@@ -110,7 +110,7 @@ public class HookSpoolTests {
         using var tmp = new TempDir();
         // A withheld ordered-drain remainder — as DrainRoutesAsync would leave it — sitting
         // right alongside a fresh route-agnostic append for the SAME session.
-        await File.WriteAllTextAsync(tmp.PathTo($"{SidA}.ordered-123-1"),
+        tmp.CreateFile($"{SidA}.ordered-123-1",
             "{\"route\":\"session-end\",\"body\":\"withheld\"}\n");
         var spool = new HookSpool(tmp.Path);
         spool.Append(SidA, "session-start", """{"n":"fresh"}""");
@@ -130,7 +130,7 @@ public class HookSpoolTests {
     [Test]
     public async Task HasBacklog_sees_an_ordered_drain_temp_even_though_DrainAllAsync_ignores_it() {
         using var tmp = new TempDir();
-        await File.WriteAllTextAsync(tmp.PathTo($"{SidA}.ordered-1-1"),
+        tmp.CreateFile($"{SidA}.ordered-1-1",
             "{\"route\":\"session-end\",\"body\":\"x\"}\n");
         var spool = new HookSpool(tmp.Path);
 

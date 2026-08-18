@@ -54,7 +54,7 @@ public class PiImportSourceTests {
     public async Task discovery_skips_non_pi_jsonl() {
         using var tmp = new TempDir();
         // A .jsonl whose first line is not a Pi session header.
-        await File.WriteAllTextAsync(tmp.PathTo("other.jsonl"), "{\"type\":\"something\",\"x\":1}\n");
+        tmp.CreateFile("other.jsonl", "{\"type\":\"something\",\"x\":1}\n");
 
         var source   = new PiImportSource(tmp.Path);
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
@@ -69,7 +69,7 @@ public class PiImportSourceTests {
         // file whose name also yields no uuid. Discovery must skip it rather than
         // minting an arbitrary non-GUID session id — mirrors the live hook path
         // (PiHookCommand.ExtractSessionId rejects non-GUID headers/filenames).
-        await File.WriteAllLinesAsync(tmp.PathTo("corrupt.jsonl"), new[] {
+        tmp.CreateFile("corrupt.jsonl", new[] {
             """{"type":"session","version":3,"id":"not-a-guid","timestamp":"2026-06-12T10:00:00.000Z","cwd":"/work/x"}""",
             """{"type":"message","id":"a1","parentId":null,"message":{"role":"user","content":"hello"}}"""
         });
@@ -86,8 +86,7 @@ public class PiImportSourceTests {
         // Header without an id, but the file is named "<timestamp>_<uuid>.jsonl"
         // (Pi's on-disk convention). Discovery falls back to the filename uuid,
         // the same recovery the live hook path uses for an unflushed header.
-        await File.WriteAllLinesAsync(
-            tmp.PathTo("2026-06-12T10-00-00_" + Sid1 + ".jsonl"),
+        tmp.CreateFile("2026-06-12T10-00-00_" + Sid1 + ".jsonl",
             new[] {
                 """{"type":"session","version":3,"timestamp":"2026-06-12T10:00:00.000Z","cwd":"/work/a"}""",
                 """{"type":"message","id":"a1","parentId":null,"message":{"role":"user","content":"hi"}}"""

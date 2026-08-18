@@ -28,7 +28,7 @@ public class ClaudePluginInstallerTests {
     public async Task IsEffectivelyInstalled_true_when_the_installed_cache_ships_the_payload() {
         using var tmp = new TempDir();
         var settingsPath = WriteEnabledSettings(tmp.Path);
-        var install = Directory.CreateDirectory(tmp.PathTo("plugins", "cache", "kcap", "kcap", "1.0.0")).FullName;
+        var install = tmp.CreateDir("plugins", "cache", "kcap", "kcap", "1.0.0");
         File.WriteAllText(Path.Combine(install, ".mcp.json"), "{}");
         WriteInstallRecord(tmp.Path, install);
 
@@ -42,9 +42,9 @@ public class ClaudePluginInstallerTests {
         using var tmp = new TempDir();
         var settingsPath = WriteEnabledSettings(tmp.Path);
         WriteInstallRecord(tmp.Path, tmp.PathTo("plugins", "cache", "kcap", "kcap", "1.0.0")); // never created
-        var location = Directory.CreateDirectory(tmp.PathTo("npm-kcap", "kcap")).FullName;
+        var location = tmp.CreateDir("npm-kcap", "kcap");
         File.WriteAllText(Path.Combine(location, ".mcp.json"), "{}");
-        File.WriteAllText(tmp.PathTo("plugins", "known_marketplaces.json"), $$"""
+        tmp.CreateFile(["plugins", "known_marketplaces.json"], $$"""
             { "kcap": { "source": { "source": "directory", "path": {{JsonValue.Create(location).ToJsonString()}} },
                         "installLocation": {{JsonValue.Create(location).ToJsonString()}} } }
             """);
@@ -63,9 +63,9 @@ public class ClaudePluginInstallerTests {
         using var tmp = new TempDir();
         var settingsPath = WriteEnabledSettings(tmp.Path);
         WriteInstallRecord(tmp.Path, tmp.PathTo("plugins", "cache", "kcap", "kcap", "1.0.0")); // cache gone
-        var checkout = Directory.CreateDirectory(tmp.PathTo("plugins", "marketplaces", "kcap")).FullName;
+        var checkout = tmp.CreateDir("plugins", "marketplaces", "kcap");
         File.WriteAllText(Path.Combine(checkout, ".mcp.json"), "{}"); // stale clone still ships the payload
-        File.WriteAllText(tmp.PathTo("plugins", "known_marketplaces.json"), $$"""
+        tmp.CreateFile(["plugins", "known_marketplaces.json"], $$"""
             { "kcap": { "source": { "source": "github", "repo": "kurrent-io/kcap-cli" },
                         "installLocation": {{JsonValue.Create(checkout).ToJsonString()}} } }
             """);
@@ -82,9 +82,9 @@ public class ClaudePluginInstallerTests {
     public async Task IsEffectivelyInstalled_false_when_only_a_project_scoped_install_has_the_payload() {
         using var tmp = new TempDir();
         var settingsPath = WriteEnabledSettings(tmp.Path);
-        var install = Directory.CreateDirectory(tmp.PathTo("plugins", "cache", "kcap", "kcap", "1.0.0")).FullName;
+        var install = tmp.CreateDir("plugins", "cache", "kcap", "kcap", "1.0.0");
         File.WriteAllText(Path.Combine(install, ".mcp.json"), "{}");
-        File.WriteAllText(Path.Combine(Directory.CreateDirectory(tmp.PathTo("plugins")).FullName,
+        File.WriteAllText(Path.Combine(tmp.CreateDir("plugins"),
                                        "installed_plugins.json"), $$"""
             { "version": 2, "plugins": { "kcap@kcap": [
                 { "scope": "project", "installPath": {{JsonValue.Create(install).ToJsonString()}}, "version": "1.0.0" } ] } }
@@ -103,11 +103,11 @@ public class ClaudePluginInstallerTests {
     public async Task IsEffectivelyInstalled_false_for_project_only_record_even_with_directory_marketplace() {
         using var tmp = new TempDir();
         var settingsPath = WriteEnabledSettings(tmp.Path);
-        var install = Directory.CreateDirectory(tmp.PathTo("plugins", "cache", "kcap", "kcap", "1.0.0")).FullName;
+        var install = tmp.CreateDir("plugins", "cache", "kcap", "kcap", "1.0.0");
         File.WriteAllText(Path.Combine(install, ".mcp.json"), "{}");
-        var checkout = Directory.CreateDirectory(tmp.PathTo("marketplace-src", "kcap")).FullName;
+        var checkout = tmp.CreateDir("marketplace-src", "kcap");
         File.WriteAllText(Path.Combine(checkout, ".mcp.json"), "{}");
-        var pluginsDir = Directory.CreateDirectory(tmp.PathTo("plugins")).FullName;
+        var pluginsDir = tmp.CreateDir("plugins");
         File.WriteAllText(Path.Combine(pluginsDir, "installed_plugins.json"), $$"""
             { "version": 2, "plugins": { "kcap@kcap": [
                 { "scope": "project", "installPath": {{JsonValue.Create(install).ToJsonString()}}, "version": "1.0.0" } ] } }
@@ -125,9 +125,9 @@ public class ClaudePluginInstallerTests {
     public async Task IsEffectivelyInstalled_true_for_bare_object_install_record_with_payload() {
         using var tmp = new TempDir();
         var settingsPath = WriteEnabledSettings(tmp.Path);
-        var install = Directory.CreateDirectory(tmp.PathTo("plugins", "cache", "kcap", "kcap", "1.0.0")).FullName;
+        var install = tmp.CreateDir("plugins", "cache", "kcap", "kcap", "1.0.0");
         File.WriteAllText(Path.Combine(install, ".mcp.json"), "{}");
-        File.WriteAllText(Path.Combine(Directory.CreateDirectory(tmp.PathTo("plugins")).FullName,
+        File.WriteAllText(Path.Combine(tmp.CreateDir("plugins"),
                                        "installed_plugins.json"), $$"""
             { "version": 1, "plugins": { "kcap@kcap":
                 { "installPath": {{JsonValue.Create(install).ToJsonString()}}, "version": "1.0.0" } } }
@@ -147,7 +147,7 @@ public class ClaudePluginInstallerTests {
     public async Task IsEffectivelyInstalled_false_when_only_the_marker_exists() {
         using var tmp = new TempDir();
         var settingsPath = tmp.PathTo("settings.json");
-        File.WriteAllText(tmp.PathTo(ClaudePluginInstaller.MarkerFileName), "1.2.3");
+        tmp.CreateFile(ClaudePluginInstaller.MarkerFileName, "1.2.3");
         await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsFalse();
     }
 
@@ -156,7 +156,7 @@ public class ClaudePluginInstallerTests {
     [Test]
     public async Task IsEffectivelyInstalled_false_when_only_a_marketplace_source_dir_has_the_payload() {
         using var tmp = new TempDir();
-        var source = Directory.CreateDirectory(tmp.PathTo("source-kcap")).FullName;
+        var source = tmp.CreateDir("source-kcap");
         File.WriteAllText(Path.Combine(source, ".mcp.json"), "{}");
         var settingsPath = tmp.CreateFile("settings.json", $$"""
             { "enabledPlugins": { "kcap@kcap": true },
@@ -185,8 +185,7 @@ public class ClaudePluginInstallerTests {
     public async Task IsInstalled_true_when_marker_present() {
         using var tmp = new TempDir();
         var settingsPath = tmp.PathTo("settings.json");
-        await File.WriteAllTextAsync(
-            tmp.PathTo(ClaudePluginInstaller.MarkerFileName),
+        tmp.CreateFile(ClaudePluginInstaller.MarkerFileName,
             "1.2.3");
         await Assert.That(ClaudePluginInstaller.IsInstalled(settingsPath)).IsTrue();
     }

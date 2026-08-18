@@ -17,7 +17,7 @@ public class ConPtyResolveCommandTests {
 
         using var tmp = new TempDir();
         var name = $"kcap-conptyprobe-{Guid.NewGuid():N}";
-        await File.WriteAllTextAsync(tmp.PathTo(name), "#!/bin/sh\nexit 0\n"); // shim twin
+        tmp.CreateFile(name, "#!/bin/sh\nexit 0\n"); // shim twin
         var cmd = tmp.PathTo(name + ".cmd");
         await File.WriteAllTextAsync(cmd, "@echo off\r\n");
 

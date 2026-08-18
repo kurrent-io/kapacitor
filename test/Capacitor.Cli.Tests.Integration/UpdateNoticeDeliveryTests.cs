@@ -121,7 +121,7 @@ public class UpdateNoticeDeliveryTests : IDisposable {
     [Test]
     public async Task ProfileUpdateCheckDisabled_PrintsNothing() {
         var cfgDir = SeedFreshNewerCache();
-        File.WriteAllText(cfgDir.PathTo("config.json"), """
+        cfgDir.CreateFile("config.json", """
             {"version":2,"active_profile":"default","profiles":{"default":{"update_check":false}},"profile_bindings":{},"cwd_remap":[]}
             """);
 
@@ -179,7 +179,7 @@ public class UpdateNoticeDeliveryTests : IDisposable {
     [Test]
     public async Task Status_ProfileUpdateCheckDisabled_PrintsBareVersion_NoAnnotation() {
         var cfgDir = SeedFreshNewerCache();
-        File.WriteAllText(cfgDir.PathTo("config.json"), """
+        cfgDir.CreateFile("config.json", """
             {"version":2,"active_profile":"default","profiles":{"default":{"update_check":false}},"profile_bindings":{},"cwd_remap":[]}
             """);
 
@@ -215,8 +215,7 @@ public class UpdateNoticeDeliveryTests : IDisposable {
         var cfgDir = new TempDir();
 
         var checkedAt = DateTimeOffset.UtcNow.ToString("O");
-        File.WriteAllText(
-            cfgDir.PathTo("update-check-latest.json"),
+        cfgDir.CreateFile("update-check-latest.json",
             $$"""{"latest_version":"{{NewerVersion}}","checked_at":"{{checkedAt}}","attempted_at":null,"failed":false}""");
 
         return cfgDir;

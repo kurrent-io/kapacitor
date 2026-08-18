@@ -16,7 +16,7 @@ public class LaunchConsentStoreTests {
     [Test]
     public async Task Corrupt_file_yields_upgrade_safe_policy() {
         using var dir = new TempDir();
-        File.WriteAllText(dir.PathTo("consent.json"), "{not json");
+        dir.CreateFile("consent.json", "{not json");
         var store = new LaunchConsentStore(dir.Path, NullLogger.Instance);
         await Assert.That(store.Current.Default).IsEqualTo(LaunchConsentDefault.Allow);
     }

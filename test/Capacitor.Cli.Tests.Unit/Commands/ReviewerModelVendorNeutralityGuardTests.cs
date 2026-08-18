@@ -153,7 +153,7 @@ public class ReviewerModelVendorNeutralityGuardTests {
         // McpFlowsServer.cs or the RPC coordinator).
         using var tmp = new TempDir();
 
-        File.WriteAllLines(tmp.PathTo("SomeNewMcpHandler.cs"), [
+        tmp.CreateFile("SomeNewMcpHandler.cs", [
             "namespace Capacitor.Cli.Commands;",
             "static class SomeNewMcpHandler {",
             "    // a comment mentioning claude-opus should NOT count",
@@ -180,14 +180,14 @@ public class ReviewerModelVendorNeutralityGuardTests {
         // proves the exclusion is by filename, not a blanket "scanner finds nothing" bug.
         using var tmp = new TempDir();
 
-        File.WriteAllLines(tmp.PathTo("ClaudeLauncher.cs"), [
+        tmp.CreateFile("ClaudeLauncher.cs", [
             "namespace Capacitor.Cli.Daemon.Services;",
             "static class ClaudeReviewerModelResolver {",
             "    public static string Resolve() => \"claude-opus-4-1\";",
             "}",
         ]);
         // A sibling non-resolver file in the SAME directory proves the scan still runs at all.
-        File.WriteAllLines(tmp.PathTo("UnrelatedHelper.cs"), [
+        tmp.CreateFile("UnrelatedHelper.cs", [
             "namespace Capacitor.Cli.Daemon.Services;",
             "static class UnrelatedHelper { }",
         ]);
@@ -201,7 +201,7 @@ public class ReviewerModelVendorNeutralityGuardTests {
     public async Task Scanner_GrandfathersOnlyTheDocumentedPreExistingLine_NotOtherLinesInTheSameFile() {
         using var tmp = new TempDir();
 
-        File.WriteAllLines(tmp.PathTo("DaemonConfig.cs"), [
+        tmp.CreateFile("DaemonConfig.cs", [
             "namespace Capacitor.Cli.Daemon;",
             "class DaemonConfig {",
             "    public string CursorModel { get; set; } = \"claude-sonnet-4-5\";", // grandfathered

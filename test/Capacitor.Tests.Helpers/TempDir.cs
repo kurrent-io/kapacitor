@@ -53,13 +53,30 @@ public sealed class TempDir : IDisposable {
     public string CreateFile(ReadOnlySpan<string> segments, string content = "") =>
         Write(PathTo(segments), content);
 
-    static string Write(string path, string content) {
-        var dir = System.IO.Path.GetDirectoryName(path);
+    /// <summary>As <see cref="CreateFile(string,string)"/> for line-oriented content:
+    /// <c>tmp.CreateFile("events.jsonl", [lineA, lineB])</c>.</summary>
+    // File.WriteAllLines, not a join: it terminates the LAST line too, and the JSONL fixtures here
+    // are parsed by production readers that treat a final unterminated line as incomplete.
+    public string CreateFile(string relativePath, string[] lines) {
+        var path = PathTo(relativePath);
 
-        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        EnsureParent(path);
+        File.WriteAllLines(path, lines);
+
+        return path;
+    }
+
+    static string Write(string path, string content) {
+        EnsureParent(path);
         File.WriteAllText(path, content);
 
         return path;
+    }
+
+    static void EnsureParent(string path) {
+        var dir = System.IO.Path.GetDirectoryName(path);
+
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
     }
 
     public void Dispose() {

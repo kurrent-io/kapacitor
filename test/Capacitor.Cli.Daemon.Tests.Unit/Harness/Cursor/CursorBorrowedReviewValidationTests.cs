@@ -7,10 +7,10 @@ public class CursorBorrowedReviewValidationTests {
     public async Task BundleDigest_IgnoresTransientRunningDirectory() {
         using var tmp = new TempDir();
 
-        File.WriteAllText(tmp.PathTo("cursor-agent"), "artifact");
+        tmp.CreateFile("cursor-agent", "artifact");
         var before = CursorBorrowedReviewValidation.ComputeBundleDigest(tmp.Path);
-        var running = Directory.CreateDirectory(tmp.PathTo(".running"));
-        File.WriteAllText(Path.Combine(running.FullName, "12345"), "");
+        var running = tmp.CreateDir(".running");
+        File.WriteAllText(Path.Combine(running, "12345"), "");
 
         var after = CursorBorrowedReviewValidation.ComputeBundleDigest(tmp.Path);
 

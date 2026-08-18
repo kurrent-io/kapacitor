@@ -36,7 +36,7 @@ public class AgentDetectionTests {
         var r = AgentDetection.Detect(Inputs(pathEnv: "", home: tmp.Path));
         await Assert.That(r.Gemini.InstallSignalFound).IsFalse();
 
-        await File.WriteAllTextAsync(tmp.PathTo(".gemini", "settings.json"), "{}");
+        tmp.CreateFile([".gemini", "settings.json"], "{}");
         var r2 = AgentDetection.Detect(Inputs(pathEnv: "", home: tmp.Path));
         await Assert.That(r2.Gemini.InstallSignalFound).IsTrue();
     }
@@ -196,7 +196,7 @@ public class AgentDetectionTests {
     [Test]
     public async Task BinaryOnPath_windows_walks_pathext_and_rejects_bare_name() {
         using var tmp = new TempDir();
-        await File.WriteAllTextAsync(tmp.PathTo("claude.CMD"), "@echo off\n");
+        tmp.CreateFile("claude.CMD", "@echo off\n");
 
         var winInputs = new AgentDetectionInputs(
             PathEnv: tmp.Path, PathExt: ".EXE;.CMD", IsWindows: true, Home: "/nonexistent");

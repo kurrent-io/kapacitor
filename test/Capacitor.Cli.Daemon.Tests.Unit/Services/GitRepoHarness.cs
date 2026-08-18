@@ -18,7 +18,7 @@ internal static class GitRepoHarness {
         Git(tmp.Path, "init", "-q");
         Git(tmp.Path, "config", "user.email", "test@example.com");
         Git(tmp.Path, "config", "user.name", "Test");
-        File.WriteAllText(tmp.PathTo("README.md"), "test");
+        tmp.CreateFile("README.md", "test");
         Git(tmp.Path, "add", "-A");
         Git(tmp.Path, "commit", "-q", "-m", "initial");
 
