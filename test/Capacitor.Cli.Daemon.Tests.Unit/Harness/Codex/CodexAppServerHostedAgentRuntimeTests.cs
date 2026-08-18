@@ -61,7 +61,7 @@ public class CodexAppServerHostedAgentRuntimeTests {
         await Assert.That(fake.ReceivedMethods).Contains("hooks/list");
         await Assert.That(fake.ReceivedMethods).Contains("thread/start");
         await Assert.That(fake.InitializeOptOuts).Contains("item/agentMessage/delta");
-        await Assert.That(fake.LastThreadStartSandboxType).IsEqualTo("readOnly");
+        await Assert.That(fake.LastThreadStartSandbox).IsEqualTo("read-only");
 
         await runtime.DisposeAsync();
     }

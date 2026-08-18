@@ -225,7 +225,11 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     async Task StartThreadAsync(CancellationToken ct) {
         var startParams = new JsonObject {
             ["cwd"]               = _launch.Cwd,
-            ["sandbox"]           = CodexAppServerPosture.RenderSandboxPolicy(_launch.Sandbox, _launch.WritableRoots),
+            // thread/start.sandbox is the coarse SandboxMode STRING (read-only / workspace-write /
+            // danger-full-access) — a different wire shape from turn/start.sandboxPolicy's object.
+            // The resolved posture token already IS that string; the per-turn sandboxPolicy object
+            // is the load-bearing containment.
+            ["sandbox"]           = CodexAppServerPosture.RenderSandboxMode(_launch.Sandbox),
             ["approvalPolicy"]    = CodexAppServerPosture.RenderApprovalPolicy(_launch.Approval),
             ["approvalsReviewer"] = CodexAppServerPosture.ApprovalsReviewer,
         };

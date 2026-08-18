@@ -42,7 +42,7 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
     // ── Observed ───────────────────────────────────────────────────────────────────────────────
     public readonly List<string>       ReceivedMethods    = [];
     public readonly List<string>       InitializeOptOuts  = [];
-    public string?                     LastThreadStartSandboxType;
+    public string?                     LastThreadStartSandbox;
     public string?                     LastTurnApprovalPolicy;
     public JsonElement?                ApprovalResponse; // the client's response to the injected request
     int _turnStartCount;
@@ -105,7 +105,7 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
 
             case "thread/start":
                 if (@params.ValueKind == JsonValueKind.Object && @params.TryGetProperty("sandbox", out var sb))
-                    LastThreadStartSandboxType = sb.TryGetProperty("type", out var st) ? st.GetString() : null;
+                    LastThreadStartSandbox = sb.ValueKind == JsonValueKind.String ? sb.GetString() : null;
                 await RespondAsync(id, new JsonObject {
                     ["thread"]        = new JsonObject { ["id"] = ThreadId, ["sessionId"] = ThreadId, ["path"] = "/tmp/r.jsonl" },
                     ["model"]         = Model,

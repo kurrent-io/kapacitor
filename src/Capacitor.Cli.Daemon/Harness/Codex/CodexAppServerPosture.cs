@@ -35,6 +35,17 @@ internal static class CodexAppServerPosture {
         return new JsonObject { ["type"] = "workspaceWrite", ["writableRoots"] = roots };
     }
 
+    /// <summary>Validates a resolved sandbox token and returns it as the coarse <c>SandboxMode</c>
+    /// STRING slotted into <c>thread/start</c>'s <c>sandbox</c> — a DIFFERENT wire shape from
+    /// <c>turn/start</c>'s <c>sandboxPolicy</c> object (<see cref="RenderSandboxPolicy"/>), which is
+    /// the load-bearing per-turn containment. The app-server rejects the object form here (verified
+    /// against the pinned binary), so this must stay the plain kebab-case string.</summary>
+    public static string RenderSandboxMode(string sandbox) => sandbox switch {
+        "read-only" or "workspace-write" or "danger-full-access" => sandbox,
+        _ => throw new ArgumentOutOfRangeException(nameof(sandbox), sandbox,
+            "Unknown Codex sandbox; app-server thread/start accepts only read-only, workspace-write, danger-full-access."),
+    };
+
     /// <summary>Validates the approval policy is one of the three known kebab-case strings and returns
     /// it verbatim — the value slotted into <c>turn/start</c>'s <c>approvalPolicy</c>. Anything else is
     /// rejected loudly: an unknown token or a granular object would either crash the app-server or
