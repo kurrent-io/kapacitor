@@ -481,11 +481,12 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
             return null;
 
         return new CodexTokenUsage(
-            InputTokens:           total.Num("inputTokens")           ?? 0,
-            CachedInputTokens:     total.Num("cachedInputTokens")     ?? 0,
-            OutputTokens:          total.Num("outputTokens")          ?? 0,
-            ReasoningOutputTokens: total.Num("reasoningOutputTokens") ?? 0,
-            TotalTokens:           total.Num("totalTokens")           ?? 0);
+            InputTokens:            total.Num("inputTokens")            ?? 0,
+            CachedInputTokens:      total.Num("cachedInputTokens")      ?? 0,
+            CacheWriteInputTokens:  total.Num("cacheWriteInputTokens")  ?? 0,
+            OutputTokens:           total.Num("outputTokens")           ?? 0,
+            ReasoningOutputTokens:  total.Num("reasoningOutputTokens")  ?? 0,
+            TotalTokens:            total.Num("totalTokens")            ?? 0);
     }
 
     // JsonNode → JsonElement without reflection (AOT-safe): the node writes its own JSON.
@@ -493,6 +494,10 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         JsonDocument.Parse(node.ToJsonString()).RootElement.Clone();
 }
 
-/// <summary>Cumulative thread token usage from <c>thread/tokenUsage/updated.total</c>.</summary>
+/// <summary>Cumulative thread token usage from <c>thread/tokenUsage/updated.total</c> (the app-server
+/// <c>TokenUsageBreakdown</c>). <see cref="CacheWriteInputTokens"/> is the cache-CREATION tier, billed
+/// separately from <see cref="CachedInputTokens"/> reads — kept so the delta converter never silently
+/// drops a billed bucket.</summary>
 internal readonly record struct CodexTokenUsage(
-    long InputTokens, long CachedInputTokens, long OutputTokens, long ReasoningOutputTokens, long TotalTokens);
+    long InputTokens, long CachedInputTokens, long CacheWriteInputTokens,
+    long OutputTokens, long ReasoningOutputTokens, long TotalTokens);

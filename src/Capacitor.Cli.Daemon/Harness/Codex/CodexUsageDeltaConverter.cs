@@ -53,6 +53,7 @@ internal sealed class CodexUsageDeltaConverter {
     static bool IsReset(CodexTokenUsage prev, CodexTokenUsage now) =>
         now.InputTokens           < prev.InputTokens
      || now.CachedInputTokens     < prev.CachedInputTokens
+     || now.CacheWriteInputTokens < prev.CacheWriteInputTokens
      || now.OutputTokens          < prev.OutputTokens
      || now.ReasoningOutputTokens < prev.ReasoningOutputTokens
      || now.TotalTokens           < prev.TotalTokens;
@@ -60,6 +61,7 @@ internal sealed class CodexUsageDeltaConverter {
     static CodexTokenUsage Delta(CodexTokenUsage prev, CodexTokenUsage now) => new(
         InputTokens:           now.InputTokens           - prev.InputTokens,
         CachedInputTokens:     now.CachedInputTokens     - prev.CachedInputTokens,
+        CacheWriteInputTokens: now.CacheWriteInputTokens - prev.CacheWriteInputTokens,
         OutputTokens:          now.OutputTokens          - prev.OutputTokens,
         ReasoningOutputTokens: now.ReasoningOutputTokens - prev.ReasoningOutputTokens,
         TotalTokens:           now.TotalTokens           - prev.TotalTokens);
