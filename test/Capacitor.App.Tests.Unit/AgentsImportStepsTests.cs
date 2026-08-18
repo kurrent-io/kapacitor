@@ -34,7 +34,7 @@ public class AgentDetectionFeedTests {
         using var tmp = new TempDir();
         var emptyDir  = tmp.CreateDir("empty");
         var claudeDir = tmp.CreateDir("claude");
-        var claudeBin = Path.Combine(claudeDir, "claude");
+        var claudeBin = claudeDir.PathTo("claude");
         await File.WriteAllTextAsync(claudeBin, "#!/bin/sh\n");
         File.SetUnixFileMode(claudeBin, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 

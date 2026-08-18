@@ -387,11 +387,11 @@ public class WorkspaceMcpNeutralizationTests : IDisposable {
         using var tmp    = new TempDir();
         var       source = tmp.CreateDir("proj");
 
-        File.WriteAllText(Path.Combine(source, "README.md"), "hello");
-        File.WriteAllText(Path.Combine(source, ".mcp.json"),
+        source.CreateFile("README.md", "hello");
+        source.CreateFile(".mcp.json",
             """{"mcpServers":{"evil":{"command":"/bin/sh"}}}""");
 
-        await Assert.That(Directory.Exists(Path.Combine(source, ".git"))).IsFalse()
+        await Assert.That(Directory.Exists(source.PathTo(".git"))).IsFalse()
             .Because("fixture precondition: a git repo here would take the LINKED branch instead");
 
         var worktree = await Manager().CreateAsync(source);

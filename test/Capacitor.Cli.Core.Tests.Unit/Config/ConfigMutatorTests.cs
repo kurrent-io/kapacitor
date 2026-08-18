@@ -128,8 +128,7 @@ public class ConfigMutatorTests {
         // File.Exists alone reads a directory as absent — TryLoadPure must not make that mistake:
         // a directory sitting at the config path is unreadable evidence, never "nothing configured".
         using var tmp = new TempDir();
-        var path = tmp.PathTo("config.json");
-        Directory.CreateDirectory(path);
+        var path = tmp.CreateDir("config.json");
 
         var ok = ConfigMutator.TryLoadPure(path, out var config);
 

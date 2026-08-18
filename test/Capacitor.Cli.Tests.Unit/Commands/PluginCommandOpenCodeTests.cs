@@ -40,9 +40,8 @@ public class PluginCommandOpenCodeTests {
     [Test]
     public async Task Install_opencode_with_if_installed_refreshes_existing_plugin() {
         using var tmp = new TempDir();
-        var dir = tmp.PathTo("plugins");
-        Directory.CreateDirectory(dir);
-        var pluginPath = Path.Combine(dir, "kcap.ts");
+        var dir = tmp.CreateDir("plugins");
+        var pluginPath = dir.PathTo("kcap.ts");
         // Seed a stale kcap.ts with NO version marker (pre-marker install). The
         // refresh path should rewrite it in place and stamp the version marker.
         await File.WriteAllTextAsync(pluginPath, "// stale plugin body");
@@ -58,18 +57,17 @@ public class PluginCommandOpenCodeTests {
         var body = await File.ReadAllTextAsync(pluginPath);
         await Assert.That(body).DoesNotContain("stale plugin body");
         await Assert.That(body).Contains("export const KcapPlugin");
-        await Assert.That(File.Exists(Path.Combine(dir, ".kcap-extension-version"))).IsTrue();
+        await Assert.That(File.Exists(dir.PathTo(".kcap-extension-version"))).IsTrue();
     }
 
     [Test]
     public async Task Install_opencode_if_installed_recreates_plugin_when_file_missing_but_marker_current() {
         using var tmp = new TempDir();
-        var dir = tmp.PathTo("plugins");
-        Directory.CreateDirectory(dir);
-        var pluginPath = Path.Combine(dir, "kcap.ts");
+        var dir = tmp.CreateDir("plugins");
+        var pluginPath = dir.PathTo("kcap.ts");
         // Marker at the CURRENT version but NO kcap.ts on disk (user deleted it). IsInstalled is true
         // via the marker, so --if-installed must still RECREATE the missing plugin, not skip it.
-        await File.WriteAllTextAsync(Path.Combine(dir, ".kcap-extension-version"), CapacitorVersion.Current());
+        dir.CreateFile(".kcap-extension-version", CapacitorVersion.Current());
 
         var exit = await PluginCommand.HandleAsync(
             ["plugin", "install", "--opencode", "--opencode-plugin-path", pluginPath, "--if-installed",
@@ -88,10 +86,9 @@ public class PluginCommandOpenCodeTests {
         using var _   = new EnvScope("OPENCODE_CONFIG_DIR", null);
         using var __  = new EnvScope("XDG_CONFIG_HOME", null);
         using var tmp = new TempDir();
-        var dir = tmp.PathTo("plugins");
-        Directory.CreateDirectory(dir);
-        var pluginPath = Path.Combine(dir, "kcap.ts");
-        var marker  = Path.Combine(dir, ".kcap-extension-version");
+        var dir = tmp.CreateDir("plugins");
+        var pluginPath = dir.PathTo("kcap.ts");
+        var marker  = dir.PathTo(".kcap-extension-version");
         await File.WriteAllTextAsync(pluginPath, "export const KcapPlugin = async () => ({})");
         await File.WriteAllTextAsync(marker, "1.0.0");
 

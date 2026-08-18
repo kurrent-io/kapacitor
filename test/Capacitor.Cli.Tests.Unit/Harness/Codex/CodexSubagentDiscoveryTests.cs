@@ -207,8 +207,7 @@ public class CodexSubagentDiscoveryTests {
         var parent = WriteParent(DayDir(tmp.Path));
 
         // Midnight rollover: the child spawns into the NEXT day's directory.
-        var nextDay = tmp.PathTo("2026", "08", "11");
-        Directory.CreateDirectory(nextDay);
+        var nextDay = tmp.CreateDir("2026", "08", "11");
         WriteChild(nextDay, stamp: "2026-08-11T00-01-02");
 
         var subs = CodexSubagentDiscovery.EnumerateSubagentRollouts(parent, Dashless(ParentDashed));

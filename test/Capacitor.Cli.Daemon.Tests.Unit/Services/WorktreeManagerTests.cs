@@ -145,7 +145,7 @@ public class WorktreeManagerTests {
         Git(upstream, "init", "-q");
         Git(upstream, "config", "user.email", "test@example.com");
         Git(upstream, "config", "user.name", "Test");
-        File.WriteAllText(Path.Combine(upstream, "main.txt"), "main");
+        upstream.CreateFile("main.txt", "main");
         Git(upstream, "add", "-A");
         Git(upstream, "commit", "-q", "-m", "initial");
 
@@ -159,7 +159,7 @@ public class WorktreeManagerTests {
         for (var i = 0; i < concurrency; i++) {
             var refName = $"refs/pull/{100 + i}/head";
             Git(upstream, "checkout", "-q", "-b", $"side-{i}");
-            File.WriteAllText(Path.Combine(upstream, $"side-{i}.txt"), $"side-{i}");
+            upstream.CreateFile($"side-{i}.txt", $"side-{i}");
             Git(upstream, "add", "-A");
             Git(upstream, "commit", "-q", "-m", $"side {i}");
             var sha = GitCapture(upstream, "rev-parse", "HEAD").Trim();
@@ -287,7 +287,7 @@ public class WorktreeManagerTests {
         using var tmp = new TempDir();
         var outside = tmp.CreateDir("outside");
         var root    = tmp.PathTo("root");
-        File.WriteAllText(Path.Combine(outside, "secret.txt"), "must-not-be-snapshotted");
+        outside.CreateFile("secret.txt", "must-not-be-snapshotted");
 
         // Forge a gitlink entry whose path is a symlink to a directory outside the source.
         Directory.CreateSymbolicLink(Path.Combine(super, "vendored"), outside);
@@ -423,7 +423,7 @@ public class WorktreeManagerTests {
         using var tmp = new TempDir();
         var root = tmp.CreateDir("root");
         var external = tmp.CreateDir("external");
-        var linkedParent = Path.Combine(root, "linked");
+        var linkedParent = root.PathTo("linked");
         Directory.CreateSymbolicLink(linkedParent, external);
 
         var ex = Assert.Throws<InvalidOperationException>(() =>
@@ -432,7 +432,7 @@ public class WorktreeManagerTests {
 
         await Assert.That(ex.Message)
             .StartsWith("borrowed_snapshot_destination_symlink_unsupported");
-        await Assert.That(Directory.Exists(Path.Combine(external, "child"))).IsFalse();
+        await Assert.That(Directory.Exists(external.PathTo("child"))).IsFalse();
     }
 
     [Test]
@@ -442,7 +442,7 @@ public class WorktreeManagerTests {
         var root = tmp.CreateDir("root");
         var external = Path.Combine(tmp.CreateDir("external"), "secret.txt");
         File.WriteAllText(external, "keep-me");
-        var linkedLeaf = Path.Combine(root, "file.txt");
+        var linkedLeaf = root.PathTo("file.txt");
         File.CreateSymbolicLink(linkedLeaf, external);
 
         var ex = Assert.Throws<InvalidOperationException>(() =>
@@ -476,7 +476,7 @@ public class WorktreeManagerTests {
 
             await Assert.That(ex!.Message)
                 .StartsWith("borrowed_snapshot_destination_symlink_unsupported");
-            await Assert.That(File.Exists(Path.Combine(external, "dirty.txt"))).IsFalse();
+            await Assert.That(File.Exists(external.PathTo("dirty.txt"))).IsFalse();
         } finally {
             try { Directory.Delete(upstream, true); } catch { }
             try { Directory.Delete(clone, true); } catch { }
@@ -490,7 +490,7 @@ public class WorktreeManagerTests {
         using var tmp = new TempDir();
         var root = tmp.PathTo("root");
         var externalDir = tmp.CreateDir("external");
-        var external = Path.Combine(externalDir, "sentinel.txt");
+        var external = externalDir.PathTo("sentinel.txt");
         try {
             File.WriteAllText(external, "keep-me");
             var route = Path.Combine(clone, "linked-leaf");
@@ -544,7 +544,7 @@ public class WorktreeManagerTests {
             Git(clone, "add", "tracked-dir/child.txt");
             Git(clone, "commit", "-q", "-m", "tracked child");
             Directory.Delete(trackedDir, true);
-            File.WriteAllText(Path.Combine(external, "child.txt"), "private external bytes");
+            external.CreateFile("child.txt", "private external bytes");
             Directory.CreateSymbolicLink(trackedDir, external);
 
             var manager = new WorktreeManager(
@@ -622,8 +622,8 @@ public class WorktreeManagerTests {
         using var tmp = new TempDir();
         var root = tmp.CreateDir("root");
         var external = tmp.CreateDir("external");
-        var borrowedSnapshots = Path.Combine(root, "borrowed-snapshots");
-        var externalChild = Path.Combine(external, "must-survive");
+        var borrowedSnapshots = root.PathTo("borrowed-snapshots");
+        var externalChild = external.PathTo("must-survive");
         try {
             Directory.CreateDirectory(externalChild);
             File.WriteAllText(Path.Combine(externalChild, "sentinel.txt"), "keep-me");

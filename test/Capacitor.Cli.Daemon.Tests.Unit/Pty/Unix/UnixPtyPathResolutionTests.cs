@@ -63,8 +63,8 @@ public class UnixPtyPathResolutionTests {
         using var tmp = new TempDir();
         var earlier = tmp.CreateDir("a");
         var later   = tmp.CreateDir("b");
-        var shadow  = Path.Combine(earlier, "tool");
-        var real    = Path.Combine(later, "tool");
+        var shadow  = earlier.PathTo("tool");
+        var real    = later.PathTo("tool");
         File.WriteAllText(shadow, ""); // exists but NOT executable (mode 0644-ish)
         File.SetUnixFileMode(shadow, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         WriteExecutable(real);
@@ -100,8 +100,8 @@ public class UnixPtyPathResolutionTests {
         using var tmp = new TempDir();
         var earlier = tmp.CreateDir("a");
         var later   = tmp.CreateDir("b");
-        var wrongClass = Path.Combine(earlier, "tool");
-        var runnable   = Path.Combine(later, "tool");
+        var wrongClass = earlier.PathTo("tool");
+        var runnable   = later.PathTo("tool");
         File.WriteAllText(wrongClass, "");
         File.SetUnixFileMode(wrongClass, UnixFileMode.GroupExecute); // 0010: has an exec bit, but NOT for the owner
         WriteExecutable(runnable);
@@ -129,7 +129,7 @@ public class UnixPtyPathResolutionTests {
         if (OperatingSystem.IsWindows()) return;
         using var tmp = new TempDir();
         var binDir = tmp.CreateDir("bin");
-        var tool = Path.Combine(binDir, "reltool");
+        var tool = binDir.PathTo("reltool");
         WriteExecutable(tool);
         // Relative PATH element "bin" resolves against cwd (not the daemon's own cwd).
         var r = UnixPtyProcess.ResolveExecutableAbsolutePath("reltool", tmp.Path, EnvWithPath("bin"));

@@ -643,7 +643,7 @@ public class CodexConfigTomlTests {
 
         var change = CodexConfigToml.RegisterKcapMcpServers(Path.Combine(alias, "config.toml"));
         await Assert.That(change).IsEqualTo(CodexConfigToml.Change.Failed);
-        await Assert.That(File.Exists(Path.Combine(real, "config.toml"))).IsFalse();
+        await Assert.That(File.Exists(real.PathTo("config.toml"))).IsFalse();
     }
 
     [Test]

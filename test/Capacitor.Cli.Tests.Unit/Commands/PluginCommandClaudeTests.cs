@@ -39,9 +39,8 @@ public class PluginCommandClaudeTests {
         using var pluginDir = new TempDir();
 
         // Seed pre-marker install: enabledPlugins entry, no marker.
-        var claudeDir = fakeHome.PathTo(".claude");
-        Directory.CreateDirectory(claudeDir);
-        var settingsPath = Path.Combine(claudeDir, "settings.json");
+        var claudeDir = fakeHome.CreateDir(".claude");
+        var settingsPath = claudeDir.PathTo("settings.json");
         await File.WriteAllTextAsync(settingsPath, """
             {
               "extraKnownMarketplaces": { "kcap": { "source": { "source": "directory", "path": "/old/path" } } },
@@ -67,14 +66,12 @@ public class PluginCommandClaudeTests {
     public async Task Install_claude_with_if_installed_is_noop_when_marker_matches_current_version() {
         using var fakeHome = new TempDir();
 
-        var claudeDir = fakeHome.PathTo(".claude");
-        Directory.CreateDirectory(claudeDir);
-        var settingsPath = Path.Combine(claudeDir, "settings.json");
+        var claudeDir = fakeHome.CreateDir(".claude");
+        var settingsPath = claudeDir.PathTo("settings.json");
 
         // Sentinel content + matching marker.
         await File.WriteAllTextAsync(settingsPath, """{"sentinel": "must-survive"}""");
-        await File.WriteAllTextAsync(
-            Path.Combine(claudeDir, ClaudePluginInstaller.MarkerFileName),
+        claudeDir.CreateFile(ClaudePluginInstaller.MarkerFileName,
             CapacitorVersion.Current());
 
         var exit = await PluginCommand.HandleAsync(["plugin", "install", "--if-installed"], TestEnv(fakeHome.Path));
@@ -91,10 +88,8 @@ public class PluginCommandClaudeTests {
         var capturedErr     = new StringWriter();
 
         // Seed: marker present so the gate proceeds…
-        var claudeDir = fakeHome.PathTo(".claude");
-        Directory.CreateDirectory(claudeDir);
-        await File.WriteAllTextAsync(
-            Path.Combine(claudeDir, ClaudePluginInstaller.MarkerFileName),
+        var claudeDir = fakeHome.CreateDir(".claude");
+        claudeDir.CreateFile(ClaudePluginInstaller.MarkerFileName,
             "some-old-version");
 
         // …but plugin dir resolution fails (null = no plugin available).
@@ -129,9 +124,8 @@ public class PluginCommandClaudeTests {
         var       stdout    = new StringWriter();
 
         // Seed a pre-marker install so --if-installed proceeds to refresh.
-        var claudeDir = fakeHome.PathTo(".claude");
-        Directory.CreateDirectory(claudeDir);
-        await File.WriteAllTextAsync(Path.Combine(claudeDir, "settings.json"), """
+        var claudeDir = fakeHome.CreateDir(".claude");
+        claudeDir.CreateFile("settings.json", """
             {
               "extraKnownMarketplaces": { "kcap": { "source": { "source": "directory", "path": "/old/path" } } },
               "enabledPlugins": { "kcap@kcap": true }
@@ -152,9 +146,8 @@ public class PluginCommandClaudeTests {
     public async Task Remove_claude_deletes_marker() {
         using var fakeHome = new TempDir();
 
-        var claudeDir = fakeHome.PathTo(".claude");
-        Directory.CreateDirectory(claudeDir);
-        var settingsPath = Path.Combine(claudeDir, "settings.json");
+        var claudeDir = fakeHome.CreateDir(".claude");
+        var settingsPath = claudeDir.PathTo("settings.json");
         await File.WriteAllTextAsync(settingsPath, """
             {
               "extraKnownMarketplaces": { "kcap": { "source": { "source": "directory", "path": "/p" } } },

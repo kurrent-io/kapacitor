@@ -36,9 +36,8 @@ public class PluginCommandPiTests {
 
         // Seed a stale kcap.ts with NO version marker (pre-marker install). The
         // refresh path should rewrite it in place and stamp the version marker.
-        var extDir = fakeHome.PathTo(".pi", "agent", "extensions");
-        Directory.CreateDirectory(extDir);
-        var extPath = Path.Combine(extDir, "kcap.ts");
+        var extDir = fakeHome.CreateDir(".pi", "agent", "extensions");
+        var extPath = extDir.PathTo("kcap.ts");
         await File.WriteAllTextAsync(extPath, "// stale extension body");
 
         var exit = await PluginCommand.HandleAsync(
@@ -48,17 +47,16 @@ public class PluginCommandPiTests {
 
         var body = await File.ReadAllTextAsync(extPath);
         await Assert.That(body).DoesNotContain("stale extension body");
-        await Assert.That(File.Exists(Path.Combine(extDir, ".kcap-extension-version"))).IsTrue();
+        await Assert.That(File.Exists(extDir.PathTo(".kcap-extension-version"))).IsTrue();
     }
 
     [Test]
     public async Task Remove_pi_deletes_extension_and_marker() {
         using var fakeHome = new TempDir();
 
-        var extDir = fakeHome.PathTo(".pi", "agent", "extensions");
-        Directory.CreateDirectory(extDir);
-        var extPath = Path.Combine(extDir, "kcap.ts");
-        var marker  = Path.Combine(extDir, ".kcap-extension-version");
+        var extDir = fakeHome.CreateDir(".pi", "agent", "extensions");
+        var extPath = extDir.PathTo("kcap.ts");
+        var marker  = extDir.PathTo(".kcap-extension-version");
         await File.WriteAllTextAsync(extPath, "export default function(pi){}");
         await File.WriteAllTextAsync(marker, "1.0.0");
 
@@ -78,15 +76,14 @@ public class PluginCommandPiTests {
     [Test]
     public async Task Install_pi_if_installed_installs_mcp_bridge_and_agents_md() {
         using var fakeHome = new TempDir();
-        var extDir = fakeHome.PathTo(".pi", "agent", "extensions");
-        Directory.CreateDirectory(extDir);
-        await File.WriteAllTextAsync(Path.Combine(extDir, "kcap.ts"), "// stale ingest");
+        var extDir = fakeHome.CreateDir(".pi", "agent", "extensions");
+        extDir.CreateFile("kcap.ts", "// stale ingest");
 
         var exit = await PluginCommand.HandleAsync(
             ["plugin", "install", "--pi", "--if-installed"], TestEnv(fakeHome.Path));
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(Path.Combine(extDir, "kcap-mcp.ts"))).IsTrue();
+        await Assert.That(File.Exists(extDir.PathTo("kcap-mcp.ts"))).IsTrue();
         var agents = fakeHome.PathTo(".pi", "agent", "AGENTS.md");
         await Assert.That(File.Exists(agents)).IsTrue();
         await Assert.That(await File.ReadAllTextAsync(agents)).Contains(AgentInstructionsWriter.BeginMarker);
@@ -95,13 +92,12 @@ public class PluginCommandPiTests {
     [Test]
     public async Task Install_pi_if_installed_heals_deleted_mcp_bridge_with_current_marker() {
         using var fakeHome = new TempDir();
-        var extDir = fakeHome.PathTo(".pi", "agent", "extensions");
-        Directory.CreateDirectory(extDir);
+        var extDir = fakeHome.CreateDir(".pi", "agent", "extensions");
         // Opt-in signal: the ingest extension is present.
-        await File.WriteAllTextAsync(Path.Combine(extDir, "kcap.ts"), "// stale ingest");
+        extDir.CreateFile("kcap.ts", "// stale ingest");
         // A CURRENT MCP marker but NO kcap-mcp.ts (user deleted the file). A marker-only "current"
         // state must NOT let the refresh skip recreating the bridge file.
-        var mcpPath = Path.Combine(extDir, "kcap-mcp.ts");
+        var mcpPath = extDir.PathTo("kcap-mcp.ts");
         PiMcpExtensionInstaller.WriteMarker(mcpPath);
         await Assert.That(File.Exists(mcpPath)).IsFalse();
 
@@ -115,30 +111,28 @@ public class PluginCommandPiTests {
     [Test]
     public async Task Install_pi_skip_mcp_omits_bridge_but_keeps_instructions() {
         using var fakeHome = new TempDir();
-        var extDir = fakeHome.PathTo(".pi", "agent", "extensions");
-        Directory.CreateDirectory(extDir);
-        await File.WriteAllTextAsync(Path.Combine(extDir, "kcap.ts"), "// stale ingest");
+        var extDir = fakeHome.CreateDir(".pi", "agent", "extensions");
+        extDir.CreateFile("kcap.ts", "// stale ingest");
 
         var exit = await PluginCommand.HandleAsync(
             ["plugin", "install", "--pi", "--if-installed", "--skip-pi-mcp"], TestEnv(fakeHome.Path));
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(Path.Combine(extDir, "kcap-mcp.ts"))).IsFalse();
+        await Assert.That(File.Exists(extDir.PathTo("kcap-mcp.ts"))).IsFalse();
         await Assert.That(File.Exists(fakeHome.PathTo(".pi", "agent", "AGENTS.md"))).IsTrue();
     }
 
     [Test]
     public async Task Install_pi_skip_instructions_omits_agents_md_but_keeps_bridge() {
         using var fakeHome = new TempDir();
-        var extDir = fakeHome.PathTo(".pi", "agent", "extensions");
-        Directory.CreateDirectory(extDir);
-        await File.WriteAllTextAsync(Path.Combine(extDir, "kcap.ts"), "// stale ingest");
+        var extDir = fakeHome.CreateDir(".pi", "agent", "extensions");
+        extDir.CreateFile("kcap.ts", "// stale ingest");
 
         var exit = await PluginCommand.HandleAsync(
             ["plugin", "install", "--pi", "--if-installed", "--skip-pi-instructions"], TestEnv(fakeHome.Path));
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(Path.Combine(extDir, "kcap-mcp.ts"))).IsTrue();
+        await Assert.That(File.Exists(extDir.PathTo("kcap-mcp.ts"))).IsTrue();
         await Assert.That(File.Exists(fakeHome.PathTo(".pi", "agent", "AGENTS.md"))).IsFalse();
     }
 

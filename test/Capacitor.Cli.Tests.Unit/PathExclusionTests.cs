@@ -27,8 +27,7 @@ public class PathExclusionTests {
     [Test]
     public async Task IsExcluded_matches_descendant() {
         using var tmp = new TempDir();
-        var       sub = tmp.PathTo("sub", "deeper");
-        Directory.CreateDirectory(sub);
+        var       sub = tmp.CreateDir("sub", "deeper");
 
         await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path])).IsTrue();
     }
@@ -48,8 +47,7 @@ public class PathExclusionTests {
     [Test]
     public async Task IsExcluded_ignores_trailing_separator_on_entry() {
         using var tmp = new TempDir();
-        var       sub = tmp.PathTo("child");
-        Directory.CreateDirectory(sub);
+        var       sub = tmp.CreateDir("child");
 
         await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path + Path.DirectorySeparatorChar])).IsTrue();
     }
@@ -60,8 +58,7 @@ public class PathExclusionTests {
         // returns "..scratch", which our containment check must not treat as a
         // parent-directory reference.
         using var tmp = new TempDir();
-        var       sub = tmp.PathTo("..scratch");
-        Directory.CreateDirectory(sub);
+        var       sub = tmp.CreateDir("..scratch");
 
         await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path])).IsTrue();
     }
@@ -69,8 +66,7 @@ public class PathExclusionTests {
     [Test]
     public async Task IsExcluded_matches_deeper_descendant_under_dotdot_named_intermediate() {
         using var tmp = new TempDir();
-        var       sub = tmp.PathTo("..data", "session");
-        Directory.CreateDirectory(sub);
+        var       sub = tmp.CreateDir("..data", "session");
 
         await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path])).IsTrue();
     }
@@ -78,8 +74,7 @@ public class PathExclusionTests {
     [Test]
     public async Task IsExcluded_matches_any_entry() {
         using var tmp = new TempDir();
-        var       sub = tmp.PathTo("child");
-        Directory.CreateDirectory(sub);
+        var       sub = tmp.CreateDir("child");
 
         await Assert.That(PathExclusion.IsExcluded(sub, ["/nonexistent/path", tmp.Path])).IsTrue();
     }
@@ -102,8 +97,7 @@ public class PathExclusionTests {
         using var real = new TempDir();
         using var link = TempSymlink.To(real.Path);
 
-        var subUnderReal = real.PathTo("sub");
-        Directory.CreateDirectory(subUnderReal);
+        var subUnderReal = real.CreateDir("sub");
 
         // The cwd reported by an agent that descended through the symlink path.
         var subUnderLink = Path.Combine(link.Path, "sub");

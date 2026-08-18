@@ -71,7 +71,7 @@ public class BorrowAuthorizerTests {
         using var tmp = new TempDir();
         var allowedRoot = tmp.CreateDir("allowed");
         var outsideRoot = tmp.CreateDir("outside");
-        var link        = Path.Combine(allowedRoot, "escape-link");
+        var link        = allowedRoot.PathTo("escape-link");
 
         Directory.CreateSymbolicLink(link, outsideRoot);
 
@@ -93,8 +93,8 @@ public class BorrowAuthorizerTests {
         using var tmp = new TempDir();
         var allowedRoot  = tmp.CreateDir("allowed");
         var outsideRoot  = tmp.CreateDir("outside");
-        var realLeaf     = Path.Combine(outsideRoot, "x");
-        var linkAncestor = Path.Combine(allowedRoot, "linkdir");
+        var realLeaf     = outsideRoot.PathTo("x");
+        var linkAncestor = allowedRoot.PathTo("linkdir");
 
         Directory.CreateDirectory(realLeaf);
         Directory.CreateSymbolicLink(linkAncestor, outsideRoot);
@@ -119,8 +119,8 @@ public class BorrowAuthorizerTests {
         using var tmp = new TempDir();
         var allowedRoot  = tmp.CreateDir("allowed");
         var linkParent   = tmp.CreateDir("link");
-        var realLeaf     = Path.Combine(allowedRoot, "proj", "x");
-        var linkAncestor = Path.Combine(linkParent, "to-allowed");
+        var realLeaf     = allowedRoot.PathTo("proj", "x");
+        var linkAncestor = linkParent.PathTo("to-allowed");
 
         Directory.CreateDirectory(realLeaf);
         Directory.CreateSymbolicLink(linkAncestor, allowedRoot);

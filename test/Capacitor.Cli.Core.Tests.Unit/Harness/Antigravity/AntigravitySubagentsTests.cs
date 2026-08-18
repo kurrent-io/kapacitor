@@ -22,7 +22,7 @@ public class AntigravitySubagentsTests {
 
         public void WriteTranscript(string convId, params string[] lines) {
             var logs = _home.CreateDir(".gemini", "antigravity", "brain", convId, ".system_generated", "logs");
-            File.WriteAllLines(Path.Combine(logs, "transcript_full.jsonl"), lines);
+            logs.CreateFile("transcript_full.jsonl", lines);
         }
 
         public void Dispose() => _home.Dispose();

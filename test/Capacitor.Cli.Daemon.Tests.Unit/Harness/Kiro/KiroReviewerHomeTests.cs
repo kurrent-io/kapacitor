@@ -89,7 +89,7 @@ public class KiroReviewerHomeTests {
         using var tmp = new TempDir();
         var stateDir = tmp.CreateDir("state");
         var outside  = tmp.CreateDir("outside");
-        var victim   = Path.Combine(outside, "not-ours");
+        var victim   = outside.PathTo("not-ours");
         Directory.CreateDirectory(victim);
 
         KiroReviewerHome.Delete(victim, stateDir, NullLogger.Instance);
@@ -109,7 +109,7 @@ public class KiroReviewerHomeTests {
         using var tmp = new TempDir();
         var stateDir = tmp.CreateDir("state");
         var outside  = tmp.CreateDir("outside");
-        var canary   = Path.Combine(outside, "canary.txt");
+        var canary   = outside.PathTo("canary.txt");
         await File.WriteAllTextAsync(canary, "keep me");
 
         var home = KiroReviewerHome.Create(stateDir, "epochA", "launch1");
@@ -159,7 +159,7 @@ public class KiroReviewerHomeTests {
         using var tmp = new TempDir();
         var stateDir = tmp.CreateDir("state");
         var outside  = tmp.CreateDir("outside");
-        var canary   = Path.Combine(outside, "canary.txt");
+        var canary   = outside.PathTo("canary.txt");
         await File.WriteAllTextAsync(canary, "keep me");
 
         var root = KiroReviewerHome.RootFor(stateDir);

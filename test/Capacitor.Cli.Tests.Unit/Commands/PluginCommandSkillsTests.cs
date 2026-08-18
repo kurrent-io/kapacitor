@@ -31,18 +31,15 @@ public class PluginCommandSkillsTests {
         using var fakeHome   = new TempDir();
         using var pluginRoot = new TempDir();
 
-        var skillsSrc = pluginRoot.PathTo("skills");
-        Directory.CreateDirectory(skillsSrc);
+        var skillsSrc = pluginRoot.CreateDir("skills");
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
-            Directory.CreateDirectory(Path.Combine(skillsSrc, name));
-            await File.WriteAllTextAsync(
-                Path.Combine(skillsSrc, name, "SKILL.md"),
+            skillsSrc.CreateDir(name);
+            skillsSrc.CreateFile([name, "SKILL.md"],
                 $"---\nname: {name}\n---\nbody");
         }
 
-        var legacyDir = fakeHome.PathTo(".codex", "skills");
-        Directory.CreateDirectory(legacyDir);
-        Directory.CreateDirectory(Path.Combine(legacyDir, "kcap-recap"));
+        var legacyDir = fakeHome.CreateDir(".codex", "skills");
+        legacyDir.CreateDir("kcap-recap");
 
         var exit = await PluginCommand.HandleAsync(
             ["plugin", "install", "--skills"],
@@ -63,12 +60,10 @@ public class PluginCommandSkillsTests {
 
         // Seed a valid plugin source — proves the gate short-circuits
         // BEFORE attempting any work, not because the source is invalid.
-        var skillsSrc = pluginRoot.PathTo("skills");
-        Directory.CreateDirectory(skillsSrc);
+        var skillsSrc = pluginRoot.CreateDir("skills");
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
-            Directory.CreateDirectory(Path.Combine(skillsSrc, name));
-            await File.WriteAllTextAsync(
-                Path.Combine(skillsSrc, name, "SKILL.md"),
+            skillsSrc.CreateDir(name);
+            skillsSrc.CreateFile([name, "SKILL.md"],
                 $"---\nname: {name}\n---\nbody");
         }
 
@@ -87,20 +82,16 @@ public class PluginCommandSkillsTests {
         using var fakeHome   = new TempDir();
         using var pluginRoot = new TempDir();
 
-        var skillsSrc = pluginRoot.PathTo("skills");
-        Directory.CreateDirectory(skillsSrc);
+        var skillsSrc = pluginRoot.CreateDir("skills");
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
-            Directory.CreateDirectory(Path.Combine(skillsSrc, name));
-            await File.WriteAllTextAsync(
-                Path.Combine(skillsSrc, name, "SKILL.md"),
+            skillsSrc.CreateDir(name);
+            skillsSrc.CreateFile([name, "SKILL.md"],
                 $"---\nname: {name}\ndescription: fresh\n---\nfresh body");
         }
 
         // Pre-seed marker (simulating a prior install).
-        var target = fakeHome.PathTo(".agents", "skills");
-        Directory.CreateDirectory(target);
-        await File.WriteAllTextAsync(
-            Path.Combine(target, AgentsSkillsInstaller.MarkerFileName),
+        var target = fakeHome.CreateDir(".agents", "skills");
+        target.CreateFile(AgentsSkillsInstaller.MarkerFileName,
             "old-version");
 
         var exit = await PluginCommand.HandleAsync(
@@ -110,7 +101,7 @@ public class PluginCommandSkillsTests {
 
         // Skills must be present after refresh.
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
-            await Assert.That(Directory.Exists(Path.Combine(target, $"kcap-{name}"))).IsTrue();
+            await Assert.That(Directory.Exists(target.PathTo($"kcap-{name}"))).IsTrue();
         }
 
         // Marker must have been overwritten with the current assembly version.
@@ -127,12 +118,10 @@ public class PluginCommandSkillsTests {
         using var fakeHome   = new TempDir();
         using var pluginRoot = new TempDir();
 
-        var skillsSrc = pluginRoot.PathTo("skills");
-        Directory.CreateDirectory(skillsSrc);
+        var skillsSrc = pluginRoot.CreateDir("skills");
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
-            Directory.CreateDirectory(Path.Combine(skillsSrc, name));
-            await File.WriteAllTextAsync(
-                Path.Combine(skillsSrc, name, "SKILL.md"),
+            skillsSrc.CreateDir(name);
+            skillsSrc.CreateFile([name, "SKILL.md"],
                 $"---\nname: {name}\ndescription: fresh\n---\nfresh body");
         }
 
@@ -169,28 +158,23 @@ public class PluginCommandSkillsTests {
         using var fakeHome   = new TempDir();
         using var pluginRoot = new TempDir();
 
-        var skillsSrc = pluginRoot.PathTo("skills");
-        Directory.CreateDirectory(skillsSrc);
+        var skillsSrc = pluginRoot.CreateDir("skills");
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
-            Directory.CreateDirectory(Path.Combine(skillsSrc, name));
-            await File.WriteAllTextAsync(
-                Path.Combine(skillsSrc, name, "SKILL.md"),
+            skillsSrc.CreateDir(name);
+            skillsSrc.CreateFile([name, "SKILL.md"],
                 $"---\nname: {name}\n---\nfresh body");
         }
 
         // Pre-seed: marker holds the *current* CLI version.
-        var target = fakeHome.PathTo(".agents", "skills");
-        Directory.CreateDirectory(target);
-        await File.WriteAllTextAsync(
-            Path.Combine(target, AgentsSkillsInstaller.MarkerFileName),
+        var target = fakeHome.CreateDir(".agents", "skills");
+        target.CreateFile(AgentsSkillsInstaller.MarkerFileName,
             AgentsSkillsInstaller.CurrentVersion());
 
         // Pre-seed one skill folder with a sentinel that the installer
         // would otherwise overwrite. If the short-circuit fires, this
         // file should survive untouched.
-        Directory.CreateDirectory(Path.Combine(target, "kcap-recap"));
-        await File.WriteAllTextAsync(
-            Path.Combine(target, "kcap-recap", "SKILL.md"),
+        target.CreateDir("kcap-recap");
+        target.CreateFile(["kcap-recap", "SKILL.md"],
             "stale body — must NOT be overwritten");
 
         var exit = await PluginCommand.HandleAsync(
@@ -199,7 +183,7 @@ public class PluginCommandSkillsTests {
         await Assert.That(exit).IsEqualTo(0);
 
         // Sentinel still intact → installer did not run.
-        var preserved = await File.ReadAllTextAsync(Path.Combine(target, "kcap-recap", "SKILL.md"));
+        var preserved = await File.ReadAllTextAsync(target.PathTo("kcap-recap", "SKILL.md"));
         await Assert.That(preserved).IsEqualTo("stale body — must NOT be overwritten");
     }
 
@@ -209,10 +193,8 @@ public class PluginCommandSkillsTests {
         var capturedErr    = new StringWriter();
 
         // Pre-seed marker so the gate proceeds…
-        var target = fakeHome.PathTo(".agents", "skills");
-        Directory.CreateDirectory(target);
-        await File.WriteAllTextAsync(
-            Path.Combine(target, AgentsSkillsInstaller.MarkerFileName),
+        var target = fakeHome.CreateDir(".agents", "skills");
+        target.CreateFile(AgentsSkillsInstaller.MarkerFileName,
             "some-version");
 
         // …but plugin path is null (resolution failed).

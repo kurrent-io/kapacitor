@@ -24,10 +24,9 @@ public class OpenCodeSubagentDiscoveryTests {
         await Assert.That(OpenCodeSubagentDiscovery.EnumerateSubagentFiles(lonely).Count).IsEqualTo(0);
 
         var parent = tmp.CreateFile("ses_parent.jsonl", "");
-        var nested = tmp.PathTo("ses_parent");
-        Directory.CreateDirectory(nested);
-        File.WriteAllText(Path.Combine(nested, "ses_child1.jsonl"), "");
-        File.WriteAllText(Path.Combine(nested, "ses_child2.jsonl"), "");
+        var nested = tmp.CreateDir("ses_parent");
+        nested.CreateFile("ses_child1.jsonl", "");
+        nested.CreateFile("ses_child2.jsonl", "");
 
         await Assert.That(OpenCodeSubagentDiscovery.EnumerateSubagentFiles(parent).Count).IsEqualTo(2);
     }

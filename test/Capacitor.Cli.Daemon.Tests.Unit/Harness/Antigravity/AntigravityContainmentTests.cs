@@ -82,7 +82,7 @@ public class AntigravityContainmentTests {
         string? home  = null;
 
         try {
-            await File.WriteAllTextAsync(Path.Combine(workspace, "README.md"), "containment probe workspace\n");
+            workspace.CreateFile("README.md", "containment probe workspace\n");
 
             // Production home and production argv/env — an assertion over a re-derived spawn shape
             // would certify the test's idea of the launch, not the launch.

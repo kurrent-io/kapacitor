@@ -12,19 +12,17 @@ namespace Capacitor.Tests.Helpers;
 public sealed class TempDir : IDisposable {
     public string Path { get; }
 
-    public TempDir([CallerFilePath] string callerFilePath = "") =>
+    public TempDir([CallerFilePath] string callerFilePath = "") {
         Path = Directory.CreateTempSubdirectory(Prefix(callerFilePath)).FullName;
+    }
+
+    // Every path/file operation lives on TempDirHandle and is reached through here, so the two types
+    // cannot drift apart. TempDir adds only ownership: the temp root, and deleting it on dispose.
+    TempDirHandle Root => new(Path);
 
     /// <summary>Path of an entry under this directory, from its path segments. Nothing is created —
     /// for a file the code under test is expected to create itself, or must find absent.</summary>
-    public string PathTo(params ReadOnlySpan<string> segments) {
-        var parts = new string[segments.Length + 1];
-
-        parts[0] = Path;
-        segments.CopyTo(parts.AsSpan(1));
-
-        return System.IO.Path.Combine(parts);
-    }
+    public string PathTo(params ReadOnlySpan<string> segments) => Root.PathTo(segments);
 
     /// <summary>A temp dir together with the path of one entry under it — for the common case of a
     /// test that needs a single absent path and never refers to the directory again:
@@ -37,47 +35,21 @@ public sealed class TempDir : IDisposable {
         return dir;
     }
 
-    /// <summary>Creates a directory (and any missing parents) and returns its path.</summary>
-    public string CreateDir(params ReadOnlySpan<string> segments) {
-        var path = PathTo(segments);
-        return Directory.CreateDirectory(path).FullName;
-    }
+    /// <summary>Creates a directory (and any missing parents) and returns it. The result converts
+    /// implicitly to its path, and can make files and further directories under itself.</summary>
+    public TempDirHandle CreateDir(params ReadOnlySpan<string> segments) => Root.CreateDir(segments);
 
-    /// <summary>Writes a file (creating any missing parent directories) and returns its path.</summary>
+    /// <inheritdoc cref="TempDirHandle.CreateFile(string,string)"/>
     public string CreateFile(string relativePath, string content = "") =>
-        Write(PathTo(relativePath), content);
+        Root.CreateFile(relativePath, content);
 
-    /// <summary>As <see cref="CreateFile(string,string)"/>, from path segments — so a nested file
-    /// needs no <c>Path.Combine</c> at the call site:
-    /// <c>tmp.CreateFile(["events", "events.jsonl"], body)</c>.</summary>
+    /// <inheritdoc cref="TempDirHandle.CreateFile(ReadOnlySpan{string},string)"/>
     public string CreateFile(ReadOnlySpan<string> segments, string content = "") =>
-        Write(PathTo(segments), content);
+        Root.CreateFile(segments, content);
 
-    /// <summary>As <see cref="CreateFile(string,string)"/> for line-oriented content:
-    /// <c>tmp.CreateFile("events.jsonl", [lineA, lineB])</c>.</summary>
-    // File.WriteAllLines, not a join: it terminates the LAST line too, and the JSONL fixtures here
-    // are parsed by production readers that treat a final unterminated line as incomplete.
-    public string CreateFile(string relativePath, string[] lines) {
-        var path = PathTo(relativePath);
-
-        EnsureParent(path);
-        File.WriteAllLines(path, lines);
-
-        return path;
-    }
-
-    static string Write(string path, string content) {
-        EnsureParent(path);
-        File.WriteAllText(path, content);
-
-        return path;
-    }
-
-    static void EnsureParent(string path) {
-        var dir = System.IO.Path.GetDirectoryName(path);
-
-        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-    }
+    /// <inheritdoc cref="TempDirHandle.CreateFile(string,string[])"/>
+    public string CreateFile(string relativePath, string[] lines) =>
+        Root.CreateFile(relativePath, lines);
 
     public void Dispose() {
         try { Directory.Delete(Path, recursive: true); } catch { /* best effort */ }

@@ -10,7 +10,7 @@ public class CursorBorrowedReviewValidationTests {
         tmp.CreateFile("cursor-agent", "artifact");
         var before = CursorBorrowedReviewValidation.ComputeBundleDigest(tmp.Path);
         var running = tmp.CreateDir(".running");
-        File.WriteAllText(Path.Combine(running, "12345"), "");
+        running.CreateFile("12345", "");
 
         var after = CursorBorrowedReviewValidation.ComputeBundleDigest(tmp.Path);
 

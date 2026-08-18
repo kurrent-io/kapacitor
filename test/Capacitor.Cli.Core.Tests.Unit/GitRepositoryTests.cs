@@ -4,8 +4,7 @@ public class GitRepositoryTests {
     [Test]
     public async Task FindRoot_returns_null_for_directory_with_no_git_entry_anywhere() {
         using var tmp = new TempDir();
-        var nested = tmp.PathTo("a", "b", "c");
-        Directory.CreateDirectory(nested);
+        var nested = tmp.CreateDir("a", "b", "c");
 
         await Assert.That(GitRepository.FindRoot(nested)).IsNull();
     }
@@ -30,8 +29,7 @@ public class GitRepositoryTests {
     public async Task FindRoot_walks_up_and_returns_the_ancestor_holding_the_dot_git_entry() {
         using var tmp = new TempDir();
         tmp.CreateDir(".git");
-        var nested = tmp.PathTo("a", "b", "c");
-        Directory.CreateDirectory(nested);
+        var nested = tmp.CreateDir("a", "b", "c");
 
         await Assert.That(GitRepository.FindRoot(nested)).IsEqualTo(tmp.Path);
     }

@@ -358,11 +358,10 @@ public class ClaudeHookCommandTests {
     public async Task session_start_includes_workspace_root_when_cwd_is_inside_a_git_repo() {
         using var tmp = new TempDir();
         tmp.CreateDir(".git");
-        var nested = tmp.PathTo("nested", "dir");
-        Directory.CreateDirectory(nested);
+        var nested = tmp.CreateDir("nested", "dir");
 
         using var fx = new Fixture();
-        await fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"{{nested.Replace("\\", "\\\\")}}"}""");
+        await fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"{{nested.Path.Replace("\\", "\\\\")}}"}""");
 
         var posted = fx.Sent.Single(s => s.StartsWith("/hooks/session-start|", StringComparison.Ordinal));
         var body   = JsonNode.Parse(posted[(posted.IndexOf('|') + 1)..]);

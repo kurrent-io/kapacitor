@@ -378,8 +378,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task Remove_returns_false_when_nothing_to_remove() {
         using var tmp    = new TempDir();
-        var       target = tmp.PathTo("agents-skills");
-        Directory.CreateDirectory(target);
+        var       target = tmp.CreateDir("agents-skills");
 
         var result = AgentsSkillsInstaller.Remove(target);
         await Assert.That(result.RemovedAny).IsFalse();
@@ -405,9 +404,8 @@ public class PluginCommandCodexTests {
 
         // Seed hooks.json with a stale 5-second PermissionRequest timeout
         // and NO marker. This is the pre-marker scenario.
-        var codexDir = fakeHome.PathTo(".codex");
-        Directory.CreateDirectory(codexDir);
-        var hooksPath = Path.Combine(codexDir, "hooks.json");
+        var codexDir = fakeHome.CreateDir(".codex");
+        var hooksPath = codexDir.PathTo("hooks.json");
         await File.WriteAllTextAsync(hooksPath, """
             {
               "hooks": {
@@ -440,14 +438,13 @@ public class PluginCommandCodexTests {
     public async Task Install_codex_with_if_installed_is_noop_when_marker_matches_current_version() {
         using var fakeHome = new TempDir();
 
-        var codexDir = fakeHome.PathTo(".codex");
-        Directory.CreateDirectory(codexDir);
+        var codexDir = fakeHome.CreateDir(".codex");
 
         // Pre-seed hooks.json with sentinel content + matching marker.
-        var hooksPath = Path.Combine(codexDir, "hooks.json");
+        var hooksPath = codexDir.PathTo("hooks.json");
         await File.WriteAllTextAsync(hooksPath, """{"sentinel": "must-survive"}""");
         await File.WriteAllTextAsync(
-            Path.Combine(codexDir, CodexHooksInstaller.MarkerFileName),
+            codexDir.PathTo(CodexHooksInstaller.MarkerFileName),
             CapacitorVersion.Current());
 
         var exit = await PluginCommand.HandleAsync(
@@ -536,10 +533,9 @@ public class PluginCommandCodexInstallIntegrationTests {
         using var pluginRoot = new TempDir();
 
         // Plant a fake plugin tree with skills/ present but validate-plan/ missing.
-        var skillsSrc = pluginRoot.PathTo("skills");
-        Directory.CreateDirectory(skillsSrc);
+        var skillsSrc = pluginRoot.CreateDir("skills");
         foreach (var name in AgentsSkillsInstaller.SourceNames.Where(n => n != "validate-plan")) {
-            var dir = Path.Combine(skillsSrc, name);
+            var dir = skillsSrc.PathTo(name);
             Directory.CreateDirectory(dir);
             File.WriteAllText(Path.Combine(dir, "SKILL.md"), $"---\nname: {name}\n---\n# {name}");
         }

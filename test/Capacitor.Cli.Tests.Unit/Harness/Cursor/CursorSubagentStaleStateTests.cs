@@ -252,13 +252,12 @@ public class CursorSubagentStaleStateTests {
     /// to) plus the child's transcript path.
     /// </summary>
     static (string Parent, string Child, string ChildPath) SeedLinkedPair(TempDir tmp, string prompt) {
-        var root = tmp.PathTo("agent-transcripts");
-        Directory.CreateDirectory(root);
+        var root = tmp.CreateDir("agent-transcripts");
 
         var parentRaw = Guid.NewGuid().ToString();
         var childRaw  = Guid.NewGuid().ToString();
 
-        var parentDir = Path.Combine(root, parentRaw);
+        var parentDir = root.PathTo(parentRaw);
         Directory.CreateDirectory(parentDir);
         var parentLine1 = """{"role":"user","message":{"content":[{"type":"text","text":"kick it off"}]}}""";
         var parentLine2 = System.Text.Json.JsonSerializer.Serialize(new {
@@ -267,7 +266,7 @@ public class CursorSubagentStaleStateTests {
         });
         File.WriteAllText(Path.Combine(parentDir, parentRaw + ".jsonl"), parentLine1 + "\n" + parentLine2 + "\n");
 
-        var childDir = Path.Combine(root, childRaw);
+        var childDir = root.PathTo(childRaw);
         Directory.CreateDirectory(childDir);
         var childPath = Path.Combine(childDir, childRaw + ".jsonl");
         var childLine = System.Text.Json.JsonSerializer.Serialize(new {

@@ -375,10 +375,9 @@ public class BorrowedReviewContextTests {
         using var root = new TempDir();
         using var external = new TempDir();
         external.CreateFile("sentinel", "keep-me");
-        var snapshots = root.PathTo("borrowed-snapshots");
-        Directory.CreateDirectory(snapshots);
+        var snapshots = root.CreateDir("borrowed-snapshots");
         var sidecar = WorktreeManager.ReviewContextRootFor(
-            Path.Combine(snapshots, "review"));
+            snapshots.PathTo("review"));
         Directory.CreateSymbolicLink(sidecar, external.Path);
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>

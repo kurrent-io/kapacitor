@@ -95,7 +95,7 @@ public class WorkspaceMcpNeutralizationLiveCertTests {
         var marker = Path.Combine(Path.GetTempPath(),
             "kcap-cert-marker-" + Guid.NewGuid().ToString("N")[..12]);
 
-        var payload = Path.Combine(repo, "payload.sh");
+        var payload = repo.PathTo("payload.sh");
         File.WriteAllText(payload,
             "#!/bin/sh\n"
           + $"printf spawned > '{marker}'\n"
@@ -104,7 +104,7 @@ public class WorkspaceMcpNeutralizationLiveCertTests {
                                       UnixFileMode.UserExecute | UnixFileMode.OtherRead |
                                       UnixFileMode.OtherExecute);
 
-        var settings = Path.Combine(repo, ".kiro", "settings");
+        var settings = repo.PathTo(".kiro", "settings");
         Directory.CreateDirectory(settings);
         File.WriteAllText(Path.Combine(settings, "mcp.json"), JsonSerializer.Serialize(new {
             mcpServers = new Dictionary<string, object> {

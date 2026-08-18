@@ -17,7 +17,7 @@ public class RepoMatcherTests {
         Run(root, "remote", "add", "origin", originUrl);
 
         if (subdir is not null) {
-            var sub = Path.Combine(root, subdir);
+            var sub = root.PathTo(subdir);
             Directory.CreateDirectory(sub);
 
             return sub;

@@ -422,7 +422,7 @@ public class CodexLauncherTests {
         Environment.SetEnvironmentVariable("HOME", home);
 
         try {
-            var srcCodex = Directory.CreateDirectory(Path.Combine(sourceRepo, ".codex")).FullName;
+            var srcCodex = sourceRepo.CreateDir(".codex");
             File.WriteAllText(Path.Combine(srcCodex, "hooks.json"), """
                 {"hooks":{
                     "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
@@ -434,7 +434,7 @@ public class CodexLauncherTests {
             var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
             NewLauncher().Prepare(ctx);
 
-            await Assert.That(File.Exists(Path.Combine(worktree, ".codex", "hooks.json"))).IsTrue();
+            await Assert.That(File.Exists(worktree.PathTo(".codex", "hooks.json"))).IsTrue();
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
         }
@@ -459,7 +459,7 @@ public class CodexLauncherTests {
         Environment.SetEnvironmentVariable("HOME", home);
 
         try {
-            var srcCodex = Directory.CreateDirectory(Path.Combine(sourceRepo, ".codex")).FullName;
+            var srcCodex = sourceRepo.CreateDir(".codex");
             File.WriteAllText(Path.Combine(srcCodex, "hooks.json"), """
                 {"hooks":{
                     "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
@@ -474,9 +474,9 @@ public class CodexLauncherTests {
             var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
             NewLauncher().Prepare(ctx);
 
-            await Assert.That(File.Exists(Path.Combine(worktree, ".codex", "config.toml"))).IsFalse();
+            await Assert.That(File.Exists(worktree.PathTo(".codex", "config.toml"))).IsFalse();
             // ...and the thing the overlay exists for still arrives.
-            await Assert.That(File.Exists(Path.Combine(worktree, ".codex", "hooks.json"))).IsTrue();
+            await Assert.That(File.Exists(worktree.PathTo(".codex", "hooks.json"))).IsTrue();
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
         }
@@ -513,8 +513,8 @@ public class CodexLauncherTests {
         Environment.SetEnvironmentVariable("HOME", home);
 
         try {
-            Directory.CreateDirectory(Path.Combine(home, ".codex"));
-            File.WriteAllText(Path.Combine(home, ".codex", "hooks.json"), """
+            home.CreateDir(".codex");
+            home.CreateFile([".codex", "hooks.json"], """
                 {"hooks":{
                     "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
                     "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
@@ -525,7 +525,7 @@ public class CodexLauncherTests {
             var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
             NewLauncher().Prepare(ctx);
 
-            await Assert.That(File.Exists(Path.Combine(home, ".codex", "config.toml"))).IsTrue();
+            await Assert.That(File.Exists(home.PathTo(".codex", "config.toml"))).IsTrue();
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
         }
@@ -541,8 +541,8 @@ public class CodexLauncherTests {
         Environment.SetEnvironmentVariable("HOME", home);
 
         try {
-            Directory.CreateDirectory(Path.Combine(sourceRepo, ".codex"));
-            File.WriteAllText(Path.Combine(sourceRepo, ".codex", "hooks.json"), """
+            sourceRepo.CreateDir(".codex");
+            sourceRepo.CreateFile([".codex", "hooks.json"], """
                 {"hooks":{
                     "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
                     "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
@@ -552,7 +552,7 @@ public class CodexLauncherTests {
 
             var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
             NewLauncher().Prepare(ctx);
-            await Assert.That(File.Exists(Path.Combine(home, ".codex", "config.toml"))).IsTrue();
+            await Assert.That(File.Exists(home.PathTo(".codex", "config.toml"))).IsTrue();
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
         }
@@ -568,8 +568,8 @@ public class CodexLauncherTests {
         Environment.SetEnvironmentVariable("HOME", home);
 
         try {
-            Directory.CreateDirectory(Path.Combine(home, ".codex"));
-            File.WriteAllText(Path.Combine(home, ".codex", "hooks.json"), """
+            home.CreateDir(".codex");
+            home.CreateFile([".codex", "hooks.json"], """
                 {"hooks":{
                     "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
                     "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
@@ -580,7 +580,7 @@ public class CodexLauncherTests {
             var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
             NewLauncher().Prepare(ctx);
 
-            var configToml = File.ReadAllText(Path.Combine(home, ".codex", "config.toml"));
+            var configToml = File.ReadAllText(home.PathTo(".codex", "config.toml"));
             // The key is written in Codex's own normalised form (absolute, lowercased on
             // Windows — see CodexPaths.NormalizeProjectKey), not the raw worktree path. The TOML
             // writer then emits it as a basic (double-quoted) key, so backslashes are escaped

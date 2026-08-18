@@ -98,7 +98,7 @@ public class ServiceVerifyInstallTests : IDisposable {
     (string Dir, string DaemonPath) SetUpViableInstall() {
         var dir = _tmp.CreateDir(Guid.NewGuid().ToString("N"));
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
-        var daemonPath = Path.Combine(dir, "kcap-daemon");
+        var daemonPath = dir.PathTo("kcap-daemon");
         File.WriteAllText(daemonPath, "");
         return (dir, daemonPath);
     }

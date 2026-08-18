@@ -78,8 +78,7 @@ public class PathShimInstallerTests {
 
         using var tmp = new TempDir();
         var target = tmp.PathTo("target-cli");
-        var dest = tmp.PathTo("kcap");
-        Directory.CreateDirectory(dest);
+        var dest = tmp.CreateDir("kcap");
 
         await Assert.That(PathShimInstaller.Preflight(dest, target)).IsEqualTo(ShimPreflight.Conflict);
     }

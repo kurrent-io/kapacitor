@@ -39,11 +39,11 @@ public class CursorLiveSubagentLinkerTests {
     public async Task discover_siblings_finds_other_session_dirs_under_the_same_agent_transcripts_root() {
         using var tmp = new TempDir();
         var transcripts = tmp.CreateDir("agent-transcripts");
-        var childDir = Path.Combine(transcripts, "child-sid");
+        var childDir = transcripts.PathTo("child-sid");
         Directory.CreateDirectory(childDir);
         var childPath = Write(childDir, "child-sid.jsonl", "{}\n");
 
-        var parentDir = Path.Combine(transcripts, "parent-sid");
+        var parentDir = transcripts.PathTo("parent-sid");
         Directory.CreateDirectory(parentDir);
         Write(parentDir, "parent-sid.jsonl", "{}\n");
 
@@ -57,7 +57,7 @@ public class CursorLiveSubagentLinkerTests {
     public async Task discover_siblings_excludes_its_own_session_dir() {
         using var tmp = new TempDir();
         var transcripts = tmp.CreateDir("agent-transcripts");
-        var childDir = Path.Combine(transcripts, "only-sid");
+        var childDir = transcripts.PathTo("only-sid");
         Directory.CreateDirectory(childDir);
         var childPath = Write(childDir, "only-sid.jsonl", "{}\n");
 

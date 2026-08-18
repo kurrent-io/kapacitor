@@ -970,15 +970,15 @@ public class CursorHookCommandTests {
         var legacyDir = tmp.CreateDir("legacy");
         var spoolDir  = tmp.CreateDir("spool");
         // Old format: {hook_event_name, body}
-        await File.WriteAllTextAsync(Path.Combine(legacyDir, $"{Sid}.jsonl"),
+        legacyDir.CreateFile($"{Sid}.jsonl",
             $"{{\"hook_event_name\":\"sessionEnd\",\"body\":\"{{\\\"session_id\\\":\\\"{Sid}\\\"}}\"}}\n");
 
         var spool = new HookSpool(spoolDir);
         CursorHookCommand.MigrateLegacyCursorSpool(spool, legacyDir);
 
-        var migrated = await File.ReadAllTextAsync(Path.Combine(spoolDir, $"{Sid}.jsonl"));
+        var migrated = await File.ReadAllTextAsync(spoolDir.PathTo($"{Sid}.jsonl"));
         await Assert.That(migrated).Contains("\"route\":\"session-end/cursor\"");
-        await Assert.That(File.Exists(Path.Combine(legacyDir, $"{Sid}.jsonl"))).IsFalse();
+        await Assert.That(File.Exists(legacyDir.PathTo($"{Sid}.jsonl"))).IsFalse();
     }
 
     sealed class Fixture : IDisposable {

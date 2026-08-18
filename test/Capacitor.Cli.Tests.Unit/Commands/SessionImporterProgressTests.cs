@@ -116,11 +116,10 @@ public class SessionImporterProgressTests : IDisposable {
         using var tmp = new TempDir();
         var sessionName = Guid.NewGuid().ToString("N");
         var sessionPath = tmp.PathTo($"{sessionName}.jsonl");
-        var agentsDir   = tmp.PathTo(sessionName, "subagents");
-        Directory.CreateDirectory(agentsDir);
+        var agentsDir   = tmp.CreateDir(sessionName, "subagents");
 
         var agentId = Guid.NewGuid().ToString("N");
-        var agentPath = Path.Combine(agentsDir, $"agent-{agentId}.jsonl");
+        var agentPath = agentsDir.PathTo($"agent-{agentId}.jsonl");
 
         await File.WriteAllLinesAsync(sessionPath, [
             """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Task","input":{"subagent_type":"code-reviewer"}}]}}""",

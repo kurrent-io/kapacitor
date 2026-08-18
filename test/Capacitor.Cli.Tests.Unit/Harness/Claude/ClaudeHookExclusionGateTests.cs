@@ -20,7 +20,7 @@ public class ClaudeHookExclusionGateTests {
         var excludedDir = tmp.CreateDir("excl");
 
         var profile  = new Profile { ExcludedPaths = [excludedDir] };
-        var body     = Body(Path.Combine(excludedDir, "project"));
+        var body     = Body(excludedDir.PathTo("project"));
 
         var excluded = await ClaudeHookCommand.IsSessionExcludedAsync(
             profile, body, Stopwatch.GetTimestamp(), "permission-request");
@@ -35,7 +35,7 @@ public class ClaudeHookExclusionGateTests {
         var otherDir    = tmp.CreateDir("other");
 
         var profile  = new Profile { ExcludedPaths = [excludedDir] };
-        var body     = Body(Path.Combine(otherDir, "project"));
+        var body     = Body(otherDir.PathTo("project"));
 
         var excluded = await ClaudeHookCommand.IsSessionExcludedAsync(
             profile, body, Stopwatch.GetTimestamp(), "permission-request");

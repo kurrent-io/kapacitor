@@ -284,7 +284,7 @@ public class AgentDetectionTests {
     public async Task BinaryOnPath_windows_input_splits_on_semicolon_regardless_of_host_platform() {
         using var tmp = new TempDir();
         var dir = tmp.CreateDir("winsep");
-        await File.WriteAllTextAsync(Path.Combine(dir, "claude.CMD"), "@echo off\n");
+        dir.CreateFile("claude.CMD", "@echo off\n");
 
         var otherDir = tmp.CreateDir("winsep2");
         var winInputs = new AgentDetectionInputs(
@@ -301,7 +301,7 @@ public class AgentDetectionTests {
 
         using var tmp = new TempDir();
         var dir = tmp.CreateDir("unixsep");
-        var claude = Path.Combine(dir, "claude");
+        var claude = dir.PathTo("claude");
         await File.WriteAllTextAsync(claude, "#!/bin/sh\n");
         File.SetUnixFileMode(claude, UnixFileMode.UserRead | UnixFileMode.UserExecute);
 
