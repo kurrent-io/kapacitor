@@ -88,8 +88,8 @@ public class AgentsSkillsInstallerTests {
 
         AgentsSkillsInstaller.Install(src.Path, dst.Path);
 
-        await Assert.That(File.Exists(Path.Combine(foreign, "SKILL.md"))).IsTrue();
-        var content = await File.ReadAllTextAsync(Path.Combine(foreign, "SKILL.md"));
+        await Assert.That(File.Exists(foreign.PathTo("SKILL.md"))).IsTrue();
+        var content = await File.ReadAllTextAsync(foreign.PathTo("SKILL.md"));
         await Assert.That(content).IsEqualTo("user content");
     }
 
@@ -112,9 +112,9 @@ public class AgentsSkillsInstallerTests {
 
         AgentsSkillsInstaller.Install(src.Path, dst.Path);
 
-        var newSkill = await File.ReadAllTextAsync(Path.Combine(stale, "SKILL.md"));
+        var newSkill = await File.ReadAllTextAsync(stale.PathTo("SKILL.md"));
         await Assert.That(newSkill).Contains("new body");
-        await Assert.That(File.Exists(Path.Combine(stale, "leftover.md"))).IsFalse();
+        await Assert.That(File.Exists(stale.PathTo("leftover.md"))).IsFalse();
     }
 
     [Test]
@@ -191,16 +191,16 @@ public class AgentsSkillsInstallerTests {
         foreach (var name in AgentsSkillsInstaller.LegacyCodexSkillNames) {
             legacy.CreateDir(name);
         }
-        Directory.CreateDirectory(Path.Combine(legacy, "user-codex-skill"));
+        legacy.CreateDir("user-codex-skill");
 
         var result = AgentsSkillsInstaller.CleanLegacyCodexSkills(legacy);
 
         await Assert.That(result.RemovedAny).IsTrue();
         await Assert.That(result.HadErrors).IsFalse();
         foreach (var name in AgentsSkillsInstaller.LegacyCodexSkillNames) {
-            await Assert.That(Directory.Exists(Path.Combine(legacy, name))).IsFalse();
+            await Assert.That(Directory.Exists(legacy.PathTo(name))).IsFalse();
         }
-        await Assert.That(Directory.Exists(Path.Combine(legacy, "user-codex-skill"))).IsTrue();
+        await Assert.That(Directory.Exists(legacy.PathTo("user-codex-skill"))).IsTrue();
     }
 
     [Test]

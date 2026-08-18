@@ -659,7 +659,7 @@ public class UninstallCommandTests {
 
         public static Task<Fixture> CreateAsync() {
             var tmp = new TempDir();
-            var configDir = Path.Combine(tmp.Path, ".config", "kcap");
+            var configDir = tmp.PathTo(".config", "kcap");
             Directory.CreateDirectory(configDir);
 
             var f = new Fixture {

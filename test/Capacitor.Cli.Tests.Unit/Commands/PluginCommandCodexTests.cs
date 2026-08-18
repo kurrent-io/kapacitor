@@ -431,7 +431,7 @@ public class PluginCommandCodexTests {
             .IsEqualTo(86400);
 
         // Marker now stamped → next upgrade takes the fast path.
-        await Assert.That(File.Exists(Path.Combine(codexDir, CodexHooksInstaller.MarkerFileName))).IsTrue();
+        await Assert.That(File.Exists(codexDir.PathTo(CodexHooksInstaller.MarkerFileName))).IsTrue();
     }
 
     [Test]

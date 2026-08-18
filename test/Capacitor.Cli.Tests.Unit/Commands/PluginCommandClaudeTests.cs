@@ -59,7 +59,7 @@ public class PluginCommandClaudeTests {
         await Assert.That(path).IsEqualTo(pluginDir.Path);
 
         // Marker stamped.
-        await Assert.That(File.Exists(Path.Combine(claudeDir, ClaudePluginInstaller.MarkerFileName))).IsTrue();
+        await Assert.That(File.Exists(claudeDir.PathTo(ClaudePluginInstaller.MarkerFileName))).IsTrue();
     }
 
     [Test]
@@ -147,21 +147,18 @@ public class PluginCommandClaudeTests {
         using var fakeHome = new TempDir();
 
         var claudeDir = fakeHome.CreateDir(".claude");
-        var settingsPath = claudeDir.PathTo("settings.json");
-        await File.WriteAllTextAsync(settingsPath, """
+        claudeDir.CreateFile("settings.json", """
             {
               "extraKnownMarketplaces": { "kcap": { "source": { "source": "directory", "path": "/p" } } },
               "enabledPlugins": { "kcap@kcap": true }
             }
             """);
-        await File.WriteAllTextAsync(
-            Path.Combine(claudeDir, ClaudePluginInstaller.MarkerFileName),
-            CapacitorVersion.Current());
+        claudeDir.CreateFile(ClaudePluginInstaller.MarkerFileName, CapacitorVersion.Current());
 
         var exit = await PluginCommand.HandleAsync(["plugin", "remove"], TestEnv(fakeHome.Path));
         await Assert.That(exit).IsEqualTo(0);
 
-        await Assert.That(File.Exists(Path.Combine(claudeDir, ClaudePluginInstaller.MarkerFileName))).IsFalse();
+        await Assert.That(File.Exists(claudeDir.PathTo(ClaudePluginInstaller.MarkerFileName))).IsFalse();
     }
 
     static PluginEnvironment TestEnv(

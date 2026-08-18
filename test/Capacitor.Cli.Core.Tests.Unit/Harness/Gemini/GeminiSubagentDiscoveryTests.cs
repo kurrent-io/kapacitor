@@ -241,11 +241,10 @@ public class GeminiSubagentDiscoveryTests {
         // discovery after ~10,000 total visited ids, dropping the tail of this real, in-cap
         // import set.
         var childCount = GeminiSubagentDiscovery.MaxCountingNodes + 50;
-        var rootChatsDir = chats.PathTo(rootId);
-        Directory.CreateDirectory(rootChatsDir);
+        var rootChatsDir = chats.CreateDir(rootId);
         for (var i = 0; i < childCount; i++) {
             var id = $"11111111-{i / 100000000:D4}-4000-8000-{i:D12}";
-            File.WriteAllText(Path.Combine(rootChatsDir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            rootChatsDir.CreateFile(id + ".jsonl", $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
         }
 
         var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
@@ -273,18 +272,15 @@ public class GeminiSubagentDiscoveryTests {
         var prevId = rootId;
         for (var depth = 1; depth <= 8; depth++) {
             var id  = $"00000000-0000-4000-8000-{depth:D12}";
-            var dir = chats.PathTo(prevId);
-            Directory.CreateDirectory(dir);
-            File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            chats.CreateDir(prevId).CreateFile(id + ".jsonl", $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
             prevId = id;
         }
 
         var belowCapCount = GeminiSubagentDiscovery.MaxCountingNodes + 50;
-        var depth8Dir     = Path.Combine(chats, prevId); // prevId is now the depth-8 node's own id
-        Directory.CreateDirectory(depth8Dir);
+        var depth8Dir     = chats.CreateDir(prevId); // prevId is now the depth-8 node's own id
         for (var i = 0; i < belowCapCount; i++) {
             var id = $"22222222-{i / 100000000:D4}-4000-8000-{i:D12}";
-            File.WriteAllText(Path.Combine(depth8Dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            depth8Dir.CreateFile(id + ".jsonl", $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
         }
 
         var result = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
@@ -324,18 +320,15 @@ public class GeminiSubagentDiscoveryTests {
         var prevId = rootId;
         for (var depth = 1; depth <= 8; depth++) {
             var id  = $"00000000-0000-4000-8000-{depth:D12}";
-            var dir = chats.PathTo(prevId);
-            Directory.CreateDirectory(dir);
-            File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            chats.CreateDir(prevId).CreateFile(id + ".jsonl", $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
             prevId = id;
         }
 
         var belowCapCount = GeminiSubagentDiscovery.MaxCountingNodes + 50;
-        var depth8Dir     = Path.Combine(chats, prevId); // prevId is now the depth-8 node's own id
-        Directory.CreateDirectory(depth8Dir);
+        var depth8Dir     = chats.CreateDir(prevId); // prevId is now the depth-8 node's own id
         for (var i = 0; i < belowCapCount; i++) {
             var id = $"22222222-{i / 100000000:D4}-4000-8000-{i:D12}";
-            File.WriteAllText(Path.Combine(depth8Dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            depth8Dir.CreateFile(id + ".jsonl", $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
         }
 
         var dequeuedBelowCapCount = 0;
@@ -372,18 +365,15 @@ public class GeminiSubagentDiscoveryTests {
         var prevId = rootId;
         for (var depth = 1; depth <= 8; depth++) {
             var id  = $"00000000-0000-4000-8000-{depth:D12}";
-            var dir = chats.PathTo(prevId);
-            Directory.CreateDirectory(dir);
-            File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            chats.CreateDir(prevId).CreateFile(id + ".jsonl", $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
             prevId = id;
         }
 
         var hugeChildCount = GeminiSubagentDiscovery.MaxCountingNodes * 5;
-        var depth8Dir      = Path.Combine(chats, prevId); // prevId is now the depth-8 node's own id
-        Directory.CreateDirectory(depth8Dir);
+        var depth8Dir      = chats.CreateDir(prevId); // prevId is now the depth-8 node's own id
         for (var i = 0; i < hugeChildCount; i++) {
             var id = $"22222222-{i / 100000000:D4}-4000-8000-{i:D12}";
-            File.WriteAllText(Path.Combine(depth8Dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            depth8Dir.CreateFile(id + ".jsonl", $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
         }
 
         var maxTouched = 0;
@@ -457,16 +447,13 @@ public class GeminiSubagentDiscoveryTests {
         var prevId = rootId;
         for (var depth = 1; depth <= 8; depth++) {
             var id  = $"00000000-0000-4000-8000-{depth:D12}";
-            var dir = chats.PathTo(prevId);
-            Directory.CreateDirectory(dir);
-            File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            chats.CreateDir(prevId).CreateFile(id + ".jsonl", $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
             prevId = id;
         }
 
         // The depth-8 node's own dir would hold only below-cap (depth-9) children — make it
         // unreadable instead of giving it any.
-        var depth8Dir = Path.Combine(chats, prevId);
-        Directory.CreateDirectory(depth8Dir);
+        var depth8Dir = chats.CreateDir(prevId); // prevId is now the depth-8 node's own id
         File.SetUnixFileMode(depth8Dir, UnixFileMode.None);
 
         try {
@@ -495,14 +482,11 @@ public class GeminiSubagentDiscoveryTests {
         var prevId = rootId;
         for (var depth = 1; depth <= 8; depth++) {
             var id  = $"00000000-0000-4000-8000-{depth:D12}";
-            var dir = chats.PathTo(prevId);
-            Directory.CreateDirectory(dir);
-            File.WriteAllText(Path.Combine(dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            chats.CreateDir(prevId).CreateFile(id + ".jsonl", $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
             prevId = id;
         }
 
-        var depth8Dir = Path.Combine(chats, prevId); // prevId is now the depth-8 node's own id
-        Directory.CreateDirectory(depth8Dir);
+        var depth8Dir = chats.CreateDir(prevId); // prevId is now the depth-8 node's own id
 
         // MaxCountingNodes - 1 valid (GUID-named) below-cap descendant files, plus ONE
         // non-GUID junk *.jsonl file — MaxCountingNodes raw directory entries total, strictly
@@ -510,9 +494,9 @@ public class GeminiSubagentDiscoveryTests {
         // whole directory is seen, so this is (correctly) NOT truncated.
         for (var i = 0; i < GeminiSubagentDiscovery.MaxCountingNodes - 1; i++) {
             var id = $"22222222-{i / 100000000:D4}-4000-8000-{i:D12}";
-            File.WriteAllText(Path.Combine(depth8Dir, id + ".jsonl"), $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
+            depth8Dir.CreateFile(id + ".jsonl", $$"""{"sessionId":"{{id}}","kind":"subagent"}""" + "\n");
         }
-        File.WriteAllText(Path.Combine(depth8Dir, "not-a-guid.jsonl"), """{"sessionId":"junk","kind":"subagent"}""" + "\n");
+        depth8Dir.CreateFile("not-a-guid.jsonl", """{"sessionId":"junk","kind":"subagent"}""" + "\n");
 
         var before = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
         await Assert.That(before.CountTruncated).IsFalse();
@@ -523,7 +507,7 @@ public class GeminiSubagentDiscoveryTests {
         // precisely the bounded fetch's sentinel-inflated limit, so the junk file now lands
         // inside the sentinel window.
         var extraId = "33333333-0000-4000-8000-000000000000";
-        File.WriteAllText(Path.Combine(depth8Dir, extraId + ".jsonl"), $$"""{"sessionId":"{{extraId}}","kind":"subagent"}""" + "\n");
+        depth8Dir.CreateFile(extraId + ".jsonl", $$"""{"sessionId":"{{extraId}}","kind":"subagent"}""" + "\n");
 
         var after = GeminiSubagentDiscovery.EnumerateDescendantFiles(root);
 

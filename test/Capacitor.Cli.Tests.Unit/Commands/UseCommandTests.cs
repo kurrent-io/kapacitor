@@ -88,7 +88,7 @@ public class UseCommandTests {
 
         await Assert.That(result).IsEqualTo(0);
 
-        var repoConfigPath = Path.Combine(repoRoot, ".kcap.json");
+        var repoConfigPath = repoRoot.PathTo(".kcap.json");
         await Assert.That(File.Exists(repoConfigPath)).IsTrue();
 
         var repoConfigJson = await File.ReadAllTextAsync(repoConfigPath);

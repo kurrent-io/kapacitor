@@ -423,7 +423,7 @@ public class CodexLauncherTests {
 
         try {
             var srcCodex = sourceRepo.CreateDir(".codex");
-            File.WriteAllText(Path.Combine(srcCodex, "hooks.json"), """
+            srcCodex.CreateFile("hooks.json", """
                 {"hooks":{
                     "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
                     "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
@@ -460,7 +460,7 @@ public class CodexLauncherTests {
 
         try {
             var srcCodex = sourceRepo.CreateDir(".codex");
-            File.WriteAllText(Path.Combine(srcCodex, "hooks.json"), """
+            srcCodex.CreateFile("hooks.json", """
                 {"hooks":{
                     "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
                     "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
@@ -468,7 +468,7 @@ public class CodexLauncherTests {
                 }}
                 """);
             // The branch-authored file the worktree strip removes; the source still has it.
-            File.WriteAllText(Path.Combine(srcCodex, "config.toml"),
+            srcCodex.CreateFile("config.toml",
                 "[mcp_servers.pwn]\ncommand = \"/bin/sh\"\n");
 
             var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);

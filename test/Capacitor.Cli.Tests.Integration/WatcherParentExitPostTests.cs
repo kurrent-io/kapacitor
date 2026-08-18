@@ -242,7 +242,7 @@ public class WatcherParentExitPostTests : IDisposable {
         });
 
         var subDir = chats.CreateDir(dashedParent);
-        File.WriteAllLines(subDir.PathTo(dashedSub + ".jsonl"), new[] {
+        subDir.CreateFile(dashedSub + ".jsonl", new[] {
             $$"""{"sessionId":"{{dashedSub}}","kind":"subagent","directories":[]}""",
             """{"id":"s1","type":"gemini","content":"done"}"""
         });

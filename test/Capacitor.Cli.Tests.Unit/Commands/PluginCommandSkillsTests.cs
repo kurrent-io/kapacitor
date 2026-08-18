@@ -50,7 +50,7 @@ public class PluginCommandSkillsTests {
         foreach (var name in AgentsSkillsInstaller.SourceNames) {
             await Assert.That(Directory.Exists(Path.Combine(target, $"kcap-{name}"))).IsTrue();
         }
-        await Assert.That(Directory.Exists(Path.Combine(legacyDir, "kcap-recap"))).IsFalse();
+        await Assert.That(Directory.Exists(legacyDir.PathTo("kcap-recap"))).IsFalse();
     }
 
     [Test]
@@ -105,7 +105,7 @@ public class PluginCommandSkillsTests {
         }
 
         // Marker must have been overwritten with the current assembly version.
-        var currentMarker = await File.ReadAllTextAsync(Path.Combine(target, AgentsSkillsInstaller.MarkerFileName));
+        var currentMarker = await File.ReadAllTextAsync(target.PathTo(AgentsSkillsInstaller.MarkerFileName));
         await Assert.That(currentMarker.Trim()).IsNotEqualTo("old-version");
     }
 
