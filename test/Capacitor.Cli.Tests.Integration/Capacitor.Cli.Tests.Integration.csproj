@@ -13,4 +13,7 @@
         <PackageReference Include="TUnit" />
         <PackageReference Include="WireMock.Net" />
     </ItemGroup>
+    <ItemGroup>
+        <Using Include="Capacitor.Tests.Helpers" />
+    </ItemGroup>
 </Project>

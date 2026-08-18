@@ -5,6 +5,8 @@ using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Harness.Claude;
+using Capacitor.Cli.Harness.Cursor;
 using Spectre.Console;
 
 namespace Capacitor.Cli.Commands;

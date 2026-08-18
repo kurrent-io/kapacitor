@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Daemon/Acp/ElicitationSchemaClassifier.cs
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Capacitor.Cli.Core;

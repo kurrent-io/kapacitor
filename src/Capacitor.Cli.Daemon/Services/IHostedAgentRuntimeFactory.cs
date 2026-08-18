@@ -3,6 +3,7 @@ using Capacitor.Cli.Core.Acp;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Core.Commands;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Daemon.Harness.Codex;
 
 namespace Capacitor.Cli.Daemon.Services;
 

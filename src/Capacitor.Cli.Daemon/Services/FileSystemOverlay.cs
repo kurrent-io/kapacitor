@@ -3,7 +3,7 @@ namespace Capacitor.Cli.Daemon.Services;
 /// <summary>
 /// Copies files from a source dir into a destination, creating directories
 /// as needed but never overwriting existing files. Used by both
-/// <see cref="ClaudeLauncher"/> and <see cref="CodexLauncher"/> to merge
+/// <see cref="Harness.Claude.ClaudeLauncher"/> and <see cref="Harness.Codex.CodexLauncher"/> to merge
 /// vendor-specific dotfiles from the source repo into the worktree without
 /// clobbering tracked content.
 /// </summary>

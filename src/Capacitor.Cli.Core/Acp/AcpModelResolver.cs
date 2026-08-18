@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Core/Acp/AcpModelResolver.cs
 namespace Capacitor.Cli.Core.Acp;
 
 /// <summary>

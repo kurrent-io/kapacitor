@@ -26,21 +26,6 @@ public class LoginShellProbeTests {
     static LoginShellProbe Probe(FakeProcessRunner runner, string? shell = "/bin/bash") =>
         new(runner, name => name == "SHELL" ? shell : null);
 
-    readonly List<string> _tempDirs = [];
-
-    string NewTempDir() {
-        var dir = Directory.CreateTempSubdirectory("kcap-loginshell-").FullName;
-        _tempDirs.Add(dir);
-        return dir;
-    }
-
-    [After(Test)]
-    public void CleanupTempDirs() {
-        foreach (var dir in _tempDirs) {
-            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
-        }
-    }
-
     // --- Parse ---
 
     [Test]
@@ -365,8 +350,8 @@ public class LoginShellProbeTests {
 
     [Test]
     public async Task KcapPathAsync_absolute_existing_file_is_returned_verbatim() {
-        var dir = NewTempDir();
-        var target = Path.Combine(dir, "kcap");
+        using var tmp = new TempDir();
+        var target = tmp.PathTo("kcap");
         File.WriteAllText(target, "cli");
         var runner = new FakeProcessRunner();
         runner.Enqueue(new ProcessResult(0, Wrap(target), "", false));
@@ -377,8 +362,8 @@ public class LoginShellProbeTests {
 
     [Test]
     public async Task KcapPathAsync_absolute_path_with_spaces_is_returned() {
-        var dir = NewTempDir();
-        var target = Path.Combine(dir, "kcap cli");
+        using var tmp = new TempDir();
+        var target = tmp.PathTo("kcap cli");
         File.WriteAllText(target, "cli");
         var runner = new FakeProcessRunner();
         runner.Enqueue(new ProcessResult(0, Wrap(target), "", false));
@@ -425,7 +410,8 @@ public class LoginShellProbeTests {
 
     [Test]
     public async Task KcapPathAsync_missing_file_is_null() {
-        var missing = Path.Combine(NewTempDir(), "kcap");
+        using var tmp = new TempDir();
+        var missing = tmp.PathTo("kcap");
         var runner = new FakeProcessRunner();
         runner.Enqueue(new ProcessResult(0, Wrap(missing), "", false));
         var probe = Probe(runner);
@@ -435,9 +421,9 @@ public class LoginShellProbeTests {
 
     [Test]
     public async Task KcapPathAsync_directory_is_null() {
-        var dir = NewTempDir();
-        var runner = new FakeProcessRunner();
-        runner.Enqueue(new ProcessResult(0, Wrap(dir), "", false));
+        using var tmp    = new TempDir();
+        var       runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, Wrap(tmp.Path), "", false));
         var probe = Probe(runner);
 
         await Assert.That(await probe.KcapPathAsync(CancellationToken.None)).IsNull();
@@ -445,8 +431,8 @@ public class LoginShellProbeTests {
 
     [Test]
     public async Task KcapPathAsync_result_is_cached() {
-        var dir = NewTempDir();
-        var target = Path.Combine(dir, "kcap");
+        using var tmp = new TempDir();
+        var target = tmp.PathTo("kcap");
         File.WriteAllText(target, "cli");
         var runner = new FakeProcessRunner();
         runner.Enqueue(new ProcessResult(0, Wrap(target), "", false));
@@ -460,8 +446,8 @@ public class LoginShellProbeTests {
 
     [Test]
     public async Task KcapPathAsync_forceRefresh_bypasses_and_repopulates_the_cache() {
-        var dir = NewTempDir();
-        var target = Path.Combine(dir, "kcap");
+        using var tmp = new TempDir();
+        var target = tmp.PathTo("kcap");
         File.WriteAllText(target, "cli");
         var runner = new FakeProcessRunner();
         runner.Enqueue(new ProcessResult(0, Wrap("kcap"), "", false)); // bare word -> null
@@ -484,8 +470,8 @@ public class LoginShellProbeTests {
 
     [Test]
     public async Task KcapPathAsync_process_start_failure_is_not_cached_and_retries() {
-        var dir = NewTempDir();
-        var target = Path.Combine(dir, "kcap");
+        using var tmp = new TempDir();
+        var target = tmp.PathTo("kcap");
         File.WriteAllText(target, "cli");
         var runner = new FakeProcessRunner();
         runner.EnqueueThrow(new InvalidOperationException("boom"));

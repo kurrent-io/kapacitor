@@ -17,24 +17,23 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 [NotInParallel]
 public class WatcherHeartbeatStalenessTests {
-    static readonly string TempDir = Path.Combine(Path.GetTempPath(), "kcap-watcher-heartbeat-tests");
+    static readonly TempDir Tmp = new();
+    static readonly TempDir Transcripts = new();
+    static string TempDir => Tmp.Path;
 
     static string? _previousWatcherDir;
 
     [Before(Class)]
     public static void SetUp() {
         _previousWatcherDir = Environment.GetEnvironmentVariable("KCAP_WATCHER_DIR");
-        Directory.CreateDirectory(TempDir);
         Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", TempDir);
     }
 
     [After(Class)]
     public static void TearDown() {
         Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", _previousWatcherDir);
-
-        try { Directory.Delete(TempDir, recursive: true); } catch {
-            /* best effort */
-        }
+        Tmp.Dispose();
+        Transcripts.Dispose();
     }
 
     [After(Test)]
@@ -42,8 +41,7 @@ public class WatcherHeartbeatStalenessTests {
 
     static (string key, string transcriptPath, string pidFile) NewKey(string prefix) {
         var key            = $"{prefix}-{Guid.NewGuid():N}";
-        var transcriptPath = Path.Combine(Path.GetTempPath(), $"{key}.jsonl");
-        File.WriteAllText(transcriptPath, "");
+        var transcriptPath = Transcripts.CreateFile($"{key}.jsonl");
 
         return (key, transcriptPath, Path.Combine(TempDir, $"{key}.pid"));
     }
@@ -74,7 +72,7 @@ public class WatcherHeartbeatStalenessTests {
 
     [Test]
     public async Task IsWatcherAlive_PidAliveButHeartbeatStale_IsFalse() {
-        var (key, transcriptPath, pidFile) = NewKey("wedged");
+        var (key, _, pidFile) = NewKey("wedged");
         using var dummy = StartDummyProcess();
 
         try {
@@ -83,13 +81,12 @@ public class WatcherHeartbeatStalenessTests {
             await Assert.That(Cli.WatcherManager.IsWatcherAlive(key)).IsFalse();
         } finally {
             try { dummy.Kill(entireProcessTree: true); } catch { /* best effort */ }
-            File.Delete(transcriptPath);
         }
     }
 
     [Test]
     public async Task IsWatcherAlive_PidAliveAndHeartbeatFresh_IsTrue() {
-        var (key, transcriptPath, pidFile) = NewKey("healthy");
+        var (key, _, pidFile) = NewKey("healthy");
         using var dummy = StartDummyProcess();
 
         try {
@@ -101,13 +98,12 @@ public class WatcherHeartbeatStalenessTests {
             await Assert.That(Cli.WatcherManager.IsWatcherAlive(key)).IsTrue();
         } finally {
             try { dummy.Kill(entireProcessTree: true); } catch { /* best effort */ }
-            File.Delete(transcriptPath);
         }
     }
 
     [Test]
     public async Task IsWatcherAlive_WithinStartupGrace_IsTrueEvenWithNoHeartbeatYet() {
-        var (key, transcriptPath, pidFile) = NewKey("fresh-start");
+        var (key, _, pidFile) = NewKey("fresh-start");
         using var dummy = StartDummyProcess();
 
         try {
@@ -118,7 +114,6 @@ public class WatcherHeartbeatStalenessTests {
             await Assert.That(Cli.WatcherManager.IsWatcherAlive(key)).IsTrue();
         } finally {
             try { dummy.Kill(entireProcessTree: true); } catch { /* best effort */ }
-            File.Delete(transcriptPath);
         }
     }
 
@@ -168,7 +163,6 @@ public class WatcherHeartbeatStalenessTests {
         } finally {
             release.TrySetResult();
             try { dummy.Kill(entireProcessTree: true); } catch { /* best effort — likely already dead */ }
-            File.Delete(transcriptPath);
         }
     }
 
@@ -176,7 +170,7 @@ public class WatcherHeartbeatStalenessTests {
     public async Task KillWatcher_RemovesHeartbeatAndStartedFiles() {
         // task 9 (review issue 2): the new sidecar files must not leak per-session the
         // way the pid file never did. KillWatcher removes the heartbeat + started markers.
-        var (key, transcriptPath, pidFile) = NewKey("kill-cleanup");
+        var (key, _, pidFile) = NewKey("kill-cleanup");
         using var dummy = StartDummyProcess();
 
         var heartbeat = Cli.WatcherManager.GetHeartbeatFilePath(key);
@@ -194,7 +188,6 @@ public class WatcherHeartbeatStalenessTests {
             await Assert.That(File.Exists(started)).IsFalse();
         } finally {
             try { dummy.Kill(entireProcessTree: true); } catch { /* best effort */ }
-            File.Delete(transcriptPath);
         }
     }
 
@@ -239,7 +232,6 @@ public class WatcherHeartbeatStalenessTests {
             await Assert.That(dummy.HasExited).IsFalse();
         } finally {
             try { dummy.Kill(entireProcessTree: true); } catch { /* best effort */ }
-            File.Delete(transcriptPath);
         }
     }
 }

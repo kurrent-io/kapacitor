@@ -11,53 +11,41 @@ namespace Capacitor.App.Tests.Unit;
 public class ActivityStatKeyTests {
     [Test]
     public async Task Live_file_append_changes_the_key_even_when_the_rotation_file_is_absent() {
-        var dir = Directory.CreateTempSubdirectory("kcap-ask-");
-        try {
-            var p1 = Path.Combine(dir.FullName, "consent-decisions.jsonl.1");
-            var live = Path.Combine(dir.FullName, "consent-decisions.jsonl");
-            File.WriteAllText(live, "one\n");
+        using var tmp = new TempDir();
+        var p1 = tmp.PathTo("consent-decisions.jsonl.1");
+        var live = tmp.PathTo("consent-decisions.jsonl");
+        File.WriteAllText(live, "one\n");
 
-            var before = AppUnderTest.ActivityStatKey(p1, live);
-            File.AppendAllText(live, "two\n");
-            var after = AppUnderTest.ActivityStatKey(p1, live);
+        var before = AppUnderTest.ActivityStatKey(p1, live);
+        File.AppendAllText(live, "two\n");
+        var after = AppUnderTest.ActivityStatKey(p1, live);
 
-            await Assert.That(after).IsNotEqualTo(before);
-        } finally {
-            Directory.Delete(dir.FullName, true);
-        }
+        await Assert.That(after).IsNotEqualTo(before);
     }
 
     [Test]
     public async Task Key_is_stable_when_neither_file_exists() {
-        var dir = Directory.CreateTempSubdirectory("kcap-ask-");
-        try {
-            var p1 = Path.Combine(dir.FullName, "consent-decisions.jsonl.1");
-            var live = Path.Combine(dir.FullName, "consent-decisions.jsonl");
+        using var tmp = new TempDir();
+        var p1 = tmp.PathTo("consent-decisions.jsonl.1");
+        var live = tmp.PathTo("consent-decisions.jsonl");
 
-            var first = AppUnderTest.ActivityStatKey(p1, live);
-            var second = AppUnderTest.ActivityStatKey(p1, live);
+        var first = AppUnderTest.ActivityStatKey(p1, live);
+        var second = AppUnderTest.ActivityStatKey(p1, live);
 
-            await Assert.That(second).IsEqualTo(first);
-        } finally {
-            Directory.Delete(dir.FullName, true);
-        }
+        await Assert.That(second).IsEqualTo(first);
     }
 
     [Test]
     public async Task Key_changes_when_the_rotation_file_appears() {
-        var dir = Directory.CreateTempSubdirectory("kcap-ask-");
-        try {
-            var p1 = Path.Combine(dir.FullName, "consent-decisions.jsonl.1");
-            var live = Path.Combine(dir.FullName, "consent-decisions.jsonl");
-            File.WriteAllText(live, "one\n");
+        using var tmp = new TempDir();
+        var p1 = tmp.PathTo("consent-decisions.jsonl.1");
+        var live = tmp.PathTo("consent-decisions.jsonl");
+        File.WriteAllText(live, "one\n");
 
-            var before = AppUnderTest.ActivityStatKey(p1, live);
-            File.WriteAllText(p1, "rotated\n");
-            var after = AppUnderTest.ActivityStatKey(p1, live);
+        var before = AppUnderTest.ActivityStatKey(p1, live);
+        File.WriteAllText(p1, "rotated\n");
+        var after = AppUnderTest.ActivityStatKey(p1, live);
 
-            await Assert.That(after).IsNotEqualTo(before);
-        } finally {
-            Directory.Delete(dir.FullName, true);
-        }
+        await Assert.That(after).IsNotEqualTo(before);
     }
 }

@@ -310,7 +310,8 @@ public class LaunchdUnitTests {
     /// evidence detection must not turn every missing directory level into Unreadable.</summary>
     [Test]
     public async Task TryReadPlist_missing_parent_directories_is_still_absent() {
-        var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-plist-").FullName, "never-created", "sub", "x.plist");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("never-created", "sub", "x.plist");
 
         var status = LaunchdUnit.TryReadPlist(path, out var content);
 

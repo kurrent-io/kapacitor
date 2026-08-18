@@ -25,13 +25,13 @@ namespace Capacitor.Cli.Tests.Integration;
 public class UpdateNoticeDeliveryTests : IDisposable {
     const string NewerVersion = "999.0.0"; // deterministically newer than any real build's version.
 
-    readonly List<(string CfgDir, Process Process)> _spawned = [];
+    readonly List<(TempDir CfgDir, Process Process)> _spawned = [];
 
     public void Dispose() {
         foreach (var (cfgDir, p) in _spawned) {
             try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
             p.Dispose();
-            try { Directory.Delete(cfgDir, true); } catch { }
+            cfgDir.Dispose();
         }
     }
 
@@ -121,7 +121,7 @@ public class UpdateNoticeDeliveryTests : IDisposable {
     [Test]
     public async Task ProfileUpdateCheckDisabled_PrintsNothing() {
         var cfgDir = SeedFreshNewerCache();
-        File.WriteAllText(Path.Combine(cfgDir, "config.json"), """
+        cfgDir.CreateFile("config.json", """
             {"version":2,"active_profile":"default","profiles":{"default":{"update_check":false}},"profile_bindings":{},"cwd_remap":[]}
             """);
 
@@ -179,7 +179,7 @@ public class UpdateNoticeDeliveryTests : IDisposable {
     [Test]
     public async Task Status_ProfileUpdateCheckDisabled_PrintsBareVersion_NoAnnotation() {
         var cfgDir = SeedFreshNewerCache();
-        File.WriteAllText(Path.Combine(cfgDir, "config.json"), """
+        cfgDir.CreateFile("config.json", """
             {"version":2,"active_profile":"default","profiles":{"default":{"update_check":false}},"profile_bindings":{},"cwd_remap":[]}
             """);
 
@@ -211,13 +211,11 @@ public class UpdateNoticeDeliveryTests : IDisposable {
     /// <c>UpdateCommand.UpdateCacheRecord.ToJson()</c> writes — so the child process's check
     /// resolves from the cache-fresh path (a local file read) without any network round-trip.
     /// </summary>
-    static string SeedFreshNewerCache() {
-        var cfgDir = Path.Combine(Path.GetTempPath(), $"kcap-update-notice-cfg-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(cfgDir);
+    static TempDir SeedFreshNewerCache() {
+        var cfgDir = new TempDir();
 
         var checkedAt = DateTimeOffset.UtcNow.ToString("O");
-        File.WriteAllText(
-            Path.Combine(cfgDir, "update-check-latest.json"),
+        cfgDir.CreateFile("update-check-latest.json",
             $$"""{"latest_version":"{{NewerVersion}}","checked_at":"{{checkedAt}}","attempted_at":null,"failed":false}""");
 
         return cfgDir;
@@ -236,7 +234,7 @@ public class UpdateNoticeDeliveryTests : IDisposable {
         return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
     }
 
-    async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(string[] args, string cfgDir) {
+    async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(string[] args, TempDir cfgDir) {
         var binary = GetCliBinaryPath();
 
         if (!File.Exists(binary)) {
@@ -251,10 +249,10 @@ public class UpdateNoticeDeliveryTests : IDisposable {
             RedirectStandardError  = true,
             UseShellExecute        = false,
             CreateNoWindow         = true,
-            WorkingDirectory       = cfgDir,
+            WorkingDirectory       = cfgDir.Path,
             Environment = {
                 ["KCAP_URL"]        = "",
-                ["KCAP_CONFIG_DIR"] = cfgDir,
+                ["KCAP_CONFIG_DIR"] = cfgDir.Path,
                 ["KCAP_SESSION_ID"] = "",
             },
         };

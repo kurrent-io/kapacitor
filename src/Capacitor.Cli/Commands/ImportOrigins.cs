@@ -1,4 +1,3 @@
-// src/cli/src/Capacitor.Cli/Commands/ImportOrigins.cs
 namespace Capacitor.Cli.Commands;
 
 /// <summary>

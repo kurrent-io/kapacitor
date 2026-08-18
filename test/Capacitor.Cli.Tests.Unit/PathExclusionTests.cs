@@ -18,7 +18,7 @@ public class PathExclusionTests {
 
     [Test]
     public async Task IsExcluded_matches_exact_path() {
-        using var tmp  = TempDir.Create();
+        using var tmp  = new TempDir();
         var       path = tmp.Path;
 
         await Assert.That(PathExclusion.IsExcluded(path, [path])).IsTrue();
@@ -26,9 +26,8 @@ public class PathExclusionTests {
 
     [Test]
     public async Task IsExcluded_matches_descendant() {
-        using var tmp = TempDir.Create();
-        var       sub = Path.Combine(tmp.Path, "sub", "deeper");
-        Directory.CreateDirectory(sub);
+        using var tmp = new TempDir();
+        var       sub = tmp.CreateDir("sub", "deeper");
 
         await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path])).IsTrue();
     }
@@ -36,9 +35,9 @@ public class PathExclusionTests {
     [Test]
     public async Task IsExcluded_does_not_match_sibling_with_shared_prefix() {
         // /tmp/foo vs /tmp/foobar — must NOT match
-        using var tmp    = TempDir.Create();
-        var       foo    = Path.Combine(tmp.Path, "foo");
-        var       foobar = Path.Combine(tmp.Path, "foobar");
+        using var tmp    = new TempDir();
+        var       foo    = tmp.PathTo("foo");
+        var       foobar = tmp.PathTo("foobar");
         Directory.CreateDirectory(foo);
         Directory.CreateDirectory(foobar);
 
@@ -47,9 +46,8 @@ public class PathExclusionTests {
 
     [Test]
     public async Task IsExcluded_ignores_trailing_separator_on_entry() {
-        using var tmp = TempDir.Create();
-        var       sub = Path.Combine(tmp.Path, "child");
-        Directory.CreateDirectory(sub);
+        using var tmp = new TempDir();
+        var       sub = tmp.CreateDir("child");
 
         await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path + Path.DirectorySeparatorChar])).IsTrue();
     }
@@ -59,27 +57,24 @@ public class PathExclusionTests {
         // /ignored/..scratch is a legitimate child of /ignored. Path.GetRelativePath
         // returns "..scratch", which our containment check must not treat as a
         // parent-directory reference.
-        using var tmp = TempDir.Create();
-        var       sub = Path.Combine(tmp.Path, "..scratch");
-        Directory.CreateDirectory(sub);
+        using var tmp = new TempDir();
+        var       sub = tmp.CreateDir("..scratch");
 
         await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path])).IsTrue();
     }
 
     [Test]
     public async Task IsExcluded_matches_deeper_descendant_under_dotdot_named_intermediate() {
-        using var tmp = TempDir.Create();
-        var       sub = Path.Combine(tmp.Path, "..data", "session");
-        Directory.CreateDirectory(sub);
+        using var tmp = new TempDir();
+        var       sub = tmp.CreateDir("..data", "session");
 
         await Assert.That(PathExclusion.IsExcluded(sub, [tmp.Path])).IsTrue();
     }
 
     [Test]
     public async Task IsExcluded_matches_any_entry() {
-        using var tmp = TempDir.Create();
-        var       sub = Path.Combine(tmp.Path, "child");
-        Directory.CreateDirectory(sub);
+        using var tmp = new TempDir();
+        var       sub = tmp.CreateDir("child");
 
         await Assert.That(PathExclusion.IsExcluded(sub, ["/nonexistent/path", tmp.Path])).IsTrue();
     }
@@ -88,7 +83,7 @@ public class PathExclusionTests {
     public async Task IsExcluded_resolves_symlinked_entry_against_real_cwd() {
         // User runs `kcap ignore /symlink-to-real` but session cwd reports
         // the resolved path. Both sides must normalize to the same target.
-        using var real = TempDir.Create();
+        using var real = new TempDir();
         using var link = TempSymlink.To(real.Path);
 
         // cwd uses the real path; entry uses the symlinked path.
@@ -99,11 +94,10 @@ public class PathExclusionTests {
     public async Task IsExcluded_resolves_parent_symlinks() {
         // /link -> /real, cwd is /link/sub. Ignoring /real (or /link) must match
         // /link/sub. Today this fails because only the leaf is resolved.
-        using var real = TempDir.Create();
+        using var real = new TempDir();
         using var link = TempSymlink.To(real.Path);
 
-        var subUnderReal = Path.Combine(real.Path, "sub");
-        Directory.CreateDirectory(subUnderReal);
+        var subUnderReal = real.CreateDir("sub");
 
         // The cwd reported by an agent that descended through the symlink path.
         var subUnderLink = Path.Combine(link.Path, "sub");
@@ -115,7 +109,7 @@ public class PathExclusionTests {
     [Test]
     public async Task IsExcluded_resolves_symlinked_cwd_against_real_entry() {
         // Reverse direction: entry stored as real path, cwd reported via symlink.
-        using var real = TempDir.Create();
+        using var real = new TempDir();
         using var link = TempSymlink.To(real.Path);
 
         await Assert.That(PathExclusion.IsExcluded(link.Path, [real.Path])).IsTrue();
@@ -123,28 +117,28 @@ public class PathExclusionTests {
 
     [Test]
     public async Task IsExcluded_ignores_null_entries() {
-        using var tmp = TempDir.Create();
+        using var tmp = new TempDir();
 
         await Assert.That(PathExclusion.IsExcluded(tmp.Path, [null!])).IsFalse();
     }
 
     [Test]
     public async Task IsExcluded_ignores_empty_entries() {
-        using var tmp = TempDir.Create();
+        using var tmp = new TempDir();
 
         await Assert.That(PathExclusion.IsExcluded(tmp.Path, [""])).IsFalse();
     }
 
     [Test]
     public async Task IsExcluded_ignores_whitespace_entries() {
-        using var tmp = TempDir.Create();
+        using var tmp = new TempDir();
 
         await Assert.That(PathExclusion.IsExcluded(tmp.Path, ["   "])).IsFalse();
     }
 
     [Test]
     public async Task IsExcluded_skips_bad_entries_but_still_matches_good_ones() {
-        using var tmp = TempDir.Create();
+        using var tmp = new TempDir();
 
         await Assert.That(PathExclusion.IsExcluded(tmp.Path, [null!, "", tmp.Path])).IsTrue();
     }
@@ -175,34 +169,11 @@ public class PathExclusionTests {
 
     [Test]
     public async Task Normalize_strips_trailing_separator() {
-        using var tmp       = TempDir.Create();
+        using var tmp       = new TempDir();
         var       withSlash = tmp.Path + Path.DirectorySeparatorChar;
 
         await Assert.That(PathExclusion.Normalize(withSlash))
             .DoesNotEndWith(Path.DirectorySeparatorChar.ToString());
-    }
-}
-
-sealed class TempDir : IDisposable {
-    public string Path { get; }
-
-    TempDir(string path) => Path = path;
-
-    public static TempDir Create() {
-        var p = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kap-pathex-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(p);
-
-        // On macOS, /var itself is a symlink to /private/var, so the temp dir's
-        // canonical form differs from Path.GetTempPath()'s output. Run it through
-        // the same normalizer the production code uses so test fixtures and
-        // production matching observe the same path.
-        return new(PathExclusion.Normalize(p));
-    }
-
-    public void Dispose() {
-        try { Directory.Delete(Path, recursive: true); } catch {
-            /* best effort */
-        }
     }
 }
 

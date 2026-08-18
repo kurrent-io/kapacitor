@@ -232,58 +232,52 @@ public class WatcherParentExitPostTests : IDisposable {
         const string dashedSub    = "57d9b498-2705-4af5-b060-ebaba4878c96";
         const string dashlessSub  = "57d9b49827054af5b060ebaba4878c96";
 
-        var tmp = Directory.CreateTempSubdirectory("kcap-parentexit-sub").FullName;
-        try {
-            var chats = Path.Combine(tmp, "chats");
-            Directory.CreateDirectory(chats);
+        using var tmp = new TempDir();
+        var chats = tmp.CreateDir("chats");
 
-            var parent = Path.Combine(chats, "session-2026-06-22T14-31-0a900000.jsonl");
-            File.WriteAllLines(parent, new[] {
-                $$"""{"sessionId":"{{dashedParent}}","projectHash":"h","kind":"main"}""",
-                $$"""{"id":"m1","type":"gemini","content":"","toolCalls":[{"id":"invoke_agent__x","name":"invoke_agent","args":{"agent_name":"codebase_investigator"},"agentId":"{{dashedSub}}","status":"success"}]}"""
-            });
+        var parent = chats.PathTo("session-2026-06-22T14-31-0a900000.jsonl");
+        File.WriteAllLines(parent, new[] {
+            $$"""{"sessionId":"{{dashedParent}}","projectHash":"h","kind":"main"}""",
+            $$"""{"id":"m1","type":"gemini","content":"","toolCalls":[{"id":"invoke_agent__x","name":"invoke_agent","args":{"agent_name":"codebase_investigator"},"agentId":"{{dashedSub}}","status":"success"}]}"""
+        });
 
-            var subDir = Path.Combine(chats, dashedParent);
-            Directory.CreateDirectory(subDir);
-            File.WriteAllLines(Path.Combine(subDir, dashedSub + ".jsonl"), new[] {
-                $$"""{"sessionId":"{{dashedSub}}","kind":"subagent","directories":[]}""",
-                """{"id":"s1","type":"gemini","content":"done"}"""
-            });
+        var subDir = chats.CreateDir(dashedParent);
+        subDir.CreateFile(dashedSub + ".jsonl", new[] {
+            $$"""{"sessionId":"{{dashedSub}}","kind":"subagent","directories":[]}""",
+            """{"id":"s1","type":"gemini","content":"done"}"""
+        });
 
-            _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
-                .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"provider":"None"}"""));
-            // 404 watermark → inline drain finds no new lines and posts no transcript batch;
-            // subagent-stop must still fire (that is the regression under test).
-            _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
-                .RespondWith(Response.Create().WithStatusCode(404));
-            foreach (var route in new[] { "/hooks/transcript", "/hooks/subagent-stop", "/hooks/session-end/gemini" }) {
-                _server.Given(Request.Create().WithPath(route).UsingPost())
-                    .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"generate_whats_done":false}"""));
-            }
-
-            await WatchCommand.PostSessionEndOnParentExitAsync(
-                baseUrl:        _server.Url!,
-                sessionId:      "0a900000000040008000000000000777",
-                transcriptPath: parent,
-                cwd:            "/repo",
-                vendor:         "gemini",
-                repository:     null
-            );
-
-            // subagent-stop was posted, carrying the canonical (dashless) agent_id.
-            var stops = _server.FindLogEntries(Request.Create().WithPath("/hooks/subagent-stop").UsingPost());
-            await Assert.That(stops.Count).IsEqualTo(1);
-            await Assert.That(stops[0].RequestMessage.Body!).Contains($"\"agent_id\":\"{dashlessSub}\"");
-
-            // ... and it landed BEFORE session-end, so SubagentCompleted precedes SessionEnded.
-            var postPaths = _server.LogEntries
-                .Where(e => e.RequestMessage.Method == "POST")
-                .Select(e => e.RequestMessage.Path)
-                .ToList();
-            await Assert.That(postPaths.IndexOf("/hooks/subagent-stop"))
-                .IsLessThan(postPaths.IndexOf("/hooks/session-end/gemini"));
-        } finally {
-            Directory.Delete(tmp, recursive: true);
+        _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"provider":"None"}"""));
+        // 404 watermark → inline drain finds no new lines and posts no transcript batch;
+        // subagent-stop must still fire (that is the regression under test).
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
+        foreach (var route in new[] { "/hooks/transcript", "/hooks/subagent-stop", "/hooks/session-end/gemini" }) {
+            _server.Given(Request.Create().WithPath(route).UsingPost())
+                .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"generate_whats_done":false}"""));
         }
+
+        await WatchCommand.PostSessionEndOnParentExitAsync(
+            baseUrl:        _server.Url!,
+            sessionId:      "0a900000000040008000000000000777",
+            transcriptPath: parent,
+            cwd:            "/repo",
+            vendor:         "gemini",
+            repository:     null
+        );
+
+        // subagent-stop was posted, carrying the canonical (dashless) agent_id.
+        var stops = _server.FindLogEntries(Request.Create().WithPath("/hooks/subagent-stop").UsingPost());
+        await Assert.That(stops.Count).IsEqualTo(1);
+        await Assert.That(stops[0].RequestMessage.Body!).Contains($"\"agent_id\":\"{dashlessSub}\"");
+
+        // ... and it landed BEFORE session-end, so SubagentCompleted precedes SessionEnded.
+        var postPaths = _server.LogEntries
+            .Where(e => e.RequestMessage.Method == "POST")
+            .Select(e => e.RequestMessage.Path)
+            .ToList();
+        await Assert.That(postPaths.IndexOf("/hooks/subagent-stop"))
+            .IsLessThan(postPaths.IndexOf("/hooks/session-end/gemini"));
     }
 }

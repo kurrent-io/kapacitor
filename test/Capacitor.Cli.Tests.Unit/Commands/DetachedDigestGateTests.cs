@@ -1,6 +1,5 @@
 using Capacitor.Cli.Commands;
 
-using Capacitor.Tests.Helpers;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 /// <summary>`kcap daemon start -d` gates the spawn on the embedded daemon digest,

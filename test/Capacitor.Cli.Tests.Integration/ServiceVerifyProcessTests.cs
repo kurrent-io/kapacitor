@@ -13,27 +13,14 @@ namespace Capacitor.Cli.Tests.Integration;
 /// rollback) without touching anything real. macOS-only: launchctl-classifying code paths.
 /// </summary>
 [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
-public class ServiceVerifyProcessTests : IDisposable {
-    readonly List<string> _tempDirs = [];
+public class ServiceVerifyProcessTests {
+    static (string Home, string Daemons, string Config) NewIsolatedEnv(TempDir tmp) {
+        // Daemons itself is deliberately absent — --verify must create it, as on a first run — so only
+        // its parent is made here.
+        tmp.CreateDir("daemons-root");
 
-    public void Dispose() {
-        foreach (var dir in _tempDirs) {
-            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
-        }
+        return (tmp.CreateDir("home"), tmp.PathTo("daemons-root", "daemons"), tmp.CreateDir("cfg"));
     }
-
-    string NewTempDir(string prefix) {
-        var dir = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        _tempDirs.Add(dir);
-        return dir;
-    }
-
-    (string Home, string Daemons, string Config) NewIsolatedEnv() => (
-        NewTempDir("kcap-verify-home"),
-        Path.Combine(NewTempDir("kcap-verify-daemons"), "daemons"),
-        NewTempDir("kcap-verify-cfg")
-    );
 
     /// <summary>Mirrors McpSessionsServerTests.GetCliBinaryPath: walk up from the test assembly's own
     /// bin dir to the repo root, then down into the CLI project's build output.</summary>
@@ -85,7 +72,8 @@ public class ServiceVerifyProcessTests : IDisposable {
         Skip.When(!OperatingSystem.IsMacOS(), "exercises launchctl-classifying code paths");
 
         var binary = RequireCliBinary();
-        var (home, daemons, config) = NewIsolatedEnv();
+        using var tmp = new TempDir();
+        var (home, daemons, config) = NewIsolatedEnv(tmp);
 
         var psi = new ProcessStartInfo(binary, "daemon service start --name ptest --verify") {
             RedirectStandardInput  = true,
@@ -134,7 +122,8 @@ public class ServiceVerifyProcessTests : IDisposable {
         Skip.When(!OperatingSystem.IsMacOS(), "exercises launchctl-classifying code paths");
 
         var binary = RequireCliBinary();
-        var (home, daemons, config) = NewIsolatedEnv();
+        using var tmp = new TempDir();
+        var (home, daemons, config) = NewIsolatedEnv(tmp);
         const string serviceName = "ptest2";
 
         // kcap's own stderr is redirected to a file by the SHELL before it execs kcap, so the fd stays

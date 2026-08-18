@@ -13,4 +13,7 @@
         <PackageReference Include="Avalonia.Headless" />
         <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
     </ItemGroup>
+    <ItemGroup>
+        <Using Include="Capacitor.Tests.Helpers" />
+    </ItemGroup>
 </Project>

@@ -4,11 +4,13 @@ using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Services;
 using Microsoft.Extensions.Time.Testing;
 
-using Capacitor.Tests.Helpers;
 namespace Capacitor.Cli.Tests.Unit.Services;
 
 [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
-public class ServiceVerifyInstallTests {
+public class ServiceVerifyInstallTests : IDisposable {
+    readonly TempDir _tmp = new();
+    public void Dispose() => _tmp.Dispose();
+
     const string Id             = "svc-verify-install";
     const string ExpectedVersion = "1.2.3";
     const string OwnPlistContent = "<plist>own-unit</plist>";
@@ -93,10 +95,10 @@ public class ServiceVerifyInstallTests {
         return await task.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
-    static (string Dir, string DaemonPath) SetUpViableInstall() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
+    (string Dir, string DaemonPath) SetUpViableInstall() {
+        var dir = _tmp.CreateDir(Guid.NewGuid().ToString("N"));
         DaemonLockPaths.OverrideDirectoryForTesting(dir);
-        var daemonPath = Path.Combine(dir, "kcap-daemon");
+        var daemonPath = dir.PathTo("kcap-daemon");
         File.WriteAllText(daemonPath, "");
         return (dir, daemonPath);
     }
@@ -110,11 +112,11 @@ public class ServiceVerifyInstallTests {
 
     [Test]
     public async Task Viability_abort_missing_binary_touches_nothing() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             var manager = new FakeServiceManager();
-            var missingPath = Path.Combine(dir, "does-not-exist-kcap-daemon");
+            var missingPath = tmp.PathTo("does-not-exist-kcap-daemon");
             var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
 
             var exit = await sut.InstallVerifiedAsync(Spec(missingPath), replace: false, ExpectedVersion);

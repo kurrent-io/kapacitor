@@ -4,7 +4,6 @@ using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Services;
 using Microsoft.Extensions.Time.Testing;
 
-using Capacitor.Tests.Helpers;
 namespace Capacitor.Cli.Tests.Unit.Services;
 
 /// <summary>Boot-refusal marker attribution in <see cref="ServiceVerify"/>'s
@@ -159,8 +158,8 @@ public class BootRefusalAttributionTests {
 
     [Test, NotInParallel]
     public async Task Readiness_timeout_with_matching_marker_attributes_exactly_once_and_consumes_it() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         using var capture = ConsoleOutput.StartErrorCapture();
         try {
 
@@ -203,8 +202,8 @@ public class BootRefusalAttributionTests {
 
     [Test, NotInParallel]
     public async Task Readiness_timeout_with_hello_never_well_formed_still_observes_pid_via_direct_query() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         using var capture = ConsoleOutput.StartErrorCapture();
         try {
 
@@ -247,8 +246,8 @@ public class BootRefusalAttributionTests {
 
     [Test, NotInParallel]
     public async Task Preclear_failure_disables_attribution_but_the_mutation_still_proceeds() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         using var capture = ConsoleOutput.StartErrorCapture();
         try {
 

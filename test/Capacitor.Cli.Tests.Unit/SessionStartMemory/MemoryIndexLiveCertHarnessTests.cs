@@ -121,16 +121,15 @@ public class MemoryIndexLiveCertHarnessTests {
     /// the execute bit, because "exists" and "is executable" are different questions and the resolver
     /// must answer the second one.</summary>
     sealed class PathProbe : IDisposable {
-        readonly string _root;
+        readonly TempDir _root = new();
 
         public PathProbe(string? commandName = null, bool executable = true) {
-            _root       = Directory.CreateTempSubdirectory("kcap-path-probe-").FullName;
-            BinDir      = Directory.CreateDirectory(Path.Combine(_root, "bin")).FullName;
-            EmptyDir    = Directory.CreateDirectory(Path.Combine(_root, "empty")).FullName;
+            var bin     = _root.CreateDir("bin");
+            BinDir      = bin;
+            EmptyDir    = _root.CreateDir("empty");
             CommandName = commandName ?? $"kcap-probe-{Guid.NewGuid():N}";
 
-            ExecutablePath = Path.Combine(BinDir, CommandName);
-            File.WriteAllText(ExecutablePath, "#!/bin/sh\nexit 0\n");
+            ExecutablePath = bin.CreateFile(CommandName, "#!/bin/sh\nexit 0\n");
 
             // `File.SetUnixFileMode` THROWS on Windows, and the probe is constructed by the one test
             // that does run there (the isWindows: true passthrough), which never looks at the mode.
@@ -146,9 +145,7 @@ public class MemoryIndexLiveCertHarnessTests {
         public string CommandName    { get; }
         public string ExecutablePath { get; }
 
-        public void Dispose() {
-            try { Directory.Delete(_root, recursive: true); } catch { /* best-effort */ }
-        }
+        public void Dispose() => _root.Dispose();
     }
 
     [Test]
@@ -227,16 +224,11 @@ public class MemoryIndexLiveCertHarnessTests {
 
     [Test]
     public async Task A_cert_worktree_is_a_fresh_empty_directory() {
-        var first  = MemoryIndexLiveCertHarness.NewCertWorktree("probe");
-        var second = MemoryIndexLiveCertHarness.NewCertWorktree("probe");
+        using var first  = MemoryIndexLiveCertHarness.NewCertWorktree("probe");
+        using var second = MemoryIndexLiveCertHarness.NewCertWorktree("probe");
 
-        try {
-            await Assert.That(first.FullName).IsNotEqualTo(second.FullName);
-            await Assert.That(first.EnumerateFileSystemInfos()).IsEmpty();
-        } finally {
-            try { first.Delete(recursive: true); } catch { /* best-effort */ }
-            try { second.Delete(recursive: true); } catch { /* best-effort */ }
-        }
+        await Assert.That(first.Path).IsNotEqualTo(second.Path);
+        await Assert.That(Directory.EnumerateFileSystemEntries(first.Path)).IsEmpty();
     }
 
     // 13 cert memories leaked into the live index because archive_memory was sent `memory_id` (what

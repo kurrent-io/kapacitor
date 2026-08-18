@@ -1,5 +1,7 @@
 using System.Net;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Harness.Antigravity;
+using Capacitor.Cli.Harness.Gemini;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -35,13 +37,18 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class RoutedReplayPrivatizeTests : IDisposable {
     readonly WireMockServer _server     = WireMockServer.Start();
-    readonly string         _agHome     = Directory.CreateTempSubdirectory("kcap-ag-privatize-it").FullName;
-    readonly string         _geminiHome = Directory.CreateTempSubdirectory("kcap-gemini-privatize-it").FullName;
+    readonly TempDir        _tmp        = new();
+    readonly string         _agHome;
+    readonly string         _geminiHome;
+
+    public RoutedReplayPrivatizeTests() {
+        _agHome     = _tmp.CreateDir("ag");
+        _geminiHome = _tmp.CreateDir("gemini");
+    }
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_agHome, recursive: true); } catch { /* best effort */ }
-        try { Directory.Delete(_geminiHome, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     static string Dashless(string id) => Guid.Parse(id).ToString("N");

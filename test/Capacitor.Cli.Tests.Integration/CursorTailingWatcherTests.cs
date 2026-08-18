@@ -1,5 +1,8 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Harness.Cursor;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -43,21 +46,20 @@ namespace Capacitor.Cli.Tests.Integration;
                 // with WatcherLifecycleTests / WatcherHeartbeatStalenessTests (bare NotInParallel
                 // — no explicit key — puts all of them in the same implicit mutual-exclusion bucket).
 public class CursorTailingWatcherTests {
-    static readonly string WatcherDir = Path.Combine(Path.GetTempPath(), "kcap-cursor-tailing-watcher-tests");
+    static readonly TempDir Tmp = new();
 
     static string? _previousWatcherDir;
 
     [Before(Class)]
     public static void SetUp() {
         _previousWatcherDir = Environment.GetEnvironmentVariable("KCAP_WATCHER_DIR");
-        Directory.CreateDirectory(WatcherDir);
-        Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", WatcherDir);
+        Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", Tmp.Path);
     }
 
     [After(Class)]
     public static void TearDown() {
         Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", _previousWatcherDir);
-        try { Directory.Delete(WatcherDir, recursive: true); } catch { /* best effort */ }
+        Tmp.Dispose();
     }
 
     [After(Test)]
@@ -81,43 +83,41 @@ public class CursorTailingWatcherTests {
     /// </summary>
     [Test]
     public async Task ForceQuitMidTurn_HeldByLiveDrain_ThenConsumedByFinalDrain() {
-        var dir = Directory.CreateTempSubdirectory("kcap-cursor-forcequit").FullName;
-        try {
-            var transcriptPath = Path.Combine(dir, "session.jsonl");
-            // Two flushed lines, then a force-quit mid-write of the third: complete JSON, no
-            // trailing newline (Cursor writes the record body first, the newline last).
-            await File.WriteAllTextAsync(
-                transcriptPath,
-                """{"role":"user","message":{"content":[{"type":"text","text":"first"}]}}""" + "\n" +
-                """{"role":"assistant","message":{"content":[{"type":"text","text":"second"}]}}""" + "\n" +
-                """{"role":"user","message":{"content":[{"type":"text","text":"force-quit line"}]}}"""
-            );
+        using var tmp = new TempDir();
+        var transcriptPath = tmp.PathTo("session.jsonl");
+        // Two flushed lines, then a force-quit mid-write of the third: complete JSON, no
+        // trailing newline (Cursor writes the record body first, the newline last).
+        await File.WriteAllTextAsync(
+            transcriptPath,
+            """{"role":"user","message":{"content":[{"type":"text","text":"first"}]}}""" + "\n" +
+            """{"role":"assistant","message":{"content":[{"type":"text","text":"second"}]}}""" + "\n" +
+            """{"role":"user","message":{"content":[{"type":"text","text":"force-quit line"}]}}"""
+        );
 
-            await using (var liveStream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
-                var liveDrain = await WatchCommand.ReadNewCompleteLinesAsync(
-                    liveStream, linesProcessed: 0, WatchCommand.IncompleteFinalLinePolicy.Hold, CancellationToken.None);
+        await using (var liveStream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+            var liveDrain = await WatchCommand.ReadNewCompleteLinesAsync(
+                liveStream, linesProcessed: 0, WatchCommand.IncompleteFinalLinePolicy.Hold, CancellationToken.None);
 
-                // Only the two flushed lines — the unterminated third is held, and NextPosition
-                // stays before it so a later drain re-reads it once complete. HeldIncompleteFinalLine
-                // is true here too (there IS a real held partial) — it just isn't acted on by a live
-                // drain; only the final drain below treats it as a needs-import signal.
-                await Assert.That(liveDrain.Lines.Count).IsEqualTo(2);
-                await Assert.That(liveDrain.NextPosition).IsEqualTo(2);
-                await Assert.That(liveDrain.HeldIncompleteFinalLine).IsTrue();
-            }
+            // Only the two flushed lines — the unterminated third is held, and NextPosition
+            // stays before it so a later drain re-reads it once complete. HeldIncompleteFinalLine
+            // is true here too (there IS a real held partial) — it just isn't acted on by a live
+            // drain; only the final drain below treats it as a needs-import signal.
+            await Assert.That(liveDrain.Lines.Count).IsEqualTo(2);
+            await Assert.That(liveDrain.NextPosition).IsEqualTo(2);
+            await Assert.That(liveDrain.HeldIncompleteFinalLine).IsTrue();
+        }
 
-            // The agent process is gone — nothing will ever append the trailing newline. The
-            // shutdown final drain must still recover the line rather than losing the turn.
-            await using (var finalStream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
-                var finalDrain = await WatchCommand.ReadNewCompleteLinesAsync(
-                    finalStream, linesProcessed: 2, WatchCommand.IncompleteFinalLinePolicy.ConsumeIfComplete, CancellationToken.None);
+        // The agent process is gone — nothing will ever append the trailing newline. The
+        // shutdown final drain must still recover the line rather than losing the turn.
+        await using (var finalStream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+            var finalDrain = await WatchCommand.ReadNewCompleteLinesAsync(
+                finalStream, linesProcessed: 2, WatchCommand.IncompleteFinalLinePolicy.ConsumeIfComplete, CancellationToken.None);
 
-                await Assert.That(finalDrain.Lines.Count).IsEqualTo(1);
-                await Assert.That(finalDrain.Lines[0]).Contains("force-quit line");
-                await Assert.That(finalDrain.NextPosition).IsEqualTo(3);
-                await Assert.That(finalDrain.HeldIncompleteFinalLine).IsFalse(); // consumed, not held
-            }
-        } finally { try { Directory.Delete(dir, recursive: true); } catch { } }
+            await Assert.That(finalDrain.Lines.Count).IsEqualTo(1);
+            await Assert.That(finalDrain.Lines[0]).Contains("force-quit line");
+            await Assert.That(finalDrain.NextPosition).IsEqualTo(3);
+            await Assert.That(finalDrain.HeldIncompleteFinalLine).IsFalse(); // consumed, not held
+        }
     }
 
     // ── 2. Idle-ceiling exit without Cursor synthesizing its own session-end ─────────────────
@@ -170,33 +170,31 @@ public class CursorTailingWatcherTests {
     /// </summary>
     [Test]
     public async Task Reactivation_ViaSessionStartHook_SpawnsAFreshWatcher() {
-        var dir = Directory.CreateTempSubdirectory("kcap-cursor-reactivate-start").FullName;
-        try {
-            Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", dir);
-            var sessionId      = NewSessionId();
-            var transcriptPath = Path.Combine(dir, $"{sessionId}.jsonl");
-            await File.WriteAllTextAsync(transcriptPath, """{"role":"user","message":{"content":[]}}""" + "\n");
+        using var tmp = new TempDir();
+        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
+        var sessionId      = NewSessionId();
+        var transcriptPath = tmp.PathTo($"{sessionId}.jsonl");
+        await File.WriteAllTextAsync(transcriptPath, """{"role":"user","message":{"content":[]}}""" + "\n");
 
-            var spawned = new List<string>();
-            Cli.WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
+        var spawned = new List<string>();
+        Cli.WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
 
-            using var server = WireMockServer.Start();
-            server.Given(Request.Create().WithPath("/auth/config").UsingGet())
-                .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"provider":"None"}"""));
-            server.Given(Request.Create().WithPath("/hooks/*").UsingPost())
-                .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
-            server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
-                .RespondWith(Response.Create().WithStatusCode(404));
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/auth/config").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"provider":"None"}"""));
+        server.Given(Request.Create().WithPath("/hooks/*").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
+        server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
 
-            using var client = new HttpClient();
-            var spool = new HookSpool(Path.Combine(dir, "spool"));
+        using var client = new HttpClient();
+        var spool = new HookSpool(tmp.PathTo("spool"));
 
-            var body = $$"""{"hook_event_name":"sessionStart","session_id":"{{sessionId}}","transcript_path":"{{transcriptPath.Replace(@"\", @"\\")}}"}""";
-            var exit = await CursorHookCommand.HandleCore(client, server.Url!, new StringReader(body), spool, TimeSpan.FromSeconds(2));
+        var body = $$"""{"hook_event_name":"sessionStart","session_id":"{{sessionId}}","transcript_path":"{{transcriptPath.Replace(@"\", @"\\")}}"}""";
+        var exit = await CursorHookCommand.HandleCore(client, server.Url!, new StringReader(body), spool, TimeSpan.FromSeconds(2));
 
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(spawned).IsEquivalentTo([sessionId]);
-        } finally { try { Directory.Delete(dir, recursive: true); } catch { } }
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(spawned).IsEquivalentTo([sessionId]);
     }
 
     /// <summary>
@@ -208,33 +206,31 @@ public class CursorTailingWatcherTests {
     /// </summary>
     [Test]
     public async Task Reactivation_ViaNonSessionStartHook_SpawnsAFreshWatcher() {
-        var dir = Directory.CreateTempSubdirectory("kcap-cursor-reactivate-nonstart").FullName;
-        try {
-            Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", dir);
-            var sessionId      = NewSessionId();
-            var transcriptPath = Path.Combine(dir, $"{sessionId}.jsonl");
-            await File.WriteAllTextAsync(transcriptPath, """{"role":"user","message":{"content":[]}}""" + "\n");
+        using var tmp = new TempDir();
+        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
+        var sessionId      = NewSessionId();
+        var transcriptPath = tmp.PathTo($"{sessionId}.jsonl");
+        await File.WriteAllTextAsync(transcriptPath, """{"role":"user","message":{"content":[]}}""" + "\n");
 
-            var spawned = new List<string>();
-            Cli.WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
+        var spawned = new List<string>();
+        Cli.WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
 
-            using var server = WireMockServer.Start();
-            server.Given(Request.Create().WithPath("/auth/config").UsingGet())
-                .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"provider":"None"}"""));
-            server.Given(Request.Create().WithPath("/hooks/*").UsingPost())
-                .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
-            server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
-                .RespondWith(Response.Create().WithStatusCode(404));
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/auth/config").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"provider":"None"}"""));
+        server.Given(Request.Create().WithPath("/hooks/*").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
+        server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
 
-            using var client = new HttpClient();
-            var spool = new HookSpool(Path.Combine(dir, "spool"));
+        using var client = new HttpClient();
+        var spool = new HookSpool(tmp.PathTo("spool"));
 
-            var body = $$"""{"hook_event_name":"postToolUse","session_id":"{{sessionId}}","transcript_path":"{{transcriptPath.Replace(@"\", @"\\")}}","tool_name":"Bash"}""";
-            var exit = await CursorHookCommand.HandleCore(client, server.Url!, new StringReader(body), spool, TimeSpan.FromSeconds(2));
+        var body = $$"""{"hook_event_name":"postToolUse","session_id":"{{sessionId}}","transcript_path":"{{transcriptPath.Replace(@"\", @"\\")}}","tool_name":"Bash"}""";
+        var exit = await CursorHookCommand.HandleCore(client, server.Url!, new StringReader(body), spool, TimeSpan.FromSeconds(2));
 
-            await Assert.That(exit).IsEqualTo(0);
-            await Assert.That(spawned).IsEquivalentTo([sessionId]);
-        } finally { try { Directory.Delete(dir, recursive: true); } catch { } }
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(spawned).IsEquivalentTo([sessionId]);
     }
 
     // ── 5. Resume at an unterminated final line, then its terminator arrives → no line drift (r6) ──
@@ -263,10 +259,10 @@ public class CursorTailingWatcherTests {
     /// </summary>
     [Test]
     public async Task ResumeAtUnterminatedFinalLine_ThenTerminatorArrives_NextRecordKeepsItsTrueLineNumber() {
-        var dir = Directory.CreateTempSubdirectory("kcap-cursor-r6-terminator-drift").FullName;
+        using var tmp = new TempDir();
         var sessionId = NewSessionId();
         try {
-            var transcriptPath = Path.Combine(dir, "session.jsonl");
+            var transcriptPath = tmp.PathTo("session.jsonl");
             // Line 0 (terminated) + line 1, complete but not yet terminated — exactly what a
             // prior watcher's shutdown final drain sent and the server already acknowledged.
             await File.WriteAllTextAsync(transcriptPath, "{\"a\":1}\n{\"b\":2}");
@@ -310,7 +306,6 @@ public class CursorTailingWatcherTests {
             // exactly 3, matching the file's true 3 complete lines; no permanent gap opens up.
             await Assert.That(drainRead.NextPosition).IsEqualTo(3);
         } finally {
-            try { Directory.Delete(dir, recursive: true); } catch { }
             try { File.Delete(CursorMarkers.QuarantinePath(sessionId)); } catch { }
         }
     }

@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Daemon/Services/AcpHostedAgentRuntime.cs
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -6,6 +5,7 @@ using System.Threading.Channels;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
 using Capacitor.Cli.Daemon.Acp;
+using Capacitor.Cli.Daemon.Harness.Kiro;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Services;

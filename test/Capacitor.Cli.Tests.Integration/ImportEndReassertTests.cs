@@ -18,14 +18,15 @@ namespace Capacitor.Cli.Tests.Integration;
 /// <c>ImportChainsTests</c> (Tests.Unit) drives for the New branch.
 /// </summary>
 public class ImportEndReassertTests : IDisposable {
-    readonly WireMockServer _server  = WireMockServer.Start();
-    readonly string         _tempDir = Directory.CreateTempSubdirectory("kcap-end-reassert-test").FullName;
+    readonly WireMockServer _server = WireMockServer.Start();
+    readonly TempDir        _tmp    = new();
+    readonly string         _tempDir;
+
+    public ImportEndReassertTests() => _tempDir = _tmp.Path;
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_tempDir, recursive: true); } catch {
-            /* best effort */
-        }
+        _tmp.Dispose();
     }
 
     // 3-line Claude-shape transcript. Root-level "timestamp" matches what both

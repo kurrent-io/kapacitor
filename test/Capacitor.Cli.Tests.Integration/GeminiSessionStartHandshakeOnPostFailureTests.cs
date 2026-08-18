@@ -1,9 +1,8 @@
 using System.Text.Json;
-using Capacitor.Cli.Commands;
+using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.SessionStartMemory;
-using Capacitor.Tests.Helpers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;

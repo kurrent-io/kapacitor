@@ -15,8 +15,8 @@ public class DaemonKillTests {
     public async Task Already_dead_pid_reports_gone_via_the_ArgumentException_path() {
         if (OperatingSystem.IsWindows()) return; // POSIX process spawn below
 
-        var dir = Directory.CreateTempSubdirectory().FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
 
         try {
             using var proc = Process.Start(new ProcessStartInfo("/usr/bin/env", ["true"]) { UseShellExecute = false });
@@ -38,8 +38,8 @@ public class DaemonKillTests {
     public async Task Killing_a_live_process_is_confirmed_gone_via_DaemonPidProbe() {
         if (OperatingSystem.IsWindows()) return; // POSIX process spawn below
 
-        var dir = Directory.CreateTempSubdirectory().FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
 
         Process? proc = null;
         try {

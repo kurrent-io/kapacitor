@@ -98,22 +98,19 @@ public class ProcessRunnerTests {
     public async Task AbandonWait_cancelled_ct_throws_and_the_child_survives() {
         Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
 
-        var marker = Path.Combine(Path.GetTempPath(), $"kcap-processrunner-{Guid.NewGuid():N}");
-        try {
-            var runner = new DaemonClientService.ProcessRunner();
-            using var cts = new CancellationTokenSource();
-            cts.Cancel();
+        using var tmp = new TempDir();
+        var marker = tmp.PathTo("marker");
+        var runner = new DaemonClientService.ProcessRunner();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
 
-            await Assert.ThrowsAsync<OperationCanceledException>(() =>
-                runner.RunAsync("/bin/sh", ["-c", $"sleep 0.3; touch {marker}"], new RunOptions(), cts.Token));
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            runner.RunAsync("/bin/sh", ["-c", $"sleep 0.3; touch {marker}"], new RunOptions(), cts.Token));
 
-            // Not killed: still running at the point the wait was abandoned, so it hasn't
-            // reached `touch` yet — then it finishes on its own past the abandoned wait.
-            await Assert.That(File.Exists(marker)).IsFalse();
-            await WaitUntilAsync(() => File.Exists(marker), TimeSpan.FromSeconds(5), "the abandoned child to finish and touch the marker");
-        } finally {
-            File.Delete(marker);
-        }
+        // Not killed: still running at the point the wait was abandoned, so it hasn't
+        // reached `touch` yet — then it finishes on its own past the abandoned wait.
+        await Assert.That(File.Exists(marker)).IsFalse();
+        await WaitUntilAsync(() => File.Exists(marker), TimeSpan.FromSeconds(5), "the abandoned child to finish and touch the marker");
     }
 
     [Test]
@@ -121,23 +118,20 @@ public class ProcessRunnerTests {
     public async Task KillTree_cancelled_ct_kills_the_child_then_throws() {
         Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
 
-        var marker = Path.Combine(Path.GetTempPath(), $"kcap-processrunner-{Guid.NewGuid():N}");
-        try {
-            var runner = new DaemonClientService.ProcessRunner();
-            using var cts = new CancellationTokenSource();
-            cts.Cancel();
+        using var tmp = new TempDir();
+        var marker = tmp.PathTo("marker");
+        var runner = new DaemonClientService.ProcessRunner();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
 
-            await Assert.ThrowsAsync<OperationCanceledException>(() =>
-                runner.RunAsync(
-                    "/bin/sh", ["-c", $"sleep 0.3; touch {marker}"],
-                    new RunOptions(CancelMode: CancelMode.KillTree), cts.Token));
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            runner.RunAsync(
+                "/bin/sh", ["-c", $"sleep 0.3; touch {marker}"],
+                new RunOptions(CancelMode: CancelMode.KillTree), cts.Token));
 
-            // Killed before it could reach `touch` — unlike AbandonWait, it never gets there.
-            await Task.Delay(TimeSpan.FromSeconds(1));
-            await Assert.That(File.Exists(marker)).IsFalse();
-        } finally {
-            File.Delete(marker);
-        }
+        // Killed before it could reach `touch` — unlike AbandonWait, it never gets there.
+        await Task.Delay(TimeSpan.FromSeconds(1));
+        await Assert.That(File.Exists(marker)).IsFalse();
     }
 
     [Test]
@@ -184,9 +178,10 @@ public class ProcessRunnerTests {
     public async Task KillTree_cancellation_kills_the_tree_even_with_TimeoutKill_ProcessOnly() {
         Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
 
+        using var tmp = new TempDir();
         var runner = new DaemonClientService.ProcessRunner();
         using var cts = new CancellationTokenSource();
-        var startedMarker = Path.Combine(Path.GetTempPath(), $"kcap-processrunner-{Guid.NewGuid():N}");
+        var startedMarker = tmp.PathTo("marker");
         int grandchildPid = -1;
         try {
             var runTask = runner.RunAsync(
@@ -201,7 +196,6 @@ public class ProcessRunnerTests {
             await Assert.ThrowsAsync<OperationCanceledException>(() => runTask);
             await WaitUntilAsync(() => !IsAlive(grandchildPid), TimeSpan.FromSeconds(5), "the grandchild to die with the caller-cancelled tree");
         } finally {
-            File.Delete(startedMarker);
             if (grandchildPid > 0) {
                 try { Process.GetProcessById(grandchildPid).Kill(); }
                 catch (ArgumentException) { /* already gone */ }

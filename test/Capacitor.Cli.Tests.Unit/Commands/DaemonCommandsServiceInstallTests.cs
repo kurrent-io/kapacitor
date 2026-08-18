@@ -47,8 +47,8 @@ public class DaemonCommandsServiceInstallTests {
     /// Install.</summary>
     [Test]
     public async Task Plain_install_bails_on_a_held_service_lock_without_calling_install() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         try {
             const string id = "svc-plain-install-lock";
             using var held = ServiceTxnLock.TryAcquire(id, TimeSpan.FromSeconds(1));

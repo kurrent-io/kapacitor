@@ -5,6 +5,10 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Acp;
+using Capacitor.Cli.Daemon.Harness.Cursor;
+using Capacitor.Cli.Daemon.Harness.Gemini;
+using Capacitor.Cli.Daemon.Harness.Kiro;
+using Capacitor.Cli.Daemon.Harness.OpenCode;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Services;

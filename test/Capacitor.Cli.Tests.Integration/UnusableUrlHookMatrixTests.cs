@@ -32,12 +32,15 @@ public class UnusableUrlHookMatrixTests : IDisposable {
 
     const string Sid = "0123456789abcdef0123456789abcdef";
 
-    readonly string _cfgDir = Path.Combine(Path.GetTempPath(), $"kcap-matrix-cfg-{Guid.NewGuid():N}");
+    readonly TempDir       _tmp = new();
+    readonly string        _cfgDir;
     readonly List<Process> _spawned = [];
+
+    public UnusableUrlHookMatrixTests() => _cfgDir = _tmp.Path;
 
     public void Dispose() {
         foreach (var p in _spawned) { try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { } p.Dispose(); }
-        try { Directory.Delete(_cfgDir, true); } catch { }
+        _tmp.Dispose();
     }
 
     [Test]

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Capacitor.Cli.Core.Acp;
+using Capacitor.Cli.Daemon.Harness.Kiro;
 
 namespace Capacitor.Cli.Daemon.Acp;
 

@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Daemon/Services/IAcpTranscriptSource.cs
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
 

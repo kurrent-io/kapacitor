@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Daemon/Acp/AcpEventTranslator.cs
 using Capacitor.Cli.Core;
 using Microsoft.Extensions.Logging;
 

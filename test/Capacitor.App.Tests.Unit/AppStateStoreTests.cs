@@ -3,19 +3,17 @@ using Capacitor.App.Services;
 namespace Capacitor.App.Tests.Unit;
 
 public class AppStateStoreTests {
-    static string TempPath() =>
-        Path.Combine(Directory.CreateTempSubdirectory("kcap-appstate-").FullName, "app-state.json");
-
     [Test]
     public async Task Missing_file_yields_defaults() {
-        var store = new AppStateStore(TempPath());
+        using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+        var store = new AppStateStore(path);
         var state = await store.LoadAsync();
         await Assert.That(state).IsEqualTo(new AppState());
     }
 
     [Test]
     public async Task Corrupt_file_yields_defaults_without_throwing() {
-        var path = TempPath();
+        using var tmp = TempDir.WithPathTo("app-state.json", out var path);
         File.WriteAllText(path, "{not json");
         var store = new AppStateStore(path);
         var state = await store.LoadAsync();
@@ -24,7 +22,7 @@ public class AppStateStoreTests {
 
     [Test]
     public async Task Update_then_fresh_store_load_sees_it() {
-        var path = TempPath();
+        using var tmp = TempDir.WithPathTo("app-state.json", out var path);
         var store = new AppStateStore(path);
         var ok = await store.UpdateAsync(s => s with { ShimOffered = true, ShimDenied = true });
         await Assert.That(ok).IsTrue();
@@ -37,8 +35,8 @@ public class AppStateStoreTests {
 
     [Test]
     public async Task Update_creates_missing_parent_directory() {
-        var dir = Directory.CreateTempSubdirectory("kcap-appstate-").FullName;
-        var path = Path.Combine(dir, "nested", "sub", "app-state.json");
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("nested", "sub", "app-state.json");
         var store = new AppStateStore(path);
 
         var ok = await store.UpdateAsync(s => s with { ShimOffered = true });
@@ -49,7 +47,7 @@ public class AppStateStoreTests {
 
     [Test]
     public async Task No_tmp_file_left_behind_after_successful_write() {
-        var path = TempPath();
+        using var tmp = TempDir.WithPathTo("app-state.json", out var path);
         var store = new AppStateStore(path);
         await store.UpdateAsync(s => s with { ShimOffered = true });
 
@@ -59,7 +57,7 @@ public class AppStateStoreTests {
 
     [Test]
     public async Task Fifty_parallel_updates_all_land() {
-        var path = TempPath();
+        using var tmp = TempDir.WithPathTo("app-state.json", out var path);
         var store = new AppStateStore(path);
 
         var tasks = Enumerable.Range(0, 50).Select(i =>
@@ -77,8 +75,8 @@ public class AppStateStoreTests {
 
     [Test]
     public async Task Write_failure_when_parent_is_a_regular_file_returns_false_without_throwing() {
-        var dir = Directory.CreateTempSubdirectory("kcap-appstate-").FullName;
-        var blockingFile = Path.Combine(dir, "blocked");
+        using var tmp = new TempDir();
+        var blockingFile = tmp.PathTo("blocked");
         File.WriteAllText(blockingFile, "not a directory");
         var path = Path.Combine(blockingFile, "app-state.json"); // parent path component is a file
 

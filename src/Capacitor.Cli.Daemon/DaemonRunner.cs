@@ -9,6 +9,12 @@ using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Daemon.Harness.Antigravity;
+using Capacitor.Cli.Daemon.Harness.Claude;
+using Capacitor.Cli.Daemon.Harness.Codex;
+using Capacitor.Cli.Daemon.Harness.Kiro;
+using Capacitor.Cli.Daemon.Harness.OpenCode;
+using Capacitor.Cli.Daemon.Harness.Pi;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -142,6 +148,13 @@ public static partial class DaemonRunner {
 
         if (Environment.GetEnvironmentVariable("KCAP_CODEX_PATH") is { Length: > 0 } envCodexPath)
             config.CodexPath = envCodexPath;
+
+        if (Environment.GetEnvironmentVariable("KCAP_CODEX_TRANSPORT") is { Length: > 0 } envCodexTransport)
+            config.CodexTransport = envCodexTransport;
+
+        // One resolved fact for both the launch router and the certification advertisement.
+        config.CodexAppServerActive = Harness.Codex.CodexTransportDecision.ResolveActive(
+            config.CodexTransport, () => ProbeCliVersion(config.CodexPath));
 
         if (Environment.GetEnvironmentVariable("KCAP_CURSOR_PATH") is { Length: > 0 } envCursorPath)
             config.CursorPath = envCursorPath;
@@ -404,14 +417,22 @@ public static partial class DaemonRunner {
                 sp.GetRequiredService<ILogger<PtyHostedAgentRuntimeFactory>>()
             )
         );
-        builder.Services.AddSingleton<IHostedAgentRuntimeFactory>(sp =>
-            new PtyHostedAgentRuntimeFactory(
-                sp.GetServices<IHostedAgentLauncher>().SingleOrDefault(l => l.Vendor == "codex")
-                    ?? throw new InvalidOperationException("No IHostedAgentLauncher registered for vendor 'codex'"),
+        // Codex is the ONE vendor with two transports. The composite factory routes review-flow
+        // launches to codex app-server when this daemon resolved it active (config.CodexAppServerActive),
+        // and delegates everything else — every interactive launch, and all launches under the PTY
+        // default — to the wrapped PTY factory, byte-identically to before.
+        builder.Services.AddSingleton<IHostedAgentRuntimeFactory>(sp => {
+            var codexLauncher = sp.GetServices<IHostedAgentLauncher>().SingleOrDefault(l => l.Vendor == "codex")
+                    ?? throw new InvalidOperationException("No IHostedAgentLauncher registered for vendor 'codex'");
+            var pty = new PtyHostedAgentRuntimeFactory(
+                codexLauncher,
                 sp.GetRequiredService<IPtyProcessFactory>(),
-                sp.GetRequiredService<ILogger<PtyHostedAgentRuntimeFactory>>()
-            )
-        );
+                sp.GetRequiredService<ILogger<PtyHostedAgentRuntimeFactory>>());
+            return new Harness.Codex.CodexHostedAgentRuntimeFactory(
+                (Harness.Codex.CodexLauncher) codexLauncher, pty,
+                sp.GetRequiredService<DaemonConfig>(),
+                sp.GetRequiredService<ILoggerFactory>());
+        });
         builder.Services.AddSingleton<IHostedAgentRuntimeFactory>(sp =>
             new AcpHostedAgentRuntimeFactory(
                 AcpVendorDescriptors.Cursor,
@@ -1301,6 +1322,7 @@ public static partial class DaemonRunner {
     internal const string ClaudeLauncherPolicyVersion = "claude-unattended-v1";
     internal const string CursorLauncherPolicyVersion = "cursor-unattended-v4";
     internal const string CodexLauncherPolicyVersion = "codex-unattended-v1";
+    internal const string CodexAppServerLauncherPolicyVersion = "codex-appserver-unattended-v1";
     internal const string CopilotLauncherPolicyVersion = "copilot-unattended-v1";
     internal const string AntigravityLauncherPolicyVersion = "antigravity-unattended-v1";
     internal const string OpenCodeLauncherPolicyVersion = "opencode-unattended-v1";
@@ -1322,7 +1344,11 @@ public static partial class DaemonRunner {
             var (cliPath, policyVersion) = vendor switch {
                 "claude"  => (config.ClaudePath, ClaudeLauncherPolicyVersion),
                 "cursor"  => (config.CursorPath, CursorLauncherPolicyVersion),
-                "codex"   => (config.CodexPath, CodexLauncherPolicyVersion),
+                // The advertised codex policy version is chosen from the SAME resolved field the
+                // launch router uses (config.CodexAppServerActive), so the certified policy and the
+                // transport actually launched can never diverge.
+                "codex"   => (config.CodexPath,
+                              config.CodexAppServerActive ? CodexAppServerLauncherPolicyVersion : CodexLauncherPolicyVersion),
                 "copilot" => (config.CopilotPath, CopilotLauncherPolicyVersion),
                 // Named rather than left to the generic arm, which advertises CliVersion: null — there
                 // is a real configured path here to probe, and the floor is stated in that version.

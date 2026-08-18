@@ -1,7 +1,6 @@
 using System.Runtime.Versioning;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Services;
-using Capacitor.Tests.Helpers;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
 

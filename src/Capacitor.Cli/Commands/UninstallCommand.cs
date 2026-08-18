@@ -1,8 +1,13 @@
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Cursor;
-using Capacitor.Cli.Core.Gemini;
-using Capacitor.Cli.Core.Kiro;
-using Capacitor.Cli.Core.OpenCode;
+using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness.Copilot;
+using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.Harness.Gemini;
+using Capacitor.Cli.Core.Harness.Kiro;
+using Capacitor.Cli.Core.Harness.OpenCode;
+using Capacitor.Cli.Core.Harness.Pi;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Commands;
@@ -50,12 +55,12 @@ public static class UninstallCommand {
         await Console.Out.WriteLineAsync($"  • Remove kcap entries from {ClaudePaths.UserSettings}");
         await Console.Out.WriteLineAsync($"  • Remove kcap entries from {CodexPaths.UserHooksJson}");
         await Console.Out.WriteLineAsync($"  • Remove kcap entries from {CursorPaths.UserHooksJson()}");
-        await Console.Out.WriteLineAsync($"  • Remove {Capacitor.Cli.Core.Copilot.CopilotPaths.KcapHooksJson()}");
+        await Console.Out.WriteLineAsync($"  • Remove {CopilotPaths.KcapHooksJson()}");
         await Console.Out.WriteLineAsync($"  • Remove kcap entries from {GeminiPaths.SettingsJson()}");
         await Console.Out.WriteLineAsync($"  • Remove {KiroPaths.KcapAgentJson()} and restore the previous default Kiro agent");
-        await Console.Out.WriteLineAsync($"  • Remove {Capacitor.Cli.Core.Pi.PiPaths.KcapExtension()}");
+        await Console.Out.WriteLineAsync($"  • Remove {PiPaths.KcapExtension()}");
         await Console.Out.WriteLineAsync($"  • Remove {OpenCodePaths.KcapPlugin()}");
-        await Console.Out.WriteLineAsync($"  • Remove the kcap plugin from {Capacitor.Cli.Core.Antigravity.AntigravityPaths.PluginDir()}");
+        await Console.Out.WriteLineAsync($"  • Remove the kcap plugin from {AntigravityPaths.PluginDir()}");
         await Console.Out.WriteLineAsync($"  • Remove agent skills under {AgentsPaths.UserSkillsDir}");
 
         if (projectRoot is not null) {

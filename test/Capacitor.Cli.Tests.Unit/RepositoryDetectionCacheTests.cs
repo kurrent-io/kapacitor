@@ -28,17 +28,14 @@ public class RepositoryDetectionCacheTests {
     // greedy owner parse flows through DetectRepositoryAsync (glab-independent).
     [Test]
     public async Task Detects_nested_gitlab_repo_base_info() {
-        var repo = MakeTempRepo("git@gitlab.com:group/sub/project.git");
-        try {
-            var payload = await RepositoryDetection.DetectRepositoryAsync(repo);
+        using var tmp = new TempDir();
+        var repo = MakeTempRepo(tmp, "git@gitlab.com:group/sub/project.git");
+        var payload = await RepositoryDetection.DetectRepositoryAsync(repo);
 
-            await Assert.That(payload).IsNotNull();
-            await Assert.That(payload!.Owner).IsEqualTo("group/sub");
-            await Assert.That(payload.RepoName).IsEqualTo("project");
-            await Assert.That(payload.Host).IsEqualTo("gitlab.com");
-        } finally {
-            Directory.Delete(repo, true);
-        }
+        await Assert.That(payload).IsNotNull();
+        await Assert.That(payload!.Owner).IsEqualTo("group/sub");
+        await Assert.That(payload.RepoName).IsEqualTo("project");
+        await Assert.That(payload.Host).IsEqualTo("gitlab.com");
     }
 
     [Test]
@@ -59,25 +56,21 @@ public class RepositoryDetectionCacheTests {
     // info. PR fields are intentionally not asserted because glab may be absent/unauthenticated.
     [Test]
     public async Task Detects_gitlab_repo_base_info() {
-        var repo = MakeTempRepo("git@gitlab.com:group/project.git");
-        try {
-            var payload = await RepositoryDetection.DetectRepositoryAsync(repo);
+        using var tmp = new TempDir();
+        var repo = MakeTempRepo(tmp, "git@gitlab.com:group/project.git");
+        var payload = await RepositoryDetection.DetectRepositoryAsync(repo);
 
-            await Assert.That(payload).IsNotNull();
-            await Assert.That(payload!.Owner).IsEqualTo("group");
-            await Assert.That(payload.RepoName).IsEqualTo("project");
-            await Assert.That(payload.Host).IsEqualTo("gitlab.com");
-            // No glab installed/authenticated in CI → PR fields stay null (best-effort).
-        } finally {
-            Directory.Delete(repo, true);
-        }
+        await Assert.That(payload).IsNotNull();
+        await Assert.That(payload!.Owner).IsEqualTo("group");
+        await Assert.That(payload.RepoName).IsEqualTo("project");
+        await Assert.That(payload.Host).IsEqualTo("gitlab.com");
+        // No glab installed/authenticated in CI → PR fields stay null (best-effort).
     }
 
     // Mirrors RepoMatcherTests.MakeTempRepo: creates a throwaway git repo with a
     // controlled origin remote so router/detector dispatch can be exercised end-to-end.
-    static string MakeTempRepo(string originUrl) {
-        var root = Path.Combine(Path.GetTempPath(), "kcap-repo-detect-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(root);
+    static string MakeTempRepo(TempDir tmp, string originUrl) {
+        var root = tmp.CreateDir("repo");
 
         RunGit(root, "init", "-q");
         RunGit(root, "remote", "add", "origin", originUrl);

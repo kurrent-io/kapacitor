@@ -1,0 +1,410 @@
+using System.Text.Json.Nodes;
+using Capacitor.Cli.Core.Mcp;
+
+namespace Capacitor.Cli.Core.Tests.Unit.Mcp;
+
+public class JsonMcpConfigWriterTests {
+    static string TempConfig(TempDir tmp, string name = "mcp.json") => tmp.PathTo(name);
+
+    // In-memory marker double: treats an entry as kcap-owned iff its key starts with "kcap-".
+    sealed class FakeMarker : IMcpMarker {
+        readonly HashSet<string> _owned = [];
+        public bool Owns(string cfg, string name, JsonNode entry) => name.StartsWith("kcap-", StringComparison.Ordinal);
+        public void Record(string cfg, IReadOnlyList<KeyValuePair<string, JsonNode?>> entries) { foreach (var (n, _) in entries) _owned.Add(n); }
+        public IEnumerable<string> Owned(string cfg) => _owned;
+        public void Clear(string cfg) => _owned.Clear();
+    }
+
+    static JsonObject Read(string path) => (JsonObject)JsonNode.Parse(File.ReadAllText(path))!;
+
+    [Test]
+    public async Task Register_on_missing_file_writes_all_servers_standard_shape() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new FakeMarker(),
+                                                  resolveBinaryPath: () => "/opt/kcap/bin/kcap");
+
+        await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Updated);
+        var servers = (JsonObject)Read(path)["mcpServers"]!;
+        await Assert.That(servers.Count).IsEqualTo(KcapMcpServers.All.Count);
+        // The registered command is the resolved native binary, not the wrapper-resolved "kcap".
+        await Assert.That((string)servers["kcap-review"]!["command"]!).IsEqualTo("/opt/kcap/bin/kcap");
+        await Assert.That(servers["kcap-review"]!["args"]!.AsArray().Count).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Register_falls_back_to_kcap_when_binary_path_unresolvable() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new FakeMarker(),
+                                     resolveBinaryPath: () => null);
+
+        var servers = (JsonObject)Read(path)["mcpServers"]!;
+        await Assert.That((string)servers["kcap-review"]!["command"]!).IsEqualTo("kcap");
+    }
+
+    [Test]
+    public async Task Register_default_resolution_is_the_running_process_path() {
+        // kcap setup executes as the native binary even when invoked via the npm wrapper
+        // (the wrapper exec's it), so Environment.ProcessPath IS the platform binary.
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new FakeMarker());
+
+        var servers = (JsonObject)Read(path)["mcpServers"]!;
+        await Assert.That((string)servers["kcap-review"]!["command"]!).IsEqualTo(Environment.ProcessPath!);
+    }
+
+    [Test]
+    public async Task Register_gemini_shape_marks_only_read_only_servers_trusted() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Gemini, cwd: null, new FakeMarker());
+
+        var servers = (JsonObject)Read(path)["mcpServers"]!;
+        // Read-only servers (pure reads) get trust:true; write/flow-launching servers keep prompting.
+        await Assert.That((bool)servers["kcap-review"]!["trust"]!).IsTrue();
+        await Assert.That((bool)servers["kcap-sessions"]!["trust"]!).IsTrue();
+        await Assert.That(servers["kcap-memory"]!["trust"]).IsNull();   // writes (save) → still prompts
+        await Assert.That(servers["kcap-flows"]!["trust"]).IsNull();    // spawns reviewer → still prompts
+    }
+
+    [Test]
+    public async Task Register_standard_shape_emits_no_trust_field() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, cwd: null, new FakeMarker());
+
+        // Cursor uses the plain Standard shape — no per-server trust knob, so we emit none anywhere.
+        var servers = (JsonObject)Read(path)["mcpServers"]!;
+        foreach (var kv in servers) await Assert.That(kv.Value!["trust"]).IsNull();
+    }
+
+    [Test]
+    public async Task Register_gemini_heals_existing_untrusted_read_only_entry() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        // A pre-trust kcap-review entry (no trust field) as an older install would have written.
+        File.WriteAllText(path, """{ "mcpServers": { "kcap-review": { "command": "kcap", "args": ["mcp","review"] } } }""");
+
+        var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Gemini, cwd: null, new FakeMarker());
+
+        await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Updated);
+        await Assert.That((bool)((JsonObject)Read(path)["mcpServers"]!)["kcap-review"]!["trust"]!).IsTrue();
+    }
+
+    [Test]
+    public async Task Register_preserves_user_servers() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        File.WriteAllText(path, """{ "mcpServers": { "playwright": { "command": "npx", "args": ["-y","playwright"] } } }""");
+
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, new FakeMarker());
+
+        var servers = (JsonObject)Read(path)["mcpServers"]!;
+        await Assert.That((string)servers["playwright"]!["command"]!).IsEqualTo("npx");
+        await Assert.That(servers.ContainsKey("kcap-review")).IsTrue();
+    }
+
+    [Test]
+    public async Task Register_is_idempotent() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        var marker = new FakeMarker();
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker);
+        var second = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker);
+
+        await Assert.That(second).IsEqualTo(JsonMcpConfigWriter.Change.Unchanged);
+    }
+
+    [Test]
+    public async Task Register_fails_closed_on_malformed_file() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        File.WriteAllText(path, "{ not json");
+        var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, new FakeMarker());
+
+        await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Failed);
+        await Assert.That(File.ReadAllText(path)).IsEqualTo("{ not json");
+    }
+
+    [Test]
+    public async Task Register_on_empty_file_writes_all_servers() {
+        // Antigravity (and others) ship a 0-byte mcp_config.json on first run. An empty file has
+        // nothing to preserve, so it must be treated as an empty config — NOT fail-closed as malformed.
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        File.WriteAllText(path, "");
+        var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, new FakeMarker());
+
+        await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Updated);
+        var servers = (JsonObject)Read(path)["mcpServers"]!;
+        await Assert.That(servers.Count).IsEqualTo(KcapMcpServers.All.Count);
+        await Assert.That(servers.ContainsKey("kcap-review")).IsTrue();
+    }
+
+    [Test]
+    public async Task Register_on_whitespace_only_file_writes_all_servers() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        File.WriteAllText(path, "  \n\t\n");
+        var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, new FakeMarker());
+
+        await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Updated);
+        await Assert.That(((JsonObject)Read(path)["mcpServers"]!).ContainsKey("kcap-review")).IsTrue();
+    }
+
+    [Test]
+    public async Task Register_fails_closed_when_block_is_wrong_type() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        File.WriteAllText(path, """{ "mcpServers": "oops" }""");
+        var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, new FakeMarker());
+
+        await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Failed);
+    }
+
+    [Test]
+    public async Task Register_does_not_clobber_user_authored_kcap_lookalike() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        // A user server literally named kcap-review but pointing elsewhere; FakeMarker.Owns
+        // returns true for the "kcap-" prefix, so replace this with the real marker semantics
+        // in Task 4's integration test. Here we assert the collision path via a non-prefixed name.
+        File.WriteAllText(path, """{ "mcpServers": { "kcap-custom": { "command": "mine" } } }""");
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, new FakeMarker());
+
+        var servers = (JsonObject)Read(path)["mcpServers"]!;
+        await Assert.That((string)servers["kcap-custom"]!["command"]!).IsEqualTo("mine");
+    }
+
+    [Test]
+    public async Task Register_opencode_shape_uses_command_array_type_local_enabled() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp, "opencode.json");
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.OpenCode, null, new FakeMarker());
+
+        var block = (JsonObject)Read(path)["mcp"]!;
+        var review = (JsonObject)block["kcap-review"]!;
+        await Assert.That((string)review["type"]!).IsEqualTo("local");
+        await Assert.That(review["command"]!.AsArray().Count).IsEqualTo(3); // kcap, mcp, review
+        await Assert.That((bool)review["enabled"]!).IsTrue();
+    }
+
+    [Test]
+    public async Task Register_copilot_shape_sets_type_stdio() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Copilot, null, new FakeMarker());
+        var review = (JsonObject)((JsonObject)Read(path)["mcpServers"]!)["kcap-review"]!;
+        await Assert.That((string)review["type"]!).IsEqualTo("stdio");
+    }
+
+    [Test]
+    public async Task Register_emits_cwd_only_for_repo_scoped_servers() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, cwd: "/w/repo", new FakeMarker());
+        var servers = (JsonObject)Read(path)["mcpServers"]!;
+        await Assert.That(servers["kcap-review"]!["cwd"]).IsNull();
+        await Assert.That((string)servers["kcap-sessions"]!["cwd"]!).IsEqualTo("/w/repo");
+    }
+
+    [Test]
+    public async Task Unregister_removes_only_owned_and_drops_empty_block() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+        var marker = new FakeMarker();
+        File.WriteAllText(path, """{ "mcpServers": { "playwright": { "command": "npx" } } }""");
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker);
+
+        var change = JsonMcpConfigWriter.Unregister(path, McpConfigShape.Standard, marker);
+        await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Updated);
+
+        var servers = (JsonObject)Read(path)["mcpServers"]!;
+        await Assert.That(servers.ContainsKey("playwright")).IsTrue();
+        await Assert.That(servers.ContainsKey("kcap-review")).IsFalse();
+    }
+
+    [Test]
+    public async Task Unregister_clears_marker_even_when_no_kcap_entries_to_remove() {
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var marker = new McpMarker("test", _ => tmp.PathTo("marker.json"));
+        // Marker recorded, but the JSON has a user server and NO kcap entries (a hand-edit removed them).
+        File.WriteAllText(path, """{ "mcpServers": { "my-tool": { "command": "x" } } }""");
+        marker.Record(path, ["kcap-review"]);
+
+        var change = JsonMcpConfigWriter.Unregister(path, McpConfigShape.Standard, marker);
+        await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Unchanged); // nothing kcap to remove; user server stays
+        await Assert.That(marker.Owned(path)).IsEmpty();                          // marker cleared regardless
+    }
+
+    [Test]
+    public async Task Register_preserves_unrecorded_kcap_named_user_server() {
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var marker = new McpMarker("test", _ => tmp.PathTo("marker.json")); // real marker, nothing recorded
+        File.WriteAllText(path, """{ "mcpServers": { "kcap-review": { "command": "user-owned" } } }""");
+
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker);
+
+        var review = (JsonObject)((JsonObject)JsonNode.Parse(File.ReadAllText(path))!["mcpServers"]!)["kcap-review"]!;
+        await Assert.That((string)review["command"]!).IsEqualTo("user-owned"); // NOT clobbered
+    }
+
+    [Test]
+    public async Task Register_heals_stale_owned_entry_but_stays_idempotent() {
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var marker = new McpMarker("test", _ => tmp.PathTo("marker.json"));
+
+        // First registration records ownership + writes canonical entries.
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker);
+        // Re-running with no changes is a no-op (idempotent).
+        var again = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker);
+        await Assert.That(again).IsEqualTo(JsonMcpConfigWriter.Change.Unchanged);
+
+        // A stale entry written by an OLDER kcap arrives with a v1 marker (names only, no
+        // fingerprint) — ownership falls back to the legacy command == "kcap" check, so it heals.
+        var root = (JsonObject)JsonNode.Parse(File.ReadAllText(path))!;
+        ((JsonObject)root["mcpServers"]!)["kcap-review"] =
+            new JsonObject { ["command"] = "kcap", ["args"] = new JsonArray { "mcp", "OLD-review" } };
+        File.WriteAllText(path, root.ToJsonString());
+        marker.Record(path, ["kcap-review"]); // names-only record = no fingerprint (v1 semantics)
+
+        // Re-register heals it back to canonical.
+        var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker);
+        await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Updated);
+        var review = (JsonObject)((JsonObject)JsonNode.Parse(File.ReadAllText(path))!["mcpServers"]!)["kcap-review"]!;
+        var args = review["args"]!.AsArray().Select(n => (string)n!).ToArray();
+        await Assert.That(args).IsEquivalentTo(new[] { "mcp", "review" }); // healed
+    }
+
+    // ── Marker v2: absolute-path ownership lifecycle ────────────────────────────
+
+    static string CommandOf(string path, string name) =>
+        (string)((JsonObject)((JsonObject)JsonNode.Parse(File.ReadAllText(path))!["mcpServers"]!)[name]!)["command"]!;
+
+    /// <summary>
+    /// The full migration chain: a v1 install (marker without fingerprints, command "kcap")
+    /// heals to absolute path A, and an npm re-layout (A → B) heals again — the v2 fingerprint
+    /// recorded at A still owns the on-disk entry.
+    /// </summary>
+    [Test]
+    public async Task Register_migrates_v1_kcap_entry_to_absolute_and_heals_a_relayout() {
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var marker = new McpMarker("test", _ => tmp.PathTo("marker.json"));
+
+        // A pre-fingerprint install: entry command "kcap", marker recorded names-only.
+        File.WriteAllText(path, """{ "mcpServers": { "kcap-review": { "command": "kcap", "args": ["mcp","review"] } } }""");
+        marker.Record(path, ["kcap-review"]);
+
+        var toA = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker,
+                                               resolveBinaryPath: () => "/opt/a/kcap");
+        await Assert.That(toA).IsEqualTo(JsonMcpConfigWriter.Change.Updated);
+        await Assert.That(CommandOf(path, "kcap-review")).IsEqualTo("/opt/a/kcap");
+
+        // npm re-layout: the binary moved. The v2 fingerprint recorded at A owns the entry → heal to B.
+        var toB = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker,
+                                               resolveBinaryPath: () => "/opt/b/kcap");
+        await Assert.That(toB).IsEqualTo(JsonMcpConfigWriter.Change.Updated);
+        await Assert.That(CommandOf(path, "kcap-review")).IsEqualTo("/opt/b/kcap");
+    }
+
+    [Test]
+    public async Task Unregister_removes_absolute_registered_owned_entries() {
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var marker = new McpMarker("test", _ => tmp.PathTo("marker.json"));
+
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker,
+                                     resolveBinaryPath: () => "/opt/a/kcap");
+
+        // v1's Owns (command == "kcap") would strand these absolute-path entries on uninstall.
+        var change = JsonMcpConfigWriter.Unregister(path, McpConfigShape.Standard, marker);
+        await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Updated);
+        await Assert.That(((JsonObject)JsonNode.Parse(File.ReadAllText(path))!).ContainsKey("mcpServers")).IsFalse();
+    }
+
+    // ── marker-failure containment + adoption recovery ──────────────────────────
+
+    sealed class ThrowingMarker : IMcpMarker {
+        public bool Owns(string cfg, string name, JsonNode entry) => false;
+        public void Record(string cfg, IReadOnlyList<KeyValuePair<string, JsonNode?>> entries) =>
+            throw new IOException("marker volume is read-only");
+        public IEnumerable<string> Owned(string cfg) => [];
+        public void Clear(string cfg) { }
+    }
+
+    /// <summary>
+    /// The marker write runs after Update's guarded boundary, so it must never throw through
+    /// the caller: setup/plugin install must not report a registration that IS committed as a
+    /// hard failure (never-fails-install contract). The config result stands; ownership is
+    /// degraded and self-heals via adoption on the next pass.
+    /// </summary>
+    [Test]
+    public async Task Register_swallows_a_marker_write_failure_and_keeps_the_config_result() {
+        using var tmp = new TempDir();
+        var path = TempConfig(tmp);
+
+        var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null,
+                                                  new ThrowingMarker(), resolveBinaryPath: () => "/opt/a/kcap");
+
+        await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Updated); // no throw, config committed
+        var servers = (JsonObject)Read(path)["mcpServers"]!;
+        await Assert.That(servers.ContainsKey("kcap-review")).IsTrue();
+    }
+
+    /// <summary>
+    /// The recovery story for config-committed-but-marker-failed: a canonical entry left
+    /// unowned (marker lost/never written) is RE-ADOPTED by the next register pass — the
+    /// marker is re-recorded without touching the config — so healing and uninstall work again.
+    /// </summary>
+    [Test]
+    public async Task Register_readopts_a_committed_but_unmarked_canonical_entry() {
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var markerFile = tmp.PathTo("marker.json");
+        var marker = new McpMarker("test", _ => markerFile);
+
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker,
+                                     resolveBinaryPath: () => "/opt/a/kcap");
+        File.Delete(markerFile); // simulate the marker write having failed/crashed post-commit
+        await Assert.That(marker.Owned(path)).IsEmpty();
+
+        var again = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker,
+                                                 resolveBinaryPath: () => "/opt/a/kcap");
+
+        await Assert.That(again).IsEqualTo(JsonMcpConfigWriter.Change.Unchanged); // config untouched…
+        await Assert.That(marker.Owned(path)).Contains("kcap-review");            // …ownership re-acquired
+
+        // And the re-acquired ownership is REAL: uninstall removes the absolute-path entries.
+        var removed = JsonMcpConfigWriter.Unregister(path, McpConfigShape.Standard, marker);
+        await Assert.That(removed).IsEqualTo(JsonMcpConfigWriter.Change.Updated);
+        await Assert.That(((JsonObject)JsonNode.Parse(File.ReadAllText(path))!).ContainsKey("mcpServers")).IsFalse();
+    }
+
+    [Test]
+    public async Task Register_preserves_a_genuine_user_edit_of_a_previously_owned_entry() {
+        using var tmp = new TempDir();
+        var path = tmp.PathTo("mcp.json");
+        var marker = new McpMarker("test", _ => tmp.PathTo("marker.json"));
+        var oneServer = KcapMcpServers.All.Take(1).ToArray(); // kcap-review only, so no sibling heal muddies the change
+
+        JsonMcpConfigWriter.Register(path, oneServer, McpConfigShape.Standard, null, marker,
+                                     resolveBinaryPath: () => "/opt/a/kcap");
+
+        // The user customizes the owned entry (adds env) — the fingerprint no longer matches.
+        var root = (JsonObject)JsonNode.Parse(File.ReadAllText(path))!;
+        ((JsonObject)((JsonObject)root["mcpServers"]!)["kcap-review"]!)["env"] = new JsonObject { ["KCAP_URL"] = "https://x" };
+        File.WriteAllText(path, root.ToJsonString());
+        var edited = File.ReadAllText(path);
+
+        var change = JsonMcpConfigWriter.Register(path, oneServer, McpConfigShape.Standard, null, marker,
+                                                  resolveBinaryPath: () => "/opt/b/kcap");
+        await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Unchanged);
+        await Assert.That(File.ReadAllText(path)).IsEqualTo(edited); // user edit preserved byte-for-byte
+    }
+}

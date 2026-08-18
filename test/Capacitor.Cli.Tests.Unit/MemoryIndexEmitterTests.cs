@@ -1,5 +1,5 @@
 using System.Text.Json.Nodes;
-using Capacitor.Cli.Commands;
+using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Tests.Unit;

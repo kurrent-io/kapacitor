@@ -1,5 +1,4 @@
 using Capacitor.Cli.Commands;
-using Capacitor.Tests.Helpers;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 

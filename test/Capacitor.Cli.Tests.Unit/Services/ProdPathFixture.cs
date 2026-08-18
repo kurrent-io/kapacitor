@@ -5,6 +5,7 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 
 /// <summary>Shared HOME/lock-dir isolation for the production-path suites.</summary>
 sealed class ProdPathFixture : IDisposable {
+    readonly TempDir _tmp = new();
     readonly string _id;
     readonly string? _originalHome;
     readonly string _home;
@@ -18,10 +19,10 @@ sealed class ProdPathFixture : IDisposable {
     public ProdPathFixture(string id) {
         _id = id;
         _originalHome = Environment.GetEnvironmentVariable("HOME");
-        _home = Directory.CreateTempSubdirectory($"kcap-{id}-home-").FullName;
+        _home = _tmp.CreateDir("home");
         Environment.SetEnvironmentVariable("HOME", _home);
 
-        _lockDir = Directory.CreateTempSubdirectory($"kcap-{id}-lock-").FullName;
+        _lockDir = _tmp.CreateDir("lock");
         DaemonLockPaths.OverrideDirectoryForTesting(_lockDir);
 
         DaemonPath = Path.Combine(_lockDir, "kcap-daemon");
@@ -43,7 +44,6 @@ sealed class ProdPathFixture : IDisposable {
     public void Dispose() {
         DaemonLockPaths.OverrideDirectoryForTesting(null);
         Environment.SetEnvironmentVariable("HOME", _originalHome);
-        try { Directory.Delete(_home, recursive: true); } catch { /* best effort */ }
-        try { Directory.Delete(_lockDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 }

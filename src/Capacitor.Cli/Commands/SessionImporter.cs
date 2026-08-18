@@ -2,6 +2,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Harness.Cursor;
 
 namespace Capacitor.Cli.Commands;
 

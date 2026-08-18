@@ -1,3 +1,5 @@
+using Capacitor.Tests.Helpers.Guards;
+
 namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>

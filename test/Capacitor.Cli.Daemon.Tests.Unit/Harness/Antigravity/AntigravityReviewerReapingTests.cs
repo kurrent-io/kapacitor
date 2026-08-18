@@ -1,0 +1,195 @@
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Daemon.Harness.Antigravity;
+using Capacitor.Cli.Daemon.Services;
+using Capacitor.Cli.Daemon.Tests.Unit.Pty;
+using Capacitor.Cli.Daemon.Tests.Unit.Services;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
+using static Capacitor.Cli.Daemon.Tests.Unit.Harness.Antigravity.AntigravityRuntimeFakes;
+
+namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Antigravity;
+
+/// <summary>
+/// The exec-per-turn runtime's clock, judged by the REAL reaper
+/// (<see cref="AgentOrchestrator.FindReviewersToReap"/>) rather than by reading
+/// <see cref="AgentActivityClock.TurnInFlight"/> back. The unit tests in
+/// <see cref="AntigravityActivityClockTests"/> pin the flag; these pin what the flag DOES, which is
+/// the thing that actually leaks a daemon slot or kills a working reviewer.
+///
+/// <para>Between turns this runtime has no process at all. That needs no special case and no
+/// keepalive: <c>TurnInFlight</c> is false, so <c>ReviewerIdleTimeout</c> governs exactly as it does
+/// for any ACP reviewer waiting on the next round.</para>
+///
+/// Uses <see cref="AgentOrchestratorHarness"/> for its <c>BuildOrchestrator</c> /
+/// <c>CaptureServerConnection</c> / <c>SpyPtyProcessFactory</c> doubles — the same pattern
+/// <c>ReviewerReapingTests.cs</c> follows.
+/// </summary>
+public class AntigravityReviewerReapingTests {
+    static readonly TimeSpan AntigravityHangGuard = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Between rounds the reviewer is a runtime with NO child process, and it must be idle-reapable
+    /// on the ordinary 2h rule. A build that left <c>TurnInFlight</c> held after a settled turn would
+    /// suppress that rule outright and the slot would never be reclaimed.
+    /// </summary>
+    [Test]
+    public async Task Antigravity_reviewer_between_turns_is_idle_reaped_like_any_other() {
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var time  = new FakeTimeProvider();
+        var clock = new AgentActivityClock(time);
+
+        await using var rt = FakeRuntime();
+        rt.ActivityClock = clock;
+
+        await rt.SendUserInputAsync("round 1").WaitAsync(AntigravityHangGuard);
+        await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(AntigravityHangGuard);
+        await rt.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(AntigravityHangGuard);
+
+        // The turn genuinely ran, so "no turn in flight" is a settled fact rather than a turn that
+        // never started.
+        await Assert.That(rt.AcpSessionId).IsEqualTo(FixedConversationId);
+
+        time.Advance(TimeSpan.FromHours(2) + TimeSpan.FromMinutes(1)); // past the 2h idle rule, under the 6h TTL
+
+        orch.SeedAgentForTest("agy-between-turns", LaunchKind.ReviewFlow, status: "Running", activityClock: clock);
+
+        // The REASON, not merely "it is in the list": at this elapsed time the TTL rule cannot fire,
+        // so naming the idle rule pins that the plain idle path was reached at all.
+        await Assert.That(AgentOrchestratorHarness.Verdicts(orch.FindReviewersToReap())).Contains(("agy-between-turns", "reviewer_idle_expired"));
+    }
+
+    /// <summary>
+    /// The opposite direction, and the reason the flag cannot simply be pinned false: a turn that is
+    /// genuinely running SUPPRESSES the idle rule, so a long review round is not reaped out from under
+    /// itself. The settled twin is the control — identical elapsed time, opposite verdict, so neither
+    /// outcome can come from the elapsed time alone.
+    ///
+    /// <para>The wedge ceiling is disabled for this orchestrator deliberately. It is the one rule a
+    /// held turn leaves armed, so with it in force the mid-turn agent at 2h1m would be reaped as
+    /// <c>turn_wedged</c> — a different rule reaching the same verdict, which would prove nothing
+    /// about idle suppression. An earlier revision instead advanced the running clock only 30m, and a
+    /// mutation check showed that made the assertion vacuous: 30m is under the idle bound anyway, so
+    /// it passed with the flag never set at all. The wedge itself is covered by
+    /// <c>ReviewerReapingTests</c>.</para>
+    /// </summary>
+    [Test]
+    public async Task Antigravity_reviewer_mid_turn_is_not_idle_reaped_while_a_settled_one_is() {
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+            configure: c => c.ReviewerTurnWedgeCeiling = TimeSpan.Zero);
+
+        var runningTime  = new FakeTimeProvider();
+        var runningClock = new AgentActivityClock(runningTime);
+
+        await using var running = FakeRuntime(FakeTurn.NeverEnds);
+        running.ActivityClock = runningClock;
+
+        _ = running.SendUserInputAsync("a long round");
+        await running.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(AntigravityHangGuard);
+
+        var settledTime  = new FakeTimeProvider();
+        var settledClock = new AgentActivityClock(settledTime);
+
+        await using var settled = FakeRuntime();
+        settled.ActivityClock = settledClock;
+
+        await settled.SendUserInputAsync("round 1").WaitAsync(AntigravityHangGuard);
+        await settled.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(AntigravityHangGuard);
+        await settled.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(AntigravityHangGuard);
+
+        // IDENTICAL elapsed time on both, past the 2h idle rule and under the 6h TTL. The only thing
+        // that differs between the two agents is whether a turn is in flight.
+        var elapsed = TimeSpan.FromHours(2) + TimeSpan.FromMinutes(1);
+        settledTime.Advance(elapsed);
+        runningTime.Advance(elapsed);
+
+        orch.SeedAgentForTest("agy-mid-turn", LaunchKind.ReviewFlow, status: "Running", activityClock: runningClock);
+        orch.SeedAgentForTest("agy-settled",  LaunchKind.ReviewFlow, status: "Running", activityClock: settledClock);
+
+        var reap = orch.FindReviewersToReap();
+
+        await Assert.That(reap.Select(r => r.Id)).DoesNotContain("agy-mid-turn");
+        await Assert.That(AgentOrchestratorHarness.Verdicts(reap)).Contains(("agy-settled", "reviewer_idle_expired"));
+    }
+
+    /// <summary>
+    /// The launch path must WIRE the exec-per-turn PID-record seam, and wire it to THIS agent's
+    /// durable record. Without it the runtime only ever gets the one-shot record of turn 1's pid taken
+    /// immediately after the launch, and every later round spawns a differently-pid'd child that never
+    /// enters the record at all.
+    ///
+    /// <para>Both directions are driven through the wired bundle rather than through a second round,
+    /// because a round's own record and the launch's one-shot record name the same live pid and would
+    /// be indistinguishable. Clearing first and then recording makes each assertion unambiguous. The
+    /// runtime's own per-turn CADENCE — a record per spawn, a clear per confirmed exit — is pinned
+    /// separately by <c>AntigravityRuntimeLifecycleTests</c>.</para>
+    /// </summary>
+    [Test]
+    public async Task An_antigravity_launch_wires_the_per_turn_pid_record_seam_to_this_agents_record() {
+        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+
+        try {
+            var factory = new AntigravityRuntimeSpyFactory();
+
+            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+                new CaptureServerConnection(), new SpyPtyProcessFactory(),
+                new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [factory]);
+
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: "agy-pid-1", Prompt: "review this", Model: "auto", Effort: null,
+                RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "antigravity"));
+
+            var runtime = factory.LastRuntime;
+
+            await Assert.That(runtime).IsNotNull();
+            await Assert.That(runtime!.PidCallbacks).IsNotNull();
+
+            // The launch's own one-shot record exists — the baseline both assertions move away from.
+            await Assert.That(orch.PidRecordsForTest().Any(r => r.AgentId == "agy-pid-1")).IsTrue();
+
+            runtime.PidCallbacks!.Clear();
+            await Assert.That(orch.PidRecordsForTest().Any(r => r.AgentId == "agy-pid-1")).IsFalse();
+
+            // A live, capturable pid: PersistPidRecordOrThrow's legacy arm records only a process it
+            // can identify, so a fabricated pid would make this pass for the wrong reason.
+            runtime.PidCallbacks.Record(Environment.ProcessId);
+
+            await Assert.That(orch.PidRecordsForTest()
+                .Any(r => r.AgentId == "agy-pid-1" && r.Pid == Environment.ProcessId)).IsTrue();
+        } finally {
+            cleanup();
+        }
+    }
+
+    /// <summary>Returns the REAL exec-per-turn runtime (the type the orchestrator's wiring branch
+    /// matches on) over a fake turn child that stays alive, so the launch sees a live, capturable pid
+    /// exactly as a real first turn would. Mirrors the real factory's one load-bearing ordering: the
+    /// conversation id is resolved before control returns.</summary>
+    sealed class AntigravityRuntimeSpyFactory : IHostedAgentRuntimeFactory {
+        public string Vendor             => "antigravity";
+        public bool   SupportsUnattended => true;
+
+        public AntigravityHostedAgentRuntime? LastRuntime { get; private set; }
+
+        public bool IsAvailable() => true;
+
+        public async Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {
+            var runtime = new AntigravityHostedAgentRuntime(
+                spawnTurn: (_, _, _) => Task.FromResult<IAgyTurnProcess>(new FakeAgyTurnProcess(
+                    FakeTurn.NeverEnds, AntigravityRuntimeFakes.FixedConversationId,
+                    pid: Environment.ProcessId)),
+                logger: NullLogger.Instance,
+                agentId: ctx.AgentId);
+
+            LastRuntime = runtime;
+
+            await runtime.SendUserInputAsync(ctx.Prompt ?? "").ConfigureAwait(false);
+            await runtime.WaitForConversationIdAsync(ct).ConfigureAwait(false);
+
+            return new HostedRuntimeStart(runtime, McpConfigPath: null, Transcript: runtime);
+        }
+    }
+}

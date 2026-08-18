@@ -9,7 +9,10 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// finds first. See <see cref="ServiceVerifyInstallTests"/> for the fresh-path/entry-recovery
 /// coverage this builds on.</summary>
 [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
-public class ServiceVerifyReplaceTests {
+public class ServiceVerifyReplaceTests : IDisposable {
+    readonly TempDir _tmp = new();
+    public void Dispose() => _tmp.Dispose();
+
     const string Id             = "svc-verify-replace";
     const string ExpectedVersion = "1.2.3";
     const string OwnPlistContent = "<plist>own-unit</plist>";
@@ -80,12 +83,11 @@ public class ServiceVerifyReplaceTests {
         return await task.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
-    static (string Dir, string DaemonPath) SetUpViableInstall() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
-        var daemonPath = Path.Combine(dir, "kcap-daemon");
+    (string Dir, string DaemonPath) SetUpViableInstall() {
+        DaemonLockPaths.OverrideDirectoryForTesting(_tmp.Path);
+        var daemonPath = _tmp.PathTo("kcap-daemon");
         File.WriteAllText(daemonPath, "");
-        return (dir, daemonPath);
+        return (_tmp.Path, daemonPath);
     }
 
     static ServiceSpec Spec(string daemonPath) =>

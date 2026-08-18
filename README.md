@@ -1304,6 +1304,18 @@ KCAP_CLAUDE_PATH=/opt/claude/bin/claude kcap daemon
 KCAP_CODEX_PATH=/opt/codex/bin/codex  kcap daemon
 ```
 
+##### Codex transport (`KCAP_CODEX_TRANSPORT`)
+
+Hosted Codex **reviewers** (review flows) can run over the `codex app-server` JSON-RPC protocol instead of the interactive PTY. It is opt-in and env-only:
+
+```bash
+KCAP_CODEX_TRANSPORT=app-server kcap daemon   # opt in; default is `pty`
+```
+
+- **Default `pty`** — the interactive-terminal path, unchanged.
+- **`app-server`** takes effect only for review-flow (unattended) launches and only when the installed Codex meets the minimum version (**0.146.0**); a lower build falls back to `pty` automatically. Interactive launches always use `pty` in this release.
+- Rollback is a restart with the value flipped back to `pty`; it governs new launches only.
+
 The Cursor CLI path (`cursor-agent` by default, used to spawn the `cursor` hosted-agent vendor) is env-only for now — there is no `daemon.cursor_path` profile key yet, so set it per-launch:
 
 ```bash

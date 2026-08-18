@@ -11,7 +11,6 @@ permissions:
   id-token: write
 
 env:
-  DOTNET_VERSION: '10.0.x'
   CLI_PROJECT: src/Capacitor.Cli/Capacitor.Cli.csproj
   DAEMON_PROJECT: src/Capacitor.Cli.Daemon/Capacitor.Cli.Daemon.csproj
 
@@ -40,10 +39,10 @@ jobs:
     name: Refuse a moved or re-cut release tag
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
 
@@ -227,12 +226,11 @@ jobs:
         if: contains(matrix.rid, 'musl') && !matrix.container
         run: musl-gcc --version
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
+      # No cache: RUNNER_OS keying collapses four Linux legs that need different RID packages.
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v6
 
       - name: Extract version from tag
         id: version
@@ -494,10 +492,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'

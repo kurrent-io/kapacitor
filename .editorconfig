@@ -274,6 +274,7 @@ dotnet_diagnostic.ide0051.severity = warning ; Remove unused private members
 dotnet_diagnostic.ide0055.severity = silent  ; Fix formatting
 dotnet_diagnostic.ide0059.severity = warning ; Unnecessary assignment
 dotnet_diagnostic.ide0062.severity = warning ; Make local function static
+dotnet_diagnostic.ide0130.severity = warning ; Namespace does not match folder structure
 dotnet_diagnostic.ide0161.severity = warning ; Convert to file-scoped namespace
 dotnet_diagnostic.ide0200.severity = warning ; Remove unnecessary lambda expression
 dotnet_diagnostic.ide1006.severity = suggestion ; Naming rule violation

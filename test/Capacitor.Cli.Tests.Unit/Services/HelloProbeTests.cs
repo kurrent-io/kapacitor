@@ -44,15 +44,15 @@ public class HelloProbeTests {
     };
 
     static async Task WithServerAsync(ConnScript script, Func<string, Task> body) {
-        var sockDir = Directory.CreateTempSubdirectory("kcap-hp-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
+        using var sockDir = new TempDir("hp");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         var name = "hp-" + Guid.NewGuid().ToString("N")[..6];
         try {
             await using var server = new OneShotServer(LocalSocketPaths.Socket(name), script);
             await body(name);
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
         }
     }
 
@@ -77,8 +77,9 @@ public class HelloProbeTests {
     public async Task No_listener_is_not_well_formed() {
         Skip.When(OperatingSystem.IsWindows(), "Unix-domain socket path");
 
-        var sockDir = Directory.CreateTempSubdirectory("kcap-hp-");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
+        using var sockDir = new TempDir("hp");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         try {
             var result = await HelloProbe.RunAsync("no-such-daemon", TimeSpan.FromSeconds(2));
 
@@ -88,7 +89,6 @@ public class HelloProbeTests {
             await Assert.That(result.DaemonName).IsNull();
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
-            try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
         }
     }
 

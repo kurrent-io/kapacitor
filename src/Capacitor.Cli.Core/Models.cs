@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness.Cursor;
 using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Core;

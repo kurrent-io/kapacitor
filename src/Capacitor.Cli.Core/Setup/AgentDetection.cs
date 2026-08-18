@@ -1,10 +1,10 @@
-using Capacitor.Cli.Core.Antigravity;
-using Capacitor.Cli.Core.Copilot;
-using Capacitor.Cli.Core.Cursor;
-using Capacitor.Cli.Core.Gemini;
-using Capacitor.Cli.Core.Kiro;
-using Capacitor.Cli.Core.OpenCode;
-using Capacitor.Cli.Core.Pi;
+using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Copilot;
+using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.Harness.Gemini;
+using Capacitor.Cli.Core.Harness.Kiro;
+using Capacitor.Cli.Core.Harness.OpenCode;
+using Capacitor.Cli.Core.Harness.Pi;
 
 namespace Capacitor.Cli.Core.Setup;
 

@@ -31,27 +31,23 @@ public class AgentDetectionFeedTests {
     public async Task Uses_the_probed_terminal_PATH_not_the_process_PATH() {
         Skip.When(OperatingSystem.IsWindows(), "chmod-based executable probe is POSIX-only.");
 
-        var emptyDir  = Directory.CreateTempSubdirectory("kcap-agents-empty-").FullName;
-        var claudeDir = Directory.CreateTempSubdirectory("kcap-agents-claude-").FullName;
-        var claudeBin = Path.Combine(claudeDir, "claude");
+        using var tmp = new TempDir();
+        var emptyDir  = tmp.CreateDir("empty");
+        var claudeDir = tmp.CreateDir("claude");
+        var claudeBin = claudeDir.PathTo("claude");
         await File.WriteAllTextAsync(claudeBin, "#!/bin/sh\n");
         File.SetUnixFileMode(claudeBin, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
-        try {
-            // Same probe, two different crafted PATHs: the outcome must track the probe, not
-            // whatever the real process PATH happens to contain on this machine.
-            var probe = new FakeLoginShellProbe { TerminalPathBehavior = _ => Task.FromResult<string?>(emptyDir) };
-            var withoutClaude = await AgentsStepViewModel.BuildDetectionFeed(probe)(CancellationToken.None);
+        // Same probe, two different crafted PATHs: the outcome must track the probe, not
+        // whatever the real process PATH happens to contain on this machine.
+        var probe = new FakeLoginShellProbe { TerminalPathBehavior = _ => Task.FromResult<string?>(emptyDir) };
+        var withoutClaude = await AgentsStepViewModel.BuildDetectionFeed(probe)(CancellationToken.None);
 
-            probe.TerminalPathBehavior = _ => Task.FromResult<string?>(claudeDir);
-            var withClaude = await AgentsStepViewModel.BuildDetectionFeed(probe)(CancellationToken.None);
+        probe.TerminalPathBehavior = _ => Task.FromResult<string?>(claudeDir);
+        var withClaude = await AgentsStepViewModel.BuildDetectionFeed(probe)(CancellationToken.None);
 
-            await Assert.That(withoutClaude.Claude.Detected).IsFalse();
-            await Assert.That(withClaude.Claude.Detected).IsTrue();
-        } finally {
-            Directory.Delete(emptyDir, recursive: true);
-            Directory.Delete(claudeDir, recursive: true);
-        }
+        await Assert.That(withoutClaude.Claude.Detected).IsFalse();
+        await Assert.That(withClaude.Claude.Detected).IsTrue();
     }
 
     [Test]

@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Daemon.Harness.Claude;
 
 namespace Capacitor.Cli.Daemon;
 
@@ -13,7 +14,7 @@ public class DaemonConfig {
     /// (<see cref="Capacitor.Cli.Core.Mcp.KcapBinaryCommand.ResolveCliSibling"/>) — inside the
     /// daemon, <see cref="Environment.ProcessPath"/> is <c>kcap-daemon</c>, NOT the binary that
     /// generated MCP registrations point at. Used to recognize a canonical absolute-path kcap
-    /// entry (e.g. <see cref="Services.ClaudeLauncher"/>'s worktree merge-skip). Null when no
+    /// entry (e.g. <see cref="ClaudeLauncher"/>'s worktree merge-skip). Null when no
     /// sibling resolves; consumers then recognize only the literal <c>"kcap"</c>.
     /// </summary>
     public string? KcapCliPath { get; set; } = Core.Mcp.KcapBinaryCommand.ResolveCliSibling();
@@ -130,6 +131,18 @@ public class DaemonConfig {
 
     public string ClaudePath { get; set; } = "claude";
     public string CodexPath  { get; set; } = "codex";
+
+    /// <summary>Transport for hosted Codex reviewers: <c>pty</c> (default) or <c>app-server</c>.
+    /// Set via <c>KCAP_CODEX_TRANSPORT</c>. Governs NEW review-flow launches only; interactive
+    /// launches always take the PTY path in this phase. The effective decision (this selection AND
+    /// the version floor) is resolved once into <see cref="CodexAppServerActive"/>.</summary>
+    public string CodexTransport { get; set; } = "pty";
+
+    /// <summary>Resolved once at startup: true when <see cref="CodexTransport"/> is <c>app-server</c>
+    /// AND the installed Codex meets the app-server version floor. Read by BOTH the launch router and
+    /// the certification advertisement so the advertised policy and the transport used are one fact.
+    /// Never set from config directly.</summary>
+    public bool CodexAppServerActive { get; set; }
 
     /// <summary>
     /// Path or bare command for the Cursor CLI's ACP entry point, spawned as

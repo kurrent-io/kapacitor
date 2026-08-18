@@ -1,7 +1,8 @@
 using System.Net;
 using System.Text.RegularExpressions;
 using Capacitor.Cli.Commands;
-using Capacitor.Tests.Helpers;
+using Capacitor.Cli.Harness.Antigravity;
+using Capacitor.Cli.Harness.Gemini;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -58,8 +59,14 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
     readonly WireMockServer _server         = WireMockServer.Start();
-    readonly string         _home           = Directory.CreateTempSubdirectory("kcap-ag-routed-loop-it").FullName;
-    readonly string         _geminiTmpDir   = Directory.CreateTempSubdirectory("kcap-ag-routed-loop-gemini-it").FullName;
+    readonly TempDir        _tmp            = new();
+    readonly string         _home;
+    readonly string         _geminiTmpDir;
+
+    public AntigravitySkippedChildOverrideRoutedLoopTests() {
+        _home         = _tmp.CreateDir("home");
+        _geminiTmpDir = _tmp.CreateDir("gemini");
+    }
 
     const string RootConvId    = "55550000-0000-4000-8000-000000000005";
     const string ChildConvId   = "66660000-0000-4000-8000-000000000006";
@@ -71,8 +78,7 @@ public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_home, recursive: true); } catch { /* best effort */ }
-        try { Directory.Delete(_geminiTmpDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     string BrainDir(string convId) => Path.Combine(_home, ".gemini", "antigravity", "brain", convId);

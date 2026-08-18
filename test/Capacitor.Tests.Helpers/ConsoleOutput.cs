@@ -1,4 +1,3 @@
-// test/Capacitor.Tests.Helpers/ConsoleOutput.cs
 namespace Capacitor.Tests.Helpers;
 
 /// <summary>

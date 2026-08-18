@@ -1,7 +1,6 @@
 using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
 using Capacitor.Cli.Core;
-using Capacitor.Tests.Helpers;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.App.Tests.Unit;
@@ -1319,8 +1318,8 @@ public class DaemonMutationLaneTests {
 
     [Test, NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task DetachedStart_transient_mid_boot_shape_with_a_marker_arriving_after_the_first_poll_is_Refused() {
-        var dir = Directory.CreateTempSubdirectory("dml-marker-").FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         var time = new FakeTimeProvider();
         var cli = new FakeKcapCli { DetachedStartBehavior = _ => Task.FromResult(new ProcessResult(0, "", "", false)) };
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
@@ -1424,8 +1423,8 @@ public class DaemonMutationLaneTests {
 
     [Test, NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task DetachedStart_classifier_with_a_null_attemptId_never_attributes_even_a_null_attempt_marker() {
-        var dir = Directory.CreateTempSubdirectory("dml-marker-").FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         var time = new FakeTimeProvider();
         try {
             PlantMarker("daemon-a", MarkerJson("daemon-a", null)); // a null-attempt marker — belongs to a service verb, never this detached attempt
@@ -1450,8 +1449,8 @@ public class DaemonMutationLaneTests {
 
     [Test, NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task DetachedStart_exit_zero_with_an_attributed_marker_is_Refused_and_consumes_the_marker() {
-        var dir = Directory.CreateTempSubdirectory("dml-marker-").FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         var time = new FakeTimeProvider(); // MINOR 8: no 10s wall-clock worst case if attribution ever regresses
         var cli = new FakeKcapCli();
         cli.DetachedStartBehavior = _ => {
@@ -1478,8 +1477,8 @@ public class DaemonMutationLaneTests {
 
     [Test, NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task DetachedStart_marker_and_full_evidence_both_present_from_the_start_marker_wins() {
-        var dir = Directory.CreateTempSubdirectory("dml-marker-").FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         var cli = new FakeKcapCli();
         cli.DetachedStartBehavior = _ => {
             PlantMarker("daemon-a", MarkerJson("daemon-a", cli.LastBootAttemptId!));
@@ -1503,8 +1502,8 @@ public class DaemonMutationLaneTests {
 
     [Test, NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task DetachedStart_exit_zero_with_a_foreign_marker_is_UnconfirmedNoAttach_and_retains_the_marker() {
-        var dir = Directory.CreateTempSubdirectory("dml-marker-").FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         var time = new FakeTimeProvider();
         PlantMarker("daemon-a", MarkerJson("daemon-a", "foreign-attempt-id"));
         var cli = new FakeKcapCli { DetachedStartBehavior = _ => Task.FromResult(new ProcessResult(0, "", "", false)) };

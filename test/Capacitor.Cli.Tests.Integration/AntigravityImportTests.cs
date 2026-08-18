@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Harness.Antigravity;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -16,7 +17,10 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class AntigravityImportTests : IDisposable {
     readonly WireMockServer _server = WireMockServer.Start();
-    readonly string         _home   = Directory.CreateTempSubdirectory("kcap-ag-import-it").FullName;
+    readonly TempDir        _tmp    = new();
+    readonly string         _home;
+
+    public AntigravityImportTests() => _home = _tmp.Path;
 
     const string Root  = "11110000-0000-4000-8000-000000000001";
     const string Child = "22220000-0000-4000-8000-000000000002";
@@ -28,7 +32,7 @@ public class AntigravityImportTests : IDisposable {
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_home, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     string BrainDir(string productSub, string convId) =>

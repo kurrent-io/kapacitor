@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Services;
 

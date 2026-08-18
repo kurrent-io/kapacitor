@@ -14,8 +14,8 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 public class DaemonPidProbeTests {
     [Test]
     public async Task Null_when_no_pid_file() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
 
         try {
             await Assert.That(DaemonPidProbe.ValidatedPid("nosuch")).IsNull();
@@ -26,8 +26,8 @@ public class DaemonPidProbeTests {
 
     [Test]
     public async Task Null_for_dead_pid() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
 
         try {
             // PID 999999999 is far above any real pid_max, so it never resolves to a live
@@ -43,8 +43,8 @@ public class DaemonPidProbeTests {
 
     [Test]
     public async Task Null_for_unparseable_pid_file() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
 
         try {
             File.WriteAllText(DaemonLockPaths.PidPath("y"), "not-a-pid\n");
@@ -57,8 +57,8 @@ public class DaemonPidProbeTests {
 
     [Test]
     public async Task Returns_pid_for_a_live_owned_process() {
-        var dir = Directory.CreateTempSubdirectory().FullName;
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        using var tmp = new TempDir();
+        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
 
         try {
             // Same technique as DaemonStopSelfPidTests: a pid file naming the CURRENT process

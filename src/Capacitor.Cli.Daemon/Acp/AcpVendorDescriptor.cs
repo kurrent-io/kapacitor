@@ -1,4 +1,6 @@
 using System.Collections.Immutable;
+using Capacitor.Cli.Daemon.Harness.Kiro;
+using Capacitor.Cli.Daemon.Harness.OpenCode;
 
 namespace Capacitor.Cli.Daemon.Acp;
 

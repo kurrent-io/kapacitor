@@ -1,7 +1,6 @@
 using System.Text.RegularExpressions;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
-using Capacitor.Tests.Helpers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;

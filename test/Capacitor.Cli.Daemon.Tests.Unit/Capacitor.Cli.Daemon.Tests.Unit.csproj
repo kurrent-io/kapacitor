@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <OutputType>Exe</OutputType>
+        <IsPackable>false</IsPackable>
+        <!-- The PTY shim tests declare native LibraryImports. -->
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\Capacitor.Tests.Helpers\Capacitor.Tests.Helpers.csproj" />
+        <ProjectReference Include="..\..\src\Capacitor.Cli.Daemon\Capacitor.Cli.Daemon.csproj" />
+        <ProjectReference Include="..\Capacitor.Cli.Tests.Unit.NativeTestHost\Capacitor.Cli.Tests.Unit.NativeTestHost.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="TUnit" />
+        <PackageReference Include="Tomlyn" />
+        <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+    </ItemGroup>
+    <ItemGroup>
+        <Using Include="Capacitor.Tests.Helpers" />
+    </ItemGroup>
+</Project>

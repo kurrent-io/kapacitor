@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Daemon/Services/AgentActivityClock.cs
 namespace Capacitor.Cli.Daemon.Services;
 
 /// <summary>

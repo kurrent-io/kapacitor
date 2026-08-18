@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core.Commands;
+using Capacitor.Cli.Daemon.Harness.Codex;
 using Capacitor.Cli.Daemon.Pty;
 using Microsoft.Extensions.Logging;
 

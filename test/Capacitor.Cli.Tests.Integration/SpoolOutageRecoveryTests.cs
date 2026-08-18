@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
-using Capacitor.Cli.Commands;
+using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -24,18 +24,16 @@ public class SpoolOutageRecoveryTests : IDisposable {
     const string Sid = "deadbeef0123456789abcdef01234567";
 
     readonly WireMockServer _server    = WireMockServer.Start();
+    readonly TempDir        _tmp       = new();
     readonly string         _spoolDir;
-    readonly string         _tmpRoot;
 
     public SpoolOutageRecoveryTests() {
-        _tmpRoot  = Path.Combine(Path.GetTempPath(), $"kcap-spool-integ-{Guid.NewGuid():N}");
-        _spoolDir = Path.Combine(_tmpRoot, "spool");
-        Directory.CreateDirectory(_tmpRoot);
+        _spoolDir = _tmp.CreateDir("spool");
     }
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_tmpRoot, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     // ---------------------------------------------------------------------------

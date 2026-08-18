@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Daemon/Acp/AcpInteractionBridge.cs
 using System.Text.Json;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;

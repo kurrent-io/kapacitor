@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Daemon/Services/AcpTranscriptForwarder.cs
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
 using Microsoft.Extensions.Logging;

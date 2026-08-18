@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Daemon/Acp/AcpReconnect.cs
 namespace Capacitor.Cli.Daemon.Acp;
 
 /// <summary>

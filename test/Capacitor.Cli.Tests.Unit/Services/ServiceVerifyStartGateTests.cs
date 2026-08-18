@@ -217,16 +217,16 @@ public class ServiceVerifyStartGateTests {
 
     [Test]
     public async Task Unreadable_config_directory_in_place_of_file_is_evidence_unreadable() {
-        var configDir = Directory.CreateTempSubdirectory("kcap-gate-cfg-").FullName;
+        using var tmp = new TempDir();
         // A directory sitting exactly where config.json belongs: File.Exists alone reads as
         // absent, but this must surface as unreadable EVIDENCE (28/evidence_unreadable), never
         // silently treated the same as an unconfigured profile (which would be identity_mismatch).
-        Directory.CreateDirectory(Path.Combine(configDir, "config.json"));
+        tmp.CreateDir("config.json");
 
         var unit = new Dictionary<string, string> {
             ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
             ["KCAP_PROFILE"] = "work",
-            ["KCAP_CONFIG_DIR"] = configDir,
+            ["KCAP_CONFIG_DIR"] = tmp.Path,
             ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
             // no KCAP_URL — forces the BakedProfileServerUrl fallback that reads config.json
         };
@@ -246,13 +246,13 @@ public class ServiceVerifyStartGateTests {
     /// contract: malformed content is now a genuine failure, not degrade-to-defaults.</summary>
     [Test]
     public async Task Malformed_config_file_is_evidence_unreadable() {
-        var configDir = Directory.CreateTempSubdirectory("kcap-gate-cfg-").FullName;
-        File.WriteAllText(Path.Combine(configDir, "config.json"), "{not json");
+        using var tmp = new TempDir();
+        tmp.CreateFile("config.json", "{not json");
 
         var unit = new Dictionary<string, string> {
             ["KCAP_CONSENT_SEED_DEFAULT"] = "prompt",
             ["KCAP_PROFILE"] = "work",
-            ["KCAP_CONFIG_DIR"] = configDir,
+            ["KCAP_CONFIG_DIR"] = tmp.Path,
             ["KCAP_EXPECT_SERVER_URL"] = "https://s.example",
             // no KCAP_URL — forces the BakedProfileServerUrl fallback that reads config.json
         };

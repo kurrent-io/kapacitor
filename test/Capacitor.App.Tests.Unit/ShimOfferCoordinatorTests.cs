@@ -57,7 +57,8 @@ public class ShimOfferCoordinatorTests {
         public readonly FakeLoginShellProbe Probe = new();
         public readonly FakeAppStateStore Store = new();
         public readonly FakeLifecycleSurface Surface = new();
-        public readonly string TempDir = Directory.CreateTempSubdirectory("kcap-shimoffer-").FullName;
+        readonly TempDir _tmp = new();
+        public string TempDir => _tmp.Path;
         public readonly TaskCompletionSource<bool> PhaseClosedSource = new();
         public readonly List<bool> OfferableValues = [];
 
@@ -82,9 +83,7 @@ public class ShimOfferCoordinatorTests {
 
         public void ClosePhase() => PhaseClosedSource.TrySetResult(true);
 
-        public void Dispose() {
-            try { Directory.Delete(TempDir, recursive: true); } catch { /* best-effort test cleanup */ }
-        }
+        public void Dispose() => _tmp.Dispose();
     }
 
     // ---- offer waits for PhaseClosed ----

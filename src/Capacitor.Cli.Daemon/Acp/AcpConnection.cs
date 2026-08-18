@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Daemon/Acp/AcpConnection.cs
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;

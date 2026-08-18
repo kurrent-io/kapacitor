@@ -5,7 +5,7 @@ namespace Capacitor.Cli.Daemon.Services;
 
 /// <summary>
 /// Builds the review-flow reviewer's <c>session/new</c> <see cref="AcpMcpServerSpec"/> list — the
-/// ACP analogue of <see cref="ClaudeLauncher"/>'s PTY <c>BuildReviewFlowMcpConfig</c>: the
+/// ACP analogue of <see cref="Harness.Claude.ClaudeLauncher"/>'s PTY <c>BuildReviewFlowMcpConfig</c>: the
 /// <c>kcap-flow-result</c> submit channel plus the reviewer allowlist.
 ///
 /// Caller (<see cref="AcpHostedAgentRuntimeFactory"/>) supplies <c>allowlistServerIds</c>

@@ -17,6 +17,8 @@
     <File Path="test\Directory.Build.props" />
     <Project Path="test\Capacitor.App.Tests.Unit\Capacitor.App.Tests.Unit.csproj" />
     <Project Path="test\Capacitor.Tests.Helpers\Capacitor.Tests.Helpers.csproj" />
+    <Project Path="test\Capacitor.Cli.Core.Tests.Unit\Capacitor.Cli.Core.Tests.Unit.csproj" />
+    <Project Path="test\Capacitor.Cli.Daemon.Tests.Unit\Capacitor.Cli.Daemon.Tests.Unit.csproj" />
     <Project Path="test\Capacitor.Cli.Tests.Integration\Capacitor.Cli.Tests.Integration.csproj" />
     <Project Path="test\Capacitor.Cli.Tests.Unit\Capacitor.Cli.Tests.Unit.csproj" />
     <Project Path="test\Capacitor.Cli.Tests.Unit.NativeTestHost\Capacitor.Cli.Tests.Unit.NativeTestHost.csproj" />

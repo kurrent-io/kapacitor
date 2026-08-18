@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
+using Capacitor.Cli.Harness.Pi;
 
 namespace Capacitor.Cli.SessionStartMemory;
 

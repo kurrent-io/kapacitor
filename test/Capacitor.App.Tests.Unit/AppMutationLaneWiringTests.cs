@@ -594,11 +594,11 @@ public class AppMutationLaneWiringTests {
             InstallVerifiedBehavior = (_, _) => Task.FromResult(new ProcessResult(28, "", "start_gate_reason=foreign_binary", false)),
         };
         var probe = new FakeLoginShellProbe();
-        var tempDir = Directory.CreateTempSubdirectory("kcap-composed-").FullName;
-        var store = new AppStateStore(Path.Combine(tempDir, "app-state.json"));
+        using var tmp = new TempDir();
+        var store = new AppStateStore(tmp.PathTo("app-state.json"));
         var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(false) }; // decline
 
-        try {
+        {
             await using var lane = new DaemonMutationLane(
                 probe, channel, () => "/opt/kcap/bin/kcap",
                 (_, _) => cli,
@@ -623,8 +623,6 @@ public class AppMutationLaneWiringTests {
 
             consumerCts.Cancel();
             await consumerTask.WaitAsync(TimeSpan.FromSeconds(5)); // swallowed by design — completes normally
-        } finally {
-            try { Directory.Delete(tempDir, recursive: true); } catch { /* best-effort test cleanup */ }
         }
     }
 

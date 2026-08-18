@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Capacitor.Cli.Commands.Harness;
 
 namespace Capacitor.Cli.Tests.Integration;
 
@@ -7,7 +8,7 @@ namespace Capacitor.Cli.Tests.Integration;
 /// temp directory before any in-process test code triggers the
 /// <c>PathHelpers</c> static initializer. <c>PathHelpers.ConfigDir</c> is
 /// <c>static readonly</c> and captured once per process from the
-/// environment, so any test that calls into <see cref="Capacitor.Cli.Commands.ClaudeHookCommand"/>
+/// environment, so any test that calls into <see cref="ClaudeHookCommand"/>
 /// (or anything else that reads <c>AppConfig</c>, profile state, repo
 /// exclusions, token store, …) would otherwise read the developer's real
 /// <c>~/.config/kcap</c>. A user-side exclusion (e.g. <c>excluded_paths</c>
@@ -31,20 +32,17 @@ namespace Capacitor.Cli.Tests.Integration;
 /// in-process tests as safe as the subprocess-based ones.
 /// </summary>
 public class IntegrationGlobalSetup {
-    internal static readonly string SharedConfigDir = Path.Combine(
-        Path.GetTempPath(),
-        "kcap-integration-tests-" + Guid.NewGuid().ToString("N")[..8]
-    );
+    static readonly TempDir Tmp = new();
+    internal static string SharedConfigDir => Tmp.Path;
 
     [ModuleInitializer]
     internal static void SetConfigDir() {
-        Directory.CreateDirectory(SharedConfigDir);
         Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", SharedConfigDir);
     }
 
     [After(Assembly)]
     public static void CleanupConfigDir() {
         Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
-        try { Directory.Delete(SharedConfigDir, recursive: true); } catch { /* best effort */ }
+        Tmp.Dispose();
     }
 }

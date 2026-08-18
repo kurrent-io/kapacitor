@@ -61,20 +61,21 @@ public class ConsentFlipCoordinatorTests {
         public readonly FakeLifecycleSurface Surface = new();
         public readonly FakeAppStateStore Store = new();
         public readonly ScriptedResolver Resolver = new();
-        public readonly string TempDir = Directory.CreateTempSubdirectory("kcap-flipcoord-").FullName;
+        readonly TempDir _tmp = new();
+        public string TempDir => _tmp.Path;
         public readonly ConsentFlipClaims Claims;
         public readonly ConsentFlipCoordinator Coordinator;
 
         public Harness() {
             Claims = new ConsentFlipClaims(
-                Path.Combine(TempDir, "consent-flip-claims.json"), Path.Combine(TempDir, "config.json"));
+                _tmp.PathTo("consent-flip-claims.json"),
+                _tmp.PathTo("config.json")
+            );
             Coordinator = new ConsentFlipCoordinator(
                 Client, Ops, Claims, Resolver.Resolve, Surface, Store, CancellationToken.None);
         }
 
-        public void Dispose() {
-            try { Directory.Delete(TempDir, recursive: true); } catch { /* best-effort test cleanup */ }
-        }
+        public void Dispose() => _tmp.Dispose();
     }
 
     // ---- happy path ----

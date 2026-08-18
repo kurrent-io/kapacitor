@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Daemon/Acp/AcpSessionUpdate.cs
 using System.Text.Json;
 
 namespace Capacitor.Cli.Daemon.Acp;
