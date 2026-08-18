@@ -6,7 +6,7 @@ namespace Capacitor.Cli.Daemon.Services;
 /// <summary>
 /// Single source of truth for a caller-selected ACP permission preset: eligibility + token
 /// validation, consumed by the orchestrator's pre-flight guard. Sibling of
-/// <see cref="CodexPosturePolicy"/> and a textual mirror of the server's <c>AcpPresetRequestPolicy</c>
+/// <see cref="Harness.Codex.CodexPosturePolicy"/> and a textual mirror of the server's <c>AcpPresetRequestPolicy</c>
 /// (the two live in different repositories, so there is no shared type). A preset is valid ONLY for an
 /// interactive, non-borrowed launch of an ACP-permission-routed vendor — the daemon's authoritative
 /// set is the ACP descriptor registry (<see cref="AcpVendorDescriptors"/>). Every other shape is a
