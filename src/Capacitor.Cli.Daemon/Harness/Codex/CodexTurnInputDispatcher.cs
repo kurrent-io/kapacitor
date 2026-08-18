@@ -14,13 +14,13 @@ internal readonly record struct CodexTurnStarted(string TurnId, string? Status);
 ///
 /// <para>Two orthogonal fields, deliberately not one flat state, because a notification can arrive
 /// while a request is in flight: <see cref="_pending"/> (the request whose JSON-RPC response is still
-/// outstanding, driven only by that response) and <see cref="_lifecycle"/> (Idle/Active/Completing,
-/// driven only by <c>turn/started</c>/<c>turn/completed</c>). The dispatcher invariant is on
-/// <see cref="_pending"/>: it dispatches the head input only when nothing is pending, so two inputs can
-/// never both observe idle and double-start (the exact hazard the server would accept). A steer the
-/// server rejects with <c>-32600</c> ("no active turn") is retried EXACTLY ONCE as a
-/// <c>turn/start</c> — in the dispatcher, never the enqueuing surface — and never dropped. An input is
-/// acknowledged only after the dispatch that actually carried it succeeds.</para>
+/// outstanding, driven only by that response) and <see cref="_lifecycle"/> (Idle/Active, driven only
+/// by <c>turn/completed</c>). The dispatcher invariant is on <see cref="_pending"/>: it dispatches the
+/// head input only when nothing is pending, so two inputs can never both observe idle and double-start
+/// (the exact hazard the server would accept). A steer the server rejects with <c>-32600</c> ("no
+/// active turn") is retried EXACTLY ONCE as a <c>turn/start</c> — in the dispatcher, never the
+/// enqueuing surface — and never dropped. An input is acknowledged only after the dispatch that
+/// actually carried it succeeds.</para>
 /// </summary>
 internal sealed class CodexTurnInputDispatcher {
     // Sends turn/start with the input as the initial prompt; returns the started turn once the RESPONSE
@@ -29,30 +29,38 @@ internal sealed class CodexTurnInputDispatcher {
     // Sends turn/steer(expectedTurnId, input); returns when the RESPONSE lands. Throws
     // CodexAppServerRpcException(-32600) when the turn is no longer active (the retryable miss).
     readonly Func<string, string, CancellationToken, Task> _steerTurn;
-    readonly ILogger          _logger;
+    // Notified (true/false) as a turn becomes active / goes idle — drives the runtime's turn-in-flight clock.
+    readonly Action<bool>?     _onTurnInFlight;
+    readonly ILogger           _logger;
     readonly CancellationToken _ct;
 
     readonly object            _gate = new();
     readonly Queue<InputItem>  _queue = new();
+    readonly List<TaskCompletionSource> _settledWaiters = [];
 
     Pending   _pending   = Pending.None;
     Lifecycle _lifecycle = Lifecycle.Idle;
-    string?   _activeTurnId;              // set in Active/Completing
+    string?   _activeTurnId;              // set in Active
     string?   _completedBeforeStartResp; // a turn/completed seen while _pending=Start (turn id unknown yet)
     bool      _dispatching;              // guards the fire-outside-lock dispatch against re-entrancy
+    bool      _lastInFlight;             // last value handed to _onTurnInFlight, so it fires only on change
 
     public CodexTurnInputDispatcher(
             Func<string, CancellationToken, Task<CodexTurnStarted>> startTurn,
             Func<string, string, CancellationToken, Task> steerTurn,
-            ILogger logger, CancellationToken ct) {
-        _startTurn = startTurn;
-        _steerTurn = steerTurn;
-        _logger    = logger;
-        _ct        = ct;
+            ILogger logger, CancellationToken ct, Action<bool>? onTurnInFlight = null) {
+        _startTurn      = startTurn;
+        _steerTurn      = steerTurn;
+        _logger         = logger;
+        _ct             = ct;
+        _onTurnInFlight = onTurnInFlight;
     }
 
-    /// <summary>True while a turn is live (Active or Completing) — the runtime's turn-in-flight signal.</summary>
+    /// <summary>True while a turn is live — the runtime's turn-in-flight signal.</summary>
     public bool TurnInFlight { get { lock (_gate) return _lifecycle != Lifecycle.Idle; } }
+
+    /// <summary>The active turn id, or null when idle — the target for a <c>turn/interrupt</c>.</summary>
+    public string? CurrentTurnId { get { lock (_gate) return _lifecycle == Lifecycle.Active ? _activeTurnId : null; } }
 
     /// <summary>Enqueues one input and returns a task that completes when the dispatch carrying it
     /// (a <c>turn/start</c> or an accepted <c>turn/steer</c>) succeeds — the "wait for write" contract.
@@ -62,6 +70,17 @@ internal sealed class CodexTurnInputDispatcher {
         lock (_gate) _queue.Enqueue(item);
         PumpDispatch();
         return item.Ack.Task;
+    }
+
+    /// <summary>Completes when the dispatcher is fully settled — no turn active, nothing pending, queue
+    /// drained. The runtime's <c>WaitForTurnIdleAsync</c> composes this with its terminal signal.</summary>
+    public Task WaitForSettledAsync() {
+        lock (_gate) {
+            if (IsSettledLocked()) return Task.CompletedTask;
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _settledWaiters.Add(tcs);
+            return tcs.Task;
+        }
     }
 
     /// <summary>Fed from the <c>turn/completed</c> notification. Advances the lifecycle and, when a
@@ -80,6 +99,7 @@ internal sealed class CodexTurnInputDispatcher {
             _lifecycle    = Lifecycle.Idle;
             _activeTurnId = null;
         }
+        SignalTransitions();
         PumpDispatch();
     }
 
@@ -95,6 +115,7 @@ internal sealed class CodexTurnInputDispatcher {
             _activeTurnId = null;
         }
         foreach (var item in orphans) item.Ack.TrySetException(ex);
+        SignalTransitions();
     }
 
     // Drains the queue as far as the invariant allows. Only one thread runs the fire-outside-lock body
@@ -165,6 +186,7 @@ internal sealed class CodexTurnInputDispatcher {
         } catch (Exception ex) {
             FailHead(item, ex);
         }
+        SignalTransitions();
     }
 
     async Task DispatchSteerAsync(InputItem item, string turnId) {
@@ -190,6 +212,7 @@ internal sealed class CodexTurnInputDispatcher {
         } catch (Exception ex) {
             FailHead(item, ex);
         }
+        SignalTransitions();
     }
 
     void FailHead(InputItem item, Exception ex) {
@@ -198,6 +221,28 @@ internal sealed class CodexTurnInputDispatcher {
             if (_queue.Count > 0 && ReferenceEquals(_queue.Peek(), item)) _queue.Dequeue();
         }
         item.Ack.TrySetException(ex);
+    }
+
+    bool IsSettledLocked() => _lifecycle == Lifecycle.Idle && _pending == Pending.None && _queue.Count == 0;
+
+    // Fires the in-flight callback on a real change and releases any settled waiters — both OUTSIDE the
+    // lock so a callback can never re-enter the dispatcher under it.
+    void SignalTransitions() {
+        bool inFlight;
+        bool fireInFlight = false;
+        List<TaskCompletionSource>? settled = null;
+
+        lock (_gate) {
+            inFlight = _lifecycle != Lifecycle.Idle;
+            if (inFlight != _lastInFlight) { _lastInFlight = inFlight; fireInFlight = true; }
+            if (IsSettledLocked() && _settledWaiters.Count > 0) {
+                settled = [.. _settledWaiters];
+                _settledWaiters.Clear();
+            }
+        }
+
+        if (fireInFlight) _onTurnInFlight?.Invoke(inFlight);
+        if (settled is not null) foreach (var w in settled) w.TrySetResult();
     }
 
     enum Pending   { None, Start, Steer }

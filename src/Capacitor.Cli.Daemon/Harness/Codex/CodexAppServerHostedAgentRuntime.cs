@@ -79,12 +79,16 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     readonly TimeProvider         _time;
     readonly CancellationTokenSource _cts = new();
 
-    readonly object              _turnGate = new();
     // Whole-runtime terminal signal: completed exactly once, when the LIVE child's read loop ends
     // (process death) or on dispose — never for the controlled child teardown during a hook-trust
     // restart. The orchestrator treats ReadOutputAsync ending as the finalize trigger, so this must
     // not fire early, and WaitForTurnIdleAsync must unblock on it so a round never outlives the child.
     readonly TaskCompletionSource _runtimeTerminal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    // The single input serializer: all input enqueues here, one dispatcher chooses turn/start vs
+    // turn/steer and owns the completion-window race (§2.2). Turn state (active turn id, in-flight
+    // clock, WaitForTurnIdle) is derived from it — the runtime no longer tracks turns itself.
+    readonly CodexTurnInputDispatcher _dispatcher;
 
     CodexAppServerConnection? _connection;
     IAcpProcess?              _process;
@@ -94,9 +98,6 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
 
     string?                   _threadId;
     string?                   _resolvedModel;
-    string?                   _currentTurnId;      // server turn id once the start response lands; null in the request window
-    TaskCompletionSource?     _turnCompleted;      // the current round's waiter
-    (string TurnId, string? Status)? _pendingCompletion; // an early turn/completed whose id we could not match yet
     CodexTokenUsage?          _usage;
     int                       _disposed;
 
@@ -108,6 +109,9 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         _clock   = clock;
         _logger  = logger;
         _time    = timeProvider ?? TimeProvider.System;
+        _dispatcher = new CodexTurnInputDispatcher(
+            startTurn: IssueTurnStartAsync, steerTurn: IssueTurnSteerAsync,
+            logger: logger, ct: _cts.Token, onTurnInFlight: flip => _clock?.SetTurnInFlight(flip));
     }
 
     // ── IHostedAgentRuntime: identity / lifecycle observables ──────────────────────────────────
@@ -180,7 +184,7 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         _clock?.ClearLaunchStage();
 
         if (!string.IsNullOrEmpty(_launch.InitialPrompt))
-            await StartTurnAsync(_launch.InitialPrompt, linked.Token).ConfigureAwait(false);
+            await _dispatcher.EnqueueAsync(_launch.InitialPrompt).ConfigureAwait(false);
     }
 
     async Task SpawnAndInitializeAsync(string? hookStateSeed, CancellationToken ct) {
@@ -213,8 +217,8 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
             // read loop ending (death) or dispose flips the whole-runtime terminal signal.
             if (!_restarting) {
                 _runtimeTerminal.TrySetResult();
-                FaultPendingTurn(new ObjectDisposedException(nameof(CodexAppServerHostedAgentRuntime),
-                    "codex app-server connection ended with a turn still in flight."));
+                _dispatcher.FaultAll(new ObjectDisposedException(nameof(CodexAppServerHostedAgentRuntime),
+                    "codex app-server connection ended with input still in flight."));
             }
         }
     }
@@ -267,12 +271,15 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
 
     // ── Turns / rounds ─────────────────────────────────────────────────────────────────────────
 
-    async Task StartTurnAsync(string prompt, CancellationToken ct) {
+    // The dispatcher's turn/start sender: builds the per-turn posture params (§2.1 renders them here,
+    // not argv) and issues turn/start, returning the server-assigned turn. A -32001 backpressure
+    // rejection is retried inside RequestAsync.
+    async Task<CodexTurnStarted> IssueTurnStartAsync(string text, CancellationToken ct) {
         var threadId = _threadId ?? throw new InvalidOperationException("codex app-server: no thread to start a turn on.");
 
         var turnParams = new JsonObject {
             ["threadId"]          = threadId,
-            ["input"]             = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = prompt }),
+            ["input"]             = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = text }),
             ["sandboxPolicy"]     = CodexAppServerPosture.RenderSandboxPolicy(_launch.Sandbox, _launch.WritableRoots),
             ["approvalPolicy"]    = CodexAppServerPosture.RenderApprovalPolicy(_launch.Approval),
             ["approvalsReviewer"] = CodexAppServerPosture.ApprovalsReviewer,
@@ -280,70 +287,39 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         if (!string.IsNullOrEmpty(_launch.Model))  turnParams["model"]  = _launch.Model;
         if (!string.IsNullOrEmpty(_launch.Effort)) turnParams["effort"] = MapEffort(_launch.Effort);
 
-        // Arm the completion signal + the turn-in-flight clock BEFORE the turn is on the wire, so a
-        // fast turn/completed can neither race a null TCS nor leave the clock flipped back to
-        // in-flight after it was cleared.
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (_turnGate) {
-            _turnCompleted     = completion;
-            _currentTurnId     = null;
-            _pendingCompletion = null;
-        }
-        _clock?.SetTurnInFlight(true);
-
-        JsonElement result;
-        try {
-            result = await RequestAsync("turn/start", turnParams, ct).ConfigureAwait(false);
-        } catch {
-            FaultPendingTurn(new OperationCanceledException("codex app-server: turn/start failed."));
-            throw;
-        }
-
+        var result = await RequestAsync("turn/start", turnParams, ct).ConfigureAwait(false);
         var turn   = result.Obj("turn");
         var turnId = turn?.Str("id");
-        if (string.IsNullOrEmpty(turnId)) {
-            var ex = new InvalidOperationException("codex app-server: turn/start returned no turn id.");
-            FaultPendingTurn(ex);
-            throw ex;
-        }
-
-        var status = turn?.Str("status");
-
-        // Bind the id, then reconcile against anything that raced ahead of this response:
-        //   - a turn/completed that arrived while the id was unknown (stashed), OR
-        //   - a response that itself came back already terminal.
-        bool completeNow = false;
-        string? completeStatus = null;
-        lock (_turnGate) {
-            _currentTurnId = turnId;
-            if (_pendingCompletion is { } pc && string.Equals(pc.TurnId, turnId, StringComparison.Ordinal)) {
-                completeNow = true;
-                completeStatus = pc.Status;
-            } else if (status is not null and not "inProgress") {
-                completeNow = true;
-                completeStatus = status;
-            }
-            _pendingCompletion = null; // discard a stash that was not ours
-        }
-        if (completeNow) CompleteTurn(turnId, completeStatus);
+        if (string.IsNullOrEmpty(turnId))
+            throw new InvalidOperationException("codex app-server: turn/start returned no turn id.");
+        return new CodexTurnStarted(turnId, turn?.Str("status"));
     }
 
-    public Task SendUserInputAsync(string text) => StartTurnAsync(text, _cts.Token);
+    // The dispatcher's turn/steer sender: feeds an input onto the ACTIVE turn (posture is already
+    // pinned by its turn/start). A stale/ended turn answers -32600 as a CodexAppServerRpcException,
+    // which the dispatcher catches and retries once as a turn/start.
+    async Task IssueTurnSteerAsync(string turnId, string text, CancellationToken ct) {
+        var threadId = _threadId ?? throw new InvalidOperationException("codex app-server: no thread to steer.");
+        var steerParams = new JsonObject {
+            ["threadId"]       = threadId,
+            ["expectedTurnId"] = turnId,
+            ["input"]          = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = text }),
+        };
+        await RequestAsync("turn/steer", steerParams, ct).ConfigureAwait(false);
+    }
 
-    public async Task SendUserInputAndWaitForWriteAsync(string text) =>
-        await StartTurnAsync(text, _cts.Token).ConfigureAwait(false);
+    public Task SendUserInputAsync(string text) => _dispatcher.EnqueueAsync(text);
+
+    public Task SendUserInputAndWaitForWriteAsync(string text) => _dispatcher.EnqueueAsync(text);
 
     public async Task WaitForTurnIdleAsync(CancellationToken ct) {
-        TaskCompletionSource? tcs;
-        lock (_turnGate) tcs = _turnCompleted;
-        if (tcs is null) return; // no turn in flight
-
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token);
-        var completed = await Task.WhenAny(tcs.Task, _runtimeTerminal.Task,
+        var settled   = _dispatcher.WaitForSettledAsync();
+        var completed = await Task.WhenAny(settled, _runtimeTerminal.Task,
             Task.Delay(Timeout.Infinite, linked.Token)).ConfigureAwait(false);
 
-        if (completed == tcs.Task || completed == _runtimeTerminal.Task)
-            return; // turn settled, or the child died — either way the round is no longer in flight
+        if (completed == settled || completed == _runtimeTerminal.Task)
+            return; // input drained + turn settled, or the child died — the round is no longer in flight
 
         await completed.ConfigureAwait(false); // propagate cancellation
     }
@@ -354,7 +330,9 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         switch (n.Method) {
             case "turn/completed": {
                 var turn = n.Params is { } p ? p.Obj("turn") : null;
-                OnTurnCompletedNotification(turn?.Str("id"), turn?.Str("status"));
+                if (turn?.Str("status") is "failed")
+                    _logger.LogWarning("codex app-server: turn completed with status=failed.");
+                _dispatcher.OnTurnCompleted(turn?.Str("id"));
                 break;
             }
             case "thread/tokenUsage/updated":
@@ -365,57 +343,6 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
                 _clock?.Advance();
                 break;
         }
-    }
-
-    void OnTurnCompletedNotification(string? turnId, string? status) {
-        lock (_turnGate) {
-            if (_currentTurnId is null) {
-                // The turn/start response has not identified the current turn yet. Stash this
-                // completion by id; StartTurnAsync applies it iff it matches, else discards it.
-                if (turnId is not null) _pendingCompletion = (turnId, status);
-                return;
-            }
-            if (turnId is not null && !string.Equals(_currentTurnId, turnId, StringComparison.Ordinal))
-                return; // a stale completion from another turn
-        }
-        CompleteTurn(turnId, status);
-    }
-
-    /// <summary>The single point that settles the current round: clears the waiter under the lock
-    /// (so exactly one caller wins), then — only if there was a waiter — clears the turn-in-flight
-    /// clock and completes the TCS.</summary>
-    void CompleteTurn(string? turnId, string? status) {
-        TaskCompletionSource? tcs;
-        lock (_turnGate) {
-            if (_currentTurnId is not null && turnId is not null
-                && !string.Equals(_currentTurnId, turnId, StringComparison.Ordinal))
-                return; // not the turn we are waiting on
-
-            tcs = _turnCompleted;
-            _turnCompleted     = null;
-            _currentTurnId     = null;
-            _pendingCompletion = null;
-        }
-        if (tcs is null) return;
-
-        _clock?.SetTurnInFlight(false);
-        tcs.TrySetResult();
-        if (status is "failed")
-            _logger.LogWarning("codex app-server: turn completed with status=failed.");
-    }
-
-    void FaultPendingTurn(Exception ex) {
-        TaskCompletionSource? tcs;
-        lock (_turnGate) {
-            tcs = _turnCompleted;
-            _turnCompleted     = null;
-            _currentTurnId     = null;
-            _pendingCompletion = null;
-        }
-        if (tcs is null) return;
-
-        _clock?.SetTurnInFlight(false);
-        tcs.TrySetException(ex);
     }
 
     /// <summary>
@@ -482,7 +409,7 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     public async Task RequestGracefulStopAsync() {
         var connection = _connection;
         var threadId   = _threadId;
-        var turnId     = _currentTurnId;
+        var turnId     = _dispatcher.CurrentTurnId;
         if (connection is null || threadId is null || turnId is null)
             return;
 
@@ -514,7 +441,7 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         // Ensure the terminal signal is set even if no read loop ever ran (e.g. spawn failed before
         // the loop started) so a ReadOutputAsync consumer never hangs.
         _runtimeTerminal.TrySetResult();
-        FaultPendingTurn(new ObjectDisposedException(nameof(CodexAppServerHostedAgentRuntime)));
+        _dispatcher.FaultAll(new ObjectDisposedException(nameof(CodexAppServerHostedAgentRuntime)));
         _cts.Dispose();
     }
 

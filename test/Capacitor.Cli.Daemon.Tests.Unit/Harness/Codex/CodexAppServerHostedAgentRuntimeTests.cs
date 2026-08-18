@@ -82,6 +82,25 @@ public class CodexAppServerHostedAgentRuntimeTests {
     }
 
     [Test]
+    public async Task Input_on_an_active_turn_is_steered_not_restarted() {
+        var fake = new FakeCodexAppServer { HoldTurnOpen = true };
+        var (runtime, _, _) = Build(_ => fake, Launch());
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await runtime.SendUserInputAsync("first").WaitAsync(HangGuard);  // turn/start — turn stays active
+        await runtime.SendUserInputAsync("second").WaitAsync(HangGuard); // steered onto the active turn
+
+        await Assert.That(fake.ReceivedMethods).Contains("turn/steer");
+        await Assert.That(fake.LastSteerExpectedTurnId).IsEqualTo("turn-1");
+        await Assert.That(fake.LastSteerText).IsEqualTo("second");
+        await Assert.That(fake.ReceivedMethods.Count(m => m == "turn/start")).IsEqualTo(1); // NOT restarted
+
+        await fake.CompleteHeldTurnAsync();
+        await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
     public async Task Initial_prompt_fires_the_first_turn_during_start() {
         var fake = new FakeCodexAppServer();
         var (runtime, _, _) = Build(_ => fake, Launch(prompt: "kick off the review"));
