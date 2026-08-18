@@ -160,27 +160,25 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
         Skip.When(OperatingSystem.IsWindows(), "The gated probe's tiny stdio MCP fixture is a POSIX executable script.");
 
         using var rootDirTemp = new TempDir();
-        var rootDir     = rootDirTemp.Path;
-        var sourceDir   = Directory.CreateDirectory(Path.Combine(rootDir, "borrowed-source"));
-        var markerPath  = Path.Combine(rootDir, "result-called");
-        var mcpPath     = Path.Combine(rootDir, "fake-kcap");
-        var protectedPath = Path.Combine(sourceDir.FullName, "protected.txt");
-        File.WriteAllText(protectedPath, "ORIGINAL\n");
-        File.WriteAllText(Path.Combine(sourceDir.FullName, "tracked_modified.txt"), "BASE-ORIGINAL\n");
-        RunGit(sourceDir.FullName, "init", "-q");
-        RunGit(sourceDir.FullName, "config", "user.email", "test@example.com");
-        RunGit(sourceDir.FullName, "config", "user.name", "Test");
-        RunGit(sourceDir.FullName, "add", "protected.txt", "tracked_modified.txt");
-        RunGit(sourceDir.FullName, "commit", "-q", "-m", "initial");
+        var sourceDir   = rootDirTemp.CreateDir("borrowed-source");
+        var markerPath  = rootDirTemp.PathTo("result-called");
+        var mcpPath     = rootDirTemp.PathTo("fake-kcap");
+        var protectedPath = sourceDir.CreateFile("protected.txt", "ORIGINAL\n");
+        sourceDir.CreateFile("tracked_modified.txt", "BASE-ORIGINAL\n");
+        RunGit(sourceDir.Path, "init", "-q");
+        RunGit(sourceDir.Path, "config", "user.email", "test@example.com");
+        RunGit(sourceDir.Path, "config", "user.name", "Test");
+        RunGit(sourceDir.Path, "add", "protected.txt", "tracked_modified.txt");
+        RunGit(sourceDir.Path, "commit", "-q", "-m", "initial");
 
         // Branch-only: committed, but only on a branch the daemon's own checkout has never seen.
-        RunGit(sourceDir.FullName, "checkout", "-q", "-b", "feature");
-        File.WriteAllText(Path.Combine(sourceDir.FullName, "branch_only.txt"), BranchOnlySentinel + "\n");
-        RunGit(sourceDir.FullName, "add", "branch_only.txt");
-        RunGit(sourceDir.FullName, "commit", "-q", "-m", "branch-only commit");
+        RunGit(sourceDir.Path, "checkout", "-q", "-b", "feature");
+        sourceDir.CreateFile("branch_only.txt", BranchOnlySentinel + "\n");
+        RunGit(sourceDir.Path, "add", "branch_only.txt");
+        RunGit(sourceDir.Path, "commit", "-q", "-m", "branch-only commit");
         // Tracked-but-dirty, and never-added: neither is reachable from any commit.
-        File.WriteAllText(Path.Combine(sourceDir.FullName, "tracked_modified.txt"), TrackedModifiedSentinel + "\n");
-        File.WriteAllText(Path.Combine(sourceDir.FullName, "untracked.txt"), UntrackedSentinel + "\n");
+        sourceDir.CreateFile("tracked_modified.txt", TrackedModifiedSentinel + "\n");
+        sourceDir.CreateFile("untracked.txt", UntrackedSentinel + "\n");
 
         File.WriteAllText(mcpPath, FakeFlowResultMcpScript);
         File.SetUnixFileMode(mcpPath,
@@ -192,12 +190,12 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
 
         var connection = new CaptureServerConnection();
         var config = new DaemonConfig {
-            WorktreeRoot = Path.Combine(rootDir, "snapshots"),
+            WorktreeRoot = rootDirTemp.PathTo("snapshots"),
             DebugFrames = true
         };
         var manager = new WorktreeManager(config, NullLogger<WorktreeManager>.Instance);
         var snapshot = await manager.CreateBorrowedSnapshotAsync(
-            sourceDir.FullName, "live-review", CancellationToken.None);
+            sourceDir.Path, "live-review", CancellationToken.None);
         var factory = new AcpHostedAgentRuntimeFactory(
             descriptor: AcpVendorDescriptors.Cursor,
             config: config,
@@ -207,7 +205,7 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
         var ctx = new RuntimeStartContext(
             AgentId: markerPath,
             Vendor: "cursor",
-            SourceRepoPath: sourceDir.FullName,
+            SourceRepoPath: sourceDir.Path,
             Worktree: snapshot,
             Prompt: "Read all four of these files: protected.txt, branch_only.txt, "
                   + "tracked_modified.txt, untracked.txt. Try to replace protected.txt with "
@@ -263,7 +261,7 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
             await runtime.WaitForTurnIdleAsync(startCts.Token);
             File.WriteAllText(protectedPath, "ROUND2\n");
             await manager.SyncFromSourceAsync(
-                sourceDir.FullName, sourceDir.FullName, snapshot.Path, [], startCts.Token);
+                sourceDir.Path, sourceDir.Path, snapshot.Path, [], startCts.Token);
             File.Delete(markerPath);
             await runtime.SendUserInputAndWaitForWriteAsync(
                 "Read protected.txt and call submit_review_result exactly once with verdict CLEAN and put its exact contents in summary. Do not modify files.");

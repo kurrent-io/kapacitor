@@ -3,16 +3,12 @@ using Capacitor.Cli.Harness.Cursor;
 namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 
 public class CursorLiveSubagentLinkerTests {
-    static string Write(string dir, string name, string content) {
-        var p = Path.Combine(dir, name); File.WriteAllText(p, content); return p;
-    }
-
     [Test]
     public async Task resolves_child_to_parent_by_prompt_hash() {
         using var tmp = new TempDir();
-        var parent = Write(tmp.Path, "parent.jsonl",
+        var parent = tmp.CreateFile("parent.jsonl",
             "{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"prompt\":\"do the thing\",\"subagent_type\":\"researcher\"}}]}}\n");
-        var child = Write(tmp.Path, "child.jsonl",
+        var child = tmp.CreateFile("child.jsonl",
             "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<user_query>do the thing</user_query>\"}]}}\n");
 
         var link = CursorLiveSubagentLinker.ResolveParent(
@@ -26,7 +22,7 @@ public class CursorLiveSubagentLinkerTests {
     [Test]
     public async Task no_match_returns_null() {
         using var tmp = new TempDir();
-        var child = Write(tmp.Path, "child.jsonl",
+        var child = tmp.CreateFile("child.jsonl",
             "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"unrelated\"}]}}\n");
         var link = CursorLiveSubagentLinker.ResolveParent("child", child, []);
         await Assert.That(link).IsNull();
@@ -39,13 +35,11 @@ public class CursorLiveSubagentLinkerTests {
     public async Task discover_siblings_finds_other_session_dirs_under_the_same_agent_transcripts_root() {
         using var tmp = new TempDir();
         var transcripts = tmp.CreateDir("agent-transcripts");
-        var childDir = transcripts.PathTo("child-sid");
-        Directory.CreateDirectory(childDir);
-        var childPath = Write(childDir, "child-sid.jsonl", "{}\n");
+        var childDir = transcripts.CreateDir("child-sid");
+        var childPath = childDir.CreateFile("child-sid.jsonl", "{}\n");
 
-        var parentDir = transcripts.PathTo("parent-sid");
-        Directory.CreateDirectory(parentDir);
-        Write(parentDir, "parent-sid.jsonl", "{}\n");
+        var parentDir = transcripts.CreateDir("parent-sid");
+        parentDir.CreateFile("parent-sid.jsonl", "{}\n");
 
         var siblings = CursorLiveSubagentLinker.DiscoverSiblingTranscripts(childPath);
 
@@ -57,9 +51,8 @@ public class CursorLiveSubagentLinkerTests {
     public async Task discover_siblings_excludes_its_own_session_dir() {
         using var tmp = new TempDir();
         var transcripts = tmp.CreateDir("agent-transcripts");
-        var childDir = transcripts.PathTo("only-sid");
-        Directory.CreateDirectory(childDir);
-        var childPath = Write(childDir, "only-sid.jsonl", "{}\n");
+        var childDir = transcripts.CreateDir("only-sid");
+        var childPath = childDir.CreateFile("only-sid.jsonl", "{}\n");
 
         var siblings = CursorLiveSubagentLinker.DiscoverSiblingTranscripts(childPath);
 
@@ -112,10 +105,10 @@ public class CursorLiveSubagentLinkerTests {
         var parentId = "11111111111111111111111111111111";
         var childId  = "22222222222222222222222222222222";
 
-        var parentPath = Write(tmp.Path, $"{parentId}.jsonl",
+        var parentPath = tmp.CreateFile($"{parentId}.jsonl",
             "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"kick things off\"}]}}\n" +
             "{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"prompt\":\"" + prompt + "\",\"subagent_type\":\"researcher\"}}]}}\n");
-        var childPath = Write(tmp.Path, $"{childId}.jsonl",
+        var childPath = tmp.CreateFile($"{childId}.jsonl",
             "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<user_query>\\n" + prompt + "\\n</user_query>\"}]}}\n");
 
         // Live path: only the child + its discovered siblings.

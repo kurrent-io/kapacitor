@@ -50,11 +50,9 @@ public class ShutdownTranscriptSpoolTests {
     [Test]
     public async Task shutdown_spools_only_the_undelivered_tail() {
         using var tmp = new TempDir();
-        var dir          = tmp.PathTo("shut-tail");
         var spoolDir     = tmp.PathTo("shut-tail-spool");
-        var transcriptPath = Path.Combine(dir, "transcript.jsonl");
+        var transcriptPath = tmp.CreateDir("shut-tail").PathTo("transcript.jsonl");
 
-        Directory.CreateDirectory(dir);
         // Lines 0-1 already confirmed sent (LinesProcessed = 2); lines 2-3 are the undelivered
         // tail that the outage left behind at shutdown.
         await File.WriteAllTextAsync(transcriptPath,
@@ -85,11 +83,9 @@ public class ShutdownTranscriptSpoolTests {
     [Test]
     public async Task shutdown_with_nothing_undelivered_is_a_noop() {
         using var tmp = new TempDir();
-        var dir             = tmp.PathTo("shut-empty");
         var spoolDir        = tmp.PathTo("shut-empty-spool");
-        var transcriptPath  = Path.Combine(dir, "transcript.jsonl");
+        var transcriptPath  = tmp.CreateDir("shut-empty").PathTo("transcript.jsonl");
 
-        Directory.CreateDirectory(dir);
         await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n{\"line\":1}\n");
 
         var spool  = new TranscriptSpool(spoolDir);
@@ -106,11 +102,9 @@ public class ShutdownTranscriptSpoolTests {
     [Test]
     public async Task shutdown_tail_exceeding_cap_marks_needs_import() {
         using var tmp = new TempDir();
-        var dir            = tmp.PathTo("shut-cap");
         var spoolDir       = tmp.PathTo("shut-cap-spool");
-        var transcriptPath = Path.Combine(dir, "transcript.jsonl");
+        var transcriptPath = tmp.CreateDir("shut-cap").PathTo("transcript.jsonl");
 
-        Directory.CreateDirectory(dir);
         var bigLine = "{\"line\":0,\"pad\":\"" + new string('x', 200) + "\"}";
         await File.WriteAllTextAsync(transcriptPath, bigLine + "\n");
 
@@ -133,11 +127,9 @@ public class ShutdownTranscriptSpoolTests {
     public async Task shutdown_skips_spooling_when_the_cursor_session_is_quarantined() {
         var sid            = Guid.NewGuid().ToString("N");
         using var tmp = new TempDir();
-        var dir            = tmp.PathTo("shut-quarantine");
         var spoolDir       = tmp.PathTo("shut-quarantine-spool");
-        var transcriptPath = Path.Combine(dir, "transcript.jsonl");
+        var transcriptPath = tmp.CreateDir("shut-quarantine").PathTo("transcript.jsonl");
 
-        Directory.CreateDirectory(dir);
         // Lines beyond `linesProcessed` exist on disk — exactly what a rejected/discarded
         // batch left behind when the guard tripped mid-poll.
         await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n{\"line\":1}\n{\"line\":2}\n");
@@ -160,11 +152,9 @@ public class ShutdownTranscriptSpoolTests {
         CursorMarkers.Quarantine(quarantinedSid, "unrelated");
 
         using var tmp = new TempDir();
-        var dir            = tmp.PathTo("shut-nonCursor");
         var spoolDir       = tmp.PathTo("shut-nonCursor-spool");
-        var transcriptPath = Path.Combine(dir, "transcript.jsonl");
+        var transcriptPath = tmp.CreateDir("shut-nonCursor").PathTo("transcript.jsonl");
 
-        Directory.CreateDirectory(dir);
         await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n");
 
         var spool  = new TranscriptSpool(spoolDir);
@@ -198,11 +188,9 @@ public class ShutdownTranscriptSpoolTests {
     [Test]
     public async Task undelivered_tail_spooled_even_though_connection_stayed_up() {
         using var tmp = new TempDir();
-        var dir            = tmp.PathTo("shut-hubex");
         var spoolDir       = tmp.PathTo("shut-hubex-spool");
-        var transcriptPath = Path.Combine(dir, "transcript.jsonl");
+        var transcriptPath = tmp.CreateDir("shut-hubex").PathTo("transcript.jsonl");
 
-        Directory.CreateDirectory(dir);
         // Send of line 0 threw a HubException (connection stayed up) → LinesProcessed still 0,
         // line 0 is the undelivered tail.
         await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n");
@@ -224,12 +212,10 @@ public class ShutdownTranscriptSpoolTests {
     [Test]
     public async Task spooled_tail_is_secret_redacted() {
         using var tmp = new TempDir();
-        var dir            = tmp.PathTo("shut-redact");
         var spoolDir       = tmp.PathTo("shut-redact-spool");
-        var transcriptPath = Path.Combine(dir, "transcript.jsonl");
+        var transcriptPath = tmp.CreateDir("shut-redact").PathTo("transcript.jsonl");
         const string secret = "ghp_0123456789abcdefABCDEF";
 
-        Directory.CreateDirectory(dir);
         await File.WriteAllTextAsync(transcriptPath, "{\"token\":\"" + secret + "\"}\n");
 
         var spool  = new TranscriptSpool(spoolDir);

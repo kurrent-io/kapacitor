@@ -57,12 +57,13 @@ static partial class UnixExecFixtures {
     public static void MakeExecutable(string path) => Chmod(path, 0b111_101_101 /* 0755 */);
 
     static string DirWithExecutableCopy(TempDir dir, string subdir, string name, string sourceAbsPath) {
-        var target = Path.Combine(dir.CreateDir(subdir), name);
+        var created = dir.CreateDir(subdir);
+        var target  = created.PathTo(name);
 
         File.Copy(sourceAbsPath, target);
         MakeExecutable(target);
 
-        return target[..^(name.Length + 1)];
+        return created.Path;
     }
 
     static string CopyWithMode(string path, string sourceAbsPath, int mode) {

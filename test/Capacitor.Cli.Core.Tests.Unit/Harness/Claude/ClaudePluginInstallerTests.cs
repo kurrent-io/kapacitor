@@ -84,8 +84,7 @@ public class ClaudePluginInstallerTests {
         var settingsPath = WriteEnabledSettings(tmp.Path);
         var install = tmp.CreateDir("plugins", "cache", "kcap", "kcap", "1.0.0");
         install.CreateFile(".mcp.json", "{}");
-        File.WriteAllText(Path.Combine(tmp.CreateDir("plugins"),
-                                       "installed_plugins.json"), $$"""
+        tmp.CreateFile(["plugins", "installed_plugins.json"], $$"""
             { "version": 2, "plugins": { "kcap@kcap": [
                 { "scope": "project", "installPath": {{JsonValue.Create(install.Path).ToJsonString()}}, "version": "1.0.0" } ] } }
             """);
