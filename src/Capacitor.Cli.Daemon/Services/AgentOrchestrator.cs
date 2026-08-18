@@ -90,6 +90,11 @@ internal record AgentInstance(
     public string?              SandboxPolicy     { get; init; }
     public string?              ApprovalPolicy    { get; init; }
 
+    /// <summary>The applied ACP permission preset for a hosted interactive ACP launch that carried
+    /// one; null everywhere else. Stored here (like the posture pair above) so initial registration
+    /// and every reconnect re-registration report the same value.</summary>
+    public string?              PermissionPreset  { get; init; }
+
     /// <summary>Phase B (D1): single-flight teardown latch — a plain field (not a property) so
     /// <see cref="System.Threading.Interlocked.CompareExchange(ref int,int,int)"/> can gate it. Exactly
     /// one teardown runs even if the launch-catch and the read-loop's finally race.</summary>
@@ -1608,6 +1613,15 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
         }
 
+        // A caller-selected ACP permission preset is validated here too — same pre-side-effect
+        // guarantee: a preset on a non-ACP-routed, non-interactive or borrowed launch fails the launch
+        // rather than being silently dropped or honoured.
+        if (AcpPermissionPresetPolicy.RejectionReason(cmd) is { } presetRejection) {
+            await _server.LaunchFailedAsync(cmd.AgentId, presetRejection);
+
+            return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
+        }
+
         if (isReviewFlow && cmd.ReviewerCertification is { } certification) {
             var version = string.Equals(cmd.Vendor, "claude", StringComparison.Ordinal)
                 ? DaemonRunner.ProbeCliVersionForLaunch(_config.ClaudePath)
@@ -1895,7 +1909,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 CodexPosture: cmd.CodexPosture,
                 // Handed to the factory so it can wire the clock onto the runtime BEFORE StartAsync —
                 // assigning it after that call returns silently defeats every handshake stage stamp.
-                ActivityClock: activityClock
+                ActivityClock: activityClock,
+                // Carried verbatim; the ACP factory resolves it (non-review-flow launches only) into the
+                // interaction bridge's preset.
+                AcpPermissionPreset: cmd.AcpPermissionPreset
             );
 
             HostedRuntimeStart start;
@@ -1997,6 +2014,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 Work                = work,
                 SandboxPolicy       = appliedPosture?.Sandbox,
                 ApprovalPolicy      = appliedPosture?.Approval,
+                // Echoed on AgentRegistered for the dashboard chip; carried verbatim from the command
+                // so a reconnect re-registration reports the same value. Only ever set for an
+                // interactive ACP launch (the policy above rejects any other shape).
+                PermissionPreset    = cmd.AcpPermissionPreset,
                 ReviewerBridgeToken = reviewerToken,
                 BorrowedSnapshotSource = borrowedSnapshotSource,
                 Kind                = cmd.Kind,       // Phase B (D2): flow identity + kind for LiveAgents/status report
@@ -3582,7 +3603,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     async Task RegisterAgentAsync(AgentInstance agent) {
         if (agent.IsPrivate) return;
 
-        await _server.AgentRegisteredAsync(agent.Id, agent.Prompt, agent.Model, agent.Effort, agent.RepoPath, agent.SandboxPolicy, agent.ApprovalPolicy);
+        await _server.AgentRegisteredAsync(agent.Id, agent.Prompt, agent.Model, agent.Effort, agent.RepoPath, agent.SandboxPolicy, agent.ApprovalPolicy, agent.PermissionPreset);
 
         // Report the PTY size so read-only viewers lock their xterm to it. Best-effort.
         try {
@@ -3829,7 +3850,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             for (var attempt = 1; ; attempt++) {
                 try {
-                    await _server.AgentRegisteredAsync(agent.Id, agent.Prompt, agent.Model, agent.Effort, agent.RepoPath, agent.SandboxPolicy, agent.ApprovalPolicy);
+                    await _server.AgentRegisteredAsync(agent.Id, agent.Prompt, agent.Model, agent.Effort, agent.RepoPath, agent.SandboxPolicy, agent.ApprovalPolicy, agent.PermissionPreset);
 
                     // Re-gate the status send atomically under _reapLock, per attempt (finding 1
                     // refinement): the outer pre-check cannot cover a verdict published DURING the

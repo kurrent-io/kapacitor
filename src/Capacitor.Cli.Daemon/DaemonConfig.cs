@@ -112,6 +112,16 @@ public class DaemonConfig {
     public string[]? UnattendedVendors { get; set; }
     public IReadOnlyList<UnattendedVendorCapability>? UnattendedVendorCapabilities { get; set; }
 
+    /// <summary>
+    /// Vendor tokens this daemon accepts a launch-time ACP permission preset for — the installed
+    /// hostable vendors (a subset of <see cref="SupportedVendors"/>) that route permissions through
+    /// the ACP bridge, computed INDEPENDENTLY of unattended certification (a preset is an
+    /// interactive-launch feature). Sent over <c>DaemonConnect</c> so the server enables the launch
+    /// dialog's preset selector and refuses a preset toward a non-advertising daemon. <c>null</c> when
+    /// the host hasn't been built yet or in tests that bypass the runner.
+    /// </summary>
+    public string[]? AcpPresetVendors { get; set; }
+
     public string WorktreeRoot { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         ".capacitor",

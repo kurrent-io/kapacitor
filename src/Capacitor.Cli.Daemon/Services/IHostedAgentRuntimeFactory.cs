@@ -225,5 +225,10 @@ internal sealed record RuntimeStartContext(
         // its runtime BEFORE StartAsync: assigned any later, every SetLaunchStage inside
         // AcpHostedAgentRuntime.StartAsync is a silent no-op against a null clock. Null for the PTY
         // launchers (AgentInstance owns their clock) and for constructions predating this field.
-        AgentActivityClock? ActivityClock = null
+        AgentActivityClock? ActivityClock = null,
+        // Caller-selected ACP permission preset ("explore"/"edit"), carried verbatim from
+        // LaunchAgentCommand.AcpPermissionPreset. The ACP factory resolves it (for non-review-flow
+        // launches only) into an AcpLaunchPermissionPreset and wires it onto the interaction bridge.
+        // Null for every non-preset launch and constructions predating this field.
+        string?             AcpPermissionPreset = null
     );

@@ -963,6 +963,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(ReviewerModelResolveRequestV1))]
 [JsonSerializable(typeof(ReviewerModelResolveResponseV1))]
 [JsonSerializable(typeof(ExplicitReviewerModelResolvedV1))]
+[JsonSerializable(typeof(AcpAutoApprovalNotice))]
 [JsonSerializable(typeof(ReviewLaunchInfo))]
 [JsonSerializable(typeof(LaunchKind))]
 [JsonSerializable(typeof(FindRepoForRemoteRequest))]
@@ -1397,7 +1398,14 @@ public readonly record struct LaunchAgentCommand(
         // The server-stamped human-readable name for RequesterUserId (issue #481). Display-only —
         // NEVER used for consent matching, which stays on RequesterUserId. Appended last, same
         // wire-compat rule as the fields above — old daemons ignore it, old servers never set it.
-        string?           RequesterDisplay = null
+        string?           RequesterDisplay = null,
+        // Caller-selected ACP permission preset ("explore"/"edit") for an interactive ACP-hosted
+        // launch. The AcpInteractionBridge auto-approves permission requests whose ACP tool kind the
+        // preset covers; everything else keeps prompting. Null for every non-preset launch; the
+        // orchestrator's pre-flight AcpPermissionPresetPolicy fails closed on a preset supplied for a
+        // review-flow / borrowed / non-ACP-routed launch. Appended last so the SignalR positional
+        // binding stays wire-compatible — old daemons ignore it, old servers never set it.
+        string?           AcpPermissionPreset = null
     );
 
 /// <summary>Caller-selected Codex launch posture. Valid ONLY for interactive, daemon-owned-worktree
@@ -1480,6 +1488,24 @@ public sealed record ExplicitReviewerModelResolvedV1(
     string ResolvedModel,
     string PolicyVersion,
     string EquivalenceKey);
+
+/// <summary>
+/// Daemon -> server (hub method <c>NotifyAcpAutoApproval</c>): one FIRE-AND-FORGET audit notice that
+/// a launch-time permission preset auto-approved an ACP <c>session/request_permission</c> without a
+/// human. The server validates every field (null-safe shape check, then bounds/allowlists), resolves
+/// the bound ACP session under its terminal-ordering gate, and appends ONE audit event per target
+/// stream. Audit-only and fail-open on the server; the CLI sends it fire-and-forget and swallows any
+/// send fault (missing-method included) so a mixed-version rollout never surfaces it as a failure.
+/// Matches the server wire record shape EXACTLY (field name / type / nullability) — the snake_case
+/// name binding means a rename on either side silently breaks the wire.
+/// </summary>
+public sealed record AcpAutoApprovalNotice(
+    string  AgentId,
+    string  AcpSessionId,
+    string? ToolName,
+    string  ToolKind,
+    string  Preset,
+    string? ToolCallId);
 
 /// <summary>
 /// Discriminator for daemon launch commands. <see cref="Default"/> preserves
@@ -1852,7 +1878,12 @@ public readonly record struct DaemonConnect(
         long?                         HighestResolutionGeneration   = null,
         // Structured per-vendor unattended-review certification facts. The legacy string
         // list above remains the compatibility surface; this trailing field adds versioned proof.
-        IReadOnlyList<UnattendedVendorCapability>? UnattendedVendorCapabilities = null
+        IReadOnlyList<UnattendedVendorCapability>? UnattendedVendorCapabilities = null,
+        // Vendor tokens this daemon accepts a launch-time ACP permission preset for — the installed
+        // hostable vendors that route permissions through the ACP bridge, computed INDEPENDENTLY of
+        // unattended certification (a preset is an interactive-launch feature, not a reviewer one).
+        // Null from a daemon predating this field. Trailing so the wire stays compatible.
+        string[]?                                  AcpPresetVendors = null
     );
 
 public sealed record UnattendedVendorCapability(
@@ -1888,7 +1919,11 @@ public readonly record struct AgentRegistered(
         // launch-kind discriminator. Trailing name-bound fields on a single JSON DTO — an older
         // server ignores them, an older daemon never sets them.
         string? SandboxPolicy  = null,
-        string? ApprovalPolicy = null
+        string? ApprovalPolicy = null,
+        // Applied ACP permission preset echo: the preset actually in effect for a hosted interactive
+        // ACP launch, non-null only for such a launch. Trailing name-bound field — an older server
+        // ignores it, an older daemon never sets it.
+        string? PermissionPreset = null
     );
 
 public readonly record struct AgentStatusChanged(

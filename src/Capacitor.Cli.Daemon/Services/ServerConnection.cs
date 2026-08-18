@@ -663,7 +663,11 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                     // Phase B2-b (sequenced-settlement design §5.5): the resolved-candidates ledger's
                     // monotonic high-water alongside the re-advertised snapshot above.
                     HighestResolutionGeneration: GetHighestResolutionGeneration?.Invoke(),
-                    UnattendedVendorCapabilities: _config.UnattendedVendorCapabilities
+                    UnattendedVendorCapabilities: _config.UnattendedVendorCapabilities,
+                    // Launch-time ACP permission-preset advertisement: the supported vendors that route
+                    // permissions through the ACP bridge. Null on an unwired/early-startup config;
+                    // wire-compatible with old servers (ignored).
+                    AcpPresetVendors: _config.AcpPresetVendors
                 ),
                 cancellationToken: _ct
             );
@@ -811,10 +815,10 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     // Outgoing messages to server
     public virtual Task AgentRegisteredAsync(
             string agentId, string? prompt, string? model, string? effort, string? repoPath,
-            string? sandboxPolicy = null, string? approvalPolicy = null)
+            string? sandboxPolicy = null, string? approvalPolicy = null, string? permissionPreset = null)
         => _hub.InvokeAsync(
             "AgentRegistered",
-            new AgentRegistered(agentId, prompt, model, effort, repoPath, sandboxPolicy, approvalPolicy),
+            new AgentRegistered(agentId, prompt, model, effort, repoPath, sandboxPolicy, approvalPolicy, permissionPreset),
             cancellationToken: _ct);
 
     /// <summary>
@@ -859,6 +863,22 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
             await _hub.SendAsync("ReportExplicitReviewerModelResolved", report, cancellationToken: _ct);
         } catch (Exception ex) {
             LogReportResolvedModelFailed(ex, report.AgentId);
+        }
+    }
+
+    /// <summary>
+    /// Best-effort: tell the server a launch-time permission preset auto-approved one ACP permission
+    /// request without a human, so it can persist an audit record. Fire-and-forget over the persistent
+    /// connection; swallowed when the connected server is older and has no <c>NotifyAcpAutoApproval</c>
+    /// hub method (missing-method / dispatch errors), so a mixed-version rollout never surfaces this as
+    /// a failure. Virtual so tests can capture the notice without a live hub. Never throws — the
+    /// caller's discarded task can be safely fire-and-forget.
+    /// </summary>
+    public virtual async Task NotifyAcpAutoApprovalAsync(AcpAutoApprovalNotice notice) {
+        try {
+            await _hub.SendAsync("NotifyAcpAutoApproval", notice, cancellationToken: _ct);
+        } catch (Exception ex) {
+            LogNotifyAcpAutoApprovalFailed(ex, notice.AgentId);
         }
     }
 
@@ -1438,6 +1458,9 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Failed to report resolved model for agent {AgentId} (server may not support it)")]
     partial void LogReportResolvedModelFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Failed to send ACP auto-approval audit for agent {AgentId} (server may not support it)")]
+    partial void LogNotifyAcpAutoApprovalFailed(Exception ex, string agentId);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Hub method '{Method}' handler threw — invocation dropped")]
     partial void LogHandlerThrew(Exception ex, string method);

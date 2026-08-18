@@ -530,6 +530,14 @@ public static partial class DaemonRunner {
             .OrderBy(v => v, StringComparer.Ordinal)
             .ToArray();
 
+        // ACP permission-preset support: the installed hostable vendors that route permissions
+        // through the ACP bridge (Acp.AcpPermissionPresets.RoutedVendors), computed INDEPENDENTLY of
+        // the unattended classification below — a preset is an interactive-launch feature, not a
+        // reviewer one. The server refuses a preset toward a daemon that does not advertise the vendor.
+        config.AcpPresetVendors = config.SupportedVendors
+            .Where(Acp.AcpPermissionPresets.RoutedVendors.Contains)
+            .ToArray();
+
         // Reviewer vendor override support: a strict subset of SupportedVendors — only vendors that
         // can also run fully unattended without routing an interaction to a human. The server gates
         // a review-flow vendor override on this list rather than SupportedVendors alone, so a vendor

@@ -38,7 +38,15 @@ internal sealed partial class AcpInteractionBridge(
         ILogger                                                                      logger,
         AcpUnattendedInteractionPolicy                                                unattendedPolicy = AcpUnattendedInteractionPolicy.Disabled,
         Action<string>?                                                               unexpectedUnattendedInteraction = null,
-        IReadOnlySet<string>?                                                         admittedToolIds = null
+        IReadOnlySet<string>?                                                         admittedToolIds = null,
+        // Launch-time permission preset for the INTERACTIVE path only (non-null only when
+        // unattendedPolicy is Disabled): the bridge auto-approves a permission request whose ACP tool
+        // kind the preset covers, with a single unambiguous allow_once — everything else keeps
+        // prompting. Null for a review-flow launch and every launch without a preset.
+        AcpLaunchPermissionPreset?                                                    preset = null,
+        // Fire-and-forget audit sink invoked once per preset auto-approval (through a non-throwing
+        // boundary). Null in tests / when no server connection is wired.
+        Action<AcpAutoApprovalNotice>?                                                notifyAutoApproval = null
     ) {
     static readonly IReadOnlySet<string> EmptyAdmitted = new HashSet<string>(StringComparer.Ordinal);
 
@@ -204,6 +212,34 @@ internal sealed partial class AcpInteractionBridge(
             LogUnattendedAutoApproveDeclined(agentId, "no unambiguous allow option offered");
 
             return CancelledResult();
+        }
+
+        // Launch-time permission preset (INTERACTIVE path only). Sits strictly between "frame
+        // understood" and "forward to human": it can only ever replace a prompt with an allow — never
+        // a cancel, never a standing grant. Auto-approve iff the request's ACP tool kind is one the
+        // preset covers AND there is a single unambiguous allow_once option. Every other case — a
+        // kind the preset does not cover, a kind-less frame, zero/multiple allow_once, or a sole
+        // allow_always — falls through to the interactive forward below.
+        if (unattendedPolicy == AcpUnattendedInteractionPolicy.Disabled
+         && preset is not null
+         && TryGetToolKind(parsed.ToolCall) is { } toolKind
+         && preset.AutoApprovedKinds.Contains(toolKind)) {
+            var autoChoice = TrySelectSingleAllowOnce(options);
+
+            if (autoChoice is not null) {
+                LogPresetAutoApproved(agentId, toolKind, preset.Token, TryGetToolTitle(parsed.ToolCall) ?? "(untitled)");
+                TryNotifyAutoApproval(new AcpAutoApprovalNotice(
+                    AgentId:      agentId,
+                    AcpSessionId: parsed.SessionId,
+                    ToolName:     TryGetToolTitle(parsed.ToolCall),
+                    ToolKind:     toolKind,
+                    Preset:       preset.Token,
+                    ToolCallId:   TryGetToolCallId(parsed.ToolCall)));
+
+                return SelectedResult(autoChoice);
+            }
+            // No unambiguous allow_once — fall through to the interactive forward (prompt), never
+            // cancel, never a standing grant.
         }
 
         var interactionRequest = new AcpInteractionRequest(
@@ -619,6 +655,40 @@ internal sealed partial class AcpInteractionBridge(
         return chosen;
     }
 
+    /// <summary>
+    /// The interactive PRESET path's option selection — STRICTER than
+    /// <see cref="TrySelectLeastPrivilegeAllow"/>: it accepts ONLY a single unambiguous
+    /// <c>allow_once</c> and NEVER a sole <c>allow_always</c>. The unattended helper's
+    /// sole-<c>allow_always</c> acceptance is correct where no human exists (unconditional trust is
+    /// the point there), but it is a standing vendor-side grant whose scope and lifetime the vendor
+    /// controls, after which the vendor may stop asking — defeating per-request re-classification and
+    /// audit. Restricting the preset to <c>allow_once</c> keeps every future request re-classified.
+    /// Shares the blank-id and colliding-id guards (a wire deserializer enforces neither).
+    /// </summary>
+    static PermissionOptionDto? TrySelectSingleAllowOnce(IReadOnlyList<PermissionOptionDto> options) {
+        var once = options.Where(o => o.Kind == "allow_once").ToArray();
+
+        if (once.Length != 1) return null;
+
+        var chosen = once[0];
+
+        if (string.IsNullOrWhiteSpace(chosen.OptionId))            return null;
+        if (options.Count(o => o.OptionId == chosen.OptionId) != 1) return null;
+
+        return chosen;
+    }
+
+    /// <summary>The non-throwing boundary for the fire-and-forget audit sink: a synchronously-throwing
+    /// delegate is caught and logged, never allowed to escape and turn an already-decided approval into
+    /// the connection's generic error path.</summary>
+    void TryNotifyAutoApproval(AcpAutoApprovalNotice notice) {
+        try {
+            notifyAutoApproval?.Invoke(notice);
+        } catch (Exception ex) {
+            logger.LogDebug(ex, "ACP: auto-approval audit notify threw for agent {AgentId}; ignoring", agentId);
+        }
+    }
+
     static JsonElement SelectedResult(PermissionOptionDto chosen) =>
         JsonSerializer.SerializeToElement(
             new PermissionOutcomeResult(new PermissionOutcomeDto("selected", chosen.OptionId)),
@@ -650,6 +720,14 @@ internal sealed partial class AcpInteractionBridge(
             ? id.GetString()
             : null;
 
+    /// <summary>The ACP <c>toolCall.kind</c> token, or null when the frame carries none (defensive,
+    /// mirroring <see cref="TryGetToolTitle"/>). A kind-less frame — e.g. kiro-cli's, which carries
+    /// only <c>{toolCallId, title}</c> — therefore never matches a preset and keeps prompting.</summary>
+    static string? TryGetToolKind(JsonElement toolCall) =>
+        toolCall.ValueKind == JsonValueKind.Object && toolCall.TryGetProperty("kind", out var k) && k.ValueKind == JsonValueKind.String
+            ? k.GetString()
+            : null;
+
     // ── LoggerMessage source-generated methods ──────────────────────────────────────────────────
     // Payload-free by construction: kind ("permission"/"elicitation") and decision
     // ("selected"/"cancelled") ONLY — never tool name/args, prompt text, or option content.
@@ -667,6 +745,11 @@ internal sealed partial class AcpInteractionBridge(
 
     [LoggerMessage(Level = LogLevel.Information, Message = "ACP unattended review-flow: auto-approved '{Kind}' permission for agent {AgentId} (tool title, untrusted: {ToolTitle})")]
     partial void LogUnattendedAutoApproved(string agentId, string kind, string toolTitle);
+
+    // Launch-time preset auto-approval audit. Payload-free by construction: agent id + the classified
+    // ACP kind + the preset token, plus the tool title as EXPLICITLY untrusted, agent-supplied context.
+    [LoggerMessage(Level = LogLevel.Information, Message = "ACP preset '{Preset}' auto-approved '{Kind}' permission for agent {AgentId} (tool title, untrusted: {ToolTitle})")]
+    partial void LogPresetAutoApproved(string agentId, string kind, string preset, string toolTitle);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "ACP unattended review-flow: declined permission for agent {AgentId} ({Reason}); returning cancelled")]
     partial void LogUnattendedAutoApproveDeclined(string agentId, string reason);

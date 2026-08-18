@@ -199,6 +199,6 @@ public partial class AgentOrchestratorVendorTests {
 
         public override Task AgentRegisteredAsync(
                 string agentId, string? prompt, string? model, string? effort, string? repoPath,
-                string? sandboxPolicy = null, string? approvalPolicy = null) => Task.CompletedTask;
+                string? sandboxPolicy = null, string? approvalPolicy = null, string? permissionPreset = null) => Task.CompletedTask;
     }
 }

@@ -233,7 +233,16 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                                      == AcpUnattendedInteractionPolicy.AllowlistedAutoApprove
                               && ctx.IsReviewFlow && reviewMcp is { Count: > 0 } && ctx.LaunchIdentity is { } id
                     ? UnattendedToolAdmission.AdmittedFor(reviewMcp, id)
-                    : null
+                    : null,
+                // Launch-time permission preset — resolved for NON-review-flow launches only (a review
+                // flow runs under its own containment posture, never a preset). A malformed token
+                // resolves to null (inert). The audit sink is fire-and-forget; ServerConnection swallows
+                // its own send faults so the discarded task never faults.
+                acpPermissionPreset: !ctx.IsReviewFlow
+                                  && AcpPermissionPresets.TryResolve(ctx.AcpPermissionPreset, out var resolvedPreset)
+                    ? resolvedPreset
+                    : null,
+                notifyAutoApproval: notice => _ = connection.NotifyAcpAutoApprovalAsync(notice)
             );
 
             // MUST precede StartAsync below: the handshake's SetLaunchStage stamps are no-ops against

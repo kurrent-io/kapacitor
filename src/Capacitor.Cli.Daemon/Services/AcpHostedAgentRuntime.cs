@@ -612,7 +612,9 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             KiroMcpSurfaceMonitor?                                                          mcpSurfaceMonitor = null,
             Action?                                                                         onDisposed = null,
             TimeSpan?                                                                       firstOutputDeadline = null,
-            IReadOnlySet<string>?                                                           admittedToolIds = null
+            IReadOnlySet<string>?                                                           admittedToolIds = null,
+            AcpLaunchPermissionPreset?                                                      acpPermissionPreset = null,
+            Action<AcpAutoApprovalNotice>?                                                  notifyAutoApproval = null
         ) {
         _admittedToolIds = admittedToolIds;
         _firstOutputDeadline = firstOutputDeadline;
@@ -651,7 +653,9 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 logger,
                 unattendedInteractionPolicy,
                 HandleUnexpectedUnattendedInteraction,
-                admittedToolIds);
+                admittedToolIds,
+                acpPermissionPreset,
+                notifyAutoApproval);
         }
 
         // The original launch's incarnation. Every later candidate goes through the same wiring

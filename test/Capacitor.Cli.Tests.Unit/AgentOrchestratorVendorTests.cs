@@ -2298,7 +2298,7 @@ public partial class AgentOrchestratorVendorTests {
 
         public override async Task AgentRegisteredAsync(
                 string agentId, string? prompt, string? model, string? effort, string? repoPath,
-                string? sandboxPolicy = null, string? approvalPolicy = null) {
+                string? sandboxPolicy = null, string? approvalPolicy = null, string? permissionPreset = null) {
             AgentRegisteredCallCount++;
             lock (AcpCallOrder) AcpCallOrder.Add($"register:{agentId}");
             lock (AgentRegisteredCalls) AgentRegisteredCalls.Add((agentId, model));
