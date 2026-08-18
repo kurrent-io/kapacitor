@@ -44,6 +44,7 @@ internal sealed class CodexTurnInputDispatcher {
     string?   _completedBeforeStartResp; // a turn/completed seen while _pending=Start (turn id unknown yet)
     bool      _dispatching;              // guards the fire-outside-lock dispatch against re-entrancy
     bool      _lastInFlight;             // last value handed to _onTurnInFlight, so it fires only on change
+    bool      _faulted;                 // FaultAll ran; a dispatch resuming after it must not resurrect state
 
     public CodexTurnInputDispatcher(
             Func<string, CancellationToken, Task<CodexTurnStarted>> startTurn,
@@ -110,7 +111,8 @@ internal sealed class CodexTurnInputDispatcher {
     public void FaultAll(Exception ex) {
         List<InputItem> orphans;
         lock (_gate) {
-            orphans = [.. _queue];
+            _faulted      = true;
+            orphans       = [.. _queue];
             _queue.Clear();
             _pending      = Pending.None;
             _lifecycle    = Lifecycle.Idle;
@@ -170,21 +172,27 @@ internal sealed class CodexTurnInputDispatcher {
     async Task DispatchStartAsync(InputItem item) {
         try {
             var started = await _startTurn(item.Text, _ct).ConfigureAwait(false);
+            bool carried = false;
             lock (_gate) {
-                _pending = Pending.None;
-                var alreadyDone = started.Status is not null and not "inProgress"
-                    || string.Equals(_completedBeforeStartResp, started.TurnId, StringComparison.Ordinal);
-                _completedBeforeStartResp = null;
-                if (alreadyDone) {
-                    _lifecycle    = Lifecycle.Idle;
-                    _activeTurnId = null;
-                } else {
-                    _lifecycle    = Lifecycle.Active;
-                    _activeTurnId = started.TurnId;
+                // FaultAll may have run during the await; if so the item is already faulted and the
+                // queue cleared — do NOT resurrect Active state or Dequeue an empty queue.
+                if (!_faulted) {
+                    _pending = Pending.None;
+                    var alreadyDone = started.Status is not null and not "inProgress"
+                        || string.Equals(_completedBeforeStartResp, started.TurnId, StringComparison.Ordinal);
+                    _completedBeforeStartResp = null;
+                    if (alreadyDone) {
+                        _lifecycle    = Lifecycle.Idle;
+                        _activeTurnId = null;
+                    } else {
+                        _lifecycle    = Lifecycle.Active;
+                        _activeTurnId = started.TurnId;
+                    }
+                    _queue.Dequeue();
+                    carried = true;
                 }
-                _queue.Dequeue();
             }
-            item.Ack.TrySetResult(); // the start carried this input (it was the turn's prompt)
+            if (carried) item.Ack.TrySetResult(); // the start carried this input (it was the turn's prompt)
         } catch (Exception ex) {
             FailHead(item, ex);
         }
@@ -194,20 +202,22 @@ internal sealed class CodexTurnInputDispatcher {
     async Task DispatchSteerAsync(InputItem item, string turnId) {
         try {
             await _steerTurn(turnId, item.Text, _ct).ConfigureAwait(false);
+            bool carried = false;
             lock (_gate) {
-                _pending = Pending.None;
-                _queue.Dequeue();
+                if (!_faulted) { _pending = Pending.None; _queue.Dequeue(); carried = true; }
             }
-            item.Ack.TrySetResult(); // accepted onto the active turn before it completed
+            if (carried) item.Ack.TrySetResult(); // accepted onto the active turn before it completed
         } catch (CodexAppServerRpcException rpc) when (rpc.Code == -32600 && !item.RetriedAsStart) {
             // The turn ended before the steer landed (spike Q13). Retry this same input EXACTLY ONCE
             // as a turn/start — force the lifecycle idle for the missed turn so the retry can't re-steer.
             lock (_gate) {
-                item.RetriedAsStart = true;
-                _pending = Pending.None;
-                if (string.Equals(_activeTurnId, turnId, StringComparison.Ordinal)) {
-                    _lifecycle    = Lifecycle.Idle;
-                    _activeTurnId = null;
+                if (!_faulted) {
+                    item.RetriedAsStart = true;
+                    _pending = Pending.None;
+                    if (string.Equals(_activeTurnId, turnId, StringComparison.Ordinal)) {
+                        _lifecycle    = Lifecycle.Idle;
+                        _activeTurnId = null;
+                    }
                 }
             }
             _logger.LogDebug("codex app-server: steer missed turn {TurnId}; retrying the input as turn/start.", turnId);
@@ -243,7 +253,12 @@ internal sealed class CodexTurnInputDispatcher {
             }
         }
 
-        if (fireInFlight) _onTurnInFlight?.Invoke(inFlight);
+        // The in-flight callback is external (the clock); a throw from it must never propagate into the
+        // dispatch loop and strand queued input.
+        if (fireInFlight) {
+            try { _onTurnInFlight?.Invoke(inFlight); }
+            catch (Exception ex) { _logger.LogError(ex, "codex app-server: turn-in-flight callback threw."); }
+        }
         if (settled is not null) foreach (var w in settled) w.TrySetResult();
     }
 

@@ -159,6 +159,29 @@ public class CodexTurnInputDispatcherTests {
     }
 
     [Test]
+    public async Task FaultAll_during_an_in_flight_start_does_not_resurrect_active_state() {
+        var sink  = new FakeTurnSink();
+        var flips = new List<bool>();
+        var d = new CodexTurnInputDispatcher(sink.Start, sink.Steer, NullLogger.Instance,
+            CancellationToken.None, onTurnInFlight: f => { lock (flips) flips.Add(f); });
+
+        var ack   = d.EnqueueAsync("a");
+        var start = await sink.NextStart();   // dispatched; the turn/start response is still pending
+
+        d.FaultAll(new ObjectDisposedException("runtime")); // teardown races the in-flight start
+        start.Started("turn-1");                             // the delegate resolves AFTER FaultAll
+
+        await Assert.That(async () => await ack.WaitAsync(Guard)).Throws<ObjectDisposedException>();
+        await Task.Delay(100); // let the post-fault continuation run — if it resurrected state, the checks below catch it
+        await Assert.That(d.TurnInFlight).IsFalse();
+        await Assert.That(d.CurrentTurnId).IsNull();
+        await d.WaitForSettledAsync().WaitAsync(Guard); // settled, never hangs on a ghost-active turn
+        bool wentActive;
+        lock (flips) wentActive = flips.Contains(true);
+        await Assert.That(wentActive).IsFalse(); // never signalled in-flight — no resurrection
+    }
+
+    [Test]
     public async Task FaultAll_faults_queued_and_in_flight_input() {
         var sink = new FakeTurnSink();
         var d    = Dispatcher(sink);
