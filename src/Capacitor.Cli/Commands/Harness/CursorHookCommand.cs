@@ -342,6 +342,19 @@ public static class CursorHookCommand {
             // Skipped for a linked subagent child — its top-level sessionStart is never
             // posted (see below), so there is no session to attach a repository to.
             if (eventName == "sessionStart" && !isSubagentChild) {
+                // Stamp the active profile's default visibility BEFORE the enrichment round-trip
+                // below re-serializes `node`. Server-side VisibilityService treats a null
+                // default_visibility as "org-repo fallback", so without this a private-default
+                // user's Cursor sessions silently go org-visible. Budget-bounded + fail-open: the
+                // hook must never block the agent loop (the import path stamps this separately).
+                try {
+                    if (!BudgetExpired()
+                     && (await AppConfig.GetActiveProfileAsync(ct))?.DefaultVisibility is { } defaultVisibility)
+                        node["default_visibility"] = defaultVisibility;
+                } catch {
+                    // fail-open — visibility is best-effort, never fatal to the hook.
+                }
+
                 // Safe extract: workspace_roots[0] may be absent or a non-string; GetValue<string>
                 // would throw and (via the outer catch) drop the whole sessionStart hook.
                 if (node["workspace_roots"] is JsonArray roots && roots.Count > 0
