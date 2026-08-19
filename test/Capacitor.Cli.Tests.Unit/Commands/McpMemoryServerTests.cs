@@ -80,6 +80,29 @@ public class McpMemoryServerTests {
     }
 
     [Test]
+    public async Task Rescope_body_carries_audience_and_team() {
+        var body = McpMemoryServer.BuildRescopeBody(Args("""{"id":"m1","audience":"team","team":"payments"}"""));
+
+        await Assert.That(body["audience"]!.GetValue<string>()).IsEqualTo("team");
+        await Assert.That(body["team"]!.GetValue<string>()).IsEqualTo("payments");
+        await Assert.That(body["project"]).IsNull();
+    }
+
+    [Test]
+    public async Task Rescope_body_carries_project_without_audience() {
+        var body = McpMemoryServer.BuildRescopeBody(Args("""{"id":"m1","project":"capacitor"}"""));
+
+        await Assert.That(body["project"]!.GetValue<string>()).IsEqualTo("capacitor");
+        await Assert.That(body["audience"]).IsNull();
+    }
+
+    [Test]
+    public async Task Rescope_body_throws_without_audience_or_project() {
+        await Assert.That(() => McpMemoryServer.BuildRescopeBody(Args("""{"id":"m1"}""")))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
     public async Task Tools_list_has_six_tools() {
         var tools = McpMemoryServer.BuildToolsList();
 

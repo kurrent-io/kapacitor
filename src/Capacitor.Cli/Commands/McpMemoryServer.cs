@@ -310,10 +310,19 @@ static class McpMemoryServer {
         ["kind"]        = args?["kind"]?.GetValue<string>()
     };
 
-    internal static JsonObject BuildRescopeBody(JsonObject? args) => new() {
-        ["audience"] = args?["audience"]?.GetValue<string>() is { Length: > 0 } a ? a : throw new ArgumentException("audience is required"),
-        ["team"]     = args?["team"]?.GetValue<string>()
-    };
+    internal static JsonObject BuildRescopeBody(JsonObject? args) {
+        var audience = args?["audience"]?.GetValue<string>();
+        var project  = args?["project"]?.GetValue<string>();
+        // Mirror the server: a project context move takes precedence and is audience-independent, so
+        // audience is required ONLY when project is absent.
+        if (string.IsNullOrEmpty(audience) && string.IsNullOrEmpty(project))
+            throw new ArgumentException("audience or project is required");
+        return new() {
+            ["audience"] = string.IsNullOrEmpty(audience) ? null : audience,
+            ["team"]     = args?["team"]?.GetValue<string>(),
+            ["project"]  = string.IsNullOrEmpty(project) ? null : project,
+        };
+    }
 
     /// <summary>
     /// Reads a numeric field as int, tolerant of JsonValue holding any underlying numeric type
@@ -418,12 +427,13 @@ static class McpMemoryServer {
                 ["kind"]        = new("string", "preference | feedback | project | reference")
             }, ["id"])),
         new("rescope_memory",
-            "Change a memory's audience (e.g. promote your user memory to team or org).",
+            "Change a memory's audience (e.g. promote your user memory to team or org), or move its context to a project. Pass audience OR project (project takes precedence and is independent of audience).",
             new("object", new() {
                 ["id"]       = new("string", "Memory id"),
                 ["audience"] = new("string", "user | team | org"),
-                ["team"]     = new("string", "Target team when audience is 'team'")
-            }, ["id", "audience"])),
+                ["team"]     = new("string", "Target team when audience is 'team'"),
+                ["project"]  = new("string", "Target project slug — moves the memory's home scope to that project")
+            }, ["id"])),
         new("archive_memory",
             "Archive (soft-delete) a memory.",
             new("object", new() { ["id"] = new("string", "Memory id") }, ["id"]))
