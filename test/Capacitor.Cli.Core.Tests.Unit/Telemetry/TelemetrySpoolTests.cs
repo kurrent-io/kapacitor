@@ -108,4 +108,62 @@ public class TelemetrySpoolTests {
         await Assert.That(spool.DrainAll().Count).IsEqualTo(0);
         spool.Clear();
     }
+
+    // The join key is a per-auth-run correlation id held in memory for that run only. Every other
+    // exit that could write it out is already covered — the debug renderer prints a placeholder —
+    // but the spool writes properties verbatim, so an undeliverable event would park the key in a
+    // file under the user's config directory. Delivery fails on a blocked, offline or slow network,
+    // which is exactly when nobody is watching.
+    [Test]
+    public async Task The_join_key_is_stripped_before_an_event_is_parked_on_disk() {
+        using var tmp = TempDir.WithPathTo("telemetry-spool.jsonl", out var path);
+        var spool = new TelemetrySpool(path);
+        const string key = "0123456789abcdef0123456789abcdef";
+
+        spool.Append([new TelemetryEvent(
+            "cli_setup_started",
+            new JsonObject { ["source"] = "cli", [SetupJoin.PropertyName] = key },
+            DateTimeOffset.UnixEpoch)]);
+
+        await Assert.That(await File.ReadAllTextAsync(path)).DoesNotContain(key);
+    }
+
+    // Stripping one property must not cost the rest of the event: a parked report is still replayed
+    // in full, minus the key.
+    [Test]
+    public async Task Stripping_the_key_leaves_every_other_property_intact() {
+        using var tmp = TempDir.WithPathTo("telemetry-spool.jsonl", out var path);
+        var spool = new TelemetrySpool(path);
+
+        spool.Append([new TelemetryEvent(
+            "cli_setup_started",
+            new JsonObject {
+                ["source"]               = "cli",
+                ["has_existing_profile"] = true,
+                [SetupJoin.PropertyName] = "0123456789abcdef0123456789abcdef",
+            },
+            DateTimeOffset.UnixEpoch)]);
+
+        var replayed = spool.DrainAll();
+
+        await Assert.That(replayed.Count).IsEqualTo(1);
+        await Assert.That(replayed[0].Name).IsEqualTo("cli_setup_started");
+        await Assert.That(replayed[0].Properties["source"]!.GetValue<string>()).IsEqualTo("cli");
+        await Assert.That(replayed[0].Properties["has_existing_profile"]!.GetValue<bool>()).IsTrue();
+        await Assert.That(replayed[0].Properties[SetupJoin.PropertyName]).IsNull();
+    }
+
+    // The caller's own event object is shared with the in-memory queue, so stripping must work on a
+    // copy — mutating it here would silently drop the key from an event still awaiting delivery.
+    [Test]
+    public async Task Stripping_does_not_mutate_the_caller_s_event() {
+        using var tmp = TempDir.WithPathTo("telemetry-spool.jsonl", out var path);
+        var spool = new TelemetrySpool(path);
+        var props = new JsonObject { [SetupJoin.PropertyName] = "0123456789abcdef0123456789abcdef" };
+        var e     = new TelemetryEvent("cli_setup_started", props, DateTimeOffset.UnixEpoch);
+
+        spool.Append([e]);
+
+        await Assert.That(props[SetupJoin.PropertyName]).IsNotNull();
+    }
 }

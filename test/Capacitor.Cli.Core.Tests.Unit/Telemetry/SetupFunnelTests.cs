@@ -107,13 +107,16 @@ public class SetupFunnelTests {
         await Assert.That(sink[^1].Properties["agents_configured"]!.GetValue<int>()).IsEqualTo(4);
     }
 
-    // Guards the collision with the server's own cli_setup_completed.
+    // Guards collisions with events OTHER producers own: the server's own cli_setup_completed,
+    // and cli_auth_return, which kcap-web's Worker emits and the CLI never does. Two producers
+    // sharing a name would double-count across two different persons.
     [Test]
     public async Task No_funnel_event_collides_with_a_server_event_name() {
         string[] serverEvents = [
             "user_registered", "user_logged_in", "cli_setup_completed", "session_ingest_started",
             "session_ingest_ended", "eval_ran", "fact_retained", "daemon_connected",
             "daemon_disconnected", "hosted_agent_started", "hosted_agent_ended",
+            "cli_auth_return",
         ];
 
         var sink = StartCapturing();

@@ -1867,9 +1867,11 @@ After adding a remap, re-run `kcap import --org` (or whichever scope you use). T
 
 ### Telemetry
 
-kcap reports anonymous usage data so we can see which commands people use and where setup goes wrong. It records **command and flag names, exit codes, durations, MCP tool names, and setup-funnel steps.** It never records argument values, file paths, repo names or URLs, session ids, transcript content, environment variable values, usernames, or email addresses.
+kcap reports pseudonymous usage data so we can see which commands people use and where setup goes wrong. It records **command and flag names, exit codes, durations, MCP tool names, and setup-funnel steps.** It never records argument values, file paths, repo names or URLs, session ids, transcript content, environment variable values, usernames, or email addresses.
 
 What identifies an installation, stated plainly: a random device id generated once and stored on this machine, so events can be tied to one install over time without naming a person. For a hosted `*.kcap.ai` workspace, every event additionally carries that workspace's slug — as an `org` property and an `organization` group — so usage rolls up per workspace; self-hosted installs never send it, and the slug names a workspace, not a user.
+
+**Signing in also links this install to your browser.** `kcap setup` and `kcap login` mint a `join_id` — a random, single-use key held in memory for that one run and never written to disk — and stamp it on that run's events and on the two signup requests. After the browser finishes signing you in, the closing page navigates once through `kurrent.io` and back, which lets us pair that key with your website analytics identity and with the workspace the run created. What comes back and is stored on CLI events is `web_device_id_capacitor` / `web_device_id_www` — the site's own random analytics ids, never an email address, name, or URL — plus `site_variant`. Together these mean CLI usage **can be associated with a workspace and with the person who created it**, which is why this data is pseudonymous rather than anonymous. Opting out suppresses all of it: no key, no navigation, no extra properties, and the post-login page behaves exactly as it did before.
 
 The first time you run a reportable command, kcap prints a one-time notice to stderr; it never prints again on that machine.
 
