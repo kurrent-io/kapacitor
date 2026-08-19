@@ -275,6 +275,11 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     /// </summary>
     public async Task BeginFirstTurnAsync(CancellationToken ct = default) {
         _dispatcher.Unseal();
+        // If ct fires after the unseal, the held turn/start may already have left (the dispatch used
+        // CancellationToken.None) — cancelling this await does NOT recall it. That is fine: a cancel here
+        // means the orchestrator is aborting the launch and will tear this runtime down, killing the
+        // process; any dispatched turn dies with it, and its late response hits the dispatcher's faulted
+        // guard and is discarded.
         if (_firstTurnDispatch is { } dispatch)
             await dispatch.WaitAsync(ct).ConfigureAwait(false);
     }
@@ -564,10 +569,12 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         _dispatcher.FaultAll(new ObjectDisposedException(nameof(CodexAppServerHostedAgentRuntime)));
 
         // A deferred first turn that was HELD but never begun (teardown before the source claim reached
-        // BeginFirstTurnAsync) leaves _firstTurnDispatch faulted-but-unawaited by the FaultAll above —
-        // observe it so it never surfaces as an unobserved task exception. Harmless if it was already
-        // awaited (the normal path) or completed.
-        _ = _firstTurnDispatch?.ContinueWith(static t => _ = t.Exception, TaskScheduler.Default);
+        // BeginFirstTurnAsync) leaves _firstTurnDispatch faulted-but-unawaited by the FaultAll above.
+        // Await it with SuppressThrowing to OBSERVE the fault (never an unobserved task exception) and to
+        // let Dispose complete only once it settles — it is already faulted/completed here (FaultAll just
+        // ran, or the normal path already awaited it), so this returns immediately.
+        if (_firstTurnDispatch is { } firstTurn)
+            await firstTurn.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
         _forwardBuffer.Complete(); // end the envelope stream so a draining forwarder's ReadAllAsync completes
         _cts.Dispose();
