@@ -12,13 +12,11 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// conversation for nothing.
 /// </remarks>
 internal sealed class StaleAgentDetectorTests {
-    static IReadOnlyList<StaleAgentProcess> Find(
-            int[] pids, Func<int, string?>? cwdOf = null) =>
+    static IReadOnlyList<StaleAgentProcess> Find(int[] pids, Func<int, string?>? cwdOf = null) =>
         StaleAgentDetector.Find(
-            [new StaleAgentTarget("pi", "pi")],
+            [new StaleAgentTarget("kiro", "kiro-cli")],
             _ => pids,
-            cwdOf ?? (_ => "/home/dev/proj"),
-            _ => null);
+            cwdOf ?? (_ => "/home/dev/proj"));
 
     [Test]
     public async Task A_running_session_is_reported_with_where_it_is() {
@@ -46,49 +44,24 @@ internal sealed class StaleAgentDetectorTests {
     [Test]
     public async Task Each_vendor_is_matched_against_its_own_process_name() {
         var stale = StaleAgentDetector.Find(
-            [new StaleAgentTarget("pi", "pi"), new StaleAgentTarget("kiro", "kiro-cli")],
+            [new StaleAgentTarget("codex", "codex"), new StaleAgentTarget("kiro", "kiro-cli")],
             name => name == "kiro-cli" ? [7] : [],
-            _ => null,
             _ => null);
 
         await Assert.That(stale.Select(s => s.Vendor).ToArray()).IsEquivalentTo(["kiro"]);
     }
 
-    // `pi` is a name anything could have, so the agent has to prove itself from its command line.
-    [Test]
-    [Arguments("node /usr/lib/node_modules/pi-coding-agent/dist/cli.js", true)]
-    [Arguments("/opt/raspberrypi/bin/pi --temperature", false)]
-    public async Task A_generic_process_name_must_be_corroborated(string commandLine, bool expected) {
-        var stale = StaleAgentDetector.Find(
-            [new StaleAgentTarget("pi", "pi", "node_modules")],
-            _ => [4821],
-            _ => null,
-            _ => commandLine);
-
-        await Assert.That(stale.Count == 1).IsEqualTo(expected);
-    }
-
-    [Test]
-    public async Task An_unreadable_command_line_disqualifies_rather_than_passes() {
-        // Windows has no cheap way to read one. Unknown is not a licence to tell someone their
-        // session is uncaptured.
-        var stale = StaleAgentDetector.Find(
-            [new StaleAgentTarget("pi", "pi", "node_modules")], _ => [4821], _ => null, _ => null);
-
-        await Assert.That(stale).IsEmpty();
-    }
-
     [Test]
     public async Task The_line_locates_the_session_and_names_the_remedy_that_exists() {
         var line = StaleAgentDetector
-            .Describe([new StaleAgentProcess("pi", 4821, "/home/dev/gaffer")])
+            .Describe([new StaleAgentProcess("kiro", 4821, "/home/dev/gaffer")])
             .Single();
 
         await Assert.That(line).Contains("/home/dev/gaffer");
         await Assert.That(line).Contains("4821");
         // The transcript is on disk either way, so withholding the backfill would name a problem and
         // hide its fix.
-        await Assert.That(line).Contains("kcap import --pi");
+        await Assert.That(line).Contains("kcap import --kiro");
         // But no instruction we cannot complete: only the destructive half of a restart is ours.
         await Assert.That(line.Contains("restart", StringComparison.OrdinalIgnoreCase)).IsFalse();
     }

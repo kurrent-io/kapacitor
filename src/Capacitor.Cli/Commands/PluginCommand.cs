@@ -853,14 +853,10 @@ public static class PluginCommand {
         // Gemini refresh heals MCP + instructions even when a prior version had hooks only.
         if (refreshOnly && !PiExtensionInstaller.IsInstalled(extensionPath)) return 0;
 
-        // Both captured before anything is written. The installed flag, because the install rewrites
-        // the file it would otherwise be read back from; the process set, because a session started
-        // during the install loaded the integration and must not be reported as predating it.
-        var piAlreadyInstalled = PiExtensionInstaller.IsInstalled(extensionPath);
-        var piRunningBefore    = piAlreadyInstalled
-            ? []
-            : env.FindStaleAgents([
-                new StaleAgentTarget("pi", PiPaths.ProcessName, PiPaths.ProcessCommandLineMarker)]);
+        // No stale-session report for Pi: it runs through a node shim, and node's process.title setter
+        // rewrites the argv region — so the process is named `pi` with a command line of just "pi", or
+        // named `node` with the package path intact, never both. A name this generic needs
+        // corroboration, and the only corroborating signal disappears exactly when the name appears.
 
         // Fresh install needs kcap on PATH: both extensions shell out to the bare
         // `kcap` command (ingest → `kcap hook --pi`; bridge → `kcap mcp <name>`), so
@@ -910,8 +906,6 @@ public static class PluginCommand {
 
         if (!args.Contains("--skip-pi-skills"))
             await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
-
-        await ReportStaleAgentsAsync(env, piRunningBefore, installed: !extensionFailed);
 
         // Non-zero only when a FRESH ingest install failed (the integration is incomplete) —
         // the independent MCP bridge + AGENTS.md steering above were still installed.
@@ -1287,11 +1281,6 @@ public static class PluginCommand {
         InstallVendorSkillsAsync(env, env.AntigravitySkillsDir, "Antigravity", refreshOnly);
 
     /// <summary>
-    /// Names any session of this vendor that started before the install, and stops there. A fresh one
-    /// picks the integration up by itself, so silence is the answer for almost everyone — and the
-    /// restart is not ours to offer, since only its destructive half is something we could do.
-    /// </summary>
-    /// <summary>
     /// Reports the sessions sampled before the install, once that install has actually landed. Saying
     /// "anything from now on is captured" after a failed one would be untrue in the direction that
     /// matters.
@@ -1593,11 +1582,7 @@ public static class PluginCommand {
         // can leave an MCP-only install with no agent marker.
         var mcpInstalled = HarnessMcpProjections.Kiro.OwnsAnything(mcpPath);
 
-        // Captured before anything is written, for the same two reasons as Pi above.
         var kiroAlreadyInstalled = KiroHooksInstaller.IsInstalled(agentPath);
-        var kiroRunningBefore    = kiroAlreadyInstalled
-            ? []
-            : env.FindStaleAgents([new StaleAgentTarget("kiro", KiroPaths.ProcessName)]);
 
         if (refreshOnly) {
             // Never touch a machine that never opted in (neither hooks nor MCP).
@@ -1625,6 +1610,13 @@ public static class PluginCommand {
 
             return 1;
         }
+
+        // Sampled after the early returns above and before anything is written: a refresh that bails
+        // should not sweep the process table, and a session started DURING the install loaded the
+        // integration, so it must not be reported as predating it.
+        var kiroRunningBefore = kiroAlreadyInstalled
+            ? []
+            : env.FindStaleAgents([new StaleAgentTarget("kiro", KiroPaths.ProcessName)]);
 
         // Clone/refresh the agent unless a refresh finds it on disk AND current (File.Exists so a
         // deleted kcap.json is recreated). MCP is registered below regardless of the clone outcome.

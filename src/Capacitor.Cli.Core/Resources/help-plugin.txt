@@ -147,13 +147,12 @@ Options:
                       install never fails. Harmless to call by hand.
 
 Notes:
-  A FIRST install of --pi or --kiro names any session of that agent already
-  running: it loaded no integration, so it is not captured live — though the
-  transcript is on disk, and `kcap import --pi` / `--kiro` backfills it once it
-  ends. kcap does not offer to restart it: that would mean killing an interactive
-  session on a terminal it does not own, and nothing could bring it back.
-  Re-running an install you already had says nothing, because that session started
-  with the integration.
+  A FIRST install of --kiro names any Kiro session already running: it loaded no
+  integration, so it is not captured live — though the transcript is on disk, and
+  `kcap import --kiro` backfills it once it ends. kcap does not offer to restart
+  it: that would mean killing an interactive session on a terminal it does not
+  own, and nothing could bring it back. Re-running an install you already had says
+  nothing, because that session started with the integration.
 
   Skills install to ~/.agents/skills/kcap-{recap,errors,hide,disable,
   validate-plan,review-flows,agent-flows,work-items,guided-tour}/.

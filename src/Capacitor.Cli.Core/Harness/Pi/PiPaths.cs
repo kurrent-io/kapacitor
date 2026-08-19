@@ -51,19 +51,6 @@ public static class PiPaths {
 
     public static string KcapExtension(string? home = null) => Path.Combine(ExtensionsDir(home), "kcap.ts");
 
-    /// <summary>
-    /// The running process's name. Too generic to stand alone (see the note above), so a match must be
-    /// corroborated by <see cref="ProcessCommandLineMarker"/>.
-    /// </summary>
-    public const string ProcessName = "pi";
-
-    /// <summary>
-    /// Pi ships as an npm package, so a genuine one runs out of a <c>node_modules</c> tree and its
-    /// command line says so. Requiring it is what separates the agent from any other executable that
-    /// happens to be called <c>pi</c>.
-    /// </summary>
-    public const string ProcessCommandLineMarker = "node_modules";
-
     /// <summary>Marker recording the installed extension version (sibling of kcap.ts).</summary>
     public static string KcapExtensionMarker(string? home = null) => Path.Combine(ExtensionsDir(home), ".kcap-extension-version");
 

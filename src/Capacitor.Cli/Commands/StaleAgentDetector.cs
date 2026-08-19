@@ -4,13 +4,11 @@ namespace Capacitor.Cli.Commands;
 public sealed record StaleAgentProcess(string Vendor, int Pid, string? Cwd);
 
 /// <summary>A vendor whose running sessions predate a first install, and how to recognise one.</summary>
-/// <param name="ProcessName">The process name to match.</param>
-/// <param name="CommandLineMustContain">
-/// A fragment the command line has to carry as well, for a name too generic to stand alone. When set,
-/// a process whose command line cannot be read does not match — unknown is not a licence to guess.
+/// <param name="ProcessName">
+/// The process name to match. It has to be exact enough to stand alone: a real binary like
+/// <c>kiro-cli</c> qualifies, a name anything could have does not.
 /// </param>
-public sealed record StaleAgentTarget(
-    string Vendor, string ProcessName, string? CommandLineMustContain = null);
+public sealed record StaleAgentTarget(string Vendor, string ProcessName);
 
 /// <summary>
 /// Finds agent sessions that were already running when the integration first arrived, so the one case
@@ -28,15 +26,9 @@ public static class StaleAgentDetector {
     public static IReadOnlyList<StaleAgentProcess> Find(
             IEnumerable<StaleAgentTarget>  targets,
             Func<string, IEnumerable<int>> running,
-            Func<int, string?>             cwdOf,
-            Func<int, string?>             commandLineOf) =>
+            Func<int, string?>             cwdOf) =>
         [.. targets.SelectMany(t => running(t.ProcessName)
-                                        .Where(pid => Matches(t, pid, commandLineOf))
                                         .Select(pid => new StaleAgentProcess(t.Vendor, pid, cwdOf(pid))))];
-
-    static bool Matches(StaleAgentTarget target, int pid, Func<int, string?> commandLineOf) =>
-        target.CommandLineMustContain is not { } fragment
-     || commandLineOf(pid)?.Contains(fragment, StringComparison.OrdinalIgnoreCase) == true;
 
     /// <summary>
     /// One line per session, naming where it is so the user can find the right window, and pointing at

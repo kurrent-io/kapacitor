@@ -43,6 +43,7 @@ public sealed record PluginEnvironment(
     public Func<IEnumerable<StaleAgentTarget>, IReadOnlyList<StaleAgentProcess>> FindStaleAgents {
         get; init;
     } = StaleAgentProbe.Find;
+
     public string ClaudeHome          => ClaudePaths.Home(HomeDirectory);
     public string ClaudeUserSettings  => Path.Combine(ClaudeHome, "settings.json");
     public string CodexHome           => CodexPaths.Home(HomeDirectory);
