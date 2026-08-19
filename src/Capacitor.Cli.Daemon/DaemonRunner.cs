@@ -152,6 +152,10 @@ public static partial class DaemonRunner {
         if (Environment.GetEnvironmentVariable("KCAP_CODEX_TRANSPORT") is { Length: > 0 } envCodexTransport)
             config.CodexTransport = envCodexTransport;
 
+        if (Environment.GetEnvironmentVariable("KCAP_CODEX_APPSERVER_APPROVAL_TIMEOUT_SECONDS") is { Length: > 0 } envApprovalTimeout
+         && int.TryParse(envApprovalTimeout, out var approvalTimeoutSeconds) && approvalTimeoutSeconds > 0)
+            config.CodexAppServerApprovalTimeoutSeconds = approvalTimeoutSeconds;
+
         // One resolved fact for both the launch router and the certification advertisement.
         config.CodexAppServerActive = Harness.Codex.CodexTransportDecision.ResolveActive(
             config.CodexTransport, () => ProbeCliVersion(config.CodexPath));
@@ -431,7 +435,8 @@ public static partial class DaemonRunner {
             return new Harness.Codex.CodexHostedAgentRuntimeFactory(
                 (Harness.Codex.CodexLauncher) codexLauncher, pty,
                 sp.GetRequiredService<DaemonConfig>(),
-                sp.GetRequiredService<ILoggerFactory>());
+                sp.GetRequiredService<ILoggerFactory>(),
+                connection: sp.GetRequiredService<ServerConnection>()); // §2.3 interactive approvals
         });
         builder.Services.AddSingleton<IHostedAgentRuntimeFactory>(sp =>
             new AcpHostedAgentRuntimeFactory(

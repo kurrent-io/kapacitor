@@ -31,19 +31,25 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
     readonly ILoggerFactory              _loggerFactory;
     readonly ILogger                     _logger;
     readonly CodexAppServerSpawnFactory  _spawnFactory;
+    readonly ServerConnection?           _connection;
 
     /// <param name="spawnFactory">Test seam only: production passes <see langword="null"/> and the
     /// real <c>codex app-server</c> child is spawned via <see cref="Process"/>. A test can substitute
     /// an in-process fake peer to drive the app-server route without a child process.</param>
+    /// <param name="connection">The server connection whose <c>RequestAcpInteractionAsync</c> forwards an
+    /// interactive launch's approvals to the user (§2.3). Null in tests that never exercise interactive
+    /// approvals; reviewers (approvalPolicy:never) never build an approval bridge regardless.</param>
     public CodexHostedAgentRuntimeFactory(
             CodexLauncher launcher, IHostedAgentRuntimeFactory ptyDelegate, DaemonConfig config,
-            ILoggerFactory loggerFactory, CodexAppServerSpawnFactory? spawnFactory = null) {
+            ILoggerFactory loggerFactory, CodexAppServerSpawnFactory? spawnFactory = null,
+            ServerConnection? connection = null) {
         _launcher      = launcher;
         _pty           = ptyDelegate;
         _config        = config;
         _loggerFactory = loggerFactory;
         _logger        = loggerFactory.CreateLogger<CodexHostedAgentRuntimeFactory>();
         _spawnFactory  = spawnFactory ?? DefaultSpawnFactory;
+        _connection    = connection;
     }
 
     public string Vendor => "codex";
@@ -98,7 +104,10 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
         var runtime = new CodexAppServerHostedAgentRuntime(
             spawn, launch, ctx.ActivityClock,
             _loggerFactory.CreateLogger<CodexAppServerHostedAgentRuntime>(),
-            emitEnvelopeTranscript: emitEnvelopeTranscript);
+            emitEnvelopeTranscript: emitEnvelopeTranscript,
+            agentId: ctx.AgentId,
+            requestInteraction: _connection is { } c ? c.RequestAcpInteractionAsync : null,
+            approvalTimeout: TimeSpan.FromSeconds(Math.Max(1, _config.CodexAppServerApprovalTimeoutSeconds)));
 
         // StartAsync may spawn a child before it throws (a failed hooks/list, thread/start, or initial
         // turn on the fail-closed paths). The orchestrator never receives a runtime it did not get a

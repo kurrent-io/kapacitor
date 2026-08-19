@@ -136,10 +136,20 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     // lands — the signal the orchestrator confirms on. Null with no initial prompt, or single-phase.
     Task? _firstTurnDispatch;
 
+    // §2.3 interactive approvals: non-null only for an INTERACTIVE launch (approvalPolicy != never) that
+    // was given a requestInteraction delegate — it forwards server-initiated requestApproval to the user
+    // and answers with their decision. Null on the reviewer path (never), which keeps DeclineServerRequestAsync.
+    readonly CodexApprovalBridge? _approvalBridge;
+
+    const double DefaultApprovalTimeoutSeconds = 45;
+
     public CodexAppServerHostedAgentRuntime(
             CodexAppServerSpawn spawn, CodexAppServerLaunch launch, AgentActivityClock? clock,
             ILogger logger, TimeProvider? timeProvider = null, TimeSpan? forwardStallTimeout = null,
-            bool emitEnvelopeTranscript = false, bool deferFirstTurn = false) {
+            bool emitEnvelopeTranscript = false, bool deferFirstTurn = false,
+            string? agentId = null,
+            Func<AcpInteractionRequest, CancellationToken, Task<AcpInteractionDecision>>? requestInteraction = null,
+            TimeSpan? approvalTimeout = null) {
         _spawn   = spawn;
         _launch  = launch;
         _clock   = clock;
@@ -147,6 +157,14 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         _time    = timeProvider ?? TimeProvider.System;
         _emitEnvelopeTranscript = emitEnvelopeTranscript;
         _deferFirstTurn = deferFirstTurn;
+        // Interactive iff approvals are actually raised (never ⇒ reviewer ⇒ decline path) AND we can both
+        // correlate (agentId) and reach the user (requestInteraction).
+        if (requestInteraction is not null && agentId is not null
+         && !string.Equals(_launch.Approval, "never", StringComparison.Ordinal)) {
+            _approvalBridge = new CodexApprovalBridge(
+                requestInteraction, agentId, logger,
+                approvalTimeout ?? TimeSpan.FromSeconds(DefaultApprovalTimeoutSeconds));
+        }
         _dispatcher = new CodexTurnInputDispatcher(
             startTurn: IssueTurnStartAsync, steerTurn: IssueTurnSteerAsync,
             logger: logger, ct: _cts.Token, onTurnInFlight: flip => _clock?.SetTurnInFlight(flip),
@@ -290,7 +308,9 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         _process    = process;
 
         connection.OnNotification  += HandleNotification;
-        connection.OnServerRequest  = DeclineServerRequestAsync;
+        // Interactive launches forward requestApproval to the user (§2.3); reviewers (approvalPolicy:never)
+        // keep declining, since a request there is a protocol violation, not a prompt.
+        connection.OnServerRequest  = _approvalBridge is { } bridge ? bridge.HandleAsync : DeclineServerRequestAsync;
 
         _childCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
         _runLoop  = RunConnectionAsync(connection, _childCts.Token);

@@ -24,15 +24,17 @@ public class CodexAppServerHostedAgentRuntimeTests {
         public ValueTask DisposeAsync() { HasExited = true; return ValueTask.CompletedTask; }
     }
 
-    static CodexAppServerLaunch Launch(string? model = null, string? prompt = null, string sandbox = "read-only", string? effort = null) =>
+    static CodexAppServerLaunch Launch(string? model = null, string? prompt = null, string sandbox = "read-only",
+            string? effort = null, string approval = "never") =>
         new(Cwd: "/tmp/wt", Model: model, Effort: effort, InitialPrompt: prompt, Sandbox: sandbox,
-            Approval: "never", WritableRoots: ["/tmp/wt"], ClientVersion: "0.146.0");
+            Approval: approval, WritableRoots: ["/tmp/wt"], ClientVersion: "0.146.0");
 
     /// <summary>Builds a spawn delegate that hands each spawn a fresh fake (indexed), recording the
     /// seed passed on each call so the restart path is assertable.</summary>
     static (CodexAppServerHostedAgentRuntime Runtime, List<string?> Seeds, Func<int, FakeCodexAppServer> Fake)
             Build(Func<int, FakeCodexAppServer> fakeFor, CodexAppServerLaunch launch,
-                  bool emitEnvelopes = false, bool deferFirstTurn = false) {
+                  bool emitEnvelopes = false, bool deferFirstTurn = false,
+                  Func<AcpInteractionRequest, CancellationToken, Task<AcpInteractionDecision>>? requestInteraction = null) {
         var seeds  = new List<string?>();
         var fakes  = new List<FakeCodexAppServer>();
         var index  = 0;
@@ -47,7 +49,10 @@ public class CodexAppServerHostedAgentRuntimeTests {
 
         var runtime = new CodexAppServerHostedAgentRuntime(
             spawn, launch, clock: null, NullLogger.Instance,
-            emitEnvelopeTranscript: emitEnvelopes, deferFirstTurn: deferFirstTurn);
+            emitEnvelopeTranscript: emitEnvelopes, deferFirstTurn: deferFirstTurn,
+            agentId: requestInteraction is null ? null : "agent-1",
+            requestInteraction: requestInteraction,
+            approvalTimeout: TimeSpan.FromSeconds(5));
         return (runtime, seeds, i => fakes[i]);
     }
 
@@ -246,6 +251,26 @@ public class CodexAppServerHostedAgentRuntimeTests {
         // The client answered the approval with a valid decline result, never a JSON-RPC error.
         await Assert.That(fake.ApprovalResponse).IsNotNull();
         await Assert.That(fake.ApprovalResponse!.Value.GetProperty("decision").GetString()).IsEqualTo("decline");
+
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Interactive_approval_is_forwarded_and_the_user_decision_is_returned_on_the_wire() {
+        // An interactive launch (approvalPolicy != never) with a requestInteraction delegate routes the
+        // server's approval request to the user and answers with their mapped decision — NOT the reviewer
+        // decline. This proves the OnServerRequest wiring reaches the bridge end to end.
+        var fake = new FakeCodexAppServer { InjectApprovalDuringTurn = true };
+        var (runtime, _, _) = Build(_ => fake, Launch(approval: "on-request"),
+            requestInteraction: (_, _) => Task.FromResult(
+                new AcpInteractionDecision("allow", "accept", "Allow", null, null, null)));
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await runtime.SendUserInputAsync("do it").WaitAsync(HangGuard);
+        await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(fake.ApprovalResponse).IsNotNull();
+        await Assert.That(fake.ApprovalResponse!.Value.GetProperty("decision").GetString()).IsEqualTo("accept");
 
         await runtime.DisposeAsync();
     }
