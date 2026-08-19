@@ -127,7 +127,6 @@ public static class ImportScopeArgs {
         // Every value must parse before any is used: a malformed one is a usage error, and importing
         // the rest would act on a command the user did not write.
         var repos = new List<(string Owner, string Name)>();
-        var seen  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var value in f.RepoArgs) {
             if (value is "." or "current") {
@@ -140,7 +139,7 @@ public static class ImportScopeArgs {
                     );
                 }
 
-                Add(input.CurrentRepo.Value);
+                repos.Add(input.CurrentRepo.Value);
 
                 continue;
             }
@@ -160,15 +159,10 @@ public static class ImportScopeArgs {
                 );
             }
 
-            Add((parts[0], parts[1]));
+            repos.Add((parts[0], parts[1]));
         }
 
+        // `--repo . --repo owner/name` naming the same repo twice is one selection; the scope dedupes.
         return new(new ImportScope.Repo(repos), f.Yes, f.Private, null);
-
-        // `--repo . --repo owner/name` naming the same repo twice must not double-count it in the
-        // confirmation summary.
-        void Add((string Owner, string Name) repo) {
-            if (seen.Add($"{repo.Owner}/{repo.Name}")) repos.Add(repo);
-        }
     }
 }

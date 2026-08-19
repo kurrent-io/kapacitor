@@ -837,12 +837,6 @@ static class ImportCommand {
 
         var totalAfterScope = filteredPerSource.Sum(d => d.Count);
 
-        if (totalAfterScope == 0) {
-            display.Line("No sessions match the selected scope.");
-
-            return 0;
-        }
-
         // --- Confirmation ---
         var sampleRepos = new List<string>();
 
@@ -875,6 +869,12 @@ static class ImportCommand {
                 display.Line(
                     $"No sessions found for {string.Join(", ", missed.Select(m => $"{m.Owner}/{m.Name}"))} — check the spelling, or `kcap remap` if the directory was renamed.");
             }
+        }
+
+        if (totalAfterScope == 0) {
+            display.Line("No sessions match the selected scope.");
+
+            return 0;
         }
 
         var visibilityDesc = forcePrivate

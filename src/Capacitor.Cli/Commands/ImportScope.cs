@@ -20,7 +20,9 @@ public abstract record ImportScope {
             // means one when the caller meant the other is worth refusing outright.
             if (repos.Count == 0) throw new ArgumentException("A repo scope needs at least one repository.", nameof(repos));
 
-            Repos = repos;
+            // Stored deduped, so this really is a set: naming a repo twice is one selection, and
+            // equality and hashing below can agree without reasoning about multiplicity.
+            Repos = [.. repos.Distinct(RepoComparer)];
         }
 
         public Repo(string owner, string name) : this([(owner, name)]) { }
@@ -28,9 +30,12 @@ public abstract record ImportScope {
         public IReadOnlyList<(string Owner, string Name)> Repos { get; }
 
         // A record over a list compares by reference, which would quietly drop the value equality the
-        // single-repo shape had before it held a collection.
+        // single-repo shape had before it held a collection. Sound because Repos is deduped: set
+        // equality and an order-insensitive XOR agree only when neither side repeats an entry.
         public bool Equals(Repo? other) =>
-            other is not null && Repos.Count == other.Repos.Count && !Repos.Except(other.Repos, RepoComparer).Any();
+            other is not null
+         && Repos.Count == other.Repos.Count
+         && !Repos.Except(other.Repos, RepoComparer).Any();
 
         public override int GetHashCode() =>
             Repos.Aggregate(0, (acc, r) => acc ^ RepoComparer.GetHashCode(r));
