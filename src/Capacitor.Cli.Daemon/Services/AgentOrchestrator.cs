@@ -776,16 +776,26 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// <para><b>Decision table</b>, in this order. A <see cref="TimeSpan.Zero"/> config value disables
     /// its own rule:
     /// <list type="number">
-    /// <item><see cref="DaemonConfig.ReviewerMaxLifetime"/> (6h) vs <c>AgeMs</c> ⇒
-    ///   <c>reviewer_ttl_expired</c>. Absolute, checked first — it holds regardless of activity or a
-    ///   held turn.</item>
+    /// <item>the HARD lifetime ceiling — <see cref="DaemonConfig.ReviewerMaxLifetime"/> plus one
+    ///   <see cref="DaemonConfig.ReviewerTurnWedgeCeiling"/> — vs <c>AgeMs</c> ⇒
+    ///   <c>reviewer_ttl_expired</c>, unfenced. Absolute: it holds regardless of activity or a held
+    ///   turn, so a runaway turn (or output stream) that keeps advancing the seq stays mortal.</item>
+    /// <item><see cref="DaemonConfig.ReviewerMaxLifetime"/> (6h) vs <c>AgeMs</c> with NO turn held ⇒
+    ///   <c>reviewer_ttl_expired</c>, FENCED on activity: reaping an actively-working reviewer
+    ///   mid-round burns the dispatched round and its accumulated context, so a held turn defers
+    ///   the cap (bounded by rule 1) and a delivery racing the sweep aborts the claim — the reap
+    ///   lands on the first genuinely quiet sweep past the lifetime instead. A disabled wedge
+    ///   ceiling collapses rule 1 onto the lifetime, restoring the original absolute cap.</item>
     /// <item>a HELD TURN suppresses the idle rule (a long tool run is legitimate) UNLESS
     ///   <c>IdleForMs</c> passes <see cref="DaemonConfig.ReviewerTurnWedgeCeiling"/> ⇒
     ///   <c>turn_wedged</c>. Any mid-turn envelope calls <c>Advance()</c> and re-arms it, so only a
     ///   genuinely frozen turn is wedge-reaped.</item>
     /// <item><see cref="DaemonConfig.ReviewerIdleTimeout"/> (2h) vs <c>IdleForMs</c> ⇒
     ///   <c>reviewer_idle_expired</c>.</item>
-    /// </list></para>
+    /// </list>
+    /// A PTY vendor never sets <c>TurnInFlight</c>, so mid-round it gets only rule 2's activity
+    /// fence (every output chunk advances the seq), not rule 2's held-turn deferral — a quiet
+    /// tool wait past the lifetime can still be reaped there.</para>
     ///
     /// <para><b>The server's <see cref="AgentInstance.InactivityBoundSeconds"/> must never appear in
     /// that table.</b> It is ROUND-SCOPED — the server applies it only while a round is in flight, and
@@ -818,11 +828,26 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             var clock = a.ActivityClock.Snapshot();
 
             if (_config.ReviewerMaxLifetime > TimeSpan.Zero && clock.AgeMs > (ulong) _config.ReviewerMaxLifetime.TotalMilliseconds) {
-                // The absolute cap is deliberately NOT activity-fenced: it fires regardless of how
-                // active the reviewer is (that is what "absolute" means here), so a delivery racing it
-                // must not abort it.
-                result.Add(new ReapCandidate(a, "reviewer_ttl_expired", clock.ActivitySeq, FencedOnActivity: false));
-                continue;
+                var graceMs = _config.ReviewerTurnWedgeCeiling > TimeSpan.Zero
+                    ? (ulong) _config.ReviewerTurnWedgeCeiling.TotalMilliseconds
+                    : 0UL;
+
+                if (clock.AgeMs > (ulong) _config.ReviewerMaxLifetime.TotalMilliseconds + graceMs) {
+                    // The hard ceiling is deliberately NOT activity-fenced: it fires regardless of how
+                    // active the reviewer is (that is what "absolute" means here), so a delivery racing
+                    // it must not abort it.
+                    result.Add(new ReapCandidate(a, "reviewer_ttl_expired", clock.ActivitySeq, FencedOnActivity: false));
+                    continue;
+                }
+
+                if (!clock.TurnInFlight) {
+                    // Fenced: a delivery between this selection and the claim means a round just
+                    // started — abort and let a quieter sweep reap it (decision table rule 2).
+                    result.Add(new ReapCandidate(a, "reviewer_ttl_expired", clock.ActivitySeq, FencedOnActivity: true));
+                    continue;
+                }
+                // Past the lifetime with a held turn: deferred to the hard ceiling. Fall through so
+                // the wedge rule still owns a frozen turn.
             }
 
             if (clock.TurnInFlight) {

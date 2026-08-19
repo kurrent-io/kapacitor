@@ -434,11 +434,12 @@ public class ReviewerReapingTests {
         await Assert.That(server.StatusReportCount).IsEqualTo(reportsAtClaim);
     }
 
-    /// <summary>The fence is scoped to the "nothing has happened" rules. The 6h absolute cap is not one
-    /// of them: it reaps a reviewer that is demonstrably active — here one that took a round AFTER
-    /// selection, advancing the very generation the idle/wedge rules would have aborted on — because
-    /// "absolute" is exactly what it means. Without the scoping, the one rule that guarantees a leaked
-    /// daemon slot is eventually reclaimed becomes indefinitely deferrable by traffic.</summary>
+    /// <summary>The fence is scoped to the "nothing has happened" rules. The hard lifetime ceiling
+    /// (lifetime + one wedge ceiling) is not one of them: it reaps a reviewer that is demonstrably
+    /// active — here one that took a round AFTER selection, advancing the very generation the
+    /// idle/wedge rules would have aborted on — because "absolute" is exactly what it means. Without
+    /// the scoping, the one rule that guarantees a leaked daemon slot is eventually reclaimed becomes
+    /// indefinitely deferrable by traffic.</summary>
     [Test]
     public async Task Max_lifetime_reaps_regardless_of_delivery() {
         var server = new CaptureServerConnection();
@@ -451,7 +452,7 @@ public class ReviewerReapingTests {
         var agent = orch.SeedAgentForTest("ttl-reap", LaunchKind.ReviewFlow, status: "Running",
             pty: new RecordingPtyProcess(), activityClock: clock);
 
-        time.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1)); // past the 6h absolute cap
+        time.Advance(TimeSpan.FromHours(7) + TimeSpan.FromMinutes(1)); // past the 6h+60m hard ceiling
 
         var candidate = orch.FindReviewersToReap().Single(c => c.Id == "ttl-reap");
         await Assert.That(candidate.Reason).IsEqualTo("reviewer_ttl_expired");
@@ -507,7 +508,7 @@ public class ReviewerReapingTests {
         var expired = orch.SeedAgentForTest("parked-ttl", LaunchKind.ReviewFlow, status: "Running",
             pty: ttlPty, activityClock: ttlClock);
 
-        ttlTime.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1));
+        ttlTime.Advance(TimeSpan.FromHours(7) + TimeSpan.FromMinutes(1)); // past the 6h+60m hard ceiling
 
         var ttlCandidate = orch.FindReviewersToReap().Single(c => c.Id == "parked-ttl");
         await Assert.That(ttlCandidate.Reason).IsEqualTo("reviewer_ttl_expired");
@@ -586,7 +587,7 @@ public class ReviewerReapingTests {
         var agent = orch.SeedAgentForTest("parked-exit", LaunchKind.ReviewFlow, status: "Running",
             pty: pty, activityClock: clock);
 
-        time.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1));
+        time.Advance(TimeSpan.FromHours(7) + TimeSpan.FromMinutes(1)); // past the 6h+60m hard ceiling
 
         var candidate = orch.FindReviewersToReap().Single(c => c.Id == "parked-exit");
         await Assert.That(candidate.Reason).IsEqualTo("reviewer_ttl_expired");
@@ -641,7 +642,7 @@ public class ReviewerReapingTests {
         var agent = orch.SeedAgentForTest("healthy-in-flight", LaunchKind.ReviewFlow, status: "Running",
             pty: pty, activityClock: clock);
 
-        time.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1));
+        time.Advance(TimeSpan.FromHours(7) + TimeSpan.FromMinutes(1)); // past the 6h+60m hard ceiling
 
         var candidate = orch.FindReviewersToReap().Single(c => c.Id == "healthy-in-flight");
         await Assert.That(candidate.Reason).IsEqualTo("reviewer_ttl_expired");

@@ -57,6 +57,99 @@ public class ReviewerTtlTests {
         await Assert.That(reap.Select(r => r.Id)).DoesNotContain("rev-fresh");
     }
 
+    /// <summary>A held turn defers the absolute lifetime cap: past the 6h lifetime but under the
+    /// 6h+60m hard ceiling with a turn in flight (an actively-working reviewer mid-round) must NOT
+    /// be reaped — killing it here burns the dispatched round and the reviewer's accumulated
+    /// context. The wedge rule still owns a frozen turn.</summary>
+    [Test]
+    public async Task Held_turn_defers_the_lifetime_cap_under_the_hard_ceiling() {
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        // defaults: 6h lifetime, 60m wedge ceiling → hard ceiling 7h.
+
+        var time  = new FakeTimeProvider();
+        var clock = new AgentActivityClock(time);
+        time.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(10));
+        clock.SetTurnInFlight(true);
+        clock.Advance(); // round input just delivered; the turn is genuinely active (idle ~0)
+
+        orch.SeedAgentForTest("rev-mid-turn", LaunchKind.ReviewFlow, status: "Running", activityClock: clock);
+
+        await Assert.That(orch.FindReviewersToReap().Select(r => r.Id)).DoesNotContain("rev-mid-turn");
+    }
+
+    /// <summary>The deferral is bounded: a held turn past the 6h+60m hard ceiling is reaped
+    /// unfenced (<c>FencedOnActivity: false</c>) however active it is — a runaway turn that keeps
+    /// advancing the seq forever must stay mortal.</summary>
+    [Test]
+    public async Task Held_turn_past_the_hard_ceiling_is_reaped_unfenced() {
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var time  = new FakeTimeProvider();
+        var clock = new AgentActivityClock(time);
+        time.Advance(TimeSpan.FromHours(7) + TimeSpan.FromMinutes(1));
+        clock.SetTurnInFlight(true);
+        clock.Advance(); // still active — activity must not defer the hard ceiling
+
+        orch.SeedAgentForTest("rev-runaway", LaunchKind.ReviewFlow, status: "Running", activityClock: clock);
+
+        var reap = orch.FindReviewersToReap();
+
+        await Assert.That(AgentOrchestratorHarness.Verdicts(reap)).Contains(("rev-runaway", "reviewer_ttl_expired"));
+        await Assert.That(reap.Single(r => r.Id == "rev-runaway").FencedOnActivity).IsFalse();
+    }
+
+    /// <summary>With no turn held, the lifetime candidate under the hard ceiling is fenced on
+    /// activity — a delivery or output racing the sweep (a round just started) aborts the claim,
+    /// and the reviewer is reaped at the first genuinely quiet sweep instead. Past the hard
+    /// ceiling the candidate reverts to unfenced (the absolute backstop).</summary>
+    [Test]
+    public async Task Lifetime_candidate_without_a_turn_is_fenced_until_the_hard_ceiling() {
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var midBandTime  = new FakeTimeProvider();
+        var midBandClock = new AgentActivityClock(midBandTime);
+        midBandTime.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(10));
+        orch.SeedAgentForTest("rev-quiet", LaunchKind.ReviewFlow, status: "Running", activityClock: midBandClock);
+
+        var pastCapTime  = new FakeTimeProvider();
+        var pastCapClock = new AgentActivityClock(pastCapTime);
+        pastCapTime.Advance(TimeSpan.FromHours(7) + TimeSpan.FromMinutes(1));
+        orch.SeedAgentForTest("rev-past-cap", LaunchKind.ReviewFlow, status: "Running", activityClock: pastCapClock);
+
+        var reap = orch.FindReviewersToReap();
+
+        await Assert.That(AgentOrchestratorHarness.Verdicts(reap)).Contains(("rev-quiet", "reviewer_ttl_expired"));
+        await Assert.That(reap.Single(r => r.Id == "rev-quiet").FencedOnActivity).IsTrue();
+        await Assert.That(AgentOrchestratorHarness.Verdicts(reap)).Contains(("rev-past-cap", "reviewer_ttl_expired"));
+        await Assert.That(reap.Single(r => r.Id == "rev-past-cap").FencedOnActivity).IsFalse();
+    }
+
+    /// <summary>A disabled wedge ceiling (<c>Zero</c>) removes the held-turn deferral rather than
+    /// making it unbounded: with no frozen-turn backstop the lifetime cap keeps its original
+    /// absolute, unfenced bite even mid-turn.</summary>
+    [Test]
+    public async Task Disabled_wedge_ceiling_restores_the_absolute_unfenced_cap() {
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+            configure: c => c.ReviewerTurnWedgeCeiling = TimeSpan.Zero);
+
+        var time  = new FakeTimeProvider();
+        var clock = new AgentActivityClock(time);
+        time.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1));
+        clock.SetTurnInFlight(true);
+        clock.Advance();
+
+        orch.SeedAgentForTest("rev-no-wedge", LaunchKind.ReviewFlow, status: "Running", activityClock: clock);
+
+        var reap = orch.FindReviewersToReap();
+
+        await Assert.That(AgentOrchestratorHarness.Verdicts(reap)).Contains(("rev-no-wedge", "reviewer_ttl_expired"));
+        await Assert.That(reap.Single(r => r.Id == "rev-no-wedge").FencedOnActivity).IsFalse();
+    }
+
     [Test]
     public async Task FindReviewersToReap_disabled_when_bounds_are_zero() {
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
