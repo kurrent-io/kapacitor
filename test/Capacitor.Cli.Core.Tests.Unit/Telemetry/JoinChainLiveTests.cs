@@ -43,6 +43,10 @@ public class JoinChainLiveTests : IDisposable {
 
     const string CapDeviceId = "e2e-cap-device";
 
+    /// <summary>Stands in for the per-login CSRF state OidcClient puts in the authorize URL. The
+    /// closing page's redirect is gated on the callback echoing it.</summary>
+    const string E2eState = "e2e-fake-state";
+
     [Test]
     public async Task The_whole_chain_carries_the_key_out_and_the_web_identity_back() {
         var baseUrl = Environment.GetEnvironmentVariable(GateEnvVar);
@@ -79,7 +83,11 @@ public class JoinChainLiveTests : IDisposable {
                 DrainCap = TimeSpan.FromSeconds(30), DisposeWait = TimeSpan.FromSeconds(10),
             };
 
-            var invoke = browser.InvokeAsync(new BrowserOptions("http://example.test/authorize", redirect));
+            // The authorize URL carries the CSRF state OidcClient generates per login, and the
+            // callback below echoes it — the redirect is gated on that match, so an authorize URL
+            // without it would (correctly) suppress the whole chain.
+            var invoke = browser.InvokeAsync(
+                new BrowserOptions($"http://example.test/authorize?state={E2eState}", redirect));
 
             // Stand in for the browser: carry the site's cookies, and follow redirects the way a
             // navigation would. $device_id only — see the class doc on firing no event.
@@ -94,7 +102,7 @@ public class JoinChainLiveTests : IDisposable {
             using var http    = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
 
             // 1. The callback lands on the CLI's own listener and gets today's page plus a redirect.
-            var closing = await http.GetStringAsync($"{redirect}?code=e2e-fake-code&state=e2e-fake-state");
+            var closing = await http.GetStringAsync($"{redirect}?code=e2e-fake-code&state={E2eState}");
             await Assert.That(closing).Contains("Authentication successful!");
 
             var emitted = Regex.Match(closing, @"location\.replace\(""([^""]+)""\)");

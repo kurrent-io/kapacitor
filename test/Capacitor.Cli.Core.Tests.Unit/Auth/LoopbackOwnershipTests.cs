@@ -25,12 +25,21 @@ namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 /// below can prove it actually detects, against a synthetic fixture rather than real source.</para>
 ///
 /// <para><b>Two checks, because pattern matching over source can always be out-spelled.</b> The
-/// scanner tolerates trivia and qualification between <c>new</c> and the argument list — a literal
-/// <c>"new LoopbackBrowser("</c> search missed <c>new LoopbackBrowser /* c */ (…)</c>, a line break
-/// before the paren, and a <c>global::</c>-qualified name, all of which compile. Since no such
-/// pattern can be proven complete, <see cref="Only_the_known_files_name_the_browser_type_at_all"/>
-/// additionally pins the set of files allowed to NAME the type at all: whatever syntax a new lane
-/// invents, it has to name it, so that assertion is the one no spelling slips past.</para>
+/// scanner tolerates trivia and qualification between <c>new</c> and the argument list, and resolves
+/// <c>using</c> aliases — a literal <c>"new LoopbackBrowser("</c> search missed
+/// <c>new LoopbackBrowser /* c */ (…)</c>, a line break before the paren, a <c>global::</c>-qualified
+/// name, and <c>new LB(…)</c> behind an alias, all of which compile.
+/// <see cref="Only_the_known_files_name_the_browser_type_at_all"/> additionally pins the set of files
+/// allowed to NAME the type at all, which catches a construction in a file nobody thought about.</para>
+///
+/// <para><b>What this still does not guarantee.</b> An earlier version of this comment claimed the
+/// file-set check was the backstop no spelling could slip past. That was wrong, and a reviewer
+/// disproved it with a two-line refactor: a <c>using</c> alias inside an ALREADY-allowlisted file
+/// leaves the file set unchanged while hiding the construction from a name-based pattern. Aliases are
+/// handled now, but the shape of that hole is general — a factory method, a generic
+/// <c>Activator</c>-style construction, or reflection inside an allowlisted file would each still be
+/// invisible. Nothing text-based closes that; only a semantic model would. This guard is a high-value
+/// tripwire for the mistakes people actually make, not a proof.</para>
 /// </summary>
 public class LoopbackOwnershipTests {
     /// <summary>
@@ -38,9 +47,25 @@ public class LoopbackOwnershipTests {
     /// <c>new</c>, an optional <c>global::</c> and dotted namespace qualification, and block comments
     /// between the type name and the argument list.
     /// </summary>
-    static readonly Regex Construction = new(
-        @"new\s+(?:global\s*::\s*)?(?:[A-Za-z_]\w*\s*\.\s*)*LoopbackBrowser\s*(?:/\*.*?\*/\s*)*\(",
+    static readonly Regex Construction = ConstructionOf("LoopbackBrowser");
+
+    /// <summary>
+    /// A construction of <paramref name="typeName"/>, tolerating what the compiler tolerates: any
+    /// whitespace or line break after <c>new</c>, an optional <c>global::</c> and dotted namespace
+    /// qualification, and block comments between the type name and the argument list.
+    /// </summary>
+    static Regex ConstructionOf(string typeName) => new(
+        $@"new\s+(?:global\s*::\s*)?(?:[A-Za-z_]\w*\s*\.\s*)*{Regex.Escape(typeName)}\s*(?:/\*.*?\*/\s*)*\(",
         RegexOptions.Compiled | RegexOptions.Singleline);
+
+    /// <summary>
+    /// A <c>using X = …LoopbackBrowser;</c> alias. Aliasing defeats a name-based scan while leaving
+    /// the type named in the file, so it slips past a filename allowlist too — the one spelling that
+    /// beat both checks at once.
+    /// </summary>
+    static readonly Regex Alias = new(
+        @"^\s*using\s+(?<alias>[A-Za-z_]\w*)\s*=\s*(?:global\s*::\s*)?(?:[A-Za-z_]\w*\s*\.\s*)*LoopbackBrowser\s*;",
+        RegexOptions.Compiled | RegexOptions.Multiline);
 
     /// <summary>An externally supplied browser that would notice being disposed by the callee.</summary>
     sealed class DisposableFakeBrowser(string query) : IBrowser, IDisposable {
@@ -94,7 +119,12 @@ public class LoopbackOwnershipTests {
         foreach (var file in SourceFiles(srcRoot)) {
             var source = File.ReadAllText(file);
 
-            foreach (var match in Construction.Matches(source).Cast<Match>()) {
+            // The type's own name, plus every local alias for it.
+            var patterns = new List<Regex> { Construction };
+            foreach (var alias in Alias.Matches(source).Cast<Match>())
+                patterns.Add(ConstructionOf(alias.Groups["alias"].Value));
+
+            foreach (var match in patterns.SelectMany(p => p.Matches(source).Cast<Match>())) {
                 var at        = match.Index;
                 var lineStart = source.LastIndexOf('\n', at) + 1;
 
@@ -317,7 +347,8 @@ public class LoopbackOwnershipTests {
 
         await Assert.That(naming).IsEquivalentTo(BrowserNamingFiles.Order().ToArray())
             .Because("a file newly naming the type may be constructing one in a spelling the scanner "
-                   + "does not anticipate — add it here only after checking the construction is owned");
+                   + "does not anticipate — add it here only after checking the construction is owned "
+                   + "and passes the join, since this check cannot verify that itself");
     }
 
     /// <summary>Files under <c>src/</c> permitted to name <see cref="LoopbackBrowser"/>: the class
@@ -327,6 +358,46 @@ public class LoopbackOwnershipTests {
     static readonly string[] BrowserNamingFiles = [
         "LoopbackBrowser.cs", "OAuthLoginFlow.cs", "OnboardingFacade.cs", "SetupJoin.cs", "SetupCommand.cs",
     ];
+
+    // A using-alias inside a file that is ALREADY allowlisted defeats both other checks at once: the
+    // alias declaration still names the type, so the file-set assertion is unchanged, while
+    // `new LB(...)` names nothing the construction pattern looks for. A realistic refactor in one of
+    // the two constructing flows, so the scanner resolves aliases and matches them too.
+    [Test]
+    public async Task Scanner_follows_a_using_alias_to_the_construction() {
+        using var tmp = new TempDir();
+
+        tmp.CreateFile("Aliased.cs", [
+            "using LB = Capacitor.Cli.Core.Auth.LoopbackBrowser;",
+            "namespace Fixture;",
+            "static class Aliased {",
+            "    static void Go() {",
+            "        var browser = new LB(progress: progress);",
+            "    }",
+            "}",
+        ]);
+
+        await Assert.That(FindSites(tmp.Path).Count).IsEqualTo(1);
+        await Assert.That(FindOwnershipViolations(tmp.Path).Count).IsEqualTo(2);
+    }
+
+    // An alias for something else must not turn every `new X(...)` in the file into a phantom site.
+    [Test]
+    public async Task Scanner_ignores_an_alias_for_an_unrelated_type() {
+        using var tmp = new TempDir();
+
+        tmp.CreateFile("OtherAlias.cs", [
+            "using LB = System.Text.StringBuilder;",
+            "namespace Fixture;",
+            "static class OtherAlias {",
+            "    static void Go() {",
+            "        var sb = new LB();",
+            "    }",
+            "}",
+        ]);
+
+        await Assert.That(FindSites(tmp.Path)).IsEmpty();
+    }
 
     // A doc comment showing the construction is documentation, not a leak.
     [Test]

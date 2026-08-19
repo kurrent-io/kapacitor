@@ -54,15 +54,92 @@ public class LoopbackBrowserTests {
         return false;
     }
 
+    /// <summary>The CSRF state OidcClient puts in the authorize URL, which the redirect is gated on.
+    /// Every test that expects a redirect echoes this back on the callback, exactly as the browser
+    /// does.</summary>
+    const string State = "xyz";
+
     static BrowserOptions Options(string redirect, TimeSpan? timeout = null) =>
         timeout is null
-            ? new BrowserOptions("http://example.test/authorize", redirect)
-            : new BrowserOptions("http://example.test/authorize", redirect) { Timeout = timeout.Value };
+            ? new BrowserOptions($"http://example.test/authorize?state={State}", redirect)
+            : new BrowserOptions($"http://example.test/authorize?state={State}", redirect) { Timeout = timeout.Value };
 
     static (int Port, string Redirect) Loopback() {
         var port = OAuthLoginFlow.GetAvailablePort();
 
         return (port, $"http://127.0.0.1:{port}/callback");
+    }
+
+    // The loopback port is reachable by ANY local process, and a bare `/callback?code=junk` used to
+    // be answered with a page carrying the first-hop URL — join key and all. That made an
+    // unauthenticated request a key-disclosure oracle: read the key out of the HTML, then spend it on
+    // `/joined?j=<stolen>&w1=<attacker id>` before the real browser ever arrives, consuming the
+    // one-shot and merging attacker-chosen ids into this run's telemetry. The downstream CSRF check
+    // only makes AUTHENTICATION fail; it cannot un-disclose the key or un-merge the properties.
+    //
+    // So the redirect is gated on the callback echoing the state from the authorize URL, which an
+    // arbitrary local process cannot know. Ending the wait is deliberately NOT gated — that
+    // behaviour, and the local denial-of-service it allows, predate this feature and are unchanged.
+    [Test]
+    [Arguments("?code=abc")]                     // no state at all
+    [Arguments("?code=abc&state=")]              // empty state
+    [Arguments("?code=abc&state=guessed")]       // wrong state
+    [Arguments("?code=abc&state=xyz%20")]        // near-miss on the real state
+    public async Task A_callback_without_the_authorize_state_is_not_told_the_key(string callback) {
+        var (port, redirect) = Loopback();
+        var join = new RecordingJoin("https://example.test/api/cli/return?j=deadbeef&p=1");
+        using var browser = new LoopbackBrowser(openBrowser: _ => { }, join: join) {
+            DrainCap = TimeSpan.FromSeconds(30), DisposeWait = TimeSpan.FromMilliseconds(200),
+        };
+
+        var invoke = browser.InvokeAsync(Options(redirect));
+
+        using var http = new HttpClient();
+        var body = await (await http.GetAsync($"{redirect}{callback}")).Content.ReadAsStringAsync();
+        await invoke;
+
+        await Assert.That(body).DoesNotContain("deadbeef").Because("the key must not reach an unauthenticated caller");
+        await Assert.That(body).DoesNotContain("location.replace(");
+        // No drain was armed, despite the 30s cap, so the port is reclaimed inline.
+        await Assert.That(await EventuallyFree(port)).IsTrue();
+    }
+
+    // The state gate must not cost the real flow its redirect.
+    [Test]
+    public async Task A_callback_echoing_the_authorize_state_still_gets_the_redirect() {
+        var (port, redirect) = Loopback();
+        var join = new RecordingJoin($"https://example.test/api/cli/return?j=deadbeef&p={port}");
+        using var browser = new LoopbackBrowser(openBrowser: _ => { }, join: join) {
+            DrainCap = TimeSpan.FromMilliseconds(400), DisposeWait = TimeSpan.FromMilliseconds(400),
+        };
+
+        var invoke = browser.InvokeAsync(Options(redirect));
+
+        using var http = new HttpClient();
+        var body = await (await http.GetAsync($"{redirect}?code=abc&state={State}")).Content.ReadAsStringAsync();
+        await invoke;
+
+        await Assert.That(body).Contains("location.replace(");
+        await Assert.That(body).Contains("deadbeef");
+    }
+
+    // An authorize URL with no state cannot authenticate a callback, so it must fail CLOSED rather
+    // than treat "nothing to compare" as a match — otherwise the oracle returns for any caller that
+    // builds its own options.
+    [Test]
+    public async Task An_authorize_url_with_no_state_never_emits_a_redirect() {
+        var (port, redirect) = Loopback();
+        var join = new RecordingJoin("https://example.test/api/cli/return?j=deadbeef&p=1");
+        using var browser = new LoopbackBrowser(openBrowser: _ => { }, join: join);
+
+        var invoke = browser.InvokeAsync(new BrowserOptions("http://example.test/authorize", redirect));
+
+        using var http = new HttpClient();
+        var body = await (await http.GetAsync($"{redirect}?code=abc&state={State}")).Content.ReadAsStringAsync();
+        await invoke;
+
+        await Assert.That(body).DoesNotContain("deadbeef");
+        await Assert.That(await EventuallyFree(port)).IsTrue();
     }
 
     [Test]

@@ -23,11 +23,14 @@ namespace Capacitor.Cli.Core.Auth;
 /// Every other exit (timeout, caller cancel, an auth-error callback, an injected <c>openBrowser</c>
 /// that throws, a closing-page write that throws) keeps ownership and disposes, exactly as before.</para>
 ///
-/// <para>The redirect fires on the same crude test the page itself uses — the callback carried no
-/// <c>error=</c>. That is NOT an auth-success signal: the CSRF state check and the token exchange
-/// both happen after this method returns, so a run that ends up failing authentication entirely
-/// still emits the redirect. Nothing here is on the critical path; the token exchange neither waits
-/// for the hops nor is affected by them.</para>
+/// <para>The redirect needs TWO things: the callback carried no <c>error=</c>, and it echoed the
+/// authorize URL's <c>state</c>. The second is a security control, not a success signal — this port
+/// is reachable by any local process, and without it a bare <c>/callback?code=junk</c> would be
+/// answered with a page containing the join key (see <see cref="StateEchoed"/>). It is still NOT an
+/// auth-success signal: the real CSRF validation and the token exchange both happen after this
+/// method returns, so a run that ends up failing authentication can still have emitted the redirect.
+/// Nothing here is on the critical path; the token exchange neither waits for the hops nor is
+/// affected by them.</para>
 /// </summary>
 /// <param name="hint">
 /// An escape hatch offered while the wait runs, printed under the "visit:" line rather than before it:
@@ -111,9 +114,21 @@ public sealed class LoopbackBrowser(
                 context.Response.Close();
             }
 
-            var query    = context.Request.Url?.Query ?? "";
-            var success  = !query.Contains("error=");
-            var firstHop = success ? SafeFirstHop(port) : null;
+            var query   = context.Request.Url?.Query ?? "";
+            var success = !query.Contains("error=");
+
+            // Gated on the callback echoing the authorize URL's CSRF state, because this port is
+            // reachable by ANY local process and the closing page would otherwise HAND OUT the join
+            // key: a bare `/callback?code=junk` used to be answered with the first-hop URL, key
+            // included. A local process could read it from the HTML and spend it on
+            // `/joined?j=<stolen>&w1=<its own id>` before the real browser arrived, consuming the
+            // one-shot and merging values it chose. The downstream CSRF check cannot undo either —
+            // it only makes authentication fail, after the disclosure.
+            //
+            // Ending the wait is deliberately NOT gated. That behaviour, and the local
+            // denial-of-service it allows, predate this feature; narrowing it here would change the
+            // auth path, which this feature must not do.
+            var firstHop = success && StateEchoed(options, query) ? SafeFirstHop(port) : null;
 
             await WritePageAsync(context, success, redirectTo: firstHop, joined: false);
 
@@ -210,6 +225,39 @@ public sealed class LoopbackBrowser(
 
         try { _listener?.Stop(); } catch { }
         try { _listener?.Close(); } catch { }
+    }
+
+    /// <summary>
+    /// Does this callback prove it came from the browser we sent out? The authorize URL carries an
+    /// unguessable <c>state</c>, generated per login by OidcClient, and only the redirect it produced
+    /// can echo it. Fails CLOSED: no state on either side means nothing to authenticate against, so
+    /// the key is withheld rather than treating "nothing to compare" as a match.
+    /// <para>Never throws — a malformed <c>StartUrl</c> costs the redirect, not the sign-in.</para>
+    /// </summary>
+    static bool StateEchoed(BrowserOptions options, string callbackQuery) {
+        try {
+            var expected = Param(new Uri(options.StartUrl).Query, "state");
+
+            return expected is not null && Param(callbackQuery, "state") == expected;
+        } catch {
+            return false;
+        }
+    }
+
+    // Hand-rolled rather than HttpUtility.ParseQueryString, which is not in the AOT-friendly surface
+    // this assembly sticks to. Mirrors SetupJoin's own parser: an empty value reads as absent.
+    static string? Param(string query, string name) {
+        foreach (var pair in query.TrimStart('?').Split('&')) {
+            var eq = pair.IndexOf('=');
+            if (eq <= 0) continue;
+            if (!string.Equals(pair[..eq], name, StringComparison.Ordinal)) continue;
+
+            var raw = pair[(eq + 1)..];
+
+            return raw.Length == 0 ? null : Uri.UnescapeDataString(raw);
+        }
+
+        return null;
     }
 
     // A faulted accept task with no continuation is an unobserved exception. Preserve the
