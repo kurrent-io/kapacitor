@@ -18,10 +18,17 @@ siloed by project. What is siloed is **person identity**:
 
 So "Reddit ad → site visit → copied install command → `kcap setup` → workspace live → 50 recorded
 sessions" is recorded as four unrelated people. The question the 2026-08-08 telemetry spec set up but
-could not answer — *which acquisition channel produces activated workspaces* — remains unanswerable,
-and the in-flight A/B experiment (`origin/legacy-site-ab-test`) has a primary metric
-(`create_workspace_requested`) that the redesign arm **cannot fire**, because that arm's only signup
-route is the CLI. The arm a person saw is the single fact nobody can attach to a CLI signup today.
+could not answer — *which acquisition channel produces activated workspaces* — remains unanswerable.
+The arm a person saw is the single fact nobody can attach to a CLI signup today.
+
+> **Corrected 2026-08-20.** An earlier draft of this section claimed the marketing A/B experiment's
+> *primary* metric was `create_workspace_requested`, which the redesign arm could not fire. That was
+> read from the branch, not from the experiment. PostHog experiment 90854 — created 2026-08-17, a day
+> after this spec — deliberately makes the primary metric an upstream funnel step (`$pageview` on
+> `/signup` / `/get-started`) precisely because `create_workspace_requested` runs at ~0.17% and is
+> hopelessly underpowered; it is a **secondary** metric there, explicitly labelled directional only.
+> Its owner had already solved that problem. This work still makes CLI signups arm-attributable, which
+> is worth having — but it is not rescuing a broken primary metric, and this spec should not claim it is.
 
 There is a second, subtler split: `www.kurrent.io` and `capacitor.kurrent.io` mint **separate** web
 persons. posthog-js is initialised with no `cookie_domain` and no `cross_subdomain_cookie`
@@ -791,8 +798,11 @@ closed for everyone — inert rather than wrong, but it would read as the featur
 
 **Coverage ramps with upgrades.** Every currently-installed binary has the dead-end page compiled in.
 Arm-attributed CLI signups only appear as people update, so for the first weeks most CLI signups will
-carry no bridge. **The experiment's owner needs to know this before reading any result** — the redesign
-arm's signups are exactly the population that is invisible until this lands and propagates.
+carry no bridge — in **both** arms, not one. (An earlier draft said the redesign arm's signups were
+exclusively CLI and therefore wholly invisible; that was wrong. Experiment 90854 serves
+`/signup/new` and `/signup/provisioning` from the current build to both arms, so both can sign up on
+the web.) Anyone breaking a result down by `site_variant` should know the denominator is
+upgrade-limited at first.
 
 Docs, per the standing same-PR rule: kcap-cli `README.md` Telemetry section (new properties, the
 post-auth navigation, that opt-out suppresses all of it); kcap-web privacy policy; kcap-server README
@@ -825,8 +835,17 @@ closing keyword) and the Linear issue Linear auto-imported from it.
 3. **The person-merge stays out of shipping code** and becomes a retroactive, scopeable script decided
    later — now for two reasons, analytics reversibility *and* the rights problem an irreversible merge
    creates.
-4. **The owner of the in-flight marketing experiment gets told before the kcap-web PR merges**, since
-   their primary metric cannot fire in one arm and this work is what makes it readable.
+4. **Telling the marketing experiment's owner is no longer a merge blocker** (revised 2026-08-20). The
+   original reason was false — see the correction in Motivation: experiment 90854's primary metric is an
+   upstream funnel step, not `create_workspace_requested`, and its own description already documents
+   that the signup form is identical across arms and out of test. Nor does this work change the
+   experiment's sample: excluding `/api/*` from arm assignment matches its server-side, cookie-based
+   design rather than altering it. The experiment has also never launched — `draft`, `start_date: null`,
+   feature flag `active: false` as of 2026-08-20 — so there is no live measurement to perturb.
+   <br>Two things remain worth one message, neither blocking: the `page_not_found` guardrail metric
+   could be polluted by CLI users if the CLI ever ships before the kcap-web route is deployed (which is
+   why that deploy order is a release gate), and the experiment sitting in `draft` while its serving
+   code is live means nothing is being computed — useful to its owner regardless of this work.
 
 ## Tracking
 
