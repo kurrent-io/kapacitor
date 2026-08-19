@@ -10,10 +10,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// <c>kcap import --skip-title</c>: the opt-out `kcap watch` has always had for the same generator.
 /// </summary>
 /// <remarks>
-/// Titling shells out to the user's own `claude` / `codex` once per imported session, on their
-/// subscription. A fake `claude` shadows the real one on PATH: the positive case has to prove a title
-/// really is posted without it, and going near a live model would make the test slow, unrunnable on CI,
-/// and billed to whoever ran it.
+/// The fake `claude` on PATH shadows a real, authenticated one — the positive control must prove a
+/// title is posted, without that costing a live model call.
 /// </remarks>
 // Mutates PATH, and shares the group the HOME-faking suites use because those are exactly the
 // ones a phantom `claude` on PATH would mislead.
