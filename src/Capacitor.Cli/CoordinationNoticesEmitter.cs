@@ -47,7 +47,7 @@ static class CoordinationNoticesEmitter {
             catch { continue; }
 
             if (string.IsNullOrWhiteSpace(text)) continue;
-            lines.Add($"- {text!.Trim()}");
+            lines.Add($"- {text.Trim()}");
         }
 
         if (lines.Count == 0) return null;
