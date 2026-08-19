@@ -103,6 +103,13 @@ public class McpMemoryServerTests {
     }
 
     [Test]
+    public async Task Rescope_body_treats_whitespace_project_as_absent() {
+        // A blank slug never resolves server-side, so it counts as absent → the required-one-of check fires.
+        await Assert.That(() => McpMemoryServer.BuildRescopeBody(Args("""{"id":"m1","project":"   "}""")))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
     public async Task Tools_list_has_six_tools() {
         var tools = McpMemoryServer.BuildToolsList();
 

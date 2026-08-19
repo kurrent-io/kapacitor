@@ -314,13 +314,14 @@ static class McpMemoryServer {
         var audience = args?["audience"]?.GetValue<string>();
         var project  = args?["project"]?.GetValue<string>();
         // Mirror the server: a project context move takes precedence and is audience-independent, so
-        // audience is required ONLY when project is absent.
-        if (string.IsNullOrEmpty(audience) && string.IsNullOrEmpty(project))
+        // audience is required ONLY when project is absent. Whitespace-only counts as absent — a blank
+        // slug would never resolve server-side, so reject it locally instead of sending an invalid move.
+        if (string.IsNullOrWhiteSpace(audience) && string.IsNullOrWhiteSpace(project))
             throw new ArgumentException("audience or project is required");
         return new() {
-            ["audience"] = string.IsNullOrEmpty(audience) ? null : audience,
+            ["audience"] = string.IsNullOrWhiteSpace(audience) ? null : audience,
             ["team"]     = args?["team"]?.GetValue<string>(),
-            ["project"]  = string.IsNullOrEmpty(project) ? null : project,
+            ["project"]  = string.IsNullOrWhiteSpace(project) ? null : project,
         };
     }
 
