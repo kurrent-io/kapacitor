@@ -562,6 +562,13 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         // the loop started) so a ReadOutputAsync consumer never hangs.
         _runtimeTerminal.TrySetResult();
         _dispatcher.FaultAll(new ObjectDisposedException(nameof(CodexAppServerHostedAgentRuntime)));
+
+        // A deferred first turn that was HELD but never begun (teardown before the source claim reached
+        // BeginFirstTurnAsync) leaves _firstTurnDispatch faulted-but-unawaited by the FaultAll above —
+        // observe it so it never surfaces as an unobserved task exception. Harmless if it was already
+        // awaited (the normal path) or completed.
+        _ = _firstTurnDispatch?.ContinueWith(static t => _ = t.Exception, TaskScheduler.Default);
+
         _forwardBuffer.Complete(); // end the envelope stream so a draining forwarder's ReadAllAsync completes
         _cts.Dispose();
     }
