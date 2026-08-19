@@ -98,6 +98,16 @@ public class CodexApprovalBridgeTests {
     }
 
     [Test]
+    public async Task Oversized_timeout_is_clamped_and_does_not_throw() {
+        // A misconfigured huge timeout must not throw at CancelAfter (which caps ~24.8 days) — the ctor
+        // clamps it, so the normal accept path still works.
+        var bridge = Bridge((_, _) => Task.FromResult(new AcpInteractionDecision("allow", "accept", null, null, null, null)),
+            timeout: TimeSpan.FromDays(100));
+        var result = await bridge.HandleAsync(ApprovalRequest(CommandMethod, CommandParams), CancellationToken.None);
+        await Assert.That(await Decision(result)).IsEqualTo("accept");
+    }
+
+    [Test]
     public async Task Delegate_throwing_declines_never_errors() {
         var bridge = Bridge((_, _) => throw new InvalidOperationException("boom"));
         var result = await bridge.HandleAsync(ApprovalRequest(CommandMethod, CommandParams), CancellationToken.None);
