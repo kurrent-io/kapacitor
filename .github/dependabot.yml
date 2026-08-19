@@ -1,6 +1,7 @@
 # Routine sweeps only — security updates are a separate always-on channel in repo settings. Weekly, not
 # daily: Dependabot rebases an open group PR every run, and each rebase re-runs the whole matrix.
 # No `docker`/`npm` — nothing there is a dependency manifest; see the comments at those pins.
+# 3-day cooldown so a poisoned release has time to be yanked; security updates ignore it by design.
 version: 2
 updates:
   # CPM: Directory.Packages.props is the single pin, and setup-dotnet keys its restore cache on it.
@@ -11,6 +12,8 @@ updates:
       day: monday
       time: "05:00"
       timezone: Etc/UTC
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 5
     labels: [dependencies]
     commit-message:
@@ -36,6 +39,8 @@ updates:
       interval: monthly
       time: "05:00"
       timezone: Etc/UTC
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 5
     labels: [dependencies]
     commit-message:
@@ -50,6 +55,8 @@ updates:
       day: monday
       time: "05:00"
       timezone: Etc/UTC
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 5
     labels: [dependencies]
     commit-message:
