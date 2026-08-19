@@ -587,6 +587,7 @@ switch (command) {
 
         var generateSummaries = args.Contains("--generate-summaries");
         var reimport          = args.Contains("--reimport");
+        var skipTitle         = args.Contains("--skip-title");
 
         // Build sources
         var explicitVendorSelection = vsel.Vendors.Count > 0;
@@ -644,7 +645,8 @@ switch (command) {
             currentRepo:             currentRepo,
             needOrgPick:             resolveResult.NeedOrgPick,
             storedOrg:               storedOrg,
-            reimport:                reimport);
+            reimport:                reimport,
+            skipTitle:               skipTitle);
     }
     case "watch" when args.Length < 3:
         Console.Error.WriteLine("Usage: kcap watch <sessionId> <transcriptPath> [--agent-id <agentId>] [--cwd <cwd>] [--skip-title] [--parent-pid <pid>] [--vendor claude|codex|copilot|gemini|kiro|pi|opencode|antigravity|cursor]");

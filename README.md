@@ -655,10 +655,13 @@ kcap import --org EventStore --private        # mark every imported session as O
 kcap import --org EventStore --since 2026-01-01  # only sessions on or after this date
 kcap import --org EventStore --cwd /path/to/project  # filter by working directory
 kcap import --org EventStore --session abc123    # single session
+kcap import --org EventStore --skip-title    # don't spend your own agent quota on titles
 kcap import --opencode --session ses_x --reimport  # force one OpenCode session past its ledger entry
 ```
 
 `--reimport` forces OpenCode sessions to re-import even when the local completeness ledger (described above) records them as already loaded — the escape hatch for a session that was deleted server-side (e.g. via `kcap disable`) but is still marked complete locally, which a plain re-run would otherwise skip. Scope it with the usual vendor/`--repo`/`--cwd`/`--session` filters to force just the affected sessions; the re-send is idempotent, and a successful forced import refreshes the ledger entry. It has no effect on other vendors, which already re-classify every run.
+
+Import generates a title for each **Claude and Codex** session it loads by shelling out to your own `claude` / `codex` — once per session, on your subscription, in the background. `--skip-title` turns that off, the same opt-out `kcap watch` takes for the same generator. Sessions are fully searchable without a title; it only affects how recognisable they look to you. The other seven agents never generate one locally, so the flag changes nothing for them: Cursor and Copilot forward the name their transcript already carries, OpenCode forwards its native title, and Antigravity, Gemini, Kiro and Pi leave the server to derive one.
 
 Non-interactive runs (no TTY, e.g. CI) must pass both a scope flag and `--yes`. The command is idempotent and resumable — re-running with the same scope only uploads what's missing or incomplete. A server-side tracker deduplicates events on `(stream, eventId)` so previously-imported turns don't get re-appended.
 

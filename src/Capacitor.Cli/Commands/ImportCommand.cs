@@ -176,7 +176,11 @@ static class ImportCommand {
                 if (f.Errored    > 0) grid.AddRow("[bold]Errored[/]", $"[red]{f.Errored}[/]");
 
                 if (f.RanBackground) {
-                    grid.AddRow("[bold]Titles[/]", $"{f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
+                    // Gated on the count, not on RanBackground: with --skip-title --generate-summaries
+                    // there is background work but no titling, and a row of zeroes reads as titling that
+                    // found nothing rather than titling that never ran.
+                    if (f.RequestedTitles)
+                        grid.AddRow("[bold]Titles[/]", $"{f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
 
                     if (f.RequestedSummaries)
                         grid.AddRow("[bold]Summaries[/]", $"{f.SummariesGenerated} generated, {f.SummariesFailed} failed");
@@ -215,7 +219,8 @@ static class ImportCommand {
                 if (f.Errored    > 0) Console.WriteLine($"  Errored             {f.Errored}");
 
                 if (f.RanBackground) {
-                    Console.WriteLine($"  Titles              {f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
+                    if (f.RequestedTitles)
+                        Console.WriteLine($"  Titles              {f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
 
                     if (f.RequestedSummaries)
                         Console.WriteLine($"  Summaries           {f.SummariesGenerated} generated, {f.SummariesFailed} failed");
@@ -553,7 +558,8 @@ static class ImportCommand {
             int  SummariesGenerated,
             int  SummariesFailed,
             bool RanBackground,
-            bool RequestedSummaries
+            bool RequestedSummaries,
+            bool RequestedTitles = false
         );
 
     /// <summary>
@@ -594,7 +600,8 @@ static class ImportCommand {
             string?                       storedOrg               = null,
             bool                          autoSkipExclusions      = false,
             string?                       defaultVisibility       = null,
-            bool                          reimport                = false
+            bool                          reimport                = false,
+            bool                          skipTitle               = false
         ) {
         using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
         var       display    = ImportDisplay.Create();
@@ -1115,6 +1122,9 @@ static class ImportCommand {
             },
             OnTitleTaskReady = t => {
                 var (sid, fp, _, vnd) = t;
+
+                // Titling shells out to the user's own `claude` / `codex`, on their subscription.
+                if (skipTitle) return;
 
                 // Don't schedule a title task for a source that doesn't support it.
                 // Cursor sets SupportsTitleGeneration=false because the composer
@@ -1637,6 +1647,7 @@ static class ImportCommand {
             SummariesGenerated: summariesGenerated,
             SummariesFailed: summariesFailed,
             RanBackground: hasBackgroundWork,
+            RequestedTitles: titleTaskCount > 0,
             RequestedSummaries: summaryTaskCount > 0
         );
 
