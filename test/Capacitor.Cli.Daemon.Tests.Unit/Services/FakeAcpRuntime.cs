@@ -47,6 +47,27 @@ internal sealed class FakeAcpRuntime : IHostedAgentRuntime, IAcpTranscriptSource
         yield break;
     }
 
+    /// <summary>§2.5: when true the runtime advertises the deferred-first-turn contract, so the
+    /// orchestrator drives it through the source-claim sequence rather than the single-phase bind.</summary>
+    public bool DeferFirstTurn { get; init; }
+    public bool RequiresSourceClaimBeforeFirstTurn => DeferFirstTurn;
+
+    /// <summary>When set, BeginFirstTurnAsync returns a faulted task — models a first-turn dispatch failure.</summary>
+    public Exception? BeginFirstTurnThrow { get; init; }
+
+    /// <summary>Fires (unbounded) once per BeginFirstTurnAsync call — lets a test await that the held
+    /// first turn was dispatched (and, by ordering against the confirm signal, that it happened between
+    /// the source claim and the confirm).</summary>
+    public Channel<int> BeginFirstTurnSignal { get; } = Channel.CreateUnbounded<int>();
+    public int          BeginFirstTurnCalls  { get; private set; }
+
+    public Task BeginFirstTurnAsync(CancellationToken ct = default) {
+        BeginFirstTurnCalls++;
+        BeginFirstTurnSignal.Writer.TryWrite(BeginFirstTurnCalls);
+
+        return BeginFirstTurnThrow is { } ex ? Task.FromException(ex) : Task.CompletedTask;
+    }
+
     public Task SendUserInputAsync(string  text) => Task.CompletedTask;
     public Task SendSpecialKeyAsync(string key) => Task.CompletedTask;
     public Task SendRawInputAsync(byte[]   data) => Task.CompletedTask;

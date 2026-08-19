@@ -212,6 +212,51 @@ sealed class CaptureServerConnection() : ServerConnection(
         return AcpEventsAckOverride?.Invoke(envelopes) ?? new AcpBatchAck(envelopes[^1].Seq, envelopes[^1].Seq);
     }
 
+    // ── §2.5 source-claim / confirm seams ───────────────────────────────────────────────
+
+    /// <summary>Outcome the raw AcpSessionSourceClaim invoke returns; default Bound@token-1. A Rejected
+    /// outcome models the server declining ownership.</summary>
+    public AcpSourceClaimOutcome? SourceClaimOutcome { get; init; }
+
+    /// <summary>When set, the raw AcpSessionSourceClaim invoke returns a FAULTED task (after recording) —
+    /// models a pre-source-claim server whose hub method doesn't exist (method-not-found).</summary>
+    public Exception? SourceClaimThrow { get; init; }
+
+    /// <summary>Fires (unbounded) once per source-claim call.</summary>
+    public Channel<int> SourceClaimSignal { get; } = Channel.CreateUnbounded<int>();
+
+    /// <summary>Outcome the raw ConfirmSessionLaunch invoke returns; default Confirmed. A custom function
+    /// sees the 1-based call count, so a test can model transient-then-terminal.</summary>
+    public Func<int, AcpLaunchConfirmOutcome>? ConfirmOutcome { get; init; }
+
+    /// <summary>Ownership tokens passed to each confirm, in order; its count fires ConfirmSignal.</summary>
+    public List<long>   ConfirmTokens { get; } = [];
+    public Channel<int> ConfirmSignal { get; } = Channel.CreateUnbounded<int>();
+
+    internal override Task<AcpSourceClaimOutcome> InvokeAcpSessionSourceClaimRawAsync(
+            string agentId, string acpSessionId, CancellationToken ct) {
+        lock (AcpCallOrder) AcpCallOrder.Add($"sourceClaim:{agentId}");
+        SourceClaimSignal.Writer.TryWrite(1);
+
+        if (SourceClaimThrow is { } ex)
+            return Task.FromException<AcpSourceClaimOutcome>(ex); // method-not-found on a pre-source-claim server
+
+        return Task.FromResult(SourceClaimOutcome ?? new AcpSourceClaimOutcome(AcpBindOutcome.Bound, 1, -1));
+    }
+
+    internal override Task<AcpLaunchConfirmOutcome> InvokeConfirmSessionLaunchRawAsync(
+            string acpSessionId, long ownershipToken, CancellationToken ct) {
+        int count;
+        lock (AcpCallOrder) {
+            AcpCallOrder.Add($"confirm:{ownershipToken}");
+            ConfirmTokens.Add(ownershipToken);
+            count = ConfirmTokens.Count;
+        }
+        ConfirmSignal.Writer.TryWrite(count);
+
+        return Task.FromResult(ConfirmOutcome?.Invoke(count) ?? AcpLaunchConfirmOutcome.Confirmed);
+    }
+
     /// <summary>(AgentId, Status) pairs passed to every AgentStatusChangedAsync call, in
     /// call order — lets a test assert on the exact lifecycle transitions the orchestrator
     /// drove (e.g. Fix B/E's immediate Running flip for a no-terminal runtime).</summary>

@@ -2075,7 +2075,15 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 // ever resolves (see AgentInstance.AcpCts).
                 var acpCts = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCts.Token);
                 agent.AcpCts = acpCts;
-                _ = StartAcpForwardingAsync(agent, transcript, cmd.Vendor, acpCts);
+                // §2.5: a runtime that HOLDS its first turn (envelope-sourced hosted Codex) is
+                // driven through the deferred-first-turn source-claim sequence — durable claim BEFORE the
+                // first turn, then forward without re-binding, then confirm. Every other transcript
+                // runtime (Cursor) keeps the single-phase bind-then-forward path. Dormant until the
+                // factory sets deferFirstTurn (the activation slice); the fake test runtime exercises it.
+                if (start.Runtime.RequiresSourceClaimBeforeFirstTurn)
+                    _ = StartEnvelopeSourcedSessionAsync(agent, start.Runtime, transcript, cmd.Vendor, acpCts);
+                else
+                    _ = StartAcpForwardingAsync(agent, transcript, cmd.Vendor, acpCts);
             }
 
             // Reconnect PID-record seam (reconnect spec §6.2 step 1): a resume candidate's pid is
@@ -3678,52 +3686,169 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 acpCts.Token
             );
 
-            // Liveness check: the await above can span a reconnect outage.
-            // If finalize already ran (cancelling acpCts and/or removing the agent from _agents)
-            // while we were waiting, abort here — do not register a binding, build a forwarder, or
-            // start it for an agent that's finalizing or already gone.
-            if (acpCts.IsCancellationRequested || !_agents.ContainsKey(agent.Id)) {
-                LogAcpBindAbortedAgentGone(agent.Id);
-
-                return;
-            }
-
-            _server.RegisterAcpBinding(
-                agent.Id,
-                new AcpBindInfo(vendor, transcript.AcpSessionId, transcript.Cwd, transcript.ResolvedModel)
-            );
-
-            // Post-register re-check (TOCTOU): finalize can run between the liveness check above and
-            // this register, having already cancelled/unregistered+cleaned up the agent — leaving the
-            // binding we just registered stale (replayed on reconnect for a dead agent). Undo it. The
-            // finalizer's own unconditional UnregisterAcpBinding covers the mirror case (finalize after
-            // this point); UnregisterAcpBinding is idempotent so a double-remove is harmless.
-            if (acpCts.IsCancellationRequested || !_agents.ContainsKey(agent.Id)) {
-                _server.UnregisterAcpBinding(agent.Id);
-                LogAcpBindAbortedAgentGone(agent.Id);
-
-                return;
-            }
-
-            var sessionStarted = AcpEventTranslator.BuildSessionStarted(
-                seq: 0,
-                DateTimeOffset.UtcNow.ToString("O"),
-                cwd: transcript.Cwd,
-                model: transcript.ResolvedModel,
-                rawSessionId: transcript.AcpSessionId
-            );
-
-            var forwarder = new AcpTranscriptForwarder(
-                send: (batch, ct) => _server.SendAcpEventsAsync(agent.Id, transcript.AcpSessionId, batch, ct),
-                initialEnvelope: sessionStarted,
-                envelopes: transcript.Envelopes,
-                logger: _logger
-            );
-
-            var runTask = ForwardAcpTranscriptAsync(agent, forwarder, acpCts.Token);
-            agent.AcpForwarder = new AcpForwarderHandle(forwarder, runTask);
+            StartForwarderAfterBind(agent, transcript, vendor, acpCts);
         } catch (Exception ex) {
             LogAcpBindFailed(ex, agent.Id);
+        }
+    }
+
+    /// <summary>
+    /// The post-bind half of ACP forwarding (everything AFTER the canonical session is bound): the
+    /// liveness / TOCTOU guards, the local reconnect-binding registration, and the transcript
+    /// forwarder build + run. Factored out of <see cref="StartAcpForwardingAsync"/> so the §2.5
+    /// deferred-first-turn source-claim path — which binds via <c>AcpSessionSourceClaim</c>, NOT
+    /// <c>AcpSessionStarted</c> — can reuse it verbatim without re-binding. Synchronous (no awaits): the
+    /// forwarder's local seq always starts at 0 and the server drives resume via the AcpBatchAck, so
+    /// this needs no cursor from either bind path. The CALLER owns the try/catch.
+    /// </summary>
+    void StartForwarderAfterBind(AgentInstance agent, IAcpTranscriptSource transcript, string vendor, CancellationTokenSource acpCts) {
+        // Liveness check: the bind await (either path) can span a reconnect outage. If finalize already
+        // ran (cancelling acpCts and/or removing the agent from _agents) while we waited, abort — do not
+        // register a binding, build a forwarder, or start it for an agent that's finalizing or gone.
+        if (acpCts.IsCancellationRequested || !_agents.ContainsKey(agent.Id)) {
+            LogAcpBindAbortedAgentGone(agent.Id);
+
+            return;
+        }
+
+        _server.RegisterAcpBinding(
+            agent.Id,
+            new AcpBindInfo(vendor, transcript.AcpSessionId, transcript.Cwd, transcript.ResolvedModel)
+        );
+
+        // Post-register re-check (TOCTOU): finalize can run between the liveness check above and this
+        // register, having already cancelled/unregistered+cleaned up the agent — leaving the binding we
+        // just registered stale (replayed on reconnect for a dead agent). Undo it. The finalizer's own
+        // unconditional UnregisterAcpBinding covers the mirror case (finalize after this point);
+        // UnregisterAcpBinding is idempotent so a double-remove is harmless.
+        if (acpCts.IsCancellationRequested || !_agents.ContainsKey(agent.Id)) {
+            _server.UnregisterAcpBinding(agent.Id);
+            LogAcpBindAbortedAgentGone(agent.Id);
+
+            return;
+        }
+
+        var sessionStarted = AcpEventTranslator.BuildSessionStarted(
+            seq: 0,
+            DateTimeOffset.UtcNow.ToString("O"),
+            cwd: transcript.Cwd,
+            model: transcript.ResolvedModel,
+            rawSessionId: transcript.AcpSessionId
+        );
+
+        var forwarder = new AcpTranscriptForwarder(
+            send: (batch, ct) => _server.SendAcpEventsAsync(agent.Id, transcript.AcpSessionId, batch, ct),
+            initialEnvelope: sessionStarted,
+            envelopes: transcript.Envelopes,
+            logger: _logger
+        );
+
+        var runTask = ForwardAcpTranscriptAsync(agent, forwarder, acpCts.Token);
+        agent.AcpForwarder = new AcpForwarderHandle(forwarder, runTask);
+    }
+
+    /// <summary>
+    /// §2.5 deferred-first-turn SOURCE-CLAIM sequence, fired fire-and-forget after
+    /// <c>RegisterAgentAsync</c> for a runtime that holds its first turn
+    /// (<see cref="IHostedAgentRuntime.RequiresSourceClaimBeforeFirstTurn"/>). Ordering:
+    /// <list type="number">
+    /// <item>durably source-claim the session (server binds + writes the ownership ledger row);</item>
+    /// <item>start the transcript forwarder WITHOUT re-binding (the claim already bound);</item>
+    /// <item>dispatch the held first turn — the earliest instant any hook can fire, strictly after the
+    ///       durable claim committed;</item>
+    /// <item>clear the ledger's provisional flag in a background confirm loop.</item>
+    /// </list>
+    /// A <c>Rejected</c> claim (or a pre-source-claim server's method-not-found) is a coded launch
+    /// failure that tears the agent down; a confirm failure NEVER does (the row stays provisional, and
+    /// the server's live-owner expiry deferral + recovery settle it). Contains all its own faults — it
+    /// is fire-and-forget with no outer catch. Every step is gated on <paramref name="acpCts"/>, so a
+    /// finalize during any await aborts cleanly.
+    /// </summary>
+    async Task StartEnvelopeSourcedSessionAsync(
+            AgentInstance agent, IHostedAgentRuntime runtime, IAcpTranscriptSource transcript,
+            string vendor, CancellationTokenSource acpCts) {
+        AcpSourceClaimOutcome claim;
+        try {
+            claim = await _server.AcpSessionSourceClaimAsync(agent.Id, transcript.AcpSessionId, acpCts.Token);
+        } catch (OperationCanceledException) when (acpCts.IsCancellationRequested) {
+            // The agent finalized while the claim was in flight — nothing bound, nothing to undo.
+            LogAcpBindAbortedAgentGone(agent.Id);
+
+            return;
+        } catch (Exception ex) {
+            // A pre-source-claim server (method-not-found) or any claim fault is unrecoverable — the
+            // session can never be envelope-stamped. Tear down (coded launch failure).
+            LogAcpSourceClaimFailed(ex, agent.Id);
+            await FailEnvelopeSourcedLaunchAsync(agent.Id, AcpHostedAgentRuntimeFactory.DescribeLaunchFailure(ex));
+
+            return;
+        }
+
+        if (claim.Outcome == AcpBindOutcome.Rejected) {
+            // The server declined ownership (a stale/foreign/terminal binding). Unrecoverable for this
+            // launch — the daemon must not proceed to a first turn on an unstamped session.
+            LogAcpSourceClaimRejected(agent.Id);
+            await FailEnvelopeSourcedLaunchAsync(agent.Id, "codex app-server: source claim rejected");
+
+            return;
+        }
+
+        try {
+            // The claim already bound server-side, so build the forwarder WITHOUT AcpSessionStarted. It
+            // is running BEFORE the first turn dispatches, so it captures that turn's envelopes.
+            StartForwarderAfterBind(agent, transcript, vendor, acpCts);
+
+            // Dispatch the held first turn and await its response — the signal we confirm on.
+            await runtime.BeginFirstTurnAsync(acpCts.Token);
+
+            // Clear the ledger's provisional flag in the background: retries transient failures for as
+            // long as the agent lives and NEVER tears it down. A BeginFirstTurn failure above skips
+            // this, leaving the row provisional for the server's Rule-2 expiry to close.
+            _ = ConfirmSessionLaunchLoopAsync(agent, transcript.AcpSessionId, claim.OwnershipToken, acpCts.Token);
+        } catch (OperationCanceledException) when (acpCts.IsCancellationRequested) {
+            LogAcpBindAbortedAgentGone(agent.Id);
+        } catch (Exception ex) {
+            // Forwarder-setup or first-turn failure: the confirm never fires, so the server closes the
+            // still-provisional session via Rule 2. Log and leave the agent's own lifecycle to reap it.
+            LogAcpBindFailed(ex, agent.Id);
+        }
+    }
+
+    /// <summary>Tears down a registered agent whose source claim failed — the proven
+    /// <see cref="CleanupAgentAsync"/> (single-flight, disposes the runtime + releases the slot +
+    /// unregisters) then <c>LaunchFailedAsync</c> composition, mirroring the launch outer-catch. Never
+    /// <c>FinalizeAgentRunAsync</c>, which would classify a still-live process by exit code.</summary>
+    async Task FailEnvelopeSourcedLaunchAsync(string agentId, string reason) {
+        if (!_agents.ContainsKey(agentId))
+            return; // already finalizing/gone — its own teardown owns it
+
+        await CleanupAgentAsync(agentId);
+        await _server.LaunchFailedAsync(agentId, reason);
+    }
+
+    /// <summary>
+    /// The background confirm loop: calls <c>ConfirmSessionLaunch</c> until it settles, retrying only
+    /// transient (non-terminal) failures on a paced cadence for as long as the agent lives (gated on
+    /// <paramref name="ct"/> == the agent's AcpCts). <c>Confirmed</c>/<c>AlreadyConfirmed</c> is done;
+    /// <c>Superseded</c>/<c>NotFound</c> is permanent (stop); a thrown error is transient (retry after a
+    /// delay). It NEVER tears the agent down — an unconfirmed row is benign (the server's live-owner
+    /// expiry deferral protects it and its recovery settles it when connectivity returns).
+    /// </summary>
+    async Task ConfirmSessionLaunchLoopAsync(AgentInstance agent, string acpSessionId, long ownershipToken, CancellationToken ct) {
+        while (!ct.IsCancellationRequested) {
+            try {
+                var outcome = await _server.ConfirmSessionLaunchAsync(acpSessionId, ownershipToken, ct);
+                if (outcome is AcpLaunchConfirmOutcome.Superseded or AcpLaunchConfirmOutcome.NotFound)
+                    LogConfirmSessionLaunchStopped(agent.Id, outcome.ToString());
+
+                return; // Confirmed / AlreadyConfirmed / Superseded / NotFound are all terminal for this loop
+            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                return; // the agent finalized — stop quietly, never tear down
+            } catch (Exception ex) {
+                LogConfirmSessionLaunchRetrying(ex, agent.Id);
+                try { await Task.Delay(ConfirmRetryDelay, ct); }
+                catch (OperationCanceledException) { return; }
+            }
         }
     }
 
@@ -3754,6 +3879,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// Settable so tests don't wait for the real value.
     /// </summary>
     internal TimeSpan AcpFinalDrainBudget { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>§2.5: paced retry cadence for the background <c>ConfirmSessionLaunch</c> loop
+    /// (transient failures only; it runs for the agent's lifetime and never tears it down). Settable so
+    /// tests don't wait the real value.</summary>
+    internal TimeSpan ConfirmRetryDelay { get; set; } = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Disposes the ACP runtime FIRST so its <c>DisposeAsync</c> completes the
@@ -4527,6 +4657,18 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "ACP transcript forwarder faulted for agent {AgentId}")]
     partial void LogAcpForwarderFaulted(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Source claim for agent {AgentId} failed — tearing the launch down (the session cannot be envelope-stamped)")]
+    partial void LogAcpSourceClaimFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Source claim for agent {AgentId} was rejected by the server — tearing the launch down")]
+    partial void LogAcpSourceClaimRejected(string agentId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Confirm loop for agent {AgentId} stopped without confirming (outcome {Outcome}) — the server's recovery owns the provisional row")]
+    partial void LogConfirmSessionLaunchStopped(string agentId, string outcome);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Confirm for agent {AgentId} did not land — retrying (a confirm failure never tears the agent down)")]
+    partial void LogConfirmSessionLaunchRetrying(Exception ex, string agentId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "ACP final transcript drain for agent {AgentId} exceeded its {Seconds}s budget — proceeding to end the session; any undrained transcript is lost")]
     partial void LogAcpFinalDrainTimedOut(string agentId, double seconds);
