@@ -1,7 +1,7 @@
 # New-harness detection and setup nudges
 
 **Date:** 2026-08-19
-**Status:** Draft
+**Status:** Reviewed (Copilot spec-review clean after 3 rounds; Kiro spec-review clean after 2 rounds — 2026-08-19)
 **Repos:** kcap-cli (surfaces 1–3 client side), kcap-server (surface 3 server side, surface 4)
 
 ## Problem
@@ -39,7 +39,7 @@ per-machine **offer ledger** — feeds four surfaces:
 |---|---------|---------|----------------------|
 | 1 | SessionStart nudge | every session in an already-wired harness (throttled) | still uses a wired harness |
 | 2 | CLI stderr notice | any interactive `kcap` command (throttled) | still runs kcap commands |
-| 3 | Capacitor UI notification | harness inventory reported on daemon heartbeat + hook ingest | visits the Capacitor UI |
+| 3 | Capacitor UI notification | harness inventory reported on daemon status report + hook ingest | visits the Capacitor UI |
 | 4 | Machine-went-quiet backstop | server notices a machine stopped recording | switched harnesses and went fully dark client-side |
 
 All four share the same predicate and the same ledger, so acting on (or declining) the offer on any
@@ -255,9 +255,9 @@ Client side (this repo):
     trust-by-default precedent against daemon-side probing rejected *spawning vendor binaries* for
     version checks, which this does not do.
   - **Hook ingest metadata**: attach the same fragment to the SessionStart hook post, so machines
-    without a daemon still report whenever any wired harness is used. PR 2 must verify the
-    SessionStart post already carries `machine_id` (expected — `MachineId` is a config-dir
-    fixture) and add it to the fragment's envelope if not, or the server cannot key the inventory.
+    without a daemon still report whenever any wired harness is used. The fragment's embedded
+    `machine_id` (above) is what keys it — the surrounding POST payload is not relied on and not
+    changed.
 - Skew, both directions: an older **server** ignores the unknown fragment (additive, no protocol
   gate); an older **client** simply never sends it, and the server treats an absent fragment as
   "inventory unknown" for that machine — never as "nothing detected" — so no notification is
@@ -265,7 +265,7 @@ Client side (this repo):
 
 Server side (kcap-server, same issue, separate PR):
 
-- Persist latest inventory per machine (`machine_id` already flows with both carriers).
+- Persist latest inventory per machine, keyed by the fragment's embedded `machine_id`.
 - Raise a user-facing notification — same surface and lifecycle as the existing "CLI update
   available" notification — when a vendor is `detected && !wired && !declined`:
   *"Antigravity was installed on ‹machine› but Kurrent Capacitor isn't set up for it. Run
@@ -306,7 +306,7 @@ signal: sessions from that machine stopped arriving.
    (`dismiss`, `list`, `reset`) + surface 1 + surface 2 + the `kcap status` line + setup stamping.
    New user-facing surface (the `harness` verbs, the status line, the stderr notice) means README +
    help-text updates in the same PR.
-2. **kcap-cli:** surface 3 client fragment on heartbeat + hook ingest.
+2. **kcap-cli:** surface 3 client fragment on the daemon status report + hook ingest.
 3. **kcap-server:** surface 3 notification + surface 4 backstop.
 
 PR 1 is independently shippable and already solves the "still uses any wired harness or kcap at
@@ -326,5 +326,5 @@ all" majority; PRs 2–3 add the resident and fully-dark coverage.
 - Emitter tests mirror `VersionNudgeEmitter`'s: fragment text, throttle respected, multi-vendor
   fold, exception → null fragment.
 - Surface 2: allowlist gating (hook/mcp/daemon-run never print), TTY gating, stderr only.
-- Surface 3 fragment: shape-pinned serialization test; heartbeat attachment cadence (6h cache).
+- Surface 3 fragment: shape-pinned serialization test; status-report attachment cadence (6h cache).
 - Server-side tests live in kcap-server with its PR.
