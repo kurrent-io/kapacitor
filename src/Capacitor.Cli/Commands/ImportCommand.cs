@@ -567,6 +567,18 @@ static class ImportCommand {
             bool RequestedSummaries
         );
 
+    /// <summary>
+    /// Every "found nothing" exit still reports. Zero sessions is an answer; no output at all is
+    /// indistinguishable from the process having died.
+    /// </summary>
+    static int WriteEmptyDiscoveryReport(bool asJson) {
+        WriteDiscoveryReport(
+            ImportDiscoverySummary.Build([], new Dictionary<string, (string, string)?>(), DiscoveryWindows()),
+            asJson);
+
+        return 0;
+    }
+
     static void WriteDiscoveryReport(ImportDiscoverySummary summary, bool asJson) =>
         Console.WriteLine(asJson
             ? ImportDiscoveryRender.ToJson(summary)
@@ -653,6 +665,8 @@ static class ImportCommand {
                 return 1;
             }
 
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+
             display.Line("No coding-agent sessions found. Install Claude, Codex, or Cursor and try again.");
 
             return 0;
@@ -696,18 +710,14 @@ static class ImportCommand {
             // Keep the message aligned with the dead branch lower in this method
             // (cleanup follow-up) so downstream tooling sees consistent output.
             if (filterSession is not null) {
+                if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+
                 await Console.Error.WriteLineAsync($"Session not found: {NormalizeGuid(filterSession)}");
 
                 return 1;
             }
 
-            // An empty report, not silence: "nothing found" is an answer a caller can act on, and a
-            // consumer cannot tell no output from a crash.
-            if (discoverOnly) {
-                WriteDiscoveryReport(ImportDiscoverySummary.Build([], new Dictionary<string, (string, string)?>(), DiscoveryWindows()), discoverJson);
-
-                return 0;
-            }
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
 
             display.Line("No transcript files found.");
 
@@ -823,7 +833,10 @@ static class ImportCommand {
         if (discoverOnly) {
             WriteDiscoveryReport(
                 ImportDiscoverySummary.Build(
-                    discoveriesPerSource.SelectMany(d => d).Select(d => (d.SessionId, ImportDiscoveryAge.Of(d))),
+                    // Each source dates its own sessions: the rule differs per vendor and only the
+                    // source knows which one its --since applies.
+                    sources.SelectMany((src, i) =>
+                        discoveriesPerSource[i].Select(d => (d.SessionId, src.DiscoveryAge(d)))),
                     resolved,
                     DiscoveryWindows()),
                 discoverJson);

@@ -19,6 +19,16 @@ internal sealed class ClaudeImportSource(string? rootOverride = null) : IImportS
     public bool IsAvailable => Directory.Exists(_projectsDir);
 
     public bool SupportsTitleGeneration => true;
+
+    // Discovery is a directory scan, so FirstTimestamp is null until classification — and `--since`
+    // already reads the transcript's first timestamp, falling back to the file's last write.
+    public DateTimeOffset? DiscoveryAge(DiscoveredSession session) {
+        var path = DiscoveredSessionFile.PathOf(session);
+
+        return path is null
+            ? session.FirstTimestamp
+            : ClaudeDiscoveryAge.FirstTimestamp(path) ?? DiscoveredSessionFile.LastWrite(path);
+    }
     public bool AttachesChildContentOnReplay => false; // chain-based: never routed
 
     public Task<IReadOnlyList<DiscoveredSession>> DiscoverAsync(DiscoveryFilters filters, CancellationToken ct) {

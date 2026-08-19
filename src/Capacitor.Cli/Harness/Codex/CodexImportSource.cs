@@ -21,6 +21,16 @@ internal sealed class CodexImportSource(string? rootOverride = null) : IImportSo
     public bool IsAvailable => Directory.Exists(_sessionsDir);
 
     public bool SupportsTitleGeneration => true;
+
+    // `--since` prunes whole day directories here and never opens a rollout, so the directory IS the
+    // date it compares.
+    public DateTimeOffset? DiscoveryAge(DiscoveredSession session) {
+        var path = DiscoveredSessionFile.PathOf(session);
+
+        return path is null
+            ? session.FirstTimestamp
+            : CodexDiscoveryAge.DayFromPath(path) ?? DiscoveredSessionFile.LastWrite(path);
+    }
     public bool AttachesChildContentOnReplay => false; // chain-based: never routed
 
     public Task<IReadOnlyList<DiscoveredSession>> DiscoverAsync(DiscoveryFilters filters, CancellationToken ct) {
