@@ -152,7 +152,9 @@ public static class AgentsSkillsInstaller {
     /// <summary>
     /// True when the on-disk skills already match this build: the version
     /// marker equals <see cref="CurrentVersion"/> AND every owned
-    /// <c>kcap-&lt;name&gt;</c> folder is present. A matching marker whose skill
+    /// <c>kcap-&lt;name&gt;</c> folder holds a SKILL.md. Checked via
+    /// <see cref="HasSkill"/> rather than folder presence, because a failed copy
+    /// leaves an empty folder behind and that must not read as current. A matching marker whose skill
     /// folders were deleted or corrupted reads as NOT current, so callers
     /// reinstall and self-heal — the marker alone can't be trusted to mean the
     /// skills are actually on disk (mirrors the hooks "marker present but host
@@ -161,7 +163,7 @@ public static class AgentsSkillsInstaller {
     /// </summary>
     public static bool IsCurrent(string targetDir) =>
         ReadMarker(targetDir) == CurrentVersion()
-        && SourceNames.All(name => Directory.Exists(Path.Combine(targetDir, "kcap-" + name)));
+        && SourceNames.All(name => HasSkill(targetDir, name));
 
     /// <summary>
     /// Deletes every <c>kcap-&lt;name&gt;</c> folder this installer owns

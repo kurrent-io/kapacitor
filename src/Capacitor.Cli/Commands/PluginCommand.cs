@@ -1246,6 +1246,12 @@ public static class PluginCommand {
     static async Task InstallVendorSkillsAsync(
             PluginEnvironment env, string targetDir, string label, bool refreshOnly) {
         if (refreshOnly && !AgentsSkillsInstaller.IsInstalled(targetDir)) return;
+
+        // The sweep runs even when the tree is already current: a Cursor-first install stamps the
+        // marker, so gating it on the copy would mean the stale dir outlives every later install.
+        if (targetDir == env.AgentsSkillsDir)
+            AgentsSkillsInstaller.CleanLegacyCodexSkills(env.LegacyCodexSkills);
+
         if (AgentsSkillsInstaller.IsCurrent(targetDir)) return;
 
         var pluginPath = env.ResolvePluginPath();
@@ -1256,17 +1262,10 @@ public static class PluginCommand {
             return;
         }
 
-        if (AgentsSkillsInstaller.Install(src, targetDir)) {
+        if (AgentsSkillsInstaller.Install(src, targetDir))
             await env.Stdout.WriteLineAsync($"{label} skills installed ({targetDir}).");
-
-            // Every other writer of the shared tree sweeps the legacy ~/.codex/skills after it. Skipping
-            // it here would let a Cursor-first install stamp the marker current, so the next
-            // `--skills --if-installed` fast-paths past the sweep and the stale dir survives.
-            if (targetDir == env.AgentsSkillsDir)
-                AgentsSkillsInstaller.CleanLegacyCodexSkills(env.LegacyCodexSkills);
-        } else {
+        else
             await env.Stderr.WriteLineAsync($"Warning: could not install {label} skills to {targetDir}.");
-        }
     }
 
     /// <summary>Antigravity reads <c>~/.gemini/skills</c>, not the agent-agnostic tree.</summary>

@@ -15,11 +15,6 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// The refresh (`--if-installed`) counterpart is the opposite property and is tested here too: it may
 /// top a tree up, never create one. The npm postinstall runs it for every vendor on each
 /// `npm install -g`, so creating there would undo a deliberate `plugin remove --skills`.
-///
-/// Cursor reaches the refresh assertions by a different route from the other four: it returns from the
-/// whole method on a current hooks marker, before the skills call, where they fall through to it. Both
-/// end in the same place, so the tests are written the same way — but removing the guard in the helper
-/// reddens four of the five, not all five.
 /// </remarks>
 [NotInParallel("HomeEnvVarMutation")]
 public class PluginCommandVendorSkillsTests {
@@ -95,6 +90,25 @@ public class PluginCommandVendorSkillsTests {
         await Assert.That(Directory.Exists(scope.Env.AgentsSkillsDir)).IsFalse();
     }
 
+    [Test]
+    public async Task install_sweeps_legacy_codex_skills_even_when_the_tree_is_already_current() {
+        using var scope = new VendorScope(Vendor.Cursor);
+
+        await PluginCommand.HandleAsync(Vendor.Cursor.InstallArgs(scope.Home), scope.Env);
+        await Assert.That(AgentsSkillsInstaller.IsCurrent(scope.Env.AgentsSkillsDir)).IsTrue();
+
+        // A pre-migration machine still carrying the old Codex-only copy.
+        var legacy = Path.Combine(scope.Env.LegacyCodexSkills, "kcap-recap");
+        Directory.CreateDirectory(legacy);
+
+        await PluginCommand.HandleAsync(Vendor.Cursor.InstallArgs(scope.Home), scope.Env);
+
+        await Assert.That(Directory.Exists(legacy))
+                    .IsFalse()
+                    .Because("the tree being current is exactly when the sweep gets skipped, so gating "
+                           + "it on the copy leaves the stale dir behind for good");
+    }
+
     /// <summary>The five vendors that read the shared tree. Kiro and Antigravity read their own and
     /// are covered separately.</summary>
     public static IEnumerable<Func<Vendor>> Vendors() {
@@ -149,9 +163,9 @@ public class PluginCommandVendorSkillsTests {
             // The fresh path refuses to install unless `kcap` resolves — it is what the hooks it
             // writes will invoke. Both names, because the Windows leg matches on PATHEXT.
             foreach (var name in new[] { "kcap", "kcap.exe" }) {
-                var path = Path.Combine(_binDir.Path, name);
-                File.WriteAllText(path, "");
-                if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+                var path = _binDir.CreateFile(name);
+                if (!OperatingSystem.IsWindows())
+                    File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
             }
 
             _envScopes.Add(new EnvScope(
