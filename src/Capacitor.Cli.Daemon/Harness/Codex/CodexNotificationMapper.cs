@@ -125,10 +125,16 @@ internal sealed partial class CodexNotificationMapper {
                     ItemId: id, TimestampIso: ts));
 
             case "fileChange":
-                // A file edit surfaces as a tool call carrying the diff content (spec §2.4 table).
-                return One(new AcpEventEnvelope(
-                    Kind: AcpEventKind.ToolCall, ToolCallId: id, ToolName: "apply_patch",
-                    ToolInputJson: RenderChanges(item.Arr("changes")), ItemId: id, TimestampIso: ts));
+                // A completed file edit surfaces as a PAIRED tool call (carrying the diff) + result (the
+                // apply status), mirroring commandExecution/mcp so a consumer never sees an orphan tool
+                // call. fileChange has no item/started, so both envelopes come from the completed item.
+                return Two(
+                    new AcpEventEnvelope(
+                        Kind: AcpEventKind.ToolCall, ToolCallId: id, ToolName: "apply_patch",
+                        ToolInputJson: RenderChanges(item.Arr("changes")), ItemId: id, TimestampIso: ts),
+                    new AcpEventEnvelope(
+                        Kind: AcpEventKind.ToolResult, ToolCallId: id, ToolResult: item.Str("status") ?? "",
+                        ToolIsError: item.Str("status") is "failed" or "declined", ItemId: id, TimestampIso: ts));
 
             case "mcpToolCall":
                 return One(new AcpEventEnvelope(
@@ -213,7 +219,8 @@ internal sealed partial class CodexNotificationMapper {
         if (itemId is null || p.Arr("changes") is not { } changes) return None;
 
         // A full-snapshot delta: the changes array IS the cumulative patch, so it replaces (never
-        // accumulates) — the ephemeral replacement rule makes a dropped one harmless.
+        // accumulates — deliberately bypasses _ephemeral, unlike outputDelta which shares this itemId;
+        // the completed item's canonical envelopes are authoritative either way).
         return One(new AcpEventEnvelope(
             Kind: AcpEventKind.ToolCall, ToolCallId: itemId, ToolName: "apply_patch",
             ToolInputJson: RenderChanges(changes), Ephemeral: true, ItemId: itemId));
@@ -233,6 +240,7 @@ internal sealed partial class CodexNotificationMapper {
 
     // ── Rendering helpers (pure) ──────────────────────────────────────────────────────────────────
     static IReadOnlyList<AcpEventEnvelope> One(AcpEventEnvelope e) => [e];
+    static IReadOnlyList<AcpEventEnvelope> Two(AcpEventEnvelope a, AcpEventEnvelope b) => [a, b];
 
     static string? IsoFromMs(long? ms) =>
         ms is { } v ? DateTimeOffset.FromUnixTimeMilliseconds(v).ToString("O", CultureInfo.InvariantCulture) : null;

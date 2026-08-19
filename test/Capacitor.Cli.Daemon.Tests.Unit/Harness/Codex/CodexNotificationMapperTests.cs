@@ -79,16 +79,33 @@ public class CodexNotificationMapperTests {
     }
 
     [Test]
-    public async Task FileChange_completed_maps_to_a_tool_call_carrying_the_diff() {
-        var e = Single(Run(NewMapper(), "item/completed",
-            """{"item":{"type":"fileChange","id":"f1","status":"completed","changes":[{"path":"a.txt","kind":"update","diff":"@@ -1 +1 @@"}]}}"""));
-        await Assert.That(e.Kind).IsEqualTo(AcpEventKind.ToolCall);
-        await Assert.That(e.ToolName).IsEqualTo("apply_patch");
-        await Assert.That(e.ToolInputJson!).Contains("a.txt");
-        await Assert.That(e.ToolInputJson!).Contains("changes");
+    public async Task FileChange_completed_maps_to_a_paired_tool_call_and_result() {
+        var r = Run(NewMapper(), "item/completed",
+            """{"item":{"type":"fileChange","id":"f1","status":"completed","changes":[{"path":"a.txt","kind":"update","diff":"@@ -1 +1 @@"}]}}""");
+        await Assert.That(r.Count).IsEqualTo(2);
+
+        var call = r[0];
+        await Assert.That(call.Kind).IsEqualTo(AcpEventKind.ToolCall);
+        await Assert.That(call.ToolName).IsEqualTo("apply_patch");
+        await Assert.That(call.ToolCallId).IsEqualTo("f1");
+        await Assert.That(call.ToolInputJson!).Contains("a.txt");
         // ToolInputJson must be a JSON object the server can parse into tool arguments.
-        using var doc = JsonDocument.Parse(e.ToolInputJson!);
+        using var doc = JsonDocument.Parse(call.ToolInputJson!);
         await Assert.That(doc.RootElement.ValueKind).IsEqualTo(JsonValueKind.Object);
+
+        var result = r[1];
+        await Assert.That(result.Kind).IsEqualTo(AcpEventKind.ToolResult);
+        await Assert.That(result.ToolCallId).IsEqualTo("f1"); // paired with the call
+        await Assert.That(result.ToolIsError).IsFalse();
+    }
+
+    [Test]
+    public async Task FileChange_failed_apply_flags_the_result_as_error() {
+        var r = Run(NewMapper(), "item/completed",
+            """{"item":{"type":"fileChange","id":"f2","status":"failed","changes":[{"path":"a.txt","kind":"update","diff":"x"}]}}""");
+        await Assert.That(r.Count).IsEqualTo(2);
+        await Assert.That(r[1].Kind).IsEqualTo(AcpEventKind.ToolResult);
+        await Assert.That(r[1].ToolIsError).IsTrue();
     }
 
     [Test]
