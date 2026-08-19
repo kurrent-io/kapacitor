@@ -7,6 +7,8 @@ using Duende.IdentityModel.OidcClient.Browser;
 
 // ReSharper disable MethodHasAsyncOverload
 
+using Capacitor.Cli.Core.Telemetry;
+
 namespace Capacitor.Cli.Core.Auth;
 
 public static class AuthProvider {
@@ -316,7 +318,16 @@ public static class OAuthLoginFlow {
             string clientId, string codeExchangeUrl, IBrowser? browser = null, TimeSpan? timeout = null,
             CancellationToken ct = default, IAuthProgress? progress = null) {
         progress ??= ConsoleAuthProgress.Instance;
-        browser  ??= new LoopbackBrowser(progress: progress);
+
+        // Owned-vs-borrowed, in one line: `created` is disposed, the injected `browser` never is. A
+        // locally-built LoopbackBrowser owns a listener that outlives InvokeAsync (the return-hop
+        // wait), so leaving it inline would hold the port for the life of the process; disposing an
+        // injected one would tear down a test's stand-in, or a future caller's shared instance.
+        // `using` on a nullable disposes only when non-null, which is exactly the distinction.
+        using LoopbackBrowser? created =
+            browser is null ? new LoopbackBrowser(progress: progress, join: SetupJoin.Loopback) : null;
+        browser ??= created!; // non-null exactly when browser was null, which is when we built it
+
         var redirectUri = $"http://127.0.0.1:{GetAvailablePort()}/callback";
 
         var options = new OidcClientOptions {
@@ -770,11 +781,26 @@ public static class OAuthLoginFlow {
         using var escape = CancellationTokenSource.CreateLinkedTokenSource(ct);
         using var settled = new CancellationTokenSource();
 
+        // Owned, not an inline sub-expression: with a join attached the listener OUTLIVES
+        // AuthenticateWorkOSAsync so it can catch the browser's return hop, so an unnamed instance
+        // would hold the port for the life of the process — for the desktop app, the whole session.
+        // `using` on a nullable disposes exactly when the local is the one we built, never the
+        // injected test seam.
+        //
+        // Scoped to the whole ladder, not to the login task: the fall-through paths below still run
+        // with it alive. That gives the drain only Dispose's own bounded wait once login succeeds,
+        // rather than the longer tail the facade used to provide — enough in practice (the production
+        // round trip merged in under a second) but genuinely tighter, not equivalent.
+        using LoopbackBrowser? created = browser is null
+            ? new LoopbackBrowser(
+                openBrowser, progress, keys.CanWatch ? WorkOSBrowserHint() : null, SetupJoin.Loopback)
+            : null;
+
         var login = AuthenticateWorkOSAsync(
             clientId, organizationId,
             // No keyboard, no hint: a GUI host cannot act on one, and a console without a keyboard
             // never reaches here (DeviceRouteRequired sent it to the device grant already).
-            browser ?? new LoopbackBrowser(openBrowser, progress, keys.CanWatch ? WorkOSBrowserHint() : null),
+            browser ?? created!,
             apiBase, escape.Token, progress);
         var watch = WatchForEscapeHatchAsync(keys, escape, settled.Token);
 
