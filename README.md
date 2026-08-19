@@ -566,9 +566,9 @@ It provides six tools:
 
 - **`search_memories`** — hybrid semantic + keyword search over memories visible to you (your own, your teams', and org-wide). Agents are told to call this before saving a new memory.
 - **`get_memory`** — fetch a memory's full content by id or slug.
-- **`save_memory`** — save a new memory with an `audience` (`user`, `team`, or `org`), `slug`, `description`, `content`, and `kind`. Scoped to the current repo by default; pass `global: true` to save it repo-independent, or `machine_specific: true` (user audience only) to tag it to this machine.
+- **`save_memory`** — save a new memory with an `audience` (`user`, `team`, `org`, or `project`), `slug`, `description`, `content`, and `kind`. For `audience: "project"` pass `audience_project: <slug>` — that project's members can then see and edit it (you must be a member). Scoped to the current repo by default; pass `global: true` to save it repo-independent, or `machine_specific: true` (user audience only) to tag it to this machine.
 - **`update_memory`** — update an existing memory's description, content, and/or kind.
-- **`rescope_memory`** — change a memory's audience (e.g. promote a personal memory to the team or org), or move its home scope to a **project** with `project: <slug>`. A project move is independent of audience and takes precedence over it, so pass `audience` **or** `project` (or both).
+- **`rescope_memory`** — change a memory's **audience** (who can see + edit it — promote a personal memory to the team, the org, or a **project's members** with `audience: "project"` + `audience_project: <slug>`), or move its home **context** to a project with `project: <slug>` (where it surfaces). These are orthogonal axes: `audience_project` sets the people, `project` sets the place — a context move is independent of audience and takes precedence over it, so pass `audience` **or** `project` (or both).
 - **`archive_memory`** — soft-delete a memory.
 
 The server is repo- and machine-aware: it resolves the current working directory to a repo hash and the local persisted machine id at startup, and uses both to scope `save_memory` and to bias `search_memories` / `get_memory` results.
