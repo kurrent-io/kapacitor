@@ -296,9 +296,7 @@ static class McpMemoryServer {
             ["content"]           = Req("content"),
             ["kind"]              = Req("kind"),
             ["team"]              = args?["team"]?.GetValue<string>(),
-            // The project slug for audience 'project' (project members become editors) — the AUDIENCE
-            // (people) selector, like team; the server requires it when audience is 'project'. Distinct
-            // from the place/context project used by rescope. Pass through raw; the server validates.
+            // audience 'project' target — the people axis, distinct from rescope's place-axis project.
             ["audience_project"]  = args?["audience_project"]?.GetValue<string>(),
             ["repo_hash"]         = global ? null : cwdRepoHash,
             ["machine_tag"]       = machineSpecific ? machineId : null,
@@ -326,9 +324,8 @@ static class McpMemoryServer {
             ["audience"] = string.IsNullOrWhiteSpace(audience) ? null : audience,
             ["team"]     = args?["team"]?.GetValue<string>(),
             ["project"]  = string.IsNullOrWhiteSpace(project) ? null : project,
-            // The target project slug for audience 'project' (its members become editors) — the AUDIENCE
-            // (people) selector, orthogonal to the place-axis 'project' above. Pass through raw like team;
-            // the server requires it when audience is 'project' and ignores it otherwise.
+            // audience 'project' target (people axis) — distinct from the place-axis 'project' above; raw
+            // like team, not whitespace-nulled, since unlike project it has no precedence branch to guard.
             ["audience_project"] = args?["audience_project"]?.GetValue<string>(),
         };
     }
