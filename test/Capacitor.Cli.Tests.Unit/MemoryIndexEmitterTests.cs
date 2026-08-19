@@ -69,6 +69,28 @@ public class MemoryIndexEmitterTests {
     }
 
     [Test]
+    public async Task Annotates_project_and_repo_scope_but_leaves_org_untagged() {
+        var index = new JsonArray(
+            new JsonObject { ["memory_id"] = "i1", ["slug"] = "org-rule",  ["audience"] = "org", ["description"] = "d", ["kind"] = "feedback", ["scope_kind"] = "org" },
+            new JsonObject { ["memory_id"] = "i2", ["slug"] = "repo-rule", ["audience"] = "org", ["description"] = "d", ["kind"] = "feedback", ["scope_kind"] = "repo" },
+            new JsonObject { ["memory_id"] = "i3", ["slug"] = "proj-rule", ["audience"] = "org", ["description"] = "d", ["kind"] = "feedback", ["scope_kind"] = "project", ["project_slug"] = "capacitor" }
+        );
+
+        var fragment = MemoryIndexEmitter.BuildFragment(index, disabled: false)!;
+
+        await Assert.That(fragment).Contains("- org-rule: d");                        // org home ⇒ untagged
+        await Assert.That(fragment).Contains("- repo-rule [repo]: d");
+        await Assert.That(fragment).Contains("- proj-rule [project: capacitor]: d");  // resolved slug, not the id
+    }
+
+    [Test]
+    public async Task Missing_scope_renders_untagged_for_an_older_server() {
+        // A server that predates scope on the index sends no scope_kind — the line renders exactly as before.
+        var fragment = MemoryIndexEmitter.BuildFragment(Index(("legacy", "org", "d")), disabled: false)!;
+        await Assert.That(fragment).Contains("- legacy: d");
+    }
+
+    [Test]
     public async Task Groups_render_in_org_then_team_then_user_order_regardless_of_input_order() {
         // Deliberately feed user → team → org; output must still be Org, Team, Yours.
         var index = Index(

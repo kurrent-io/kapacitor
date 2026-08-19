@@ -32,7 +32,11 @@ internal sealed record SessionStartMemoryEntry(
     [property: JsonPropertyName("slug")] string? Slug,
     [property: JsonPropertyName("audience")] string? Audience,
     [property: JsonPropertyName("description")] string? Description,
-    [property: JsonPropertyName("kind")] string? Kind);
+    [property: JsonPropertyName("kind")] string? Kind,
+    // The memory's home scope (org|project|repo) + the resolved project slug for a project-scoped row.
+    // Defaulted so an older server (no scope fields) parses as org, which renders unannotated.
+    [property: JsonPropertyName("scope_kind")] string? ScopeKind = null,
+    [property: JsonPropertyName("project_slug")] string? ProjectSlug = null);
 
 internal sealed record SessionStartMemoryContextRequest(
     string BaseUrl,
