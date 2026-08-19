@@ -144,6 +144,53 @@ public class CodexHostedAgentRuntimeFactoryTests {
         }
     }
 
+    // ── Guard-1 marker (§2.5) ──────────────────────────────────────────────────────────
+    [Test]
+    public async Task BuildEnv_stamps_the_hosted_appserver_marker_only_when_emitting_envelopes() {
+        using var wt = new TempDir();
+        var ctx = Ctx(isReviewFlow: true, wt.Path);
+
+        var off = CodexHostedAgentRuntimeFactory.BuildEnv(ctx, emitEnvelopeTranscript: false);
+        var on  = CodexHostedAgentRuntimeFactory.BuildEnv(ctx, emitEnvelopeTranscript: true);
+
+        await Assert.That(off.ContainsKey("KCAP_HOSTED_APPSERVER")).IsFalse();
+        await Assert.That(on["KCAP_HOSTED_APPSERVER"]).IsEqualTo("1");
+    }
+
+    [Test]
+    [NotInParallel("HomeEnvVarMutation")]
+    public async Task App_server_launch_leaves_the_marker_unset_while_dormant() {
+        // The activation slice has not flipped emitEnvelopeTranscript, so a real app-server launch must
+        // NOT stamp the marker — otherwise the shipped reviewers (still hook-ingested) would lose the watcher.
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        using var home = new TempDir();
+        using var wt   = new TempDir();
+        WriteWorktreeHooks(wt);
+        await using var fake = new FakeCodexAppServer();
+        IReadOnlyDictionary<string, string>? capturedEnv = null;
+
+        try {
+            Environment.SetEnvironmentVariable("HOME", home.Path);
+            Environment.SetEnvironmentVariable("CODEX_HOME", home.PathTo(".codex"));
+
+            CodexAppServerSpawnFactory seam = (_, _, _, _, env, _, _) => {
+                capturedEnv = env;
+                return Task.FromResult<(CodexAppServerConnection, IAcpProcess)>((fake.ConnectClient(), new FakeAcpProcess()));
+            };
+            var factory = Factory(new RecordingPtyFactory(), appServerActive: true, seam);
+
+            var start = await factory.StartAsync(Ctx(isReviewFlow: true, wt.Path), CancellationToken.None).WaitAsync(HangGuard);
+            await start.Runtime.DisposeAsync();
+        } finally {
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            Environment.SetEnvironmentVariable("CODEX_HOME", originalCodexHome);
+        }
+
+        await Assert.That(capturedEnv).IsNotNull();
+        await Assert.That(capturedEnv!.ContainsKey("KCAP_HOSTED_APPSERVER")).IsFalse();
+    }
+
     [Test]
     [NotInParallel("HomeEnvVarMutation")]
     public async Task Missing_hooks_on_the_app_server_route_fails_closed() {

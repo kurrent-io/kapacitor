@@ -76,7 +76,14 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
 
         var (sandbox, approval) = CodexPosturePolicy.Resolve(ctx.Work, ctx.IsReviewFlow, ctx.CodexPosture);
         var appServerArgs = _launcher.BuildAppServerLaunchArgs(launcherCtx);
-        var env           = BuildEnv(ctx);
+
+        // §2.5: an envelope-sourced session is the transcript's exclusive source, so the
+        // KCAP_HOSTED_APPSERVER marker (which makes the codex hook/watcher stand down — guard-1) and the
+        // runtime's own envelope emission must never disagree — both read this ONE decision. It stays
+        // false until the activation slice flips it together with the runtime's Transcript wiring, so
+        // guard-1 lands dormant and the shipped reviewers keep hook ingestion.
+        var emitEnvelopeTranscript = false;
+        var env                    = BuildEnv(ctx, emitEnvelopeTranscript);
 
         var launch = new CodexAppServerLaunch(
             Cwd:           ctx.Worktree.Path,
@@ -93,7 +100,8 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
 
         var runtime = new CodexAppServerHostedAgentRuntime(
             spawn, launch, ctx.ActivityClock,
-            _loggerFactory.CreateLogger<CodexAppServerHostedAgentRuntime>());
+            _loggerFactory.CreateLogger<CodexAppServerHostedAgentRuntime>(),
+            emitEnvelopeTranscript: emitEnvelopeTranscript);
 
         // StartAsync may spawn a child before it throws (a failed hooks/list, thread/start, or initial
         // turn on the fail-closed paths). The orchestrator never receives a runtime it did not get a
@@ -126,7 +134,7 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
         CodexPosture = ctx.CodexPosture,
     };
 
-    static Dictionary<string, string> BuildEnv(RuntimeStartContext ctx) {
+    internal static Dictionary<string, string> BuildEnv(RuntimeStartContext ctx, bool emitEnvelopeTranscript) {
         var env = new Dictionary<string, string> {
             ["KCAP_RENDERED_AGENT"] = "1",
             ["KCAP_AGENT_ID"]       = ctx.AgentId,
@@ -135,6 +143,9 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
         if (!string.IsNullOrEmpty(ctx.DaemonEpoch))     env["KCAP_DAEMON_EPOCH"] = ctx.DaemonEpoch;
         if (!string.IsNullOrEmpty(ctx.ServerUrl))       env["KCAP_URL"]          = ctx.ServerUrl;
         if (!string.IsNullOrEmpty(ctx.DaemonBridgeUrl)) env["KCAP_DAEMON_URL"]   = ctx.DaemonBridgeUrl;
+        // §2.5 guard-1: only an envelope-sourced session carries this marker; the codex hook +
+        // watcher inherit it and stand down so the rollout is not double-ingested alongside the envelopes.
+        if (emitEnvelopeTranscript) env["KCAP_HOSTED_APPSERVER"] = "1";
         return env;
     }
 
