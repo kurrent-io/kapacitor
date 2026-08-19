@@ -238,16 +238,4 @@ public class PluginCommandCopilotTests {
         Stderr:            TextWriter.Null
     ) { ResolveMcpBinaryPath = () => TestBinaryPath };
 
-    // Sets an env var for the test's lifetime and restores the previous value on Dispose.
-    // Used to clear COPILOT_HOME so CopilotPaths resolves under the fake home.
-    sealed class EnvScope : IDisposable {
-        readonly string  _key;
-        readonly string? _prev;
-        public EnvScope(string key, string? value) {
-            _key  = key;
-            _prev = Environment.GetEnvironmentVariable(key);
-            Environment.SetEnvironmentVariable(key, value);
-        }
-        public void Dispose() => Environment.SetEnvironmentVariable(_key, _prev);
-    }
 }

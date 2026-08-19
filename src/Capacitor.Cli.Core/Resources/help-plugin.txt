@@ -9,16 +9,17 @@ Subcommands:
 Options:
   --project           Apply hooks to current project only (default: user-wide).
                       Skills are always user-wide; --project only affects hooks.
-  --codex             Target Codex CLI: install hooks AND agent skills.
-  --cursor            Target Cursor IDE: install hooks to ~/.cursor/hooks.json.
-                      Detected by user-dir presence, not PATH, so users without
-                      the cursor shell command are covered.
+  --codex             Target Codex CLI: install hooks and the agent skills.
+  --cursor            Target Cursor IDE: install hooks to ~/.cursor/hooks.json,
+                      plus the agent skills. Detected by user-dir presence, not
+                      PATH, so users without the cursor shell command are covered.
   --copilot           Target GitHub Copilot CLI: write kcap's own hooks file to
-                      ~/.copilot/hooks/kcap.json (honours $COPILOT_HOME). Copilot
-                      merges every *.json in that directory, so user-authored
-                      hook files are never touched.
+                      ~/.copilot/hooks/kcap.json (honours $COPILOT_HOME), plus the
+                      agent skills. Copilot merges every *.json in that directory,
+                      so user-authored hook files are never touched.
   --gemini            Target Gemini CLI: merge kcap's hooks into the SHARED
-                      ~/.gemini/settings.json (honours $GEMINI_CLI_HOME). User-authored
+                      ~/.gemini/settings.json (honours $GEMINI_CLI_HOME), plus the
+                      agent skills. User-authored
                       hook entries and every other settings key are preserved; if
                       the file exists but isn't valid JSON the install fails closed
                       and leaves it untouched.
@@ -37,7 +38,8 @@ Options:
                       (Kiro reads ~/.kiro/skills, not the agent-agnostic
                       ~/.agents/skills) so Kiro is steered to prefer the kcap tools.
   --pi                Target Pi (badlogic/pi-mono): install the live-ingest
-                      extension to ~/.pi/agent/extensions/kcap.ts. Pi has no
+                      extension to ~/.pi/agent/extensions/kcap.ts, plus the agent
+                      skills. Pi has no
                       shell hooks; the extension auto-loads on `pi` startup and
                       streams each session. Also installs the kcap MCP-bridge
                       extension (~/.pi/agent/extensions/kcap-mcp.ts — Pi has no
@@ -46,7 +48,8 @@ Options:
                       block in ~/.pi/agent/AGENTS.md (see --skip-pi-instructions).
                       User-wide only — --project has no effect with --pi.
   --opencode          Target SST OpenCode: install the live-ingest plugin to
-                      ~/.config/opencode/plugins/kcap.ts. OpenCode has no shell
+                      ~/.config/opencode/plugins/kcap.ts, plus the agent skills.
+                      OpenCode has no shell
                       hooks; the plugin auto-loads on `opencode` startup and
                       streams each session. User-wide only — --project has no
                       effect with --opencode.
@@ -60,9 +63,12 @@ Options:
                       hooks.json). Antigravity has no shell hooks; the GUI loads
                       plugins at startup and streams each conversation. User-wide
                       only — --project has no effect with --antigravity.
-  --skills            Install only the agent-agnostic skills to ~/.agents/skills/.
-                      Use this if you only have Cursor (or another agent that
-                      reads ~/.agents/skills/) and don't want Codex hooks.
+  --skills            Install ONLY the agent-agnostic skills to ~/.agents/skills/,
+                      with no hooks or MCP registration. Every per-vendor install
+                      (--codex, --cursor, --copilot, --gemini, --pi, --opencode)
+                      already writes them, so reach for this to refresh the skills
+                      on their own, or to install them for an agent kcap has no
+                      integration for.
   --skip-codex-network-access
                       With --codex: skip enabling Codex sandbox network access.
                       By default `install --codex` also allows Codex's
@@ -130,7 +136,12 @@ Notes:
   Skills install to ~/.agents/skills/kcap-{recap,errors,hide,disable,
   validate-plan,review-flows,agent-flows,work-items,guided-tour}/.
   Codex, Cursor, and any other agent that honors the .agents/skills convention
-  will pick them up automatically.
+  will pick them up automatically. Every install of a vendor that reads that tree
+  writes them, so `install --cursor` alone leaves nothing missing. Kiro and
+  Antigravity get their own copies instead, under ~/.kiro/skills and
+  ~/.gemini/skills, and the bare (Claude) install uses the plugin bundle.
+  The --if-installed refresh only tops up skills you already have: `plugin remove
+  --skills` stays removed until you install a vendor again explicitly.
 
   --codex also writes hooks to ~/.codex/hooks.json (or <repo>/.codex/hooks.json
   with --project). MCP server registration is handled separately by the Codex

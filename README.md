@@ -146,7 +146,7 @@ In `--no-prompt` mode, the wizard installs hooks for every detected agent by def
 > **Behavior change: `--no-prompt` now also imports this repo's history.** The Step 6 import (above) defaults to yes like every other prompt in the wizard, so `kcap setup --no-prompt` now uploads this repository's past sessions too — when run inside a git repo with an origin remote and authentication requirements are satisfied (including no-auth/provider-`None` servers). Existing unattended/scripted `kcap setup --no-prompt` invocations will start uploading current-repo session history unless you add `--skip-import`.
 
 > **Need hooks for an agent installed after setup, or scoped to a single repo?**
-> Run `kcap plugin install [--codex|--cursor|--copilot|--gemini|--kiro|--pi|--opencode|--antigravity]` (omit the flag for the Claude Code plugin), or pair Codex with `--project` for a per-repo install. Use `--skills` instead of `--codex` if you only want the agent skills without Codex hooks. Cursor uses user-scope only — `--project` has no effect with `--cursor`. After installing Codex hooks, the next `codex` launch prompts to trust the new hooks — accept once to trust them all (run `/hooks` inside Codex if you'd rather trust each entry individually). After a `--project` install, also run `codex` once in the repo and accept the workspace trust prompt. Re-running after a kcap upgrade is rarely needed for user-scope installs — the npm postinstall hook auto-refreshes them on every `npm install -g @kurrent/kcap`, and `kcap update` refreshes them too (npm 11+ blocks install scripts by default — `kcap update` works regardless, or add `allow-scripts[]=@kurrent/kcap` to `~/.npmrc` to opt the postinstall in once).
+> Run `kcap plugin install [--codex|--cursor|--copilot|--gemini|--kiro|--pi|--opencode|--antigravity]` (omit the flag for the Claude Code plugin), or pair Codex with `--project` for a per-repo install. Every per-vendor install also writes the agent skills to `~/.agents/skills/` (Kiro and Antigravity get their own copies under `~/.kiro/skills` and `~/.gemini/skills`), so `--skills` is only needed to install or refresh them on their own — for instance for an agent kcap has no integration for. Cursor uses user-scope only — `--project` has no effect with `--cursor`. After installing Codex hooks, the next `codex` launch prompts to trust the new hooks — accept once to trust them all (run `/hooks` inside Codex if you'd rather trust each entry individually). After a `--project` install, also run `codex` once in the repo and accept the workspace trust prompt. Re-running after a kcap upgrade is rarely needed for user-scope installs — the npm postinstall hook auto-refreshes them on every `npm install -g @kurrent/kcap`, and `kcap update` refreshes them too (npm 11+ blocks install scripts by default — `kcap update` works regardless, or add `allow-scripts[]=@kurrent/kcap` to `~/.npmrc` to opt the postinstall in once).
 
 > **Need at least one agent to capture sessions:** the setup wizard runs to completion without an agent CLI on `PATH` (it'll still configure your profile, auth, and daemon), but kcap only records work once Claude Code or Codex CLI is installed and the hooks are in place.
 
@@ -1095,7 +1095,7 @@ kcap plugin install --codex --if-installed           # refresh Codex hooks only 
 kcap plugin install --if-installed                   # refresh Claude plugin registration only if previously installed (used by npm postinstall)
 ```
 
-Installing with `--codex` (or `--skills`) writes nine skills under `~/.agents/skills/`:
+Installing any vendor that reads the shared tree — `--codex`, `--cursor`, `--copilot`, `--gemini`, `--pi`, `--opencode` — writes these nine skills under `~/.agents/skills/` (`--skills` installs them alone; Kiro and Antigravity get their own copies, and the bare Claude install uses the plugin bundle):
 
 | Skill | Wraps | Purpose |
 |---|---|---|
@@ -1166,7 +1166,7 @@ PR review is supported for hosted Codex agents as well as Claude — the same `k
 Cursor is detected by the presence of `~/.cursor/` — you don't need the `cursor` shell command on `PATH`. If `kcap setup` found Cursor and you said yes, hooks are already in place. Installing also registers the six kcap MCP servers in `~/.cursor/mcp.json` (non-destructive, idempotent); pass `--skip-cursor-mcp` to opt out. To install or remove later:
 
 ```bash
-kcap plugin install --cursor                # writes ~/.cursor/hooks.json + registers kcap MCP servers
+kcap plugin install --cursor                # writes ~/.cursor/hooks.json + agent skills + registers kcap MCP servers
 kcap plugin install --cursor --skip-cursor-mcp  # hooks only, skip ~/.cursor/mcp.json
 kcap plugin remove --cursor                 # remove Cursor hooks + kcap MCP servers
 ```
@@ -1199,7 +1199,7 @@ something you need to run day to day.
 Copilot CLI is detected via `~/.copilot/` (created on Copilot's first run) or the `copilot` binary on `PATH`. kcap writes its own hooks file — Copilot merges every `*.json` under `~/.copilot/hooks/`, so your other hook files are never touched. Copilot loads hook config at startup: restart any running `copilot` session after installing.
 
 ```bash
-kcap plugin install --copilot               # writes ~/.copilot/hooks/kcap.json
+kcap plugin install --copilot               # writes ~/.copilot/hooks/kcap.json + agent skills
 kcap plugin remove --copilot                # deletes ~/.copilot/hooks/kcap.json
 ```
 
@@ -1210,7 +1210,7 @@ Live sessions stream from `~/.copilot/session-state/<session-id>/events.jsonl` (
 Gemini CLI is detected via `~/.gemini/` (created on Gemini's first run) or the `gemini` binary on `PATH`. Gemini keeps its hooks in the shared `~/.gemini/settings.json`, so kcap **merges** its entries into the `hooks` block and preserves your other settings and any hand-authored hook entries. Gemini loads hook config at startup: restart any running `gemini` session after installing.
 
 ```bash
-kcap plugin install --gemini                # merges kcap hooks into ~/.gemini/settings.json
+kcap plugin install --gemini                # merges kcap hooks into ~/.gemini/settings.json, writes agent skills
 kcap plugin remove --gemini                 # removes only kcap's entries
 ```
 
@@ -1244,7 +1244,7 @@ Pi (`badlogic/pi-mono`) is detected via `~/.pi/agent/` or the `pi` binary on `PA
 `kcap` must be on `PATH` (both extensions shell out to it). Restart any running `pi` session after installing.
 
 ```bash
-kcap plugin install --pi                    # write kcap.ts + kcap-mcp.ts + AGENTS.md block
+kcap plugin install --pi                    # write kcap.ts + kcap-mcp.ts + AGENTS.md block + agent skills
 kcap plugin install --pi --skip-pi-mcp      # ingest + steering only, no MCP bridge
 kcap plugin remove --pi                     # delete both extensions + strip the AGENTS.md block
 ```
@@ -1256,11 +1256,11 @@ Live sessions stream from `~/.pi/agent/sessions/` (honours `PI_CODING_AGENT_DIR`
 SST OpenCode is detected via `~/.config/opencode/` (or `~/.local/share/opencode/`) or the `opencode` binary on `PATH`. OpenCode has **no shell hooks** — it exposes an in-process plugin API — so `install --opencode` writes a dependency-free plugin to `~/.config/opencode/plugins/kcap.ts`, which `opencode` auto-loads at startup. Restart any running `opencode` session after installing.
 
 ```bash
-kcap plugin install --opencode              # write ~/.config/opencode/plugins/kcap.ts
+kcap plugin install --opencode              # write ~/.config/opencode/plugins/kcap.ts + agent skills
 kcap plugin remove --opencode               # delete it
 ```
 
-Beyond the capture plugin, `install --opencode` (and `kcap setup`) also **registers the six kcap MCP servers** in `~/.config/opencode/opencode.json` — OpenCode's `mcp` block, each entry `type: "local"` with `command` as an array and `enabled: true` (non-destructive/idempotent, preserving `$schema` and any user servers; opt out `--skip-opencode-mcp`) — and installs a kcap-owned **steering block** into `~/.config/opencode/AGENTS.md` (opt out `--skip-opencode-instructions`). `remove --opencode` reverses all three. (OpenCode reads the agent-agnostic `~/.agents/skills/` for kcap's skills, so no separate skills copy is needed.)
+Beyond the capture plugin, `install --opencode` (and `kcap setup`) also **registers the six kcap MCP servers** in `~/.config/opencode/opencode.json` — OpenCode's `mcp` block, each entry `type: "local"` with `command` as an array and `enabled: true` (non-destructive/idempotent, preserving `$schema` and any user servers; opt out `--skip-opencode-mcp`) — and installs a kcap-owned **steering block** into `~/.config/opencode/AGENTS.md` (opt out `--skip-opencode-instructions`). `remove --opencode` reverses all three. (OpenCode reads the agent-agnostic `~/.agents/skills/`, and `install --opencode` writes it, so no separate `--skills` run is needed.)
 
 On `session.created` the plugin runs `kcap hook --opencode` (POSTs lifecycle + spawns the watcher); on each `session.idle` it fetches the session's full messages via OpenCode's in-process SDK and appends them as native `{info, parts}` JSONL to a file the watcher tails (`vendor=opencode`) — so kcap must be on `PATH`. Since OpenCode has **no session-end event**, the watcher synthesizes session-end when the `opencode` process exits. OpenCode records per-message tokens/cost, so those flow through. Historical `kcap import --opencode` reads the SQLite db directly — see [Loading historical sessions](#loading-historical-sessions).
 
