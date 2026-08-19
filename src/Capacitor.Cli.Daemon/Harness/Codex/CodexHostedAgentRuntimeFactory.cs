@@ -83,10 +83,12 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
         var (sandbox, approval) = CodexPosturePolicy.Resolve(ctx.Work, ctx.IsReviewFlow, ctx.CodexPosture);
         var appServerArgs = _launcher.BuildAppServerLaunchArgs(launcherCtx);
 
-        // Marker stamping (guard-1) and the runtime's envelope emission must use the SAME decision, or a
-        // session could be hook-suppressed with no envelope source. The activation slice flips it on.
-        var emitEnvelopeTranscript = false;
-        var env                    = BuildEnv(ctx, emitEnvelopeTranscript);
+        // The app-server path is envelope-sourced: the daemon emits the transcript and defers the first
+        // turn behind a source claim, guard-1 stands the rollout watcher down (the marker), and guard-2
+        // backstops server-side. ONE decision drives all four (marker, emission, deferral, forwarder) so
+        // they can never desync. Rollback is codex.transport=pty — this method is not reached then.
+        const bool envelopeSourced = true;
+        var env = BuildEnv(ctx, envelopeSourced);
 
         var launch = new CodexAppServerLaunch(
             Cwd:           ctx.Worktree.Path,
@@ -104,7 +106,8 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
         var runtime = new CodexAppServerHostedAgentRuntime(
             spawn, launch, ctx.ActivityClock,
             _loggerFactory.CreateLogger<CodexAppServerHostedAgentRuntime>(),
-            emitEnvelopeTranscript: emitEnvelopeTranscript,
+            emitEnvelopeTranscript: envelopeSourced,
+            deferFirstTurn: envelopeSourced,
             agentId: ctx.AgentId,
             requestInteraction: _connection is { } c ? c.RequestAcpInteractionAsync : null,
             approvalTimeout: TimeSpan.FromSeconds(Math.Max(1, _config.CodexAppServerApprovalTimeoutSeconds)));
@@ -118,7 +121,10 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
             await runtime.DisposeAsync().ConfigureAwait(false);
             throw;
         }
-        return new HostedRuntimeStart(runtime, McpConfigPath: null);
+        // Transcript: runtime → the orchestrator drains the runtime's envelopes through an
+        // AcpTranscriptForwarder and, because RequiresSourceClaimBeforeFirstTurn is now set, runs the
+        // source-claim → BeginFirstTurn → confirm sequence before the first turn is dispatched.
+        return new HostedRuntimeStart(runtime, McpConfigPath: null, Transcript: runtime);
     }
 
     static LauncherContext BuildLauncherContext(RuntimeStartContext ctx) => new(

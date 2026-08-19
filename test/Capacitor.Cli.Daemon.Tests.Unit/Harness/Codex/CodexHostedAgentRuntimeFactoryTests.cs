@@ -159,9 +159,10 @@ public class CodexHostedAgentRuntimeFactoryTests {
 
     [Test]
     [NotInParallel("HomeEnvVarMutation")]
-    public async Task App_server_launch_leaves_the_marker_unset_while_dormant() {
-        // The activation slice has not flipped emitEnvelopeTranscript, so a real app-server launch must
-        // NOT stamp the marker — otherwise the shipped reviewers (still hook-ingested) would lose the watcher.
+    public async Task App_server_launch_is_envelope_sourced_after_activation() {
+        // Activation: a real app-server launch stamps the KCAP_HOSTED_APPSERVER marker (guard-1 stands the
+        // rollout watcher down), carries a Transcript for the forwarder to drain, and defers the first turn
+        // behind the source claim.
         var originalHome = Environment.GetEnvironmentVariable("HOME");
         var originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
         using var home = new TempDir();
@@ -181,6 +182,10 @@ public class CodexHostedAgentRuntimeFactoryTests {
             var factory = Factory(new RecordingPtyFactory(), appServerActive: true, seam);
 
             var start = await factory.StartAsync(Ctx(isReviewFlow: true, wt.Path), CancellationToken.None).WaitAsync(HangGuard);
+
+            await Assert.That(start.Transcript).IsNotNull();
+            await Assert.That(start.Runtime.RequiresSourceClaimBeforeFirstTurn).IsTrue();
+
             await start.Runtime.DisposeAsync();
         } finally {
             Environment.SetEnvironmentVariable("HOME", originalHome);
@@ -188,7 +193,7 @@ public class CodexHostedAgentRuntimeFactoryTests {
         }
 
         await Assert.That(capturedEnv).IsNotNull();
-        await Assert.That(capturedEnv!.ContainsKey("KCAP_HOSTED_APPSERVER")).IsFalse();
+        await Assert.That(capturedEnv!["KCAP_HOSTED_APPSERVER"]).IsEqualTo("1");
     }
 
     [Test]
