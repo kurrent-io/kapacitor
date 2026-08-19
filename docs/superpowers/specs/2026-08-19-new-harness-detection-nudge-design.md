@@ -77,11 +77,16 @@ CLI cannot reference. Hoist it:
   vendors being left off user-facing surfaces.
 
 The "is kcap wired in?" half of the predicate is a new
-`HarnessIntegrationProbe.IsWired(vendorId, home, env)` in **Core**: the per-vendor installers and
-`*Paths` classes it delegates to already live in Core, and it must be callable from both the CLI
-(surfaces 1–2, `kcap status`) and the Daemon (surface 3's heartbeat inventory), which cannot
-reference the CLI assembly. It derives each installer's config path from home + the existing env
-overrides the same way `PluginEnvironment.FromProcess()` does. `StatusCommand` refactors onto it,
+`HarnessIntegrationProbe.IsWired(string vendorId, AgentDetectionInputs inputs)` in **Core**: the
+per-vendor installers and `*Paths` classes it delegates to already live in Core, and it must be
+callable from both the CLI (surfaces 1–2, `kcap status`) and the Daemon (surface 3's heartbeat
+inventory), which cannot reference the CLI assembly. `AgentDetectionInputs` already carries every
+per-vendor env override the paths need (`GeminiCliHome`, `CopilotHome`, `KiroHome`, `PiAgentDir`,
+`OpenCodeConfigDir`, `XdgConfigHome`/`XdgDataHome`, `Platform`, `AppData`, …), so detection and the
+wired-probe take the SAME input snapshot; the probe resolves each installer's config path through
+the Core `*Paths` helpers (the CLI-assembly `PluginEnvironment`'s properties document the exact
+per-vendor path-member mapping to mirror — it cannot be referenced from Core). `StatusCommand`
+refactors onto it,
 **behavior-preserving**: each installer must keep receiving exactly the path argument it gets from
 `BuildHooksStatusLine` today, guarded by keeping/adding the status line unit test as a regression
 pin.
@@ -110,8 +115,10 @@ temp+rename like `AppState`):
   offered* gets `last_offered` = now — regardless of whether the user answered yes or no to the
   unified install prompt. Setup **never writes `declined: true`**: a "not now" at setup is a soft
   skip that resurfaces after the re-offer floor; permanent silence is only ever the explicit
-  `kcap harness dismiss`. Vendors excluded from the prompt by a `--skip-*` flag were not offered
-  and are not stamped. Stamping never overwrites an existing `declined: true` entry.
+  `kcap harness dismiss`. Vendors excluded from **install** by a `--skip-<vendor>-hooks` flag are
+  not stamped (the flag does not remove the vendor from the unified prompt — it gates the install
+  step — but a flag-skipped vendor was not meaningfully offered). Stamping never overwrites an
+  existing `declined: true` entry.
 - **Install clears the need silently:** a successful `kcap plugin install --<vendor>` makes
   predicate clause 2 false; the ledger entry becomes inert (no cleanup needed).
 - **Decline:** new command `kcap harness dismiss <vendor>` sets `declined: true`. This is what the
@@ -277,8 +284,10 @@ all" majority; PRs 2–3 add the resident and fully-dark coverage.
 
 - `HarnessCatalog` conformance pins: every `KnownVendorFlags` flag appears exactly once; every
   `AgentDetectionResult` field is selected by exactly one entry.
-- Ledger: corrupt/missing file → empty; setup stamping (declined vs offered); dismiss command;
-  atomic write (partial-write torn file reads as empty).
+- Ledger: corrupt/missing file → empty; setup stamping (offered vs `--skip`-gated); a named test
+  that setup stamping with a pre-existing `declined: true` entry leaves `declined: true` intact
+  (the regression would revive an explicit dismissal); dismiss command; atomic write
+  (partial-write torn file reads as empty).
 - Predicate unit tests per vendor over injected `AgentDetectionInputs` + fake installer state,
   including the Gemini/Antigravity shared-dir disambiguation pair and Claude/Codex PATH-only cases.
 - Emitter tests mirror `VersionNudgeEmitter`'s: fragment text, throttle respected, multi-vendor
