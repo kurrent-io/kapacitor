@@ -124,19 +124,35 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     // together with the factory's Transcript wiring and the dedup guards.
     readonly bool _emitEnvelopeTranscript;
 
+    // Whether the FIRST turn is deferred behind a source claim (the §2.5 deferred-first-turn contract).
+    // Distinct from _emitEnvelopeTranscript (envelope EMISSION, §2.4): the two are logically separable
+    // (emission needs no seal; a seal needs no emission) and each is independently testable, even
+    // though production flips BOTH together at the envelope-source activation.
+    readonly bool _deferFirstTurn;
+
+    // The held initial prompt's dispatch, when the first turn is DEFERRED: its turn/start is enqueued
+    // sealed at StartAsync (so it sits at the head) but not sent until the orchestrator's source claim
+    // acks and calls BeginFirstTurnAsync. The task completes when that first turn/start's RESPONSE
+    // lands — the signal the orchestrator confirms on. Null with no initial prompt, or single-phase.
+    Task? _firstTurnDispatch;
+
     public CodexAppServerHostedAgentRuntime(
             CodexAppServerSpawn spawn, CodexAppServerLaunch launch, AgentActivityClock? clock,
             ILogger logger, TimeProvider? timeProvider = null, TimeSpan? forwardStallTimeout = null,
-            bool emitEnvelopeTranscript = false) {
+            bool emitEnvelopeTranscript = false, bool deferFirstTurn = false) {
         _spawn   = spawn;
         _launch  = launch;
         _clock   = clock;
         _logger  = logger;
         _time    = timeProvider ?? TimeProvider.System;
         _emitEnvelopeTranscript = emitEnvelopeTranscript;
+        _deferFirstTurn = deferFirstTurn;
         _dispatcher = new CodexTurnInputDispatcher(
             startTurn: IssueTurnStartAsync, steerTurn: IssueTurnSteerAsync,
-            logger: logger, ct: _cts.Token, onTurnInFlight: flip => _clock?.SetTurnInFlight(flip));
+            logger: logger, ct: _cts.Token, onTurnInFlight: flip => _clock?.SetTurnInFlight(flip),
+            // Deferring the first turn seals the dispatcher — externally-reachable input arriving during
+            // the source-claim window enqueues and waits; BeginFirstTurnAsync unseals it.
+            sealedAtStart: deferFirstTurn);
         _mapper = new CodexNotificationMapper(() => _resolvedModel, logger);
         _forwardBuffer = new CodexForwardBuffer(
             ForwardBufferCapacity,
@@ -227,8 +243,40 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         await StartThreadAsync(linked.Token).ConfigureAwait(false);
         _clock?.ClearLaunchStage();
 
-        if (!string.IsNullOrEmpty(_launch.InitialPrompt))
-            await _dispatcher.EnqueueAsync(_launch.InitialPrompt, linked.Token).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(_launch.InitialPrompt)) {
+            if (_deferFirstTurn) {
+                // DEFERRED first turn: the dispatcher is sealed, so this enqueue parks the prompt at the
+                // head of the queue and dispatches NOTHING now — we must NOT await it (the ack cannot
+                // complete until BeginFirstTurnAsync unseals). Use CancellationToken.None as the per-input
+                // token because StartAsync's `linked` is disposed on return, long before the deferred
+                // send; the dispatcher's own runtime token (_cts.Token) still aborts it on teardown.
+                _firstTurnDispatch = _dispatcher.EnqueueAsync(_launch.InitialPrompt, CancellationToken.None);
+            } else {
+                await _dispatcher.EnqueueAsync(_launch.InitialPrompt, linked.Token).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// When true, <see cref="StartAsync"/> has established the thread and HELD the first turn (sealed
+    /// the input dispatcher) instead of dispatching it — the orchestrator must durably source-claim
+    /// this session, then call <see cref="BeginFirstTurnAsync"/>, before any turn (and therefore any
+    /// hook or rollout line) can exist. Driven by the deferred-first-turn flag (production flips it with
+    /// the envelope-source activation); every single-phase launch keeps the immediate first turn.
+    /// </summary>
+    public bool RequiresSourceClaimBeforeFirstTurn => _deferFirstTurn;
+
+    /// <summary>
+    /// Unseals the input dispatcher — dispatching the held initial prompt as the first <c>turn/start</c>,
+    /// then any input that arrived during the sealed claim window FIFO — and awaits the first turn's
+    /// JSON-RPC RESPONSE (the signal the orchestrator confirms the launch on). Called once, only when
+    /// <see cref="RequiresSourceClaimBeforeFirstTurn"/> is true and only after the source claim acks.
+    /// With no initial prompt it simply unseals (a subsequent user input becomes the first turn).
+    /// </summary>
+    public async Task BeginFirstTurnAsync(CancellationToken ct = default) {
+        _dispatcher.Unseal();
+        if (_firstTurnDispatch is { } dispatch)
+            await dispatch.WaitAsync(ct).ConfigureAwait(false);
     }
 
     async Task SpawnAndInitializeAsync(string? hookStateSeed, CancellationToken ct) {

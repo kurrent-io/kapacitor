@@ -224,6 +224,73 @@ public class CodexTurnInputDispatcherTests {
         await Assert.That(async () => await ack2.WaitAsync(Guard)).Throws<ObjectDisposedException>();
     }
 
+    // ── Deferred-first-turn seal ─────────────────────────────────────────────────────────────────
+
+    static CodexTurnInputDispatcher Sealed(FakeTurnSink sink) =>
+        new(sink.Start, sink.Steer, NullLogger.Instance, CancellationToken.None, sealedAtStart: true);
+
+    [Test]
+    public async Task Sealed_dispatcher_holds_input_and_reads_idle_until_unseal() {
+        var sink = new FakeTurnSink();
+        var d    = Sealed(sink);
+
+        var ack = d.EnqueueAsync("held-prompt"); // enqueues behind the seal — nothing dispatches
+
+        await Task.Delay(100); // give any (erroneous) dispatch a chance to fire
+        await Assert.That(sink.StartCount).IsEqualTo(0);   // sealed ⇒ no turn/start left
+        await Assert.That(d.TurnInFlight).IsFalse();       // and the reaper sees it idle, not wedged
+        await Assert.That(ack.IsCompleted).IsFalse();
+
+        d.Unseal();
+
+        var start = await sink.NextStart();
+        await Assert.That(start.Text).IsEqualTo("held-prompt");
+        start.Started("turn-1");
+        await ack.WaitAsync(Guard);
+    }
+
+    [Test]
+    public async Task Unseal_dispatches_the_held_prompt_first_then_queued_input_fifo() {
+        var sink = new FakeTurnSink();
+        var d    = Sealed(sink);
+
+        // The held initial prompt is enqueued first (the head); input that "arrived during the claim
+        // window" enqueues behind it — all while sealed.
+        var promptAck   = d.EnqueueAsync("initial-prompt");
+        var externalAck = d.EnqueueAsync("external-input");
+
+        await Task.Delay(50);
+        await Assert.That(sink.StartCount).IsEqualTo(0);
+
+        d.Unseal();
+
+        var start = await sink.NextStart();               // the held prompt dispatches FIRST
+        await Assert.That(start.Text).IsEqualTo("initial-prompt");
+        start.Started("turn-1");
+        await promptAck.WaitAsync(Guard);
+
+        var steer = await sink.NextSteer();               // then the queued input, FIFO, onto the turn
+        await Assert.That(steer.Text).IsEqualTo("external-input");
+        steer.Accepted();
+        await externalAck.WaitAsync(Guard);
+
+        await Assert.That(sink.StartCount).IsEqualTo(1);  // exactly one start — no double-start
+    }
+
+    [Test]
+    public async Task Unseal_is_idempotent() {
+        var sink = new FakeTurnSink();
+        var d    = Sealed(sink);
+
+        var ack = d.EnqueueAsync("hello");
+        d.Unseal();
+        d.Unseal(); // a second unseal is a harmless pump, not a double-dispatch
+
+        (await sink.NextStart()).Started("turn-1");
+        await ack.WaitAsync(Guard);
+        await Assert.That(sink.StartCount).IsEqualTo(1);
+    }
+
     // ── Channel-synchronized fake send-sink ─────────────────────────────────────────────────────
 
     sealed class FakeTurnSink {

@@ -31,7 +31,8 @@ public class CodexAppServerHostedAgentRuntimeTests {
     /// <summary>Builds a spawn delegate that hands each spawn a fresh fake (indexed), recording the
     /// seed passed on each call so the restart path is assertable.</summary>
     static (CodexAppServerHostedAgentRuntime Runtime, List<string?> Seeds, Func<int, FakeCodexAppServer> Fake)
-            Build(Func<int, FakeCodexAppServer> fakeFor, CodexAppServerLaunch launch, bool emitEnvelopes = false) {
+            Build(Func<int, FakeCodexAppServer> fakeFor, CodexAppServerLaunch launch,
+                  bool emitEnvelopes = false, bool deferFirstTurn = false) {
         var seeds  = new List<string?>();
         var fakes  = new List<FakeCodexAppServer>();
         var index  = 0;
@@ -45,7 +46,8 @@ public class CodexAppServerHostedAgentRuntimeTests {
         };
 
         var runtime = new CodexAppServerHostedAgentRuntime(
-            spawn, launch, clock: null, NullLogger.Instance, emitEnvelopeTranscript: emitEnvelopes);
+            spawn, launch, clock: null, NullLogger.Instance,
+            emitEnvelopeTranscript: emitEnvelopes, deferFirstTurn: deferFirstTurn);
         return (runtime, seeds, i => fakes[i]);
     }
 
@@ -109,6 +111,42 @@ public class CodexAppServerHostedAgentRuntimeTests {
         await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
 
         await Assert.That(DrainAvailable(runtime)).IsEmpty();
+
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Deferred_first_turn_holds_the_initial_prompt_until_BeginFirstTurn() {
+        // Envelope-source path: StartAsync establishes the thread but must NOT dispatch the first turn —
+        // it seals the dispatcher and holds the prompt, so nothing can fire a hook before the source
+        // claim commits. The orchestrator drives the first turn via BeginFirstTurnAsync after the claim.
+        var fake = new FakeCodexAppServer();
+        var (runtime, _, _) = Build(_ => fake, Launch(prompt: "review this"), deferFirstTurn: true);
+
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(runtime.RequiresSourceClaimBeforeFirstTurn).IsTrue();
+        await Assert.That(runtime.ThreadId).IsEqualTo("thread-abc");
+        await Assert.That(fake.ReceivedMethods).DoesNotContain("turn/start"); // held — no first turn yet
+
+        await runtime.BeginFirstTurnAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(fake.ReceivedMethods).Contains("turn/start"); // unsealed — the held prompt dispatched
+
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Single_phase_launch_dispatches_the_initial_prompt_at_start() {
+        // Reviewer/control-plane path (gate off): the runtime keeps the single-phase launch — the initial
+        // prompt is dispatched at StartAsync, and no source claim is required.
+        var fake = new FakeCodexAppServer();
+        var (runtime, _, _) = Build(_ => fake, Launch(prompt: "review this")); // emitEnvelopes defaults false
+
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(runtime.RequiresSourceClaimBeforeFirstTurn).IsFalse();
+        await Assert.That(fake.ReceivedMethods).Contains("turn/start"); // self-driven at start, no BeginFirstTurn
 
         await runtime.DisposeAsync();
     }
