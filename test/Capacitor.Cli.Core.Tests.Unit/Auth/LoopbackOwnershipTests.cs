@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using Capacitor.Cli.Core.Auth;
 using Duende.IdentityModel.OidcClient.Browser;
 
@@ -22,9 +23,24 @@ namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 /// <para>Guarded at source because the behavioural form would bind a port and launch a browser.
 /// <see cref="FindOwnershipViolations"/> takes its root as a parameter so the scanner self-tests
 /// below can prove it actually detects, against a synthetic fixture rather than real source.</para>
+///
+/// <para><b>Two checks, because pattern matching over source can always be out-spelled.</b> The
+/// scanner tolerates trivia and qualification between <c>new</c> and the argument list — a literal
+/// <c>"new LoopbackBrowser("</c> search missed <c>new LoopbackBrowser /* c */ (…)</c>, a line break
+/// before the paren, and a <c>global::</c>-qualified name, all of which compile. Since no such
+/// pattern can be proven complete, <see cref="Only_the_known_files_name_the_browser_type_at_all"/>
+/// additionally pins the set of files allowed to NAME the type at all: whatever syntax a new lane
+/// invents, it has to name it, so that assertion is the one no spelling slips past.</para>
 /// </summary>
 public class LoopbackOwnershipTests {
-    const string Construction = "new LoopbackBrowser(";
+    /// <summary>
+    /// A construction, tolerating what the compiler tolerates: any whitespace or line break after
+    /// <c>new</c>, an optional <c>global::</c> and dotted namespace qualification, and block comments
+    /// between the type name and the argument list.
+    /// </summary>
+    static readonly Regex Construction = new(
+        @"new\s+(?:global\s*::\s*)?(?:[A-Za-z_]\w*\s*\.\s*)*LoopbackBrowser\s*(?:/\*.*?\*/\s*)*\(",
+        RegexOptions.Compiled | RegexOptions.Singleline);
 
     /// <summary>An externally supplied browser that would notice being disposed by the callee.</summary>
     sealed class DisposableFakeBrowser(string query) : IBrowser, IDisposable {
@@ -75,33 +91,40 @@ public class LoopbackOwnershipTests {
     internal static List<(string File, int Line, string Statement, string Arguments)> FindSites(string srcRoot) {
         var sites = new List<(string, int, string, string)>();
 
-        foreach (var file in Directory.EnumerateFiles(srcRoot, "*.cs", SearchOption.AllDirectories)) {
+        foreach (var file in SourceFiles(srcRoot)) {
             var source = File.ReadAllText(file);
-            var from   = 0;
 
-            while ((from = source.IndexOf(Construction, from, StringComparison.Ordinal)) >= 0) {
-                var next      = from + Construction.Length;
-                var lineStart = source.LastIndexOf('\n', from) + 1;
+            foreach (var match in Construction.Matches(source).Cast<Match>()) {
+                var at        = match.Index;
+                var lineStart = source.LastIndexOf('\n', at) + 1;
 
-                if (source[lineStart..from].Contains("//", StringComparison.Ordinal)) {
-                    from = next;
-                    continue;
-                }
+                if (source[lineStart..at].Contains("//", StringComparison.Ordinal)) continue;
 
-                var start = source.LastIndexOfAny([';', '{', '}'], from) + 1;
-                var line  = source[..from].Count(c => c == '\n') + 1;
+                var start = source.LastIndexOfAny([';', '{', '}'], at) + 1;
+                var line  = source[..at].Count(c => c == '\n') + 1;
 
-                sites.Add((Path.GetFileName(file), line, source[start..from], ArgumentsAt(source, from)));
-                from = next;
+                // match.Index + match.Length - 1 is the '(' the regex consumed, wherever the trivia
+                // put it, so the argument list is read from the real paren rather than a fixed offset.
+                sites.Add((Path.GetFileName(file), line, source[start..at],
+                           ArgumentsAt(source, match.Index + match.Length - 1)));
             }
         }
 
         return sites;
     }
 
+    /// <summary>
+    /// Hand-written <c>.cs</c> under <paramref name="root"/>. <c>bin</c>/<c>obj</c> are excluded
+    /// because they sit INSIDE <c>src/</c>: they hold generated sources, and a generator that ever
+    /// emitted a copy of a flow would have the scanner counting the same site twice.
+    /// </summary>
+    static IEnumerable<string> SourceFiles(string root) =>
+        Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                          .Any(segment => segment is "bin" or "obj"));
+
     /// <summary>The argument list, paren-balanced so a nested call inside it doesn't truncate.</summary>
-    static string ArgumentsAt(string source, int constructionAt) {
-        var open  = constructionAt + Construction.Length - 1;
+    static string ArgumentsAt(string source, int open) {
         var depth = 0;
 
         for (var i = open; i < source.Length; i++) {
@@ -238,6 +261,72 @@ public class LoopbackOwnershipTests {
         await Assert.That(violations.Count).IsEqualTo(2);
         await Assert.That(violations.TrueForAll(v => v.Contains("BrandNewFacade.cs:4"))).IsTrue();
     }
+
+    // Trivia between the type name and the argument list. All three compile, and a scanner looking
+    // for the literal token "new LoopbackBrowser(" sees none of them — so an unowned, joinless site
+    // spelled any of these ways would leave every assertion in this file green.
+    [Test]
+    [Arguments("        var browser = new LoopbackBrowser /* built here */ (progress: progress);")]
+    [Arguments("        var browser = new LoopbackBrowser (progress: progress);")]
+    [Arguments("        var browser = new global::Capacitor.Cli.Core.Auth.LoopbackBrowser(progress: progress);")]
+    public async Task Scanner_finds_a_construction_however_it_is_spelled(string construction) {
+        using var tmp = new TempDir();
+
+        tmp.CreateFile("Sneaky.cs", [
+            "namespace Fixture;",
+            "static class Sneaky {",
+            "    static void Go() {",
+            construction,
+            "    }",
+            "}",
+        ]);
+
+        await Assert.That(FindSites(tmp.Path).Count).IsEqualTo(1);
+        await Assert.That(FindOwnershipViolations(tmp.Path).Count).IsEqualTo(2);
+    }
+
+    // A construction split across lines — the argument list on the line after the type name.
+    [Test]
+    public async Task Scanner_finds_a_construction_split_across_lines() {
+        using var tmp = new TempDir();
+
+        tmp.CreateFile("Wrapped.cs", [
+            "namespace Fixture;",
+            "static class Wrapped {",
+            "    static void Go() {",
+            "        var browser = new LoopbackBrowser",
+            "            (progress: progress);",
+            "    }",
+            "}",
+        ]);
+
+        await Assert.That(FindSites(tmp.Path).Count).IsEqualTo(1);
+        await Assert.That(FindOwnershipViolations(tmp.Path).Count).IsEqualTo(2);
+    }
+
+    // The spelling-independent backstop. Whatever syntax a new lane uses, it has to NAME the type,
+    // so the set of files allowed to mention it is asserted — that is what catches a construction
+    // this file's pattern matching does not anticipate.
+    [Test]
+    public async Task Only_the_known_files_name_the_browser_type_at_all() {
+        var naming = SourceFiles(Path.Combine(RepoRoot(), "src"))
+            .Where(f => File.ReadAllText(f).Contains("LoopbackBrowser", StringComparison.Ordinal))
+            .Select(f => Path.GetFileName(f))
+            .Order()
+            .ToArray();
+
+        await Assert.That(naming).IsEquivalentTo(BrowserNamingFiles.Order().ToArray())
+            .Because("a file newly naming the type may be constructing one in a spelling the scanner "
+                   + "does not anticipate — add it here only after checking the construction is owned");
+    }
+
+    /// <summary>Files under <c>src/</c> permitted to name <see cref="LoopbackBrowser"/>: the class
+    /// itself, the two flows that construct one, and two that only mention it in a comment or a
+    /// <c>see cref</c>. Adding a sixth is a deliberate edit here, and that is the point — it is the
+    /// one check no construction syntax can slip past.</summary>
+    static readonly string[] BrowserNamingFiles = [
+        "LoopbackBrowser.cs", "OAuthLoginFlow.cs", "OnboardingFacade.cs", "SetupJoin.cs", "SetupCommand.cs",
+    ];
 
     // A doc comment showing the construction is documentation, not a leak.
     [Test]

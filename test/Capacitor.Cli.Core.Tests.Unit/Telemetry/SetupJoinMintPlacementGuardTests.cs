@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Telemetry;
 
@@ -12,10 +13,10 @@ namespace Capacitor.Cli.Core.Tests.Unit.Telemetry;
 /// automated, CI and remote-shell sign-in carries no key at all. Neither failure throws, logs, or
 /// turns a test red.</para>
 ///
-/// <para>Both are prevented structurally by minting as the FIRST statement of the command handler,
-/// before any funnel event and before the flag parsing that chooses a lane. This guard is what
-/// keeps it there. It reads source rather than running the handlers because the behavioural form
-/// would perform real filesystem and network work.</para>
+/// <para>Both are prevented structurally by minting as the FIRST CODE in the command handler,
+/// unconditionally, before any funnel event and before the flag parsing that chooses a lane. This
+/// guard is what keeps it there. It reads source rather than running the handlers because the
+/// behavioural form would perform real filesystem and network work.</para>
 ///
 /// <para><b>Scope: every <c>.cs</c> file under <c>src/</c>.</b> The mint used to live in
 /// <c>Program.cs</c>'s <c>case "login"</c> arm and this guard asserted exactly that; the onboarding
@@ -54,13 +55,22 @@ public class SetupJoinMintPlacementGuardTests {
     internal static List<(string File, string Source)> FindMintingFiles(string srcRoot) {
         var found = new List<(string, string)>();
 
-        foreach (var file in Directory.EnumerateFiles(srcRoot, "*.cs", SearchOption.AllDirectories)) {
+        foreach (var file in SourceFiles(srcRoot)) {
             var source = File.ReadAllText(file);
             if (MintIndexes(source).Count > 0) found.Add((Path.GetFileName(file), source));
         }
 
         return found;
     }
+
+    /// <summary>
+    /// Hand-written <c>.cs</c> under <paramref name="root"/>. <c>bin</c>/<c>obj</c> are excluded
+    /// because they sit INSIDE <c>src/</c> and hold generated sources.
+    /// </summary>
+    static IEnumerable<string> SourceFiles(string root) =>
+        Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                          .Any(segment => segment is "bin" or "obj"));
 
     /// <summary>Indexes of every mint in code — comment mentions excluded.</summary>
     static List<int> MintIndexes(string source) {
@@ -78,13 +88,24 @@ public class SetupJoinMintPlacementGuardTests {
     }
 
     /// <summary>
-    /// True when the mint is the first statement of the <c>HandleAsync</c> that encloses it: no
-    /// other statement-terminating <c>;</c> stands between the handler's opening brace and the mint.
+    /// True when the mint is the first CODE in the <c>HandleAsync</c> that encloses it: nothing but
+    /// whitespace and comments stands between that handler's opening brace and the mint.
+    ///
+    /// <para>"First code", not "no preceding <c>;</c>" — that weaker form passed
+    /// <c>if (!args.Contains("--device")) SetupJoin.Mint();</c>, which compiles, puts the mint first,
+    /// and hands the device lane no key: exactly the regression this guard exists to prevent. A
+    /// condition contains no semicolon, so only requiring the mint to be reachable-looking proved
+    /// nothing about it being unconditional.</para>
+    ///
+    /// <para>The brace is the HANDLER's, deliberately, not the nearest one — anchoring to the nearest
+    /// would let <c>if (…) { SetupJoin.Mint(); }</c> pass, since the block's own brace sits directly
+    /// before the mint.</para>
+    ///
     /// <para>An offset rather than a line-count budget, because the correct code's mint sits under a
     /// multi-line comment explaining why it is there, and a budget makes that comment load-bearing.
     /// </para>
     /// </summary>
-    internal static bool MintsAsTheFirstStatementOfItsHandler(string source) {
+    internal static bool MintsAsTheFirstCodeInItsHandler(string source) {
         foreach (var mint in MintIndexes(source)) {
             var signature = source.LastIndexOf("HandleAsync(", mint, StringComparison.Ordinal);
             if (signature < 0) return false;
@@ -92,19 +113,23 @@ public class SetupJoinMintPlacementGuardTests {
             var body = source.IndexOf('{', signature);
             if (body < 0 || body > mint) return false;
 
-            if (WithoutLineComments(source[(body + 1)..mint]).Contains(';')) return false;
+            if (WithoutComments(source[(body + 1)..mint]).Trim().Length > 0) return false;
         }
 
         return true;
     }
 
-    // A `;` inside an explanatory comment is not a statement.
-    static string WithoutLineComments(string text) =>
-        string.Join('\n', text.Split('\n').Select(line => {
+    /// <summary>Both comment forms removed, so an explanation above the mint — the shape the real
+    /// handlers use — does not read as preceding code.</summary>
+    static string WithoutComments(string text) {
+        var withoutBlocks = Regex.Replace(text, @"/\*.*?\*/", " ", RegexOptions.Singleline);
+
+        return string.Join('\n', withoutBlocks.Split('\n').Select(line => {
             var slashes = line.IndexOf("//", StringComparison.Ordinal);
 
             return slashes < 0 ? line : line[..slashes];
         }));
+    }
 
     // === The real guard ===
 
@@ -119,10 +144,11 @@ public class SetupJoinMintPlacementGuardTests {
     }
 
     [Test]
-    public async Task Every_mint_is_the_first_statement_of_its_handler() {
+    public async Task Every_mint_is_the_first_code_in_its_handler() {
         foreach (var (file, source) in FindMintingFiles(SrcRoot())) {
-            await Assert.That(MintsAsTheFirstStatementOfItsHandler(source)).IsTrue()
-                .Because($"{file} mints after another statement, so a lane or a funnel event can precede it");
+            await Assert.That(MintsAsTheFirstCodeInItsHandler(source)).IsTrue()
+                .Because($"{file} has code before its mint — a condition or a funnel event can precede it, "
+                       + "which is how a lane ends up with no key");
         }
     }
 
@@ -173,7 +199,7 @@ public class SetupJoinMintPlacementGuardTests {
         var minting = FindMintingFiles(tmp.Path);
 
         await Assert.That(minting.Count).IsEqualTo(1);
-        await Assert.That(MintsAsTheFirstStatementOfItsHandler(minting[0].Source)).IsTrue();
+        await Assert.That(MintsAsTheFirstCodeInItsHandler(minting[0].Source)).IsTrue();
     }
 
     [Test]
@@ -190,7 +216,7 @@ public class SetupJoinMintPlacementGuardTests {
             "}",
         ]);
 
-        await Assert.That(MintsAsTheFirstStatementOfItsHandler(FindMintingFiles(tmp.Path)[0].Source)).IsFalse();
+        await Assert.That(MintsAsTheFirstCodeInItsHandler(FindMintingFiles(tmp.Path)[0].Source)).IsFalse();
     }
 
     // The lane-dependence bug in its natural habitat: a mint inside the loopback path, where a
@@ -212,7 +238,48 @@ public class SetupJoinMintPlacementGuardTests {
 
         await Assert.That(minting.Count).IsEqualTo(1);
         await Assert.That(minting[0].File).IsEqualTo("Lane.cs");
-        await Assert.That(MintsAsTheFirstStatementOfItsHandler(minting[0].Source)).IsFalse();
+        await Assert.That(MintsAsTheFirstCodeInItsHandler(minting[0].Source)).IsFalse();
+    }
+
+    // The exact regression this guard claims to prevent, in the one form that still compiles and
+    // still puts the mint first: guarded by the flag that chooses the lane. The device lane then
+    // gets no key, and a check that only asks "is there a statement before it" says yes, this is
+    // fine. So the mint must be the first CODE after the brace, not merely the first `;`.
+    [Test]
+    [Arguments("        if (!args.Contains(\"--device\")) SetupJoin.Mint();")]
+    [Arguments("        if (args.Length > 1) { SetupJoin.Mint(); }")]
+    public async Task Scanner_flags_a_conditional_mint(string mint) {
+        using var tmp = new TempDir();
+
+        tmp.CreateFile("Conditional.cs", [
+            "namespace Fixture;",
+            "static class Conditional {",
+            "    public static async Task<int> HandleAsync(string[] args) {",
+            mint,
+            "    }",
+            "}",
+        ]);
+
+        await Assert.That(MintsAsTheFirstCodeInItsHandler(FindMintingFiles(tmp.Path)[0].Source)).IsFalse();
+    }
+
+    // A block comment before the mint is documentation, not code, so it must not read as a
+    // preceding statement — the strengthened check has to strip both comment forms.
+    [Test]
+    public async Task Scanner_accepts_a_mint_behind_a_block_comment() {
+        using var tmp = new TempDir();
+
+        tmp.CreateFile("Blocked.cs", [
+            "namespace Fixture;",
+            "static class Blocked {",
+            "    public static async Task<int> HandleAsync(string[] args) {",
+            "        /* Before any lane is chosen; the semicolon here is prose. */",
+            "        SetupJoin.Mint();",
+            "    }",
+            "}",
+        ]);
+
+        await Assert.That(MintsAsTheFirstCodeInItsHandler(FindMintingFiles(tmp.Path)[0].Source)).IsTrue();
     }
 
     [Test]
