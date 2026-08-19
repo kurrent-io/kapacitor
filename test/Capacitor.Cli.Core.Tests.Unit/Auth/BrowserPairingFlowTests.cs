@@ -168,6 +168,9 @@ public class BrowserPairingFlowTests {
     [Arguments("javascript:alert(1)")]
     [Arguments("/setup?p=p1")]
     [Arguments("https://evil.example.com/setup?p=p1")]
+    // Userinfo lets a URL read as one host while addressing another — the fallback link is printed
+    // for a human to read, so a URL that misreads is the whole problem.
+    [Arguments("https://acme.kcap.ai@evil.example.com/setup?p=p1")]
     public async Task A_setup_url_that_is_not_a_page_on_this_server_is_never_opened(string setupUrl) {
         var (flow, channel, progress, clock, opened) = Build();
         channel.Mint = new(201, new MintPairingResponse {
@@ -180,6 +183,54 @@ public class BrowserPairingFlowTests {
 
         await Assert.That(opened).IsEmpty();
         await Assert.That(progress.Code).IsNull();
+    }
+
+    // Path-routed deployments put the tenant IN the path, so comparing authorities alone gets this
+    // wrong in both directions: it rejects the tenant's own page and admits its neighbour's.
+    [Test]
+    public async Task A_path_routed_server_accepts_its_own_setup_page() {
+        var clock    = new FakeTimeProvider(clockBase);
+        var channel  = new FakeChannel(clock);
+        var progress = new RecordingProgress();
+        var opened   = new List<string>();
+        var flow     = new BrowserPairingFlow(channel, progress, clock, opened.Add);
+
+        const string pathRouted = "https://host/tenant-a";
+
+        channel.Mint = new(201, new MintPairingResponse {
+            PairingId = "p1", UserCode = "7Q2F-KX9M", Secret = "s3cret", PollIntervalSeconds = 2,
+            SetupUrl = $"{pathRouted}/setup?p=p1", ExpiresAt = clockBase.AddMinutes(15)
+        });
+        channel.Polls.Enqueue(new(200, new PairingStatusResponse {
+            Status = "approved", ServerUrl = pathRouted, User = new PairingUser { Id = "github:4242" }
+        }));
+
+        await Assert.That(await Drive(flow.RunAsync(pathRouted, Machine, "nostromo", default), clock))
+            .IsTypeOf<PairingResult.Approved>();
+
+        await Assert.That(opened).IsEquivalentTo([$"{pathRouted}/setup?p=p1"]);
+    }
+
+    [Test]
+    [Arguments("https://host/tenant-b/setup?p=p1")]  // a neighbour on the same host
+    [Arguments("https://host/tenant-abc/setup?p=p1")] // prefix of the base, but a different tenant
+    [Arguments("https://host/setup?p=p1")]            // above the base
+    public async Task A_path_routed_server_rejects_another_tenants_page(string setupUrl) {
+        var clock    = new FakeTimeProvider(clockBase);
+        var channel  = new FakeChannel(clock);
+        var progress = new RecordingProgress();
+        var opened   = new List<string>();
+        var flow     = new BrowserPairingFlow(channel, progress, clock, opened.Add);
+
+        channel.Mint = new(201, new MintPairingResponse {
+            PairingId = "p1", UserCode = "7Q2F-KX9M", Secret = "s", SetupUrl = setupUrl,
+            ExpiresAt = clockBase.AddMinutes(15)
+        });
+
+        await Assert.That(await Drive(flow.RunAsync("https://host/tenant-a", Machine, "nostromo", default), clock))
+            .IsTypeOf<PairingResult.Untrusted>();
+
+        await Assert.That(opened).IsEmpty();
     }
 
     // ── THE CODE AND THE LINK ──

@@ -139,15 +139,29 @@ public sealed class BrowserPairingFlow(
     /// <summary>
     /// Whether a URL is safe to hand to the OS.
     ///
-    /// <para>It goes to a shell-executed open, so an unchecked one is not merely a bad link: a
-    /// <c>file://</c> path or a registered custom scheme would be launched, by a server the CLI has
-    /// no reason to trust that far. The origin test is the second half — a page on somebody else's
-    /// host is where a human would be asked to approve somebody else's pairing.</para>
+    /// <para>It goes to a shell-executed open, so scheme and origin are checked first: a
+    /// <c>file://</c> path or a registered custom scheme would otherwise be launched on a server's
+    /// say-so, and userinfo lets a URL read as one host while addressing another.</para>
+    ///
+    /// <para>Compared against the whole configured base, path included. A path-routed deployment
+    /// puts the tenant IN the path, so reducing either side to its authority both admits a sibling
+    /// tenant's page and rejects the legitimate one. <see cref="ServerIdentity"/> refuses a base
+    /// carrying a query, which <c>setup_url</c> always has, so the query and fragment come off
+    /// before canonicalising — the URL that is opened keeps them.</para>
     /// </summary>
-    static bool IsOpenable(string setupUrl, string serverUrl) =>
-        Uri.TryCreate(setupUrl, UriKind.Absolute, out var parsed)
-     && (parsed.Scheme == Uri.UriSchemeHttp || parsed.Scheme == Uri.UriSchemeHttps)
-     && ServerIdentity.SameServer(parsed.GetLeftPart(UriPartial.Authority), serverUrl);
+    static bool IsOpenable(string setupUrl, string serverUrl) {
+        if (!Uri.TryCreate(setupUrl, UriKind.Absolute, out var parsed)) return false;
+        if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps) return false;
+        if (!string.IsNullOrEmpty(parsed.UserInfo)) return false;
+
+        var target = ServerIdentity.Canonicalize($"{parsed.Scheme}://{parsed.Authority}{parsed.AbsolutePath}");
+        var origin = ServerIdentity.Canonicalize(serverUrl);
+
+        if (target is null || origin is null) return false;
+
+        // The trailing separator is what stops base "/tenant-a" matching "/tenant-abc".
+        return target == origin || target.StartsWith(origin + "/", StringComparison.Ordinal);
+    }
 
     static TimeSpan Min(TimeSpan a, TimeSpan b) => a < b ? a : b;
 
