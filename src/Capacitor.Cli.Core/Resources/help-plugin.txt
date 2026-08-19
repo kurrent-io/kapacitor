@@ -53,6 +53,9 @@ Options:
                       hooks; the plugin auto-loads on `opencode` startup and
                       streams each session. User-wide only — --project has no
                       effect with --opencode.
+  --skip-opencode-skills
+                      With --opencode: skip installing the kcap skills into
+                      ~/.agents/skills.
   --skip-opencode-mcp With --opencode: skip registering the kcap MCP servers in
                       ~/.config/opencode/opencode.json (the `mcp` block).
   --skip-opencode-instructions
@@ -77,11 +80,17 @@ Options:
                       ~/.codex/config.toml) so kcap skills work. The
                       --if-installed refresh path never touches this, so the npm
                       postinstall hook leaves config.toml alone.
+  --skip-cursor-skills
+                      With --cursor: skip installing the kcap skills into
+                      ~/.agents/skills.
   --skip-cursor-mcp   With --cursor: skip registering the kcap MCP servers in
                       ~/.cursor/mcp.json. By default `install --cursor` also
                       registers all 6 kcap MCP servers there (non-destructive,
                       idempotent — preserves any user-authored servers) so
                       Cursor picks them up with no manual JSON edit.
+  --skip-copilot-skills
+                      With --copilot: skip installing the kcap skills into
+                      ~/.agents/skills.
   --skip-copilot-mcp  With --copilot: skip registering the kcap MCP servers in
                       ~/.copilot/mcp-config.json. By default `install --copilot`
                       also registers all 6 kcap MCP servers there (non-destructive,
@@ -93,6 +102,9 @@ Options:
                       `install --copilot` writes a small kcap-owned, marker-delimited
                       block (non-destructive — preserves your own instructions) that
                       nudges Copilot to use the kcap tools for why/history questions.
+  --skip-gemini-skills
+                      With --gemini: skip installing the kcap skills into
+                      ~/.agents/skills.
   --skip-gemini-mcp   With --gemini: skip registering the kcap MCP servers in the
                       shared ~/.gemini/settings.json. By default `install --gemini`
                       also registers all 6 kcap MCP servers there (non-destructive,
@@ -114,6 +126,8 @@ Options:
   --skip-antigravity-skills
                       With --antigravity: skip copying the kcap skills into
                       ~/.gemini/skills (where Antigravity reads them, not ~/.agents/skills).
+  --skip-pi-skills    With --pi: skip installing the kcap skills into
+                      ~/.agents/skills.
   --skip-pi-mcp       With --pi: skip installing the kcap MCP-bridge extension
                       (~/.pi/agent/extensions/kcap-mcp.ts). By default `install
                       --pi` writes it so Pi exposes the 6 kcap MCP servers as

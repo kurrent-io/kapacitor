@@ -91,6 +91,21 @@ public class PluginCommandVendorSkillsTests {
     }
 
     [Test]
+    [MethodDataSource(nameof(Vendors))]
+    public async Task the_skip_flag_declines_the_shared_skills(Vendor vendor) {
+        using var scope = new VendorScope(vendor);
+
+        var exit = await PluginCommand.HandleAsync(
+            [.. vendor.InstallArgs(scope.Home), $"--skip-{vendor.Flag}-skills"], scope.Env);
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(Directory.Exists(scope.Env.AgentsSkillsDir))
+                    .IsFalse()
+                    .Because("every other artifact these installs write has a skip flag, so the shared "
+                           + "tree needs one too — nothing else lets you take hooks without it");
+    }
+
+    [Test]
     public async Task install_sweeps_legacy_codex_skills_even_when_the_tree_is_already_current() {
         using var scope = new VendorScope(Vendor.Cursor);
 

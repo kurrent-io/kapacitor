@@ -717,7 +717,8 @@ public static class PluginCommand {
         if (!args.Contains("--skip-cursor-mcp"))
             await RegisterCursorMcpServersAsync(env);
 
-        await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
+        if (!args.Contains("--skip-cursor-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
 
         return 0;
     }
@@ -898,7 +899,8 @@ public static class PluginCommand {
         if (!skipInstructions)
             await InstallPiInstructionsAsync(env);
 
-        await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
+        if (!args.Contains("--skip-pi-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
 
         // Non-zero only when a FRESH ingest install failed (the integration is incomplete) —
         // the independent MCP bridge + AGENTS.md steering above were still installed.
@@ -1052,7 +1054,8 @@ public static class PluginCommand {
         if (!args.Contains("--skip-opencode-instructions"))
             await InstallOpenCodeInstructionsAsync(env);
 
-        await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
+        if (!args.Contains("--skip-opencode-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
 
         return 0;
     }
@@ -1403,7 +1406,8 @@ public static class PluginCommand {
         if (!args.Contains("--skip-copilot-instructions"))
             await InstallCopilotInstructionsAsync(env);
 
-        await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
+        if (!args.Contains("--skip-copilot-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
 
         return 0;
     }
@@ -1977,7 +1981,8 @@ public static class PluginCommand {
         if (!args.Contains("--skip-gemini-instructions"))
             await InstallGeminiInstructionsAsync(env);
 
-        await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
+        if (!args.Contains("--skip-gemini-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
 
         // Non-zero only when a FRESH hook install failed (the integration is incomplete) — the
         // independent GEMINI.md steering above was still installed.
