@@ -234,11 +234,11 @@ public class CodexTurnInputDispatcherTests {
         var sink = new FakeTurnSink();
         var d    = Sealed(sink);
 
-        var ack = d.EnqueueAsync("held-prompt"); // enqueues behind the seal — nothing dispatches
+        var ack = d.EnqueueAsync("held-prompt");
 
-        await Task.Delay(100); // give any (erroneous) dispatch a chance to fire
-        await Assert.That(sink.StartCount).IsEqualTo(0);   // sealed ⇒ no turn/start left
-        await Assert.That(d.TurnInFlight).IsFalse();       // and the reaper sees it idle, not wedged
+        await Task.Delay(100); // an erroneous dispatch would surface within this window; sealed, none does
+        await Assert.That(sink.StartCount).IsEqualTo(0);
+        await Assert.That(d.TurnInFlight).IsFalse(); // sealed must read idle so the reaper can't wedge it
         await Assert.That(ack.IsCompleted).IsFalse();
 
         d.Unseal();
@@ -254,8 +254,8 @@ public class CodexTurnInputDispatcherTests {
         var sink = new FakeTurnSink();
         var d    = Sealed(sink);
 
-        // The held initial prompt is enqueued first (the head); input that "arrived during the claim
-        // window" enqueues behind it — all while sealed.
+        // Both enqueued while sealed: the held prompt first (the head), then input that "arrived during
+        // the claim window". Unseal must dispatch the prompt as the turn/start and the rest FIFO behind it.
         var promptAck   = d.EnqueueAsync("initial-prompt");
         var externalAck = d.EnqueueAsync("external-input");
 
@@ -264,17 +264,17 @@ public class CodexTurnInputDispatcherTests {
 
         d.Unseal();
 
-        var start = await sink.NextStart();               // the held prompt dispatches FIRST
+        var start = await sink.NextStart();
         await Assert.That(start.Text).IsEqualTo("initial-prompt");
         start.Started("turn-1");
         await promptAck.WaitAsync(Guard);
 
-        var steer = await sink.NextSteer();               // then the queued input, FIFO, onto the turn
+        var steer = await sink.NextSteer();
         await Assert.That(steer.Text).IsEqualTo("external-input");
         steer.Accepted();
         await externalAck.WaitAsync(Guard);
 
-        await Assert.That(sink.StartCount).IsEqualTo(1);  // exactly one start — no double-start
+        await Assert.That(sink.StartCount).IsEqualTo(1); // one start — the second input rode a steer, no double-start
     }
 
     [Test]
@@ -284,11 +284,11 @@ public class CodexTurnInputDispatcherTests {
 
         var ack = d.EnqueueAsync("hello");
         d.Unseal();
-        d.Unseal(); // a second unseal is a harmless pump, not a double-dispatch
+        d.Unseal();
 
         (await sink.NextStart()).Started("turn-1");
         await ack.WaitAsync(Guard);
-        await Assert.That(sink.StartCount).IsEqualTo(1);
+        await Assert.That(sink.StartCount).IsEqualTo(1); // the second Unseal was a harmless pump, not a re-dispatch
     }
 
     // ── Channel-synchronized fake send-sink ─────────────────────────────────────────────────────

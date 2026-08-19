@@ -117,9 +117,8 @@ public class CodexAppServerHostedAgentRuntimeTests {
 
     [Test]
     public async Task Deferred_first_turn_holds_the_initial_prompt_until_BeginFirstTurn() {
-        // Envelope-source path: StartAsync establishes the thread but must NOT dispatch the first turn —
-        // it seals the dispatcher and holds the prompt, so nothing can fire a hook before the source
-        // claim commits. The orchestrator drives the first turn via BeginFirstTurnAsync after the claim.
+        // The load-bearing ordering: with deferral on, StartAsync must establish the thread but leave NO
+        // turn/start behind (a hook could otherwise fire before the source claim commits).
         var fake = new FakeCodexAppServer();
         var (runtime, _, _) = Build(_ => fake, Launch(prompt: "review this"), deferFirstTurn: true);
 
@@ -127,26 +126,24 @@ public class CodexAppServerHostedAgentRuntimeTests {
 
         await Assert.That(runtime.RequiresSourceClaimBeforeFirstTurn).IsTrue();
         await Assert.That(runtime.ThreadId).IsEqualTo("thread-abc");
-        await Assert.That(fake.ReceivedMethods).DoesNotContain("turn/start"); // held — no first turn yet
+        await Assert.That(fake.ReceivedMethods).DoesNotContain("turn/start");
 
         await runtime.BeginFirstTurnAsync(CancellationToken.None).WaitAsync(HangGuard);
 
-        await Assert.That(fake.ReceivedMethods).Contains("turn/start"); // unsealed — the held prompt dispatched
+        await Assert.That(fake.ReceivedMethods).Contains("turn/start");
 
         await runtime.DisposeAsync();
     }
 
     [Test]
     public async Task Single_phase_launch_dispatches_the_initial_prompt_at_start() {
-        // Reviewer/control-plane path (gate off): the runtime keeps the single-phase launch — the initial
-        // prompt is dispatched at StartAsync, and no source claim is required.
         var fake = new FakeCodexAppServer();
-        var (runtime, _, _) = Build(_ => fake, Launch(prompt: "review this")); // emitEnvelopes defaults false
+        var (runtime, _, _) = Build(_ => fake, Launch(prompt: "review this")); // deferFirstTurn defaults false
 
         await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
 
         await Assert.That(runtime.RequiresSourceClaimBeforeFirstTurn).IsFalse();
-        await Assert.That(fake.ReceivedMethods).Contains("turn/start"); // self-driven at start, no BeginFirstTurn
+        await Assert.That(fake.ReceivedMethods).Contains("turn/start"); // no deferral ⇒ the prompt drives the first turn at start
 
         await runtime.DisposeAsync();
     }
