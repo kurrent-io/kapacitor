@@ -164,7 +164,7 @@ public sealed class SpectreTenantProvisioner(TenantProvisioningClient client, st
             }
             AnsiConsole.MarkupLine($"  [yellow]![/] Still provisioning. {retry} once it's ready.");
             SetupFunnel.WorkspaceFailed("poll_timeout");
-            return ProvisionOffer.InProgress;
+            return ProvisionOffer.InProgress(slug);
         });
     }
 

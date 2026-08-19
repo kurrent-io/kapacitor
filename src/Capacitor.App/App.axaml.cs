@@ -426,6 +426,11 @@ public partial class App : Application {
         var result = await attempt.Result.ConfigureAwait(false);
 
         switch (result) {
+            // Sign-in succeeded and the workspace is on its way; closing the window mid-poll is not a
+            // failure, and stderr saying so would be untrue.
+            case AuthResult.Failed { Reason: AuthFailureReason.ProvisioningInProgress } pending:
+                Console.Error.WriteLine($"kcap: {pending.Message}");
+                break;
             case AuthResult.Failed failed:
                 Console.Error.WriteLine($"kcap: onboarding sign-in ended with a failure: {failed.Message}");
                 break;

@@ -243,10 +243,12 @@ public sealed class WizardTenantProvisioner(
             }
         }
 
-        progress.Error($"Still provisioning — finish later by joining '{slug}' from the Connect step.");
+        // Notice, not Error: the workspace is being created, nothing has gone wrong. The reason on the
+        // result is what lets the step headline it as pending rather than failed.
+        progress.Notice($"Still provisioning — finish later by joining '{slug}' from the Connect step.");
         SetupFunnel.WorkspaceFailed("poll_timeout");
 
-        return ProvisionOffer.InProgress;
+        return ProvisionOffer.InProgress(slug);
     }
 
     // The interface hands the provisioner every non-Created message, so a decline must say so here
