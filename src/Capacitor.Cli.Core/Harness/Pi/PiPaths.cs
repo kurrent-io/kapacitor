@@ -51,6 +51,13 @@ public static class PiPaths {
 
     public static string KcapExtension(string? home = null) => Path.Combine(ExtensionsDir(home), "kcap.ts");
 
+    /// <summary>
+    /// The running process's name. Generic enough that it is not a reliable PATH probe on its own
+    /// (see the note above), and an npm shim may report the runtime's name instead — so a match is
+    /// evidence and a miss is not evidence of absence.
+    /// </summary>
+    public const string ProcessName = "pi";
+
     /// <summary>Marker recording the installed extension version (sibling of kcap.ts).</summary>
     public static string KcapExtensionMarker(string? home = null) => Path.Combine(ExtensionsDir(home), ".kcap-extension-version");
 

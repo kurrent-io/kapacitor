@@ -35,6 +35,14 @@ public sealed record PluginEnvironment(
     /// whatever executable happens to be running the test.
     /// </summary>
     public Func<string?>? ResolveMcpBinaryPath { get; init; }
+
+    /// <summary>
+    /// Finds agent sessions already running at first install. A seam for the same reason the rest of
+    /// this type is one: the default reads the machine's real process table, which a test must not.
+    /// </summary>
+    public Func<IEnumerable<StaleAgentTarget>, IReadOnlyList<StaleAgentProcess>> FindStaleAgents {
+        get; init;
+    } = StaleAgentProbe.Find;
     public string ClaudeHome          => ClaudePaths.Home(HomeDirectory);
     public string ClaudeUserSettings  => Path.Combine(ClaudeHome, "settings.json");
     public string CodexHome           => CodexPaths.Home(HomeDirectory);

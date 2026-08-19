@@ -70,6 +70,9 @@ public static class KiroPaths {
     /// </summary>
     public static string KcapAgentJson(string? home = null) => Path.Combine(AgentsDir(home), "kcap.json");
 
+    /// <summary>The running process's name — a real binary, so an exact match.</summary>
+    public const string ProcessName = "kiro-cli";
+
     /// <summary>
     /// Detection: the config tree exists. The binary name (<c>kiro</c> /
     /// <c>kiro-cli</c>) is also probed by callers via <c>AgentDetection.BinaryOnPath</c>;

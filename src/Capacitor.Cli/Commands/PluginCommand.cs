@@ -853,6 +853,10 @@ public static class PluginCommand {
         // Gemini refresh heals MCP + instructions even when a prior version had hooks only.
         if (refreshOnly && !PiExtensionInstaller.IsInstalled(extensionPath)) return 0;
 
+        // Captured before anything is written: the install rewrites the file it would otherwise be
+        // read back from.
+        var piAlreadyInstalled = PiExtensionInstaller.IsInstalled(extensionPath);
+
         // Fresh install needs kcap on PATH: both extensions shell out to the bare
         // `kcap` command (ingest → `kcap hook --pi`; bridge → `kcap mcp <name>`), so
         // pi must find kcap on PATH. Skipped on the postinstall (--if-installed) path.
@@ -901,6 +905,8 @@ public static class PluginCommand {
 
         if (!args.Contains("--skip-pi-skills"))
             await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
+
+        await ReportStaleAgentsAsync(env, piAlreadyInstalled, new StaleAgentTarget("pi", PiPaths.ProcessName));
 
         // Non-zero only when a FRESH ingest install failed (the integration is incomplete) —
         // the independent MCP bridge + AGENTS.md steering above were still installed.
@@ -1275,6 +1281,22 @@ public static class PluginCommand {
     static Task InstallAntigravitySkillsAsync(PluginEnvironment env, bool refreshOnly) =>
         InstallVendorSkillsAsync(env, env.AntigravitySkillsDir, "Antigravity", refreshOnly);
 
+    /// <summary>
+    /// Names any session of this vendor that started before the install, and stops there. A fresh one
+    /// picks the integration up by itself, so silence is the answer for almost everyone — and the
+    /// restart is not ours to offer, since only its destructive half is something we could do.
+    /// </summary>
+    static async Task ReportStaleAgentsAsync(
+            PluginEnvironment env, bool wasAlreadyInstalled, StaleAgentTarget target) {
+        // Only a FIRST install can strand a running session. A re-install rewrites the same file, so
+        // reporting on one would tell a months-old, perfectly captured session it is not captured.
+        if (wasAlreadyInstalled) return;
+
+        foreach (var line in StaleAgentDetector.Describe(env.FindStaleAgents([target]))) {
+            await env.Stdout.WriteLineAsync(line);
+        }
+    }
+
     static async Task<int> RemoveAntigravity(string[] args, PluginEnvironment env) {
         var hooksPath = GetArg(args, "--antigravity-hooks-path") ?? env.AntigravityHooksJson;
 
@@ -1563,6 +1585,9 @@ public static class PluginCommand {
         // can leave an MCP-only install with no agent marker.
         var mcpInstalled = HarnessMcpProjections.Kiro.OwnsAnything(mcpPath);
 
+        // Captured before anything is written, for the same reason as Pi above.
+        var kiroAlreadyInstalled = KiroHooksInstaller.IsInstalled(agentPath);
+
         if (refreshOnly) {
             // Never touch a machine that never opted in (neither hooks nor MCP).
             if (!KiroHooksInstaller.IsInstalled(agentPath) && !mcpInstalled) return 0;
@@ -1626,6 +1651,8 @@ public static class PluginCommand {
         // of the agent clone; non-fatal (a copy error is a warning). Mirrors the Antigravity path.
         if (!args.Contains("--skip-kiro-skills"))
             await InstallKiroSkillsAsync(env, refreshOnly);
+
+        await ReportStaleAgentsAsync(env, kiroAlreadyInstalled, new StaleAgentTarget("kiro", KiroPaths.ProcessName));
 
         // A fresh agent-clone failure is still an error exit (capture won't work without it), but the
         // independent MCP file + skills were still written above.
