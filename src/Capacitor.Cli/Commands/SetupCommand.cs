@@ -193,7 +193,7 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         // Step 1b: machine pairing. Needs a resolved server to mint on, and nothing to do when
-        // discovery has already signed the user in — bare `kcap setup` gets neither until AI-2026.
+        // discovery has already signed the user in — bare `kcap setup` gets neither yet.
         var pairing = loginComplete ? null : await RunPairingStepAsync(serverUrl, provider, noPrompt);
 
         switch (pairing) {
