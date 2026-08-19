@@ -3788,7 +3788,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // The server declined ownership (a stale/foreign/terminal binding). Unrecoverable for this
             // launch — the daemon must not proceed to a first turn on an unstamped session.
             LogAcpSourceClaimRejected(agent.Id);
-            await FailEnvelopeSourcedLaunchAsync(agent.Id, "codex app-server: source claim rejected");
+            await FailEnvelopeSourcedLaunchAsync(agent.Id, "Hosted session source claim rejected by the server");
 
             return;
         }
@@ -3827,8 +3827,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// try, so a teardown fault (a cleanup or a LaunchFailed hub error) is contained here and logged
     /// rather than escaping as an unobserved task exception.</para></summary>
     async Task FailEnvelopeSourcedLaunchAsync(string agentId, string reason) {
-        if (!_agents.ContainsKey(agentId))
+        if (!_agents.TryGetValue(agentId, out var agent))
             return; // already finalizing/gone — its own teardown owns it
+
+        // Mark the agent terminally Failed BEFORE CleanupAgentAsync disposes the runtime: disposal ends
+        // the read loop, whose FinalizeAgentRunAsync classifies by exit code and would otherwise emit a
+        // Completed/Failed AgentStatusChanged that races and could MASK this coded launch failure (a
+        // later "Completed" clearing the server-side FailureReason). A pre-set "Failed" makes that
+        // exit-code classification a no-op — the same guard the launch-verdict path uses (see the
+        // "Force terminal Failed BEFORE the report" block in FinalizeAgentRunAsync).
+        SetAgentStatus(agent, "Failed");
 
         try {
             await CleanupAgentAsync(agentId);
