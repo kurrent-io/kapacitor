@@ -64,6 +64,26 @@ internal sealed class PluginCommandStaleAgentTests {
         await Assert.That(pipe.ToString().Contains("already running", StringComparison.Ordinal)).IsFalse();
     }
 
+    [Test]
+    public async Task An_install_that_failed_claims_nothing_about_future_sessions() {
+        using var path = new KcapOnPath();
+        using var home = new FakeUserHome();
+        using var pipe = new StringWriter();
+
+        // A directory where the extension file belongs: the write fails, the command exits non-zero,
+        // and live capture was never installed — so promising that anything from now on is captured
+        // would be untrue in the direction that matters.
+        var extension = Path.Combine(home.Path, "kcap.ts");
+        Directory.CreateDirectory(extension);
+
+        var exit = await PluginCommand.HandleAsync(
+            ["plugin", "install", "--pi", "--pi-extension-path", extension],
+            Env(home.Path, pipe, found: [Running]));
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(pipe.ToString()).DoesNotContain("4821");
+    }
+
     /// <summary>The fresh install refuses unless `kcap` resolves — the extension it writes invokes it.</summary>
     sealed class KcapOnPath : IDisposable {
         readonly TempDir  _bin = new();

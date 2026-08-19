@@ -11,15 +11,12 @@ public sealed record StaleAgentTarget(string Vendor, string ProcessName);
 /// worth mentioning can be mentioned and every other case stays silent.
 /// </summary>
 /// <remarks>
-/// The trigger is a FIRST install, not a timestamp. An install rewrites its own extension file, so
-/// dating staleness from that file's mtime would tell a months-old, perfectly recorded session that it
-/// is not being recorded every time the user re-ran the installer — and the npm postinstall re-runs it
-/// on every upgrade. On a first install the question needs no clock: nothing running can have loaded
-/// an integration that did not exist.
+/// Keyed on a first install rather than a clock: an install rewrites its own extension, so dating
+/// staleness from that file would tell a long-installed, perfectly captured session it is not
+/// captured — on every re-run, and on every npm upgrade.
 ///
-/// We state the fact and locate the process rather than offering to fix it. The restart decomposes
-/// into kill and relaunch and only the destructive half is ours: their session is interactive on a
-/// terminal we do not own, so killing it discards a conversation nothing can bring back.
+/// Locates the session but offers no restart: only the destructive half of one is ours to do, on a
+/// terminal we do not own.
 /// </remarks>
 public static class StaleAgentDetector {
     public static IReadOnlyList<StaleAgentProcess> Find(

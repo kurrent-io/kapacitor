@@ -853,9 +853,13 @@ public static class PluginCommand {
         // Gemini refresh heals MCP + instructions even when a prior version had hooks only.
         if (refreshOnly && !PiExtensionInstaller.IsInstalled(extensionPath)) return 0;
 
-        // Captured before anything is written: the install rewrites the file it would otherwise be
-        // read back from.
+        // Both captured before anything is written. The installed flag, because the install rewrites
+        // the file it would otherwise be read back from; the process set, because a session started
+        // during the install loaded the integration and must not be reported as predating it.
         var piAlreadyInstalled = PiExtensionInstaller.IsInstalled(extensionPath);
+        var piRunningBefore    = piAlreadyInstalled
+            ? []
+            : env.FindStaleAgents([new StaleAgentTarget("pi", PiPaths.ProcessName)]);
 
         // Fresh install needs kcap on PATH: both extensions shell out to the bare
         // `kcap` command (ingest → `kcap hook --pi`; bridge → `kcap mcp <name>`), so
@@ -906,7 +910,7 @@ public static class PluginCommand {
         if (!args.Contains("--skip-pi-skills"))
             await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
 
-        await ReportStaleAgentsAsync(env, piAlreadyInstalled, new StaleAgentTarget("pi", PiPaths.ProcessName));
+        await ReportStaleAgentsAsync(env, piRunningBefore, installed: !extensionFailed);
 
         // Non-zero only when a FRESH ingest install failed (the integration is incomplete) —
         // the independent MCP bridge + AGENTS.md steering above were still installed.
@@ -1286,13 +1290,16 @@ public static class PluginCommand {
     /// picks the integration up by itself, so silence is the answer for almost everyone — and the
     /// restart is not ours to offer, since only its destructive half is something we could do.
     /// </summary>
+    /// <summary>
+    /// Reports the sessions sampled before the install, once that install has actually landed. Saying
+    /// "anything from now on is captured" after a failed one would be untrue in the direction that
+    /// matters.
+    /// </summary>
     static async Task ReportStaleAgentsAsync(
-            PluginEnvironment env, bool wasAlreadyInstalled, StaleAgentTarget target) {
-        // Only a FIRST install can strand a running session. A re-install rewrites the same file, so
-        // reporting on one would tell a months-old, perfectly captured session it is not captured.
-        if (wasAlreadyInstalled) return;
+            PluginEnvironment env, IReadOnlyList<StaleAgentProcess> runningBefore, bool installed) {
+        if (!installed) return;
 
-        foreach (var line in StaleAgentDetector.Describe(env.FindStaleAgents([target]))) {
+        foreach (var line in StaleAgentDetector.Describe(runningBefore)) {
             await env.Stdout.WriteLineAsync(line);
         }
     }
@@ -1585,8 +1592,11 @@ public static class PluginCommand {
         // can leave an MCP-only install with no agent marker.
         var mcpInstalled = HarnessMcpProjections.Kiro.OwnsAnything(mcpPath);
 
-        // Captured before anything is written, for the same reason as Pi above.
+        // Captured before anything is written, for the same two reasons as Pi above.
         var kiroAlreadyInstalled = KiroHooksInstaller.IsInstalled(agentPath);
+        var kiroRunningBefore    = kiroAlreadyInstalled
+            ? []
+            : env.FindStaleAgents([new StaleAgentTarget("kiro", KiroPaths.ProcessName)]);
 
         if (refreshOnly) {
             // Never touch a machine that never opted in (neither hooks nor MCP).
@@ -1652,7 +1662,7 @@ public static class PluginCommand {
         if (!args.Contains("--skip-kiro-skills"))
             await InstallKiroSkillsAsync(env, refreshOnly);
 
-        await ReportStaleAgentsAsync(env, kiroAlreadyInstalled, new StaleAgentTarget("kiro", KiroPaths.ProcessName));
+        await ReportStaleAgentsAsync(env, kiroRunningBefore, installed: !hooksFailed);
 
         // A fresh agent-clone failure is still an error exit (capture won't work without it), but the
         // independent MCP file + skills were still written above.
