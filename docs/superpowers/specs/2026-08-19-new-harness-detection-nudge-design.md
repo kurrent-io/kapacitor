@@ -77,10 +77,14 @@ CLI cannot reference. Hoist it:
   vendors being left off user-facing surfaces.
 
 The "is kcap wired in?" half of the predicate is a new
-`HarnessIntegrationProbe.IsWired(vendorId, paths)` in the CLI assembly (not Core — the installers'
-path bundles live with the commands), implemented by delegating to the same per-vendor
-`Installer.IsInstalled` calls `StatusCommand` makes today, refactored so status and the nudge share
-one function instead of two parallel switch statements.
+`HarnessIntegrationProbe.IsWired(vendorId, home, env)` in **Core**: the per-vendor installers and
+`*Paths` classes it delegates to already live in Core, and it must be callable from both the CLI
+(surfaces 1–2, `kcap status`) and the Daemon (surface 3's heartbeat inventory), which cannot
+reference the CLI assembly. It derives each installer's config path from home + the existing env
+overrides the same way `PluginEnvironment.FromProcess()` does. `StatusCommand` refactors onto it,
+**behavior-preserving**: each installer must keep receiving exactly the path argument it gets from
+`BuildHooksStatusLine` today, guarded by keeping/adding the status line unit test as a regression
+pin.
 
 ### S2. Offer ledger
 
@@ -102,18 +106,26 @@ temp+rename like `AppState`):
 
 - Missing or corrupt file reads as empty (worst case: one repeat offer; never a crash, never a
   blocked hook).
-- **Setup stamps it:** at the end of `kcap setup` Step 4, every vendor that was *detected* gets a
-  ledger entry — `declined: true` when the user answered no to the unified install prompt, else
-  `last_offered` = now. A vendor skipped at setup is therefore never re-nudged as if it were new.
+- **Setup stamps it:** at the end of `kcap setup` Step 4, every vendor that was *detected and
+  offered* gets `last_offered` = now — regardless of whether the user answered yes or no to the
+  unified install prompt. Setup **never writes `declined: true`**: a "not now" at setup is a soft
+  skip that resurfaces after the re-offer floor; permanent silence is only ever the explicit
+  `kcap harness dismiss`. Vendors excluded from the prompt by a `--skip-*` flag were not offered
+  and are not stamped. Stamping never overwrites an existing `declined: true` entry.
 - **Install clears the need silently:** a successful `kcap plugin install --<vendor>` makes
   predicate clause 2 false; the ledger entry becomes inert (no cleanup needed).
 - **Decline:** new command `kcap harness dismiss <vendor>` sets `declined: true`. This is what the
   SessionStart nudge tells the agent to run when the user says no, and what surface 2's notice
   mentions ("… or `kcap harness dismiss antigravity` to stop asking"). `kcap harness dismiss --all`
-  declines everything currently nudgeable.
-- **Re-offer interval:** a non-declined vendor is re-nudged at most once per 7 days
-  (`last_offered` + 7d), so an ignored nudge resurfaces occasionally instead of dying after one
-  ignored session or spamming every session.
+  declines exactly the vendors currently detected-and-unwired — deliberately NOT all 9: a harness
+  installed *after* the dismiss is a new event and nudges once. "Never ask about any harness ever"
+  is the profile opt-out, not `--all`; the command's help text states this.
+- **Re-offer floor:** predicate clause 3 requires `last_offered` older than 7 days, so a given
+  vendor nudges **at most once per 7 days even on a fully active machine** — the 6h throttle
+  (S3 below) governs only how often the *evaluation* runs, never how often a vendor re-nudges.
+  Emitting a nudge stamps that vendor's `last_offered`, which is what starts its 7-day quiet
+  period. An ignored nudge therefore resurfaces weekly instead of dying after one ignored session
+  or spamming every session.
 - **Opt-out:** `Profile.DisableHarnessNudge` (bool, default false) alongside the existing four
   `Disable*` profile bools; when set, surfaces 1 and 2 emit nothing (surface 3/4 dismissal is
   server-side, below).
@@ -124,7 +136,10 @@ Detection runs are throttled with an on-disk mtime stamp,
 `~/.config/kcap/harness-offers.last-check`, exactly the `AgentHookPoster.TryClaimDrainAttempt`
 pattern (every hook is a fresh AOT process, so the guard must be cross-process; mtime is the clock;
 I/O errors fail open to "don't check"). Throttle: 6 hours. Within the window, surfaces 1 and 2 do
-nothing — not even the probe. The evaluation itself (9 dir/PATH probes + one small JSON read) is
+nothing — not even the probe. The read-mtime-then-write claim is **not atomic** and this is
+accepted: two hook processes starting within the same instant can both claim it, and the worst
+case is the same nudge fragment appearing in two simultaneously-started sessions once per 6h
+window — benign, and the per-vendor 7-day floor still bounds real repetition. No lock file. The evaluation itself (9 dir/PATH probes + one small JSON read) is
 well under a millisecond of filesystem work; the throttle exists to keep hook latency identical on
 the common path, not because the probe is expensive.
 
@@ -134,11 +149,12 @@ the common path, not because the probe is expensive.
   probe for them). A newly installed Claude/Codex is noticed only once its binary is on the PATH
   the probing process sees. For hooks that PATH is the harness's session PATH; for the daemon it is
   the daemon's environment. Acceptable: both vendors are overwhelmingly installed onto PATH.
-- **`~/.gemini` is shared by Gemini CLI and Antigravity.** The existing narrowed probes
-  (`GeminiPaths.IsInstalledPure` requires `settings.json`/`projects.json`/`tmp`;
-  `AntigravityPaths.IsInstalledPure` requires the `antigravity`/`antigravity-cli` subdirs) already
-  disambiguate; the nudge adds no new probing and inherits that behavior. A test pins that an
-  Antigravity-only `~/.gemini` nudges Antigravity and not Gemini, and vice versa.
+- **`~/.gemini` is shared by Gemini CLI and Antigravity.** The existing narrowed probes already
+  disambiguate, asymmetrically: Gemini requires **file/content evidence** inside `~/.gemini`
+  (`settings.json`, `projects.json`, or a `tmp/` dir — a bare `~/.gemini` is NOT Gemini), while
+  Antigravity requires only **directory existence** of `~/.gemini/antigravity` or
+  `~/.gemini/antigravity-cli` (an empty such dir IS Antigravity). The nudge adds no new probing and
+  inherits this. Tests pin both directions of the pair, honoring that asymmetry.
 
 ## Surface 1 — SessionStart nudge (wired harnesses)
 
@@ -169,8 +185,9 @@ Gating (all required):
 
 - stderr is a TTY (`!Console.IsErrorRedirected`), so scripts and pipelines never see it;
 - the command is interactive-user-facing — an allowlist anchored on the top-level verb, explicitly
-  excluding `hook`, `mcp`, `daemon run` (the daemon process itself), `watch`, `completion`, and any
-  command with `--json`-style machine output;
+  excluding `hook`, `mcp`, `daemon run` (the daemon process itself), `watch`, `completion`, the
+  `harness` group itself (dismissing must never print a fresh nudge; independent of ordering, the
+  verb is simply excluded), and any command with `--json`-style machine output;
 - throttle stamp claimable (shared with surface 1 — one check per 6h across both surfaces);
 - profile opt-out unset.
 
@@ -191,17 +208,23 @@ Client side (this repo):
   all 9 vendors, plus `declined: [vendor_id]` from the ledger so the server can suppress declined
   vendors without a second round-trip.
 - Carriers, both cheap and already flowing:
-  - **Daemon heartbeat** (the existing periodic heartbeat in `AgentOrchestrator`): attach the
-    inventory, re-evaluated on the daemon's own in-memory 6h cadence — it must NOT claim the shared
-    on-disk stamp, or a resident daemon would perpetually starve surfaces 1–2 of their claim —
-    cached in memory between re-evaluations. This is the resident carrier — it works
+  - **Daemon heartbeat** (the existing periodic heartbeat in `AgentOrchestrator`): the daemon
+    evaluates the inventory once at startup and then re-evaluates every 6h from its own in-memory
+    timestamp — it must NOT claim the shared on-disk stamp, or a resident daemon would perpetually
+    starve surfaces 1–2 of their claim. Every heartbeat attaches the **last cached** inventory;
+    heartbeats never trigger a probe themselves. No install-event signal: a `plugin install` is
+    picked up by the next 6h re-evaluation (and immediately by the hook-ingest carrier). This is the resident carrier — it works
     with zero sessions and zero manual kcap use. Note: this is pure filesystem probing; the
     trust-by-default precedent against daemon-side probing rejected *spawning vendor binaries* for
     version checks, which this does not do.
   - **Hook ingest metadata**: attach the same fragment to the SessionStart hook post, so machines
-    without a daemon still report whenever any wired harness is used.
-- Down-level server: the fragment is additive; an older server ignores unknown fields. No protocol
-  gate needed.
+    without a daemon still report whenever any wired harness is used. PR 2 must verify the
+    SessionStart post already carries `machine_id` (expected — `MachineId` is a config-dir
+    fixture) and add it to the fragment's envelope if not, or the server cannot key the inventory.
+- Skew, both directions: an older **server** ignores the unknown fragment (additive, no protocol
+  gate); an older **client** simply never sends it, and the server treats an absent fragment as
+  "inventory unknown" for that machine — never as "nothing detected" — so no notification is
+  raised or cleared from silence.
 
 Server side (kcap-server, same issue, separate PR):
 
