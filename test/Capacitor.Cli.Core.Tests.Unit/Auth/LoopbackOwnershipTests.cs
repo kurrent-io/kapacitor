@@ -24,11 +24,13 @@ namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 /// <see cref="FindOwnershipViolations"/> takes its root as a parameter so the scanner self-tests
 /// below can prove it actually detects, against a synthetic fixture rather than real source.</para>
 ///
-/// <para><b>Two checks, because pattern matching over source can always be out-spelled.</b> The
-/// scanner tolerates trivia and qualification between <c>new</c> and the argument list, and resolves
-/// <c>using</c> aliases — a literal <c>"new LoopbackBrowser("</c> search missed
-/// <c>new LoopbackBrowser /* c */ (…)</c>, a line break before the paren, a <c>global::</c>-qualified
-/// name, and <c>new LB(…)</c> behind an alias, all of which compile.
+/// <para><b>Two checks, because pattern matching over source can always be out-spelled.</b> Three
+/// review rounds each out-spelled it once, so the patterns now ignore trivia — whitespace, line
+/// breaks, block comments — at EVERY junction (see <see cref="Trivia"/>), accept <c>global::</c> and
+/// dotted qualification, and resolve <c>using</c> aliases. The spellings that got through, all of
+/// which compile: <c>new LoopbackBrowser /* c */ (…)</c>, a line break before the paren, a
+/// <c>global::</c>-qualified name, <c>new LB(…)</c> behind an alias, and
+/// <c>using LB = …LoopbackBrowser /* c */;</c>.
 /// <see cref="Only_the_known_files_name_the_browser_type_at_all"/> additionally pins the set of files
 /// allowed to NAME the type at all, which catches a construction in a file nobody thought about.</para>
 ///
@@ -43,29 +45,37 @@ namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 /// </summary>
 public class LoopbackOwnershipTests {
     /// <summary>
-    /// A construction, tolerating what the compiler tolerates: any whitespace or line break after
-    /// <c>new</c>, an optional <c>global::</c> and dotted namespace qualification, and block comments
-    /// between the type name and the argument list.
+    /// Whitespace, line breaks and block comments — what the compiler ignores between two tokens, and
+    /// therefore what this file's patterns must ignore too, at EVERY junction.
+    /// <para>Shared deliberately. The alias pattern below originally spelled its own trailing
+    /// separator as a bare <c>\s*</c> while the construction pattern tolerated comments, so
+    /// <c>using LB = …LoopbackBrowser /* c */;</c> compiled and defeated alias recognition. One
+    /// definition, used everywhere, is what stops the two drifting apart again.</para>
     /// </summary>
+    const string Trivia = @"\s*(?:/\*.*?\*/\s*)*";
+
+    /// <summary>A keyword, requiring a real separator after it so <c>newLB(</c> is not a match while
+    /// <c>new LB(</c> and <c>new/* c */LB(</c> both are.</summary>
+    const string Separated = @"(?=[\s/])";
+
+    /// <summary>Optional <c>global::</c> and dotted namespace qualification before a type name.</summary>
+    const string Qualifier = @"(?:global\s*::\s*)?(?:[A-Za-z_]\w*\s*\.\s*)*";
+
     static readonly Regex Construction = ConstructionOf("LoopbackBrowser");
 
-    /// <summary>
-    /// A construction of <paramref name="typeName"/>, tolerating what the compiler tolerates: any
-    /// whitespace or line break after <c>new</c>, an optional <c>global::</c> and dotted namespace
-    /// qualification, and block comments between the type name and the argument list.
-    /// </summary>
+    /// <summary>A construction of <paramref name="typeName"/>, however the trivia falls.</summary>
     static Regex ConstructionOf(string typeName) => new(
-        $@"new\s+(?:global\s*::\s*)?(?:[A-Za-z_]\w*\s*\.\s*)*{Regex.Escape(typeName)}\s*(?:/\*.*?\*/\s*)*\(",
+        $@"new{Separated}{Trivia}{Qualifier}{Regex.Escape(typeName)}{Trivia}\(",
         RegexOptions.Compiled | RegexOptions.Singleline);
 
     /// <summary>
     /// A <c>using X = …LoopbackBrowser;</c> alias. Aliasing defeats a name-based scan while leaving
-    /// the type named in the file, so it slips past a filename allowlist too — the one spelling that
+    /// the type named in the file, so it slips past the filename allowlist too — the spelling that
     /// beat both checks at once.
     /// </summary>
     static readonly Regex Alias = new(
-        @"^\s*using\s+(?<alias>[A-Za-z_]\w*)\s*=\s*(?:global\s*::\s*)?(?:[A-Za-z_]\w*\s*\.\s*)*LoopbackBrowser\s*;",
-        RegexOptions.Compiled | RegexOptions.Multiline);
+        $@"^{Trivia}using{Separated}{Trivia}(?<alias>[A-Za-z_]\w*){Trivia}={Trivia}{Qualifier}LoopbackBrowser{Trivia};",
+        RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.Singleline);
 
     /// <summary>An externally supplied browser that would notice being disposed by the callee.</summary>
     sealed class DisposableFakeBrowser(string query) : IBrowser, IDisposable {
@@ -379,6 +389,50 @@ public class LoopbackOwnershipTests {
 
         await Assert.That(FindSites(tmp.Path).Count).IsEqualTo(1);
         await Assert.That(FindOwnershipViolations(tmp.Path).Count).IsEqualTo(2);
+    }
+
+    // Trivia at each junction of the alias declaration. All of these compile, and each one used to
+    // defeat alias recognition — which then defeated the file-set assertion too, since the alias line
+    // still names the type in a file that is already allowlisted.
+    [Test]
+    [Arguments("using LB = Capacitor.Cli.Core.Auth.LoopbackBrowser /* local alias */;")]
+    [Arguments("using LB /* alias */ = Capacitor.Cli.Core.Auth.LoopbackBrowser;")]
+    [Arguments("using /* alias */ LB = Capacitor.Cli.Core.Auth.LoopbackBrowser;")]
+    [Arguments("using LB = global::Capacitor.Cli.Core.Auth.LoopbackBrowser;")]
+    [Arguments("using LB = Capacitor.Cli.Core.Auth.LoopbackBrowser ;")]
+    public async Task Scanner_follows_an_alias_however_the_trivia_falls(string alias) {
+        using var tmp = new TempDir();
+
+        tmp.CreateFile("AliasTrivia.cs", [
+            alias,
+            "namespace Fixture;",
+            "static class AliasTrivia {",
+            "    static void Go() {",
+            "        var browser = new LB(progress: progress);",
+            "    }",
+            "}",
+        ]);
+
+        await Assert.That(FindSites(tmp.Path).Count).IsEqualTo(1);
+        await Assert.That(FindOwnershipViolations(tmp.Path).Count).IsEqualTo(2);
+    }
+
+    // A comment is a token separator, so this compiles too — and `newLB(` must still not match.
+    [Test]
+    public async Task Scanner_separates_the_new_keyword_by_a_comment_but_not_by_nothing() {
+        using var tmp = new TempDir();
+
+        tmp.CreateFile("Tight.cs", [
+            "namespace Fixture;",
+            "static class Tight {",
+            "    static void Go() {",
+            "        var browser = new/* c */LoopbackBrowser(progress: progress);",
+            "        var other = newLoopbackBrowser(progress);", // an unrelated method call
+            "    }",
+            "}",
+        ]);
+
+        await Assert.That(FindSites(tmp.Path).Count).IsEqualTo(1);
     }
 
     // An alias for something else must not turn every `new X(...)` in the file into a phantom site.
