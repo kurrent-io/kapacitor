@@ -48,6 +48,12 @@ with no remembered org needs an interactive terminal (or pass `--org <owner>`).
 Without a scope flag on an interactive terminal, an interactive picker is shown.
 
 Options:
+  --discover              Report what is on disk and exit without importing:
+                          sessions and last activity per repository, how many
+                          couldn't be matched to one, and totals for each --since
+                          window. Needs no scope flag — it is what you run to
+                          decide which one to use
+  --json                  With --discover: emit the report as JSON
   --yes, -y               Skip the confirmation prompt
   --private               Mark every imported session as Only Visible to You
   --since YYYY-MM-DD      Only import sessions started on or after this date

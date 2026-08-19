@@ -587,6 +587,16 @@ switch (command) {
 
         var generateSummaries = args.Contains("--generate-summaries");
         var reimport          = args.Contains("--reimport");
+        var discoverOnly      = args.Contains("--discover");
+        var discoverJson      = args.Contains("--json");
+
+        // Silently ignoring it would turn "report as JSON" into a real import, which is the one
+        // mistake this flag pair can make that costs something.
+        if (discoverJson && !discoverOnly) {
+            Console.Error.WriteLine("--json only applies to `kcap import --discover`.");
+
+            return 1;
+        }
 
         // Build sources
         var explicitVendorSelection = vsel.Vendors.Count > 0;
@@ -623,7 +633,9 @@ switch (command) {
             CurrentRepo:   currentRepo,
             StoredOrg:     storedOrg));
 
-        if (resolveResult.Error is not null) {
+        // `--discover` reports what a scope WOULD select, so requiring one first is backwards — it is
+        // the answer to "what should I pick", asked before anything is uploaded.
+        if (resolveResult.Error is not null && !discoverOnly) {
             Console.Error.WriteLine(resolveResult.Error);
             return 1;
         }
@@ -644,7 +656,9 @@ switch (command) {
             currentRepo:             currentRepo,
             needOrgPick:             resolveResult.NeedOrgPick,
             storedOrg:               storedOrg,
-            reimport:                reimport);
+            reimport:                reimport,
+            discoverOnly:            discoverOnly,
+            discoverJson:            discoverJson);
     }
     case "watch" when args.Length < 3:
         Console.Error.WriteLine("Usage: kcap watch <sessionId> <transcriptPath> [--agent-id <agentId>] [--cwd <cwd>] [--skip-title] [--parent-pid <pid>] [--vendor claude|codex|copilot|gemini|kiro|pi|opencode|antigravity|cursor]");
