@@ -3817,13 +3817,20 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// <summary>Tears down a registered agent whose source claim failed — the proven
     /// <see cref="CleanupAgentAsync"/> (single-flight, disposes the runtime + releases the slot +
     /// unregisters) then <c>LaunchFailedAsync</c> composition, mirroring the launch outer-catch. Never
-    /// <c>FinalizeAgentRunAsync</c>, which would classify a still-live process by exit code.</summary>
+    /// <c>FinalizeAgentRunAsync</c>, which would classify a still-live process by exit code.
+    /// <para>Guaranteed NO-THROW: it is awaited from the fire-and-forget source-claim task OUTSIDE any
+    /// try, so a teardown fault (a cleanup or a LaunchFailed hub error) is contained here and logged
+    /// rather than escaping as an unobserved task exception.</para></summary>
     async Task FailEnvelopeSourcedLaunchAsync(string agentId, string reason) {
         if (!_agents.ContainsKey(agentId))
             return; // already finalizing/gone — its own teardown owns it
 
-        await CleanupAgentAsync(agentId);
-        await _server.LaunchFailedAsync(agentId, reason);
+        try {
+            await CleanupAgentAsync(agentId);
+            await _server.LaunchFailedAsync(agentId, reason);
+        } catch (Exception ex) {
+            LogAcpBindFailed(ex, agentId); // contain the teardown fault (fire-and-forget caller has no catch)
+        }
     }
 
     /// <summary>
