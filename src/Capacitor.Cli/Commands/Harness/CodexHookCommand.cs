@@ -455,11 +455,8 @@ static class CodexHookCommand {
     // own internal throttle/budget/try-catch make it safe to abandon if the process exits first;
     // reliable delivery for Codex sessions is carried by the daemon's periodic drain pass,
     // not by this opportunistic best-effort attempt.
-    // §2.5 guard-1: a hosted app-server codex session is envelope-sourced — the daemon pushes its
-    // transcript directly, so this hook must NOT spawn a rollout watcher (that would double-ingest the
-    // same session). The daemon stamps the marker on the codex process; the hook inherits it through the
-    // same channel as KCAP_AGENT_ID / KCAP_DAEMON_URL. Absent on every non-hosted and pre-activation
-    // session, so those keep the watcher exactly as before.
+    // guard-1: an envelope-sourced hosted session's transcript comes from the daemon, so spawning a
+    // rollout watcher here would double-ingest it. Marker absent on every other session.
     static bool IsEnvelopeSourcedHostedSession() =>
         Environment.GetEnvironmentVariable("KCAP_HOSTED_APPSERVER") is "1";
 

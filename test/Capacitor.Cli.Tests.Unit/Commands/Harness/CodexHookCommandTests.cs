@@ -492,7 +492,7 @@ public class CodexHookCommandTests : IDisposable {
 
         try {
             Environment.SetEnvironmentVariable("KCAP_HOSTED_APPSERVER", "1");
-            var payload = """{"hook_event_name":"Stop","session_id":"abc","transcript_path":"/tmp/r.jsonl","cwd":"/tmp"}""";
+            var payload = """{"hook_event_name":"Stop","session_id":"g1-stop-suppressed","transcript_path":"/tmp/r.jsonl","cwd":"/tmp"}""";
 
             var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
             await Assert.That(exit).IsEqualTo(0);
@@ -526,7 +526,7 @@ public class CodexHookCommandTests : IDisposable {
 
         try {
             Environment.SetEnvironmentVariable("KCAP_HOSTED_APPSERVER", null);
-            var payload = """{"hook_event_name":"Stop","session_id":"abc","transcript_path":"/tmp/r.jsonl","cwd":"/tmp"}""";
+            var payload = """{"hook_event_name":"Stop","session_id":"g1-stop-control","transcript_path":"/tmp/r.jsonl","cwd":"/tmp"}""";
 
             var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
             await Assert.That(exit).IsEqualTo(0);
@@ -550,7 +550,7 @@ public class CodexHookCommandTests : IDisposable {
 
         try {
             Environment.SetEnvironmentVariable("KCAP_HOSTED_APPSERVER", "1");
-            var payload = """{"hook_event_name":"SessionStart","session_id":"abc","transcript_path":"/tmp/r.jsonl","cwd":"/tmp"}""";
+            var payload = """{"hook_event_name":"SessionStart","session_id":"g1-start-suppressed","transcript_path":"/tmp/r.jsonl","cwd":"/tmp"}""";
 
             var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
             await Assert.That(exit).IsEqualTo(0);

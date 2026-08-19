@@ -192,6 +192,30 @@ public class CodexHostedAgentRuntimeFactoryTests {
     }
 
     [Test]
+    public async Task ApplyChildEnv_clears_an_inherited_marker_when_the_overlay_does_not_emit() {
+        // A daemon whose OWN environment carries the marker must not leak it to a non-emitting child —
+        // that child's hook would suppress the only watcher and lose the transcript.
+        var childEnv = new Dictionary<string, string?> { ["KCAP_HOSTED_APPSERVER"] = "1", ["PATH"] = "/usr/bin" };
+        var overlay  = new Dictionary<string, string> { ["KCAP_AGENT_ID"] = "agent-1" }; // dormant: no marker
+
+        CodexHostedAgentRuntimeFactory.ApplyChildEnv(childEnv, overlay);
+
+        await Assert.That(childEnv.ContainsKey("KCAP_HOSTED_APPSERVER")).IsFalse();
+        await Assert.That(childEnv["KCAP_AGENT_ID"]).IsEqualTo("agent-1");
+        await Assert.That(childEnv["PATH"]).IsEqualTo("/usr/bin");
+    }
+
+    [Test]
+    public async Task ApplyChildEnv_sets_the_marker_when_the_overlay_emits() {
+        var childEnv = new Dictionary<string, string?>();
+        var overlay  = new Dictionary<string, string> { ["KCAP_HOSTED_APPSERVER"] = "1" };
+
+        CodexHostedAgentRuntimeFactory.ApplyChildEnv(childEnv, overlay);
+
+        await Assert.That(childEnv["KCAP_HOSTED_APPSERVER"]).IsEqualTo("1");
+    }
+
+    [Test]
     [NotInParallel("HomeEnvVarMutation")]
     public async Task Missing_hooks_on_the_app_server_route_fails_closed() {
         var originalHome = Environment.GetEnvironmentVariable("HOME");
