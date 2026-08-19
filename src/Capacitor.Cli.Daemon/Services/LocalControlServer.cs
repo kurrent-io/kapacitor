@@ -11,11 +11,12 @@ namespace Capacitor.Cli.Daemon.Services;
 /// — anything that can open it can spawn processes and stream a terminal, so it sits at
 /// the same trust boundary as the daemon PID/lock files.
 internal sealed partial class LocalControlServer(
-        DaemonConfig config, AgentOrchestrator orchestrator, RestartCoordinator restart,
-        LaunchConsentIpc consentIpc, DaemonStatusIpc statusIpc, ILogger<LocalControlServer> logger
+        DaemonConfig config, AgentOrchestrator orchestrator,
+        RestartCoordinator restart, LaunchConsentIpc consentIpc, DaemonStatusIpc statusIpc,
+        ILogger<LocalControlServer> logger
     ) : BackgroundService {
     protected override async Task ExecuteAsync(CancellationToken ct) {
-        var path = LocalSocketPaths.Socket(config.Name);
+        var path = config.Store.SocketPath(config.Name);
         try { if (File.Exists(path)) File.Delete(path); } catch { /* stale; bind fails loudly below */ }
 
         using var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);

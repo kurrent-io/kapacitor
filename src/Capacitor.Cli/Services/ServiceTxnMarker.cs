@@ -9,7 +9,7 @@ namespace Capacitor.Cli.Services;
 
 /// <summary>
 /// Durable, phase-recording record of an in-flight <c>kcap daemon service</c> mutation
-/// (install/replace/start). Lives at <c>{DaemonLockPaths.Directory}/{id}.service-txn</c>,
+/// (install/replace/start). Lives at <c>{daemonsDir}/{id}.service-txn</c>,
 /// distinct from <see cref="ServiceTxnLock"/>. A resumer reads the last recorded
 /// <see cref="TxnMarker.Phase"/> to decide how far a prior attempt got. Does no locking
 /// itself — callers must serialize writes per <c>serviceId</c> via <see cref="ServiceTxnLock"/>.
@@ -23,14 +23,11 @@ public sealed record TxnMarker(
     string? PlistFingerprint);
 
 public static partial class ServiceTxnMarker {
-    public static string MarkerPath(string serviceId) =>
-        Path.Combine(DaemonLockPaths.Directory, $"{serviceId}.service-txn");
-
-    public static bool Exists(string serviceId) => File.Exists(MarkerPath(serviceId));
+    public static bool Exists(DaemonStore store, string daemonName) => File.Exists(store.ServiceTxnPath(daemonName));
 
     /// <summary>Null on missing OR corrupt — a torn/unreadable marker must never crash a caller.</summary>
-    public static TxnMarker? Read(string serviceId) {
-        var path = MarkerPath(serviceId);
+    public static TxnMarker? Read(DaemonStore store, string daemonName) {
+        var path = store.ServiceTxnPath(daemonName);
         try {
             if (!File.Exists(path)) return null;
             return JsonSerializer.Deserialize(File.ReadAllText(path), MarkerJsonContext.Default.TxnMarker);
@@ -45,9 +42,9 @@ public static partial class ServiceTxnMarker {
     /// content while losing the rename that published it (§3.4: file + directory flush ordering is
     /// load-bearing).
     /// </summary>
-    public static void Write(string serviceId, TxnMarker marker) {
-        DaemonLockPaths.EnsureDirectory();
-        var path = MarkerPath(serviceId);
+    public static void Write(DaemonStore store, string daemonName, TxnMarker marker) {
+        store.EnsureDirectory();
+        var path = store.ServiceTxnPath(daemonName);
         var tmp  = path + ".tmp";
         var json = JsonSerializer.Serialize(marker, MarkerJsonContext.Default.TxnMarker);
 
@@ -64,8 +61,8 @@ public static partial class ServiceTxnMarker {
         FlushDirectory(Path.GetDirectoryName(path)!);
     }
 
-    public static void Delete(string serviceId) {
-        var path = MarkerPath(serviceId);
+    public static void Delete(DaemonStore store, string daemonName) {
+        var path = store.ServiceTxnPath(daemonName);
         try { File.Delete(path); } catch { /* best-effort */ }
         FlushDirectory(Path.GetDirectoryName(path)!); // durably lose the directory entry, not just the file
     }

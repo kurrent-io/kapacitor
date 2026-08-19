@@ -88,6 +88,9 @@ ProcessUrlPolicy.Current = CrashReporter.IsFailOpenCommand(command)
 
 var baseUrl = await AppConfig.ResolveServerUrl(args, gitTimeoutMs: isHook ? 1000 : 5000);
 
+// KCAP_DAEMONS_DIR is dead to the process from this line on.
+var daemonPaths = DaemonStore.FromEnvironment();
+
 // Telemetry: initialised once the server URL is known (it decides the `organization` group) and
 // torn down from ProcessExit, which observes the exit code returned by top-level Main. Every
 // call swallows, so nothing here can fail a command.
@@ -322,9 +325,9 @@ switch (command) {
     case "whoami":
         return await WhoamiCommand.HandleAsync(baseUrl!);
     case "daemon":
-        return await DaemonCommands.HandleAsync(args);
+        return await new DaemonCommands(daemonPaths).HandleAsync(args);
     case "agent":
-        return await AgentCommand.HandleAsync(args, baseUrl);
+        return await new AgentCommand(daemonPaths).HandleAsync(args, baseUrl);
     case "setup":
         return await SetupCommand.HandleAsync(args);
     case "plugin":
@@ -336,7 +339,7 @@ switch (command) {
     case "use":
         return await UseCommand.HandleAsync(args);
     case "status":
-        return await StatusCommand.HandleAsync(baseUrl, args);
+        return await StatusCommand.HandleAsync(daemonPaths, baseUrl, args);
     case "harness":
         return await HarnessCommand.HandleAsync(args);
     case "config":
@@ -449,7 +452,7 @@ switch (command) {
     case "cleanup":
         return await CleanupCommand.HandleCleanup();
     case "uninstall":
-        return await UninstallCommand.HandleAsync(args);
+        return await UninstallCommand.HandleAsync(daemonPaths, args);
     case "disable": {
         // The sessionId is consumed as a filesystem path component
         // (watcher PID files, disabled marker file). Validate strictly as a

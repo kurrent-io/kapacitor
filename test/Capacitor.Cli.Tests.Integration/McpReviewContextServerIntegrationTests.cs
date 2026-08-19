@@ -8,6 +8,8 @@ namespace Capacitor.Cli.Tests.Integration;
 
 [NotInParallel]
 public class McpReviewContextServerIntegrationTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     [Test]
     public async Task Daemon_context_mode_starts_without_backend_and_performs_one_exact_get() {
         var token = "0123456789abcdef0123456789abcdef";
@@ -74,21 +76,13 @@ public class McpReviewContextServerIntegrationTests {
         }
     }
 
-    static Process Spawn(string capability, string configDir) {
-        var binary = CliBinary();
-        var info = new ProcessStartInfo(binary, "mcp review") {
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            Environment = {
-                ["KCAP_REVIEW_CONTEXT_MODE"] = "1",
-                ["KCAP_REVIEW_CONTEXT_URL"] = capability,
-                ["KCAP_URL"] = "not-a-backend-url",
-                ["KCAP_CONFIG_DIR"] = configDir
-            }
-        };
+    Process Spawn(string capability, string configDir) {
+        var info = KcapProcess.StartInfo(Daemons.Store, "mcp", "review");
+        info.Environment["KCAP_REVIEW_CONTEXT_MODE"] = "1";
+        info.Environment["KCAP_REVIEW_CONTEXT_URL"] = capability;
+        info.Environment["KCAP_URL"] = "not-a-backend-url";
+        info.Environment["KCAP_CONFIG_DIR"] = configDir;
+
         return Process.Start(info) ?? throw new InvalidOperationException("Failed to start kcap");
     }
 
@@ -101,15 +95,5 @@ public class McpReviewContextServerIntegrationTests {
             throw new InvalidOperationException(
                 "MCP process exited: " + await process.StandardError.ReadToEndAsync());
         return JsonNode.Parse(line)!.AsObject();
-    }
-
-    static string CliBinary() {
-        var asmDir = Path.GetDirectoryName(typeof(McpReviewContextServerIntegrationTests).Assembly.Location)!;
-        var binDir = Path.GetDirectoryName(asmDir)!;
-        var configuration = Path.GetFileName(binDir);
-        var projectDir = Path.GetDirectoryName(Path.GetDirectoryName(binDir)!)!;
-        var repoRoot = Path.GetDirectoryName(Path.GetDirectoryName(projectDir)!)!;
-        return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", configuration,
-            "net10.0", OperatingSystem.IsWindows() ? "kcap.exe" : "kcap");
     }
 }

@@ -30,9 +30,10 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
     Task _loop = Task.CompletedTask;
 
     public DaemonClientService(
-            string daemonName,
+            string                                                       daemonName,
             Func<CancellationToken, IAsyncEnumerable<LocalControlEvent>> runClient,
-            Func<CancellationToken, Task<MutationOutcome>> startDaemon) {
+            Func<CancellationToken, Task<MutationOutcome>>               startDaemon
+        ) {
         DaemonName   = daemonName;
         _runClient   = runClient;
         _startDaemon = startDaemon;
@@ -152,13 +153,14 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
     /// from that same resolution, so the gate verdict and the daemon identity can never diverge on
     /// a concurrently-changing profile.
     /// </summary>
-    public static DaemonClientService CreateResolved(
-            Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
+    public static DaemonClientService CreateResolved(DaemonStore store, Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
         var name = DaemonNameResolver.Resolve([], AppConfig.ResolvedProfile?.Profile?.Daemon?.Name);
 
         return new DaemonClientService(
-            name, ct => new LocalControlClient(name).RunAsync(ct),
-            BuildStartDaemon(name, () => AppConfig.ResolvedProfile, runMutation));
+            name,
+            ct => new LocalControlClient(store, name).RunAsync(ct),
+            BuildStartDaemon(name, () => AppConfig.ResolvedProfile, runMutation)
+        );
     }
 
     /// The main-window Start/Retry delegate: builds a DetachedStart MutationRequest at the

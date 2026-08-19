@@ -12,6 +12,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Acp;
 /// what establishes the token is genuinely carrying the authentication rather than something else
 /// having cached it.</para>
 /// </summary>
+[ParallelLimiter<SubprocessLimit>]
 public class BorrowedReviewAuthBrokerTests {
     static Func<string, string?> Env(params (string Name, string? Value)[] entries) =>
         name => entries.FirstOrDefault(e => e.Name == name).Value;

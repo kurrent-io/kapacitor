@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.LocalIpc;
@@ -83,6 +84,7 @@ internal enum StartGateReason { DirectiveMissing, DirectiveInvalid, IdentityMism
 /// <c>launchctl</c>.
 /// </summary>
 sealed class ServiceVerify(
+    DaemonStore store,
     IVerifyServiceManager manager,
     Func<string, int?> validatedDaemonPid,
     Func<string, TimeSpan, Task<HelloProbeResult>> hello,
@@ -190,7 +192,8 @@ sealed class ServiceVerify(
     /// <summary>start --verify: no viability check (start writes nothing). Accepts ANY well-formed
     /// hello — capability-incompatible old daemons included.</summary>
     public async Task<int> StartVerifiedAsync(string serviceId) {
-        using var txn = ServiceTxnLock.TryAcquire(serviceId, LockWait);
+        using var txn = ServiceTxnLock.TryAcquire(store, serviceId, LockWait);
+
         if (txn is null) {
             Say(VerifyExit.ContendedToken);
             return VerifyExit.Contended;
@@ -243,8 +246,7 @@ sealed class ServiceVerify(
             }
         }
 
-        ServiceTxnMarker.Write(serviceId,
-            new TxnMarker(1, "start", "captured", DescribeQuery(pre), "unloaded-plist-retained", null));
+        ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, "start", "captured", DescribeQuery(pre), "unloaded-plist-retained", null));
 
         if (gated) {
             // Phase B: the gated path never kickstarts a loaded label the way the ungated Start()
@@ -261,8 +263,7 @@ sealed class ServiceVerify(
                     // existing bootout-unknown contract (22): Rollback re-attempts the bootout
                     // with its own verification, landing in RestoreVerification if that also fails.
                     Say($"stop: {bootOutError}");
-                    ServiceTxnMarker.Write(serviceId,
-                        new TxnMarker(1, "start", "gate-bootout-failed", DescribeQuery(pre), "unloaded-plist-retained", null));
+                    ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, "start", "gate-bootout-failed", DescribeQuery(pre), "unloaded-plist-retained", null));
                     return await Rollback(serviceId, VerifyExit.BootoutUnknown, VerifyExit.BootoutUnknownToken);
                 }
 
@@ -273,8 +274,7 @@ sealed class ServiceVerify(
                 // (via the ungated manager.Start below's own Loaded→kickstart branch) instead of
                 // provably starting the fresh one this gate is authorizing.
                 if (!await WaitForLabelAbsentAsync(serviceId, deadline)) {
-                    ServiceTxnMarker.Write(serviceId,
-                        new TxnMarker(1, "start", "gate-bootout-unconfirmed", DescribeQuery(pre), "unloaded-plist-retained", null));
+                    ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, "start", "gate-bootout-unconfirmed", DescribeQuery(pre), "unloaded-plist-retained", null));
                     return await Rollback(serviceId, VerifyExit.BootoutUnknown, VerifyExit.BootoutUnknownToken);
                 }
             }
@@ -286,8 +286,7 @@ sealed class ServiceVerify(
             // content changed (to something unreadable) or can no longer be confirmed unchanged —
             // so route it into the same drift branch rather than letting it throw.
             if (!RecheckPlistUnchanged(serviceId, phaseAPlistContent)) {
-                ServiceTxnMarker.Write(serviceId,
-                    new TxnMarker(1, "start", "gate-drift", DescribeQuery(pre), "unloaded-plist-retained", null));
+                ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, "start", "gate-drift", DescribeQuery(pre), "unloaded-plist-retained", null));
                 return await Rollback(serviceId, VerifyExit.StartGateDrift, VerifyExit.StartGateDriftToken);
             }
         }
@@ -299,7 +298,7 @@ sealed class ServiceVerify(
         // entirely rather than risk attributing a stale marker; the mutation itself still proceeds.
         var attributionEnabled = false;
         if (gated) {
-            attributionEnabled = BootRefusalReader.TryClear(serviceId);
+            attributionEnabled = BootRefusalMarker.TryClear(store, serviceId);
             if (!attributionEnabled) Say("boot-refusal marker could not be cleared; coded attribution disabled");
         }
 
@@ -309,16 +308,14 @@ sealed class ServiceVerify(
         if (gated) {
             if (!manager.StartBootstrapOnly(serviceId, Remaining(deadline), out var bootstrapOnlyError)) {
                 Say($"start: {bootstrapOnlyError}");
-                ServiceTxnMarker.Write(serviceId,
-                    new TxnMarker(1, "start", "gate-bootstrap-only-failed", DescribeQuery(pre), "unloaded-plist-retained", null));
+                ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, "start", "gate-bootstrap-only-failed", DescribeQuery(pre), "unloaded-plist-retained", null));
                 return await Rollback(serviceId, VerifyExit.BootoutUnknown, VerifyExit.BootoutUnknownToken);
             }
         } else if (!manager.Start(serviceId, Remaining(deadline), out var startError) && startError is not null) {
             Say($"start: {startError}");
         }
 
-        ServiceTxnMarker.Write(serviceId,
-            new TxnMarker(1, "start", "bootstrapped", DescribeQuery(pre), "unloaded-plist-retained", null));
+        ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, "start", "bootstrapped", DescribeQuery(pre), "unloaded-plist-retained", null));
 
         var pollDeadline = deadline - _confirmReserve;
 
@@ -356,16 +353,14 @@ sealed class ServiceVerify(
                     // silent commit. Re-read the plist (contained) and compare against Phase A's own
                     // captured content, and re-check the digest one more time.
                     if (gated && !RecheckPlistUnchanged(serviceId, phaseAPlistContent)) {
-                        ServiceTxnMarker.Write(serviceId,
-                            new TxnMarker(1, "start", "gate-post-readiness-drift", DescribeQuery(pre), "unloaded-plist-retained", null));
+                        ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, "start", "gate-post-readiness-drift", DescribeQuery(pre), "unloaded-plist-retained", null));
                         return await Rollback(serviceId, VerifyExit.StartGateDrift, VerifyExit.StartGateDriftToken);
                     }
 
-                    ServiceTxnMarker.Write(serviceId,
-                        new TxnMarker(1, "start", "committed", DescribeQuery(pre), "unloaded-plist-retained", null));
+                    ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, "start", "committed", DescribeQuery(pre), "unloaded-plist-retained", null));
                     onCommitted?.Invoke();
-                    ServiceTxnMarker.Delete(serviceId);
-                    if (gated) BootRefusalReader.Consume(serviceId); // hygiene — no refusal to attribute on success
+                    ServiceTxnMarker.Delete(store, serviceId);
+                    if (gated) BootRefusalMarker.TryDelete(store, serviceId); // hygiene — no refusal to attribute on success
                     return VerifyExit.Ok;
                 }
             }
@@ -376,7 +371,7 @@ sealed class ServiceVerify(
 
         var rollbackExit = await Rollback(serviceId);
 
-        return AttributeReadinessTimeout(serviceId, rollbackExit, gated, attributionEnabled, unitExpectation, observedJobPids);
+        return AttributeReadinessTimeout(store, serviceId, rollbackExit, gated, attributionEnabled, unitExpectation, observedJobPids);
     }
 
     /// <summary>Re-reads the plist and re-checks the digest (both contained — never an escaping
@@ -404,13 +399,13 @@ sealed class ServiceVerify(
     /// what a boot-refusal marker explains, so <paramref name="rollbackExit"/> passes through
     /// unchanged in every case; this only ever adds the one stderr line and consumes the marker.
     /// </summary>
-    static int AttributeReadinessTimeout(string serviceId, int rollbackExit, bool gated, bool attributionEnabled,
+    static int AttributeReadinessTimeout(DaemonStore store, string daemonName, int rollbackExit, bool gated, bool attributionEnabled,
             string? unitExpectation, IReadOnlySet<int> observedJobPids) {
         if (gated && attributionEnabled && rollbackExit == VerifyExit.ReadinessTimeout
-            && BootRefusalReader.TryRead(serviceId) is { } evidence
-            && Attributable(evidence, serviceId, unitExpectation, observedJobPids)) {
+            && BootRefusalMarker.TryRead(store, daemonName) is { } evidence
+            && Attributable(evidence, daemonName, unitExpectation, observedJobPids)) {
             Say($"refusal_reason={evidence.Token}");
-            BootRefusalReader.Consume(serviceId);
+            BootRefusalMarker.TryDelete(store, daemonName);
         }
 
         return rollbackExit;
@@ -424,9 +419,17 @@ sealed class ServiceVerify(
     /// its baked server expectation agrees with the unit's own (see <see cref="ExpectationsAgree"/>);
     /// and its pid was positively observed as a job pid during THIS readiness window, never a pid
     /// merely assumed from a stale marker left by a previous incarnation.
+    ///
+    /// <para>The DUAL of <c>BootRefusalAttribution.TryAttribute</c> in the desktop app, not a copy of
+    /// it: that one claims a refusal from a start IT launched and so requires its own attempt id,
+    /// while this one claims a refusal from a service-unit start and so requires the ABSENCE of one.
+    /// A marker satisfies at most one of them; unifying them would attribute each side's refusals to
+    /// the other.</para>
     /// </summary>
-    internal static bool Attributable(BootRefusalEvidence evidence, string daemonName, string? unitExpectation, IReadOnlySet<int> observedJobPids) =>
-        evidence.DaemonName == daemonName
+    internal static bool Attributable(BootRefusalRecord evidence, string daemonName, string? unitExpectation, IReadOnlySet<int> observedJobPids) =>
+        // The marker carries the name as configured; sanitising both sides makes two spellings
+        // of one daemon compare equal.
+        DaemonStore.Sanitize(evidence.DaemonName) == DaemonStore.Sanitize(daemonName)
         && evidence.AttemptId is null
         && ExpectationsAgree(evidence.Expectation, unitExpectation)
         && observedJobPids.Contains(evidence.Pid);
@@ -624,7 +627,7 @@ sealed class ServiceVerify(
         while (true) {
             lastProbe = manager.Query(serviceId, Remaining(deadline)).Probe;
             if (lastProbe == LabelProbe.Absent) {
-                ServiceTxnMarker.Delete(serviceId);
+                ServiceTxnMarker.Delete(store, serviceId);
                 Say(reasonToken);
                 return reasonExit;
             }
@@ -658,10 +661,10 @@ sealed class ServiceVerify(
     /// (spec §3.4): a fresh install refuses to touch an existing label/unit
     /// (<see cref="VerifyExit.Contended"/>), while <c>--replace</c> clears/takes it over first.</summary>
     public async Task<int> InstallVerifiedAsync(ServiceSpec spec, bool replace, string? expectedVersion) {
-        var serviceId = spec.ServiceId;
-        var op        = replace ? "replace" : "install";
+        var serviceId   = spec.ServiceId;
+        var op          = replace ? "replace" : "install";
+        using var txn = ServiceTxnLock.TryAcquire(store, serviceId, LockWait);
 
-        using var txn = ServiceTxnLock.TryAcquire(serviceId, LockWait);
         if (txn is null) {
             Say(VerifyExit.ContendedToken);
             return VerifyExit.Contended;
@@ -721,9 +724,9 @@ sealed class ServiceVerify(
         // A leftover marker means a prior attempt never reached a terminal state. "committed" is just a
         // crash between writing that phase and deleting the marker — self-heal. Any other phase may
         // have left residue; recovery authority is scoped by CONTENT (see RecoverLeftoverMarker).
-        if (ServiceTxnMarker.Read(serviceId) is { } leftover) {
+        if (ServiceTxnMarker.Read(store, serviceId) is { } leftover) {
             if (leftover.Phase == "committed") {
-                ServiceTxnMarker.Delete(serviceId);
+                ServiceTxnMarker.Delete(store, serviceId);
             } else if (await RecoverLeftoverMarker(serviceId, generated.Path, leftover) is { } recoveryExit) {
                 return recoveryExit;
             }
@@ -747,15 +750,15 @@ sealed class ServiceVerify(
                 Say(VerifyExit.ContendedToken);
                 return VerifyExit.Contended;
             }
-            ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "captured", preState, "no-unit", null));
+            ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, op, "captured", preState, "no-unit", null));
         } else {
-            ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "captured", preState, "no-unit", null));
+            ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, op, "captured", preState, "no-unit", null));
             if (await ApplyReplaceMatrixAsync(serviceId, pre, preState, op, forward) is { } stopExit) {
                 return stopExit;
             }
         }
 
-        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "written", preState, "no-unit", fingerprint));
+        ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, op, "written", preState, "no-unit", fingerprint));
 
         // TOCTOU re-check immediately before the mutation viability's digest check
         // authorized — the same binary content could have been swapped (a foreign writer, a broken
@@ -772,7 +775,7 @@ sealed class ServiceVerify(
         // the mutation itself still proceeds.
         var attributionEnabled = false;
         if (gated) {
-            attributionEnabled = BootRefusalReader.TryClear(serviceId);
+            attributionEnabled = BootRefusalMarker.TryClear(store, serviceId);
             if (!attributionEnabled) Say("boot-refusal marker could not be cleared; coded attribution disabled");
         }
 
@@ -783,10 +786,10 @@ sealed class ServiceVerify(
             // plist on disk, so route through the same fingerprint-gated rollback.
             Say($"{op}: {ex.Message}");
             var bootstrapThrowExit = await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.ReadinessTimeout, VerifyExit.ReadinessTimeoutToken);
-            return AttributeReadinessTimeout(serviceId, bootstrapThrowExit, gated, attributionEnabled, unitExpectation, observedJobPids);
+            return AttributeReadinessTimeout(store, serviceId, bootstrapThrowExit, gated, attributionEnabled, unitExpectation, observedJobPids);
         }
 
-        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "bootstrapped", preState, "no-unit", fingerprint));
+        ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, op, "bootstrapped", preState, "no-unit", fingerprint));
 
         var pollDeadline = forward - _confirmReserve;
 
@@ -828,10 +831,10 @@ sealed class ServiceVerify(
                         if (gated && !DigestStillGood(spec.DaemonBinaryPath))
                             return await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.StartGateDrift, VerifyExit.StartGateDriftToken);
 
-                        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "committed", preState, "no-unit", fingerprint));
+                        ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, op, "committed", preState, "no-unit", fingerprint));
                         onCommitted?.Invoke();
-                        ServiceTxnMarker.Delete(serviceId);
-                        if (gated) BootRefusalReader.Consume(serviceId); // hygiene — no refusal to attribute on success
+                        ServiceTxnMarker.Delete(store, serviceId);
+                        if (gated) BootRefusalMarker.TryDelete(store, serviceId); // hygiene — no refusal to attribute on success
                         return VerifyExit.Ok;
                     }
 
@@ -845,7 +848,7 @@ sealed class ServiceVerify(
         }
 
         var readinessTimeoutExit = await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.ReadinessTimeout, VerifyExit.ReadinessTimeoutToken);
-        return AttributeReadinessTimeout(serviceId, readinessTimeoutExit, gated, attributionEnabled, unitExpectation, observedJobPids);
+        return AttributeReadinessTimeout(store, serviceId, readinessTimeoutExit, gated, attributionEnabled, unitExpectation, observedJobPids);
     }
 
     /// <summary>
@@ -858,7 +861,7 @@ sealed class ServiceVerify(
     async Task<int?> RecoverLeftoverMarker(string serviceId, string onDiskPath, TxnMarker leftover) {
         if (leftover.PlistFingerprint is null) {
             // Died before ever writing a plist — nothing on disk to clean up.
-            ServiceTxnMarker.Delete(serviceId);
+            ServiceTxnMarker.Delete(store, serviceId);
             return null;
         }
 
@@ -869,7 +872,7 @@ sealed class ServiceVerify(
             return VerifyExit.RestoreVerification;
         }
         if (status == LaunchdUnit.PlistRead.Absent) {
-            ServiceTxnMarker.Delete(serviceId); // confirmed absent — residue already gone
+            ServiceTxnMarker.Delete(store, serviceId); // confirmed absent — residue already gone
             return null;
         }
 
@@ -883,7 +886,7 @@ sealed class ServiceVerify(
         // bool on a bootout exit 0 does not itself prove the label/file are gone.
         if (await ClearLabelAsync(serviceId, time.GetUtcNow() + _rollbackReserve) is { } clearExit) return clearExit;
 
-        ServiceTxnMarker.Delete(serviceId);
+        ServiceTxnMarker.Delete(store, serviceId);
         return null;
     }
 
@@ -936,7 +939,7 @@ sealed class ServiceVerify(
             // is gone before writing/bootstrapping the replacement, else the new job hits a
             // deliberate-refusal exit and the replacement spuriously fails.
             if (await ClearLabelAsync(serviceId, deadline) is { } clearExit) return clearExit;
-            ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "label-cleared", preState, "no-unit", null));
+            ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, op, "label-cleared", preState, "no-unit", null));
 
             if (!await WaitForPidGoneAsync(serviceId, deadline)) {
                 Say(VerifyExit.StopUnconfirmedToken);
@@ -948,7 +951,7 @@ sealed class ServiceVerify(
         if (pre.Probe == LabelProbe.Loaded || pre.UnitPresent) {
             // A non-owning/orphan label, or a stopped-but-installed unit — --replace may clear it.
             if (await ClearLabelAsync(serviceId, deadline) is { } clearExit) return clearExit;
-            ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "label-cleared", preState, "no-unit", null));
+            ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, op, "label-cleared", preState, "no-unit", null));
         }
 
         // Re-read AFTER any clearing: bootout can terminate the true owner as a side effect of
@@ -957,7 +960,7 @@ sealed class ServiceVerify(
         var liveOwner = validatedDaemonPid(serviceId);
         if (liveOwner is null) return null;
 
-        if (!DaemonKill.KillValidatedOwner(serviceId, liveOwner.Value, KillWait))
+        if (!DaemonKill.KillValidatedOwner(store, serviceId, liveOwner.Value, KillWait))
             Say($"replace: kill of validated owner (PID {liveOwner}) did not confirm gone immediately");
 
         if (!await WaitForStopConfirmedAsync(serviceId, deadline)) {
@@ -965,7 +968,7 @@ sealed class ServiceVerify(
             return VerifyExit.StopUnconfirmed;
         }
 
-        ServiceTxnMarker.Write(serviceId, new TxnMarker(1, op, "owner-stopped", preState, "no-unit", null));
+        ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, op, "owner-stopped", preState, "no-unit", null));
         return null;
     }
 
@@ -1059,7 +1062,7 @@ sealed class ServiceVerify(
         while (true) {
             last = manager.Query(serviceId, Remaining(deadline));
             if (last.Probe == LabelProbe.Absent && !last.UnitPresent) {
-                ServiceTxnMarker.Delete(serviceId);
+                ServiceTxnMarker.Delete(store, serviceId);
                 Say(reasonToken);
                 return reasonExit;
             }

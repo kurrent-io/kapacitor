@@ -1,6 +1,4 @@
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Daemon;
-using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Services;
 using Microsoft.Extensions.Time.Testing;
 
@@ -9,48 +7,49 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// <summary>Boot-refusal marker attribution in <see cref="ServiceVerify"/>'s
 /// gated readiness-timeout path. The pure <see cref="ServiceVerify.Attributable"/> rule is exercised
 /// verbatim per the task brief; the <see cref="FakeServiceManager"/>-driven tests exercise the
-/// verified pre-clear + observed-pid correlation end to end, planting a marker with the daemon's own
-/// <see cref="BootRefusal.TryWrite"/> writer so the CLI-side <see cref="BootRefusalReader"/> proves it
-/// can actually parse what the daemon actually writes.</summary>
-[NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+/// verified pre-clear + observed-pid correlation end to end, planting a marker with the same
+/// <see cref="BootRefusalMarker"/> the daemon writes through, so the read proves it can parse what
+/// the daemon actually writes.</summary>
 public class BootRefusalAttributionTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     const string Id = "boot-refusal-svc";
 
     // ── pure rule, verbatim per the task brief ──
 
     [Test]
     public async Task Marker_with_matching_name_expectation_and_observed_pid_attributes() {
-        var e = new BootRefusalEvidence("d1", "server_expectation_mismatch", "https://s", "https://t", 4242, "i", null);
+        var e = new BootRefusalRecord(1, "d1", "server_expectation_mismatch", "https://s", "https://t", 4242, "i", null, DateTimeOffset.UtcNow);
         await Assert.That(ServiceVerify.Attributable(e, "d1", "https://s", new HashSet<int> { 4242 })).IsTrue();
     }
 
     [Test]
     public async Task Foreign_pid_never_attributes_even_with_same_name_and_expectation() {
-        var e = new BootRefusalEvidence("d1", "server_expectation_mismatch", "https://s", "https://t", 9999, "i", null);
+        var e = new BootRefusalRecord(1, "d1", "server_expectation_mismatch", "https://s", "https://t", 9999, "i", null, DateTimeOffset.UtcNow);
         await Assert.That(ServiceVerify.Attributable(e, "d1", "https://s", new HashSet<int> { 4242 })).IsFalse();
     }
 
     [Test]
     public async Task Different_daemon_name_never_attributes() {
-        var e = new BootRefusalEvidence("other", "consent_seed_unwritable", null, null, 4242, "i", null);
+        var e = new BootRefusalRecord(1, "other", "consent_seed_unwritable", null, null, 4242, "i", null, DateTimeOffset.UtcNow);
         await Assert.That(ServiceVerify.Attributable(e, "d1", null, new HashSet<int> { 4242 })).IsFalse();
     }
 
     [Test]
     public async Task Attempt_id_bearing_marker_is_detached_evidence_not_service_evidence() {
-        var e = new BootRefusalEvidence("d1", "server_expectation_mismatch", "https://s", "https://t", 4242, "i", "att-1");
+        var e = new BootRefusalRecord(1, "d1", "server_expectation_mismatch", "https://s", "https://t", 4242, "i", "att-1", DateTimeOffset.UtcNow);
         await Assert.That(ServiceVerify.Attributable(e, "d1", "https://s", new HashSet<int> { 4242 })).IsFalse();
     }
 
     [Test]
     public async Task Trailing_slash_difference_still_attributes() {
-        var e = new BootRefusalEvidence("d1", "server_expectation_mismatch", "https://s", "https://t", 4242, "i", null);
+        var e = new BootRefusalRecord(1, "d1", "server_expectation_mismatch", "https://s", "https://t", 4242, "i", null, DateTimeOffset.UtcNow);
         await Assert.That(ServiceVerify.Attributable(e, "d1", "https://s/", new HashSet<int> { 4242 })).IsTrue();
     }
 
     [Test]
     public async Task Case_only_difference_still_attributes() {
-        var e = new BootRefusalEvidence("d1", "server_expectation_mismatch", "https://S.Example", "https://t", 4242, "i", null);
+        var e = new BootRefusalRecord(1, "d1", "server_expectation_mismatch", "https://S.Example", "https://t", 4242, "i", null, DateTimeOffset.UtcNow);
         await Assert.That(ServiceVerify.Attributable(e, "d1", "https://s.example", new HashSet<int> { 4242 })).IsTrue();
     }
 
@@ -58,25 +57,25 @@ public class BootRefusalAttributionTests {
     // with genuine absence (null) on the other — only a null/null pair is absence.
     [Test]
     public async Task Null_versus_empty_expectation_never_attributes() {
-        var e = new BootRefusalEvidence("d1", "consent_seed_unwritable", null, "https://t", 4242, "i", null);
+        var e = new BootRefusalRecord(1, "d1", "consent_seed_unwritable", null, "https://t", 4242, "i", null, DateTimeOffset.UtcNow);
         await Assert.That(ServiceVerify.Attributable(e, "d1", "", new HashSet<int> { 4242 })).IsFalse();
     }
 
     [Test]
     public async Task Both_null_expectation_still_attributes() {
-        var e = new BootRefusalEvidence("d1", "consent_seed_unwritable", null, "https://t", 4242, "i", null);
+        var e = new BootRefusalRecord(1, "d1", "consent_seed_unwritable", null, "https://t", 4242, "i", null, DateTimeOffset.UtcNow);
         await Assert.That(ServiceVerify.Attributable(e, "d1", null, new HashSet<int> { 4242 })).IsTrue();
     }
 
     [Test]
     public async Task Both_empty_expectation_never_attributes() {
-        var e = new BootRefusalEvidence("d1", "consent_seed_unwritable", "", "https://t", 4242, "i", null);
+        var e = new BootRefusalRecord(1, "d1", "consent_seed_unwritable", "", "https://t", 4242, "i", null, DateTimeOffset.UtcNow);
         await Assert.That(ServiceVerify.Attributable(e, "d1", "", new HashSet<int> { 4242 })).IsFalse();
     }
 
     [Test]
     public async Task Genuinely_different_expectation_never_attributes() {
-        var e = new BootRefusalEvidence("d1", "server_expectation_mismatch", "https://s", "https://t", 4242, "i", null);
+        var e = new BootRefusalRecord(1, "d1", "server_expectation_mismatch", "https://s", "https://t", 4242, "i", null, DateTimeOffset.UtcNow);
         await Assert.That(ServiceVerify.Attributable(e, "d1", "https://other.example", new HashSet<int> { 4242 })).IsFalse();
     }
 
@@ -158,125 +157,105 @@ public class BootRefusalAttributionTests {
 
     [Test, NotInParallel]
     public async Task Readiness_timeout_with_matching_marker_attributes_exactly_once_and_consumes_it() {
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         using var capture = ConsoleOutput.StartErrorCapture();
-        try {
 
-            // The observed job pid IS this test process's own pid, matching what BootRefusal.TryWrite
-            // (the daemon's real writer) stamps onto the marker — no need to fake a pid.
-            var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
-            manager.OnStart = id => {
-                var stateDir = Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(id));
-                Directory.CreateDirectory(stateDir);
-                BootRefusal.TryWrite(stateDir,
-                    new DaemonConfig { Name = id, ExpectedServerUrl = "https://s.example", ServerUrl = "https://resolved.example", InstanceId = "inst-1" },
-                    "server_expectation_mismatch");
-            };
+        // The observed job pid IS this test process's own pid, matching what BootRefusalMarker.TryWrite
+        // stamps onto the marker — no need to fake a pid.
+        var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
+        manager.OnStart = id => {
+            Directory.CreateDirectory(Daemons.Store.StateDirectory(id));
+            BootRefusalMarker.TryWrite(
+                Daemons.Store, id, "server_expectation_mismatch",
+                "https://s.example", "https://resolved.example", "inst-1", attemptId: null);
+        };
 
-            var time = new FakeTimeProvider();
+        var time = new FakeTimeProvider();
 
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
-            // Ownership never matches (validated pid always disagrees with the observed job pid), so
-            // readiness never settles and the forward budget genuinely rolls back to a timeout.
-            var sut = new ServiceVerify(manager, _ => -1, Hello, time,
-                forwardBudget: TimeSpan.FromSeconds(2),
-                readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
-                gateEnv: GatedEnvWithIdentity("https://s.example"),
-                digestMatches: _ => true);
+        // Ownership never matches (validated pid always disagrees with the observed job pid), so
+        // readiness never settles and the forward budget genuinely rolls back to a timeout.
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => -1, Hello, time,
+            forwardBudget: TimeSpan.FromSeconds(2),
+            readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
+            gateEnv: GatedEnvWithIdentity("https://s.example"),
+            digestMatches: _ => true);
 
-            var task = sut.StartVerifiedAsync(Id);
-            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = sut.StartVerifiedAsync(Id);
+        var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+        await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
 
-            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
-            await Assert.That(lines.Count(l => l == "refusal_reason=server_expectation_mismatch")).IsEqualTo(1);
-            await Assert.That(BootRefusalReader.TryRead(Id)).IsNull(); // consumed after attribution
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        await Assert.That(lines.Count(l => l == "refusal_reason=server_expectation_mismatch")).IsEqualTo(1);
+        await Assert.That(BootRefusalMarker.TryRead(Daemons.Store, Id)).IsNull(); // consumed after attribution
     }
 
     [Test, NotInParallel]
     public async Task Readiness_timeout_with_hello_never_well_formed_still_observes_pid_via_direct_query() {
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         using var capture = ConsoleOutput.StartErrorCapture();
-        try {
 
-            // Hello NEVER comes back well-formed — exactly the shape of a REFUSING daemon whose
-            // control socket never exists. IsReadyAsync's own Query call therefore never runs; the
-            // job pid can only be observed via the direct per-iteration Query the readiness loop
-            // now also issues when hello never resolves a pid.
-            var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
-            manager.OnStart = id => {
-                var stateDir = Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(id));
-                Directory.CreateDirectory(stateDir);
-                BootRefusal.TryWrite(stateDir,
-                    new DaemonConfig { Name = id, ExpectedServerUrl = "https://s.example", ServerUrl = "https://resolved.example", InstanceId = "inst-1" },
-                    "server_expectation_mismatch");
-            };
+        // Hello NEVER comes back well-formed — exactly the shape of a REFUSING daemon whose
+        // control socket never exists. IsReadyAsync's own Query call therefore never runs; the
+        // job pid can only be observed via the direct per-iteration Query the readiness loop
+        // now also issues when hello never resolves a pid.
+        var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
+        manager.OnStart = id => {
+            Directory.CreateDirectory(Daemons.Store.StateDirectory(id));
+            BootRefusalMarker.TryWrite(
+                Daemons.Store, id, "server_expectation_mismatch",
+                "https://s.example", "https://resolved.example", "inst-1", attemptId: null);
+        };
 
-            var time = new FakeTimeProvider();
+        var time = new FakeTimeProvider();
 
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(false, null, null, null)); // never well-formed
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(false, null, null, null)); // never well-formed
 
-            var sut = new ServiceVerify(manager, _ => -1, Hello, time,
-                forwardBudget: TimeSpan.FromSeconds(2),
-                readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
-                gateEnv: GatedEnvWithIdentity("https://s.example"),
-                digestMatches: _ => true);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => -1, Hello, time,
+            forwardBudget: TimeSpan.FromSeconds(2),
+            readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
+            gateEnv: GatedEnvWithIdentity("https://s.example"),
+            digestMatches: _ => true);
 
-            var task = sut.StartVerifiedAsync(Id);
-            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = sut.StartVerifiedAsync(Id);
+        var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+        await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
 
-            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
-            await Assert.That(lines.Count(l => l == "refusal_reason=server_expectation_mismatch")).IsEqualTo(1);
-            await Assert.That(BootRefusalReader.TryRead(Id)).IsNull(); // consumed after attribution
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        await Assert.That(lines.Count(l => l == "refusal_reason=server_expectation_mismatch")).IsEqualTo(1);
+        await Assert.That(BootRefusalMarker.TryRead(Daemons.Store, Id)).IsNull(); // consumed after attribution
     }
 
     [Test, NotInParallel]
     public async Task Preclear_failure_disables_attribution_but_the_mutation_still_proceeds() {
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         using var capture = ConsoleOutput.StartErrorCapture();
-        try {
 
-            // A directory sitting AT the marker path can never be removed via File.Delete — the
-            // verified pre-clear must fail, log its notice, and disable coded attribution without
-            // blocking the transaction itself.
-            Directory.CreateDirectory(BootRefusalReader.MarkerPath(Id));
+        // A directory sitting AT the marker path can never be removed via File.Delete — the
+        // verified pre-clear must fail, log its notice, and disable coded attribution without
+        // blocking the transaction itself.
+        Directory.CreateDirectory(Daemons.Store.BootRefusalPath(Id));
 
-            var manager = new FakeServiceManager { RunningPid = 4242 };
+        var manager = new FakeServiceManager { RunningPid = 4242 };
 
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
-                readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
-                gateEnv: GatedEnvWithIdentity("https://s.example"),
-                digestMatches: _ => true);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System,
+            readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
+            gateEnv: GatedEnvWithIdentity("https://s.example"),
+            digestMatches: _ => true);
 
-            var exit = await sut.StartVerifiedAsync(Id);
+        var exit = await sut.StartVerifiedAsync(Id);
 
-            // Ownership matches immediately (same pid throughout) — the mutation proceeds to a normal
-            // verified success despite the marker never having been cleared.
-            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+        // Ownership matches immediately (same pid throughout) — the mutation proceeds to a normal
+        // verified success despite the marker never having been cleared.
+        await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
 
-            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
-            await Assert.That(lines.Any(l => l == "boot-refusal marker could not be cleared; coded attribution disabled")).IsTrue();
-            await Assert.That(lines.Any(l => l.StartsWith("refusal_reason=", StringComparison.Ordinal))).IsFalse();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        await Assert.That(lines.Any(l => l == "boot-refusal marker could not be cleared; coded attribution disabled")).IsTrue();
+        await Assert.That(lines.Any(l => l.StartsWith("refusal_reason=", StringComparison.Ordinal))).IsFalse();
     }
 }

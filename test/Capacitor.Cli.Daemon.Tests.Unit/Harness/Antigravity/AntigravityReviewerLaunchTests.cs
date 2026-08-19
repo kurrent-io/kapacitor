@@ -16,16 +16,14 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Antigravity;
 /// through a round's outcome. A round that completes proves nothing about which flags were passed:
 /// a reviewer that never attempts a shell call looks identical whether or not it was granted one.
 /// </summary>
-public class AntigravityReviewerLaunchTests : IDisposable {
+public class AntigravityReviewerLaunchTests {
     static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(10);
 
     /// <summary>A path, never a created directory — <see cref="AntigravityHostedAgentRuntimeFactory.BuildTurnPsi"/> is pure, so the argv
     /// assertions below run identically on every platform (the real per-launch home is POSIX-only).</summary>
     const string HomePath = "/tmp/kcap-antigravity-home";
 
-    readonly TempDir _stateDir = new();
-
-    public void Dispose() => _stateDir.Dispose();
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
     /// <summary>The minimum this daemon has on record — the same value the seeded record and the
     /// version seam default to, so the "meets it exactly" case is the baseline every other arm moves
@@ -36,15 +34,14 @@ public class AntigravityReviewerLaunchTests : IDisposable {
     /// production (<c>DaemonRunner</c> seeds from the consent event). Null records NOTHING, which is
     /// how the no-minimum arm is reached — the gate is not configuration, so there is no value to pass
     /// for "unset".</param>
-    DaemonConfig EnabledConfig(
-            string? model = null, string? stateDir = null, string? minimum = RecordedMinimum) {
+    DaemonConfig EnabledConfig(string? model = null, string? minimum = RecordedMinimum) {
         var config = new DaemonConfig {
             AntigravityPath                      = "agy",
             AntigravityModel                     = model,
             AntigravityUnattendedReviewerEnabled = true,
             Name                                 = "test-daemon",
             DaemonEpoch                          = "epoch-1",
-            StateDir                             = stateDir ?? _stateDir.Path
+            Store                                = Daemons.Store
         };
 
         if (minimum is not null)

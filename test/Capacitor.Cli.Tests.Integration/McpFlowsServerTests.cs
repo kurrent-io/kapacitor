@@ -15,6 +15,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// the server emits plus the HTTP calls WireMock observed.
 /// </summary>
 public class McpFlowsServerTests : IDisposable {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     readonly WireMockServer _server           = WireMockServer.Start();
     readonly TempDir        _tmp              = new();
     readonly string         _cfgDir;
@@ -65,22 +67,6 @@ public class McpFlowsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Resolves the path of the built `kcap` CLI binary in the source tree.
-    /// Mirrors the approach in <see cref="McpSessionsServerTests"/>.
-    /// </summary>
-    static string GetCliBinaryPath() {
-        var asmDir      = Path.GetDirectoryName(typeof(McpFlowsServerTests).Assembly.Location)!;
-        var binDir      = Path.GetDirectoryName(asmDir)!;
-        var config      = Path.GetFileName(binDir);
-        var testBin     = Path.GetDirectoryName(binDir)!;
-        var testProjDir = Path.GetDirectoryName(testBin)!;
-        var testRoot    = Path.GetDirectoryName(testProjDir)!;
-        var repoRoot    = Path.GetDirectoryName(testRoot)!;
-        var binaryName  = OperatingSystem.IsWindows() ? "kcap.exe" : "kcap";
-        return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
-    }
-
-    /// <summary>
     /// Spawns <c>kcap mcp flows</c> as a child process with WireMock as the backend.
     /// <paramref name="urlOverride"/> replaces the WireMock URL (used to exercise the
     /// invalid-server_url path).
@@ -89,28 +75,10 @@ public class McpFlowsServerTests : IDisposable {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var binary = GetCliBinaryPath();
-
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: " +
-                "dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary
-            );
-        }
-
-        var psi = new ProcessStartInfo(binary, "mcp flows") {
-            RedirectStandardInput  = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-            WorkingDirectory       = workingDirectory ?? _cwdDir,
-            Environment = {
-                ["KCAP_URL"]        = urlOverride ?? _server.Url!,
-                ["KCAP_CONFIG_DIR"] = _cfgDir
-            }
-        };
+        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "flows");
+        psi.WorkingDirectory = workingDirectory ?? _cwdDir;
+        psi.Environment["KCAP_URL"] = urlOverride ?? _server.Url!;
+        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
 
         ApplyHarnessSignals(psi, harnessSessionId: null, harnessProjectDir: null);
 
@@ -134,29 +102,11 @@ public class McpFlowsServerTests : IDisposable {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var binary = GetCliBinaryPath();
-
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: " +
-                "dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary
-            );
-        }
-
-        var psi = new ProcessStartInfo(binary, "mcp flows") {
-            RedirectStandardInput  = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-            WorkingDirectory       = workingDirectory ?? _cwdDir,
-            Environment = {
-                ["KCAP_URL"]          = _server.Url!,
-                ["KCAP_CONFIG_DIR"]   = _cfgDir,
-                ["KCAP_SESSION_ID"]   = sessionId
-            }
-        };
+        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "flows");
+        psi.WorkingDirectory = workingDirectory ?? _cwdDir;
+        psi.Environment["KCAP_URL"] = _server.Url!;
+        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
+        psi.Environment["KCAP_SESSION_ID"] = sessionId;
 
         ApplyHarnessSignals(psi, harnessSessionId, harnessProjectDir);
 

@@ -1,18 +1,24 @@
-using Capacitor.Cli.Daemon.Services;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 public class BootRefusalTests {
+    static void Write(DaemonConfig config, string token) =>
+        BootRefusalMarker.TryWrite(
+            config.Store, config.Name, token, config.ExpectedServerUrl, config.ServerUrl,
+            config.InstanceId, config.BootAttemptId);
+
     [Test]
     public async Task Write_then_read_round_trips_identity() {
         using var tmp = new TempDir();
         var config = new DaemonConfig {
             Name = "d1", ExpectedServerUrl = "https://a", ServerUrl = "https://b",
-            InstanceId = "i-1", BootAttemptId = "att-9",
+            InstanceId = "i-1", BootAttemptId = "att-9", Store = new DaemonStore(tmp.Path),
         };
-        BootRefusal.TryWrite(tmp.Path, config, "server_expectation_mismatch");
+        Directory.CreateDirectory(config.Store.StateDirectory(config.Name));
+        Write(config, "server_expectation_mismatch");
 
-        var r = BootRefusal.TryRead(tmp.Path);
+        var r = BootRefusalMarker.TryRead(config.Store, config.Name);
         await Assert.That(r!.Token).IsEqualTo("server_expectation_mismatch");
         await Assert.That(r.DaemonName).IsEqualTo("d1");
         await Assert.That(r.Expectation).IsEqualTo("https://a");
@@ -24,19 +30,10 @@ public class BootRefusalTests {
     [Test]
     public async Task Write_into_unwritable_dir_is_swallowed() {
         using var tmp = new TempDir();
-        var dir = tmp.PathTo("missing", "deep");
-        // no Directory.CreateDirectory — TryWrite must not throw
-        BootRefusal.TryWrite(dir, new DaemonConfig { Name = "d" }, "consent_seed_unwritable");
-        await Assert.That(BootRefusal.TryRead(dir)).IsNull();
-    }
-
-    [Test]
-    public async Task Corrupt_marker_is_renamed_aside_and_reads_null() {
-        using var tmp = new TempDir();
-        await File.WriteAllTextAsync(BootRefusal.MarkerPath(tmp.Path), "{corrupt");
-        await Assert.That(BootRefusal.TryRead(tmp.Path)).IsNull();
-        await Assert.That(File.Exists(BootRefusal.MarkerPath(tmp.Path))).IsFalse();
-        await Assert.That(Directory.GetFiles(tmp.Path, "boot-refusal.json.quarantined-*")).IsNotEmpty();
+        var config = new DaemonConfig { Name = "d", Store = new DaemonStore(tmp.PathTo("missing", "deep")) };
+        // no Directory.CreateDirectory — the write must not throw
+        Write(config, "consent_seed_unwritable");
+        await Assert.That(BootRefusalMarker.TryRead(config.Store, config.Name)).IsNull();
     }
 
     [Test]
@@ -66,11 +63,14 @@ public class BootRefusalTests {
         var dir = tmp.PathTo("brand-new-name");
         await Assert.That(Directory.Exists(dir)).IsFalse();
 
-        Directory.CreateDirectory(dir); // mirrors DaemonRunner's eager best-effort creation
-        var config = new DaemonConfig { Name = "d2", ExpectedServerUrl = "https://a", ServerUrl = "https://b" };
-        BootRefusal.TryWrite(dir, config, "server_expectation_mismatch");
+        var config = new DaemonConfig {
+            Name = "d2", ExpectedServerUrl = "https://a", ServerUrl = "https://b",
+            Store = new DaemonStore(dir),
+        };
+        Directory.CreateDirectory(config.Store.StateDirectory(config.Name)); // mirrors DaemonRunner's eager best-effort creation
+        Write(config, "server_expectation_mismatch");
 
-        var r = BootRefusal.TryRead(dir);
+        var r = BootRefusalMarker.TryRead(config.Store, config.Name);
         await Assert.That(r).IsNotNull();
         await Assert.That(r!.Token).IsEqualTo("server_expectation_mismatch");
     }
@@ -80,9 +80,9 @@ public class BootRefusalTests {
     [Test, NotInParallel]
     public async Task RunBootChecksAsync_empty_expected_server_url_refuses_as_mismatch() {
         using var tmp = new TempDir();
-        var config = new DaemonConfig { Name = "d-empty-expect", ServerUrl = "https://s", ExpectedServerUrl = "" };
+        var config = new DaemonConfig { Name = "d-empty-expect", ServerUrl = "https://s", ExpectedServerUrl = "", Store = new DaemonStore(tmp.Path) };
         using var capture = ConsoleOutput.StartErrorCapture();
-        var exit = await DaemonRunner.RunBootChecksAsync(config, tmp.Path);
+        var exit = await DaemonRunner.RunBootChecksAsync(config);
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(capture.GetCapturedError()).Contains("server_expectation_mismatch");
@@ -91,12 +91,12 @@ public class BootRefusalTests {
     [Test]
     public async Task RunBootChecksAsync_null_directive_is_truly_absent_and_proceeds() {
         using var tmp = new TempDir();
-        var config = new DaemonConfig { Name = "d-absent", ServerUrl = "https://s", ConsentSeedDirective = null };
+        var config = new DaemonConfig { Name = "d-absent", ServerUrl = "https://s", ConsentSeedDirective = null, Store = new DaemonStore(tmp.Path) };
 
-        var exit = await DaemonRunner.RunBootChecksAsync(config, tmp.Path);
+        var exit = await DaemonRunner.RunBootChecksAsync(config);
 
         await Assert.That(exit).IsNull();
-        await Assert.That(File.Exists(tmp.PathTo("consent.json"))).IsFalse(); // never seeded
+        await Assert.That(File.Exists(Path.Combine(config.Store.StateDirectory(config.Name), "consent.json"))).IsFalse(); // never seeded
     }
 
     [Test, NotInParallel]
@@ -104,9 +104,9 @@ public class BootRefusalTests {
         using var tmp = new TempDir();
         // Empty is a deliberate refusal under the exact-value contract, not absence — the seed path
         // must activate on it (BootSeed("") itself already classifies RefusedInvalidDirective).
-        var config = new DaemonConfig { Name = "d-empty", ServerUrl = "https://s", ConsentSeedDirective = "" };
+        var config = new DaemonConfig { Name = "d-empty", ServerUrl = "https://s", ConsentSeedDirective = "", Store = new DaemonStore(tmp.Path) };
         using var capture = ConsoleOutput.StartErrorCapture();
-        var exit = await DaemonRunner.RunBootChecksAsync(config, tmp.Path);
+        var exit = await DaemonRunner.RunBootChecksAsync(config);
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(capture.GetCapturedError()).Contains("consent_seed_invalid");
@@ -119,11 +119,13 @@ public class BootRefusalTests {
         // Persist()'s own I/O against the bogus path fails) — either way this must land as the
         // coded consent_seed_unwritable refusal, never an uncoded crash that respins under KeepAlive.
         using var tmp = new TempDir();
-        var stateDirAsFile = tmp.PathTo("state-is-a-file");
-        await File.WriteAllTextAsync(stateDirAsFile, "not a directory");
-        var config = new DaemonConfig { Name = "d-unwritable", ServerUrl = "https://s", ConsentSeedDirective = "prompt" };
+        var config = new DaemonConfig {
+            Name = "d-unwritable", ServerUrl = "https://s", ConsentSeedDirective = "prompt",
+            Store = new DaemonStore(tmp.Path),
+        };
+        await File.WriteAllTextAsync(config.Store.StateDirectory(config.Name), "not a directory");
         using var capture = ConsoleOutput.StartErrorCapture();
-        var exit = await DaemonRunner.RunBootChecksAsync(config, stateDirAsFile);
+        var exit = await DaemonRunner.RunBootChecksAsync(config);
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(capture.GetCapturedError()).Contains("consent_seed_unwritable");

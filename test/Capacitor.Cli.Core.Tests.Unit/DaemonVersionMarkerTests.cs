@@ -1,68 +1,46 @@
 namespace Capacitor.Cli.Core.Tests.Unit;
 
-[NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
 public class DaemonVersionMarkerTests {
     [Test]
     public async Task Write_then_read_round_trips() {
-        using var dir = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(dir.Path);
-        try {
-            DaemonVersionMarker.Write("laptop", "0.4.11+sha.abc1234");
+        using var daemons = new TempDaemonStore();
 
-            await Assert.That(DaemonVersionMarker.TryRead("laptop")).IsEqualTo("0.4.11+sha.abc1234");
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        DaemonVersionMarker.Write(daemons.Store, "laptop", "0.4.11+sha.abc1234");
+
+        await Assert.That(DaemonVersionMarker.TryRead(daemons.Store, "laptop")).IsEqualTo("0.4.11+sha.abc1234");
     }
 
     [Test]
     public async Task TryRead_returns_null_when_absent() {
-        using var dir = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(dir.Path);
-        try {
-            await Assert.That(DaemonVersionMarker.TryRead("nope")).IsNull();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        using var daemons = new TempDaemonStore();
+
+        await Assert.That(DaemonVersionMarker.TryRead(daemons.Store, "nope")).IsNull();
     }
 
     [Test]
     public async Task TryRead_returns_null_for_blank_marker() {
-        using var dir = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(dir.Path);
-        try {
-            File.WriteAllText(DaemonLockPaths.VersionPath("laptop"), "   \n");
+        using var daemons = new TempDaemonStore();
+        File.WriteAllText(daemons.Store.VersionPath("laptop"), "   \n");
 
-            await Assert.That(DaemonVersionMarker.TryRead("laptop")).IsNull();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        await Assert.That(DaemonVersionMarker.TryRead(daemons.Store, "laptop")).IsNull();
     }
 
     [Test]
     public async Task Delete_removes_marker() {
-        using var dir = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(dir.Path);
-        try {
-            DaemonVersionMarker.Write("laptop", "0.4.11");
-            DaemonVersionMarker.Delete("laptop");
+        using var daemons = new TempDaemonStore();
 
-            await Assert.That(File.Exists(DaemonLockPaths.VersionPath("laptop"))).IsFalse();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        DaemonVersionMarker.Write(daemons.Store, "laptop", "0.4.11");
+        DaemonVersionMarker.Delete(daemons.Store, "laptop");
+
+        await Assert.That(File.Exists(daemons.Store.VersionPath("laptop"))).IsFalse();
     }
 
     [Test]
     public async Task EnumerateNames_includes_marker_only_entry() {
-        using var dir = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(dir.Path);
-        try {
-            DaemonVersionMarker.Write("orphan", "0.4.11");
+        using var daemons = new TempDaemonStore();
 
-            await Assert.That(DaemonLockPaths.EnumerateNames()).Contains("orphan");
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        DaemonVersionMarker.Write(daemons.Store, "orphan", "0.4.11");
+
+        await Assert.That(daemons.Store.EnumerateNames()).Contains("orphan");
     }
 }

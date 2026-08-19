@@ -25,6 +25,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// <c>SeedAgentForTest</c>/<c>CaptureServerConnection</c>/<c>SpyPtyProcessFactory</c> test doubles —
 /// same pattern as <c>ReviewerTtlTests.cs</c>/<c>OneExecutionDomainTests.cs</c>.
 /// </summary>
+[ParallelLimiter<SubprocessLimit>]
 public class ReviewerReapingTests {
     /// <summary>
     /// THE regression this fix exists for: a reviewer that has finished round 1 and is waiting while

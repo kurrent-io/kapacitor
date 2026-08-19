@@ -18,6 +18,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// which a start-time snapshot would go stale, and therefore the shape the freshness test needs.</para>
 /// </summary>
 public class ReviewerVendorPreferenceTests : IDisposable {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     readonly WireMockServer _server           = WireMockServer.Start();
     readonly TempDir        _tmp              = new();
     readonly string         _cfgDir;
@@ -61,36 +63,12 @@ public class ReviewerVendorPreferenceTests : IDisposable {
             throw new InvalidOperationException($"seeding flows.reviewer_vendor failed: {vendor.Stderr}");
     }
 
-    static string GetCliBinaryPath() {
-        var asmDir      = Path.GetDirectoryName(typeof(ReviewerVendorPreferenceTests).Assembly.Location)!;
-        var binDir      = Path.GetDirectoryName(asmDir)!;
-        var config      = Path.GetFileName(binDir);
-        var testBin     = Path.GetDirectoryName(binDir)!;
-        var testProjDir = Path.GetDirectoryName(testBin)!;
-        var testRoot    = Path.GetDirectoryName(testProjDir)!;
-        var repoRoot    = Path.GetDirectoryName(testRoot)!;
-        var binaryName  = OperatingSystem.IsWindows() ? "kcap.exe" : "kcap";
-
-        return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
-    }
-
     ProcessStartInfo BaseStartInfo(string arguments) {
-        var binary = GetCliBinaryPath();
-
-        if (!File.Exists(binary))
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary);
-
-        var psi = new ProcessStartInfo(binary, arguments) {
-            RedirectStandardInput  = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-            WorkingDirectory       = _cwdDir,
-            Environment            = { ["KCAP_CONFIG_DIR"] = _cfgDir }
-        };
+        var psi = KcapProcess.StartInfo(Daemons.Store);
+        // A string, not ArgumentList: quote-aware parsing, so an argument may contain a space.
+        psi.Arguments = arguments;
+        psi.WorkingDirectory = _cwdDir;
+        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
 
         // The flows lane must resolve its server from the PROFILE, so no URL override may leak in
         // from the developer's or CI's environment.

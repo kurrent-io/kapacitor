@@ -1,6 +1,5 @@
 using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
-using Capacitor.Cli.Core;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.App.Tests.Unit;
@@ -8,6 +7,8 @@ namespace Capacitor.App.Tests.Unit;
 /// Deterministic TUnit tests: every ordering assertion is driven by TaskCompletionSource gates on
 /// FakeKcapCli (shared from DaemonLifecycleControllerTests.cs, same namespace), never Task.Delay.
 public class DaemonMutationLaneTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     static readonly TimeSpan Bounded = TimeSpan.FromSeconds(5);
 
     static MutationRequest Req(
@@ -43,8 +44,8 @@ public class DaemonMutationLaneTests {
         {"schema":1,"daemon_name":"{{daemonName}}","token":"server_expectation_mismatch","expectation":"https://cap.example.test","resolved":"https://t","pid":4242,"instance_id":"inst-1","attempt_id":{{(attemptId is null ? "null" : $"\"{attemptId}\"")}}}
         """;
 
-    static void PlantMarker(string daemonName, string content) {
-        var path = BootRefusalMarker.MarkerPath(daemonName);
+    void PlantMarker(string daemonName, string content) {
+        var path = Daemons.Store.BootRefusalPath(daemonName);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, content);
     }
@@ -72,12 +73,13 @@ public class DaemonMutationLaneTests {
         }
     }
 
-    static DaemonMutationLane MakeLane(
+    DaemonMutationLane MakeLane(
             RecordingExecutorFactory factory, OutcomeChannel? channel = null,
             Func<string?>? cliOverride = null, ILoginShellProbe? shellProbe = null,
             Func<MutationRequest, IDaemonObservation>? oneShotFactory = null,
             TimeProvider? time = null, MutationClassifier? classify = null) {
         var lane = new DaemonMutationLane(
+            Daemons.Store,
             shellProbe ?? new FakeLoginShellProbe { KcapPathBehavior = _ => Task.FromResult<string?>(null) },
             channel ?? new OutcomeChannel(),
             cliOverride ?? (() => "/opt/kcap/bin/kcap"),
@@ -1316,10 +1318,8 @@ public class DaemonMutationLaneTests {
         await lane.DisposeAsync();
     }
 
-    [Test, NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    [Test]
     public async Task DetachedStart_transient_mid_boot_shape_with_a_marker_arriving_after_the_first_poll_is_Refused() {
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         var time = new FakeTimeProvider();
         var cli = new FakeKcapCli { DetachedStartBehavior = _ => Task.FromResult(new ProcessResult(0, "", "", false)) };
         var factory = new RecordingExecutorFactory { Behavior = (_, _) => cli };
@@ -1332,18 +1332,14 @@ public class DaemonMutationLaneTests {
             },
         };
         var lane = MakeLane(factory, oneShotFactory: _ => observation, time: time);
-        try {
-            var task = lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
-            var outcome = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
+        var outcome = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(outcome).IsEqualTo(new MutationOutcome.Refused("server_expectation_mismatch", RecoverySurface.Takeover));
-            await Assert.That(File.Exists(BootRefusalMarker.MarkerPath("daemon-a"))).IsFalse(); // consumed
-            await Assert.That(pollCount).IsEqualTo(2); // caught by the NEXT iteration's marker-first check — no 3rd observe call
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.Refused("server_expectation_mismatch", RecoverySurface.Takeover));
+        await Assert.That(File.Exists(Daemons.Store.BootRefusalPath("daemon-a"))).IsFalse(); // consumed
+        await Assert.That(pollCount).IsEqualTo(2); // caught by the NEXT iteration's marker-first check — no 3rd observe call
 
-            await lane.DisposeAsync();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        await lane.DisposeAsync();
     }
 
     // ---- TEST GAP (round 1): the loop actually re-observes, not just waits out a single check ----
@@ -1421,36 +1417,28 @@ public class DaemonMutationLaneTests {
     // a real DetachedStart action never produces one) must never attribute a marker, even a
     // matching null-attempt one (which belongs to a service-verb refusal, not this action). ----
 
-    [Test, NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    [Test]
     public async Task DetachedStart_classifier_with_a_null_attemptId_never_attributes_even_a_null_attempt_marker() {
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         var time = new FakeTimeProvider();
-        try {
-            PlantMarker("daemon-a", MarkerJson("daemon-a", null)); // a null-attempt marker — belongs to a service verb, never this detached attempt
-            var lane = MakeLane(new RecordingExecutorFactory(), time: time);
-            var executor = new FakeKcapCli();
-            var observation = new ScriptedObservation(); // never full evidence
+        PlantMarker("daemon-a", MarkerJson("daemon-a", null)); // a null-attempt marker — belongs to a service verb, never this detached attempt
+        var lane = MakeLane(new RecordingExecutorFactory(), time: time);
+        var executor = new FakeKcapCli();
+        var observation = new ScriptedObservation(); // never full evidence
 
-            var task = lane.Classify(
-                Req(verb: MutationVerb.DetachedStart), new ProcessResult(0, "", "", false), executor, observation, null, CancellationToken.None);
-            var outcome = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = lane.Classify(
+            Req(verb: MutationVerb.DetachedStart), new ProcessResult(0, "", "", false), executor, observation, null, CancellationToken.None);
+        var outcome = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(outcome).IsEqualTo(new MutationOutcome.UnconfirmedNoAttach());
-            await Assert.That(File.Exists(BootRefusalMarker.MarkerPath("daemon-a"))).IsTrue(); // untouched — TryAttribute never called
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.UnconfirmedNoAttach());
+        await Assert.That(File.Exists(Daemons.Store.BootRefusalPath("daemon-a"))).IsTrue(); // untouched — TryAttribute never called
 
-            await lane.DisposeAsync();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        await lane.DisposeAsync();
     }
 
     // ==== Task 9b: DetachedStart boot-refusal marker attribution (real filesystem — BootRefusalMarkerTests pattern) ====
 
-    [Test, NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    [Test]
     public async Task DetachedStart_exit_zero_with_an_attributed_marker_is_Refused_and_consumes_the_marker() {
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         var time = new FakeTimeProvider(); // MINOR 8: no 10s wall-clock worst case if attribution ever regresses
         var cli = new FakeKcapCli();
         cli.DetachedStartBehavior = _ => {
@@ -1464,10 +1452,9 @@ public class DaemonMutationLaneTests {
             var outcome = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
             await Assert.That(outcome).IsEqualTo(new MutationOutcome.Refused("server_expectation_mismatch", RecoverySurface.Takeover));
-            await Assert.That(File.Exists(BootRefusalMarker.MarkerPath("daemon-a"))).IsFalse();
+            await Assert.That(File.Exists(Daemons.Store.BootRefusalPath("daemon-a"))).IsFalse();
         } finally {
             await lane.DisposeAsync();
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
 
@@ -1475,10 +1462,8 @@ public class DaemonMutationLaneTests {
     // never attaches, so marker-first can never produce a false Refused, while evidence-first could
     // let a pre-existing same-name daemon's evidence mask a real refusal. ----
 
-    [Test, NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    [Test]
     public async Task DetachedStart_marker_and_full_evidence_both_present_from_the_start_marker_wins() {
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         var cli = new FakeKcapCli();
         cli.DetachedStartBehavior = _ => {
             PlantMarker("daemon-a", MarkerJson("daemon-a", cli.LastBootAttemptId!));
@@ -1488,22 +1473,16 @@ public class DaemonMutationLaneTests {
         // Full, matching evidence from t=0 — if evidence were checked first this would resolve Succeeded.
         var observation = new ScriptedObservation { Behavior = (_, _) => Task.FromResult<ObservedEvidence?>(MatchingEvidence()) };
         var lane = MakeLane(factory, oneShotFactory: _ => observation);
-        try {
-            var outcome = await lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
+        var outcome = await lane.RunAsync(Req(verb: MutationVerb.DetachedStart), CancellationToken.None);
 
-            await Assert.That(outcome).IsEqualTo(new MutationOutcome.Refused("server_expectation_mismatch", RecoverySurface.Takeover));
-            await Assert.That(File.Exists(BootRefusalMarker.MarkerPath("daemon-a"))).IsFalse(); // consumed
+        await Assert.That(outcome).IsEqualTo(new MutationOutcome.Refused("server_expectation_mismatch", RecoverySurface.Takeover));
+        await Assert.That(File.Exists(Daemons.Store.BootRefusalPath("daemon-a"))).IsFalse(); // consumed
 
-            await lane.DisposeAsync();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        await lane.DisposeAsync();
     }
 
-    [Test, NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    [Test]
     public async Task DetachedStart_exit_zero_with_a_foreign_marker_is_UnconfirmedNoAttach_and_retains_the_marker() {
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
         var time = new FakeTimeProvider();
         PlantMarker("daemon-a", MarkerJson("daemon-a", "foreign-attempt-id"));
         var cli = new FakeKcapCli { DetachedStartBehavior = _ => Task.FromResult(new ProcessResult(0, "", "", false)) };
@@ -1514,10 +1493,9 @@ public class DaemonMutationLaneTests {
             var outcome = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
             await Assert.That(outcome).IsEqualTo(new MutationOutcome.UnconfirmedNoAttach());
-            await Assert.That(File.Exists(BootRefusalMarker.MarkerPath("daemon-a"))).IsTrue();
+            await Assert.That(File.Exists(Daemons.Store.BootRefusalPath("daemon-a"))).IsTrue();
         } finally {
             await lane.DisposeAsync();
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
 }

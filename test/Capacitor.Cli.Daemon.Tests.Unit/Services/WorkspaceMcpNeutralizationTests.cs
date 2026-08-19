@@ -15,11 +15,10 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// assumption, so a naive delete is itself an attack surface: a branch that makes <c>.gemini</c> a link to
 /// the operator's real <c>~/.gemini</c> would have kcap destroy the operator's configuration.</para>
 /// </summary>
-public class WorkspaceMcpNeutralizationTests : IDisposable {
-    readonly TempDir _tmp = new();
-    public void Dispose() => _tmp.Dispose();
+public class WorkspaceMcpNeutralizationTests {
+    [TempDir] public required TempDir Tmp { get; init; }
 
-    string NewDir(string tag) => _tmp.CreateDir(tag);
+    string NewDir(string tag) => Tmp.CreateDir(tag);
 
     static void WriteAt(string root, string relative, string content) {
         var full = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));

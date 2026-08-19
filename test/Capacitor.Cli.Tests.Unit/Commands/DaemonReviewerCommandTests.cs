@@ -10,6 +10,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// working while telling operators it does not.
 /// </summary>
 public class DaemonReviewerCommandTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     [Test]
     [Arguments("kiro")]
     [Arguments("gemini")]
@@ -52,10 +54,7 @@ public class DaemonReviewerCommandTests {
     [NotInParallel]
     public async Task AnUnknownVendorIsRefusedAndOffersTheAffirmableOnes() {
         using var capture = ConsoleOutput.StartErrorCapture();
-        int exitCode;
-
-
-        exitCode = await DaemonReviewerCommand.HandleAsync(["affirm", "--vendor", "antigravitee"]);
+        var exitCode = await DaemonReviewerCommand.HandleAsync(Daemons.Store, ["affirm", "--vendor", "antigravitee"]);
 
         await Assert.That(exitCode).IsEqualTo(1);
         await Assert.That(capture.GetCapturedError()).Contains("Unknown reviewer vendor");

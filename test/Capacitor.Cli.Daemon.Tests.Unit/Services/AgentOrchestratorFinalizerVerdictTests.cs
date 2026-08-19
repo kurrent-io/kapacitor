@@ -21,6 +21,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// Uses <see cref="AgentOrchestratorHarness"/> for its BuildOrchestrator /
 /// CaptureServerConnection / CreateGitRepo / SpyHostedAgentRuntimeFactory harness.
 /// </summary>
+[ParallelLimiter<SubprocessLimit>]
 public class AgentOrchestratorFinalizerVerdictTests {
     /// <summary>
     /// Minimal <see cref="IAcpProcess"/> whose <see cref="WaitForExitAsync"/> is a SEPARATE,

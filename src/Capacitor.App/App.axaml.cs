@@ -34,6 +34,9 @@ public partial class App : Application {
     // Linked to the app's shutdown sequence below; the token StartDaemonCommand's WAIT is built
     // against — never CancellationToken.None, or an unbounded wait would survive app exit.
     readonly CancellationTokenSource _shutdown = new();
+
+    // The app's one read of KCAP_DAEMONS_DIR.
+    readonly DaemonStore _daemonStore = DaemonStore.FromEnvironment();
     // Constructed FIRST (before any other graph object) in StartAsync and disposed LAST — every
     // daemon mutation in the app runs through it, so nothing that might still call RunAsync can outlive it.
     DaemonMutationLane? _lane;
@@ -112,11 +115,11 @@ public partial class App : Application {
             var laneProbe  = new LoginShellProbe(laneRunner, Environment.GetEnvironmentVariable);
             var channel    = new OutcomeChannel();
             var lane = new DaemonMutationLane(
-                laneProbe, channel, ResolveCliOverride,
+                _daemonStore, laneProbe, channel, ResolveCliOverride,
                 (request, pinnedPath) => new KcapCli(
                     laneRunner, pinnedPath, request.DaemonName, request.Profile, laneProbe.TerminalPathAsync,
                     canonicalServer: request.CanonicalServer),
-                _ => new OneShotObservation(OneShotProbeTimeout),
+                _ => new OneShotObservation(_daemonStore, OneShotProbeTimeout),
                 TimeProvider.System);
             _lane = lane;
 
@@ -186,7 +189,7 @@ public partial class App : Application {
     void BuildDaemonGraph(
             IClassicDesktopStyleApplicationLifetime desktop, DaemonMutationLane lane, OutcomeChannel channel,
             GateResult gate, bool laneQuiesced) {
-        var service = DaemonClientService.CreateResolved(lane.RunAsync);
+        var service = DaemonClientService.CreateResolved(_daemonStore, lane.RunAsync);
 
         // Incomplete after the wizard (abandoned, or sign-in skipped) is the carve-out arm, and so
         // is a lane that outran the handoff cap: the graph comes up with every lifecycle
@@ -197,7 +200,7 @@ public partial class App : Application {
         // window rows share a single stop/open-in-web code path (spec §7) and a single
         // toast/stderr channel (spec §11). notifier is built here (not after service.Start()
         // below) because PauseController/AgentActionService, constructed further down, need it.
-        var ops = new LocalControlOps(service.DaemonName);
+        var ops      = new LocalControlOps(_daemonStore, service.DaemonName);
         var notifier = new AppNotifier();
 
         // spec: BehaviorSubjects, not plain Subjects — MainWindowViewModel and
@@ -244,14 +247,14 @@ public partial class App : Application {
         // window factory below and MainWindowViewModel both need the SAME instance — the
         // former to nudge it on every conclusive ack, the latter to render it.
         var activity = new ActivityViewModel(
-            () => ConsentDecisionLogReader.ReadTail(service.DaemonName, 200),
-            () => ActivityStatKey(service.DaemonName), ticker);
+            () => ConsentDecisionLogReader.ReadTail(_daemonStore, service.DaemonName, 200),
+            () => ActivityStatKey(_daemonStore, service.DaemonName), ticker);
         _activity = activity;
 
         // The prompt window is built per raise, never here: the coordinator owns its lifetime
         // and each window gets its own ViewModel over the one shared service (spec §6).
         var consent = new ConsentService(
-            service, ops, ticker, ct => ConsentSubscription.RunAsync(service.DaemonName, ct),
+            service, ops, ticker, ct => ConsentSubscription.RunAsync(_daemonStore, service.DaemonName, ct),
             TimeProvider.System, _shutdown.Token);
         _consent = consent;
         _promptCoordinator = new ConsentPromptCoordinator(consent, () => new ConsentPromptWindow {
@@ -301,11 +304,11 @@ public partial class App : Application {
             WizardComposition.NewOperation,
             surface,
             ResolveCli: () => NewWizardCli(runner, cliPath, probe),
-            ResolveOps: name => new LocalControlOps(name),
+            ResolveOps: name => new LocalControlOps(_daemonStore, name),
             ResolveIdentity: ResolveWizardIdentity,
             ResolveConsentFlipIdentity: ResolveConsentFlipIdentity,
             RunMutation: lane.RunAsync,
-            Observation: new OneShotObservation(OneShotProbeTimeout),
+            Observation: new OneShotObservation(_daemonStore, OneShotProbeTimeout),
             AppState: new AppStateStore(PathHelpers.ConfigPath("app-state.json")),
             ShimInstaller: new PathShimInstaller(runner, probe),
             UrlOpener: new ShellUrlOpener(),
@@ -845,8 +848,8 @@ public partial class App : Application {
             TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
-    internal static string ActivityStatKey(string daemonName) {
-        var path = ConsentDecisionLogReader.PathFor(daemonName);
+    internal static string ActivityStatKey(DaemonStore store, string daemonName) {
+        var path = store.ConsentLogPath(daemonName);
         return ActivityStatKey(path + ".1", path);
     }
 

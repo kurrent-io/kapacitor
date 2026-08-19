@@ -1,6 +1,5 @@
 using System.Net.Sockets;
 using System.Text.Json;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
@@ -13,7 +12,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// End-to-end coverage of the Hello/HelloReply frame pair over a REAL Unix-domain socket —
 /// the same <c>LocalControlServer.HandleConnectionAsync</c> routing switch a real
 /// `kcap` client talks to. The harness mirrors <c>LaunchConsentIpcTests</c> (temp
-/// DaemonLockPaths override, socket-file poll, Windows guard) but builds its own minimal
+/// per-test daemons directory, socket-file poll, Windows guard) but builds its own minimal
 /// AgentOrchestrator, since none of these tests exercise Spawn/Attach/Stop — the
 /// orchestrator (and the consent plumbing) only need to exist to satisfy
 /// LocalControlServer's constructor.
@@ -41,20 +40,21 @@ public class LocalControlHelloTests {
         public RestartOutcome Restart() => RestartOutcome.NoOp;
     }
 
-    sealed record Harness(TempDir StateDir, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection, DaemonConfig Config, string SockPath);
+    sealed record Harness(TempDaemonStore Daemons, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection, DaemonConfig Config, string SockPath);
 
     static async Task<Harness> StartAsync(string daemonName, CancellationToken ct) {
-        var stateDir = new TempDir();
-        var store       = new LaunchConsentStore(stateDir.Path, NullLogger.Instance);
+        var daemons     = new TempDaemonStore();
+        var stateRoot   = daemons.Store.StateDirectory(daemonName);
+        var store       = new LaunchConsentStore(stateRoot, NullLogger.Instance);
         var broker      = new LaunchConsentBroker();
-        var decisionLog = new LaunchConsentDecisionLog(stateDir.Path, NullLogger.Instance);
+        var decisionLog = new LaunchConsentDecisionLog(stateRoot, NullLogger.Instance);
         var gate        = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         var config = new DaemonConfig {
             Name         = daemonName,
             ServerUrl    = "http://127.0.0.1:1",
-            StateDir     = stateDir.Path,
-            WorktreeRoot = stateDir.PathTo("worktrees"),
+            Store        = daemons.Store,
+            WorktreeRoot = daemons.PathTo("worktrees"),
         };
         var consentIpc  = new LaunchConsentIpc(broker, store, config, NullLogger<LaunchConsentIpc>.Instance);
 
@@ -70,15 +70,15 @@ public class LocalControlHelloTests {
             NullLogger<AgentOrchestrator>.Instance, gate);
 
         var statusIpc = new DaemonStatusIpc(config, orchestrator, connection, new DaemonStatusNotifier());
-        var restart = RestartCoordinator.ForTest(daemonName, daemonName, new NoopRestartStrategy());
+        var restart = RestartCoordinator.ForTest(daemons.Store, daemonName, daemonName, new NoopRestartStrategy());
         var server = new LocalControlServer(config, orchestrator, restart, consentIpc, statusIpc, NullLogger<LocalControlServer>.Instance);
         await server.StartAsync(ct);
 
-        var sockPath = LocalSocketPaths.Socket(daemonName);
+        var sockPath = daemons.Store.SocketPath(daemonName);
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (!File.Exists(sockPath) && DateTime.UtcNow < deadline) await Task.Delay(20, ct);
 
-        return new Harness(stateDir, server, orchestrator, connection, config, sockPath);
+        return new Harness(daemons, server, orchestrator, connection, config, sockPath);
     }
 
     static async Task StopAsync(Harness h) {
@@ -86,17 +86,13 @@ public class LocalControlHelloTests {
         await h.Server.StopAsync(CancellationToken.None);
         h.Server.Dispose();
         await h.Connection.DisposeAsync();
-        h.StateDir.Dispose();
+        h.Daemons.Dispose();
     }
 
-    /// Wraps a test body with the temp-dir DaemonLockPaths override + harness lifecycle, mirroring
-    /// LaunchConsentIpcTests's RunAsync. Each [Test] still carries its own
-    /// [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")] + Windows guard,
-    /// since those must be visible on the test method itself.
+    /// Wraps a test body with the harness lifecycle, mirroring LaunchConsentIpcTests's RunAsync. The harness owns
+    /// its own daemons directory, so nothing here is shared between tests; each [Test] still
+    /// carries its own Windows guard, which must be visible on the test method itself.
     static async Task RunAsync(string daemonName, Func<Harness, CancellationToken, Task> body) {
-        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
-        using var sockDir = new TempDir("lch");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         Harness? h = null;
@@ -106,7 +102,6 @@ public class LocalControlHelloTests {
             await body(h, cts.Token);
         } finally {
             if (h is not null) await StopAsync(h);
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
 
@@ -117,7 +112,6 @@ public class LocalControlHelloTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Hello_with_client_info_gets_a_reply_naming_version_name_and_capabilities() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -138,7 +132,6 @@ public class LocalControlHelloTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Hello_with_empty_payload_gets_an_identical_reply() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -157,7 +150,6 @@ public class LocalControlHelloTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Hello_with_malformed_json_payload_is_treated_as_empty_and_still_replies() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -179,7 +171,6 @@ public class LocalControlHelloTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Hello_reply_carries_pid_and_instance_id() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -196,7 +187,6 @@ public class LocalControlHelloTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task List_still_returns_AgentList_alongside_the_new_Hello_route() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -210,7 +200,6 @@ public class LocalControlHelloTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Unrouted_frame_type_gets_an_error_reply_mentioning_hello() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 

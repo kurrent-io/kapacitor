@@ -14,6 +14,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// repeatedly. Where the control is a second build with a different cwd, the assertion is that the SAME
 /// fixture yields the file — so "absent" can only mean the exclusion acted.</para>
 /// </summary>
+[ParallelLimiter<SubprocessLimit>]
 public class BorrowedSnapshotExclusionScopeTests {
     // ---------- fixture ----------
 

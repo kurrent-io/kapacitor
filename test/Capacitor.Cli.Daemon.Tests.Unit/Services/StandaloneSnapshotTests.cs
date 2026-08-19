@@ -11,6 +11,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// and <c>Path.Exists</c> all follow, so a dangling link reports absent and an "it was not copied"
 /// assertion passes for the wrong reason. Everything here uses <see cref="EntryNames"/> or
 /// <see cref="IsPresent"/>, which read the parent directory and the entry's own attributes.</para></summary>
+[ParallelLimiter<SubprocessLimit>]
 public class StandaloneSnapshotTests {
     // ---- fixtures -----------------------------------------------------------------------------------
 

@@ -47,7 +47,7 @@ public class CodexProjectKeyTests {
     [Test]
     public async Task TrustWorktree_writes_one_entry_regardless_of_input_casing() {
         using var tmp = new TempDir();
-        var configPath = tmp.PathTo("config.toml");
+        var configPath = tmp.GetResolvedPath("config.toml");
 
         var upper = OperatingSystem.IsWindows()
             ? @"C:\Src\Repo\Worktrees\Agent-01"
@@ -69,7 +69,7 @@ public class CodexProjectKeyTests {
     [Test]
     public async Task TrustWorktree_is_idempotent_under_the_normalized_key() {
         using var tmp = new TempDir();
-        var configPath = tmp.PathTo("config.toml");
+        var configPath = tmp.GetResolvedPath("config.toml");
 
         var path = OperatingSystem.IsWindows() ? @"C:\Src\Wt" : "/Src/Wt";
 

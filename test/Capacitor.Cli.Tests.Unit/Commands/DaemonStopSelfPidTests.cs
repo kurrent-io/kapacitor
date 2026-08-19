@@ -20,10 +20,9 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// which is why identity is the wrong question and self-reference is the right one.</para>
 ///
 /// <para>In CI this arrived as a random <c>UninstallCommandTests</c> failure — uninstall runs
-/// <c>daemon stop --yes</c>, which enumerates the daemons directory, and that directory is chosen by
-/// a process-global static that the daemon tests redirect. That parallelism hole is fixed separately
-/// by the constraint key on <c>UninstallCommandTests</c>; this test covers the production behaviour
-/// on its own, so the guard survives even if the test-isolation fix is later refactored away.</para>
+/// <c>daemon stop --yes</c>, which enumerates the daemons directory, and that suite was reaching the
+/// runner's own. Isolating the directory is what closes that hole; this test covers the production
+/// behaviour on its own, so the guard survives even if the isolation is later refactored away.</para>
 ///
 /// <para><b>Mutation evidence, stated precisely.</b> Removing BOTH the self-pid guard and the
 /// <c>InvalidOperationException</c> catch fails this test with the exact CI error
@@ -34,37 +33,31 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// an unhandled exception) rather than either individual guard, and it is worth knowing that is what
 /// it does — a future reader deleting one layer will not be told by this test.</para>
 /// </summary>
-[NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
 public class DaemonStopSelfPidTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     [Test]
     public async Task Stop_refuses_to_kill_a_pid_file_naming_the_current_process() {
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
+        // Write the pid file directly rather than acquiring a real DaemonLock. The first
+        // version of this test DID acquire one — and was vacuous: a held lock leaves the pid
+        // file unreadable, so StopByName returns 1 down its "PID file unreadable" branch and
+        // never reaches the kill at all. It passed with the guard removed, which is the only
+        // reason that was caught. What matters is reaching the kill, not how the file got there.
+        //
+        // The token must be the REAL one for this pid: that is what makes IsOurDaemon return
+        // true, which is the whole point. A fabricated token would be rejected earlier and the
+        // test would again pass for the wrong reason.
+        var token = ProcessStartToken.ForPid(Environment.ProcessId);
 
-        try {
-            // Write the pid file directly rather than acquiring a real DaemonLock. The first
-            // version of this test DID acquire one — and was vacuous: a held lock leaves the pid
-            // file unreadable, so StopByName returns 1 down its "PID file unreadable" branch and
-            // never reaches the kill at all. It passed with the guard removed, which is the only
-            // reason that was caught. What matters is reaching the kill, not how the file got there.
-            //
-            // The token must be the REAL one for this pid: that is what makes IsOurDaemon return
-            // true, which is the whole point. A fabricated token would be rejected earlier and the
-            // test would again pass for the wrong reason.
-            var token = ProcessStartToken.ForPid(Environment.ProcessId);
+        await File.WriteAllTextAsync(
+            Daemons.Store.PidPath("self"), $"{Environment.ProcessId}\n{token}\n");
 
-            await File.WriteAllTextAsync(
-                DaemonLockPaths.PidPath("self"), $"{Environment.ProcessId}\n{token}\n");
+        // Before the fix this threw InvalidOperationException out of Process.Kill. The exit code
+        // matters less than the fact that it RETURNS: an unhandled exception here takes down
+        // whichever unrelated test happens to be running — which is exactly how it showed up in
+        // CI, as a random UninstallCommandTests failure.
+        var exit = await new DaemonCommands(Daemons.Store).HandleAsync(["daemon", "stop", "--name", "self", "--yes"]);
 
-            // Before the fix this threw InvalidOperationException out of Process.Kill. The exit code
-            // matters less than the fact that it RETURNS: an unhandled exception here takes down
-            // whichever unrelated test happens to be running — which is exactly how it showed up in
-            // CI, as a random UninstallCommandTests failure.
-            var exit = await DaemonCommands.HandleAsync(["daemon", "stop", "--name", "self", "--yes"]);
-
-            await Assert.That(exit).IsEqualTo(1);
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        await Assert.That(exit).IsEqualTo(1);
     }
 }

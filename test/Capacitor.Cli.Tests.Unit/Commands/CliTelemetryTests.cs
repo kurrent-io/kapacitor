@@ -13,10 +13,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
     nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
     nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
 ])]
-public class CliTelemetryTests : IDisposable {
-    readonly TempDir _stateDir = new();
-
-    public void Dispose() => _stateDir.Dispose();
+public class CliTelemetryTests {
+    [TempDir] public required TempDir StateDir { get; init; }
 
     // CliTelemetry holds process-global static state (Enabled, TestSink, ...). A prior test
     // elsewhere in the suite (e.g. one that persists `telemetry off`) can leave Enabled=false
@@ -34,7 +32,7 @@ public class CliTelemetryTests : IDisposable {
     }
 
     List<TelemetryEvent> StartCapturing(string command = "setup", string? serverUrl = null) {
-        TelemetryState.PathOverride = StatePath(_stateDir);
+        TelemetryState.PathOverride = StatePath(StateDir);
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
         CliTelemetry.Initialize(command, serverUrl, loggedIn: false);
@@ -46,7 +44,7 @@ public class CliTelemetryTests : IDisposable {
 
     [Test]
     public async Task Capture_records_the_event_with_shared_properties() {
-        // StartCapturing() always begins from a brand-new device state file (this test's own _stateDir),
+        // StartCapturing() always begins from a brand-new device state file (this test's own StateDir),
         // so Initialize's first-run notice fires and "cli_first_run" lands in the sink too (see
         // First_run_emits_cli_first_run_once_per_device below) — filter by name rather than assume
         // this is the only event, the same way Record_command_emits_cli_command_with_exit_code does.

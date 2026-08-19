@@ -25,6 +25,30 @@ public sealed class TempDir : IDisposable {
     /// for a file the code under test is expected to create itself, or must find absent.</summary>
     public string PathTo(params ReadOnlySpan<string> segments) => Root.PathTo(segments);
 
+    /// <summary>Like <see cref="PathTo"/>, with every symlinked ancestor resolved — for code that
+    /// refuses a symlinked component (a Mac's temp root is under <c>/var</c> → <c>/private</c>).
+    /// Opt-in: the resolved form costs 8 characters of the <c>sockaddr_un</c> budget.</summary>
+    public string GetResolvedPath(params ReadOnlySpan<string> segments) =>
+        new TempDirHandle(_resolvedPath ??= ResolveLinks(Path)).PathTo(segments);
+
+    string? _resolvedPath;
+
+    // Every component, not just the leaf — a symlink anywhere in the prefix is what gets rejected.
+    static string ResolveLinks(string path) {
+        var full    = System.IO.Path.GetFullPath(path);
+        var root    = System.IO.Path.GetPathRoot(full)!;
+        var current = root;
+
+        foreach (var part in full[root.Length..].Split(
+                     System.IO.Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries)) {
+            current = System.IO.Path.Combine(current, part);
+            if (Directory.ResolveLinkTarget(current, returnFinalTarget: true) is { } target)
+                current = target.FullName;
+        }
+
+        return current;
+    }
+
     /// <summary>A temp dir together with the path of one entry under it — for the common case of a
     /// test that needs a single absent path and never refers to the directory again:
     /// <c>using var tmp = TempDir.WithPathTo("config.json", out var path);</c>. Nothing is created.</summary>
@@ -66,7 +90,8 @@ public sealed class TempDir : IDisposable {
         return clean.Length == 0 ? "kcap-test-" : $"kcap-test-{clean}-";
     }
 
-    static string Stem(string callerFilePath) {
+    /// <summary>A file stem or class name without the <c>Tests</c> suffix.</summary>
+    internal static string Stem(string callerFilePath) {
         var stem = System.IO.Path.GetFileNameWithoutExtension(callerFilePath);
 
         return stem.EndsWith("Tests", StringComparison.Ordinal) ? stem[..^5] : stem;

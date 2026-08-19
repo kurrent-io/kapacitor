@@ -56,7 +56,7 @@ internal static class DaemonStatusValidator {
 /// StatusSubscribe → snapshot stream, reconnecting with backoff. All failure is DATA (the
 /// event stream); only cancellation ends the enumeration. See the state machine and
 /// classification rules in the app-shell design spec §4 — every branch here is pinned there.
-public sealed class LocalControlClient(string daemonName, TimeProvider? time = null) {
+public sealed class LocalControlClient(DaemonStore store, string daemonName, TimeProvider? time = null) {
     readonly TimeProvider _time = time ?? TimeProvider.System;
 
     // Internal test seams: production always runs these defaults, so no public validation
@@ -231,7 +231,7 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
         try {
             using var timeoutCts = new CancellationTokenSource(ConnectTimeout, _time);
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-            await sock.ConnectAsync(new UnixDomainSocketEndPoint(LocalSocketPaths.Socket(daemonName)), linkedCts.Token);
+            await sock.ConnectAsync(new UnixDomainSocketEndPoint(store.SocketPath(daemonName)), linkedCts.Token);
             return new NetworkStream(sock, ownsSocket: true);
         } catch { sock.Dispose(); throw; }
     }

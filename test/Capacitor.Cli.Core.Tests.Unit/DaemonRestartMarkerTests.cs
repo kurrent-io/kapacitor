@@ -1,46 +1,32 @@
 namespace Capacitor.Cli.Core.Tests.Unit;
 
-[NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
 public class DaemonRestartMarkerTests {
     [Test]
     public async Task Write_then_read_round_trips() {
-        using var dir = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(dir.Path);
-        try {
-            var when = new DateTimeOffset(2026, 6, 25, 12, 3, 0, TimeSpan.Zero);
-            DaemonRestartMarker.Write("laptop", new DaemonRestartMarker("v0.4.11", "self-detected", when));
+        using var daemons = new TempDaemonStore();
+        var when = new DateTimeOffset(2026, 6, 25, 12, 3, 0, TimeSpan.Zero);
 
-            var read = DaemonRestartMarker.TryRead("laptop");
+        DaemonRestartMarker.Write(daemons.Store, "laptop", new DaemonRestartMarker("v0.4.11", "self-detected", when));
+        var read = DaemonRestartMarker.TryRead(daemons.Store, "laptop");
 
-            await Assert.That(read).IsNotNull();
-            await Assert.That(read!.RunningVersion).IsEqualTo("v0.4.11");
-            await Assert.That(read.Reason).IsEqualTo("self-detected");
-            await Assert.That(read.QueuedAt).IsEqualTo(when);
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        await Assert.That(read).IsNotNull();
+        await Assert.That(read!.RunningVersion).IsEqualTo("v0.4.11");
+        await Assert.That(read.Reason).IsEqualTo("self-detected");
+        await Assert.That(read.QueuedAt).IsEqualTo(when);
     }
 
     [Test]
     public async Task TryRead_returns_null_when_absent() {
-        using var dir = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(dir.Path);
-        try {
-            await Assert.That(DaemonRestartMarker.TryRead("nope")).IsNull();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        using var daemons = new TempDaemonStore();
+
+        await Assert.That(DaemonRestartMarker.TryRead(daemons.Store, "nope")).IsNull();
     }
 
     [Test]
     public async Task EnumerateNames_includes_marker_only_entry() {
-        using var dir = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(dir.Path);
-        try {
-            File.WriteAllText(DaemonLockPaths.RestartPendingPath("orphan"), "{}");
-            await Assert.That(DaemonLockPaths.EnumerateNames()).Contains("orphan");
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        using var daemons = new TempDaemonStore();
+        File.WriteAllText(daemons.Store.RestartPendingPath("orphan"), "{}");
+
+        await Assert.That(daemons.Store.EnumerateNames()).Contains("orphan");
     }
 }

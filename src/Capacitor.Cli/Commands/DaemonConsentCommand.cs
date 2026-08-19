@@ -16,7 +16,7 @@ namespace Capacitor.Cli.Commands;
 public static class DaemonConsentCommand {
     static readonly string[] Verbs = ["show", "set-default", "allow", "deny", "remove", "log"];
 
-    public static async Task<int> HandleAsync(string[] args) {
+    public static async Task<int> HandleAsync(DaemonStore store, string[] args) {
         if (args.Length == 0) return PrintConsentUsage();
 
         var sub  = args[0];
@@ -24,7 +24,7 @@ public static class DaemonConsentCommand {
 
         // `log` is the one verb that never touches the socket, so it skips the
         // running-daemon precondition below.
-        if (sub == "log") return await LogAsync(rest);
+        if (sub == "log") return await LogAsync(store, rest);
 
         if (!Verbs.Contains(sub)) return PrintConsentUsage();
 
@@ -37,7 +37,7 @@ public static class DaemonConsentCommand {
             return 1;
         }
 
-        var socketPath = LocalSocketPaths.Socket(name);
+        var socketPath = store.SocketPath(name);
 
         if (!File.Exists(socketPath)) {
             await Console.Error.WriteLineAsync($"daemon is not running (socket not found at {socketPath})");
@@ -186,7 +186,7 @@ public static class DaemonConsentCommand {
 
     // ── log ─────────────────────────────────────────────────────────────────
 
-    static async Task<int> LogAsync(string[] args) {
+    static async Task<int> LogAsync(DaemonStore store, string[] args) {
         string name;
         try {
             name = ResolveName(args);
@@ -198,7 +198,7 @@ public static class DaemonConsentCommand {
 
         var n = ParseCount(args);
 
-        var path       = Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(name), "consent-decisions.jsonl");
+        var path       = store.ConsentLogPath(name);
         var backupPath = path + ".1";
 
         List<string> tail;

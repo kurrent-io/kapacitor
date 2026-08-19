@@ -20,6 +20,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// the guard emits — and rejects the fail-open fallback marker.</para>
 /// </summary>
 public class UnusableUrlHookMatrixTests : IDisposable {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     // Every class IsAcceptableUrl rejects. Deliberately NOT the empty string: ProfileResolver ignores
     // an exactly-empty KCAP_URL and falls back to the active profile, so it would test the wrong thing.
     public static IEnumerable<string> UnusableUrls() => [
@@ -151,33 +153,14 @@ public class UnusableUrlHookMatrixTests : IDisposable {
     }
 
     async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(string[] args, string url, string stdin) {
-        var binary = GetCliBinaryPath();
-
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary);
-        }
-
         Directory.CreateDirectory(_cfgDir);
 
-        var psi = new ProcessStartInfo(binary) {
-            RedirectStandardInput  = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-            WorkingDirectory       = _cfgDir,
-            Environment = {
-                ["KCAP_URL"]           = url,
-                ["KCAP_CONFIG_DIR"]    = _cfgDir,
-                ["KCAP_NO_UPDATE_CHECK"] = "1",
-                // Ambient session state must not decide what these cases exercise.
-                ["KCAP_SESSION_ID"]      = "",
-            },
-        };
-
-        foreach (var a in args) psi.ArgumentList.Add(a);
+        var psi = KcapProcess.StartInfo(Daemons.Store, args);
+        psi.WorkingDirectory = _cfgDir;
+        psi.Environment["KCAP_URL"] = url;
+        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
+        psi.Environment["KCAP_NO_UPDATE_CHECK"] = "1";
+        psi.Environment["KCAP_SESSION_ID"] = ""; // ambient session state must not decide these cases
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("failed to start kcap");
         _spawned.Add(process);
@@ -202,19 +185,6 @@ public class UnusableUrlHookMatrixTests : IDisposable {
         return (process.ExitCode, stdout, stderr);
     }
 
-    static string GetCliBinaryPath() {
-        var asmDir      = Path.GetDirectoryName(typeof(UnusableUrlHookMatrixTests).Assembly.Location)!;
-        var binDir      = Path.GetDirectoryName(asmDir)!;
-        var config      = Path.GetFileName(binDir);
-        var testBin     = Path.GetDirectoryName(binDir)!;
-        var testProjDir = Path.GetDirectoryName(testBin)!;
-        var testRoot    = Path.GetDirectoryName(testProjDir)!;
-        var repoRoot    = Path.GetDirectoryName(testRoot)!;
-        var binaryName  = OperatingSystem.IsWindows() ? "kcap.exe" : "kcap";
-
-        return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
-    }
-
     /// <summary>
     /// Judge alone built its client before opening stdio, so an unusable URL killed it ahead of the
     /// handshake. Needs a child process: the failure mode is the process dying.
@@ -222,25 +192,14 @@ public class UnusableUrlHookMatrixTests : IDisposable {
     [Test]
     [MethodDataSource(nameof(UnusableUrls))]
     public async Task Mcp_judge_completes_the_handshake_and_returns_a_tool_error(string url) {
-        var binary = GetCliBinaryPath();
-
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary);
-        }
-
         Directory.CreateDirectory(_cfgDir);
 
-        var psi = new ProcessStartInfo(binary) {
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-            UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = _cfgDir,
-            Environment = {
-                ["KCAP_URL"] = url, ["KCAP_CONFIG_DIR"] = _cfgDir,
-                ["KCAP_NO_UPDATE_CHECK"] = "1", ["KCAP_SESSION_ID"] = "",
-            },
-        };
-        foreach (var a in new[] { "mcp", "judge", "--session", Sid }) psi.ArgumentList.Add(a);
+        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "judge", "--session", Sid);
+        psi.WorkingDirectory = _cfgDir;
+        psi.Environment["KCAP_URL"] = url;
+        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
+        psi.Environment["KCAP_NO_UPDATE_CHECK"] = "1";
+        psi.Environment["KCAP_SESSION_ID"] = "";
 
         using var proc = Process.Start(psi) ?? throw new InvalidOperationException("failed to start kcap");
         _spawned.Add(proc);

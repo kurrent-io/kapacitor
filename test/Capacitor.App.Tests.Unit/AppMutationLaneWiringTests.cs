@@ -10,6 +10,8 @@ namespace Capacitor.App.Tests.Unit;
 /// functions over interfaces and fakes — FakeLifecycleSurface/FakeKcapCli/FakeLoginShellProbe are
 /// shared from DaemonLifecycleControllerTests.cs, same namespace).
 public class AppMutationLaneWiringTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null, string what = "condition") {
         var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
         while (!condition()) {
@@ -556,7 +558,7 @@ public class AppMutationLaneWiringTests {
     public async Task QuiesceLifecycleAndLaneAsync_waits_for_an_in_flight_lane_mutation() {
         var gate = new TaskCompletionSource<string?>();
         var cli = new FakeKcapCli { VersionBehavior = _ => gate.Task };
-        await using var lane = new DaemonMutationLane(
+        await using var lane = new DaemonMutationLane(Daemons.Store,
             new FakeLoginShellProbe { KcapPathBehavior = _ => Task.FromResult<string?>(null) },
             new OutcomeChannel(),
             () => "/opt/kcap/bin/kcap",
@@ -599,7 +601,7 @@ public class AppMutationLaneWiringTests {
         var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(false) }; // decline
 
         {
-            await using var lane = new DaemonMutationLane(
+            await using var lane = new DaemonMutationLane(Daemons.Store,
                 probe, channel, () => "/opt/kcap/bin/kcap",
                 (_, _) => cli,
                 _ => new NeverObservation(),
@@ -647,7 +649,7 @@ public class AppMutationLaneWiringTests {
         var probe = new FakeLoginShellProbe();
         var surface = new FakeLifecycleSurface { ConfirmBehavior = (_, _) => Task.FromResult(true) }; // accept
 
-        await using var lane = new DaemonMutationLane(
+        await using var lane = new DaemonMutationLane(Daemons.Store,
             probe, channel, () => "/opt/kcap/bin/kcap",
             (_, _) => cli,
             _ => new NeverObservation(),

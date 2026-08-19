@@ -18,6 +18,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// the server emits plus the HTTP calls WireMock observed.
 /// </summary>
 public class McpSessionsServerTests : IDisposable {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     readonly WireMockServer _server            = WireMockServer.Start();
     readonly TempDir        _tmp               = new();
     readonly string         _cfgDir;
@@ -46,26 +48,6 @@ public class McpSessionsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Resolves the path of the built `kcap` CLI binary in the source tree.
-    /// The integration tests are built into
-    /// <c>test/Capacitor.Cli.Tests.Integration/bin/&lt;config&gt;/net10.0/</c>, so we
-    /// walk up to the repo root and descend into <c>src/Capacitor.Cli/bin/&lt;config&gt;/net10.0/kcap</c>.
-    /// </summary>
-    static string GetCliBinaryPath() {
-        var asmDir = Path.GetDirectoryName(typeof(McpSessionsServerTests).Assembly.Location)!;
-        // asmDir → .../test/Capacitor.Cli.Tests.Integration/bin/<config>/net10.0
-        var binDir       = Path.GetDirectoryName(asmDir)!;           // .../bin/<config>
-        var config       = Path.GetFileName(binDir);                 // Debug / Release
-        var testBin      = Path.GetDirectoryName(binDir)!;           // .../bin
-        var testProjDir  = Path.GetDirectoryName(testBin)!;          // .../Capacitor.Cli.Tests.Integration
-        var testRoot     = Path.GetDirectoryName(testProjDir)!;      // .../test
-        var repoRoot     = Path.GetDirectoryName(testRoot)!;         // repo root
-        var binaryName   = OperatingSystem.IsWindows() ? "kcap.exe" : "kcap";
-
-        return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
-    }
-
-    /// <summary>
     /// Spawns <c>kcap mcp sessions</c> as a child process. <paramref name="provider"/>
     /// controls the response to <c>/auth/config</c> — "None" lets the server skip token
     /// resolution entirely; "GitHub" forces token-store consultation so the unauthenticated
@@ -76,28 +58,10 @@ public class McpSessionsServerTests : IDisposable {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var binary = GetCliBinaryPath();
-
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: " +
-                "dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary
-            );
-        }
-
-        var psi = new ProcessStartInfo(binary, "mcp sessions") {
-            RedirectStandardInput  = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-            WorkingDirectory       = _cwdDir,
-            Environment = {
-                ["KCAP_URL"]        = urlOverride ?? _server.Url!,
-                ["KCAP_CONFIG_DIR"] = _cfgDir
-            }
-        };
+        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "sessions");
+        psi.WorkingDirectory = _cwdDir;
+        psi.Environment["KCAP_URL"] = urlOverride ?? _server.Url!;
+        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap process");
         _spawnedProcesses.Add(process);

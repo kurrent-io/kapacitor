@@ -35,7 +35,7 @@ public class AgentOrchestratorConsentDialogTests {
         var pty   = new BypassBannerPtyProcess(BypassDialogOutput);
         var agent = orch.SeedAgentForTest("rev-wedge", LaunchKind.ReviewFlow, status: "Starting", pty: pty);
 
-        await orch.ReadAgentOutputForTest(agent).WaitAsync(TimeSpan.FromSeconds(10));
+        await orch.ReadAgentOutputForTest(agent).WaitAsync(WaitHarness.Bounded);
 
         // (1) Actionable fail-fast, not a silent session-id timeout.
         var failed = server.LaunchFailedCalls.SingleOrDefault(c => c.AgentId == "rev-wedge");
@@ -73,7 +73,7 @@ public class AgentOrchestratorConsentDialogTests {
         var agent = orch.SeedAgentForTest("rev-live", LaunchKind.ReviewFlow, status: "Starting", pty: pty);
         agent.SessionId = "live-session-abc";
 
-        await orch.ReadAgentOutputForTest(agent).WaitAsync(TimeSpan.FromSeconds(10));
+        await orch.ReadAgentOutputForTest(agent).WaitAsync(WaitHarness.Bounded);
 
         // No consent-dialog fail-fast fired: the wedged-detector never terminated the process, and no
         // Bypass-Permissions coded reason was reported (a startup-failure classification of the raw
@@ -96,7 +96,7 @@ public class AgentOrchestratorConsentDialogTests {
         var pty   = new BypassBannerPtyProcess(BypassDialogOutput, exitAfterBanner: true);
         var agent = orch.SeedAgentForTest("interactive", LaunchKind.Default, status: "Starting", pty: pty);
 
-        await orch.ReadAgentOutputForTest(agent).WaitAsync(TimeSpan.FromSeconds(10));
+        await orch.ReadAgentOutputForTest(agent).WaitAsync(WaitHarness.Bounded);
 
         // No consent-dialog fail-fast fired (the process was never force-terminated by the detector).
         await Assert.That(pty.Terminated).IsFalse();

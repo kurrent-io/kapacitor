@@ -15,7 +15,7 @@ using Capacitor.Cli.Core.Harness.Pi;
 namespace Capacitor.Cli.Commands;
 
 public static class StatusCommand {
-    public static async Task<int> HandleAsync(string? baseUrl, string[] args) {
+    public static async Task<int> HandleAsync(DaemonStore store, string? baseUrl, string[] args) {
         // Version line reuses UpdateNotice's shared check and marks-reported so the exit footer
         // doesn't double-print; respects the same opt-outs.
         await WriteVersionLineAsync(args);
@@ -109,7 +109,7 @@ public static class StatusCommand {
         // a healthy daemon because new daemons no longer write the legacy
         // singleton.
         Console.Write("  Daemon:  ");
-        await WriteAgentStatusAsync();
+        await WriteAgentStatusAsync(store);
 
         return 0;
     }
@@ -165,14 +165,14 @@ public static class StatusCommand {
                 : $"kcap {current} (update available: {target})"
             : $"kcap {current}";
 
-    static async Task WriteAgentStatusAsync() {
-        if (!Directory.Exists(DaemonLockPaths.Directory)) {
+    static async Task WriteAgentStatusAsync(DaemonStore store) {
+        if (!Directory.Exists(store.Directory)) {
             await Console.Out.WriteLineAsync("not running");
 
             return;
         }
 
-        var pidFiles = Directory.EnumerateFiles(DaemonLockPaths.Directory, "*.pid")
+        var pidFiles = Directory.EnumerateFiles(store.Directory, "*.pid")
             .OrderBy(f => f)
             .ToList();
 

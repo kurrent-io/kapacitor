@@ -575,8 +575,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // (the startup reap only touches its own leftovers). DaemonId is a stable per-name identity;
         // DaemonEpoch is fresh per boot so the env-marker scan can tell a prior incarnation's
         // survivors from the current incarnation's live children.
-        var recordRoot = Path.Combine(
-            config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
+        var recordRoot = config.Store.StateDirectory(config.Name);
         _pidRecordRoot = recordRoot;
         _pidRecords  = new AgentPidRecordStore(recordRoot, logger);
         _failedLaunchLog = new FailedLaunchLog(recordRoot);

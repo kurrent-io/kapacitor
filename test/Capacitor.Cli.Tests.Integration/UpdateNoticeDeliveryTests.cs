@@ -23,6 +23,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// <c>Program.cs</c>.</para>
 /// </summary>
 public class UpdateNoticeDeliveryTests : IDisposable {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     const string NewerVersion = "999.0.0"; // deterministically newer than any real build's version.
 
     readonly List<(TempDir CfgDir, Process Process)> _spawned = [];
@@ -221,43 +223,12 @@ public class UpdateNoticeDeliveryTests : IDisposable {
         return cfgDir;
     }
 
-    static string GetCliBinaryPath() {
-        var asmDir      = Path.GetDirectoryName(typeof(UpdateNoticeDeliveryTests).Assembly.Location)!;
-        var binDir      = Path.GetDirectoryName(asmDir)!;
-        var config      = Path.GetFileName(binDir);
-        var testBin     = Path.GetDirectoryName(binDir)!;
-        var testProjDir = Path.GetDirectoryName(testBin)!;
-        var testRoot    = Path.GetDirectoryName(testProjDir)!;
-        var repoRoot    = Path.GetDirectoryName(testRoot)!;
-        var binaryName  = OperatingSystem.IsWindows() ? "kcap.exe" : "kcap";
-
-        return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
-    }
-
     async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(string[] args, TempDir cfgDir) {
-        var binary = GetCliBinaryPath();
-
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary);
-        }
-
-        var psi = new ProcessStartInfo(binary) {
-            RedirectStandardInput  = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-            WorkingDirectory       = cfgDir.Path,
-            Environment = {
-                ["KCAP_URL"]        = "",
-                ["KCAP_CONFIG_DIR"] = cfgDir.Path,
-                ["KCAP_SESSION_ID"] = "",
-            },
-        };
-
-        foreach (var a in args) psi.ArgumentList.Add(a);
+        var psi = KcapProcess.StartInfo(Daemons.Store, args);
+        psi.WorkingDirectory = cfgDir.Path;
+        psi.Environment["KCAP_URL"] = "";
+        psi.Environment["KCAP_CONFIG_DIR"] = cfgDir.Path;
+        psi.Environment["KCAP_SESSION_ID"] = "";
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("failed to start kcap");
         _spawned.Add((cfgDir, process));

@@ -27,6 +27,8 @@ namespace Capacitor.App.Tests.Unit;
 /// continuation extracted out of StartAsync — this test proves THAT method actually leaves the
 /// window visible, against a fake service, without needing a real desktop lifetime or daemon.
 public class AppStartupTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task BuildAndShowMainWindow_leaves_the_window_visible() {
@@ -263,7 +265,7 @@ public class AppStartupTests {
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task HandleStartupFailureAsync_disposes_the_lane() {
-        var lane = new DaemonMutationLane(
+        var lane = new DaemonMutationLane(Daemons.Store,
             new FakeLoginShellProbe(), new OutcomeChannel(), () => null,
             (_, pinnedPath) => new FakeKcapCli { CliPath = pinnedPath },
             _ => new NeverObservation(), TimeProvider.System);

@@ -198,10 +198,12 @@ public class AntigravityReviewerLiveCertTests {
     /// re-derived here: the argv assertions above run against the vector the OS actually got.</para>
     /// </summary>
     sealed class LiveHarness : IDisposable {
-        readonly TempDir _tmp;
+        readonly TempDir         _tmp;
+        readonly TempDaemonStore _daemons;
 
-        LiveHarness(TempDir tmp, string worktree, DaemonConfig config) {
+        LiveHarness(TempDir tmp, TempDaemonStore daemons, string worktree, DaemonConfig config) {
             _tmp     = tmp;
+            _daemons = daemons;
             Worktree = worktree;
             Config   = config;
         }
@@ -214,7 +216,7 @@ public class AntigravityReviewerLiveCertTests {
         internal static LiveHarness Create() {
             var tmp      = new TempDir("agyc");
             var worktree = tmp.CreateDir("wt");
-            var stateDir = tmp.CreateDir("state");
+            var daemons  = new TempDaemonStore();
 
             // Something to be reviewing. The prompts deliberately never ask for it — a cert that
             // depended on the model reading a file would be measuring the model, not the reviewer —
@@ -229,7 +231,7 @@ public class AntigravityReviewerLiveCertTests {
                 AntigravityReviewerTurnTimeoutSeconds   = TurnTimeoutSeconds,
                 Name                                  = "agy-live-cert",
                 DaemonEpoch                           = "cert-" + Guid.NewGuid().ToString("N")[..8],
-                StateDir                              = stateDir
+                Store                                 = daemons.Store
             };
 
             // Seeded through the DAEMON's own path, not a hand-written record: production records the
@@ -240,7 +242,7 @@ public class AntigravityReviewerLiveCertTests {
                 AntigravityHostedAgentRuntimeFactory.ReviewerStateDir(config),
                 DaemonRunner.AntigravityVendor, enabled: true, config.AntigravityPath);
 
-            return new LiveHarness(tmp, worktree, config);
+            return new LiveHarness(tmp, daemons, worktree, config);
         }
 
         internal Task<HostedRuntimeStart> LaunchAsync(string prompt) {
@@ -329,6 +331,7 @@ public class AntigravityReviewerLiveCertTests {
                 }
 
             _tmp.Dispose();
+            _daemons.Dispose();
         }
     }
 }

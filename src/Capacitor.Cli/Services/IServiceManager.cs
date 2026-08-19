@@ -1,4 +1,5 @@
 using System.Text;
+
 namespace Capacitor.Cli.Services;
 
 /// <summary>Which OS service backend a manager targets.</summary>
@@ -21,8 +22,8 @@ record ServiceQuery(LabelProbe Probe, bool UnitPresent, ServiceState State, stri
 
 /// <summary>
 /// Everything needed to render and register one per-user service.
-/// <paramref name="ServiceId"/> is the sanitized id (see <see cref="ServiceText.ServiceId"/>)
-/// used for the filename/label/instance/task AND the daemon <c>--name</c>.
+/// <paramref name="ServiceId"/> is the sanitized id (see <c>DaemonStore.Sanitize</c>), used for the
+/// filename/label/instance/task AND the daemon <c>--name</c>.
 /// </summary>
 record ServiceSpec(
     string                              ServiceId,

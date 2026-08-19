@@ -13,7 +13,7 @@ public class CodexConfigWriterTests {
     static TempDir ScopedHome(out string? originalHome) {
         var tmp = new TempDir("codex");
         originalHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", tmp.Path);
+        Environment.SetEnvironmentVariable("HOME", tmp.GetResolvedPath());
 
         return tmp;
     }

@@ -19,6 +19,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// (an earlier version of this file used IsEquivalentTo, which ignores ordering, and passed with the
 /// gate deleted — hence the positional assertions).</para>
 /// </summary>
+[ParallelLimiter<SubprocessLimit>]
 public class WorktreeMetadataGateTests {
     // RunContinuationsAsynchronously: without it a SetResult can run the waiter's continuation inline
     // on this thread, which would make the ordering below prove nothing.

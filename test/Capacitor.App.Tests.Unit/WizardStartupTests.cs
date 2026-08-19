@@ -188,6 +188,8 @@ static class WizardFixtures {
 /// </summary>
 [NotInParallel("AvaloniaSession")]
 public class WizardStartupTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     static readonly TimeSpan Cap = TimeSpan.FromSeconds(5);
 
     // ── the close boundary (steps 1-4) ────────────────────────────────────────
@@ -518,7 +520,7 @@ public class WizardStartupTests {
     public async Task Shutdown_quiesce_still_caps_an_in_flight_lane_mutation() {
         var gate = new TaskCompletionSource<string?>();
         var cli = new FakeKcapCli { VersionBehavior = _ => gate.Task };
-        await using var lane = new DaemonMutationLane(
+        await using var lane = new DaemonMutationLane(Daemons.Store,
             new FakeLoginShellProbe { KcapPathBehavior = _ => Task.FromResult<string?>(null) },
             new OutcomeChannel(),
             () => "/opt/kcap/bin/kcap",

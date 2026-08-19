@@ -1,7 +1,10 @@
 using TUnit.Core.Enums;
 
-// Linux only: the integration suite does real loopback HTTP (WireMock). On the Windows runner an
-// https probe against the plain-HTTP test server (localhost/::1 resolution + TLS-to-HTTP) is
-// environment-flaky. The cross-platform correctness that matters on Windows — path handling and the
-// watcher handle test — lives in the unit suites.
-[assembly: RunOn(OS.Linux)]
+// Not Windows: an https probe against the plain-HTTP WireMock server (localhost/::1 resolution +
+// TLS-to-HTTP) is environment-flaky there. The cross-platform correctness that matters on Windows —
+// path handling and the watcher handle test — lives in the unit suites.
+[assembly: RunOn(OS.Linux | OS.MacOs)]
+
+// Every test here spawns the real binary and talks loopback HTTP; at TUnit's default width they
+// starve each other into timeout failures.
+[assembly: ParallelLimiter<SubprocessLimit>]

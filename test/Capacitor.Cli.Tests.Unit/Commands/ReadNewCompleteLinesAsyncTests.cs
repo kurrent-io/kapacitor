@@ -10,12 +10,10 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 // (SplitNewCompleteLines) — same partial-final-line hold-back, so a mid-write final line is
 // never consumed and dropped. The length-cap makes that hold-back robust against a concurrent
 // append happening after the length was sampled.
-public class ReadNewCompleteLinesAsyncTests : IDisposable {
-    readonly TempDir _tmp = new();
+public class ReadNewCompleteLinesAsyncTests {
+    [TempDir] public required TempDir Tmp { get; init; }
 
-    public void Dispose() => _tmp.Dispose();
-
-    string WriteTemp(string content) => _tmp.CreateFile($"drain-{Guid.NewGuid():N}.jsonl", content);
+    string WriteTemp(string content) => Tmp.CreateFile($"drain-{Guid.NewGuid():N}.jsonl", content);
 
     static async Task<WatchCommand.NewTranscriptLines> ReadViaStream(
             string path, int linesProcessed, WatchCommand.IncompleteFinalLinePolicy policy) {

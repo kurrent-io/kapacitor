@@ -42,11 +42,15 @@ public static partial class DaemonRunner {
         string?    logFile     = null;
         string?    stderrFile  = null;
         LogLevel?  logLevelArg = null;
-        var        config      = new DaemonConfig();
+        // The one place this process reads KCAP_DAEMONS_DIR. From here the directory travels as an
+        // explicit dependency — on the config, and as a DI singleton — never re-read from the
+        // environment, so a descendant process can't be handed a different one by accident.
+        var paths = DaemonStore.FromEnvironment();
 
-        // Captured for self-respawn (detached restart-after-update) and to detect
-        // the successor's --await-lock handoff flag.
-        config.OriginalArgs = args;
+        // OriginalArgs is captured for self-respawn (detached restart-after-update) and to detect
+        // the successor's --await-lock handoff flag. Paths is set here, in the initializer, so the
+        // config is never observably path-less.
+        var config = new DaemonConfig { Store = paths, OriginalArgs = args };
         var awaitLock = args.Contains("--await-lock");
 
         // Boot-local carriers: read off ambient env and IMMEDIATELY remove them, before anything
@@ -259,8 +263,8 @@ public static partial class DaemonRunner {
         // the server can refuse a second daemon claiming the same
         // (owner, name) slot.
         var daemonLock = awaitLock
-            ? DaemonLock.TryAcquire(config.Name, TimeSpan.FromSeconds(5), config.Version)
-            : DaemonLock.TryAcquire(config.Name, config.Version);
+            ? DaemonLock.TryAcquire(config.Store, config.Name, TimeSpan.FromSeconds(5), config.Version)
+            : DaemonLock.TryAcquire(config.Store, config.Name, config.Version);
 
         if (daemonLock is null) {
             await Console.Error.WriteLineAsync(
@@ -276,20 +280,19 @@ public static partial class DaemonRunner {
         // Phase B2-b (sequenced-settlement design §4.2.3): the durable per-daemon state root — used by
         // the pre-host boot-check block immediately below AND (further down) by the coverage journal /
         // reviewer-home sweeps. Computed once here so every consumer agrees on the exact same directory.
-        var coverageStateDir = Path.Combine(
-            config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
+        var coverageStateDir = config.Store.StateDirectory(config.Name);
 
         // Best-effort, never throws: on a brand-new daemon name nothing has created this directory yet
         // (LaunchConsentStore's ctor — the previous sole creator — only runs below, and not at all on
         // the expectation-mismatch arm), so without this an expectation-mismatch refusal on a fresh
-        // name would have nowhere to write its marker. Same fail-soft posture as BootRefusal.TryWrite
+        // name would have nowhere to write its marker. Same fail-soft posture as BootRefusalMarker.TryWrite
         // itself — a failure here just means that call's own containment swallows the write too.
         try { Directory.CreateDirectory(coverageStateDir); } catch { /* best-effort */ }
 
         // Pre-host boot checks — see RunBootChecksAsync. Both refusal arms return BEFORE the host is
         // built, before any ServerConnection/token use of any kind, so a misdirected or un-consented
         // daemon never gets far enough to touch the network or spawn anything.
-        if (await RunBootChecksAsync(config, coverageStateDir) is { } bootCheckExit) return bootCheckExit;
+        if (await RunBootChecksAsync(config) is { } bootCheckExit) return bootCheckExit;
 
         // Phase B2-b (sequenced-settlement design): pin the per-boot epoch here, before any service is
         // built, so the epoch advertised on DaemonConnect and the orchestrator's own _daemonEpoch (which
@@ -329,6 +332,7 @@ public static partial class DaemonRunner {
             .RecordBoot(daemonLock.InstanceId, daemonLock.PriorInstanceId,
                 priorLockReadFailed: daemonLock.PriorLockIndeterminate, thisEpochContained: OperatingSystem.IsWindows());
 
+        builder.Services.AddSingleton(paths);
         builder.Services.AddSingleton(config);
         builder.Services.AddSingleton(daemonLock);
         builder.Services.AddSingleton<ServerConnection>();
@@ -520,7 +524,7 @@ public static partial class DaemonRunner {
         builder.Services.AddSingleton<IRestartStrategy>(sp => {
             var cfg        = sp.GetRequiredService<DaemonConfig>();
             var hasLogFile = cfg.OriginalArgs.Contains("--log-file");
-            var mode       = SupervisionDetector.DetectCurrent(DaemonLockPaths.Sanitize(cfg.Name), hasLogFile);
+            var mode       = SupervisionDetector.DetectCurrent(DaemonStore.Sanitize(cfg.Name), hasLogFile);
 
             return mode switch {
                 SupervisionMode.Supervised => sp.GetRequiredService<SupervisedExitStrategy>(),
@@ -751,9 +755,17 @@ public static partial class DaemonRunner {
     /// keep reporting a refusal that no longer applies. Returns the process exit code on refusal,
     /// or null to proceed to host construction.
     /// </summary>
-    internal static async Task<int?> RunBootChecksAsync(DaemonConfig config, string stateDir) {
+    /// <summary>The config's view of a refusal — the only place DaemonConfig meets the marker.</summary>
+    static void WriteRefusal(DaemonStore store, DaemonConfig config, string token) =>
+        BootRefusalMarker.TryWrite(
+            store, config.Name, token, config.ExpectedServerUrl, config.ServerUrl,
+            config.InstanceId, config.BootAttemptId);
+
+    internal static async Task<int?> RunBootChecksAsync(DaemonConfig config) {
+        var store      = config.Store;
+        var daemonName = config.Name;
         if (!ExpectationSatisfied(config.ExpectedServerUrl, config.ServerUrl)) {
-            BootRefusal.TryWrite(stateDir, config, "server_expectation_mismatch");
+            WriteRefusal(store, config, "server_expectation_mismatch");
             await Console.Error.WriteLineAsync("kcap-daemon: refusing to start: server_expectation_mismatch");
 
             return 0;
@@ -766,23 +778,23 @@ public static partial class DaemonRunner {
             // entire lifetime).
             SeedResult seed;
             try {
-                seed = new LaunchConsentStore(stateDir, NullLogger.Instance).BootSeed(config.ConsentSeedDirective);
+                seed = new LaunchConsentStore(store.StateDirectory(daemonName), NullLogger.Instance).BootSeed(config.ConsentSeedDirective);
             } catch {
-                BootRefusal.TryWrite(stateDir, config, "consent_seed_unwritable");
+                WriteRefusal(store, config, "consent_seed_unwritable");
                 await Console.Error.WriteLineAsync("kcap-daemon: refusing to start: consent_seed_unwritable");
 
                 return 0;
             }
 
             if (seed.Outcome is SeedOutcome.RefusedInvalidDirective or SeedOutcome.RefusedUnwritable) {
-                BootRefusal.TryWrite(stateDir, config, seed.RefusalToken!);
+                WriteRefusal(store, config, seed.RefusalToken!);
                 await Console.Error.WriteLineAsync($"kcap-daemon: refusing to start: {seed.RefusalToken}");
 
                 return 0;
             }
         }
 
-        BootRefusal.TryDelete(stateDir);   // passing boot clears leftovers (hygiene)
+        BootRefusalMarker.TryDelete(store, daemonName);   // passing boot clears leftovers (hygiene)
 
         return null;
     }
@@ -1039,7 +1051,7 @@ public static partial class DaemonRunner {
     /// long before <c>Host.CreateApplicationBuilder</c> finishes.
     /// </summary>
     internal static bool IsSupervised(string resolvedName) =>
-        SupervisionDetector.DetectCurrent(DaemonLockPaths.Sanitize(resolvedName), hasLogFile: false)
+        SupervisionDetector.DetectCurrent(DaemonStore.Sanitize(resolvedName), hasLogFile: false)
             == SupervisionMode.Supervised;
 
     /// <summary>

@@ -9,37 +9,28 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// process-TREE kill path (multiple children, orphaned grandchildren) gets real coverage
 /// elsewhere; this covers the already-dead short-circuit and the gone-check's use of
 /// <see cref="DaemonPidProbe"/> against a single live process.</summary>
-[NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
 public class DaemonKillTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     [Test]
     public async Task Already_dead_pid_reports_gone_via_the_ArgumentException_path() {
         if (OperatingSystem.IsWindows()) return; // POSIX process spawn below
 
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
+        using var proc = Process.Start(new ProcessStartInfo("/usr/bin/env", ["true"]) { UseShellExecute = false });
+        await Assert.That(proc).IsNotNull();
+        proc!.WaitForExit();
+        var deadPid = proc.Id;
 
-        try {
-            using var proc = Process.Start(new ProcessStartInfo("/usr/bin/env", ["true"]) { UseShellExecute = false });
-            await Assert.That(proc).IsNotNull();
-            proc!.WaitForExit();
-            var deadPid = proc.Id;
+        // Process.GetProcessById(deadPid) throws ArgumentException inside KillValidatedOwner —
+        // the short-circuit "already dead" arm, distinct from the gone-check below.
+        var gone = DaemonKill.KillValidatedOwner(Daemons.Store, "dead-owner", deadPid, TimeSpan.FromSeconds(1));
 
-            // Process.GetProcessById(deadPid) throws ArgumentException inside KillValidatedOwner —
-            // the short-circuit "already dead" arm, distinct from the gone-check below.
-            var gone = DaemonKill.KillValidatedOwner("dead-owner", deadPid, TimeSpan.FromSeconds(1));
-
-            await Assert.That(gone).IsTrue();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        await Assert.That(gone).IsTrue();
     }
 
     [Test]
     public async Task Killing_a_live_process_is_confirmed_gone_via_DaemonPidProbe() {
         if (OperatingSystem.IsWindows()) return; // POSIX process spawn below
-
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
 
         Process? proc = null;
         try {
@@ -50,19 +41,18 @@ public class DaemonKillTests {
             // probe treat the spawned process as "our daemon" before the kill, so ValidatedPid
             // resolving to null afterward is a genuine before/after signal, not a vacuous no-op.
             var token = ProcessStartToken.ForPid(proc!.Id);
-            await File.WriteAllTextAsync(DaemonLockPaths.PidPath("live-owner"), $"{proc.Id}\n{token}\n");
+            await File.WriteAllTextAsync(Daemons.Store.PidPath("live-owner"), $"{proc.Id}\n{token}\n");
 
-            await Assert.That(DaemonPidProbe.ValidatedPid("live-owner")).IsEqualTo(proc.Id);
+            await Assert.That(DaemonPidProbe.ValidatedPid(Daemons.Store, "live-owner")).IsEqualTo(proc.Id);
 
-            var gone = DaemonKill.KillValidatedOwner("live-owner", proc.Id, TimeSpan.FromSeconds(5));
+            var gone = DaemonKill.KillValidatedOwner(Daemons.Store, "live-owner", proc.Id, TimeSpan.FromSeconds(5));
 
             await Assert.That(gone).IsTrue();
             await Assert.That(proc.HasExited).IsTrue();
-            await Assert.That(DaemonPidProbe.ValidatedPid("live-owner")).IsNull();
+            await Assert.That(DaemonPidProbe.ValidatedPid(Daemons.Store, "live-owner")).IsNull();
         } finally {
             try { if (proc is { HasExited: false }) proc.Kill(entireProcessTree: true); } catch { /* best-effort */ }
             proc?.Dispose();
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
 }

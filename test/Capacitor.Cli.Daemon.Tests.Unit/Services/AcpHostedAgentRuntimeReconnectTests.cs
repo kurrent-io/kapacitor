@@ -16,7 +16,9 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// reconnect delays.
 /// </summary>
 public class AcpHostedAgentRuntimeReconnectTests {
-    static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(10);
+    // Every use is a ceiling on something that must finish, never an assertion that it doesn't:
+    // the suite's generous bound turns a starved run into a slow pass instead of a false failure.
+    static readonly TimeSpan HangGuard = WaitHarness.Bounded;
 
     sealed class FakeAcpProcess : IAcpProcess {
         readonly TaskCompletionSource _exited = new(TaskCreationOptions.RunContinuationsAsynchronously);

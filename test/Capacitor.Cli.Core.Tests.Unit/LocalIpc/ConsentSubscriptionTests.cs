@@ -6,9 +6,8 @@ namespace Capacitor.Cli.Core.Tests.Unit.LocalIpc;
 
 /// <summary>
 /// ConsentSubscription.RunAsync over a REAL Unix socket driven by a scripted server (spec §4.2).
-/// Harness conventions (short socket paths for the macOS sockaddr_un ~104-byte limit, Windows
-/// guard, [NotInParallel], daemon-name→socket-path arrangement, the ScriptedOpsServer shape) are
-/// copied from <see cref="LocalControlOpsTests"/>.
+/// Harness conventions (Windows guard, per-test socket directory, the ScriptedOpsServer shape)
+/// are copied from <see cref="LocalControlOpsTests"/>.
 /// </summary>
 public class ConsentSubscriptionTests {
     delegate Task ConnScript(Socket raw, NetworkStream s, CancellationToken ct);
@@ -98,35 +97,28 @@ public class ConsentSubscriptionTests {
     static string PendingJsonWithPromptIdFragment(string requestId, string promptIdFragment) =>
         $$"""{"request_id":"{{requestId}}","requester":null,"kind":"tool","repo_path":"/repo","vendor":"claude","requested_at":"2026-08-08T00:00:00Z","timeout_seconds":30,"requester_display":null{{promptIdFragment}}}""";
 
-    /// Runs `body` against an isolated socket dir with a scripted server listening for `name`.
-    static async Task WithServerAsync(ConnScript[] scripts, Func<string, Task> body) {
-        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
-        using var sockDir = new TempDir("csub");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        try {
-            var name = "csx-" + Guid.NewGuid().ToString("N")[..6];
-            await using var server = new ScriptedOpsServer(LocalSocketPaths.Socket(name), scripts);
-            await body(name);
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+    /// Runs `body` against this test's own socket dir, with a scripted server listening for `name`.
+    static async Task WithServerAsync(ConnScript[] scripts, Func<DaemonStore, string, Task> body) {
+        using var daemons = new TempDaemonStore();
+        const string name = "consent";
+        await using var server = new ScriptedOpsServer(daemons.Store.SocketPath(name), scripts);
+        await body(daemons.Store, name);
     }
 
-    static async Task<List<ConsentStreamEvent>> CollectAsync(string daemonName, TimeSpan timeout) {
+    static async Task<List<ConsentStreamEvent>> CollectAsync(DaemonStore store, string daemonName, TimeSpan timeout) {
         using var cts = new CancellationTokenSource(timeout);
         var events = new List<ConsentStreamEvent>();
-        await foreach (var e in ConsentSubscription.RunAsync(daemonName, cts.Token)) events.Add(e);
+        await foreach (var e in ConsentSubscription.RunAsync(store, daemonName, cts.Token)) events.Add(e);
         return events;
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Subscribed_is_yielded_after_the_write_and_before_any_frame() {
         if (OperatingSystem.IsWindows()) return;
 
-        await WithServerAsync([SubscribeThenPark()], async name => {
+        await WithServerAsync([SubscribeThenPark()], async (paths, name) => {
             using var cts = new CancellationTokenSource();
-            var enumerator = ConsentSubscription.RunAsync(name, cts.Token).GetAsyncEnumerator();
+            var enumerator = ConsentSubscription.RunAsync(paths, name, cts.Token).GetAsyncEnumerator();
             try {
                 var moved = await enumerator.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
                 await Assert.That(moved).IsTrue();
@@ -138,14 +130,13 @@ public class ConsentSubscriptionTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Replay_and_push_frames_yield_pending_events_in_order() {
         if (OperatingSystem.IsWindows()) return;
 
         var a = ValidPendingJson("r1", "p1");
         var b = ValidPendingJson("r2", "p2");
-        await WithServerAsync([SubscribePush(a, b)], async name => {
-            var events = await CollectAsync(name, TimeSpan.FromSeconds(5));
+        await WithServerAsync([SubscribePush(a, b)], async (paths, name) => {
+            var events = await CollectAsync(paths, name, TimeSpan.FromSeconds(5));
 
             await Assert.That(events.Count).IsEqualTo(3);
             await Assert.That(events[0]).IsTypeOf<ConsentStreamEvent.Subscribed>();
@@ -157,52 +148,45 @@ public class ConsentSubscriptionTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Failed_connect_ends_without_subscribed() {
         if (OperatingSystem.IsWindows()) return;
 
-        using var sockDir = new TempDir("csub");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        try {
-            var events = await CollectAsync("csx-none", TimeSpan.FromSeconds(5));
-            await Assert.That(events.Count).IsEqualTo(0);
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        using var daemons = new TempDaemonStore();
+
+        var events = await CollectAsync(daemons.Store, "none", TimeSpan.FromSeconds(5));
+
+        await Assert.That(events.Count).IsEqualTo(0);
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Unexpected_frame_type_ends_the_enumeration() {
         if (OperatingSystem.IsWindows()) return;
 
-        await WithServerAsync([SubscribeThenWrongFrameType()], async name => {
-            var events = await CollectAsync(name, TimeSpan.FromSeconds(5));
+        await WithServerAsync([SubscribeThenWrongFrameType()], async (paths, name) => {
+            var events = await CollectAsync(paths, name, TimeSpan.FromSeconds(5));
             await Assert.That(events.Count).IsEqualTo(1);
             await Assert.That(events[0]).IsTypeOf<ConsentStreamEvent.Subscribed>();
         });
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Undecodable_json_ends_the_enumeration() {
         if (OperatingSystem.IsWindows()) return;
 
-        await WithServerAsync([SubscribePush("not-json")], async name => {
-            var events = await CollectAsync(name, TimeSpan.FromSeconds(5));
+        await WithServerAsync([SubscribePush("not-json")], async (paths, name) => {
+            var events = await CollectAsync(paths, name, TimeSpan.FromSeconds(5));
             await Assert.That(events.Count).IsEqualTo(1);
             await Assert.That(events[0]).IsTypeOf<ConsentStreamEvent.Subscribed>();
         });
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Structurally_invalid_pending_is_skipped_and_the_stream_continues() {
         if (OperatingSystem.IsWindows()) return;
 
         var valid = ValidPendingJson("r1", "p1");
-        await WithServerAsync([SubscribePush("{}", valid)], async name => {
-            var events = await CollectAsync(name, TimeSpan.FromSeconds(5));
+        await WithServerAsync([SubscribePush("{}", valid)], async (paths, name) => {
+            var events = await CollectAsync(paths, name, TimeSpan.FromSeconds(5));
             await Assert.That(events.Count).IsEqualTo(2);
             await Assert.That(events[0]).IsTypeOf<ConsentStreamEvent.Subscribed>();
             var pending = (ConsentStreamEvent.Pending)events[1];
@@ -211,7 +195,6 @@ public class ConsentSubscriptionTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Prompt_id_requirement_is_isolated() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -220,8 +203,8 @@ public class ConsentSubscriptionTests {
         var empty = PendingJsonWithPromptIdFragment("r3", ",\"prompt_id\":\"\"");
         var final = ValidPendingJson("r4", "p4");
 
-        await WithServerAsync([SubscribePush(absent, nullValue, empty, final)], async name => {
-            var events = await CollectAsync(name, TimeSpan.FromSeconds(5));
+        await WithServerAsync([SubscribePush(absent, nullValue, empty, final)], async (paths, name) => {
+            var events = await CollectAsync(paths, name, TimeSpan.FromSeconds(5));
             await Assert.That(events.Count).IsEqualTo(2);
             await Assert.That(events[0]).IsTypeOf<ConsentStreamEvent.Subscribed>();
             var pending = (ConsentStreamEvent.Pending)events[1];
@@ -230,26 +213,24 @@ public class ConsentSubscriptionTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task V1_codec_daemon_yields_subscribed_then_ends() {
         if (OperatingSystem.IsWindows()) return;
 
-        await WithServerAsync([V1CodecReject()], async name => {
-            var events = await CollectAsync(name, TimeSpan.FromSeconds(5));
+        await WithServerAsync([V1CodecReject()], async (paths, name) => {
+            var events = await CollectAsync(paths, name, TimeSpan.FromSeconds(5));
             await Assert.That(events.Count).IsEqualTo(1);
             await Assert.That(events[0]).IsTypeOf<ConsentStreamEvent.Subscribed>();
         });
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Cancellation_propagates() {
         if (OperatingSystem.IsWindows()) return;
 
-        await WithServerAsync([SubscribeThenPark()], async name => {
+        await WithServerAsync([SubscribeThenPark()], async (paths, name) => {
             using var cts = new CancellationTokenSource();
             var enumTask = Task.Run(async () => {
-                await foreach (var _ in ConsentSubscription.RunAsync(name, cts.Token)) { }
+                await foreach (var _ in ConsentSubscription.RunAsync(paths, name, cts.Token)) { }
             });
             await Task.Delay(50); // let connect+write+Subscribed land so cancellation hits the pending read
             cts.Cancel();

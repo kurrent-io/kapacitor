@@ -16,6 +16,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// <c>HandleLaunchAgent</c> (must never stall the launch on a slow/blocked bind — see
 /// <c>StartAcpForwardingAsync</c>'s remarks).
 /// </summary>
+[ParallelLimiter<SubprocessLimit>]
 public class AgentOrchestratorAcpForwardingTests {
     // ── Bind ordering (design spec §2.3) ────────────────────────────────────────────────────────
 

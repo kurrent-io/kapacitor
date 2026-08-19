@@ -1,15 +1,13 @@
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Daemon;
-using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Services;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
 
-[NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
-public class ServiceVerifyInstallTests : IDisposable {
-    readonly TempDir _tmp = new();
-    public void Dispose() => _tmp.Dispose();
+public class ServiceVerifyInstallTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
+    [TempDir] public required TempDir Tmp { get; init; }
 
     const string Id             = "svc-verify-install";
     const string ExpectedVersion = "1.2.3";
@@ -96,8 +94,7 @@ public class ServiceVerifyInstallTests : IDisposable {
     }
 
     (string Dir, string DaemonPath) SetUpViableInstall() {
-        var dir = _tmp.CreateDir(Guid.NewGuid().ToString("N"));
-        DaemonLockPaths.OverrideDirectoryForTesting(dir);
+        var dir = Tmp.CreateDir(Guid.NewGuid().ToString("N"));
         var daemonPath = dir.PathTo("kcap-daemon");
         File.WriteAllText(daemonPath, "");
         return (dir, daemonPath);
@@ -112,247 +109,223 @@ public class ServiceVerifyInstallTests : IDisposable {
 
     [Test]
     public async Task Viability_abort_missing_binary_touches_nothing() {
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
-        try {
-            var manager = new FakeServiceManager();
-            var missingPath = tmp.PathTo("does-not-exist-kcap-daemon");
-            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
+        var manager = new FakeServiceManager();
+        var missingPath = Daemons.PathTo("does-not-exist-kcap-daemon");
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(missingPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(missingPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
-            await Assert.That(manager.Calls).IsEmpty();
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
+        await Assert.That(manager.Calls).IsEmpty();
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     [Test]
     public async Task PreQuery_loaded_is_contended_not_bootout_unknown() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded };
-            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
+        var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded };
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.Contended);
-            await Assert.That(manager.QueryCalls).IsEqualTo(1);
-            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.Contended);
+        await Assert.That(manager.QueryCalls).IsEqualTo(1);
+        await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     [Test]
     public async Task PreQuery_unknown_is_bootout_unknown_distinct_from_loaded() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Unknown };
-            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
+        var manager = new FakeServiceManager { InitialProbe = LabelProbe.Unknown };
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.BootoutUnknown);
-            await Assert.That(manager.QueryCalls).IsEqualTo(1);
-            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.BootoutUnknown);
+        await Assert.That(manager.QueryCalls).IsEqualTo(1);
+        await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     [Test]
     public async Task Happy_path_writes_marker_through_every_phase_then_commits_and_deletes() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager();
-            // Render viability now runs GenerateFiles BEFORE the first destructive step, so no marker
-            // exists yet when it fires (the old ordering wrote "captured" first — that was the bug).
-            var markerExistsAtGenerateFiles = true;
-            manager.OnGenerateFiles = id => markerExistsAtGenerateFiles = ServiceTxnMarker.Exists(id);
-            var phaseAtWriteAndBootstrap = "";
-            manager.OnWriteAndBootstrap = id => phaseAtWriteAndBootstrap = ServiceTxnMarker.Read(id)!.Phase;
+        var manager = new FakeServiceManager();
+        // Render viability now runs GenerateFiles BEFORE the first destructive step, so no marker
+        // exists yet when it fires (the old ordering wrote "captured" first — that was the bug).
+        var markerExistsAtGenerateFiles = true;
+        manager.OnGenerateFiles = id => markerExistsAtGenerateFiles = ServiceTxnMarker.Exists(Daemons.Store, id);
+        var phaseAtWriteAndBootstrap = "";
+        manager.OnWriteAndBootstrap = id => phaseAtWriteAndBootstrap = ServiceTxnMarker.Read(Daemons.Store, id)!.Phase;
 
-            var phaseAtFirstHello = "";
-            var helloCalls = 0;
-            Task<HelloProbeResult> Hello(string id, TimeSpan _) {
-                if (helloCalls++ == 0) phaseAtFirstHello = ServiceTxnMarker.Read(id)!.Phase;
-                return Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
-            }
+        var phaseAtFirstHello = "";
+        var helloCalls = 0;
+        Task<HelloProbeResult> Hello(string id, TimeSpan _) {
+            if (helloCalls++ == 0) phaseAtFirstHello = ServiceTxnMarker.Read(Daemons.Store, id)!.Phase;
+            return Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        }
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
-            await Assert.That(markerExistsAtGenerateFiles).IsFalse();
-            await Assert.That(phaseAtWriteAndBootstrap).IsEqualTo("written");
-            await Assert.That(phaseAtFirstHello).IsEqualTo("bootstrapped");
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(0);
-            // Primary check + the floored final-recheck confirmation — both hello calls happened.
-            await Assert.That(helloCalls).IsEqualTo(2);
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+        await Assert.That(markerExistsAtGenerateFiles).IsFalse();
+        await Assert.That(phaseAtWriteAndBootstrap).IsEqualTo("written");
+        await Assert.That(phaseAtFirstHello).IsEqualTo("bootstrapped");
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
+        await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(0);
+        // Primary check + the floored final-recheck confirmation — both hello calls happened.
+        await Assert.That(helloCalls).IsEqualTo(2);
     }
 
     [Test]
     public async Task Leftover_committed_marker_at_entry_self_heals_and_proceeds() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "committed", "stale", "no-unit", "stale-fingerprint"));
+        ServiceTxnMarker.Write(Daemons.Store, Id, new TxnMarker(1, "install", "committed", "stale", "no-unit", "stale-fingerprint"));
 
-            var manager = new FakeServiceManager();
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        var manager = new FakeServiceManager();
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
+        await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
     }
 
     [Test]
     public async Task Leftover_written_phase_marker_with_matching_plist_is_cleaned_up_and_proceeds() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            // Unlike the mismatch case below, the on-disk plist's fingerprint matches exactly what
-            // the dead transaction itself recorded — provably its own residue, so recovery cleans
-            // it up (Uninstall, benign-absence semantics) rather than surfacing.
-            var matchingFingerprint = ServiceTxnMarker.Fingerprint(OwnPlistContent);
-            ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "written", "stale", "no-unit", matchingFingerprint));
+        // Unlike the mismatch case below, the on-disk plist's fingerprint matches exactly what
+        // the dead transaction itself recorded — provably its own residue, so recovery cleans
+        // it up (Uninstall, benign-absence semantics) rather than surfacing.
+        var matchingFingerprint = ServiceTxnMarker.Fingerprint(OwnPlistContent);
+        ServiceTxnMarker.Write(Daemons.Store, Id, new TxnMarker(1, "install", "written", "stale", "no-unit", matchingFingerprint));
 
-            var manager = new FakeServiceManager();
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        var manager = new FakeServiceManager();
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
-            await Assert.That(manager.Calls.IndexOf("uninstall")).IsLessThan(manager.Calls.IndexOf("writeAndBootstrap"));
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+        await Assert.That(manager.Calls.IndexOf("uninstall")).IsLessThan(manager.Calls.IndexOf("writeAndBootstrap"));
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
+        await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
     }
 
     [Test]
     public async Task Leftover_marker_with_null_fingerprint_is_cleared_without_touching_the_manager() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            // Died before ever writing a plist (e.g. a crash right after "captured") — there is
-            // nothing on disk that could be the dead transaction's residue, so recovery just clears
-            // the marker; it must not call Uninstall on a label it never touched.
-            ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "captured", "stale", "no-unit", null));
+        // Died before ever writing a plist (e.g. a crash right after "captured") — there is
+        // nothing on disk that could be the dead transaction's residue, so recovery just clears
+        // the marker; it must not call Uninstall on a label it never touched.
+        ServiceTxnMarker.Write(Daemons.Store, Id, new TxnMarker(1, "install", "captured", "stale", "no-unit", null));
 
-            var manager = new FakeServiceManager();
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        var manager = new FakeServiceManager();
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(0);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(0);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     [Test]
     public async Task Leftover_marker_with_unreadable_but_present_plist_surfaces_restore_verification_untouched() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            // A read failure (permission error, transient I/O error, ...) is NOT the same as
-            // absence: _readPlist returns null for both, but the file demonstrably exists here, so
-            // recovery must never guess it's gone and clean up regardless — that would pave over
-            // something it never actually examined.
-            var matchingFingerprint = ServiceTxnMarker.Fingerprint(OwnPlistContent);
-            ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "written", "stale", "no-unit", matchingFingerprint));
+        // A read failure (permission error, transient I/O error, ...) is NOT the same as
+        // absence: _readPlist returns null for both, but the file demonstrably exists here, so
+        // recovery must never guess it's gone and clean up regardless — that would pave over
+        // something it never actually examined.
+        var matchingFingerprint = ServiceTxnMarker.Fingerprint(OwnPlistContent);
+        ServiceTxnMarker.Write(Daemons.Store, Id, new TxnMarker(1, "install", "written", "stale", "no-unit", matchingFingerprint));
 
-            var manager = new FakeServiceManager();
-            var sut = new ServiceVerify(manager, _ => 4242,
-                (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
-                TimeProvider.System,
-                readPlist: _ => null,     // simulates a read failure, not absence
-                plistExists: _ => true);  // ...but the file IS there
+        var manager = new FakeServiceManager();
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242,
+            (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
+            TimeProvider.System,
+            readPlist: _ => null,     // simulates a read failure, not absence
+            plistExists: _ => true);  // ...but the file IS there
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
-            await Assert.That(manager.Calls).IsEmpty();
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
+        await Assert.That(manager.Calls).IsEmpty();
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsTrue();
     }
 
     [Test]
     public async Task Leftover_marker_whose_clear_never_confirms_absent_aborts_without_deleting_the_marker() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            // Uninstall "succeeds" (bootout exit 0) but the label never actually settles to
-            // Absent — the exact race ClearLabelAsync (now shared with entry recovery, not a bare
-            // trust-the-bool call) exists to catch.
-            var matchingFingerprint = ServiceTxnMarker.Fingerprint(OwnPlistContent);
-            ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "written", "stale", "no-unit", matchingFingerprint));
+        // Uninstall "succeeds" (bootout exit 0) but the label never actually settles to
+        // Absent — the exact race ClearLabelAsync (now shared with entry recovery, not a bare
+        // trust-the-bool call) exists to catch.
+        var matchingFingerprint = ServiceTxnMarker.Fingerprint(OwnPlistContent);
+        ServiceTxnMarker.Write(Daemons.Store, Id, new TxnMarker(1, "install", "written", "stale", "no-unit", matchingFingerprint));
 
-            var manager = new FakeServiceManager { StayUnknownAfterUninstall = true };
-            var time = new FakeTimeProvider();
+        var manager = new FakeServiceManager { StayUnknownAfterUninstall = true };
+        var time = new FakeTimeProvider();
 
-            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), time,
-                rollbackReserve: TimeSpan.FromSeconds(1), readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), time,
+            rollbackReserve: TimeSpan.FromSeconds(1), readPlist: OwnPlist);
 
-            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
-            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.RollbackBudget);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
-            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.RollbackBudget);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+        await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsTrue();
     }
 
     [Test]
     public async Task Leftover_written_phase_marker_at_entry_surfaces_restore_verification_untouched() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "written", "stale", "no-unit", "stale-fingerprint"));
+        ServiceTxnMarker.Write(Daemons.Store, Id, new TxnMarker(1, "install", "written", "stale", "no-unit", "stale-fingerprint"));
 
-            var manager = new FakeServiceManager();
-            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
+        var manager = new FakeServiceManager();
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
-            await Assert.That(manager.Calls).IsEmpty();
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
-            await Assert.That(ServiceTxnMarker.Read(Id)!.Phase).IsEqualTo("written");
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
+        await Assert.That(manager.Calls).IsEmpty();
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsTrue();
+        await Assert.That(ServiceTxnMarker.Read(Daemons.Store, Id)!.Phase).IsEqualTo("written");
     }
 
     [Test]
     public async Task Wrong_hello_version_rolls_back_by_uninstalling_its_own_unit() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager();
-            var time = new FakeTimeProvider();
+        var manager = new FakeServiceManager();
+        var time = new FakeTimeProvider();
 
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, "0.9.0", Id)); // version != ExpectedVersion; name/protocol right
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, "0.9.0", Id)); // version != ExpectedVersion; name/protocol right
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
-                forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, time,
+            forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
 
-            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
-            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.HelloValidation);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.HelloValidation);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     /// <summary>Spec §3.4: install/replace validates the daemon NAME too — a well-formed, right-
@@ -361,23 +334,21 @@ public class ServiceVerifyInstallTests : IDisposable {
     [Test]
     public async Task Wrong_hello_name_rolls_back_by_uninstalling_its_own_unit() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager();
-            var time = new FakeTimeProvider();
+        var manager = new FakeServiceManager();
+        var time = new FakeTimeProvider();
 
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "someone-elses-daemon"));
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, "someone-elses-daemon"));
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
-                forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, time,
+            forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
 
-            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
-            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.HelloValidation);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.HelloValidation);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     /// <summary>Spec §3.4: install/replace validates the hello's PROTOCOL version too — an
@@ -386,23 +357,21 @@ public class ServiceVerifyInstallTests : IDisposable {
     [Test]
     public async Task Unsupported_protocol_version_rolls_back_by_uninstalling_its_own_unit() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager();
-            var time = new FakeTimeProvider();
+        var manager = new FakeServiceManager();
+        var time = new FakeTimeProvider();
 
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 2, ExpectedVersion, Id)); // protocol 2 != this build's 1
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 2, ExpectedVersion, Id)); // protocol 2 != this build's 1
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
-                forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, time,
+            forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
 
-            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
-            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.HelloValidation);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.HelloValidation);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     /// <summary>The nullable contract: <c>expectedVersion: null</c> means "skip version
@@ -412,241 +381,219 @@ public class ServiceVerifyInstallTests : IDisposable {
     [Test]
     public async Task Null_expected_version_skips_version_validation_but_still_succeeds() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager();
 
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, "whatever-version-nobody-checks", Id));
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, "whatever-version-nobody-checks", Id));
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System, readPlist: OwnPlist);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, expectedVersion: null);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, expectedVersion: null);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     [Test]
     public async Task Foreign_plist_at_final_recheck_is_never_deleted_and_keeps_the_marker() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager();
+        var manager = new FakeServiceManager();
 
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            // A different writer's plist text is on disk by the time the final recheck reads it —
-            // the fingerprint can never match what WriteAndBootstrap wrote.
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System, readPlist: _ => "<plist>someone-else</plist>");
+        // A different writer's plist text is on disk by the time the final recheck reads it —
+        // the fingerprint can never match what WriteAndBootstrap wrote.
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System, readPlist: _ => "<plist>someone-else</plist>");
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(0);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(0);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsTrue();
     }
 
     [Test]
     public async Task PreQuery_absent_but_unit_present_stopped_but_installed_is_contended() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            // `service stop` retains the plist by design — a stopped-but-installed service must be
-            // treated the same as Loaded, not as a fresh Absent slot to overwrite.
-            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Absent, InitialUnitPresent = true };
-            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
+        // `service stop` retains the plist by design — a stopped-but-installed service must be
+        // treated the same as Loaded, not as a fresh Absent slot to overwrite.
+        var manager = new FakeServiceManager { InitialProbe = LabelProbe.Absent, InitialUnitPresent = true };
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.Contended);
-            await Assert.That(manager.QueryCalls).IsEqualTo(1);
-            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.Contended);
+        await Assert.That(manager.QueryCalls).IsEqualTo(1);
+        await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     [Test]
     public async Task GenerateFiles_throwing_is_a_viability_abort_before_any_destructive_step() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager { GenerateFilesThrows = new InvalidOperationException("invalid captured env value") };
-            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
+        var manager = new FakeServiceManager { GenerateFilesThrows = new InvalidOperationException("invalid captured env value") };
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            // Rendering the plist is a VIABILITY step now — a throw aborts before anything on disk is
-            // touched (no query, no marker), rather than after the marker was already written.
-            await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
-            await Assert.That(manager.Calls).IsEmpty();
-            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(0);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        // Rendering the plist is a VIABILITY step now — a throw aborts before anything on disk is
+        // touched (no query, no marker), rather than after the marker was already written.
+        await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
+        await Assert.That(manager.Calls).IsEmpty();
+        await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(0);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     [Test]
     public async Task Invalid_pinned_profile_url_is_a_viability_abort_touching_nothing() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager();
-            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
-                TimeProvider.System, readPlist: OwnPlist, profileViable: () => false);
+        var manager = new FakeServiceManager();
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
+            TimeProvider.System, readPlist: OwnPlist, profileViable: () => false);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
-            await Assert.That(manager.Calls).IsEmpty();
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
+        await Assert.That(manager.Calls).IsEmpty();
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     [Test]
     public async Task WriteAndBootstrap_throwing_still_rolls_back_the_plist_it_already_wrote() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            // launchctl bootstrap can throw (EPERM under MDM, I/O error) AFTER WriteUnitFiles has
-            // already put the plist on disk — readPlist reflects that with matching ("own") content.
-            var manager = new FakeServiceManager { WriteAndBootstrapThrows = new InvalidOperationException("launchctl bootstrap failed (exit 5): Input/output error") };
-            var sut = new ServiceVerify(manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
+        // launchctl bootstrap can throw (EPERM under MDM, I/O error) AFTER WriteUnitFiles has
+        // already put the plist on disk — readPlist reflects that with matching ("own") content.
+        var manager = new FakeServiceManager { WriteAndBootstrapThrows = new InvalidOperationException("launchctl bootstrap failed (exit 5): Input/output error") };
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)), TimeProvider.System, readPlist: OwnPlist);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
-            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+        await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     [Test]
     public async Task Rollback_reserve_exhausted_with_undetermined_state_is_rollback_budget() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager { RunningPid = 111, StayUnknownAfterUninstall = true }; // ownership never holds
-            var time = new FakeTimeProvider();
+        var manager = new FakeServiceManager { RunningPid = 111, StayUnknownAfterUninstall = true }; // ownership never holds
+        var time = new FakeTimeProvider();
 
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var sut = new ServiceVerify(manager, _ => 222, Hello, time,
-                forwardBudget: TimeSpan.FromSeconds(2), rollbackReserve: TimeSpan.FromSeconds(1), readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 222, Hello, time,
+            forwardBudget: TimeSpan.FromSeconds(2), rollbackReserve: TimeSpan.FromSeconds(1), readPlist: OwnPlist);
 
-            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
-            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            // Uninstall ran, but the post-uninstall probe never settles below Unknown before the
-            // reserve runs out — a genuine timeout, not an observed-wrong state.
-            await Assert.That(exit).IsEqualTo(VerifyExit.RollbackBudget);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        // Uninstall ran, but the post-uninstall probe never settles below Unknown before the
+        // reserve runs out — a genuine timeout, not an observed-wrong state.
+        await Assert.That(exit).IsEqualTo(VerifyExit.RollbackBudget);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsTrue();
     }
 
     [Test]
     public async Task Lock_loser_never_converges_rolls_back_to_readiness_timeout() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager { RunningPid = 111 }; // never matches the validated pid below
-            var time = new FakeTimeProvider();
+        var manager = new FakeServiceManager { RunningPid = 111 }; // never matches the validated pid below
+        var time = new FakeTimeProvider();
 
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var sut = new ServiceVerify(manager, _ => 222, Hello, time,
-                forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 222, Hello, time,
+            forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
 
-            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
-            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
-            // No stop-by-pid path exists here at all — the only rollback verb is Uninstall.
-            await Assert.That(manager.Calls.Contains("stop")).IsFalse();
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+        // No stop-by-pid path exists here at all — the only rollback verb is Uninstall.
+        await Assert.That(manager.Calls.Contains("stop")).IsFalse();
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     [Test]
     public async Task Final_recheck_at_a_different_incarnation_rolls_back_instead_of_committing() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            // Every readiness check observes a NEW job pid — a KeepAlive respawn between the primary
-            // check and the final recheck. Ownership holds for each individual check, but the pinned
-            // incarnation never survives to the recheck, so the transaction must never commit a
-            // crash-looping unit; it rolls back at the forward cutoff.
-            var manager = new FakeServiceManager { RunningPid = 1000 };
-            var time = new FakeTimeProvider();
+        // Every readiness check observes a NEW job pid — a KeepAlive respawn between the primary
+        // check and the final recheck. Ownership holds for each individual check, but the pinned
+        // incarnation never survives to the recheck, so the transaction must never commit a
+        // crash-looping unit; it rolls back at the forward cutoff.
+        var manager = new FakeServiceManager { RunningPid = 1000 };
+        var time = new FakeTimeProvider();
 
-            Task<HelloProbeResult> Hello(string _, TimeSpan __) {
-                if (manager.Bootstrapped) manager.RunningPid++;   // respawn: a new pid per observation
-                return Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
-            }
+        Task<HelloProbeResult> Hello(string _, TimeSpan __) {
+            if (manager.Bootstrapped) manager.RunningPid++;   // respawn: a new pid per observation
+            return Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        }
 
-            var sut = new ServiceVerify(manager, _ => manager.RunningPid, Hello, time,
-                forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => manager.RunningPid, Hello, time,
+            forwardBudget: TimeSpan.FromSeconds(2), readPlist: OwnPlist);
 
-            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
-            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     [Test]
     public async Task A_late_hello_never_hands_a_hung_query_a_second_full_budget() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var time = new FakeTimeProvider();
-            var start = time.GetUtcNow();
+        var time = new FakeTimeProvider();
+        var start = time.GetUtcNow();
 
-            // A hung `launchctl print` paired with a hello that consumes ~all of its budget must not
-            // let readiness exceed the forward deadline: the Query is bounded by remaining-to-deadline,
-            // so the transaction rolls back rather than committing after ~2x the forward time.
-            var manager = new FakeServiceManager { HangQueryClock = time };
-            Task<HelloProbeResult> Hello(string _, TimeSpan budget) {
-                time.Advance(budget);
-                return Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
-            }
+        // A hung `launchctl print` paired with a hello that consumes ~all of its budget must not
+        // let readiness exceed the forward deadline: the Query is bounded by remaining-to-deadline,
+        // so the transaction rolls back rather than committing after ~2x the forward time.
+        var manager = new FakeServiceManager { HangQueryClock = time };
+        Task<HelloProbeResult> Hello(string _, TimeSpan budget) {
+            time.Advance(budget);
+            return Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        }
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, time,
-                forwardBudget: TimeSpan.FromSeconds(2), rollbackReserve: TimeSpan.FromSeconds(1), readPlist: OwnPlist);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, time,
+            forwardBudget: TimeSpan.FromSeconds(2), rollbackReserve: TimeSpan.FromSeconds(1), readPlist: OwnPlist);
 
-            var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
-            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            // Capped to the single forward deadline: the burned-budget hello leaves no time for the
-            // Query, so readiness aborts to rollback instead of doubling its spend...
-            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
-            // ...and the whole transaction stays inside the advertised forward + reserve envelope.
-            var elapsed = time.GetUtcNow() - start;
-            await Assert.That(elapsed <= TimeSpan.FromSeconds(3)).IsTrue();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        // Capped to the single forward deadline: the burned-budget hello leaves no time for the
+        // Query, so readiness aborts to rollback instead of doubling its spend...
+        await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+        // ...and the whole transaction stays inside the advertised forward + reserve envelope.
+        var elapsed = time.GetUtcNow() - start;
+        await Assert.That(elapsed <= TimeSpan.FromSeconds(3)).IsTrue();
     }
 
     [Test]
     public async Task Rollback_never_uninstalls_an_unreadable_present_plist() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            // A lock-unaware writer replaced our plist with a foreign/unreadable file between
-            // bootstrap and rollback: _readPlist returns null (can't fingerprint it) but the file
-            // demonstrably exists. Uninstalling it would delete something we never verified is ours,
-            // so rollback must fail closed and leave it untouched.
-            var manager = new FakeServiceManager { WriteAndBootstrapThrows = new InvalidOperationException("launchctl bootstrap failed (exit 5)") };
-            var sut = new ServiceVerify(manager, _ => 4242,
-                (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
-                TimeProvider.System,
-                readPlist: _ => null,     // present but unreadable — cannot be fingerprinted
-                plistExists: _ => true);
+        // A lock-unaware writer replaced our plist with a foreign/unreadable file between
+        // bootstrap and rollback: _readPlist returns null (can't fingerprint it) but the file
+        // demonstrably exists. Uninstalling it would delete something we never verified is ours,
+        // so rollback must fail closed and leave it untouched.
+        var manager = new FakeServiceManager { WriteAndBootstrapThrows = new InvalidOperationException("launchctl bootstrap failed (exit 5)") };
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242,
+            (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
+            TimeProvider.System,
+            readPlist: _ => null,     // present but unreadable — cannot be fingerprinted
+            plistExists: _ => true);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(0);      // the foreign file is never paved
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();     // marker retained for explicit repair
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(0);      // the foreign file is never paved
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsTrue();     // marker retained for explicit repair
     }
 
     /// <summary>The gated viability arm's digest check fires alongside the
@@ -657,27 +604,23 @@ public class ServiceVerifyInstallTests : IDisposable {
     public async Task Gated_install_with_bad_binary_digest_aborts_viability_with_reason_line() {
         var (dir, daemonPath) = SetUpViableInstall();
         using var capture = ConsoleOutput.StartErrorCapture();
-        try {
 
-            var manager = new FakeServiceManager();
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        var manager = new FakeServiceManager();
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
-                readPlist: OwnPlist,
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
-                digestMatches: _ => false); // viability digest check fails
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System,
+            readPlist: OwnPlist,
+            gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+            digestMatches: _ => false); // viability digest check fails
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
-            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
-            await Assert.That(lines).IsEquivalentTo(["viability_reason=package_inconsistent"]);
-            await Assert.That(manager.Calls).IsEmpty();
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
+        var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        await Assert.That(lines).IsEquivalentTo(["viability_reason=package_inconsistent"]);
+        await Assert.That(manager.Calls).IsEmpty();
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     /// <summary>The pre-bootstrap TOCTOU recheck. Viability's digest check passes (call 1)
@@ -687,26 +630,24 @@ public class ServiceVerifyInstallTests : IDisposable {
     [Test]
     public async Task Gated_install_digest_drift_before_bootstrap_rolls_back_with_29() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager();
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        var manager = new FakeServiceManager();
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var digestCalls = 0;
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
-                readPlist: OwnPlist,
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
-                digestMatches: _ => Interlocked.Increment(ref digestCalls) == 1); // pass viability, fail pre-bootstrap
+        var digestCalls = 0;
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System,
+            readPlist: OwnPlist,
+            gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+            digestMatches: _ => Interlocked.Increment(ref digestCalls) == 1); // pass viability, fail pre-bootstrap
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.StartGateDrift);
-            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
-            // install's verified-safe failure state: no unit on disk — InstallRollback's own
-            // uninstall ran and confirmed absent, same machinery every other install rollback uses.
-            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.StartGateDrift);
+        await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(0);
+        // install's verified-safe failure state: no unit on disk — InstallRollback's own
+        // uninstall ran and confirmed absent, same machinery every other install rollback uses.
+        await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     /// <summary>A gated install whose digest passes at every checkpoint (viability,
@@ -714,22 +655,20 @@ public class ServiceVerifyInstallTests : IDisposable {
     [Test]
     public async Task Gated_install_with_passing_digest_throughout_still_commits() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager();
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        var manager = new FakeServiceManager();
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
-                readPlist: OwnPlist,
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
-                digestMatches: _ => true);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System,
+            readPlist: OwnPlist,
+            gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+            digestMatches: _ => true);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
-            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+        await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     /// <summary>The gate is truly INACTIVE without the invoking env's consent-seed
@@ -738,21 +677,19 @@ public class ServiceVerifyInstallTests : IDisposable {
     [Test]
     public async Task Ungated_install_with_failing_digest_still_commits_gate_truly_inactive() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager();
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        var manager = new FakeServiceManager();
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
-                readPlist: OwnPlist,
-                digestMatches: _ => false); // no gateEnv wired at all — must never be consulted
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System,
+            readPlist: OwnPlist,
+            digestMatches: _ => false); // no gateEnv wired at all — must never be consulted
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
-            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.Ok);
+        await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     /// <summary>The viability arm's digest check must fire for
@@ -765,33 +702,29 @@ public class ServiceVerifyInstallTests : IDisposable {
     public async Task Gated_replace_with_bad_binary_digest_aborts_viability_before_any_destructive_step() {
         var (dir, daemonPath) = SetUpViableInstall();
         using var capture = ConsoleOutput.StartErrorCapture();
-        try {
 
-            // Loaded and owned (RunningPid matches the validated pid below) — exactly the shape
-            // that would otherwise drive ApplyReplaceMatrixAsync's owning-label bootout branch.
-            var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, RunningPid = 4242 };
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        // Loaded and owned (RunningPid matches the validated pid below) — exactly the shape
+        // that would otherwise drive ApplyReplaceMatrixAsync's owning-label bootout branch.
+        var manager = new FakeServiceManager { InitialProbe = LabelProbe.Loaded, RunningPid = 4242 };
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
-                readPlist: OwnPlist,
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
-                digestMatches: _ => false);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System,
+            readPlist: OwnPlist,
+            gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+            digestMatches: _ => false);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: true, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
-            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
-            await Assert.That(lines).IsEquivalentTo(["viability_reason=package_inconsistent"]);
-            // No destructive step ran at all: not even the pre-mutation Query, let alone
-            // ApplyReplaceMatrixAsync's Uninstall-driven bootout or the takeover kill it can
-            // trigger — the manager was never touched.
-            await Assert.That(manager.Calls).IsEmpty();
-            await Assert.That(manager.UninstallCalls).IsEqualTo(0);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        await Assert.That(exit).IsEqualTo(VerifyExit.Viability);
+        var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        await Assert.That(lines).IsEquivalentTo(["viability_reason=package_inconsistent"]);
+        // No destructive step ran at all: not even the pre-mutation Query, let alone
+        // ApplyReplaceMatrixAsync's Uninstall-driven bootout or the takeover kill it can
+        // trigger — the manager was never touched.
+        await Assert.That(manager.Calls).IsEmpty();
+        await Assert.That(manager.UninstallCalls).IsEqualTo(0);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     /// <summary>Exercises the THIRD checkpoint — the
@@ -804,49 +737,45 @@ public class ServiceVerifyInstallTests : IDisposable {
     [Test]
     public async Task Gated_install_digest_drift_at_post_readiness_recheck_rolls_back_with_29_never_committing() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            var manager = new FakeServiceManager();
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        var manager = new FakeServiceManager();
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var digestCalls = 0;
-            var committedInvoked = false;
-            var sut = new ServiceVerify(manager, _ => 4242, Hello, TimeProvider.System,
-                readPlist: OwnPlist,
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
-                // pass(1)=viability, pass(2)=pre-bootstrap, fail(3)=post-readiness.
-                digestMatches: _ => Interlocked.Increment(ref digestCalls) is not 3,
-                onCommitted: () => committedInvoked = true);
+        var digestCalls = 0;
+        var committedInvoked = false;
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System,
+            readPlist: OwnPlist,
+            gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+            // pass(1)=viability, pass(2)=pre-bootstrap, fail(3)=post-readiness.
+            digestMatches: _ => Interlocked.Increment(ref digestCalls) is not 3,
+            onCommitted: () => committedInvoked = true);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.StartGateDrift);
-            await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);  // reached bootstrap this time
-            await Assert.That(manager.UninstallCalls).IsEqualTo(1);          // rollback's own uninstall ran
-            await Assert.That(committedInvoked).IsFalse();                  // never reached "committed"
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.StartGateDrift);
+        await Assert.That(manager.WriteAndBootstrapCalls).IsEqualTo(1);  // reached bootstrap this time
+        await Assert.That(manager.UninstallCalls).IsEqualTo(1);          // rollback's own uninstall ran
+        await Assert.That(committedInvoked).IsFalse();                  // never reached "committed"
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     [Test]
     public async Task Rollback_uninstalls_when_the_plist_is_genuinely_absent() {
         var (dir, daemonPath) = SetUpViableInstall();
-        try {
-            // The other null-read shape: the file is genuinely gone (read null AND not present), so
-            // the idempotent uninstall still runs and verifies the restored (absent) state.
-            var manager = new FakeServiceManager { WriteAndBootstrapThrows = new InvalidOperationException("launchctl bootstrap failed (exit 5)") };
-            var sut = new ServiceVerify(manager, _ => 4242,
-                (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
-                TimeProvider.System,
-                readPlist: _ => null,
-                plistExists: _ => false);
+        // The other null-read shape: the file is genuinely gone (read null AND not present), so
+        // the idempotent uninstall still runs and verifies the restored (absent) state.
+        var manager = new FakeServiceManager { WriteAndBootstrapThrows = new InvalidOperationException("launchctl bootstrap failed (exit 5)") };
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242,
+            (_, _) => Task.FromResult(new HelloProbeResult(false, null, null, null)),
+            TimeProvider.System,
+            readPlist: _ => null,
+            plistExists: _ => false);
 
-            var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
+        var exit = await sut.InstallVerifiedAsync(Spec(daemonPath), replace: false, ExpectedVersion);
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
-            await Assert.That(manager.UninstallCalls).IsEqualTo(1);
-            await Assert.That(ServiceTxnMarker.Exists(Id)).IsFalse();
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+        await Assert.That(manager.UninstallCalls).IsEqualTo(1);
+        await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
     // ── gated install readiness-timeout refusal attribution (mirrors StartVerifiedAsync's) ──
@@ -855,86 +784,77 @@ public class ServiceVerifyInstallTests : IDisposable {
     public async Task Gated_install_readiness_timeout_with_matching_marker_attributes_refusal_reason() {
         var (dir, daemonPath) = SetUpViableInstall();
         using var capture = ConsoleOutput.StartErrorCapture();
-        try {
 
-            // The observed job pid IS this test process's own pid, matching what BootRefusal.TryWrite
-            // (the daemon's real writer) stamps onto the marker — planted from OnWriteAndBootstrap,
-            // simulating the daemon starting (and refusing) right after this transaction spawns it.
-            var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
-            manager.OnWriteAndBootstrap = id => {
-                var stateDir = Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(id));
-                Directory.CreateDirectory(stateDir);
-                BootRefusal.TryWrite(stateDir,
-                    new DaemonConfig { Name = id, ExpectedServerUrl = "https://s.example", ServerUrl = "https://resolved.example", InstanceId = "inst-1" },
-                    "server_expectation_mismatch");
-            };
+        // The observed job pid IS this test process's own pid, matching what BootRefusal.TryWrite
+        // (the daemon's real writer) stamps onto the marker — planted from OnWriteAndBootstrap,
+        // simulating the daemon starting (and refusing) right after this transaction spawns it.
+        var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
+        manager.OnWriteAndBootstrap = id => {
+            Directory.CreateDirectory(Daemons.Store.StateDirectory(id));
+            BootRefusalMarker.TryWrite(
+                Daemons.Store, id, "server_expectation_mismatch",
+                "https://s.example", "https://resolved.example", "inst-1", attemptId: null);
+        };
 
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var time = new FakeTimeProvider();
-            var spec = Spec(daemonPath) with {
-                Environment = new Dictionary<string, string> { ["KCAP_EXPECT_SERVER_URL"] = "https://s.example" },
-            };
+        var time = new FakeTimeProvider();
+        var spec = Spec(daemonPath) with {
+            Environment = new Dictionary<string, string> { ["KCAP_EXPECT_SERVER_URL"] = "https://s.example" },
+        };
 
-            // Ownership never matches (validated pid always disagrees with the observed job pid), so
-            // readiness never settles and the forward budget genuinely rolls back to a timeout.
-            var sut = new ServiceVerify(manager, _ => -1, Hello, time,
-                forwardBudget: TimeSpan.FromSeconds(2),
-                readPlist: OwnPlist,
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
-                digestMatches: _ => true);
+        // Ownership never matches (validated pid always disagrees with the observed job pid), so
+        // readiness never settles and the forward budget genuinely rolls back to a timeout.
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => -1, Hello, time,
+            forwardBudget: TimeSpan.FromSeconds(2),
+            readPlist: OwnPlist,
+            gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+            digestMatches: _ => true);
 
-            var task = sut.InstallVerifiedAsync(spec, replace: false, ExpectedVersion);
-            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = sut.InstallVerifiedAsync(spec, replace: false, ExpectedVersion);
+        var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
-            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
-            await Assert.That(lines.Count(l => l == "refusal_reason=server_expectation_mismatch")).IsEqualTo(1);
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+        var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        await Assert.That(lines.Count(l => l == "refusal_reason=server_expectation_mismatch")).IsEqualTo(1);
     }
 
     [Test, NotInParallel]
     public async Task Gated_install_readiness_timeout_with_a_foreign_marker_reports_no_refusal_reason() {
         var (dir, daemonPath) = SetUpViableInstall();
         using var capture = ConsoleOutput.StartErrorCapture();
-        try {
 
-            // Same shape as the matching-marker test, but the marker names a DIFFERENT daemon —
-            // residue from an unrelated service. Attributable must reject it on name alone.
-            var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
-            manager.OnWriteAndBootstrap = id => {
-                var stateDir = Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(id));
-                Directory.CreateDirectory(stateDir);
-                BootRefusal.TryWrite(stateDir,
-                    new DaemonConfig { Name = "some-other-daemon", ExpectedServerUrl = "https://s.example", ServerUrl = "https://resolved.example", InstanceId = "inst-1" },
-                    "server_expectation_mismatch");
-            };
+        // Same shape as the matching-marker test, but the marker names a DIFFERENT daemon —
+        // residue from an unrelated service. Attributable must reject it on name alone.
+        var manager = new FakeServiceManager { RunningPid = Environment.ProcessId };
+        manager.OnWriteAndBootstrap = id => {
+            Directory.CreateDirectory(Daemons.Store.StateDirectory(id));
+            // Planted rather than written through the marker: it has to land in THIS daemon's
+            // directory while naming another, which the writer alone cannot express.
+            File.WriteAllText(Daemons.Store.BootRefusalPath(id),
+                $$"""{"schema":1,"daemon_name":"some-other-daemon","token":"server_expectation_mismatch","expectation":"https://s.example","resolved":"https://resolved.example","pid":{{Environment.ProcessId}},"instance_id":"inst-1","attempt_id":null}""");
+        };
 
-            static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
-                Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, ExpectedVersion, Id));
 
-            var time = new FakeTimeProvider();
-            var spec = Spec(daemonPath) with {
-                Environment = new Dictionary<string, string> { ["KCAP_EXPECT_SERVER_URL"] = "https://s.example" },
-            };
+        var time = new FakeTimeProvider();
+        var spec = Spec(daemonPath) with {
+            Environment = new Dictionary<string, string> { ["KCAP_EXPECT_SERVER_URL"] = "https://s.example" },
+        };
 
-            var sut = new ServiceVerify(manager, _ => -1, Hello, time,
-                forwardBudget: TimeSpan.FromSeconds(2),
-                readPlist: OwnPlist,
-                gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
-                digestMatches: _ => true);
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => -1, Hello, time,
+            forwardBudget: TimeSpan.FromSeconds(2),
+            readPlist: OwnPlist,
+            gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null,
+            digestMatches: _ => true);
 
-            var task = sut.InstallVerifiedAsync(spec, replace: false, ExpectedVersion);
-            var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
+        var task = sut.InstallVerifiedAsync(spec, replace: false, ExpectedVersion);
+        var exit = await Drive(task, time, TimeSpan.FromMilliseconds(500));
 
-            await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
-            var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
-            await Assert.That(lines.Any(l => l.StartsWith("refusal_reason=", StringComparison.Ordinal))).IsFalse();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
+        var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        await Assert.That(lines.Any(l => l.StartsWith("refusal_reason=", StringComparison.Ordinal))).IsFalse();
     }
 }

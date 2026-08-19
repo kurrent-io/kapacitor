@@ -9,6 +9,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// We build a real local git repo with two commits on a side ref so we can
 /// fetch it back as if it were a PR head and assert the worktree HEAD lines up.
 /// </summary>
+[ParallelLimiter<SubprocessLimit>]
 public class WorktreeManagerTests {
     // A class, not a record: 'Clone' is disallowed as a record member name.
     sealed class Repo(TempDir tmp, TempDirHandle upstream, TempDirHandle clone) : IDisposable {

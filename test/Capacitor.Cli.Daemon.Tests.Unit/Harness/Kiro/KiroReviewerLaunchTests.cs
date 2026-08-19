@@ -12,17 +12,16 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Kiro;
 /// — not on a round's outcome. A round that completes proves nothing about whether a tool was
 /// trusted if the model never called it.
 /// </summary>
-public class KiroReviewerLaunchTests : IDisposable {
+[ParallelLimiter<SubprocessLimit>]
+public class KiroReviewerLaunchTests {
     const string InstalledVersion = "2.16.0";
 
-    readonly TempDir _stateDir = new();
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
-    public void Dispose() => _stateDir.Dispose();
-
-    static DaemonConfig EnabledConfig(string stateDir) {
+    static DaemonConfig EnabledConfig(DaemonStore store) {
         var config = new DaemonConfig {
             KiroUnattendedReviewerEnabled = true,
-            StateDir = stateDir,
+            Store = store,
             Name = "test-daemon",
             DaemonEpoch = "epoch-1"
         };
@@ -61,7 +60,7 @@ public class KiroReviewerLaunchTests : IDisposable {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
-        var value = TrustValue(Psi(isReviewFlow: true, EnabledConfig(_stateDir.Path)));
+        var value = TrustValue(Psi(isReviewFlow: true, EnabledConfig(Daemons.Store)));
 
         await Assert.That(value.Split(',')).Contains("fs_read");
         await Assert.That(value.Split(',')).Contains("thinking");
@@ -79,7 +78,7 @@ public class KiroReviewerLaunchTests : IDisposable {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
-        var psi   = Psi(isReviewFlow: true, EnabledConfig(_stateDir.Path), mcpAllowlist: ["kcap-review"]);
+        var psi   = Psi(isReviewFlow: true, EnabledConfig(Daemons.Store), mcpAllowlist: ["kcap-review"]);
         var value = TrustValue(psi);
 
         // Assert the exact @server/tool PAIRS. Checking "kcap-review" and "/{tool}" separately would
@@ -108,7 +107,7 @@ public class KiroReviewerLaunchTests : IDisposable {
         // no trust argv, which is exactly the assertion that should hold on a platform where the
         // reviewer is unavailable. Skipping it there would drop the coverage that matters most.
 
-        var psi = Psi(isReviewFlow: false, EnabledConfig(_stateDir.Path));
+        var psi = Psi(isReviewFlow: false, EnabledConfig(Daemons.Store));
 
         await Assert.That(psi.ArgumentList.Contains("--trust-tools")).IsFalse();
         await Assert.That(psi.Environment.ContainsKey("KIRO_HOME")).IsFalse();
@@ -119,7 +118,7 @@ public class KiroReviewerLaunchTests : IDisposable {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
-        var psi = Psi(isReviewFlow: true, EnabledConfig(_stateDir.Path));
+        var psi = Psi(isReviewFlow: true, EnabledConfig(Daemons.Store));
 
         await Assert.That(psi.Environment.ContainsKey("KIRO_HOME")).IsTrue();
 
@@ -144,7 +143,7 @@ public class KiroReviewerLaunchTests : IDisposable {
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
         var config = new DaemonConfig {
-            StateDir = _stateDir.Path, Name = "test-daemon", KiroUnattendedReviewerEnabled = false
+            Store = Daemons.Store, Name = "test-daemon", KiroUnattendedReviewerEnabled = false
         };
 
         await Assert.That(() => Psi(isReviewFlow: true, config))
@@ -162,8 +161,7 @@ public class KiroReviewerLaunchTests : IDisposable {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only.");
 
-        var stateDir = _stateDir.Path;
-        var config = new DaemonConfig { StateDir = stateDir, Name = "test-daemon", DaemonEpoch = "epoch-1" };
+        var config = new DaemonConfig { Store = Daemons.Store, Name = "test-daemon", DaemonEpoch = "epoch-1" };
 
         // Seeded exactly as a real boot seeds it, which is now unconditional.
         AcpHostedAgentRuntimeFactory.VersionStoreFor(config, AcpVendorDescriptors.Kiro.Vendor)
@@ -188,7 +186,7 @@ public class KiroReviewerLaunchTests : IDisposable {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
-        var config = EnabledConfig(_stateDir.Path);
+        var config = EnabledConfig(Daemons.Store);
 
         var psi = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
             AcpVendorDescriptors.Kiro, config, Ctx(isReviewFlow: true),
@@ -207,7 +205,7 @@ public class KiroReviewerLaunchTests : IDisposable {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
-        var config = EnabledConfig(_stateDir.Path);
+        var config = EnabledConfig(Daemons.Store);
 
         await Assert.That(() => AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
                 AcpVendorDescriptors.Kiro, config, Ctx(isReviewFlow: true),
@@ -227,7 +225,7 @@ public class KiroReviewerLaunchTests : IDisposable {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
-        var config = EnabledConfig(_stateDir.Path);
+        var config = EnabledConfig(Daemons.Store);
         config.KiroReviewerLaunchTimeoutSeconds = 1;
 
         // Streams that never yield a frame: the child is up, the pipe is open, nothing arrives.
@@ -299,7 +297,7 @@ public class KiroReviewerLaunchTests : IDisposable {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only.");
 
-        var config = EnabledConfig(_stateDir.Path);
+        var config = EnabledConfig(Daemons.Store);
         var agent  = new FakeAcpAgent();
         var conn   = new CaptureServerConnection();
 
@@ -353,7 +351,7 @@ public class KiroReviewerLaunchTests : IDisposable {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only.");
 
-        var config = EnabledConfig(_stateDir.Path);
+        var config = EnabledConfig(Daemons.Store);
         var agent  = new FakeAcpAgent();
         var conn   = new CaptureServerConnection();
         var child  = new AliveSilentProcess();

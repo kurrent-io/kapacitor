@@ -1,5 +1,4 @@
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
@@ -8,17 +7,18 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// WriteAndBootstrap actually classifies/mutates per the verify algorithm, and the on-disk recheck
 /// needs GenerateFiles to return exactly one file. Non-launchd managers get a clear, coded-nowhere
 /// rejection rather than a deep failure inside the transaction.</summary>
-[NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
 public class DaemonCommandsServiceInstallTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     [Test]
     public async Task Verify_flag_is_rejected_on_a_non_launchd_manager() {
-        var exit = await DaemonCommands.ServiceInstall(new SystemdServiceManager(), ["--verify"], "test-id", true);
+        var exit = await new DaemonServiceCommands(Daemons.Store, new SystemdServiceManager(), "test-id").Install(["--verify"], true);
         await Assert.That(exit).IsEqualTo(1);
     }
 
     [Test]
     public async Task Verify_flag_is_rejected_on_the_windows_manager_too() {
-        var exit = await DaemonCommands.ServiceInstall(new WindowsScheduledTaskServiceManager(), ["--verify"], "test-id", true);
+        var exit = await new DaemonServiceCommands(Daemons.Store, new WindowsScheduledTaskServiceManager(), "test-id").Install(["--verify"], true);
         await Assert.That(exit).IsEqualTo(1);
     }
 
@@ -29,7 +29,7 @@ public class DaemonCommandsServiceInstallTests {
     /// reason).</summary>
     [Test]
     public async Task Replace_without_verify_is_rejected() {
-        var exit = await DaemonCommands.ServiceInstall(new SystemdServiceManager(), ["--replace"], "test-id", true);
+        var exit = await new DaemonServiceCommands(Daemons.Store, new SystemdServiceManager(), "test-id").Install(["--replace"], true);
         await Assert.That(exit).IsEqualTo(1);
     }
 
@@ -38,7 +38,7 @@ public class DaemonCommandsServiceInstallTests {
     /// --no-start).</summary>
     [Test]
     public async Task No_start_with_verify_is_rejected() {
-        var exit = await DaemonCommands.ServiceInstall(new SystemdServiceManager(), ["--verify", "--no-start"], "test-id", startNow: false);
+        var exit = await new DaemonServiceCommands(Daemons.Store, new SystemdServiceManager(), "test-id").Install(["--verify", "--no-start"], startNow: false);
         await Assert.That(exit).IsEqualTo(1);
     }
 
@@ -47,21 +47,17 @@ public class DaemonCommandsServiceInstallTests {
     /// Install.</summary>
     [Test]
     public async Task Plain_install_bails_on_a_held_service_lock_without_calling_install() {
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
-        try {
-            const string id = "svc-plain-install-lock";
-            using var held = ServiceTxnLock.TryAcquire(id, TimeSpan.FromSeconds(1));
-            await Assert.That(held).IsNotNull();
+        const string id = "svc-plain-install-lock";
+        using var held = ServiceTxnLock.TryAcquire(Daemons.Store, id, TimeSpan.FromSeconds(1));
+        await Assert.That(held).IsNotNull();
 
-            var manager = new CountingManager();
-            var spec = new ServiceSpec(id, "/x/kcap-daemon", "/x/log", new Dictionary<string, string>(), []);
+        var manager = new CountingManager();
+        var spec = new ServiceSpec(id, "/x/kcap-daemon", "/x/log", new Dictionary<string, string>(), []);
 
-            var exit = await DaemonCommands.ServiceInstallPlain(manager, spec, startNow: true);
+        var exit = await new DaemonServiceCommands(Daemons.Store, manager, "test-id").InstallPlain(spec, startNow: true);
 
-            await Assert.That(exit).IsEqualTo(1);
-            await Assert.That(manager.InstallCalls).IsEqualTo(0);
-        } finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(manager.InstallCalls).IsEqualTo(0);
     }
 
     sealed class CountingManager : IServiceManager {

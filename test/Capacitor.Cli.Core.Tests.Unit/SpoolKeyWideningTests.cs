@@ -9,22 +9,17 @@ namespace Capacitor.Cli.Core.Tests.Unit;
 /// the lifecycle and transcript spools: <c>Append</c> returned void, so the caller reported "spooled"
 /// while nothing was written.</para>
 /// </summary>
-public class SpoolKeyWideningTests : IDisposable {
+public class SpoolKeyWideningTests {
     // A REAL OpenCode id: its generator appends a base62 suffix, so ids are MIXED CASE. An earlier
     // version of this test invented a lowercase-only value, which masked a fix that would have
     // rejected almost every genuine OpenCode session.
     const string OpenCodeId = "ses_619a78374ffe7o0x1iTK74jFRg";
 
-    readonly TempDir _tmp = new();
-    readonly string  _dir;
-    readonly string  _tdir;
+    [TempDir] public required TempDir Tmp { get; init; }
 
-    public SpoolKeyWideningTests() {
-        _tdir = _tmp.PathTo("tdir");
-        _dir  = _tmp.PathTo("dir");
-    }
-
-    public void Dispose() => _tmp.Dispose();
+    // Lazy, not ctor-assigned: an injected property is only set after construction.
+    string _dir  => Tmp.PathTo("dir");
+    string _tdir => Tmp.PathTo("tdir");
 
     [Test]
     public async Task Lifecycle_filename_is_a_reversible_escape_not_a_digest() {

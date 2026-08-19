@@ -23,7 +23,18 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// <c>SpyPtyProcessFactory</c>, <c>FixedPtyProcessFactory</c>, <c>OneChunkThenBlockPtyProcess</c>,
 /// <c>SpyHostedAgentLauncher</c>).
 /// </summary>
+[ParallelLimiter<SubprocessLimit>]
 public class AgentOrchestratorBorrowLaunchTests {
+    // The bridge's loopback listener can still refuse a connection while coming up, so the manifest
+    // is fetched with a bound rather than once.
+    static async Task<string> FetchAsync(HttpClient client, string url) {
+        var deadline = DateTime.UtcNow + WaitHarness.Bounded;
+        while (true) {
+            try { return await client.GetStringAsync(url); }
+            catch (HttpRequestException) when (DateTime.UtcNow < deadline) { await Task.Delay(50); }
+        }
+    }
+
     [Test]
     public async Task Borrowed_Claude_review_flow_fails_at_runtime_boundary_without_spawning() {
         var (cwd, cleanup) = GitRepoHarness.CreateGitRepo();
@@ -100,7 +111,7 @@ public class AgentOrchestratorBorrowLaunchTests {
                 .IsEqualTo(BorrowAuthorizer.Canonicalize(cwd));
 
             using var client = new HttpClient();
-            var firstManifest = await client.GetStringAsync(ctx.ReviewContextCapabilityUrl!);
+            var firstManifest = await FetchAsync(client, ctx.ReviewContextCapabilityUrl!);
             await Assert.That(firstManifest)
                 .Contains(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(firstContext)));
             var retiredGenerationPath = ctx.Worktree.ReviewContextGeneration!.StoragePath;
@@ -112,7 +123,7 @@ public class AgentOrchestratorBorrowLaunchTests {
             await orch.HandleSendInputForTest(new SendInputCommand(cmd.AgentId, "next", null));
             await Assert.That(File.ReadAllText(Path.Combine(ctx.Worktree.Path, "README.md")))
                 .IsEqualTo("dirty-two");
-            var secondManifest = await client.GetStringAsync(ctx.ReviewContextCapabilityUrl!);
+            var secondManifest = await FetchAsync(client, ctx.ReviewContextCapabilityUrl!);
             await Assert.That(secondManifest)
                 .Contains(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(secondContext)));
             await Assert.That(secondManifest).DoesNotContain(
@@ -171,7 +182,7 @@ public class AgentOrchestratorBorrowLaunchTests {
 
             await Assert.That(runtime.HasExited).IsFalse();
             using var client = new HttpClient();
-            var manifest = await client.GetStringAsync(context.ReviewContextCapabilityUrl!);
+            var manifest = await FetchAsync(client, context.ReviewContextCapabilityUrl!);
             await Assert.That(manifest).Contains(Convert.ToBase64String(
                 System.Text.Encoding.UTF8.GetBytes(secondContext)));
 

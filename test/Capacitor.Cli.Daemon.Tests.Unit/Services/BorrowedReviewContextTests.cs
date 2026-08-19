@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
+[ParallelLimiter<SubprocessLimit>]
 public class BorrowedReviewContextTests {
     [Test]
     [Arguments("--skip-worktree")]

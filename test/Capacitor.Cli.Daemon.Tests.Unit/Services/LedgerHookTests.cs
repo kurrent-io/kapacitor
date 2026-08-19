@@ -4,15 +4,14 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
-public class LedgerHookTests : IDisposable {
-    readonly TempDir _tmp = new();
-    public void Dispose() => _tmp.Dispose();
+public class LedgerHookTests {
+    [TempDir] public required TempDir Tmp { get; init; }
 
     (AgentPidRecordStore store, ResolvedCandidatesLedger ledger, string dir) NewPair() {
         return (
-            new AgentPidRecordStore(_tmp.Path, NullLogger.Instance),
-            new ResolvedCandidatesLedger(_tmp.Path, NullLogger.Instance),
-            dir: _tmp.Path
+            new AgentPidRecordStore(Tmp.Path, NullLogger.Instance),
+            new ResolvedCandidatesLedger(Tmp.Path, NullLogger.Instance),
+            dir: Tmp.Path
         );
     }
 

@@ -13,6 +13,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// did exactly that), which would leave this file green while the group stayed shadowed.
 /// </summary>
 public class AgentVerbDispatchTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     /// Emitted by AgentCommand and nothing else: the Unix subcommand paths all prefix their
     /// usage/errors with `kcap agent`, and Windows refuses the group with the same prefix.
     const string HandlerMarker = "kcap agent";
@@ -110,24 +112,12 @@ public class AgentVerbDispatchTests {
         await Assert.That(exitCode).IsEqualTo(1);
     }
 
-    static async Task<(string Stdout, string Stderr, int ExitCode)> RunCli(
+    async Task<(string Stdout, string Stderr, int ExitCode)> RunCli(
             string argLine, bool clearServerUrl = false) {
-        var binary = GetCliBinaryPath();
 
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: " +
-                "dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary
-            );
-        }
-
-        var psi = new ProcessStartInfo(binary, argLine + " --no-update-check") {
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true
-        };
+        var psi = KcapProcess.StartInfo(Daemons.Store);
+        // A string, not ArgumentList: quote-aware parsing, so an argument may contain a space.
+        psi.Arguments = $"{argLine} --no-update-check";
 
         // Isolate from the developer's own profile so these assertions don't depend on whether
         // this machine happens to have a server configured.
@@ -136,6 +126,9 @@ public class AgentVerbDispatchTests {
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start kcap process");
 
+        // Nothing writes to the child; leaving the pipe open would hang any prompt it reaches.
+        process.StandardInput.Close();
+
         var stdoutTask = process.StandardOutput.ReadToEndAsync();
         var stderrTask = process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
@@ -143,15 +136,4 @@ public class AgentVerbDispatchTests {
         return (await stdoutTask, await stderrTask, process.ExitCode);
     }
 
-    static string GetCliBinaryPath() {
-        var asmDir      = Path.GetDirectoryName(typeof(AgentVerbDispatchTests).Assembly.Location)!;
-        var binDir      = Path.GetDirectoryName(asmDir)!;
-        var config      = Path.GetFileName(binDir);
-        var testBin     = Path.GetDirectoryName(binDir)!;
-        var testProjDir = Path.GetDirectoryName(testBin)!;
-        var testRoot    = Path.GetDirectoryName(testProjDir)!;
-        var repoRoot    = Path.GetDirectoryName(testRoot)!;
-        var binaryName  = OperatingSystem.IsWindows() ? "kcap.exe" : "kcap";
-        return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
-    }
 }

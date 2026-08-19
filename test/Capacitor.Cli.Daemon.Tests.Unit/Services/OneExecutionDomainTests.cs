@@ -17,6 +17,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 //
 // Reuses AgentOrchestratorHarness (BuildOrchestrator/SpyPtyProcessFactory/
 // SpyHostedAgentLauncher/SeqCaptureServerConnection/CapturingLogger/DenyDefaultGate/CreateGitRepo).
+[ParallelLimiter<SubprocessLimit>]
 public class OneExecutionDomainTests {
 
     /// <summary>Parks every <see cref="ILaunchConsentPrompter.PromptAsync"/> call on a per-request
@@ -579,10 +580,10 @@ public class OneExecutionDomainTests {
         // The record root must outlive this orchestrator — surviving a shutdown is the whole subject —
         // so the state dir is owned here rather than by the harness, whose orchestrator reaps its own
         // scratch dir on dispose.
-        using var stateTmp = new TempDir();
+        using var stateTmp = new TempDaemonStore();
         var server = new SeqCaptureServerConnection();
         var orch   = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(),
-            new Dictionary<string, IHostedAgentLauncher>(), configure: c => c.StateDir = stateTmp.Path);
+            new Dictionary<string, IHostedAgentLauncher>(), configure: c => c.Store = stateTmp.Store);
 
         // A child started AFTER the teardown snapshot: it exists and has a durable record, but the
         // orchestrator's registry never knew about it, so shutdown cannot terminate it.

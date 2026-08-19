@@ -14,7 +14,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// End-to-end coverage of the StatusSubscribe/DaemonStatus frame pair over a REAL Unix-domain
 /// socket — the same <c>LocalControlServer.HandleConnectionAsync</c> routing switch a real
 /// `kcap` client talks to. The harness mirrors <see cref="LocalControlHelloTests"/> (temp
-/// DaemonLockPaths override, socket-file poll, Windows guard). Beyond the single wiring test,
+/// per-test daemons directory, socket-file poll, Windows guard). Beyond the single wiring test,
 /// this file pins the debounce/pulse/convergence behavior matrix: every mutation triggers a
 /// re-push, a pulse burst coalesces into one trailing snapshot, two subscribers converge
 /// independently via their own cursors, a mutation landing exactly at the snapshot/cursor
@@ -23,6 +23,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// connection. The observable guarantee throughout is CONVERGENCE, not per-generation delivery —
 /// debounce is free to collapse a burst into fewer pushes than pulses.
 /// </summary>
+[ParallelLimiter<SubprocessLimit>]
 public class DaemonStatusIpcTests {
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
@@ -89,18 +90,19 @@ public class DaemonStatusIpcTests {
     /// mirrors <c>AgentStatusSnapshotTests.Build</c> — for the pure write-path exception test
     /// below, which drives <see cref="DaemonStatusIpc.HandleSubscribeAsync"/> directly against a
     /// fake stream instead of a real connection.</summary>
-    static (AgentOrchestrator Orchestrator, DaemonStatusIpc StatusIpc, TempDir StateDir) BuildBareStatusIpc(string name) {
-        var stateDir = new TempDir();
-        var store       = new LaunchConsentStore(stateDir.Path, NullLogger.Instance);
+    static (AgentOrchestrator Orchestrator, DaemonStatusIpc StatusIpc, TempDaemonStore Daemons) BuildBareStatusIpc(string name) {
+        var daemons   = new TempDaemonStore();
+        var stateRoot = daemons.Store.StateDirectory(name);
+        var store       = new LaunchConsentStore(stateRoot, NullLogger.Instance);
         var broker      = new LaunchConsentBroker();
-        var decisionLog = new LaunchConsentDecisionLog(stateDir.Path, NullLogger.Instance);
+        var decisionLog = new LaunchConsentDecisionLog(stateRoot, NullLogger.Instance);
         var gate        = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         var config = new DaemonConfig {
             Name         = name,
             ServerUrl    = "http://127.0.0.1:1",
-            StateDir     = stateDir.Path,
-            WorktreeRoot = stateDir.PathTo("worktrees"),
+            Store        = daemons.Store,
+            WorktreeRoot = daemons.PathTo("worktrees"),
         };
 
         var notifier         = new DaemonStatusNotifier();
@@ -119,13 +121,13 @@ public class DaemonStatusIpcTests {
             Debounce = TimeSpan.FromMilliseconds(1),
         };
 
-        return (orchestrator, statusIpc, stateDir);
+        return (orchestrator, statusIpc, daemons);
     }
 
     sealed record Harness(
         LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection,
         DaemonConfig Config, string SockPath, DaemonStatusNotifier Notifier, DaemonStatusIpc StatusIpc,
-        TempDir StateDir) {
+        TempDaemonStore Daemons) {
         int _serverStopped;
 
         /// Re-entrant-safe: the shutdown test stops the server itself (to observe the
@@ -138,17 +140,18 @@ public class DaemonStatusIpcTests {
     }
 
     static async Task<Harness> StartAsync(string daemonName, CancellationToken ct) {
-        var stateDir = new TempDir();
-        var store       = new LaunchConsentStore(stateDir.Path, NullLogger.Instance);
+        var daemons   = new TempDaemonStore();
+        var stateRoot = daemons.Store.StateDirectory(daemonName);
+        var store       = new LaunchConsentStore(stateRoot, NullLogger.Instance);
         var broker      = new LaunchConsentBroker();
-        var decisionLog = new LaunchConsentDecisionLog(stateDir.Path, NullLogger.Instance);
+        var decisionLog = new LaunchConsentDecisionLog(stateRoot, NullLogger.Instance);
         var gate        = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         var config = new DaemonConfig {
             Name         = daemonName,
             ServerUrl    = "http://127.0.0.1:1",
-            StateDir     = stateDir.Path,
-            WorktreeRoot = stateDir.PathTo("worktrees"),
+            Store        = daemons.Store,
+            WorktreeRoot = daemons.PathTo("worktrees"),
         };
         var consentIpc  = new LaunchConsentIpc(broker, store, config, NullLogger<LaunchConsentIpc>.Instance);
 
@@ -169,15 +172,15 @@ public class DaemonStatusIpcTests {
             Debounce = TimeSpan.FromMilliseconds(25), // fast tests; 250ms is the production default
         };
 
-        var restart = RestartCoordinator.ForTest(daemonName, daemonName, new NoopRestartStrategy());
+        var restart = RestartCoordinator.ForTest(daemons.Store, daemonName, daemonName, new NoopRestartStrategy());
         var server = new LocalControlServer(config, orchestrator, restart, consentIpc, statusIpc, NullLogger<LocalControlServer>.Instance);
         await server.StartAsync(ct);
 
-        var sockPath = LocalSocketPaths.Socket(daemonName);
+        var sockPath = daemons.Store.SocketPath(daemonName);
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (!File.Exists(sockPath) && DateTime.UtcNow < deadline) await Task.Delay(20, ct);
 
-        return new Harness(server, orchestrator, connection, config, sockPath, notifier, statusIpc, stateDir);
+        return new Harness(server, orchestrator, connection, config, sockPath, notifier, statusIpc, daemons);
     }
 
     static async Task StopAsync(Harness h) {
@@ -185,17 +188,13 @@ public class DaemonStatusIpcTests {
         await h.StopServerOnceAsync(CancellationToken.None);
         h.Server.Dispose();
         await h.Connection.DisposeAsync();
-        h.StateDir.Dispose();
+        h.Daemons.Dispose();
     }
 
-    /// Wraps a test body with the temp-dir DaemonLockPaths override + harness lifecycle, mirroring
-    /// LocalControlHelloTests's RunAsync. Each [Test] still carries its own
-    /// [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")] + Windows guard,
-    /// since those must be visible on the test method itself.
+    /// Wraps a test body with the harness lifecycle, mirroring LocalControlHelloTests's RunAsync. The harness owns
+    /// its own daemons directory, so nothing here is shared between tests; each [Test] still
+    /// carries its own Windows guard, which must be visible on the test method itself.
     static async Task RunAsync(string daemonName, Func<Harness, CancellationToken, Task> body) {
-        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
-        using var sockDir = new TempDir("dsi");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         Harness? h = null;
@@ -205,7 +204,6 @@ public class DaemonStatusIpcTests {
             await body(h, cts.Token);
         } finally {
             if (h is not null) await StopAsync(h);
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
 
@@ -254,7 +252,6 @@ public class DaemonStatusIpcTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Subscribe_pushes_an_immediate_snapshot_with_daemon_block_and_agents() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -281,7 +278,6 @@ public class DaemonStatusIpcTests {
     }
 
     [Test] // pid/instance_id identity on the daemon block, first snapshot
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task First_snapshot_carries_pid_and_instance_id() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -298,7 +294,6 @@ public class DaemonStatusIpcTests {
     }
 
     [Test] // add / status-change / removal each trigger a re-push
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Each_mutation_triggers_a_re_push() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -329,7 +324,6 @@ public class DaemonStatusIpcTests {
     }
 
     [Test] // burst coalescing: at most one trailing snapshot after the in-flight push
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task A_pulse_burst_coalesces_into_one_trailing_snapshot() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -354,7 +348,6 @@ public class DaemonStatusIpcTests {
     }
 
     [Test] // two-subscriber convergence + slow subscriber doesn't stall the fast one
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Both_subscribers_converge_after_a_change_and_a_slow_one_stalls_only_itself() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -389,7 +382,6 @@ public class DaemonStatusIpcTests {
     }
 
     [Test] // cursor-before-snapshot + pulse-after-mutation regressions, deterministic via the hook
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task A_mutation_at_the_snapshot_boundary_still_converges() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -420,7 +412,6 @@ public class DaemonStatusIpcTests {
     }
 
     [Test] // subscriber EOF reaps the handler promptly
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Subscriber_eof_reaps_the_handler_promptly() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -453,7 +444,7 @@ public class DaemonStatusIpcTests {
     /// </summary>
     [Test]
     public async Task HandleSubscribeAsync_absorbs_a_write_side_disconnect_without_faulting() {
-        var (orchestrator, statusIpc, stateDir) = BuildBareStatusIpc("status-ipc-throw-test");
+        var (orchestrator, statusIpc, daemons) = BuildBareStatusIpc("status-ipc-throw-test");
         try {
             var stream           = new VanishedSubscriberStream();
             var firstSnapshotSeen = false;
@@ -483,12 +474,11 @@ public class DaemonStatusIpcTests {
             }
         } finally {
             await orchestrator.DisposeAsync();
-            stateDir.Dispose();
+            daemons.Dispose();
         }
     }
 
     [Test] // snapshot stress: no exceptions, every payload internally consistent, converges
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Concurrent_mutations_never_produce_an_inconsistent_payload() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -535,7 +525,6 @@ public class DaemonStatusIpcTests {
     }
 
     [Test] // §5: StatusSubscribe on a shutting-down daemon — the connection just closes
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Daemon_shutdown_closes_the_subscription() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 

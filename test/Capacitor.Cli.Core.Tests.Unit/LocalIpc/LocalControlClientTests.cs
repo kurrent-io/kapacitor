@@ -146,31 +146,25 @@ public class LocalControlClientTests {
     static async Task<List<LocalControlEvent>> RunClientAsync(
             ConnScript[] scripts, Func<List<LocalControlEvent>, bool> until,
             Action<LocalControlClient>? configure = null, TimeProvider? time = null) {
-        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
-        using var sockDir = new TempDir("lcc");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
+        using var daemons = new TempDaemonStore();
+        const string name = "client";
+        await using var server = new ScriptedServer(daemons.Store.SocketPath(name), scripts);
+        var client = new LocalControlClient(daemons.Store, name, time) {
+            RetryDelays = [TimeSpan.FromMilliseconds(1)],
+            ConnectTimeout = TimeSpan.FromSeconds(2),
+            HelloReplyTimeout = TimeSpan.FromMilliseconds(300),
+            FirstSnapshotTimeout = TimeSpan.FromMilliseconds(300),
+        };
+        configure?.Invoke(client);
+        var events = new List<LocalControlEvent>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         try {
-            var name = "lcc-" + Guid.NewGuid().ToString("N")[..6];
-            await using var server = new ScriptedServer(LocalSocketPaths.Socket(name), scripts);
-            var client = new LocalControlClient(name, time) {
-                RetryDelays = [TimeSpan.FromMilliseconds(1)],
-                ConnectTimeout = TimeSpan.FromSeconds(2),
-                HelloReplyTimeout = TimeSpan.FromMilliseconds(300),
-                FirstSnapshotTimeout = TimeSpan.FromMilliseconds(300),
-            };
-            configure?.Invoke(client);
-            var events = new List<LocalControlEvent>();
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            try {
-                await foreach (var e in client.RunAsync(cts.Token)) {
-                    events.Add(e);
-                    if (until(events)) break;
-                }
-            } catch (OperationCanceledException) { }
-            return events;
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+            await foreach (var e in client.RunAsync(cts.Token)) {
+                events.Add(e);
+                if (until(events)) break;
+            }
+        } catch (OperationCanceledException) { }
+        return events;
     }
 
     /// Lock-guarded reads for the two tests below that poll a `List&lt;LocalControlEvent&gt;`
@@ -186,7 +180,6 @@ public class LocalControlClientTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Gate_pass_yields_connecting_then_connected_with_first_snapshot_then_status() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -203,7 +196,6 @@ public class LocalControlClientTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Capability_missing_and_hello_eof_classify_as_incompatible() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -219,24 +211,18 @@ public class LocalControlClientTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Missing_socket_classifies_as_unreachable() {
         if (OperatingSystem.IsWindows()) return;
 
-        using var sockDir = new TempDir("lcc");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        try {
-            var client = new LocalControlClient("lcc-none") { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
-            var events = new List<LocalControlEvent>();
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            await foreach (var e in client.RunAsync(cts.Token)) {
-                events.Add(e);
-                if (e is LocalControlEvent.Unreachable) break;
-            }
-            await Assert.That(((LocalControlEvent.Unreachable)events[^1]).Reason).IsEqualTo("daemon_unreachable");
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        using var daemons = new TempDaemonStore();
+        var client = new LocalControlClient(daemons.Store, "none") { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
+        var events = new List<LocalControlEvent>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await foreach (var e in client.RunAsync(cts.Token)) {
+            events.Add(e);
+            if (e is LocalControlEvent.Unreachable) break;
         }
+        await Assert.That(((LocalControlEvent.Unreachable)events[^1]).Reason).IsEqualTo("daemon_unreachable");
     }
 
     // Note: a bespoke "connect refused" (file present, nothing listening) reproduction was
@@ -247,7 +233,6 @@ public class LocalControlClientTests {
     // above already exercises that code path.
 
     [Test] // "Error frame or any unexpected frame type answering Hello" (§4.2), both flavors
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Unexpected_and_undecodable_hello_replies_classify_as_incompatible() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -263,7 +248,6 @@ public class LocalControlClientTests {
     }
 
     [Test] // same §4.2 branch, but "arriving on the subscribe connection" instead of answering Hello
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Unexpected_frame_type_on_subscribe_connection_classifies_as_incompatible() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -275,7 +259,6 @@ public class LocalControlClientTests {
     }
 
     [Test] // silent peers classify via deadlines instead of hanging (spec §4.1)
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Silent_peers_classify_as_unreachable_via_phase_deadlines() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -289,7 +272,6 @@ public class LocalControlClientTests {
     }
 
     [Test] // malformed/invalid status is protocol evidence, first frame AND mid-stream, for both shapes
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Malformed_and_invalid_status_classify_as_incompatible() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -313,7 +295,6 @@ public class LocalControlClientTests {
     }
 
     [Test] // subscribe-EOF before first frame: failed cycle, no Connected, no backoff reset
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Subscribe_eof_before_first_frame_is_a_failed_cycle() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -324,7 +305,6 @@ public class LocalControlClientTests {
     }
 
     [Test] // transition-only: a persistent outage yields ONE Unreachable however many cycles run
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Persistent_outage_yields_one_unreachable_event() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -337,7 +317,6 @@ public class LocalControlClientTests {
     }
 
     [Test] // a reason CHANGE yields a second event
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Reason_change_yields_a_new_unreachable_event() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -349,7 +328,6 @@ public class LocalControlClientTests {
     }
 
     [Test] // spec decision 6: the hello reply's DaemonVersion propagates into the incompatible Unreachable
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Hello_reply_missing_status_cap_carries_daemon_version_into_incompatible() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -364,7 +342,6 @@ public class LocalControlClientTests {
 
     [Test] // dedupe key is the (reason, version) PAIR: a version change re-emits even though the
            // reason stays "daemon_incompatible" across every cycle
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Daemon_version_change_while_incompatible_reemits_unreachable() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -382,30 +359,23 @@ public class LocalControlClientTests {
     }
 
     [Test] // a transport failure never read a hello reply, so no version is ever known
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Transport_failure_has_null_daemon_version() {
         if (OperatingSystem.IsWindows()) return;
 
-        using var sockDir = new TempDir("lcc");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        try {
-            var client = new LocalControlClient("lcc-none-v") { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
-            var events = new List<LocalControlEvent>();
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            await foreach (var e in client.RunAsync(cts.Token)) {
-                events.Add(e);
-                if (e is LocalControlEvent.Unreachable) break;
-            }
-            var unreachable = (LocalControlEvent.Unreachable)events[^1];
-            await Assert.That(unreachable.Reason).IsEqualTo("daemon_unreachable");
-            await Assert.That(unreachable.DaemonVersion).IsNull();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        using var daemons = new TempDaemonStore();
+        var client = new LocalControlClient(daemons.Store, "none-v") { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
+        var events = new List<LocalControlEvent>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await foreach (var e in client.RunAsync(cts.Token)) {
+            events.Add(e);
+            if (e is LocalControlEvent.Unreachable) break;
         }
+        var unreachable = (LocalControlEvent.Unreachable)events[^1];
+        await Assert.That(unreachable.Reason).IsEqualTo("daemon_unreachable");
+        await Assert.That(unreachable.DaemonVersion).IsNull();
     }
 
     [Test] // daemon dies mid-stream → Unreachable; restart → Connected with fresh snapshot
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Mid_stream_death_then_restart_reconnects() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -420,140 +390,115 @@ public class LocalControlClientTests {
 
     [Test] // pins the disposal-leak fix: breaking out of the enumeration (no cancel) must still
            // close the live subscribe socket, not merely stop reading from it
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Breaking_out_of_the_enumeration_after_connected_disposes_the_subscribe_socket() {
         if (OperatingSystem.IsWindows()) return;
 
-        using var sockDir = new TempDir("lcc");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        try {
-            var name = "lcc-" + Guid.NewGuid().ToString("N")[..6];
-            var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            await using var server = new ScriptedServer(LocalSocketPaths.Socket(name),
-                HelloThen(GoodHello("status/1")), SubscribePushThenObserveClose(closed, ValidStatusJson("m", "a1")));
-            var client = new LocalControlClient(name) { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var daemons = new TempDaemonStore();
+        const string name = "client";
+        var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = new ScriptedServer(daemons.Store.SocketPath(name),
+            HelloThen(GoodHello("status/1")), SubscribePushThenObserveClose(closed, ValidStatusJson("m", "a1")));
+        var client = new LocalControlClient(daemons.Store, name) { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
-            await foreach (var e in client.RunAsync(cts.Token)) {
-                // A bare `break` — never cancels `cts` — is exactly the disposal path the fix
-                // targets: `await foreach` calls the enumerator's DisposeAsync() while it's
-                // suspended at this very `yield return Connected`.
-                if (e is LocalControlEvent.Connected) break;
-            }
-
-            // Without the fix this never completes (the server's read stays parked on a socket
-            // nobody ever closed) and the test fails on this timeout — a deterministic signal,
-            // not a flaky one: the WaitAsync bound only needs to be "generous enough", never
-            // "tight enough".
-            await closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        await foreach (var e in client.RunAsync(cts.Token)) {
+            // A bare `break` — never cancels `cts` — is exactly the disposal path the fix
+            // targets: `await foreach` calls the enumerator's DisposeAsync() while it's
+            // suspended at this very `yield return Connected`.
+            if (e is LocalControlEvent.Connected) break;
         }
+
+        // Without the fix this never completes (the server's read stays parked on a socket
+        // nobody ever closed) and the test fails on this timeout — a deterministic signal,
+        // not a flaky one: the WaitAsync bound only needs to be "generous enough", never
+        // "tight enough".
+        await closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     [Test] // pins the completion-checkpoint fix: cancellation landing exactly between
            // RunCycleAsync succeeding and Connected being yielded must end the enumeration with
            // NO Connected ever surfacing, and must still close the stream it was handed
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Cancellation_landing_exactly_at_cycle_success_never_yields_connected() {
         if (OperatingSystem.IsWindows()) return;
 
-        using var sockDir = new TempDir("lcc");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        try {
-            var name = "lcc-" + Guid.NewGuid().ToString("N")[..6];
-            var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            await using var server = new ScriptedServer(LocalSocketPaths.Socket(name),
-                HelloThen(GoodHello("status/1")), SubscribePushThenObserveClose(closed, ValidStatusJson("m", "a1")));
-            var client = new LocalControlClient(name) { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            // Fires after RunCycleAsync has already returned success (the first valid snapshot
-            // was read) but before RunAsync's ct checkpoint/yield — exactly the race the fix
-            // closes.
-            client.OnCycleSucceededForTest = cts.Cancel;
+        using var daemons = new TempDaemonStore();
+        const string name = "client";
+        var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = new ScriptedServer(daemons.Store.SocketPath(name),
+            HelloThen(GoodHello("status/1")), SubscribePushThenObserveClose(closed, ValidStatusJson("m", "a1")));
+        var client = new LocalControlClient(daemons.Store, name) { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        // Fires after RunCycleAsync has already returned success (the first valid snapshot
+        // was read) but before RunAsync's ct checkpoint/yield — exactly the race the fix
+        // closes.
+        client.OnCycleSucceededForTest = cts.Cancel;
 
-            var events = new List<LocalControlEvent>();
-            await foreach (var e in client.RunAsync(cts.Token)) events.Add(e);
+        var events = new List<LocalControlEvent>();
+        await foreach (var e in client.RunAsync(cts.Token)) events.Add(e);
 
-            await Assert.That(events.Count).IsEqualTo(1);
-            await Assert.That(events[0]).IsTypeOf<LocalControlEvent.Connecting>();
-            await Assert.That(events.OfType<LocalControlEvent.Connected>().Any()).IsFalse();
+        await Assert.That(events.Count).IsEqualTo(1);
+        await Assert.That(events[0]).IsTypeOf<LocalControlEvent.Connecting>();
+        await Assert.That(events.OfType<LocalControlEvent.Connected>().Any()).IsFalse();
 
-            // The stream handed back by the successful cycle must still be disposed on this
-            // path — the server's blocked read observes the close.
-            await closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        // The stream handed back by the successful cycle must still be disposed on this
+        // path — the server's blocked read observes the close.
+        await closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     [Test] // clean cancellation mid-backoff-wait, no fabricated events
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Cancellation_ends_the_enumeration_cleanly() {
         if (OperatingSystem.IsWindows()) return;
 
-        using var sockDir = new TempDir("lcc");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        try {
-            var client = new LocalControlClient("lcc-cxl") { RetryDelays = [TimeSpan.FromSeconds(30)] };
-            using var cts = new CancellationTokenSource();
-            var gate = new object();
-            var events = new List<LocalControlEvent>();
-            var run = Task.Run(async () => {
-                await foreach (var e in client.RunAsync(cts.Token)) lock (gate) events.Add(e);
-            });
-            // wait for Connecting + first Unreachable, then cancel mid-backoff-wait. The poll
-            // reads `events` from the test thread while the background task above still writes
-            // it — both sides must go through the same lock, or an Add landing mid-enumeration
-            // throws InvalidOperationException (List<T> is not thread-safe).
-            var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (CountLocked(gate, events) < 2 && DateTime.UtcNow < deadline) await Task.Delay(10);
-            cts.Cancel();
-            await run.WaitAsync(TimeSpan.FromSeconds(5));
-            // `run` has completed here, so the background writer is done — a plain read is safe.
-            await Assert.That(events.Count).IsEqualTo(2); // nothing fabricated after cancel
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        using var daemons = new TempDaemonStore();
+        var client = new LocalControlClient(daemons.Store, "cxl") { RetryDelays = [TimeSpan.FromSeconds(30)] };
+        using var cts = new CancellationTokenSource();
+        var gate = new object();
+        var events = new List<LocalControlEvent>();
+        var run = Task.Run(async () => {
+            await foreach (var e in client.RunAsync(cts.Token)) lock (gate) events.Add(e);
+        });
+        // wait for Connecting + first Unreachable, then cancel mid-backoff-wait. The poll
+        // reads `events` from the test thread while the background task above still writes
+        // it — both sides must go through the same lock, or an Add landing mid-enumeration
+        // throws InvalidOperationException (List<T> is not thread-safe).
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (CountLocked(gate, events) < 2 && DateTime.UtcNow < deadline) await Task.Delay(10);
+        cts.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+        // `run` has completed here, so the background writer is done — a plain read is safe.
+        await Assert.That(events.Count).IsEqualTo(2); // nothing fabricated after cancel
     }
 
     [Test] // clean cancellation mid-stream (established connection, blocked on the next read)
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Cancellation_mid_stream_ends_the_enumeration_cleanly() {
         if (OperatingSystem.IsWindows()) return;
 
-        using var sockDir = new TempDir("lcc");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        try {
-            var name = "lcc-" + Guid.NewGuid().ToString("N")[..6];
-            await using var server = new ScriptedServer(LocalSocketPaths.Socket(name),
-                HelloThen(GoodHello("status/1")), SubscribePush(ValidStatusJson("m", "a1")));
-            var client = new LocalControlClient(name) { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
-            using var cts = new CancellationTokenSource();
-            var gate = new object();
-            var events = new List<LocalControlEvent>();
-            var run = Task.Run(async () => {
-                await foreach (var e in client.RunAsync(cts.Token)) lock (gate) events.Add(e);
-            });
+        using var daemons = new TempDaemonStore();
+        const string name = "client";
+        await using var server = new ScriptedServer(daemons.Store.SocketPath(name),
+            HelloThen(GoodHello("status/1")), SubscribePush(ValidStatusJson("m", "a1")));
+        var client = new LocalControlClient(daemons.Store, name) { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
+        using var cts = new CancellationTokenSource();
+        var gate = new object();
+        var events = new List<LocalControlEvent>();
+        var run = Task.Run(async () => {
+            await foreach (var e in client.RunAsync(cts.Token)) lock (gate) events.Add(e);
+        });
 
-            // Same lock-guarded poll as above: the background writer and this read must not
-            // race List<T>'s internal state.
-            var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (!HasConnectedLocked(gate, events) && DateTime.UtcNow < deadline) await Task.Delay(10);
+        // Same lock-guarded poll as above: the background writer and this read must not
+        // race List<T>'s internal state.
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!HasConnectedLocked(gate, events) && DateTime.UtcNow < deadline) await Task.Delay(10);
 
-            cts.Cancel(); // cancels the pending (indefinitely blocked) read on the live stream
-            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        cts.Cancel(); // cancels the pending (indefinitely blocked) read on the live stream
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
 
-            // `run` has completed here, so the background writer is done — plain reads are safe.
-            await Assert.That(events.Count).IsEqualTo(2); // Connecting, Connected — nothing fabricated after cancel
-            await Assert.That(events.OfType<LocalControlEvent.Unreachable>().Any()).IsFalse();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        // `run` has completed here, so the background writer is done — plain reads are safe.
+        await Assert.That(events.Count).IsEqualTo(2); // Connecting, Connected — nothing fabricated after cancel
+        await Assert.That(events.OfType<LocalControlEvent.Unreachable>().Any()).IsFalse();
     }
 
     [Test] // backoff advances across consecutive failures and resets to the start after a proven Connected
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Backoff_delay_advances_across_failures_and_resets_after_connected() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -567,66 +512,60 @@ public class LocalControlClientTests {
         //    schedule that failed to reset would need far longer than the poll deadline below,
         //    so WaitForServedAsync's own "eventually reaches N" assertion fails cleanly instead
         //    of racing a tight tolerance.
-        using var sockDir = new TempDir("lcc");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        try {
-            var name = "lcc-" + Guid.NewGuid().ToString("N")[..6];
-            // cycle0 fails (index0 delay), cycle1 fails with the SAME reason (index1 delay —
-            // proves the schedule advanced), cycle2 connects then immediately EOFs (a NEW
-            // reason), cycle3 connects again — the backoff before cycle3's dial must be the
-            // SHORT index0 delay again (proves the reset), not the un-reset index2 one.
-            await using var server = new ScriptedServer(LocalSocketPaths.Socket(name),
-                HelloEof(), HelloEof(),
-                HelloThen(GoodHello("status/1")), SubscribePushThenClose(ValidStatusJson("m", "a1")),
-                HelloThen(GoodHello("status/1")), SubscribePush(ValidStatusJson("m", "a1", "a2")));
+        using var daemons = new TempDaemonStore();
+        const string name = "client";
+        // cycle0 fails (index0 delay), cycle1 fails with the SAME reason (index1 delay —
+        // proves the schedule advanced), cycle2 connects then immediately EOFs (a NEW
+        // reason), cycle3 connects again — the backoff before cycle3's dial must be the
+        // SHORT index0 delay again (proves the reset), not the un-reset index2 one.
+        await using var server = new ScriptedServer(daemons.Store.SocketPath(name),
+            HelloEof(), HelloEof(),
+            HelloThen(GoodHello("status/1")), SubscribePushThenClose(ValidStatusJson("m", "a1")),
+            HelloThen(GoodHello("status/1")), SubscribePush(ValidStatusJson("m", "a1", "a2")));
 
-            var client = new LocalControlClient(name) {
-                // index0/index1 exercise "advances"; index2 is deliberately far outside the
-                // poll deadline below so an un-reset schedule (which would land on index2,
-                // since Math.Min(attempt, length-1) caps there once attempt=2) times out.
-                RetryDelays = [TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(2), TimeSpan.FromMinutes(2)],
-                ConnectTimeout = TimeSpan.FromSeconds(10),
-                HelloReplyTimeout = TimeSpan.FromSeconds(10),
-                FirstSnapshotTimeout = TimeSpan.FromSeconds(10),
-            };
-            var events = new List<LocalControlEvent>();
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            var run = Task.Run(async () => {
-                await foreach (var e in client.RunAsync(cts.Token)) events.Add(e);
-            });
+        var client = new LocalControlClient(daemons.Store, name) {
+            // index0/index1 exercise "advances"; index2 is deliberately far outside the
+            // poll deadline below so an un-reset schedule (which would land on index2,
+            // since Math.Min(attempt, length-1) caps there once attempt=2) times out.
+            RetryDelays = [TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(2), TimeSpan.FromMinutes(2)],
+            ConnectTimeout = TimeSpan.FromSeconds(10),
+            HelloReplyTimeout = TimeSpan.FromSeconds(10),
+            FirstSnapshotTimeout = TimeSpan.FromSeconds(10),
+        };
+        var events = new List<LocalControlEvent>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var run = Task.Run(async () => {
+            await foreach (var e in client.RunAsync(cts.Token)) events.Add(e);
+        });
 
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            async Task<TimeSpan> WaitForServedAsync(int n) {
-                var deadline = DateTime.UtcNow.AddSeconds(10);
-                while (server.Served < n && DateTime.UtcNow < deadline) await Task.Delay(5);
-                await Assert.That(server.Served).IsGreaterThanOrEqualTo(n); // eventually-reaches-N: one-sided
-                return sw.Elapsed;
-            }
-
-            await WaitForServedAsync(1);                     // cycle0 dialed
-            var t1 = await WaitForServedAsync(2);             // cycle1 dialed, after the index0 (~100ms) backoff
-            var t2 = await WaitForServedAsync(4);             // cycle2's hello+subscribe, after the index1 (~2s) backoff
-            await WaitForServedAsync(6);                      // cycle3's hello+subscribe — only reachable within the
-                                                                // poll deadline if the schedule actually reset
-
-            cts.Cancel();
-            try { await run; } catch (OperationCanceledException) { }
-
-            var deltaLong = (t2 - t1).TotalMilliseconds; // the advanced (index1) delay
-            await Assert.That(deltaLong).IsGreaterThan(1000); // well above the 100ms index0 delay — one-sided
-
-            var reasons = events.OfType<LocalControlEvent.Unreachable>().Select(u => u.Reason).ToArray();
-            await Assert.That(reasons).IsEquivalentTo(new[] { "daemon_incompatible", "daemon_unreachable" }, CollectionOrdering.Matching);
-            await Assert.That(events.OfType<LocalControlEvent.Connected>().Count()).IsEqualTo(2);
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        async Task<TimeSpan> WaitForServedAsync(int n) {
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (server.Served < n && DateTime.UtcNow < deadline) await Task.Delay(5);
+            await Assert.That(server.Served).IsGreaterThanOrEqualTo(n); // eventually-reaches-N: one-sided
+            return sw.Elapsed;
         }
+
+        await WaitForServedAsync(1);                     // cycle0 dialed
+        var t1 = await WaitForServedAsync(2);             // cycle1 dialed, after the index0 (~100ms) backoff
+        var t2 = await WaitForServedAsync(4);             // cycle2's hello+subscribe, after the index1 (~2s) backoff
+        await WaitForServedAsync(6);                      // cycle3's hello+subscribe — only reachable within the
+                                                            // poll deadline if the schedule actually reset
+
+        cts.Cancel();
+        try { await run; } catch (OperationCanceledException) { }
+
+        var deltaLong = (t2 - t1).TotalMilliseconds; // the advanced (index1) delay
+        await Assert.That(deltaLong).IsGreaterThan(1000); // well above the 100ms index0 delay — one-sided
+
+        var reasons = events.OfType<LocalControlEvent.Unreachable>().Select(u => u.Reason).ToArray();
+        await Assert.That(reasons).IsEquivalentTo(new[] { "daemon_incompatible", "daemon_unreachable" }, CollectionOrdering.Matching);
+        await Assert.That(events.OfType<LocalControlEvent.Connected>().Count()).IsEqualTo(2);
     }
 
     // ---- hello↔snapshot instance correlation ----
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Mismatched_hello_and_snapshot_identity_never_emits_Connected() {
         if (OperatingSystem.IsWindows()) return;
         // Use the suite's scripted-socket helper: hello reply from process A, snapshot from process B.
@@ -641,7 +580,6 @@ public class LocalControlClientTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Matching_hello_and_snapshot_identity_yields_connected_with_identity() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -658,7 +596,6 @@ public class LocalControlClientTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Hello_without_identity_fields_yields_connected_with_null_identity_pid() {
         if (OperatingSystem.IsWindows()) return;
 

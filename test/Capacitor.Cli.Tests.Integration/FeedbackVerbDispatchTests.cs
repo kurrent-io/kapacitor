@@ -13,6 +13,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// other pre-dispatch guard that exits non-zero with unrelated text.
 /// </summary>
 public class FeedbackVerbDispatchTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     [Test]
     public async Task Bare_feedback_reaches_the_handlers_usage_error() {
         var (stdout, stderr, exitCode) = await RunCli("feedback");
@@ -24,24 +26,12 @@ public class FeedbackVerbDispatchTests {
         await Assert.That(exitCode).IsNotEqualTo(0);
     }
 
-    static async Task<(string Stdout, string Stderr, int ExitCode)> RunCli(
+    async Task<(string Stdout, string Stderr, int ExitCode)> RunCli(
             string argLine, bool clearServerUrl = false) {
-        var binary = GetCliBinaryPath();
 
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: " +
-                "dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary
-            );
-        }
-
-        var psi = new ProcessStartInfo(binary, argLine + " --no-update-check") {
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true
-        };
+        var psi = KcapProcess.StartInfo(Daemons.Store);
+        // A string, not ArgumentList: quote-aware parsing, so an argument may contain a space.
+        psi.Arguments = $"{argLine} --no-update-check";
 
         // Isolate from the developer's own profile so this assertion doesn't depend on whether
         // this machine happens to have a server configured. Unreachable-but-present is enough:
@@ -51,6 +41,9 @@ public class FeedbackVerbDispatchTests {
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start kcap process");
 
+        // Nothing writes to the child; leaving the pipe open would hang any prompt it reaches.
+        process.StandardInput.Close();
+
         var stdoutTask = process.StandardOutput.ReadToEndAsync();
         var stderrTask = process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
@@ -58,15 +51,4 @@ public class FeedbackVerbDispatchTests {
         return (await stdoutTask, await stderrTask, process.ExitCode);
     }
 
-    static string GetCliBinaryPath() {
-        var asmDir      = Path.GetDirectoryName(typeof(FeedbackVerbDispatchTests).Assembly.Location)!;
-        var binDir      = Path.GetDirectoryName(asmDir)!;
-        var config      = Path.GetFileName(binDir);
-        var testBin     = Path.GetDirectoryName(binDir)!;
-        var testProjDir = Path.GetDirectoryName(testBin)!;
-        var testRoot    = Path.GetDirectoryName(testProjDir)!;
-        var repoRoot    = Path.GetDirectoryName(testRoot)!;
-        var binaryName  = OperatingSystem.IsWindows() ? "kcap.exe" : "kcap";
-        return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
-    }
 }

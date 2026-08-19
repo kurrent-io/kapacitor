@@ -12,6 +12,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// stdio, and pin the server info + the call-schema-first routing cue.
 /// </summary>
 public class McpAnalyticsServerTests : IDisposable {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     readonly WireMockServer _server           = WireMockServer.Start();
     readonly TempDir        _tmp              = new();
     readonly string         _cfgDir;
@@ -37,44 +39,14 @@ public class McpAnalyticsServerTests : IDisposable {
         _tmp.Dispose();
     }
 
-    static string GetCliBinaryPath() {
-        var asmDir      = Path.GetDirectoryName(typeof(McpAnalyticsServerTests).Assembly.Location)!;
-        var binDir      = Path.GetDirectoryName(asmDir)!;
-        var config      = Path.GetFileName(binDir);
-        var testBin     = Path.GetDirectoryName(binDir)!;
-        var testProjDir = Path.GetDirectoryName(testBin)!;
-        var testRoot    = Path.GetDirectoryName(testProjDir)!;
-        var repoRoot    = Path.GetDirectoryName(testRoot)!;
-        var binaryName  = OperatingSystem.IsWindows() ? "kcap.exe" : "kcap";
-
-        return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
-    }
-
     Process SpawnMcpServer(string provider = "None") {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var binary = GetCliBinaryPath();
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: " +
-                "dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary
-            );
-        }
-
-        var psi = new ProcessStartInfo(binary, "mcp analytics") {
-            RedirectStandardInput  = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-            WorkingDirectory       = _cwdDir,
-            Environment = {
-                ["KCAP_URL"]        = _server.Url!,
-                ["KCAP_CONFIG_DIR"] = _cfgDir
-            }
-        };
+        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "analytics");
+        psi.WorkingDirectory = _cwdDir;
+        psi.Environment["KCAP_URL"] = _server.Url!;
+        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap process");
         _spawnedProcesses.Add(process);

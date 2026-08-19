@@ -13,6 +13,8 @@ namespace Capacitor.App.Tests.Unit;
 /// need [NotInParallel]. They ARE concurrency-sensitive (single-flight restart, disposal
 /// races), hence the "run the class 3x" step in the task brief.
 public class DaemonClientServiceTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     /// Feeds a scripted event stream through a shared channel: each DaemonClientService
     /// enumeration ("attach attempt") is one Run() call reading from the SAME channel, so a
     /// manual restart resumes the same event source rather than starting a fresh one — the

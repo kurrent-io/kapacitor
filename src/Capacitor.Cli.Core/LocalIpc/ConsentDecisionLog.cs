@@ -23,11 +23,8 @@ public partial class ConsentDecisionJsonContext : JsonSerializerContext;
 public sealed record ConsentLogReadResult(IReadOnlyList<ConsentDecisionRecord> Records, bool Complete);
 
 public static class ConsentDecisionLogReader {
-    public static string PathFor(string daemonName) =>
-        Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(daemonName), "consent-decisions.jsonl");
-
-    public static ConsentLogReadResult ReadTail(string daemonName, int max) {
-        var path = PathFor(daemonName);
+    public static ConsentLogReadResult ReadTail(DaemonStore store, string daemonName, int max) {
+        var path = store.ConsentLogPath(daemonName);
         var complete = true;
         var lines = new List<string>();
         foreach (var file in new[] { path + ".1", path }) {         // .1 first: its lines are older

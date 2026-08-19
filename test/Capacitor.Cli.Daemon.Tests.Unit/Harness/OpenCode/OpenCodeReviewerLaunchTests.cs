@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Harness.OpenCode;
@@ -11,17 +12,15 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.OpenCode;
 /// which for this vendor is the whole trust vector, since <c>opencode acp</c> has no trust argv. An
 /// argv assertion here would certify nothing.
 /// </summary>
-public class OpenCodeReviewerLaunchTests : IDisposable {
+public class OpenCodeReviewerLaunchTests {
     const string InstalledVersion = "1.18.9";
 
-    readonly TempDir _stateDir = new();
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
-    public void Dispose() => _stateDir.Dispose();
-
-    DaemonConfig EnabledConfig(string? stateDir = null) {
+    DaemonConfig EnabledConfig(DaemonStore? paths = null) {
         var config = new DaemonConfig {
             OpenCodeUnattendedReviewerEnabled = true,
-            StateDir = stateDir ?? _stateDir.Path,
+            Store = paths ?? Daemons.Store,
             Name = "test-daemon",
             DaemonEpoch = "epoch-1"
         };
@@ -175,8 +174,7 @@ public class OpenCodeReviewerLaunchTests : IDisposable {
     public async Task AReviewLaunch_GetsAnEmptyIsolatedConfigDirectory() {
         SkipOnWindows();
 
-        var stateDir = _stateDir.Path;
-        var psi = Psi(isReviewFlow: true, EnabledConfig(stateDir));
+        var psi = Psi(isReviewFlow: true, EnabledConfig(Daemons.Store));
 
         var dir = psi.Environment[OpenCodeLaunchEnvironment.ConfigDirVariable];
 
@@ -188,7 +186,7 @@ public class OpenCodeReviewerLaunchTests : IDisposable {
         await Assert.That(dir!.StartsWith(
             OpenCodeReviewerConfigDir.RootFor(
                 AcpHostedAgentRuntimeFactory.ReviewerStateDir(
-                    new DaemonConfig { StateDir = stateDir, Name = "test-daemon" })),
+                    new DaemonConfig { Store = Daemons.Store, Name = "test-daemon" })),
             StringComparison.Ordinal)).IsTrue();
     }
 
@@ -227,7 +225,7 @@ public class OpenCodeReviewerLaunchTests : IDisposable {
 
         var config = new DaemonConfig {
             OpenCodeUnattendedReviewerEnabled = false,
-            StateDir = _stateDir.Path, Name = "test-daemon", DaemonEpoch = "epoch-1"
+            Store = Daemons.Store, Name = "test-daemon", DaemonEpoch = "epoch-1"
         };
 
         await Assert.That(() => Psi(isReviewFlow: true, config))
@@ -245,7 +243,7 @@ public class OpenCodeReviewerLaunchTests : IDisposable {
 
         var config = new DaemonConfig {
             OpenCodeUnattendedReviewerEnabled = true,
-            StateDir = _stateDir.Path, Name = "test-daemon", DaemonEpoch = "epoch-1"
+            Store = Daemons.Store, Name = "test-daemon", DaemonEpoch = "epoch-1"
         };
 
         await Assert.That(() => Psi(isReviewFlow: true, config))

@@ -16,13 +16,13 @@ public static class DaemonPidProbe {
     /// absent/unusable, the PID is dead, or the start token doesn't match. Same semantics
     /// <c>daemon stop</c> uses before killing.
     /// </summary>
-    public static int? ValidatedPid(string daemonName) =>
-        ReadPidFile(daemonName) is { } entry && IsOurDaemon(entry.Pid, entry.StartToken)
+    public static int? ValidatedPid(DaemonStore store, string daemonName) =>
+        ReadPidFile(store, daemonName) is { } entry && IsOurDaemon(entry.Pid, entry.StartToken)
             ? entry.Pid
             : null;
 
-    internal static PidEntry? ReadPidFile(string daemonName) {
-        var pidPath = DaemonLockPaths.PidPath(daemonName);
+    internal static PidEntry? ReadPidFile(DaemonStore store, string daemonName) {
+        var pidPath = store.PidPath(daemonName);
 
         if (!File.Exists(pidPath)) return null;
 

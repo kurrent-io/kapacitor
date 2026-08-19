@@ -1,6 +1,5 @@
 using System.Security;
 using System.Xml;
-using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Services;
 
@@ -10,9 +9,6 @@ namespace Capacitor.Cli.Services;
 /// malformed markup, regardless of daemon name / path content.
 /// </summary>
 static class ServiceText {
-    /// <summary>Sanitized, portable service id — reuses the daemon lock-file rule.</summary>
-    public static string ServiceId(string name) => DaemonLockPaths.Sanitize(name);
-
     /// <summary>XML-escape for plist and Task Scheduler XML (escapes &amp; &lt; &gt; " ').</summary>
     public static string Xml(string value) => SecurityElement.Escape(value) ?? "";
 

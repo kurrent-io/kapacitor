@@ -15,11 +15,12 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 /// Local-attach (Phase 1) behaviours on AgentOrchestrator. Partial of
 /// AgentOrchestratorVendorTests to reuse its BuildOrchestrator + test doubles.
+[ParallelLimiter<SubprocessLimit>]
 public class AgentOrchestratorLocalAttachTests {
     sealed class NoopRestartStrategy : IRestartStrategy { public RestartOutcome Restart() => RestartOutcome.NoOp; }
 
-    static RestartCoordinator TestCoordinator() =>
-        RestartCoordinator.ForTest("test", "test", new NoopRestartStrategy());
+    static RestartCoordinator TestCoordinator(DaemonStore store) =>
+        RestartCoordinator.ForTest(store, "test", "test", new NoopRestartStrategy());
 
     // Consent: a fresh, throwaway consent store/broker pair — these pre-existing LocalControlServer
     // tests don't exercise consent at all, so the wiring only needs to satisfy the ctor.
@@ -408,7 +409,7 @@ public class AgentOrchestratorLocalAttachTests {
                 var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate: false, tmp.Path, [], 80, 24);
                 await orch.HandleLocalSpawnAsync(spawn, client, default);
 
-                var deadline = DateTime.UtcNow.AddSeconds(5);
+                var deadline = DateTime.UtcNow + WaitHarness.Bounded;
                 while (orch.ActiveAgentCountForTest > 0 && DateTime.UtcNow < deadline) await Task.Delay(20);
 
                 await Assert.That(pty.LastEnv!["KCAP_DAEMON_URL"]).IsEqualTo(orch.PermissionBridgeForTest.BaseUrl);
@@ -592,15 +593,11 @@ public class AgentOrchestratorLocalAttachTests {
     /// (shared with every other daemon refusal, e.g. the review-agent stop protection).
     /// </summary>
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Attach_over_the_real_socket_refuses_a_hosted_agent_with_no_terminal() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
-        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
-        using var sockDir = new TempDir("aola");
-        using var consentDir = new TempDir("aolac");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var daemons = new TempDaemonStore();
+        using var cts = new CancellationTokenSource(WaitHarness.Bounded);
 
         LocalControlServer? listener = null;
         AgentOrchestrator?  orch     = null;
@@ -615,12 +612,12 @@ public class AgentOrchestratorLocalAttachTests {
                 Work = WorkLocation.OwnedWorktree, Status = "Running"
             });
 
-            var config = new DaemonConfig { Name = "test", ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(config, consentDir.Path), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
+            var config = new DaemonConfig { Store = daemons.Store, Name = "test", ServerUrl = "http://127.0.0.1:1" };
+            listener = new LocalControlServer(config, orch, TestCoordinator(daemons.Store), TestConsentIpc(config, daemons.CreateDir("consent")), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
-            var sockPath = LocalSocketPaths.Socket("test");
-            var deadline = DateTime.UtcNow.AddSeconds(5);
+            var sockPath = daemons.Store.SocketPath("test");
+            var deadline = DateTime.UtcNow + WaitHarness.Bounded;
             while (!File.Exists(sockPath) && DateTime.UtcNow < deadline) await Task.Delay(20, cts.Token);
             await Assert.That(File.Exists(sockPath)).IsTrue();
 
@@ -640,19 +637,15 @@ public class AgentOrchestratorLocalAttachTests {
         } finally {
             if (orch is not null) await orch.DisposeAsync();
             if (listener is not null) { await listener.StopAsync(CancellationToken.None); listener.Dispose(); }
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Local_socket_list_round_trips_registered_agents_over_a_real_socket() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
-        using var sockDir = new TempDir("aola");
-        using var consentDir = new TempDir("aolac");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var daemons = new TempDaemonStore();
+        using var cts = new CancellationTokenSource(WaitHarness.Bounded);
 
         LocalControlServer? listener = null;
         AgentOrchestrator?  orch     = null;
@@ -667,12 +660,12 @@ public class AgentOrchestratorLocalAttachTests {
                 IsPrivate = true, Work = WorkLocation.BorrowedCwd, Status = "Running"
             });
 
-            var config = new DaemonConfig { Name = "test", ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(config, consentDir.Path), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
+            var config = new DaemonConfig { Store = daemons.Store, Name = "test", ServerUrl = "http://127.0.0.1:1" };
+            listener = new LocalControlServer(config, orch, TestCoordinator(daemons.Store), TestConsentIpc(config, daemons.CreateDir("consent")), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
-            var sockPath = LocalSocketPaths.Socket("test");
-            var deadline = DateTime.UtcNow.AddSeconds(5);
+            var sockPath = daemons.Store.SocketPath("test");
+            var deadline = DateTime.UtcNow + WaitHarness.Bounded;
             while (!File.Exists(sockPath) && DateTime.UtcNow < deadline) await Task.Delay(20, cts.Token);
             await Assert.That(File.Exists(sockPath)).IsTrue();
 
@@ -689,7 +682,6 @@ public class AgentOrchestratorLocalAttachTests {
         } finally {
             if (orch is not null) await orch.DisposeAsync();
             if (listener is not null) { await listener.StopAsync(CancellationToken.None); listener.Dispose(); }
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
 
@@ -700,10 +692,8 @@ public class AgentOrchestratorLocalAttachTests {
     /// isolation; only a real connection proves the server's frame switch wires them together.
     /// </summary>
     static async Task<LocalFrame?> StopV2OverRealSocketAsync(string daemonName, bool force, string agentId) {
-        using var sockDir = new TempDir("aola");
-        using var consentDir = new TempDir("aolac");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var daemons = new TempDaemonStore();
+        using var cts = new CancellationTokenSource(WaitHarness.Bounded);
 
         LocalControlServer? listener = null;
         AgentOrchestrator?  orch     = null;
@@ -713,12 +703,12 @@ public class AgentOrchestratorLocalAttachTests {
             orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
             orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
 
-            var config = new DaemonConfig { Name = daemonName, ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(config, consentDir.Path), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
+            var config = new DaemonConfig { Store = daemons.Store, Name = daemonName, ServerUrl = "http://127.0.0.1:1" };
+            listener = new LocalControlServer(config, orch, TestCoordinator(daemons.Store), TestConsentIpc(config, daemons.CreateDir("consent")), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
-            var sockPath = LocalSocketPaths.Socket(daemonName);
-            var deadline = DateTime.UtcNow.AddSeconds(5);
+            var sockPath = daemons.Store.SocketPath(daemonName);
+            var deadline = DateTime.UtcNow + WaitHarness.Bounded;
             while (!File.Exists(sockPath) && DateTime.UtcNow < deadline) await Task.Delay(20, cts.Token);
             await Assert.That(File.Exists(sockPath)).IsTrue();
 
@@ -732,12 +722,10 @@ public class AgentOrchestratorLocalAttachTests {
         } finally {
             if (orch is not null) await orch.DisposeAsync();
             if (listener is not null) { await listener.StopAsync(CancellationToken.None); listener.Dispose(); }
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Local_socket_stopv2_without_force_refuses_a_protected_agent_end_to_end() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -748,7 +736,6 @@ public class AgentOrchestratorLocalAttachTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Local_socket_stopv2_with_force_stops_a_protected_agent_end_to_end() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 

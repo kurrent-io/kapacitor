@@ -9,7 +9,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task InstallCodexHooks_writes_all_six_events() {
         using var tmp  = new TempDir();
-        var       path = tmp.PathTo("hooks.json");
+        var       path = tmp.GetResolvedPath("hooks.json");
 
         var ok = PluginCommand.InstallCodexHooks(path);
         await Assert.That(ok).IsTrue();
@@ -33,7 +33,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task PermissionRequest_hook_uses_long_timeout_so_dashboard_decision_isnt_killed() {
         using var tmp  = new TempDir();
-        var       path = tmp.PathTo("hooks.json");
+        var       path = tmp.GetResolvedPath("hooks.json");
 
         PluginCommand.InstallCodexHooks(path);
 
@@ -53,7 +53,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task InstallCodexHooks_preserves_other_top_level_keys() {
         using var tmp  = new TempDir();
-        var       path = tmp.PathTo("hooks.json");
+        var       path = tmp.GetResolvedPath("hooks.json");
 
         await File.WriteAllTextAsync(path, """{"some_other_setting": true}""");
 
@@ -67,7 +67,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task InstallCodexHooks_overwrites_existing_kcap_entries() {
         using var tmp  = new TempDir();
-        var       path = tmp.PathTo("hooks.json");
+        var       path = tmp.GetResolvedPath("hooks.json");
 
         // Seed with the pre-consolidation marker `kcap codex-hook` plus an
         // unrelated user-authored sibling. Install must rewrite the kcap entry
@@ -102,7 +102,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task InstallCodexHooks_rewrites_pre_rename_kapacitor_marker() {
         using var tmp  = new TempDir();
-        var       path = tmp.PathTo("hooks.json");
+        var       path = tmp.GetResolvedPath("hooks.json");
 
         // Pre-rename installs left `kapacitor codex-hook` entries behind.
         // Install must rewrite them to the consolidated `kcap hook --codex`
@@ -134,7 +134,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task RemoveCodexHooks_clears_all_kcap_entries() {
         using var tmp  = new TempDir();
-        var       path = tmp.PathTo("hooks.json");
+        var       path = tmp.GetResolvedPath("hooks.json");
 
         PluginCommand.InstallCodexHooks(path);
         var ok = PluginCommand.RemoveCodexHooks(path);
@@ -162,7 +162,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task InstallCodexHooks_tolerates_numeric_command_field_in_existing_entry() {
         using var tmp  = new TempDir();
-        var       path = tmp.PathTo("hooks.json");
+        var       path = tmp.GetResolvedPath("hooks.json");
 
         // Entry whose inner hook has `command: 42` (a number, not a string).
         await File.WriteAllTextAsync(path, """
@@ -189,7 +189,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task RemoveCodexHooks_tolerates_numeric_command_field_in_existing_entry() {
         using var tmp  = new TempDir();
-        var       path = tmp.PathTo("hooks.json");
+        var       path = tmp.GetResolvedPath("hooks.json");
 
         // Mix: a malformed entry (number command) and a real kcap entry.
         await File.WriteAllTextAsync(path, """
@@ -375,7 +375,7 @@ public class PluginCommandCodexTests {
 
         var exit = await PluginCommand.HandleAsync(
             ["plugin", "install", "--codex", "--if-installed"],
-            TestEnv(fakeHome.Path));
+            TestEnv(fakeHome.GetResolvedPath()));
         await Assert.That(exit).IsEqualTo(0);
 
         // hooks.json must NOT exist — user never opted in.
@@ -403,7 +403,7 @@ public class PluginCommandCodexTests {
 
         var exit = await PluginCommand.HandleAsync(
             ["plugin", "install", "--codex", "--if-installed"],
-            TestEnv(fakeHome.Path));
+            TestEnv(fakeHome.GetResolvedPath()));
         await Assert.That(exit).IsEqualTo(0);
 
         // PermissionRequest timeout must have been refreshed to 86400.
@@ -434,7 +434,7 @@ public class PluginCommandCodexTests {
 
         var exit = await PluginCommand.HandleAsync(
             ["plugin", "install", "--codex", "--if-installed"],
-            TestEnv(fakeHome.Path));
+            TestEnv(fakeHome.GetResolvedPath()));
         await Assert.That(exit).IsEqualTo(0);
 
         // Sentinel intact → installer short-circuited.
@@ -446,7 +446,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task InstallCodexHooks_stamps_marker_on_success() {
         using var tmp  = new TempDir();
-        var       path = tmp.PathTo("hooks.json");
+        var       path = tmp.GetResolvedPath("hooks.json");
 
         var ok = PluginCommand.InstallCodexHooks(path);
         await Assert.That(ok).IsTrue();
@@ -460,7 +460,7 @@ public class PluginCommandCodexTests {
     [Test]
     public async Task RemoveCodexHooks_deletes_marker_when_kcap_entries_were_removed() {
         using var tmp  = new TempDir();
-        var       path = tmp.PathTo("hooks.json");
+        var       path = tmp.GetResolvedPath("hooks.json");
 
         PluginCommand.InstallCodexHooks(path);
         await Assert.That(File.Exists(tmp.PathTo(CodexHooksInstaller.MarkerFileName))).IsTrue();
@@ -497,7 +497,7 @@ public class PluginCommandCodexInstallIntegrationTests {
         PlantFakePlugin(pluginRoot.Path);
 
         var capturedOut = new StringWriter();
-        var env         = TestEnv(fakeHome.Path, pluginRoot.Path, stdout: capturedOut);
+        var env         = TestEnv(fakeHome.GetResolvedPath(), pluginRoot.Path, stdout: capturedOut);
 
         var exit = await PluginCommand.HandleAsync(["plugin", "install", "--codex"], env);
         await Assert.That(exit).IsEqualTo(0);
@@ -526,7 +526,7 @@ public class PluginCommandCodexInstallIntegrationTests {
         }
 
         var capturedErr = new StringWriter();
-        var env         = TestEnv(fakeHome.Path, pluginRoot.Path, stderr: capturedErr);
+        var env         = TestEnv(fakeHome.GetResolvedPath(), pluginRoot.Path, stderr: capturedErr);
 
         var exit = await PluginCommand.HandleAsync(["plugin", "install", "--codex"], env);
         await Assert.That(exit).IsEqualTo(1);
@@ -550,7 +550,7 @@ public class PluginCommandCodexInstallIntegrationTests {
 
         var capturedErr = new StringWriter();
         // PluginPath = null signals ResolvePluginPath returned no plugin.
-        var env = TestEnv(fakeHome.Path, pluginPath: null, stderr: capturedErr);
+        var env = TestEnv(fakeHome.GetResolvedPath(), pluginPath: null, stderr: capturedErr);
 
         var exit = await PluginCommand.HandleAsync(["plugin", "install", "--codex"], env);
         await Assert.That(exit).IsEqualTo(1);
@@ -571,7 +571,7 @@ public class PluginCommandCodexInstallIntegrationTests {
         PlantFakePlugin(pluginRoot.Path);
 
         var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--codex"], TestEnv(fakeHome.Path, pluginRoot.Path));
+            ["plugin", "install", "--codex"], TestEnv(fakeHome.GetResolvedPath(), pluginRoot.Path));
         await Assert.That(exit).IsEqualTo(0);
 
         var configPath = fakeHome.PathTo(".codex", "config.toml");
@@ -584,10 +584,10 @@ public class PluginCommandCodexInstallIntegrationTests {
     [Test]
     public async Task RemoveCodex_user_scope_preserves_unowned_manual_mcp_servers() {
         using var fakeHome = new TempDir();
-        var configPath = SeedCodexConfigWithKcapServers(fakeHome.Path);
+        var configPath = SeedCodexConfigWithKcapServers(fakeHome.GetResolvedPath());
 
         var exit = await PluginCommand.HandleAsync(
-            ["plugin", "remove", "--codex"], TestEnv(fakeHome.Path));
+            ["plugin", "remove", "--codex"], TestEnv(fakeHome.GetResolvedPath()));
         await Assert.That(exit).IsEqualTo(0);
 
         var toml = await File.ReadAllTextAsync(configPath);
@@ -602,11 +602,11 @@ public class PluginCommandCodexInstallIntegrationTests {
         // Regression: a project-scoped uninstall must NOT strip the user-global
         // kcap MCP servers, which every other repo relies on.
         using var fakeHome = new TempDir();
-        var configPath = SeedCodexConfigWithKcapServers(fakeHome.Path);
+        var configPath = SeedCodexConfigWithKcapServers(fakeHome.GetResolvedPath());
         var before     = await File.ReadAllTextAsync(configPath);
 
         var exit = await PluginCommand.HandleAsync(
-            ["plugin", "remove", "--codex", "--project"], TestEnv(fakeHome.Path));
+            ["plugin", "remove", "--codex", "--project"], TestEnv(fakeHome.GetResolvedPath()));
         await Assert.That(exit).IsEqualTo(0);
 
         // config.toml is untouched — the user-global servers survive.

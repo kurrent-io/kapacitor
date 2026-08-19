@@ -17,6 +17,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 ///   • <see cref="CodexHooksNotInstalledException"/> from Prepare surfaces as a
 ///     LaunchFailed with the exception's message and no PTY ever spawns.
 /// </summary>
+[ParallelLimiter<SubprocessLimit>]
 public class AgentOrchestratorVendorTests {
     /// <summary>
     /// Guards the diagnostic itself. The intermittent failures this replaced were unresolvable
@@ -983,7 +984,7 @@ public class AgentOrchestratorVendorTests {
             ));
 
             // Wait until the read loop has produced a chunk and is parked in the blocked send.
-            await sendEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await sendEntered.Task.WaitAsync(WaitHarness.Bounded);
 
             // Stopping the agent cancels ReadCts. The blocked enqueue MUST be released by
             // that cancellation; otherwise the read loop (and its finally-block cleanup)
@@ -991,7 +992,7 @@ public class AgentOrchestratorVendorTests {
             // daemon-lifetime token instead, so this never completes.
             await orch.HandleStopAgentForTest("agent-bp");
 
-            await sendUnblocked.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await sendUnblocked.Task.WaitAsync(WaitHarness.Bounded);
         } finally {
             cleanup();
         }
@@ -1033,7 +1034,7 @@ public class AgentOrchestratorVendorTests {
             _ = orch.HandleStopAgentForTest("agent-stop");
 
             // The process must be terminated even though EndAgentSession is still blocked.
-            await terminated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await terminated.Task.WaitAsync(WaitHarness.Bounded);
         } finally {
             endSessionBlock.Cancel(); // release the finalize backstop's blocked end-session
             cleanup();
@@ -1076,7 +1077,7 @@ public class AgentOrchestratorVendorTests {
 
             // The PTY exits immediately → the read loop ends → FinalizeAgentRunAsync runs.
             // End-session blocks (never recovers), but cleanup must still run after the budget.
-            await unregistered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await unregistered.Task.WaitAsync(WaitHarness.Bounded);
         } finally {
             neverRecovers.Cancel(); // release the background end-session task
             cleanup();
@@ -1552,7 +1553,7 @@ public class AgentOrchestratorVendorTests {
             await Assert.That(server.AgentRegisteredCalls).Contains(("agent-v3", "sonnet"));
 
             // Reported on the v3 channel with the derived key; the legacy channel was NOT used.
-            await server.ExplicitReviewerModelReportSignal.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+            await server.ExplicitReviewerModelReportSignal.Reader.ReadAsync().AsTask().WaitAsync(WaitHarness.Bounded);
             await Assert.That(server.ExplicitReviewerModelReports).Count().IsEqualTo(1);
             var report = server.ExplicitReviewerModelReports[0];
             await Assert.That(report.AgentId).IsEqualTo("agent-v3");

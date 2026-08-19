@@ -7,9 +7,8 @@ namespace Capacitor.Cli.Core.Tests.Unit.LocalIpc;
 
 /// <summary>
 /// LocalControlOps one-shot stop/consent operations over a REAL Unix socket driven by a
-/// scripted server (design spec §10). Harness conventions (short socket paths for the macOS
-/// sockaddr_un ~104-byte limit, Windows guard, [NotInParallel], daemon-name→socket-path
-/// arrangement) are copied from <see cref="LocalControlClientTests"/> — this is a one-shot
+/// scripted server (design spec §10). Harness conventions (Windows guard, per-test socket
+/// directory) are copied from <see cref="LocalControlClientTests"/> — this is a one-shot
 /// request/reply protocol rather than a long-lived subscribe stream, so <see cref="ConnScript"/>
 /// also hands scripts the raw accepted <see cref="Socket"/> (not just the wrapping
 /// <see cref="NetworkStream"/>), needed to force an abrupt RST close for
@@ -147,31 +146,24 @@ public class LocalControlOpsTests {
         await FrameCodec.ReadAsync(s, ct); await Task.Delay(Timeout.Infinite, ct);            // accept, never reply
     };
 
-    /// Runs `body` against an ops client wired to a scripted server in an isolated socket dir.
+    /// Runs `body` against an ops client wired to a scripted server in this test's own socket dir.
     static async Task WithOpsAsync(
             ConnScript[] scripts, Func<LocalControlOps, Task> body, Action<LocalControlOps>? configure = null) {
-        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
-        using var sockDir = new TempDir("lco");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        try {
-            var name = "lco-" + Guid.NewGuid().ToString("N")[..6];
-            await using var server = new ScriptedOpsServer(LocalSocketPaths.Socket(name), scripts);
-            var ops = new LocalControlOps(name) {
-                ConnectTimeout = TimeSpan.FromSeconds(2),
-                ConsentReplyTimeout = TimeSpan.FromSeconds(2),
-                StopReplyTimeout = TimeSpan.FromSeconds(2),
-            };
-            configure?.Invoke(ops);
-            await body(ops);
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        using var daemons = new TempDaemonStore();
+        const string name = "ops";
+        await using var server = new ScriptedOpsServer(daemons.Store.SocketPath(name), scripts);
+        var ops = new LocalControlOps(daemons.Store, name) {
+            ConnectTimeout = TimeSpan.FromSeconds(2),
+            ConsentReplyTimeout = TimeSpan.FromSeconds(2),
+            StopReplyTimeout = TimeSpan.FromSeconds(2),
+        };
+        configure?.Invoke(ops);
+        await body(ops);
     }
 
     // ---- StopAgentAsync ----
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Stop_ok() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -184,7 +176,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Stop_failed() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -197,7 +188,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Stop_skipped() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -210,7 +200,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Stop_error_frame() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -223,7 +212,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Stop_missing_line() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -235,7 +223,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Stop_duplicate_line() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -247,7 +234,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Stop_three_fields() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -259,7 +245,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Stop_unknown_status() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -271,14 +256,15 @@ public class LocalControlOpsTests {
     }
 
     /// An empty agentId is not "stop nothing" on the wire — the daemon's StopV2 handler reads it
-    /// as stop-ALL (AgentOrchestrator.LocalIpc.cs). No scripted server or socket-dir arrangement
-    /// here: the whole point is that the guard throws BEFORE StopAgentAsync ever reaches
-    /// ExchangeAsync/LocalSocketPaths, so this runs against a daemon name nothing is listening on
-    /// and would fail with LocalControlOpsException(daemon_unreachable) if the guard were
-    /// missing or placed after the connect attempt.
+    /// as stop-ALL (AgentOrchestrator.LocalIpc.cs). No scripted server here: the whole point is
+    /// that the guard throws BEFORE StopAgentAsync ever reaches ExchangeAsync, so this runs
+    /// against a daemon name nothing is listening on and would fail with
+    /// LocalControlOpsException(daemon_unreachable) if the guard were missing or placed after the
+    /// connect attempt.
     [Test]
     public async Task Stop_empty_agent_id_throws_before_connecting() {
-        var ops = new LocalControlOps("lco-nonexistent-" + Guid.NewGuid().ToString("N")[..6]);
+        using var daemons = new TempDaemonStore();
+        var ops = new LocalControlOps(daemons.Store, "nonexistent");
         await Assert.ThrowsAsync<ArgumentException>(
             async () => await ops.StopAgentAsync("", false, CancellationToken.None));
     }
@@ -286,7 +272,6 @@ public class LocalControlOpsTests {
     // ---- GetConsentPolicyAsync ----
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Get_policy_ok() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -301,7 +286,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     [Arguments("""{"default":"allow","prompt_timeout_seconds":45,"rules":null}""")]                    // null rules
     [Arguments("""{"default":"allow","prompt_timeout_seconds":45,"rules":[null]}""")]                  // null rule element
     [Arguments("""{"default":"bogus","prompt_timeout_seconds":45,"rules":[]}""")]                      // unknown default
@@ -317,7 +301,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Get_policy_error_frame() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -332,7 +315,6 @@ public class LocalControlOpsTests {
     // ---- PutConsentPolicyAsync ----
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Put_ack_ok() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -344,7 +326,6 @@ public class LocalControlOpsTests {
     }
 
     [Test] // {} is a wire-shape edge case (STJ default bool), not an exception — presentation is the app's job
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Put_ack_empty_object() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -356,7 +337,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Put_error_frame() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -371,7 +351,6 @@ public class LocalControlOpsTests {
     // ---- ResolveConsentAsync ----
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     [Arguments("""{"ok":true,"error":null,"rule_saved":null}""", true, null, null)]
     [Arguments("""{"ok":true,"error":"partial rule save failure","rule_saved":false}""", true, "partial rule save failure", false)]
     [Arguments("""{"ok":false,"error":"no pending consent request with that id","rule_saved":true}""", false, "no pending consent request with that id", true)]
@@ -388,7 +367,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Resolve_echoes_prompt_id_on_the_written_frame() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -402,7 +380,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Resolve_maps_error_frame_to_daemon_rejected() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -418,7 +395,6 @@ public class LocalControlOpsTests {
     /// than resolving by request id without the identity check, so the caller must see this as
     /// "nothing was resolved", never as a successful ack.
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Resolve_against_a_v1_codec_observes_eof_as_unexpected_reply_and_nothing_was_resolved() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -431,7 +407,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Resolve_clean_eof() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -443,7 +418,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Resolve_malformed_ack() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -455,7 +429,6 @@ public class LocalControlOpsTests {
     }
 
     [Test] // real short timeout, matching this file's existing choice of real time over FakeTimeProvider for socket tests
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Resolve_reply_timeout() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -467,7 +440,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Resolve_caller_cancellation() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -483,7 +455,6 @@ public class LocalControlOpsTests {
     // ---- shared transport classification (exercised via StopAgentAsync) ----
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Clean_eof() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -495,7 +466,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Truncated_frame() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -508,7 +478,6 @@ public class LocalControlOpsTests {
 
     [Test] // design spec §10: "undecodable frame ... → unexpected_reply" — FrameCodec.ReadAsync's
            // own InvalidDataException path, distinct from EndOfStreamException (Truncated_frame)
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Undecodable_frame_type() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -525,7 +494,6 @@ public class LocalControlOpsTests {
            // complete in one synchronous syscall, forcing a genuine async suspension that gives
            // AbruptReset's SO_LINGER(0) close real wall-clock time to land first — deterministic
            // "broken pipe" every run, not a timing-dependent flake.
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Post_connect_reset() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -538,24 +506,18 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Connect_failure() {
         if (OperatingSystem.IsWindows()) return;
 
-        using var sockDir = new TempDir("lco");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
-        try {
-            var ops = new LocalControlOps("lco-none") { ConnectTimeout = TimeSpan.FromSeconds(2) };
-            var ex = await Assert.ThrowsAsync<LocalControlOpsException>(
-                async () => await ops.StopAgentAsync("a1", false, CancellationToken.None));
-            await Assert.That(ex!.Reason).IsEqualTo("daemon_unreachable");
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        using var daemons = new TempDaemonStore();
+
+        var ops = new LocalControlOps(daemons.Store, "none") { ConnectTimeout = TimeSpan.FromSeconds(2) };
+        var ex = await Assert.ThrowsAsync<LocalControlOpsException>(
+            async () => await ops.StopAgentAsync("a1", false, CancellationToken.None));
+        await Assert.That(ex!.Reason).IsEqualTo("daemon_unreachable");
     }
 
     [Test] // real short timeout, matching LocalControlClientTests' choice of real time over FakeTimeProvider for socket tests
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Reply_timeout() {
         if (OperatingSystem.IsWindows()) return;
 
@@ -567,7 +529,6 @@ public class LocalControlOpsTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Caller_cancellation() {
         if (OperatingSystem.IsWindows()) return;
 

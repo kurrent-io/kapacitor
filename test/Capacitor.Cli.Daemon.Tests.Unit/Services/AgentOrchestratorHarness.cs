@@ -37,16 +37,16 @@ internal static class AgentOrchestratorHarness {
             // inline arm and the publication barrier. Production never has that window.
             bool                                                deferProcessorPublication = false
         ) {
-        var tmp    = new TempDir();
+        var tmp    = new TempDaemonStore();
         var config = new DaemonConfig {
             Name                = "test",
             ServerUrl           = "http://127.0.0.1:1",
             ClaudePath          = "claude",
             MaxConcurrentAgents = 5,
             WorktreeRoot        = tmp.CreateDir("worktree"),
-            // Phase B (D4): isolate the PID-record store to a temp dir so tests never touch the
-            // real ~/.config/kcap/daemons.
-            StateDir            = tmp.CreateDir("state")
+            // Phase B (D4): the PID-record store, consent policy and decision log all hang off this
+            // directory, so each harness gets its own and nothing reaches the real daemons dir.
+            Store               = tmp.Store
         };
 
         if (allowedRepoPath is not null) {
@@ -71,8 +71,8 @@ internal static class AgentOrchestratorHarness {
             .ToDictionary(f => f.Vendor);
 
         consentGate ??= new LaunchConsentGate(
-            new LaunchConsentStore(config.StateDir!, NullLogger.Instance),
-            new LaunchConsentDecisionLog(config.StateDir!, NullLogger.Instance),
+            new LaunchConsentStore(config.Store.StateDirectory(config.Name), NullLogger.Instance),
+            new LaunchConsentDecisionLog(config.Store.StateDirectory(config.Name), NullLogger.Instance),
             prompter: null, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         return new HarnessOrchestrator(
@@ -97,10 +97,10 @@ internal static class AgentOrchestratorHarness {
     /// every call site already does — reaps it at test end. BuildOrchestrator is called from many
     /// sites, so no per-test fixture could own that directory instead.</summary>
     sealed class HarnessOrchestrator : AgentOrchestrator {
-        readonly TempDir _tmp;
+        readonly TempDaemonStore _tmp;
 
         internal HarnessOrchestrator(
-                TempDir                                                 tmp,
+                TempDaemonStore                                         tmp,
                 DaemonConfig                                            config,
                 ServerConnection                                        server,
                 WorktreeManager                                         worktreeManager,

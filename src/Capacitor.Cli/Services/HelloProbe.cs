@@ -1,5 +1,6 @@
 using System.Net.Sockets;
 using System.Text.Json;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 
 namespace Capacitor.Cli.Services;
@@ -16,11 +17,11 @@ public sealed record HelloProbeResult(bool WellFormed, int? ProtocolVersion, str
 static class HelloProbe {
     static readonly HelloProbeResult NotWellFormed = new(false, null, null, null);
 
-    public static async Task<HelloProbeResult> RunAsync(string daemonName, TimeSpan timeout) {
+    public static async Task<HelloProbeResult> RunAsync(DaemonStore store, string daemonName, TimeSpan timeout) {
         using var cts = new CancellationTokenSource(timeout);
         try {
             var sock = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            await using var stream = await ConnectAsync(sock, daemonName, cts.Token);
+            await using var stream = await ConnectAsync(sock, store, daemonName, cts.Token);
 
             await FrameCodec.WriteAsync(stream, new LocalFrame(FrameType.Hello), cts.Token);
             var reply = await FrameCodec.ReadAsync(stream, cts.Token);
@@ -34,9 +35,9 @@ static class HelloProbe {
         }
     }
 
-    static async Task<NetworkStream> ConnectAsync(Socket sock, string daemonName, CancellationToken ct) {
+    static async Task<NetworkStream> ConnectAsync(Socket sock, DaemonStore store, string daemonName, CancellationToken ct) {
         try {
-            await sock.ConnectAsync(new UnixDomainSocketEndPoint(LocalSocketPaths.Socket(daemonName)), ct);
+            await sock.ConnectAsync(new UnixDomainSocketEndPoint(store.SocketPath(daemonName)), ct);
             return new NetworkStream(sock, ownsSocket: true);
         } catch { sock.Dispose(); throw; }
     }

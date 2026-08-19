@@ -1,32 +1,33 @@
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
-[NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
 public class CoverageJournalTests {
     // Real DaemonLock lifecycle so the InstanceId chain is genuine, never a hand-edited marker.
     sealed class Harness : IDisposable {
-        readonly TempDir _tmp = new();
-        public readonly string LockDir;
-        public readonly string StateDir;
+        const string DaemonName = "alpha";
+
+        readonly TempDaemonStore _daemons = new();
+
+        // The lock and the journal share one daemons directory, as they do in production.
+        public readonly string StateDirectory;
 
         public Harness() {
-            LockDir  = _tmp.CreateDir("lock");
-            StateDir = _tmp.CreateDir("state");
-            DaemonLockPaths.OverrideDirectoryForTesting(LockDir);
+            StateDirectory = _daemons.Store.StateDirectory(DaemonName);
+            // Pre-created, as DaemonRunner does at boot: one test's premise is a used-looking state dir.
+            Directory.CreateDirectory(StateDirectory);
         }
 
         // One real boot: acquire the lock, record coverage (aware), dispose.
         public bool AwareBoot(bool contained = true) {
-            using var l = DaemonLock.TryAcquire("alpha")!;
-            return new CoverageJournal(StateDir, NullLogger.Instance)
+            using var l = DaemonLock.TryAcquire(_daemons.Store, DaemonName)!;
+            return new CoverageJournal(StateDirectory, NullLogger.Instance)
                 .RecordBoot(l.InstanceId, l.PriorInstanceId, priorLockReadFailed: l.PriorLockIndeterminate, contained);
         }
         // An unaware/old boot: acquires the real lock (mints a fresh InstanceId) but writes NO journal.
-        public static void UnawareBoot() { using var l = DaemonLock.TryAcquire("alpha")!; }
-        public void Dispose() { DaemonLockPaths.OverrideDirectoryForTesting(null); _tmp.Dispose(); }
+        public void UnawareBoot() { using var l = DaemonLock.TryAcquire(_daemons.Store, DaemonName)!; }
+        public void Dispose() => _daemons.Dispose();
     }
 
     [Test] public async Task Genesis_first_ever_contained_boot_seeds_true() {
@@ -48,7 +49,7 @@ public class CoverageJournalTests {
     [Test] public async Task Downgrade_sandwich_breaks_the_chain_permanently() {
         using var h = new Harness();
         await Assert.That(h.AwareBoot()).IsTrue();
-        Harness.UnawareBoot();                             // old boot mints a fresh lock InstanceId, no journal
+        h.UnawareBoot();                                   // old boot mints a fresh lock InstanceId, no journal
         await Assert.That(h.AwareBoot()).IsFalse();  // prior lock id != journal tail id ⇒ broken
         await Assert.That(h.AwareBoot()).IsFalse();  // sticky: the detecting boot persisted false
     }
@@ -64,7 +65,7 @@ public class CoverageJournalTests {
         using var h = new Harness();
         // A pre-existing (previously-used) state dir with NO journal file + a prior lock InstanceId.
         // Genesis-eligibility is "journal absent", but a prior lock InstanceId ⇒ un-journaled history ⇒ false.
-        Harness.UnawareBoot(); // prior lock id exists; state dir has no journal
+        h.UnawareBoot(); // prior lock id exists; state dir has no journal
         await Assert.That(h.AwareBoot()).IsFalse();
     }
 
@@ -73,12 +74,12 @@ public class CoverageJournalTests {
         // A read-failed / blank prior lock (priorLockReadFailed = true) with an absent journal must NOT be
         // treated as genesis — an unreadable prior lock could hide an intervening boot, so it fails closed
         // (regression: previously null priorLockInstanceId alone drove genesis, conflating empty-vs-unreadable).
-        var covered = new CoverageJournal(h.StateDir, NullLogger.Instance)
+        var covered = new CoverageJournal(h.StateDirectory, NullLogger.Instance)
             .RecordBoot("me", priorLockInstanceId: null, priorLockReadFailed: true, thisEpochContained: true);
         await Assert.That(covered).IsFalse();
         // A genuinely empty prior lock (readFailed = false, id = null) with an absent journal is still genesis.
         using var h2 = new Harness();
-        var genesis = new CoverageJournal(h2.StateDir, NullLogger.Instance)
+        var genesis = new CoverageJournal(h2.StateDirectory, NullLogger.Instance)
             .RecordBoot("me", priorLockInstanceId: null, priorLockReadFailed: false, thisEpochContained: true);
         await Assert.That(genesis).IsTrue();
     }
@@ -86,7 +87,7 @@ public class CoverageJournalTests {
     [Test] public async Task Corrupt_coverage_state_is_false() {
         using var h = new Harness();
         await Assert.That(h.AwareBoot()).IsTrue();
-        File.WriteAllText(Path.Combine(h.StateDir, "coverage.json"), "{ not json");
+        File.WriteAllText(Path.Combine(h.StateDirectory, "coverage.json"), "{ not json");
         await Assert.That(h.AwareBoot()).IsFalse();
     }
 
@@ -96,8 +97,8 @@ public class CoverageJournalTests {
         // document. A crash BEFORE the rename leaves at most a stray .tmp — never a partial journal and never
         // a separate marker — so File.Exists(coverage.json) stays false and the next boot is still
         // genesis-eligible (re-seeds correctly). A COMPLETED rename is a valid, fully-initialized journal.
-        Directory.CreateDirectory(h.StateDir);
-        var journal = Path.Combine(h.StateDir, "coverage.json");
+        Directory.CreateDirectory(h.StateDirectory);
+        var journal = Path.Combine(h.StateDirectory, "coverage.json");
         File.WriteAllText(journal + ".tmp-deadbeef", "{ partial"); // crash-before-rename residue
         await Assert.That(File.Exists(journal)).IsFalse();
 

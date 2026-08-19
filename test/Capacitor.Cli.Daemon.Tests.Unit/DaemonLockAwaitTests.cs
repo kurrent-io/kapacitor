@@ -1,48 +1,38 @@
 using System.Diagnostics;
-using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit;
 
-[NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
 public class DaemonLockAwaitTests {
     [Test]
     public async Task Await_acquires_after_holder_releases() {
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
-        try {
-            var first = DaemonLock.TryAcquire("await-test");
-            await Assert.That(first).IsNotNull();
+        using var daemons = new TempDaemonStore();
 
-            // Release the holder after a short delay, on a background task.
-            var releaser = Task.Run(async () => { await Task.Delay(300); first!.Dispose(); });
+        var first = DaemonLock.TryAcquire(daemons.Store, "await-test");
+        await Assert.That(first).IsNotNull();
 
-            var sw     = Stopwatch.StartNew();
-            var second = DaemonLock.TryAcquire("await-test", TimeSpan.FromSeconds(5));
-            sw.Stop();
+        // Release the holder after a short delay, on a background task.
+        var releaser = Task.Run(async () => { await Task.Delay(300); first!.Dispose(); });
 
-            await Assert.That(second).IsNotNull();
-            await Assert.That(sw.ElapsedMilliseconds).IsGreaterThanOrEqualTo(200);
-            second!.Dispose();
-            await releaser;
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        var sw     = Stopwatch.StartNew();
+        var second = DaemonLock.TryAcquire(daemons.Store, "await-test", TimeSpan.FromSeconds(5));
+        sw.Stop();
+
+        await Assert.That(second).IsNotNull();
+        await Assert.That(sw.ElapsedMilliseconds).IsGreaterThanOrEqualTo(200);
+        second!.Dispose();
+        await releaser;
     }
 
     [Test]
     public async Task Await_returns_null_if_never_released() {
-        using var tmp = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(tmp.Path);
-        try {
-            var first = DaemonLock.TryAcquire("held");
-            await Assert.That(first).IsNotNull();
+        using var daemons = new TempDaemonStore();
 
-            var second = DaemonLock.TryAcquire("held", TimeSpan.FromMilliseconds(500));
-            await Assert.That(second).IsNull();
+        var first = DaemonLock.TryAcquire(daemons.Store, "held");
+        await Assert.That(first).IsNotNull();
 
-            first!.Dispose();
-        } finally {
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
-        }
+        var second = DaemonLock.TryAcquire(daemons.Store, "held", TimeSpan.FromMilliseconds(500));
+        await Assert.That(second).IsNull();
+
+        first!.Dispose();
     }
 }

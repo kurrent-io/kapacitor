@@ -4,6 +4,7 @@ using Capacitor.Cli.Daemon.Services;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
+[ParallelLimiter<SubprocessLimit>]
 public class PtyHostedAgentRuntimeTests {
     // Records every write so we can assert the split-write ordering.
     sealed class RecordingPty : IPtyProcess {

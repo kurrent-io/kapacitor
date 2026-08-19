@@ -474,8 +474,7 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
     /// the ACP reviewers use, so a reviewer home and a consent decision live under one owner-only root
     /// per daemon. Per DAEMON, never shared: the home sweep's safety depends on every directory in its
     /// root belonging to this daemon.</summary>
-    internal static string ReviewerStateDir(DaemonConfig config) =>
-        Path.Combine(config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
+    internal static string ReviewerStateDir(DaemonConfig config) => config.Store.StateDirectory(config.Name);
 
     internal static string TempDirIn(string home) => Path.Combine(home, "tmp");
 

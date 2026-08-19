@@ -26,7 +26,7 @@ namespace Capacitor.Cli.Commands;
 /// is the remedy for — see the per-vendor exception on <see cref="ReviewerVersionStore"/>.</para>
 /// </summary>
 public static class DaemonReviewerCommand {
-    public static Task<int> HandleAsync(string[] args) {
+    public static Task<int> HandleAsync(DaemonStore daemonStore, string[] args) {
         if (args.Length == 0 || args[0] != "affirm")
             return Task.FromResult(Usage());
 
@@ -43,10 +43,9 @@ public static class DaemonReviewerCommand {
         }
 
         var name     = DaemonNameResolver.Resolve(args, AppConfig.ResolvedProfile?.Profile?.Daemon?.Name);
-        // The same {DaemonLockPaths.Directory}/{name} shape the daemon resolves for its own state
-        // (consent, decisions). DaemonConfig.StateDir has no profile or env binding, so the default
-        // root is the only one a running daemon can be using.
-        var stateDir = Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(name));
+        // DaemonConfig.StateDir has no profile or env binding, so the default root is the only one
+        // a running daemon can be using.
+        var stateDir = daemonStore.StateDirectory(name);
 
         var binary   = Environment.GetEnvironmentVariable(reviewer.PathEnvVar) is { Length: > 0 } configured
             ? configured

@@ -15,7 +15,7 @@ internal readonly record struct AgentRow(
 /// `kcap agent start|ls|stop|attach` — drive daemon-hosted agents from the local
 /// terminal over the daemon's local control socket.
 /// </summary>
-internal static class AgentCommand {
+internal sealed class AgentCommand(DaemonStore store) {
     internal static readonly string[] KnownSubcommands = ["start", "ls", "stop", "attach"];
 
     /// Verbs that only ever belonged to the pre-rename `agent` daemon group, minus the
@@ -33,7 +33,7 @@ internal static class AgentCommand {
     internal static (string Sub, string[] Args) SplitSubcommand(string[] args) =>
         args.Length > 1 && !args[1].StartsWith('-') ? (args[1], args[2..]) : ("ls", args[1..]);
 
-    public static async Task<int> HandleAsync(string[] args, string? baseUrl) {
+    public async Task<int> HandleAsync(string[] args, string? baseUrl) {
         var (sub, rest) = SplitSubcommand([.. args.Where(a => !GlobalFlags.Contains(a))]);
 
         // `agent` was the daemon verb before it was renamed to `daemon`. The two groups still
@@ -64,7 +64,7 @@ internal static class AgentCommand {
         }
     }
 
-    static async Task<int> RunAsync(string[] args, string? baseUrl) {
+    async Task<int> RunAsync(string[] args, string? baseUrl) {
         // ls/stop/attach only ever talk to the local socket, so the group is offline-callable.
         // Starting an agent is the one subcommand that needs a server for the daemon to record to.
         if (baseUrl is null) {
@@ -83,7 +83,7 @@ internal static class AgentCommand {
         var name = ResolveName(parsed.DaemonName);
         if (!await EnsureDaemonAsync(name)) return 1;
 
-        var sock = LocalSocketPaths.Socket(name);
+        var sock = store.SocketPath(name);
         var work = parsed.Worktree ? WorkLocation.OwnedWorktree : WorkLocation.BorrowedCwd;
         var (cols, rows) = TermSize();
         var spawn = FrameCodec.Spawn(parsed.Vendor, work, parsed.Private, Environment.CurrentDirectory, parsed.Passthrough, cols, rows);
@@ -93,7 +93,7 @@ internal static class AgentCommand {
             : await LocalAgentClient.RunAsync(sock, spawn, CancellationToken.None);
     }
 
-    static async Task<int> AttachAsync(string[] args) {
+    async Task<int> AttachAsync(string[] args) {
         if (args.Length == 0 || args[0].StartsWith('-')) {
             await Console.Error.WriteLineAsync("usage: kcap agent attach <agent-id> [--daemon <name>]");
 
@@ -107,7 +107,7 @@ internal static class AgentCommand {
             return 1;
         }
 
-        var sock = LocalSocketPaths.Socket(ResolveName(daemonName));
+        var sock = store.SocketPath(ResolveName(daemonName));
 
         if (!File.Exists(sock)) {
             await Console.Error.WriteLineAsync($"kcap: no daemon socket at {sock}");
@@ -121,7 +121,7 @@ internal static class AgentCommand {
         return await LocalAgentClient.RunAsync(sock, new LocalFrame(FrameType.Attach) { Text = agentId }, CancellationToken.None);
     }
 
-    static async Task<int> StopAsync(string[] args) {
+    async Task<int> StopAsync(string[] args) {
         var all = args.Contains("--all");
         var yes = args.Contains("--yes") || args.Contains("-y");
         var force = args.Contains("--force");
@@ -148,7 +148,7 @@ internal static class AgentCommand {
         }
 
         var name = ResolveName(daemonName);
-        var sock = LocalSocketPaths.Socket(name);
+        var sock = store.SocketPath(name);
 
         if (!File.Exists(sock)) {
             await Console.Error.WriteLineAsync($"kcap: no daemon socket at {sock}");
@@ -289,7 +289,7 @@ internal static class AgentCommand {
         return id;
     }
 
-    static async Task<int> ListAsync(string[] args) {
+    async Task<int> ListAsync(string[] args) {
         var (daemonName, daemonError) = DaemonNameFrom(args);
         if (daemonError is not null) {
             await Console.Error.WriteLineAsync($"kcap agent: {daemonError}");
@@ -297,7 +297,7 @@ internal static class AgentCommand {
             return 1;
         }
 
-        var sock = LocalSocketPaths.Socket(ResolveName(daemonName));
+        var sock = store.SocketPath(ResolveName(daemonName));
 
         if (!File.Exists(sock)) {
             Console.WriteLine("No local daemon running.");
@@ -406,12 +406,12 @@ internal static class AgentCommand {
     }
 
     /// <summary>Connects if a daemon is up; otherwise starts one detached and waits for the socket.</summary>
-    static async Task<bool> EnsureDaemonAsync(string name) {
-        var sock = LocalSocketPaths.Socket(name);
+    async Task<bool> EnsureDaemonAsync(string name) {
+        var sock = store.SocketPath(name);
         if (await CanConnectAsync(sock)) return true;
 
         await Console.Error.WriteLineAsync($"kcap: starting daemon '{name}'…");
-        await DaemonCommands.HandleAsync(["daemon", "start", "-d", "--name", name]);
+        await new DaemonCommands(store).HandleAsync(["daemon", "start", "-d", "--name", name]);
 
         var deadline = DateTime.UtcNow.AddSeconds(15);
         while (DateTime.UtcNow < deadline) {

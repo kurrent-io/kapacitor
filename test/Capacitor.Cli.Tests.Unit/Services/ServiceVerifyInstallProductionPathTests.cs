@@ -1,11 +1,10 @@
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
 
 // Real-manager counterpart to ServiceVerifyStartGateProductionPathTests, covering the same
 // discriminated-read contract for InstallVerifiedAsync's marker recovery.
-[NotInParallel(["HomeEnvVarMutation", nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting"])]
+[NotInParallel(["HomeEnvVarMutation"])]
 public class ServiceVerifyInstallProductionPathTests {
     const string Id = "prodpath-install";
 
@@ -25,16 +24,16 @@ public class ServiceVerifyInstallProductionPathTests {
 
         // The fingerprint value is irrelevant — recovery must never reach the fingerprint compare
         // once the read is classified Unreadable.
-        ServiceTxnMarker.Write(Id, new TxnMarker(1, "install", "written", "stale", "no-unit", "irrelevant-fingerprint"));
+        ServiceTxnMarker.Write(fx.Store, Id, new TxnMarker(1, "install", "written", "stale", "no-unit", "irrelevant-fingerprint"));
 
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(false, null, null, null));
 
-        var sut = new ServiceVerify(fx.Manager, _ => 4242, Hello, TimeProvider.System);
+        var sut = new ServiceVerify(fx.Store, fx.Manager, _ => 4242, Hello, TimeProvider.System);
 
         var exit = await sut.InstallVerifiedAsync(Spec(fx.DaemonPath), replace: false, expectedVersion: null);
 
         await Assert.That(exit).IsEqualTo(VerifyExit.RestoreVerification);
-        await Assert.That(ServiceTxnMarker.Exists(Id)).IsTrue();
+        await Assert.That(ServiceTxnMarker.Exists(fx.Store, Id)).IsTrue();
     }
 }

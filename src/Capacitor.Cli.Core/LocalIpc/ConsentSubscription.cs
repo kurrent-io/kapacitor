@@ -17,7 +17,7 @@ public abstract record ConsentStreamEvent {
 
 public static class ConsentSubscription {
     public static async IAsyncEnumerable<ConsentStreamEvent> RunAsync(
-            string daemonName, [EnumeratorCancellation] CancellationToken ct = default) {
+            DaemonStore store, string daemonName, [EnumeratorCancellation] CancellationToken ct = default) {
         using var sock = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         NetworkStream? stream = null;
         try {
@@ -25,7 +25,7 @@ public static class ConsentSubscription {
             // before routing and closes without replying — we yield Subscribed (the write
             // flushed) and then end on EOF, never registering a subscriber there (spec §4.1).
             try {
-                await sock.ConnectAsync(new UnixDomainSocketEndPoint(LocalSocketPaths.Socket(daemonName)), ct);
+                await sock.ConnectAsync(new UnixDomainSocketEndPoint(store.SocketPath(daemonName)), ct);
                 stream = new NetworkStream(sock, ownsSocket: false);
                 await FrameCodec.WriteAsync(stream, new LocalFrame(FrameType.ConsentSubscribeV2), ct);
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {

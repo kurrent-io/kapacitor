@@ -27,11 +27,23 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// outcome asserted below — i.e. this test FAILS on that regression, unlike the pre-round-4 test it
 /// replaces.
 /// </summary>
+[ParallelLimiter<SubprocessLimit>]
 public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
-    readonly TempDir _tmp = new();
-    public void Dispose() => _tmp.Dispose();
+    readonly List<TempDaemonStore> _daemons = [];
+    public void Dispose() { foreach (var daemons in _daemons) daemons.Dispose(); }
 
-    string NewStateDir() => _tmp.CreateDir(Guid.NewGuid().ToString("N"));
+    // One daemons directory per config: the reviewer state root is {directory}/{name} and the name is
+    // fixed, so two configs built in the same test are isolated only by their directory.
+    DaemonStore NewPaths() {
+        var daemons = new TempDaemonStore();
+        _daemons.Add(daemons);
+
+        return daemons.Store;
+    }
+
+    // Nothing configured but a state root of its own — the reviewer gate reads a version store, and
+    // that read must never reach the developer's real daemons directory.
+    DaemonConfig BareConfig() => new() { Name = "bare", Store = NewPaths() };
 
     // 20s (was 5s): several barrier tests poll a REAL handshake for its "initialize" send within this
     // window; on the slower/differently-scheduled windows CI runner, under parallel load, that send
@@ -1842,6 +1854,7 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
     /// token. An interactive agent runs as the user, with the user's own vendor profile and
     /// credentials — redirecting those would break it, and doing so silently would be worse.</summary>
     [Test]
+    [NotInParallel("HomeEnvVarMutation")] // psi snapshots HOME; this compares it to a later live read
     public async Task BuildProcessStartInfo_Copilot_NonBorrowedReview_LeavesTheEnvironmentAlone() {
         var ctx = ReviewContext(["kcap-review"]) with { Work = WorkLocation.OwnedWorktree };
         var supported = CopilotBorrowedReviewPolicy.Resolve(
@@ -2208,8 +2221,8 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
     DaemonConfig GeminiEnabledConfig(string? affirmed = GeminiBuild) {
         var config = new DaemonConfig {
             GeminiUnattendedReviewerEnabled = true,
-            StateDir = NewStateDir(),
-            Name     = "test-daemon"
+            Store = NewPaths(),
+            Name  = "test-daemon"
         };
 
         if (affirmed is not null)
@@ -2231,7 +2244,7 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
         // unpinned: on a host with no gemini the version is unknown, so the test passed for that reason and
         // would have kept passing if advertisement stopped honouring the flag entirely.
         IHostedAgentRuntimeFactory disabled = new AcpHostedAgentRuntimeFactory(
-            AcpVendorDescriptors.Gemini, new DaemonConfig(), NullLoggerFactory.Instance,
+            AcpVendorDescriptors.Gemini, BareConfig(), NullLoggerFactory.Instance,
             new CaptureServerConnection(), resolveVendorVersion: _ => GeminiBuild);
 
         await Assert.That(disabled.SupportsUnattended).IsFalse();
@@ -2312,7 +2325,7 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
     [Test]
     public async Task Gemini_ADefaultDaemon_IsNotWithheldForLackOfAnOptIn() {
         IHostedAgentRuntimeFactory standard = new AcpHostedAgentRuntimeFactory(
-            AcpVendorDescriptors.Gemini, new DaemonConfig(), NullLoggerFactory.Instance,
+            AcpVendorDescriptors.Gemini, BareConfig(), NullLoggerFactory.Instance,
             new CaptureServerConnection(), resolveVendorVersion: _ => GeminiBuild);
 
         var reason = standard.DescribeUnattendedSupport().WithheldReason;
@@ -2445,7 +2458,7 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
         var fake    = new FakeAcpAgent();
         var factory = new AcpHostedAgentRuntimeFactory(
             descriptor: AcpVendorDescriptors.Gemini,
-            config: new DaemonConfig(),                       // NOT enabled
+            config: BareConfig(),                            // no affirmation of its own
             loggerFactory: NullLoggerFactory.Instance,
             connection: new CaptureServerConnection(),
             connectionSource: _ => {
@@ -2561,7 +2574,7 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
     /// <summary>OpenCode is a GATED reviewer vendor (like Kiro/Gemini) — RequireReviewerCapability
     /// refuses it before <c>_connectionSource</c> even runs unless the operator has opted in AND the
     /// resolved build matches (or exceeds) what this daemon has affirmed. Mirrors the established
-    /// <c>GeminiEnabledConfig</c> pattern: a real, per-test-unique StateDir backs a filesystem
+    /// <c>GeminiEnabledConfig</c> pattern: a real, per-config state root backs a filesystem
     /// <see cref="ReviewerVersionStore"/>, and <c>launchTimeoutSeconds</c> lets a caller
     /// override the 120s default when a test needs the deadline to actually fire.</summary>
     const string OpenCodeBuild = "1.0.0";
@@ -2569,8 +2582,8 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
     DaemonConfig OpenCodeEnabledConfig(int? launchTimeoutSeconds = null) {
         var config = new DaemonConfig {
             OpenCodeUnattendedReviewerEnabled = true,
-            StateDir = NewStateDir(),
-            Name     = "test-daemon"
+            Store = NewPaths(),
+            Name  = "test-daemon"
         };
 
         if (launchTimeoutSeconds is { } seconds)

@@ -13,9 +13,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit;
 /// <c>AntigravityReviewerLaunchTests</c>); what these pin is that the list this daemon advertises
 /// derives from that ladder rather than from a second, separately-maintained narrowing pass.
 /// </summary>
-public class DaemonRunnerAntigravityFloorTests : IDisposable {
-    readonly TempDir _tmp = new();
-    public void Dispose() => _tmp.Dispose();
+public class DaemonRunnerAntigravityFloorTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
     sealed class FakeFactory(string vendor, bool advertised) : IHostedAgentRuntimeFactory {
         public string Vendor             { get; } = vendor;
@@ -34,7 +33,7 @@ public class DaemonRunnerAntigravityFloorTests : IDisposable {
         var config = new DaemonConfig {
             AntigravityPath                      = "agy",
             AntigravityUnattendedReviewerEnabled = true,
-            StateDir                             = _tmp.Path,
+            Store                                = Daemons.Store,
             Name                                 = "test-daemon"
         };
 
@@ -97,10 +96,9 @@ public class DaemonRunnerAntigravityFloorTests : IDisposable {
     /// and every launch refuses as <c>version_no_minimum</c> forever, while both halves look correct
     /// in isolation.
     ///
-    /// <para>Seeds through <c>DaemonRunner.SeedReviewerAffirmation</c> at the directory
-    /// <c>RunAsync</c> computes — restated here on purpose, so a change to either side has to be made
-    /// twice — and then asserts through advertisement rather than by reading the file back, which
-    /// would only re-derive the writer's own answer.</para>
+    /// <para>Seeds through <c>DaemonRunner.SeedReviewerAffirmation</c> at <c>config.StateDirectory</c>
+    /// — the one directory <c>RunAsync</c> hands it — and then asserts through advertisement rather
+    /// than by reading the file back, which would only re-derive the writer's own answer.</para>
     /// </summary>
     [Test]
     [UnsupportedOSPlatform("windows")]
@@ -112,8 +110,8 @@ public class DaemonRunnerAntigravityFloorTests : IDisposable {
         var config = Config(minimum: null);
         config.AntigravityPath = stub;
 
-        // Restated rather than taken from the factory: this is the shape RunAsync computes.
-        var stateDir = Path.Combine(config.StateDir!, DaemonLockPaths.Sanitize(config.Name));
+        // The per-name state root RunAsync passes to the seeding block.
+        var stateDir = config.Store.StateDirectory(config.Name);
 
         DaemonRunner.SeedReviewerAffirmation(
             stateDir, DaemonRunner.AntigravityVendor, enabled: true, stub);
@@ -157,8 +155,8 @@ public class DaemonRunnerAntigravityFloorTests : IDisposable {
         config.AntigravityPath                      = stub;
         config.AntigravityUnattendedReviewerEnabled = false;
 
-        // Restated rather than taken from the factory: this is the shape RunAsync computes.
-        var stateDir = Path.Combine(config.StateDir!, DaemonLockPaths.Sanitize(config.Name));
+        // The per-name state root RunAsync passes to the seeding block.
+        var stateDir = config.Store.StateDirectory(config.Name);
 
         DaemonRunner.SeedReviewerFloors(stateDir, config);
 
@@ -216,8 +214,8 @@ public class DaemonRunnerAntigravityFloorTests : IDisposable {
         config.KiroUnattendedReviewerEnabled        = false;
         config.GeminiUnattendedReviewerEnabled      = false;
 
-        // Restated rather than taken from the factory: this is the shape RunAsync computes.
-        var stateDir = Path.Combine(config.StateDir!, DaemonLockPaths.Sanitize(config.Name));
+        // The per-name state root RunAsync passes to the seeding block.
+        var stateDir = config.Store.StateDirectory(config.Name);
 
         DaemonRunner.SeedReviewerFloors(stateDir, config);
 
@@ -248,7 +246,7 @@ public class DaemonRunnerAntigravityFloorTests : IDisposable {
         config.KiroUnattendedReviewerEnabled   = true;
         config.GeminiUnattendedReviewerEnabled = true;
 
-        var stateDir = Path.Combine(config.StateDir!, DaemonLockPaths.Sanitize(config.Name));
+        var stateDir = config.Store.StateDirectory(config.Name);
 
         DaemonRunner.SeedReviewerFloors(stateDir, config);
 

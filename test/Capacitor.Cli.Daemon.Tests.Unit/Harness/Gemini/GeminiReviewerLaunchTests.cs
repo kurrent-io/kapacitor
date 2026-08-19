@@ -13,9 +13,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Gemini;
 /// channel (it starts normally and can never report), and a reviewer launched with approval prompting
 /// restored (it stalls on a permission frame no human answers).</para>
 /// </summary>
-public class GeminiReviewerLaunchTests : IDisposable {
-    readonly TempDir _tmp = new();
-    public void Dispose() => _tmp.Dispose();
+public class GeminiReviewerLaunchTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
     static readonly Guid ChannelGuid   = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     static readonly Guid DenyGuid      = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
@@ -28,14 +27,14 @@ public class GeminiReviewerLaunchTests : IDisposable {
     /// <summary>Enabled AND carrying an affirmation for the build these launches report, seeded exactly
     /// as enabling the reviewer does in production. Without the affirmation every launch is refused over
     /// an upgrade that never happened.</summary>
-    // EnabledConfig is a property, not a field: every read builds a fresh isolated StateDir so one
-    // test's version affirmation can never leak into another's.
+    // EnabledConfig is a property, not a field: every read takes a fresh daemon name, and so a fresh
+    // per-name state root, so one test's version affirmation can never leak into another's.
     DaemonConfig EnabledConfig {
         get {
             var config = new DaemonConfig {
                 GeminiUnattendedReviewerEnabled = true,
-                StateDir = _tmp.CreateDir(Guid.NewGuid().ToString("N")),
-                Name     = "test-daemon"
+                Store = Daemons.Store,
+                Name  = "test-daemon-" + Guid.NewGuid().ToString("N")
             };
 
             AcpHostedAgentRuntimeFactory.VersionStoreFor(config, AcpVendorDescriptors.Gemini.Vendor)

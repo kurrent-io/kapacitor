@@ -12,7 +12,9 @@ namespace Capacitor.Cli.Tests.Integration;
 /// runs a real fail-fast path (lock → launchctl query → bootstrap attempt → forward-budget poll →
 /// rollback) without touching anything real. macOS-only: launchctl-classifying code paths.
 /// </summary>
-[NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+// Both tests drive a real launchctl forward-budget poll, and one of them bounds the child's
+// flock acquisition by wall clock — they cannot afford to race each other for a core.
+[NotInParallel(nameof(ServiceVerifyProcessTests))]
 public class ServiceVerifyProcessTests {
     static (string Home, string Daemons, string Config) NewIsolatedEnv(TempDir tmp) {
         // Daemons itself is deliberately absent — --verify must create it, as on a first run — so only
@@ -22,36 +24,9 @@ public class ServiceVerifyProcessTests {
         return (tmp.CreateDir("home"), tmp.PathTo("daemons-root", "daemons"), tmp.CreateDir("cfg"));
     }
 
-    /// <summary>Mirrors McpSessionsServerTests.GetCliBinaryPath: walk up from the test assembly's own
-    /// bin dir to the repo root, then down into the CLI project's build output.</summary>
-    static string GetCliBinaryPath() {
-        var asmDir      = Path.GetDirectoryName(typeof(ServiceVerifyProcessTests).Assembly.Location)!;
-        var binDir      = Path.GetDirectoryName(asmDir)!;
-        var config      = Path.GetFileName(binDir);
-        var testBin     = Path.GetDirectoryName(binDir)!;
-        var testProjDir = Path.GetDirectoryName(testBin)!;
-        var testRoot    = Path.GetDirectoryName(testProjDir)!;
-        var repoRoot    = Path.GetDirectoryName(testRoot)!;
-        var binaryName  = OperatingSystem.IsWindows() ? "kcap.exe" : "kcap";
-
-        return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
-    }
-
-    static string RequireCliBinary() {
-        var binary = GetCliBinaryPath();
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary);
-        }
-        return binary;
-    }
-
-    static bool LockHeld(string daemonsDir, string serviceName) {
-        DaemonLockPaths.OverrideDirectoryForTesting(daemonsDir);
-        try { return ServiceTxnLock.IsHeld(serviceName); }
-        finally { DaemonLockPaths.OverrideDirectoryForTesting(null); }
-    }
+    // The parent inspects the flock the child holds, so both must name the same directory.
+    static bool LockHeld(string daemonsDir, string serviceName) =>
+        ServiceTxnLock.IsHeld(new DaemonStore(daemonsDir), serviceName);
 
     /// <summary>First direct child pid of <paramref name="parentPid"/>, via <c>pgrep -P</c> — used to
     /// find the orphaned kcap grandchild for a best-effort cleanup kill, since Process.Start only
@@ -71,23 +46,13 @@ public class ServiceVerifyProcessTests {
     public async Task ClosedStdio_StillExitsWithCodedNonZero() {
         Skip.When(!OperatingSystem.IsMacOS(), "exercises launchctl-classifying code paths");
 
-        var binary = RequireCliBinary();
         using var tmp = new TempDir();
         var (home, daemons, config) = NewIsolatedEnv(tmp);
 
-        var psi = new ProcessStartInfo(binary, "daemon service start --name ptest --verify") {
-            RedirectStandardInput  = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-            WorkingDirectory       = home,
-            Environment = {
-                ["HOME"]             = home,
-                ["KCAP_DAEMONS_DIR"] = daemons,
-                ["KCAP_CONFIG_DIR"]  = config,
-            }
-        };
+        var psi = KcapProcess.StartInfo(new DaemonStore(daemons), "daemon", "service", "start", "--name", "ptest", "--verify");
+        psi.WorkingDirectory = home;
+        psi.Environment["HOME"] = home;
+        psi.Environment["KCAP_CONFIG_DIR"] = config;
 
         using var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap");
 
@@ -121,7 +86,6 @@ public class ServiceVerifyProcessTests {
     public async Task ParentDeath_OrphanedChildStillReleasesTheServiceLock() {
         Skip.When(!OperatingSystem.IsMacOS(), "exercises launchctl-classifying code paths");
 
-        var binary = RequireCliBinary();
         using var tmp = new TempDir();
         var (home, daemons, config) = NewIsolatedEnv(tmp);
         const string serviceName = "ptest2";
@@ -135,7 +99,8 @@ public class ServiceVerifyProcessTests {
         // sh is the "parent" — it forks kcap as its own child (no exec) so killing sh orphans kcap
         // rather than replacing it. The trailing `echo done` is what forces sh to stay a real
         // intermediate process instead of tail-call-optimizing itself away.
-        var shellCommand = $"'{binary}' daemon service start --name {serviceName} --verify 2>'{errPath}'; echo done";
+        var shellCommand =
+            $"'{KcapProcess.BinaryPath}' daemon service start --name {serviceName} --verify 2>'{errPath}'; echo done";
         var psi = new ProcessStartInfo("/bin/sh", ["-c", shellCommand]) {
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
@@ -144,7 +109,7 @@ public class ServiceVerifyProcessTests {
             WorkingDirectory       = home,
             Environment = {
                 ["HOME"]             = home,
-                ["KCAP_DAEMONS_DIR"] = daemons,
+                [DaemonStore.DaemonsDirEnvVar] = daemons,
                 ["KCAP_CONFIG_DIR"]  = config,
             }
         };

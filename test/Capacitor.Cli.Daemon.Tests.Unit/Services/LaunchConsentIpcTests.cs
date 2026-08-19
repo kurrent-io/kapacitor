@@ -1,6 +1,5 @@
 using System.Net.Sockets;
 using System.Text.Json;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
@@ -14,7 +13,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// ConsentRulesGet/ConsentRulesPut) over a REAL Unix-domain socket — the same
 /// LocalControlServer.HandleConnectionAsync routing switch a real `kcap` client talks to.
 /// The harness mirrors AgentOrchestratorLocalAttachTests's real-socket tests (temp
-/// DaemonLockPaths override, socket-file poll, Windows guard) but builds its own minimal
+/// per-test daemons directory, socket-file poll, Windows guard) but builds its own minimal
 /// AgentOrchestrator, since none of these tests exercise Spawn/Attach/List/Stop — the
 /// orchestrator only needs to exist to satisfy LocalControlServer's constructor.
 /// </summary>
@@ -42,24 +41,25 @@ public class LaunchConsentIpcTests {
     }
 
     sealed record Harness(
-        TempDir StateDir, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection,
+        TempDaemonStore Daemons, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection,
         LaunchConsentStore Store, LaunchConsentBroker Broker, LaunchConsentGate Gate, string SockPath);
 
     static async Task<Harness> StartAsync(
             string daemonName, LaunchConsentDefault def, int promptTimeoutSeconds, CancellationToken ct
         ) {
-        var stateDir = new TempDir();
-        var store = new LaunchConsentStore(stateDir.Path, NullLogger.Instance);
+        var daemons = new TempDaemonStore();
+        var stateRoot = daemons.Store.StateDirectory(daemonName);
+        var store = new LaunchConsentStore(stateRoot, NullLogger.Instance);
         store.TryReplace(new LaunchConsentPolicy(def, promptTimeoutSeconds, []), out _);
         var broker = new LaunchConsentBroker();
-        var decisionLog = new LaunchConsentDecisionLog(stateDir.Path, NullLogger.Instance);
+        var decisionLog = new LaunchConsentDecisionLog(stateRoot, NullLogger.Instance);
         var gate = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         var config = new DaemonConfig {
             Name         = daemonName,
             ServerUrl    = "http://127.0.0.1:1",
-            StateDir     = stateDir.Path,
-            WorktreeRoot = stateDir.PathTo("worktrees"),
+            Store        = daemons.Store,
+            WorktreeRoot = daemons.PathTo("worktrees"),
         };
         var consentIpc = new LaunchConsentIpc(broker, store, config, NullLogger<LaunchConsentIpc>.Instance);
 
@@ -75,15 +75,15 @@ public class LaunchConsentIpcTests {
             NullLogger<AgentOrchestrator>.Instance, gate);
 
         var statusIpc = new DaemonStatusIpc(config, orchestrator, connection, new DaemonStatusNotifier());
-        var restart = RestartCoordinator.ForTest(daemonName, daemonName, new NoopRestartStrategy());
+        var restart = RestartCoordinator.ForTest(daemons.Store, daemonName, daemonName, new NoopRestartStrategy());
         var server = new LocalControlServer(config, orchestrator, restart, consentIpc, statusIpc, NullLogger<LocalControlServer>.Instance);
         await server.StartAsync(ct);
 
-        var sockPath = LocalSocketPaths.Socket(daemonName);
+        var sockPath = daemons.Store.SocketPath(daemonName);
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (!File.Exists(sockPath) && DateTime.UtcNow < deadline) await Task.Delay(20, ct);
 
-        return new Harness(stateDir, server, orchestrator, connection, store, broker, gate, sockPath);
+        return new Harness(daemons, server, orchestrator, connection, store, broker, gate, sockPath);
     }
 
     static async Task StopAsync(Harness h) {
@@ -91,20 +91,17 @@ public class LaunchConsentIpcTests {
         await h.Server.StopAsync(CancellationToken.None);
         h.Server.Dispose();
         await h.Connection.DisposeAsync();
-        h.StateDir.Dispose();
+        h.Daemons.Dispose();
     }
 
-    /// Wraps a test body with the temp-dir DaemonLockPaths override + harness lifecycle, mirroring
-    /// AgentOrchestratorLocalAttachTests's real-socket tests. Each [Test] still carries its own
-    /// [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")] + Windows guard,
-    /// since those must be visible on the test method itself.
+    /// Wraps a test body with the harness lifecycle, mirroring
+    /// AgentOrchestratorLocalAttachTests's real-socket tests. The harness owns its own daemons
+    /// directory, so no test here shares state with another; each [Test] still carries its own
+    /// Windows guard, which must be visible on the test method itself.
     static async Task RunAsync(
             string daemonName, LaunchConsentDefault def, int promptTimeoutSeconds,
             Func<Harness, CancellationToken, Task> body
         ) {
-        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
-        using var sockDir = new TempDir("lci");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         Harness? h = null;
@@ -114,7 +111,6 @@ public class LaunchConsentIpcTests {
             await body(h, cts.Token);
         } finally {
             if (h is not null) await StopAsync(h);
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
 
@@ -165,7 +161,6 @@ public class LaunchConsentIpcTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task RulesGet_returns_current_policy_and_RulesPut_replaces_it() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -205,7 +200,6 @@ public class LaunchConsentIpcTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Subscribe_receives_pending_and_Resolve_unblocks_the_gate() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -246,7 +240,6 @@ public class LaunchConsentIpcTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Resolve_with_save_rule_appends_to_policy() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -280,7 +273,6 @@ public class LaunchConsentIpcTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Resolve_unknown_request_acks_false() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -305,7 +297,6 @@ public class LaunchConsentIpcTests {
     // dropped connection. ══════════════════════════════════════════════════════════════════
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task RulesPut_missing_rules_field_acks_false_without_dropping_the_connection() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -324,7 +315,6 @@ public class LaunchConsentIpcTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task RulesPut_null_rules_element_acks_false_without_dropping_the_connection() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -347,7 +337,6 @@ public class LaunchConsentIpcTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Resolve_missing_request_id_acks_false_without_dropping_the_connection() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -369,7 +358,6 @@ public class LaunchConsentIpcTests {
     // Ok=true, rather than being indistinguishable from "no pending request with that id". ══════
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Resolve_with_an_invalid_save_rule_still_resolves_but_reports_the_save_error() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -411,7 +399,6 @@ public class LaunchConsentIpcTests {
     // broker's own ground-truth PromptId/RequesterDisplay. ═══════════════════════════════════════
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task V2_resolve_without_prompt_id_acks_invalid_payload() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -434,7 +421,6 @@ public class LaunchConsentIpcTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Rule_saved_is_populated_on_both_ok_branches() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -486,7 +472,6 @@ public class LaunchConsentIpcTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task V2_resolve_with_mismatching_echo_acks_no_pending_and_leaves_the_request_live() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -511,7 +496,6 @@ public class LaunchConsentIpcTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Subscribe_pushes_prompt_id_and_requester_display_on_pending_frames() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 

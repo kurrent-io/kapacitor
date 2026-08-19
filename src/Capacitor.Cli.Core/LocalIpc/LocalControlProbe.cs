@@ -25,14 +25,15 @@ public static class LocalControlProbe {
     /// <param name="timeout">A SINGLE shared budget for the whole call — not a per-dial
     /// timeout. It bounds the hello dial+read AND the StatusSubscribe dial+read together, so a
     /// slow hello leaves correspondingly less time for the snapshot half.</param>
-    public static async Task<ProbeResult> ProbeAsync(string daemonName, TimeSpan timeout, CancellationToken ct = default) {
+    public static async Task<ProbeResult> ProbeAsync(
+            DaemonStore store, string daemonName, TimeSpan timeout, CancellationToken ct = default) {
         using var timeoutCts = new CancellationTokenSource(timeout);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
         var linked = linkedCts.Token;
 
         HelloReplyDto hello;
         try {
-            await using var conn = await DialAsync(daemonName, linked);
+            await using var conn = await DialAsync(store, daemonName, linked);
             await FrameCodec.WriteAsync(conn, new LocalFrame(FrameType.Hello), linked);
             var frame = await FrameCodec.ReadAsync(conn, linked);
             if (frame is null || frame.Type != FrameType.HelloReply) return new ProbeResult(false, null, null, false);
@@ -44,7 +45,7 @@ public static class LocalControlProbe {
         }
 
         try {
-            await using var conn = await DialAsync(daemonName, linked);
+            await using var conn = await DialAsync(store, daemonName, linked);
             await FrameCodec.WriteAsync(conn, new LocalFrame(FrameType.StatusSubscribe), linked);
             var frame = await FrameCodec.ReadAsync(conn, linked);
             if (frame is null || frame.Type != FrameType.DaemonStatus) return new ProbeResult(true, hello, null, false);
@@ -71,10 +72,10 @@ public static class LocalControlProbe {
         }
     }
 
-    static async Task<NetworkStream> DialAsync(string daemonName, CancellationToken ct) {
+    static async Task<NetworkStream> DialAsync(DaemonStore store, string daemonName, CancellationToken ct) {
         var sock = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         try {
-            await sock.ConnectAsync(new UnixDomainSocketEndPoint(LocalSocketPaths.Socket(daemonName)), ct);
+            await sock.ConnectAsync(new UnixDomainSocketEndPoint(store.SocketPath(daemonName)), ct);
             return new NetworkStream(sock, ownsSocket: true);
         } catch { sock.Dispose(); throw; }
     }

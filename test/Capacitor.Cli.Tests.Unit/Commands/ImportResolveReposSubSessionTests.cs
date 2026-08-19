@@ -10,20 +10,15 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// import's missing-cwd report — they aren't user sessions and the user can't
 /// remap a path that only ever existed for a few seconds.
 /// </summary>
-public class ImportResolveReposSubSessionTests : IDisposable {
-    readonly TempDir _tmp = new();
-    readonly string  _tempDir;
-
-    public ImportResolveReposSubSessionTests() => _tempDir = _tmp.Path;
-
-    public void Dispose() => _tmp.Dispose();
+public class ImportResolveReposSubSessionTests {
+    [TempDir] public required TempDir Tmp { get; init; }
 
     [Test]
     public async Task ResolveTranscriptRepos_excludes_kcap_subsessions_from_missing_cwd_report() {
         // A genuine user session whose cwd has since gone missing — this SHOULD
         // be surfaced so the user can `kcap remap` it.
         var realMissing = "/does/not/exist/real-repo";
-        var realPath    = Path.Combine(_tempDir, "real.jsonl");
+        var realPath    = Path.Combine(Tmp.Path, "real.jsonl");
         await File.WriteAllLinesAsync(
             realPath,
             [
@@ -37,7 +32,7 @@ public class ImportResolveReposSubSessionTests : IDisposable {
         // queue-operation content from the production prompt prefix (JSON-encoded
         // so embedded newlines escape correctly) so this stays correct if the
         // embedded prompt template is reworded.
-        var subPath       = Path.Combine(_tempDir, "agent-title.jsonl");
+        var subPath       = Path.Combine(Tmp.Path, "agent-title.jsonl");
         var queueOpLine   = """{"type":"queue-operation","operation":"enqueue","content":"""
                           + JsonSerializer.Serialize(TitleGenerator.TitlePromptPrefix) + "}";
         var subCwdLine    = """{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"/private/var/folders/x/T/kcap-claude-deadbeef","message":{"content":"x"}}""";

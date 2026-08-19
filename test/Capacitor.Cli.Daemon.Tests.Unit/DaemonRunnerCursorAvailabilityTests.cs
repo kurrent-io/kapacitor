@@ -15,6 +15,7 @@ namespace Capacitor.Cli.Daemon.Tests.Unit;
 /// <c>LogCursorUnavailable</c> Warning call at the <c>RunAsync</c> call site is not independently
 /// unit-tested (would require a full host boot).
 /// </summary>
+[ParallelLimiter<SubprocessLimit>]
 public class DaemonRunnerCursorAvailabilityTests {
     /// <summary>Minimal <see cref="IHostedAgentRuntimeFactory"/> stand-in — only <see cref="Vendor"/>/<see cref="IsAvailable"/>/<see cref="SupportsUnattended"/>/<see cref="ReviewerModelResolver"/> matter here.</summary>
     sealed class FakeRuntimeFactory(

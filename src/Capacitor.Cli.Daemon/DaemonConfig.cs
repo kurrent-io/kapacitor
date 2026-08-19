@@ -46,13 +46,11 @@ public class DaemonConfig {
     /// </summary>
     public TimeSpan ReviewerTurnWedgeCeiling { get; set; } = TimeSpan.FromMinutes(60);
 
-    /// <summary>
-    /// Phase B (D4): root directory under which this daemon writes its per-agent PID records
-    /// (<c>{StateDir}/{name}/agents/{agentId}.json</c>). Null → the shared daemon state dir
-    /// (<c>DaemonLockPaths.Directory</c>); tests point it at a temp dir. The per-name subdir keeps a
-    /// daemon's records "its own" so the startup reap only ever touches this daemon's leftovers.
-    /// </summary>
-    public string? StateDir { get; set; }
+    /// <summary>Where this daemon's files live.</summary>
+    public DaemonStore Store {
+        get => field ?? throw new InvalidOperationException($"DaemonConfig.Store was never set; pass a {nameof(DaemonStore)} in from the entry point.");
+        set;
+    }
 
     /// <summary>Phase B (D4): a fresh per-boot epoch (GUID). Written into each spawned child's
     /// <c>KCAP_DAEMON_EPOCH</c> env marker; the startup env-marker scan kills same-daemon children

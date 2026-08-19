@@ -9,6 +9,9 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// The AOT binary doesn't bundle e_sqlite3; <see cref="SqliteNativeResolver"/> downloads
 /// the pristine per-RID native, integrity-checks it, caches it, and loads it.
 /// </summary>
+// PristineNativePath resolves under HOME, so a concurrent HOME mutator sends it at that test's temp
+// directory and the pin lookup finds nothing.
+[NotInParallel("HomeEnvVarMutation")]
 public class SqliteNativeResolverTests {
     /// <summary>
     /// Drift guard for ALL shipped RIDs, not just the test runner's: the SourceGear.sqlite3

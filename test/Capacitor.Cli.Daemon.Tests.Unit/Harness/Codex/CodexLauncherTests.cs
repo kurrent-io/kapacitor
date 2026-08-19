@@ -419,7 +419,7 @@ public class CodexLauncherTests {
         var worktree = tmp.CreateDir("wt");
         var home = tmp.CreateDir("home");
         var originalHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", home);
+        Environment.SetEnvironmentVariable("HOME", tmp.GetResolvedPath("home"));
 
         try {
             var srcCodex = sourceRepo.CreateDir(".codex");
@@ -456,7 +456,7 @@ public class CodexLauncherTests {
         var worktree = tmp.CreateDir("wt");
         var home = tmp.CreateDir("home");
         var originalHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", home);
+        Environment.SetEnvironmentVariable("HOME", tmp.GetResolvedPath("home"));
 
         try {
             var srcCodex = sourceRepo.CreateDir(".codex");
@@ -489,7 +489,7 @@ public class CodexLauncherTests {
         var worktree = tmp.CreateDir("wt");
         var home = tmp.CreateDir("home");
         var originalHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", home);
+        Environment.SetEnvironmentVariable("HOME", tmp.GetResolvedPath("home"));
 
         try {
             var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
@@ -510,7 +510,7 @@ public class CodexLauncherTests {
         var worktree = tmp.CreateDir("wt");
         var home = tmp.CreateDir("home");
         var originalHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", home);
+        Environment.SetEnvironmentVariable("HOME", tmp.GetResolvedPath("home"));
 
         try {
             home.CreateDir(".codex");
@@ -538,7 +538,7 @@ public class CodexLauncherTests {
         var worktree = tmp.CreateDir("wt");
         var home = tmp.CreateDir("home");
         var originalHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", home);
+        Environment.SetEnvironmentVariable("HOME", tmp.GetResolvedPath("home"));
 
         try {
             sourceRepo.CreateDir(".codex");
@@ -565,7 +565,7 @@ public class CodexLauncherTests {
         var worktree = tmp.CreateDir("wt");
         var home = tmp.CreateDir("home");
         var originalHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", home);
+        Environment.SetEnvironmentVariable("HOME", tmp.GetResolvedPath("home"));
 
         try {
             home.CreateDir(".codex");

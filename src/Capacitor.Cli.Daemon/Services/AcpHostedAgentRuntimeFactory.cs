@@ -1029,8 +1029,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// consent decision live under one owner-only root per daemon. Per DAEMON, never shared: the
     /// reviewer-home sweep's safety depends on every directory in its root belonging to this
     /// daemon.</summary>
-    internal static string ReviewerStateDir(DaemonConfig config) =>
-        Path.Combine(config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
+    internal static string ReviewerStateDir(DaemonConfig config) => config.Store.StateDirectory(config.Name);
 
     internal static ReviewerVersionStore VersionStoreFor(DaemonConfig config, string vendor) =>
         new(ReviewerStateDir(config), vendor);

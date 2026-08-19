@@ -4,14 +4,13 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
-// One test deletes and recreates its dir mid-test (below) — Dispose is best-effort and tolerates
-// that.
-public class ResolvedCandidatesLedgerTests : IDisposable {
-    readonly TempDir _tmp = new();
-    public void Dispose() => _tmp.Dispose();
+// One test deletes and recreates its dir mid-test (below); TempDir's cleanup is best-effort and
+// tolerates that.
+public class ResolvedCandidatesLedgerTests {
+    [TempDir] public required TempDir Tmp { get; init; }
 
     ResolvedCandidatesLedger New(out string dir) {
-        dir = _tmp.Path;
+        dir = Tmp.Path;
         return new ResolvedCandidatesLedger(dir, NullLogger.Instance);
     }
 

@@ -8,7 +8,7 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// a malformed or unreadable on-disk unit escape the start gate as an uncoded failure — end to end
 /// through the REAL manager, complementing <see cref="ServiceVerifyStartTests"/>'s stubbed-seam
 /// coverage of the same contract.</summary>
-[NotInParallel(["HomeEnvVarMutation", nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting"])]
+[NotInParallel(["HomeEnvVarMutation"])]
 public class ServiceVerifyStartGateProductionPathTests {
     const string Id = "prodpath";
 
@@ -37,6 +37,7 @@ public class ServiceVerifyStartGateProductionPathTests {
     sealed class Fixture : IDisposable {
         readonly ProdPathFixture _core = new(Id);
 
+        public DaemonStore Store => _core.Store;
         public string PlistPath => _core.PlistPath;
         public LaunchdServiceManager Manager => _core.Manager;
 
@@ -44,7 +45,7 @@ public class ServiceVerifyStartGateProductionPathTests {
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
         public async Task<(int Exit, string[] StdErrLines)> RunStartVerifiedAsync() {
-            var sut = new ServiceVerify(Manager, _ => 4242, Hello, TimeProvider.System,
+            var sut = new ServiceVerify(Store, Manager, _ => 4242, Hello, TimeProvider.System,
                 gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
 
             using var capture = ConsoleOutput.StartErrorCapture();

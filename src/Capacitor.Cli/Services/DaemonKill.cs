@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Services;
 
@@ -18,7 +19,7 @@ static class DaemonKill {
     /// whether the name is gone afterward, re-checked via <see cref="DaemonPidProbe.ValidatedPid"/>
     /// rather than assumed from the kill call succeeding.
     /// </summary>
-    public static bool KillValidatedOwner(string daemonName, int validatedPid, TimeSpan wait) {
+    public static bool KillValidatedOwner(DaemonStore store, string daemonName, int validatedPid, TimeSpan wait) {
         try {
             var process = Process.GetProcessById(validatedPid);
 
@@ -45,6 +46,6 @@ static class DaemonKill {
             return true; // already dead before we even got here
         }
 
-        return DaemonPidProbe.ValidatedPid(daemonName) is not { } stillPid || stillPid != validatedPid;
+        return DaemonPidProbe.ValidatedPid(store, daemonName) is not { } stillPid || stillPid != validatedPid;
     }
 }

@@ -28,7 +28,7 @@ namespace Capacitor.Cli.Commands;
 /// covers all known agents.
 /// </summary>
 public static class UninstallCommand {
-    public static async Task<int> HandleAsync(string[] args) {
+    public static async Task<int> HandleAsync(DaemonStore store, string[] args) {
         var skipPrompt     = args.Contains("--yes") || args.Contains("-y");
         var keepConfig     = args.Contains("--keep-config");
         var includeProject = args.Contains("--project");
@@ -117,7 +117,7 @@ public static class UninstallCommand {
         // about to delete. --yes silences the multi-daemon confirmation so this
         // works non-interactively. A non-zero exit code means at least one
         // daemon couldn't be stopped; we leave the config dir alone in that case.
-        if (await DaemonCommands.HandleAsync(["daemon", "stop", "--yes"]) != 0) hadFailures = true;
+        if (await new DaemonCommands(store).HandleAsync(["daemon", "stop", "--yes"]) != 0) hadFailures = true;
 
         // Kill any orphaned watcher PIDs that the daemon stop didn't catch.
         if (await CleanupCommand.HandleCleanup() != 0) hadFailures = true;

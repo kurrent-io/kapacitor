@@ -8,103 +8,76 @@ namespace Capacitor.Cli.Daemon.Tests.Unit;
 /// holds for its lifetime. Verifies the protection: a second daemon
 /// acquiring the same name on the same machine fails fast.
 ///
-/// All tests redirect <see cref="DaemonLockPaths"/> to a temp directory so
-/// nothing touches the user's real <c>~/.config/kcap/daemons</c>. The
-/// per-class isolation pattern (unique subdir per test, restored at the
-/// end) keeps the tests independent of one another's failed/leaked locks.
+/// Every test owns a <see cref="TempDaemonStore"/>, so nothing touches the
+/// user's real <c>~/.config/kcap/daemons</c> and no test can see another's
+/// failed/leaked locks.
 /// </summary>
-[NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
 public class DaemonLockTests {
-    static TempDir CreateScratchDir() {
-        var dir = new TempDir();
-        DaemonLockPaths.OverrideDirectoryForTesting(dir.Path);
-
-        return dir;
-    }
-
-    static void Restore() => DaemonLockPaths.OverrideDirectoryForTesting(null);
-
     [Test]
     public async Task TryAcquire_OnFreshSlot_ReturnsLockWithFreshInstanceId() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            var l = DaemonLock.TryAcquire("alpha");
+        var l = DaemonLock.TryAcquire(daemons.Store, "alpha");
 
-            await Assert.That(l).IsNotNull();
-            await Assert.That(l!.InstanceId).IsNotEmpty();
-            await Assert.That(l.InstanceId.Length).IsEqualTo(32); // GUID "N" format
+        await Assert.That(l).IsNotNull();
+        await Assert.That(l!.InstanceId).IsNotEmpty();
+        await Assert.That(l.InstanceId.Length).IsEqualTo(32); // GUID "N" format
 
-            // The lock file is held with FileShare.None, so the test
-            // process can't read it while the daemon owns it (that's the
-            // whole point — would-be duplicates can't peek). Verify the
-            // content after disposal instead.
-            var expected = l.InstanceId;
-            l.Dispose();
+        // The lock file is held with FileShare.None, so the test
+        // process can't read it while the daemon owns it (that's the
+        // whole point — would-be duplicates can't peek). Verify the
+        // content after disposal instead.
+        var expected = l.InstanceId;
+        l.Dispose();
 
-            // Dispose deletes the lock file, which is the production
-            // behaviour. Re-acquire to inspect the file content we'd see
-            // mid-lifetime: it'll have a fresh instance id, but the
-            // structure (single 32-char GUID line) is the assertion that
-            // matters.
-            using var reacquired = DaemonLock.TryAcquire("alpha");
-            await Assert.That(reacquired).IsNotNull();
-            await Assert.That(reacquired!.InstanceId).IsNotEqualTo(expected);
-        } finally {
-            Restore();
-        }
+        // Dispose deletes the lock file, which is the production
+        // behaviour. Re-acquire to inspect the file content we'd see
+        // mid-lifetime: it'll have a fresh instance id, but the
+        // structure (single 32-char GUID line) is the assertion that
+        // matters.
+        using var reacquired = DaemonLock.TryAcquire(daemons.Store, "alpha");
+        await Assert.That(reacquired).IsNotNull();
+        await Assert.That(reacquired!.InstanceId).IsNotEqualTo(expected);
     }
 
     [Test]
     public async Task TryAcquire_OnSameName_WhileHeld_Fails() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            using var first = DaemonLock.TryAcquire("alpha");
-            await Assert.That(first).IsNotNull();
+        using var first = DaemonLock.TryAcquire(daemons.Store, "alpha");
+        await Assert.That(first).IsNotNull();
 
-            var second = DaemonLock.TryAcquire("alpha");
-            await Assert.That(second).IsNull();
-        } finally {
-            Restore();
-        }
+        var second = DaemonLock.TryAcquire(daemons.Store, "alpha");
+        await Assert.That(second).IsNull();
     }
 
     [Test]
     public async Task TryAcquire_DifferentNames_BothSucceed() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            using var alpha = DaemonLock.TryAcquire("alpha");
-            using var beta  = DaemonLock.TryAcquire("beta");
+        using var alpha = DaemonLock.TryAcquire(daemons.Store, "alpha");
+        using var beta  = DaemonLock.TryAcquire(daemons.Store, "beta");
 
-            await Assert.That(alpha).IsNotNull();
-            await Assert.That(beta).IsNotNull();
-            await Assert.That(alpha!.InstanceId).IsNotEqualTo(beta!.InstanceId);
-        } finally {
-            Restore();
-        }
+        await Assert.That(alpha).IsNotNull();
+        await Assert.That(beta).IsNotNull();
+        await Assert.That(alpha!.InstanceId).IsNotEqualTo(beta!.InstanceId);
     }
 
     [Test]
     public async Task Dispose_ReleasesLock_AllowingReAcquisition() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            var first = DaemonLock.TryAcquire("alpha");
-            await Assert.That(first).IsNotNull();
+        var first = DaemonLock.TryAcquire(daemons.Store, "alpha");
+        await Assert.That(first).IsNotNull();
 
-            // Different instance id should be produced on re-acquire so a
-            // post-disposal observer can tell the daemons apart.
-            var firstId = first!.InstanceId;
-            first.Dispose();
+        // Different instance id should be produced on re-acquire so a
+        // post-disposal observer can tell the daemons apart.
+        var firstId = first!.InstanceId;
+        first.Dispose();
 
-            using var second = DaemonLock.TryAcquire("alpha");
-            await Assert.That(second).IsNotNull();
-            await Assert.That(second!.InstanceId).IsNotEqualTo(firstId);
-        } finally {
-            Restore();
-        }
+        using var second = DaemonLock.TryAcquire(daemons.Store, "alpha");
+        await Assert.That(second).IsNotNull();
+        await Assert.That(second!.InstanceId).IsNotEqualTo(firstId);
     }
 
     /// <summary>
@@ -116,20 +89,16 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task Dispose_DoesNotDeleteLockFile() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            var l        = DaemonLock.TryAcquire("alpha")!;
-            var lockPath = DaemonLockPaths.LockPath("alpha");
+        var l        = DaemonLock.TryAcquire(daemons.Store, "alpha")!;
+        var lockPath = daemons.Store.LockPath("alpha");
 
-            await Assert.That(File.Exists(lockPath)).IsTrue();
+        await Assert.That(File.Exists(lockPath)).IsTrue();
 
-            l.Dispose();
+        l.Dispose();
 
-            await Assert.That(File.Exists(lockPath)).IsTrue();
-        } finally {
-            Restore();
-        }
+        await Assert.That(File.Exists(lockPath)).IsTrue();
     }
 
     /// <summary>
@@ -140,24 +109,20 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task Dispose_DoesNotDeletePidFile_IfItPointsToSomeoneElsesPid() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            var l       = DaemonLock.TryAcquire("alpha")!;
-            var pidPath = DaemonLockPaths.PidPath("alpha");
+        var l       = DaemonLock.TryAcquire(daemons.Store, "alpha")!;
+        var pidPath = daemons.Store.PidPath("alpha");
 
-            // Simulate a successor process that won the race after our
-            // flock release and rewrote the PID file. We pick a PID that
-            // is definitely not us.
-            File.WriteAllText(pidPath, "99999\n637999999999999999");
+        // Simulate a successor process that won the race after our
+        // flock release and rewrote the PID file. We pick a PID that
+        // is definitely not us.
+        File.WriteAllText(pidPath, "99999\n637999999999999999");
 
-            l.Dispose();
+        l.Dispose();
 
-            await Assert.That(File.Exists(pidPath)).IsTrue();
-            await Assert.That(File.ReadAllText(pidPath)).StartsWith("99999");
-        } finally {
-            Restore();
-        }
+        await Assert.That(File.Exists(pidPath)).IsTrue();
+        await Assert.That(File.ReadAllText(pidPath)).StartsWith("99999");
     }
 
     /// <summary>
@@ -169,23 +134,19 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task TryAcquire_WritesPidFile_WithPidAndStableStartToken() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            using var l = DaemonLock.TryAcquire("alpha");
-            await Assert.That(l).IsNotNull();
+        using var l = DaemonLock.TryAcquire(daemons.Store, "alpha");
+        await Assert.That(l).IsNotNull();
 
-            var lines = (await File.ReadAllTextAsync(DaemonLockPaths.PidPath("alpha")))
-                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var lines = (await File.ReadAllTextAsync(daemons.Store.PidPath("alpha")))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-            await Assert.That(lines.Length).IsEqualTo(2);
-            await Assert.That(lines[0]).IsEqualTo(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
-            // The test process IS the "daemon" here, so the recorded token must
-            // match what a reader computes for this same PID.
-            await Assert.That(lines[1]).IsEqualTo(ProcessStartToken.ForCurrent());
-        } finally {
-            Restore();
-        }
+        await Assert.That(lines.Length).IsEqualTo(2);
+        await Assert.That(lines[0]).IsEqualTo(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
+        // The test process IS the "daemon" here, so the recorded token must
+        // match what a reader computes for this same PID.
+        await Assert.That(lines[1]).IsEqualTo(ProcessStartToken.ForCurrent());
     }
 
     /// <summary>
@@ -195,16 +156,12 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task TryAcquire_WritesVersionMarker() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            using var l = DaemonLock.TryAcquire("alpha", "0.4.11+sha.abc1234");
-            await Assert.That(l).IsNotNull();
+        using var l = DaemonLock.TryAcquire(daemons.Store, "alpha", "0.4.11+sha.abc1234");
+        await Assert.That(l).IsNotNull();
 
-            await Assert.That(DaemonVersionMarker.TryRead("alpha")).IsEqualTo("0.4.11+sha.abc1234");
-        } finally {
-            Restore();
-        }
+        await Assert.That(DaemonVersionMarker.TryRead(daemons.Store, "alpha")).IsEqualTo("0.4.11+sha.abc1234");
     }
 
     /// <summary>
@@ -214,36 +171,28 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task TryAcquire_StillSucceeds_WhenVersionMarkerWriteFails() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            // Plant a directory where the marker file would go, so the atomic
-            // move in DaemonVersionMarker.Write throws.
-            System.IO.Directory.CreateDirectory(DaemonLockPaths.VersionPath("alpha"));
+        // Plant a directory where the marker file would go, so the atomic
+        // move in DaemonVersionMarker.Write throws.
+        System.IO.Directory.CreateDirectory(daemons.Store.VersionPath("alpha"));
 
-            using var l = DaemonLock.TryAcquire("alpha", "0.4.11");
+        using var l = DaemonLock.TryAcquire(daemons.Store, "alpha", "0.4.11");
 
-            await Assert.That(l).IsNotNull();
-            await Assert.That(l!.InstanceId).IsNotEmpty();
-        } finally {
-            Restore();
-        }
+        await Assert.That(l).IsNotNull();
+        await Assert.That(l!.InstanceId).IsNotEmpty();
     }
 
     [Test]
     public async Task Dispose_DeletesVersionMarker_WhenPidStillOurs() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            var l = DaemonLock.TryAcquire("alpha", "0.4.11")!;
-            await Assert.That(File.Exists(DaemonLockPaths.VersionPath("alpha"))).IsTrue();
+        var l = DaemonLock.TryAcquire(daemons.Store, "alpha", "0.4.11")!;
+        await Assert.That(File.Exists(daemons.Store.VersionPath("alpha"))).IsTrue();
 
-            l.Dispose();
+        l.Dispose();
 
-            await Assert.That(File.Exists(DaemonLockPaths.VersionPath("alpha"))).IsFalse();
-        } finally {
-            Restore();
-        }
+        await Assert.That(File.Exists(daemons.Store.VersionPath("alpha"))).IsFalse();
     }
 
     /// <summary>
@@ -254,40 +203,32 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task Dispose_DoesNotDeleteVersionMarker_IfPidPointsToSomeoneElse() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            var l = DaemonLock.TryAcquire("alpha", "0.4.10")!;
+        var l = DaemonLock.TryAcquire(daemons.Store, "alpha", "0.4.10")!;
 
-            // Simulate the successor: it rewrote both the PID file and the version marker.
-            File.WriteAllText(DaemonLockPaths.PidPath("alpha"), "99999\n637999999999999999");
-            DaemonVersionMarker.Write("alpha", "0.4.11");
+        // Simulate the successor: it rewrote both the PID file and the version marker.
+        File.WriteAllText(daemons.Store.PidPath("alpha"), "99999\n637999999999999999");
+        DaemonVersionMarker.Write(daemons.Store, "alpha", "0.4.11");
 
-            l.Dispose();
+        l.Dispose();
 
-            await Assert.That(DaemonVersionMarker.TryRead("alpha")).IsEqualTo("0.4.11");
-        } finally {
-            Restore();
-        }
+        await Assert.That(DaemonVersionMarker.TryRead(daemons.Store, "alpha")).IsEqualTo("0.4.11");
     }
 
     [Test]
     public async Task TryAcquire_AfterStaleLockFileLeftBehind_StillAcquires() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            // Simulate a daemon that died without cleanup: lockfile exists,
-            // but no process holds the kernel flock. Re-acquisition must
-            // succeed — that's the whole point of flock semantics.
-            DaemonLockPaths.EnsureDirectory();
-            File.WriteAllText(DaemonLockPaths.LockPath("alpha"), "stale-instance-id");
+        // Simulate a daemon that died without cleanup: lockfile exists,
+        // but no process holds the kernel flock. Re-acquisition must
+        // succeed — that's the whole point of flock semantics.
+        daemons.Store.EnsureDirectory();
+        File.WriteAllText(daemons.Store.LockPath("alpha"), "stale-instance-id");
 
-            using var l = DaemonLock.TryAcquire("alpha");
-            await Assert.That(l).IsNotNull();
-            await Assert.That(l!.InstanceId).IsNotEqualTo("stale-instance-id");
-        } finally {
-            Restore();
-        }
+        using var l = DaemonLock.TryAcquire(daemons.Store, "alpha");
+        await Assert.That(l).IsNotNull();
+        await Assert.That(l!.InstanceId).IsNotEqualTo("stale-instance-id");
     }
 
     /// <summary>
@@ -300,20 +241,16 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task TryAcquire_WhenPriorHolderLeftStalePidFile_ReportsUncleanExit() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            // A well-formed PID file from a prior holder that never cleaned up.
-            DaemonLockPaths.EnsureDirectory();
-            File.WriteAllText(DaemonLockPaths.PidPath("alpha"), "424242\n637999999999999999");
+        // A well-formed PID file from a prior holder that never cleaned up.
+        daemons.Store.EnsureDirectory();
+        File.WriteAllText(daemons.Store.PidPath("alpha"), "424242\n637999999999999999");
 
-            using var l = DaemonLock.TryAcquire("alpha");
-            await Assert.That(l).IsNotNull();
-            await Assert.That(l!.PriorExitWasUnclean).IsTrue();
-            await Assert.That(l.PriorHolderPid).IsEqualTo(424242);
-        } finally {
-            Restore();
-        }
+        using var l = DaemonLock.TryAcquire(daemons.Store, "alpha");
+        await Assert.That(l).IsNotNull();
+        await Assert.That(l!.PriorExitWasUnclean).IsTrue();
+        await Assert.That(l.PriorHolderPid).IsEqualTo(424242);
     }
 
     /// <summary>
@@ -323,19 +260,15 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task TryAcquire_WhenStalePidFileUnparseable_StillReportsUncleanExit_WithNullPid() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            DaemonLockPaths.EnsureDirectory();
-            File.WriteAllText(DaemonLockPaths.PidPath("alpha"), "not-a-pid\n");
+        daemons.Store.EnsureDirectory();
+        File.WriteAllText(daemons.Store.PidPath("alpha"), "not-a-pid\n");
 
-            using var l = DaemonLock.TryAcquire("alpha");
-            await Assert.That(l).IsNotNull();
-            await Assert.That(l!.PriorExitWasUnclean).IsTrue();
-            await Assert.That(l.PriorHolderPid).IsNull();
-        } finally {
-            Restore();
-        }
+        using var l = DaemonLock.TryAcquire(daemons.Store, "alpha");
+        await Assert.That(l).IsNotNull();
+        await Assert.That(l!.PriorExitWasUnclean).IsTrue();
+        await Assert.That(l.PriorHolderPid).IsNull();
     }
 
     /// <summary>
@@ -348,39 +281,35 @@ public class DaemonLockTests {
     public async Task TryAcquire_WhenStalePidFilePresentButUnreadable_ReportsUncleanExit_WithNullPid() {
         if (OperatingSystem.IsWindows()) return; // Unix permission model only
 
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
         try {
-            DaemonLockPaths.EnsureDirectory();
-            var pidPath = DaemonLockPaths.PidPath("alpha");
+            daemons.Store.EnsureDirectory();
+            var pidPath = daemons.Store.PidPath("alpha");
             File.WriteAllText(pidPath, "777\n");
             // Write-only for the owner: File.Exists sees it and TryAcquire's
             // WritePidFile can still overwrite it, but ReadAllText throws (no read
             // bit), exercising the "present but unreadable" path.
             File.SetUnixFileMode(pidPath, UnixFileMode.UserWrite);
 
-            using var l = DaemonLock.TryAcquire("alpha");
+            using var l = DaemonLock.TryAcquire(daemons.Store, "alpha");
             await Assert.That(l).IsNotNull();
             await Assert.That(l!.PriorExitWasUnclean).IsTrue();
             await Assert.That(l.PriorHolderPid).IsNull();
         } finally {
-            Restore();
-            try { File.SetUnixFileMode(DaemonLockPaths.PidPath("alpha"), UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch { /* best-effort */ }
+            // Readable again so the directory's own teardown isn't fighting the mode.
+            try { File.SetUnixFileMode(daemons.Store.PidPath("alpha"), UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch { /* best-effort */ }
         }
     }
 
     [Test]
     public async Task TryAcquire_OnFreshSlot_ReportsCleanPriorExit() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            using var l = DaemonLock.TryAcquire("alpha");
-            await Assert.That(l).IsNotNull();
-            await Assert.That(l!.PriorExitWasUnclean).IsFalse();
-            await Assert.That(l.PriorHolderPid).IsNull();
-        } finally {
-            Restore();
-        }
+        using var l = DaemonLock.TryAcquire(daemons.Store, "alpha");
+        await Assert.That(l).IsNotNull();
+        await Assert.That(l!.PriorExitWasUnclean).IsFalse();
+        await Assert.That(l.PriorHolderPid).IsNull();
     }
 
     /// <summary>
@@ -390,17 +319,13 @@ public class DaemonLockTests {
     /// </summary>
     [Test]
     public async Task TryAcquire_AfterCleanDispose_ReportsCleanPriorExit() {
-        using var dir = CreateScratchDir();
+        using var daemons = new TempDaemonStore();
 
-        try {
-            DaemonLock.TryAcquire("alpha")!.Dispose();
+        DaemonLock.TryAcquire(daemons.Store, "alpha")!.Dispose();
 
-            using var l = DaemonLock.TryAcquire("alpha");
-            await Assert.That(l).IsNotNull();
-            await Assert.That(l!.PriorExitWasUnclean).IsFalse();
-            await Assert.That(l.PriorHolderPid).IsNull();
-        } finally {
-            Restore();
-        }
+        using var l = DaemonLock.TryAcquire(daemons.Store, "alpha");
+        await Assert.That(l).IsNotNull();
+        await Assert.That(l!.PriorExitWasUnclean).IsFalse();
+        await Assert.That(l.PriorHolderPid).IsNull();
     }
 }

@@ -1,4 +1,3 @@
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
@@ -12,8 +11,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// REAL daemon stack (not a scripted stub) — the identity-mismatch behaviour under test lives in
 /// <see cref="LaunchConsentIpc.HandleRulesPutV2Async"/>, so a fake server that just echoes back an
 /// ack would prove nothing. Harness mirrors
-/// <see cref="ConsentRulesPutV2Tests"/> (temp DaemonLockPaths
-/// override, socket-file poll, Windows guard, minimal AgentOrchestrator) but drives the daemon
+/// <see cref="ConsentRulesPutV2Tests"/> (per-test daemons
+/// directory, socket-file poll, Windows guard, minimal AgentOrchestrator) but drives the daemon
 /// through <see cref="LocalControlOps"/>, the Core client under test, instead of hand-rolled
 /// frames.
 /// </summary>
@@ -40,20 +39,21 @@ public class LocalControlOpsV2PutTests {
         public RestartOutcome Restart() => RestartOutcome.NoOp;
     }
 
-    sealed record Harness(TempDir StateDir, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection, DaemonConfig Config, string SockPath);
+    sealed record Harness(TempDaemonStore Daemons, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection, DaemonConfig Config, string SockPath);
 
     static async Task<Harness> StartAsync(string daemonName, CancellationToken ct, string serverUrl = "http://127.0.0.1:1") {
-        var stateDir = new TempDir();
-        var store       = new LaunchConsentStore(stateDir.Path, NullLogger.Instance);
+        var daemons     = new TempDaemonStore();
+        var stateRoot   = daemons.Store.StateDirectory(daemonName);
+        var store       = new LaunchConsentStore(stateRoot, NullLogger.Instance);
         var broker      = new LaunchConsentBroker();
-        var decisionLog = new LaunchConsentDecisionLog(stateDir.Path, NullLogger.Instance);
+        var decisionLog = new LaunchConsentDecisionLog(stateRoot, NullLogger.Instance);
         var gate        = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         var config = new DaemonConfig {
             Name         = daemonName,
             ServerUrl    = serverUrl,
-            StateDir     = stateDir.Path,
-            WorktreeRoot = stateDir.PathTo("worktrees"),
+            Store        = daemons.Store,
+            WorktreeRoot = daemons.PathTo("worktrees"),
         };
         var consentIpc = new LaunchConsentIpc(broker, store, config, NullLogger<LaunchConsentIpc>.Instance);
 
@@ -69,15 +69,15 @@ public class LocalControlOpsV2PutTests {
             NullLogger<AgentOrchestrator>.Instance, gate);
 
         var statusIpc = new DaemonStatusIpc(config, orchestrator, connection, new DaemonStatusNotifier());
-        var restart = RestartCoordinator.ForTest(daemonName, daemonName, new NoopRestartStrategy());
+        var restart = RestartCoordinator.ForTest(daemons.Store, daemonName, daemonName, new NoopRestartStrategy());
         var server = new LocalControlServer(config, orchestrator, restart, consentIpc, statusIpc, NullLogger<LocalControlServer>.Instance);
         await server.StartAsync(ct);
 
-        var sockPath = LocalSocketPaths.Socket(daemonName);
+        var sockPath = daemons.Store.SocketPath(daemonName);
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (!File.Exists(sockPath) && DateTime.UtcNow < deadline) await Task.Delay(20, ct);
 
-        return new Harness(stateDir, server, orchestrator, connection, config, sockPath);
+        return new Harness(daemons, server, orchestrator, connection, config, sockPath);
     }
 
     static async Task StopAsync(Harness h) {
@@ -85,35 +85,30 @@ public class LocalControlOpsV2PutTests {
         await h.Server.StopAsync(CancellationToken.None);
         h.Server.Dispose();
         await h.Connection.DisposeAsync();
-        h.StateDir.Dispose();
+        h.Daemons.Dispose();
     }
 
-    /// Wraps a test body with the temp-dir DaemonLockPaths override + harness lifecycle, mirroring
+    /// Wraps a test body with the harness lifecycle, mirroring
     /// ConsentRulesPutV2Tests.RunAsync, and hands the body a LocalControlOps pointed at the same
     /// daemon name so it can drive Put/Get through the real client under test.
     static async Task RunAsync(string daemonName, Func<Harness, LocalControlOps, CancellationToken, Task> body, string serverUrl = "http://127.0.0.1:1") {
-        // Short name: macOS allows 104 bytes of socket path and $TMPDIR takes 49.
-        using var sockDir = new TempDir("lcov");
-        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.Path);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         Harness? h = null;
         try {
             h = await StartAsync(daemonName, cts.Token, serverUrl);
             await Assert.That(File.Exists(h.SockPath)).IsTrue();
-            var ops = new LocalControlOps(daemonName) {
+            var ops = new LocalControlOps(h.Daemons.Store, daemonName) {
                 ConnectTimeout = TimeSpan.FromSeconds(2),
                 ConsentReplyTimeout = TimeSpan.FromSeconds(5),
             };
             await body(h, ops, cts.Token);
         } finally {
             if (h is not null) await StopAsync(h);
-            DaemonLockPaths.OverrideDirectoryForTesting(null);
         }
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Identity_match_applies_and_follow_up_get_sees_it() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -132,7 +127,6 @@ public class LocalControlOpsV2PutTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Name_mismatch_acks_identity_mismatch_and_leaves_policy_unchanged() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -153,7 +147,6 @@ public class LocalControlOpsV2PutTests {
     }
 
     [Test]
-    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Server_mismatch_acks_identity_mismatch_and_leaves_policy_unchanged() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 

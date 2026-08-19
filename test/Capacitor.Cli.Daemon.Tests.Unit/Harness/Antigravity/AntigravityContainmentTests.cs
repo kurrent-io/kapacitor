@@ -76,10 +76,19 @@ public class AntigravityContainmentTests {
         var logsBefore     = SnapshotNames(kcapLogs);
         var watchersBefore = SnapshotNames(kcapWatchers);
 
-        using var tmp = new TempDir();
-        var stateDir  = tmp.CreateDir("state");
-        var workspace = tmp.CreateDir("ws");
-        string? home  = null;
+        using var tmp     = new TempDir();
+        using var daemons = new TempDaemonStore();
+        var workspace     = tmp.CreateDir("ws");
+        string? home      = null;
+
+        var config = new DaemonConfig {
+            AntigravityPath                       = "agy",
+            AntigravityUnattendedReviewerEnabled  = true,
+            Name                                  = "containment-daemon",
+            DaemonEpoch                           = "containment-epoch",
+            Store                                 = daemons.Store,
+            AntigravityReviewerTurnTimeoutSeconds = (int)TurnTimeout.TotalSeconds
+        };
 
         try {
             workspace.CreateFile("README.md", "containment probe workspace\n");
@@ -87,17 +96,11 @@ public class AntigravityContainmentTests {
             // Production home and production argv/env — an assertion over a re-derived spawn shape
             // would certify the test's idea of the launch, not the launch.
             home = AntigravityReviewerHome.Create(
-                stateDir, "containment-epoch", "containment-agent", [], grantInjectedMcpTools: true);
+                config.Store.StateDirectory(config.Name), "containment-epoch", "containment-agent", [],
+                grantInjectedMcpTools: true);
 
             var psi = AntigravityHostedAgentRuntimeFactory.BuildTurnPsi(
-                config: new DaemonConfig {
-                    AntigravityPath                      = "agy",
-                    AntigravityUnattendedReviewerEnabled = true,
-                    Name                                 = "containment-daemon",
-                    DaemonEpoch                          = "containment-epoch",
-                    StateDir                             = stateDir,
-                    AntigravityReviewerTurnTimeoutSeconds = (int)TurnTimeout.TotalSeconds
-                },
+                config: config,
                 ctx: Ctx(workspace),
                 prompt: "Reply with the single word OK. Do not use any tools.",
                 conversationId: null,
@@ -169,7 +172,7 @@ public class AntigravityContainmentTests {
                     .Because($"the reviewer's conversation db must not appear in the operator's store ({root})");
             }
         } finally {
-            if (home is not null) AntigravityReviewerHome.Delete(home, stateDir);
+            if (home is not null) AntigravityReviewerHome.Delete(home, config.Store.StateDirectory(config.Name));
         }
     }
 

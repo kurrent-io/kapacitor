@@ -308,19 +308,19 @@ public class UnitWriterExpansionTests {
     [Arguments("-1")]
     [Arguments("8.5")]
     public async Task ServiceExtraArgs_rejects_a_non_positive_integer(string bad) {
-        var ex = Assert.Throws<ArgumentException>(() => DaemonCommands.ServiceExtraArgs(bad));
+        var ex = Assert.Throws<ArgumentException>(() => DaemonServiceCommands.ExtraArgs(bad));
 
         await Assert.That(ex!.Message).Contains("positive integer");
     }
 
     [Test]
     public async Task ServiceExtraArgs_accepts_an_integer() {
-        await Assert.That(DaemonCommands.ServiceExtraArgs("8")).IsEquivalentTo(["--max-agents", "8"]);
+        await Assert.That(DaemonServiceCommands.ExtraArgs("8")).IsEquivalentTo(["--max-agents", "8"]);
     }
 
     [Test]
     public async Task ServiceExtraArgs_is_empty_when_the_flag_is_absent() {
-        await Assert.That(DaemonCommands.ServiceExtraArgs(null)).IsEmpty();
+        await Assert.That(DaemonServiceCommands.ExtraArgs(null)).IsEmpty();
     }
 
     // ── the execution MODE must be part of the artifact, not inherited from the machine ──

@@ -34,28 +34,28 @@ public class AgentStatusSnapshotTests {
         public HttpClient CreateClient(string name) => new();
     }
 
-    sealed record Fixture(AgentOrchestrator Orchestrator, DaemonStatusNotifier Notifier, TempDir Tmp) {
+    sealed record Fixture(AgentOrchestrator Orchestrator, DaemonStatusNotifier Notifier, TempDaemonStore Daemons) {
         public async Task CleanupAsync() {
             await Orchestrator.DisposeAsync();
-            Tmp.Dispose();
+            Daemons.Dispose();
         }
     }
 
     static Fixture Build() {
-        var tmp         = new TempDir();
-        var stateDir    = tmp.CreateDir("state");
-        var worktreeRoot = tmp.PathTo("worktrees");
-        var store       = new LaunchConsentStore(stateDir.Path, NullLogger.Instance);
-        var broker      = new LaunchConsentBroker();
-        var decisionLog = new LaunchConsentDecisionLog(stateDir.Path, NullLogger.Instance);
-        var gate        = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
+        var daemons = new TempDaemonStore();
 
         var config = new DaemonConfig {
             Name         = "status-snapshot-test",
             ServerUrl    = "http://127.0.0.1:1",
-            StateDir     = stateDir.Path,
-            WorktreeRoot = worktreeRoot,
+            Store        = daemons.Store,
+            WorktreeRoot = daemons.PathTo("worktrees"),
         };
+
+        // The consent store and its decision log share this daemon's per-name state root, as DaemonRunner wires them.
+        var store       = new LaunchConsentStore(config.Store.StateDirectory(config.Name), NullLogger.Instance);
+        var broker      = new LaunchConsentBroker();
+        var decisionLog = new LaunchConsentDecisionLog(config.Store.StateDirectory(config.Name), NullLogger.Instance);
+        var gate        = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         var connection       = new ServerConnection(config, NullLoggerFactory.Instance, NullLogger<ServerConnection>.Instance);
         var worktreeManager  = new WorktreeManager(config, NullLogger<WorktreeManager>.Instance);
@@ -69,7 +69,7 @@ public class AgentStatusSnapshotTests {
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate, statusNotifier: notifier);
 
-        return new Fixture(orchestrator, notifier, tmp);
+        return new Fixture(orchestrator, notifier, daemons);
     }
 
     [Test]

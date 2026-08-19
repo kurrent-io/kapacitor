@@ -5,6 +5,8 @@ namespace Capacitor.App.Tests.Unit;
 
 /// Plain TUnit tests — OneShotObservation is driven via its scripted Probe seam.
 public class DaemonObservationTests {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     static MutationRequest Req(string daemonName = "daemon-a", string server = "http://localhost:9999") =>
         new(MutationVerb.StartVerified, "default", server, daemonName);
 
@@ -15,7 +17,7 @@ public class DaemonObservationTests {
         var hello = new HelloReplyDto(1, "1.2.3", "daemon-a", ["status/1"], Pid: 111, InstanceId: "inst-1");
         var snap = FakeDaemonClientService.Snap("daemon-a", serverUrl: "http://localhost:9999", pid: 111, instanceId: "inst-1");
         var probeResult = new ProbeResult(true, hello, snap, IdentityConsistent: true);
-        var adapter = new OneShotObservation(TimeSpan.FromSeconds(1)) { Probe = (_, _, _) => Task.FromResult(probeResult) };
+        var adapter = new OneShotObservation(Daemons.Store, TimeSpan.FromSeconds(1)) { Probe = (_, _, _) => Task.FromResult(probeResult) };
 
         var evidence = await adapter.ObserveAsync(Req(), CancellationToken.None);
 
@@ -28,7 +30,7 @@ public class DaemonObservationTests {
         var hello = new HelloReplyDto(1, "1.2.3", "daemon-a", ["status/1"], Pid: 111, InstanceId: "inst-1");
         var snap = FakeDaemonClientService.Snap("daemon-a", serverUrl: "http://localhost:9999", pid: 222, instanceId: "inst-2");
         var probeResult = new ProbeResult(true, hello, snap, IdentityConsistent: false);
-        var adapter = new OneShotObservation(TimeSpan.FromSeconds(1)) { Probe = (_, _, _) => Task.FromResult(probeResult) };
+        var adapter = new OneShotObservation(Daemons.Store, TimeSpan.FromSeconds(1)) { Probe = (_, _, _) => Task.FromResult(probeResult) };
 
         var evidence = await adapter.ObserveAsync(Req(), CancellationToken.None);
 
@@ -39,7 +41,7 @@ public class DaemonObservationTests {
     [Test]
     public async Task OneShot_unreachable_maps_to_false_evidence() {
         var probeResult = new ProbeResult(false, null, null, false);
-        var adapter = new OneShotObservation(TimeSpan.FromSeconds(1)) { Probe = (_, _, _) => Task.FromResult(probeResult) };
+        var adapter = new OneShotObservation(Daemons.Store, TimeSpan.FromSeconds(1)) { Probe = (_, _, _) => Task.FromResult(probeResult) };
 
         var evidence = await adapter.ObserveAsync(Req(), CancellationToken.None);
 
@@ -51,7 +53,7 @@ public class DaemonObservationTests {
         var hello = new HelloReplyDto(1, "1.2.3", "daemon-a", ["status/1"]); // predates Pid/InstanceId
         var snap = FakeDaemonClientService.Snap("daemon-a", serverUrl: "http://localhost:9999"); // predates Pid/InstanceId
         var probeResult = new ProbeResult(true, hello, snap, IdentityConsistent: false);
-        var adapter = new OneShotObservation(TimeSpan.FromSeconds(1)) { Probe = (_, _, _) => Task.FromResult(probeResult) };
+        var adapter = new OneShotObservation(Daemons.Store, TimeSpan.FromSeconds(1)) { Probe = (_, _, _) => Task.FromResult(probeResult) };
 
         var evidence = await adapter.ObserveAsync(Req(), CancellationToken.None);
 
@@ -64,7 +66,7 @@ public class DaemonObservationTests {
     public async Task OneShot_calls_probe_with_the_requests_daemon_name_and_its_own_timeout() {
         string? seenName = null;
         TimeSpan? seenTimeout = null;
-        var adapter = new OneShotObservation(TimeSpan.FromSeconds(3)) {
+        var adapter = new OneShotObservation(Daemons.Store, TimeSpan.FromSeconds(3)) {
             Probe = (name, timeout, _) => {
                 seenName = name;
                 seenTimeout = timeout;

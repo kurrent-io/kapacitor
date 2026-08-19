@@ -15,17 +15,17 @@ namespace Capacitor.Cli.Core;
 /// nothing to trip the NativeAOT reflection serializer.</para>
 /// </summary>
 public static class DaemonVersionMarker {
-    public static void Write(string daemonName, string version) {
-        DaemonLockPaths.EnsureDirectory();
-        var path = DaemonLockPaths.VersionPath(daemonName);
+    public static void Write(DaemonStore store, string daemonName, string version) {
+        store.EnsureDirectory();
+        var path = store.VersionPath(daemonName);
         var tmp  = $"{path}.tmp";
         File.WriteAllText(tmp, version);
         File.Move(tmp, path, overwrite: true);
     }
 
     /// <summary>The recorded version, or <c>null</c> if the marker is absent, blank, or unreadable.</summary>
-    public static string? TryRead(string daemonName) {
-        var path = DaemonLockPaths.VersionPath(daemonName);
+    public static string? TryRead(DaemonStore store, string daemonName) {
+        var path = store.VersionPath(daemonName);
         if (!File.Exists(path)) return null;
         try {
             var version = File.ReadAllText(path).Trim();
@@ -35,7 +35,7 @@ public static class DaemonVersionMarker {
         }
     }
 
-    public static void Delete(string daemonName) {
-        try { File.Delete(DaemonLockPaths.VersionPath(daemonName)); } catch { /* best-effort */ }
+    public static void Delete(DaemonStore store, string daemonName) {
+        try { File.Delete(store.VersionPath(daemonName)); } catch { /* best-effort */ }
     }
 }

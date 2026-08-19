@@ -1,23 +1,10 @@
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon.Services;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
-[NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
-public class RestartCoordinatorTests : IDisposable {
-    readonly TempDir _dir = new();
-
-    [Before(HookType.Test)]
-    public void Setup() {
-        DaemonLockPaths.OverrideDirectoryForTesting(_dir.Path);
-    }
-
-    [After(HookType.Test)]
-    public void Teardown() {
-        DaemonLockPaths.OverrideDirectoryForTesting(null);
-    }
-
-    public void Dispose() => _dir.Dispose();
+public class RestartCoordinatorTests {
+    // Per-test isolation for the restart marker the coordinator writes.
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
     sealed class SpyStrategy : IRestartStrategy {
         public int            Calls;
@@ -25,8 +12,8 @@ public class RestartCoordinatorTests : IDisposable {
         public RestartOutcome Restart() { Calls++; return Outcome; }
     }
 
-    static RestartCoordinator NewCoordinator(SpyStrategy spy, Func<bool> isBusy, Func<BinaryStat?> stat) {
-        var c = RestartCoordinator.ForTest("laptop", "v0.4.11", spy);
+    RestartCoordinator NewCoordinator(SpyStrategy spy, Func<bool> isBusy, Func<BinaryStat?> stat) {
+        var c = RestartCoordinator.ForTest(Daemons.Store, "laptop", "v0.4.11", spy);
         c.IsBusy     = isBusy;
         c.StatBinary = stat;
         c.PrimeBaseline();   // capture initial stat as baseline

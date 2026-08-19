@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 
 namespace Capacitor.App.Services.Mutation;
@@ -23,6 +24,7 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
     internal static readonly TimeSpan DetachedConfirmWindow = TimeSpan.FromSeconds(10);
     internal static readonly TimeSpan DetachedPollInterval  = TimeSpan.FromSeconds(1);
 
+    readonly DaemonStore _store;
     readonly ILoginShellProbe _shellProbe;
     readonly OutcomeChannel _channel;
     readonly Func<string?> _cliOverride;
@@ -44,9 +46,10 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
     internal MutationClassifier Classify { get; set; }
 
     public DaemonMutationLane(
-            ILoginShellProbe shellProbe, OutcomeChannel channel,
+            DaemonStore store, ILoginShellProbe shellProbe, OutcomeChannel channel,
             Func<string?> cliOverride, Func<MutationRequest, string?, IKcapCli> executorFactory,
             Func<MutationRequest, IDaemonObservation> oneShotFactory, TimeProvider time) {
+        _store           = store;
         _shellProbe      = shellProbe;
         _channel         = channel;
         _cliOverride     = cliOverride;
@@ -379,7 +382,7 @@ public sealed class DaemonMutationLane : IAsyncDisposable {
             // can never produce a false Refused, while evidence-first could let a pre-existing
             // same-name daemon (or, here, a transient mid-boot evidence shape) mask a real refusal —
             // checked fresh every iteration, so a refusal arriving mid-window is caught on the next poll.
-            if (attemptId is not null && BootRefusalMarker.TryAttribute(request.DaemonName, attemptId, request.CanonicalServer) is { } refusal)
+            if (attemptId is not null && BootRefusalAttribution.TryAttribute(_store, request.DaemonName, attemptId, request.CanonicalServer) is { } refusal)
                 return new MutationOutcome.Refused(refusal.Token, ReasonRouting.ForBootRefusal(refusal.Token));
 
             var evidence = await observation.ObserveAsync(request, ct).ConfigureAwait(false);
