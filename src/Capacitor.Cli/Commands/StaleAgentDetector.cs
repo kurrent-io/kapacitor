@@ -3,8 +3,14 @@ namespace Capacitor.Cli.Commands;
 /// <summary>An agent session that was already running when kcap's integration was first installed.</summary>
 public sealed record StaleAgentProcess(string Vendor, int Pid, string? Cwd);
 
-/// <summary>A vendor whose running sessions predate a first install, and what its process is called.</summary>
-public sealed record StaleAgentTarget(string Vendor, string ProcessName);
+/// <summary>A vendor whose running sessions predate a first install, and how to recognise one.</summary>
+/// <param name="ProcessName">The process name to match.</param>
+/// <param name="CommandLineMustContain">
+/// A fragment the command line has to carry as well, for a name too generic to stand alone. When set,
+/// a process whose command line cannot be read does not match — unknown is not a licence to guess.
+/// </param>
+public sealed record StaleAgentTarget(
+    string Vendor, string ProcessName, string? CommandLineMustContain = null);
 
 /// <summary>
 /// Finds agent sessions that were already running when the integration first arrived, so the one case
@@ -20,11 +26,17 @@ public sealed record StaleAgentTarget(string Vendor, string ProcessName);
 /// </remarks>
 public static class StaleAgentDetector {
     public static IReadOnlyList<StaleAgentProcess> Find(
-            IEnumerable<StaleAgentTarget> targets,
+            IEnumerable<StaleAgentTarget>  targets,
             Func<string, IEnumerable<int>> running,
-            Func<int, string?>             cwdOf) =>
+            Func<int, string?>             cwdOf,
+            Func<int, string?>             commandLineOf) =>
         [.. targets.SelectMany(t => running(t.ProcessName)
+                                        .Where(pid => Matches(t, pid, commandLineOf))
                                         .Select(pid => new StaleAgentProcess(t.Vendor, pid, cwdOf(pid))))];
+
+    static bool Matches(StaleAgentTarget target, int pid, Func<int, string?> commandLineOf) =>
+        target.CommandLineMustContain is not { } fragment
+     || commandLineOf(pid)?.Contains(fragment, StringComparison.OrdinalIgnoreCase) == true;
 
     /// <summary>
     /// One line per session, naming where it is so the user can find the right window, and pointing at

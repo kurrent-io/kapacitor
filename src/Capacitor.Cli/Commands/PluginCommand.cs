@@ -859,7 +859,8 @@ public static class PluginCommand {
         var piAlreadyInstalled = PiExtensionInstaller.IsInstalled(extensionPath);
         var piRunningBefore    = piAlreadyInstalled
             ? []
-            : env.FindStaleAgents([new StaleAgentTarget("pi", PiPaths.ProcessName)]);
+            : env.FindStaleAgents([
+                new StaleAgentTarget("pi", PiPaths.ProcessName, PiPaths.ProcessCommandLineMarker)]);
 
         // Fresh install needs kcap on PATH: both extensions shell out to the bare
         // `kcap` command (ingest → `kcap hook --pi`; bridge → `kcap mcp <name>`), so

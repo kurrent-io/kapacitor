@@ -15,7 +15,10 @@ internal sealed class StaleAgentDetectorTests {
     static IReadOnlyList<StaleAgentProcess> Find(
             int[] pids, Func<int, string?>? cwdOf = null) =>
         StaleAgentDetector.Find(
-            [new StaleAgentTarget("pi", "pi")], _ => pids, cwdOf ?? (_ => "/home/dev/proj"));
+            [new StaleAgentTarget("pi", "pi")],
+            _ => pids,
+            cwdOf ?? (_ => "/home/dev/proj"),
+            _ => null);
 
     [Test]
     public async Task A_running_session_is_reported_with_where_it_is() {
@@ -45,9 +48,34 @@ internal sealed class StaleAgentDetectorTests {
         var stale = StaleAgentDetector.Find(
             [new StaleAgentTarget("pi", "pi"), new StaleAgentTarget("kiro", "kiro-cli")],
             name => name == "kiro-cli" ? [7] : [],
+            _ => null,
             _ => null);
 
         await Assert.That(stale.Select(s => s.Vendor).ToArray()).IsEquivalentTo(["kiro"]);
+    }
+
+    // `pi` is a name anything could have, so the agent has to prove itself from its command line.
+    [Test]
+    [Arguments("node /usr/lib/node_modules/pi-coding-agent/dist/cli.js", true)]
+    [Arguments("/opt/raspberrypi/bin/pi --temperature", false)]
+    public async Task A_generic_process_name_must_be_corroborated(string commandLine, bool expected) {
+        var stale = StaleAgentDetector.Find(
+            [new StaleAgentTarget("pi", "pi", "node_modules")],
+            _ => [4821],
+            _ => null,
+            _ => commandLine);
+
+        await Assert.That(stale.Count == 1).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task An_unreadable_command_line_disqualifies_rather_than_passes() {
+        // Windows has no cheap way to read one. Unknown is not a licence to tell someone their
+        // session is uncaptured.
+        var stale = StaleAgentDetector.Find(
+            [new StaleAgentTarget("pi", "pi", "node_modules")], _ => [4821], _ => null, _ => null);
+
+        await Assert.That(stale).IsEmpty();
     }
 
     [Test]

@@ -7,10 +7,11 @@ namespace Capacitor.Cli.Commands;
 /// kept apart from the rule so the rule is testable without them.
 /// </summary>
 /// <remarks>
-/// Matching is by process name, which is what the platform makes cheap and is exact for a real binary
-/// like <c>kiro-cli</c>. It is weaker for an agent launched through a node shim, whose process may be
-/// named after the runtime rather than itself — that direction under-reports, which is the one to
-/// prefer: a session wrongly told it is uncaptured sends someone to kill a conversation for nothing.
+/// Matching is by process name, exact for a real binary like <c>kiro-cli</c> and too generic on its own
+/// for <c>pi</c> — which is why that one also has to prove itself from its command line. Both remaining
+/// failure modes under-report rather than over-report: a node shim may be named after the runtime and
+/// go unseen, and an unreadable command line disqualifies rather than passes. That is the direction to
+/// prefer — a session wrongly told it is uncaptured sends someone to kill a conversation for nothing.
 /// </remarks>
 public static class StaleAgentProbe {
     /// <summary>
@@ -19,7 +20,8 @@ public static class StaleAgentProbe {
     /// </summary>
     public static IReadOnlyList<StaleAgentProcess> Find(IEnumerable<StaleAgentTarget> targets) {
         try {
-            return StaleAgentDetector.Find(targets, RunningPids, ProcessHelpers.GetProcessCwd);
+            return StaleAgentDetector.Find(
+                targets, RunningPids, ProcessHelpers.GetProcessCwd, ProcessHelpers.GetProcessCommandLine);
         } catch {
             return [];
         }

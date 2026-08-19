@@ -741,6 +741,55 @@ static partial class ProcessHelpers {
     }
 
     /// <summary>
+    /// The full command line of <paramref name="pid"/>, arguments included, or null when it cannot be
+    /// read.
+    /// </summary>
+    /// <remarks>
+    /// The exec path alone is not enough to identify an agent launched through a runtime: a node shim
+    /// execs <c>node</c>, so the exec path says "node" and only the arguments say which script. Unix
+    /// only — Windows has no cheap equivalent, and a caller that needs certainty must treat null as
+    /// "unknown" rather than "no match".
+    /// </remarks>
+    public static string? GetProcessCommandLine(int pid) {
+        if (pid <= 0 || OperatingSystem.IsWindows()) return null;
+
+        if (OperatingSystem.IsMacOS()) return ReadCommandLineMac(pid);
+
+        try {
+            // NUL-separated argv; joined with spaces so a caller can substring-match across it.
+            var raw = File.ReadAllBytes($"/proc/{pid}/cmdline");
+
+            return raw.Length == 0 ? null : Encoding.UTF8.GetString(raw).Replace('\0', ' ').Trim();
+        } catch {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The whole <c>KERN_PROCARGS2</c> buffer as text — exec path and argv together. Not parsed into
+    /// arguments: callers only ask whether something appears in it, and argv's exact layout after the
+    /// exec path is padded and alignment-dependent.
+    /// </summary>
+    static unsafe string? ReadCommandLineMac(int pid) {
+        Span<int> mib  = [CtlKern, KernProcArgs2, pid];
+        nuint     size = 0;
+
+        fixed (int* m = mib) {
+            if (sysctl(m, 3, null, &size, null, 0) != 0 || size == 0) return null;
+
+            var buf = new byte[size];
+
+            fixed (byte* b = buf) {
+                if (sysctl(m, 3, b, &size, null, 0) != 0) return null;
+            }
+
+            if (size <= sizeof(int)) return null;
+
+            return Encoding.UTF8.GetString(buf, sizeof(int), (int)size - sizeof(int)).Replace('\0', ' ');
+        }
+    }
+
+    /// <summary>
     /// Extracts the executable path from a <c>KERN_PROCARGS2</c> buffer: a 4-byte
     /// <c>argc</c> followed by the NUL-terminated exec path string. Pure so the
     /// parsing is unit-testable with a synthetic buffer. Returns null when the buffer
