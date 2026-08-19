@@ -10,7 +10,6 @@ namespace Capacitor.Cli.Core.Auth;
 /// comparison exists to prevent.</para>
 /// </summary>
 public interface IPairingProgress {
-    /// <summary>The code and the fallback link, both mandatory — see <see cref="BrowserPairingFlow"/>.</summary>
     void AwaitingApproval(string userCode, string setupUrl);
 
     /// <summary>One poll came back still pending.</summary>

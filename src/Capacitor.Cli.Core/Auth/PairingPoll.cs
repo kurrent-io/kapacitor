@@ -21,11 +21,13 @@ public static class PairingPoll {
         200 when status == "approved" => PairingVerdict.Approved,
         200 when status == "denied"   => PairingVerdict.Denied,
         410                           => PairingVerdict.Expired,
-        // 401 is terminal, not transient: unlike the provisioning poll there is no token source to
-        // refresh on the next tick — the secret was minted once and never changes, so a server that
-        // rejects it now will reject it forever.
-        401 or 404                    => PairingVerdict.Gone,
         429                           => PairingVerdict.SlowDown,
+        408                           => PairingVerdict.Wait,
+        // Every other 4xx is terminal, 401 included: unlike the provisioning poll there is no token
+        // source to refresh on the next tick, because the secret was minted once and never changes.
+        // Retrying a request the server has refused only defers the report and then misnames it —
+        // seventeen minutes of polling followed by "expired", for a pairing that was never wrong.
+        >= 400 and < 500              => PairingVerdict.Gone,
         // 200 pending, 5xx, and 0 (transport): the browser side may simply not have got there yet.
         _                             => PairingVerdict.Wait
     };

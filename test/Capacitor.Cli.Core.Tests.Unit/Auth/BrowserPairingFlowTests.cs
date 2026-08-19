@@ -141,6 +141,47 @@ public class BrowserPairingFlowTests {
         await Assert.That(result!.Message).Contains("Could not reach");
     }
 
+    // The code IS the defence. An empty one renders a prompt with nothing beside it, which removes
+    // the comparison without failing anything — the worst of the two outcomes.
+    [Test]
+    public async Task A_mint_with_no_user_code_degrades_rather_than_showing_an_empty_comparison() {
+        var (flow, channel, progress, clock, opened) = Build();
+        channel.Mint = new(201, new MintPairingResponse {
+            PairingId = "p1", Secret = "s", SetupUrl = $"{Server}/setup?p=p1",
+            ExpiresAt = clockBase.AddMinutes(15)
+        });
+
+        await Assert.That(await Drive(flow.RunAsync(Server, Machine, "nostromo", default), clock))
+            .IsTypeOf<PairingResult.Failed>();
+
+        await Assert.That(opened).IsEmpty();
+        await Assert.That(progress.Code).IsNull();
+    }
+
+    // ── WHAT GETS HANDED TO THE OS ──
+
+    // The URL is shell-executed, so an unchecked one is not a bad link but a launched program. And a
+    // page on another host is where a human would approve somebody else's pairing.
+    [Test]
+    [Arguments("file:///etc/passwd")]
+    [Arguments("ms-msdt:/id")]
+    [Arguments("javascript:alert(1)")]
+    [Arguments("/setup?p=p1")]
+    [Arguments("https://evil.example.com/setup?p=p1")]
+    public async Task A_setup_url_that_is_not_a_page_on_this_server_is_never_opened(string setupUrl) {
+        var (flow, channel, progress, clock, opened) = Build();
+        channel.Mint = new(201, new MintPairingResponse {
+            PairingId = "p1", UserCode = "7Q2F-KX9M", Secret = "s", SetupUrl = setupUrl,
+            ExpiresAt = clockBase.AddMinutes(15)
+        });
+
+        await Assert.That(await Drive(flow.RunAsync(Server, Machine, "nostromo", default), clock))
+            .IsTypeOf<PairingResult.Untrusted>();
+
+        await Assert.That(opened).IsEmpty();
+        await Assert.That(progress.Code).IsNull();
+    }
+
     // ── THE CODE AND THE LINK ──
 
     // Both are mandatory: the terminal's copy of the code is the only thing tying the page to this
@@ -294,6 +335,25 @@ public class BrowserPairingFlowTests {
 
         await Assert.That(await Drive(flow.RunAsync(Server, Machine, "nostromo", default), clock))
             .IsTypeOf<PairingResult.Expired>();
+    }
+
+    // The mint response is untrusted in both directions: a floor stops a fast clock abandoning a
+    // live pairing, a ceiling stops a far-future expiry polling for months.
+    [Test]
+    public async Task An_absurd_expiry_does_not_poll_forever() {
+        var (flow, channel, _, clock, _) = Build();
+        channel.Mint = new(201, new MintPairingResponse {
+            PairingId = "p1", UserCode = "7Q2F-KX9M", Secret = "s3cret",
+            SetupUrl = $"{Server}/setup?p=p1", PollIntervalSeconds = 2,
+            ExpiresAt = clockBase.AddYears(50)
+        });
+
+        var start = clock.GetUtcNow();
+
+        await Assert.That(await Drive(flow.RunAsync(Server, Machine, "nostromo", default), clock))
+            .IsTypeOf<PairingResult.Expired>();
+
+        await Assert.That(clock.GetUtcNow() - start).IsLessThan(TimeSpan.FromHours(2));
     }
 
     [Test]

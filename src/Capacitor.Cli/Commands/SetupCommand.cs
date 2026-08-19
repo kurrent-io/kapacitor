@@ -55,7 +55,9 @@ sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
         string.IsNullOrWhiteSpace(message) || message.StartsWith(' ') ? message : $"  {message}";
 }
 
-/// <summary>Step 1b's rendering, at setup's two-space indent.</summary>
+/// <summary>Step 1b's rendering, at setup's two-space indent. The code is printed here because the
+/// browser showing one is only half a comparison — the half that makes it a defence is the copy
+/// printed by the machine being paired.</summary>
 sealed class SpectrePairingProgress : IPairingProgress {
     bool _waiting;
 
@@ -907,12 +909,9 @@ public static class SetupCommand {
         }
     }
 
-    /// <summary>
-    /// Checks that the account which approved is the account that just signed in.
-    ///
-    /// <para>Runs immediately after login and before anything else in setup, because every later
-    /// step configures this machine for whoever this turns out to be.</para>
-    /// </summary>
+    /// <summary>Checks that the account which approved is the account that just signed in — see
+    /// <see cref="PairingIdentity"/>. Runs before anything else in setup, because every later step
+    /// configures this machine for whoever this turns out to be.</summary>
     static async Task<int> AssertPairingIdentityAsync(PairingResult.Approved approved, string activeProfile) {
         var tokens = await TokenStore.LoadAsync(activeProfile);
 
@@ -941,16 +940,12 @@ public static class SetupCommand {
     }
 
     /// <summary>
-    /// Releases the pairing, last, once there is nothing left for the browser to be told about.
+    /// Releases the pairing, last: completion invalidates the secret, and the channel is how this
+    /// machine reports progress, so ending it at sign-in would shut the door before the steps worth
+    /// reporting had run.
     ///
-    /// <para>Completion invalidates the secret, so it closes the channel for good — and the channel
-    /// is how this machine reports what it found and how far it got. Ending it at sign-in would shut
-    /// the door before any of the steps worth reporting had run.</para>
-    ///
-    /// <para>A 403 is the one status that matters: it is the server disagreeing with the identity
-    /// check above, which is the disagreement that check exists to surface. Everything else is
-    /// cosmetic — notably 401, which is what a retried call whose first attempt already succeeded
-    /// gets, by which point setup is finished and saying otherwise would be a lie.</para>
+    /// <para>403 is the one status worth acting on — the server disagreeing with the identity check
+    /// above. See <see cref="PairingClient.CompleteAsync"/> for why the rest are not.</para>
     /// </summary>
     static async Task<int> CompletePairingAsync(PairingResult.Approved approved, string activeProfile) {
         var tokens = await TokenStore.LoadAsync(activeProfile);

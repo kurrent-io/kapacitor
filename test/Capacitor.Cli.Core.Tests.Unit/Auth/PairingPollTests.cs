@@ -39,6 +39,21 @@ public class PairingPollTests {
     public async Task NotFound_is_terminal() =>
         await Assert.That(PairingPoll.Classify(404, null)).IsEqualTo(PairingVerdict.Gone);
 
+    // Retrying a request the server has refused only defers the report and then misnames it: the
+    // user waits out the whole budget and is told the pairing expired, which it never did.
+    [Test]
+    [Arguments(400)]
+    [Arguments(403)]
+    [Arguments(405)]
+    [Arguments(422)]
+    public async Task A_permanently_refused_request_is_terminal(int status) =>
+        await Assert.That(PairingPoll.Classify(status, null)).IsEqualTo(PairingVerdict.Gone);
+
+    // The one 4xx that says "try again" rather than "no".
+    [Test]
+    public async Task RequestTimeout_keeps_waiting() =>
+        await Assert.That(PairingPoll.Classify(408, null)).IsEqualTo(PairingVerdict.Wait);
+
     [Test]
     public async Task TooManyRequests_backs_off_rather_than_aborting() =>
         await Assert.That(PairingPoll.Classify(429, null)).IsEqualTo(PairingVerdict.SlowDown);
