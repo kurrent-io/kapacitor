@@ -100,7 +100,7 @@ code alongside the fallback link. Compare the code in the terminal against the o
 the browser shows before approving: the terminal's copy is the only thing tying
 that page to this machine. Setup then waits for approval, and stops if the account
 that approved is not the account you go on to sign in as. Skipped, with no change
-to today's behaviour, on servers that do not offer it, in headless environments,
+to today's behavior, on servers that do not offer it, in headless environments,
 and under --no-prompt.
 
 When you sign in with Kurrent's hosted auth and discovery finds no tenant, setup

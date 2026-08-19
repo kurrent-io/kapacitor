@@ -12,6 +12,16 @@ public sealed record MintOutcome(int StatusCode, MintPairingResponse? Body);
 /// which <see cref="PairingPoll.Classify"/> treats as "keep waiting" rather than as an answer.</summary>
 public sealed record PollOutcome(int StatusCode, PairingStatusResponse? Body);
 
+/// <summary>The pairing routes the flow needs, as a seam: the flow's loop, backoff and guards are
+/// the part worth testing, and they should not need a socket to exercise.</summary>
+public interface IPairingChannel {
+    Task<MintOutcome> MintAsync(string serverUrl, string machineId, string machineName, CancellationToken ct);
+
+    Task<PollOutcome> PollAsync(string serverUrl, string pairingId, string secret, CancellationToken ct);
+
+    Task<int> CompleteAsync(string serverUrl, string pairingId, string secret, string? accessToken, CancellationToken ct);
+}
+
 /// <summary>
 /// The CLI's client for the tenant's pairing routes.
 ///
@@ -19,7 +29,7 @@ public sealed record PollOutcome(int StatusCode, PairingStatusResponse? Body);
 /// transient blip mid-poll must not crash an interactive <c>kcap setup</c>, and the poll loop is the
 /// right place to decide what a blip means.</para>
 /// </summary>
-public sealed class PairingClient(HttpClient http) {
+public sealed class PairingClient(HttpClient http) : IPairingChannel {
     /// <summary>
     /// Mints a pairing on the tenant.
     ///
@@ -43,8 +53,14 @@ public sealed class PairingClient(HttpClient http) {
 
             if (!resp.IsSuccessStatusCode) return new((int)resp.StatusCode, null);
 
-            return new((int)resp.StatusCode,
-                       await resp.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.MintPairingResponse, ct));
+            MintPairingResponse? body = null;
+
+            // Guarded like the poll's: an unreadable body must not collapse to StatusCode 0, which
+            // the flow reports as "could not reach the server" about a server that just answered.
+            try { body = await resp.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.MintPairingResponse, ct); }
+            catch (Exception e) when (IsTransient(e)) { /* leave null — the flow's guard reports it */ }
+
+            return new((int)resp.StatusCode, body);
         } catch (Exception e) when (IsTransient(e)) {
             return new(0, null);
         }
@@ -97,7 +113,7 @@ public sealed class PairingClient(HttpClient http) {
 
     static HttpRequestMessage Secured(HttpMethod method, string url, string secret) {
         var req = new HttpRequestMessage(method, url);
-        req.Headers.TryAddWithoutValidation(PairingHeaders.Secret, secret);
+        req.Headers.TryAddWithoutValidation(HttpClientExtensions.PairingSecretHeader, secret);
 
         return req;
     }
@@ -106,9 +122,4 @@ public sealed class PairingClient(HttpClient http) {
     // HttpClient timeout rather than a user cancel.
     static bool IsTransient(Exception e) =>
         e is HttpRequestException or OperationCanceledException or JsonException or NotSupportedException;
-}
-
-public static class PairingHeaders {
-    /// <summary>Must match the tenant's <c>PairingEndpoints.SecretHeader</c> exactly.</summary>
-    public const string Secret = "X-Kcap-Pairing-Secret";
 }
