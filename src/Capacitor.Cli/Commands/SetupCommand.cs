@@ -55,6 +55,42 @@ sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
         string.IsNullOrWhiteSpace(message) || message.StartsWith(' ') ? message : $"  {message}";
 }
 
+/// <summary>
+/// Step 1b's rendering, at setup's two-space indent.
+///
+/// <para><b>The code goes in the terminal, every time.</b> A browser showing a code is only half a
+/// comparison; the half that makes it a defence is the one printed by the machine being paired. The
+/// fallback link is equally non-optional — nothing can confirm the browser actually opened.</para>
+/// </summary>
+sealed class SpectrePairingProgress : IPairingProgress {
+    bool _waiting;
+
+    public void AwaitingApproval(string userCode, string setupUrl) {
+        _waiting = true;
+
+        AnsiConsole.MarkupLine("  Opening your browser to finish setup.");
+        AnsiConsole.MarkupLine($"  [dim]If it didn't open:[/]  {Markup.Escape(setupUrl)}");
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine($"  Your code:  [bold cyan]{Markup.Escape(userCode)}[/]");
+        AnsiConsole.MarkupLine("  [yellow]Check the browser shows the same code before you approve.[/]");
+        AnsiConsole.WriteLine();
+        AnsiConsole.Markup("  Waiting…");
+    }
+
+    public void PollTick() => AnsiConsole.Write(".");
+
+    public void Notice(string message) => AnsiConsole.MarkupLine($"  {Markup.Escape(message)}");
+
+    /// <summary>Closes the "Waiting…" line the dots were appended to, so whatever prints next does
+    /// not land halfway along it.</summary>
+    public void EndWait() {
+        if (!_waiting) return;
+
+        _waiting = false;
+        AnsiConsole.WriteLine();
+    }
+}
+
 public static class SetupCommand {
     public static async Task<int> HandleAsync(string[] args) {
         var serverUrlArg     = GetArg(args, "--server-url");
@@ -165,11 +201,33 @@ public static class SetupCommand {
 
         await Console.Out.WriteLineAsync();
 
+        // Step 1b: machine pairing. Only on a named tenant — bare `kcap setup` has no server to mint
+        // on yet, and discovery has already signed the user in by the time it returns.
+        var pairing = serverUrlArg is null || loginComplete
+            ? null
+            : await RunPairingStepAsync(serverUrl, provider, noPrompt);
+
+        switch (pairing) {
+            case PairingResult.Denied:
+                await Console.Error.WriteLineAsync("  Setup was declined in the browser.");
+
+                return 1;
+
+            case PairingResult.Expired:
+                await Console.Error.WriteLineAsync("  This setup request expired before it was approved.");
+                await Console.Error.WriteLineAsync("  Run `kcap setup` again to start a new one.");
+
+                return 1;
+        }
+
         // Step 2: Login
         AnsiConsole.Write(new Rule("[yellow]Step 2/6 — Login[/]").LeftJustified());
 
         var loginStepResult = await RunLoginStepAsync(loginComplete, provider, serverUrl, forceDevice, activeProfile);
         if (loginStepResult != 0) return loginStepResult;
+
+        if (pairing is PairingResult.Approved approved
+         && await SettlePairingAsync(serverUrl, approved, activeProfile) != 0) return 1;
 
         await Console.Out.WriteLineAsync();
 
@@ -806,6 +864,80 @@ public static class SetupCommand {
             AnsiConsole.MarkupLine($"  [red]✗[/] Cannot reach server: {Markup.Escape(ex.Message)}");
             return null;
         }
+    }
+
+    /// <summary>Test seam: overrides the pairing flow so tests drive Step 1b without a server or a
+    /// browser. Reset to null in a finally block.</summary>
+    internal static Func<string, Task<PairingResult>>? PairingOverride;
+
+    internal static readonly SpectrePairingProgress PairingProgress = new();
+
+    /// <summary>
+    /// Step 1b — hands the browser a pairing and waits for a human to approve it.
+    ///
+    /// <para>Skipped rather than failed in every case where it cannot help: a tenant that does not
+    /// serve the routes, a headless machine with no browser to open, <c>--no-prompt</c>, and the
+    /// <c>None</c> provider, which has no identity for the approval to be about. A transport failure
+    /// is also a skip — the ordinary sign-in below still works, and refusing to proceed would make a
+    /// blip in a brand-new leg fatal to a path that used to work.</para>
+    /// </summary>
+    static async Task<PairingResult?> RunPairingStepAsync(string serverUrl, string provider, bool noPrompt) {
+        if (PairingOverride is { } over) return await over(serverUrl);
+
+        if (noPrompt || provider == AuthProvider.None || HeadlessEnvironment.IsHeadless()) return null;
+
+        var flow = new BrowserPairingFlow(new PairingClient(new HttpClient()), PairingProgress);
+
+        var result = await flow.RunAsync(
+            serverUrl, MachineId.Get(), Environment.MachineName, CancellationToken.None);
+
+        PairingProgress.EndWait();
+
+        switch (result) {
+            case PairingResult.Unavailable:
+                return null;
+
+            case PairingResult.Failed failed:
+                AnsiConsole.MarkupLine($"  [yellow]![/] {Markup.Escape(failed.Message)}");
+                AnsiConsole.MarkupLine("  [dim]Continuing with sign-in.[/]");
+
+                return null;
+
+            default:
+                return result;
+        }
+    }
+
+    /// <summary>
+    /// Closes the pairing once sign-in has happened, having first checked that the person who signed
+    /// in is the person who approved.
+    ///
+    /// <para><b>The comparison is the security property, not a sanity check.</b> The channel carries
+    /// approval and never a credential, so nothing else ties the human at the browser to the identity
+    /// this machine just authenticated as — without it, a pairing one person approved could be
+    /// redeemed by somebody else's session. The server re-checks it and answers 403, which is what
+    /// keeps an older or modified build from failing it quietly.</para>
+    ///
+    /// <para>The <c>/complete</c> call itself is cosmetic and its result is deliberately ignored:
+    /// completion invalidates the secret, so a retried call whose first attempt landed answers 401 —
+    /// by which point setup has already succeeded and saying so would be a lie.</para>
+    /// </summary>
+    static async Task<int> SettlePairingAsync(string serverUrl, PairingResult.Approved approved, string activeProfile) {
+        var tokens = await TokenStore.LoadAsync(activeProfile);
+
+        if (!PairingIdentity.Matches(approved.UserId, tokens?.AccessToken)) {
+            await Console.Error.WriteLineAsync(
+                "  Setup was approved by a different account than the one that just signed in.");
+            await Console.Error.WriteLineAsync(
+                "  Run `kcap setup` again and approve it as the account you signed in with.");
+
+            return 1;
+        }
+
+        await new PairingClient(new HttpClient()).CompleteAsync(
+            serverUrl, approved.PairingId, approved.Secret, tokens?.AccessToken, CancellationToken.None);
+
+        return 0;
     }
 
     /// <summary>Test seam: overrides façade construction for Step 1/2. Reset to null in a finally block.</summary>

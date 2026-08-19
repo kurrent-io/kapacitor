@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 using System.Text;
 using Duende.IdentityModel.OidcClient.Browser;
@@ -14,7 +13,7 @@ namespace Capacitor.Cli.Core.Auth;
 /// <see cref="OperationCanceledException"/>; only the independent timeout returns Timeout.
 /// </summary>
 public sealed class LoopbackBrowser(Action<string>? openBrowser = null, IAuthProgress? progress = null) : IBrowser {
-    readonly Action<string> _openBrowser = openBrowser ?? OpenSystemBrowser;
+    readonly Action<string> _openBrowser = openBrowser ?? SystemBrowser.Open;
     readonly IAuthProgress  _progress    = progress ?? ConsoleAuthProgress.Instance;
 
     public async Task<BrowserResult> InvokeAsync(BrowserOptions options, CancellationToken ct = default) {
@@ -60,14 +59,6 @@ public sealed class LoopbackBrowser(Action<string>? openBrowser = null, IAuthPro
         listener.Stop();
 
         return new BrowserResult { ResultType = BrowserResultType.Success, Response = query };
-    }
-
-    static void OpenSystemBrowser(string url) {
-        try {
-            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-        } catch {
-            // Best-effort — headless environments (devcontainers, SSH) have no browser.
-        }
     }
 
     static async Task WriteClosingPageAsync(HttpListenerContext ctx, bool success) {
