@@ -579,6 +579,30 @@ public static class ClaudeHookCommand {
                 return 0;
             }
 
+            // Advertise the coordination-notices capability so the server MAY return
+            // work-overlap / work-item-adjacency notices to inject into this live agent's
+            // context below (rendered next to the team-memory index). Injected ONLY here — onto
+            // the LIVE Claude/generic session-start POST body — and deliberately AFTER the
+            // ordering-guard/backlog return above, so a spooled body never carries the promise
+            // (matching the memory fetch's "don't pay for what a replay won't use" rule).
+            // `kcap import` posts /hooks/session-start/{vendor} with origin=historical and never
+            // reaches this path; the server also refuses a historical origin. Suppressed by the
+            // disable_coordination_notices opt-out, read from the EFFECTIVE profile so it is
+            // honoured for KCAP_URL users too — mirroring the sibling guidelines opt-out below
+            // (the same defect the memory read above still carries).
+            var coordinationNoticesDisabled = activeProfile?.DisableCoordinationNotices is true;
+            if (!coordinationNoticesDisabled) {
+                try {
+                    var node = JsonNode.Parse(body);
+                    if (node is not null) {
+                        node["coordination_notices"] = CoordinationNoticesEmitter.CapabilityVersion;
+                        body                          = node.ToJsonString();
+                    }
+                } catch {
+                    // Best effort — never fail the hook building the capability field.
+                }
+            }
+
             // kick off the team-memory index fetch in PARALLEL with the hook POST so
             // it adds no latency to the critical path. Fully best-effort / fail-open: any failure,
             // a 401, or a budget overrun yields a null fragment and nothing is injected. Started
@@ -670,13 +694,20 @@ public static class ClaudeHookCommand {
                     // hook budget so a slow fetch can't delay the hook (fail-open → null).
                     var memoryFragment = await AwaitMemoryFragmentAsync(memoryIndexTask, processStart);
 
+                    // Coordination notices ride the hook POST response (no extra fetch), same as the
+                    // guidelines fragment. Gated on the same opt-out that suppressed the capability
+                    // above: when disabled the server was never asked and returns nothing, but the
+                    // gate is defense-in-depth so the opt-out holds even against an over-eager server.
+                    var coordinationFragment = CoordinationNoticesEmitter.BuildFragment(
+                        responseNode, coordinationNoticesDisabled);
+
                     // The static work-items nudge. Claude has always carried kcap-workitems, so
                     // the availability gate is always satisfied here; only the opt-out can suppress it.
                     var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
                         SessionStartHarness.Claude, sessionId, activeProfile?.DisableWorkItemsNudge is true);
 
                     var envelope = SessionStartAdditionalContext.BuildEnvelope(
-                        lessonsFragment, nudgeFragment, memoryFragment, workItemsNudge);
+                        lessonsFragment, nudgeFragment, memoryFragment, coordinationFragment, workItemsNudge);
 
                     if (envelope is not null) {
                         writer.WriteLine(envelope);

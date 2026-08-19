@@ -167,6 +167,8 @@ public static class ConfigCommand {
             "disable_session_guidelines" => throw new ArgumentException($"Invalid value for disable_session_guidelines: '{value}'. Must be true or false."),
             "disable_memory_index" when bool.TryParse(value, out var b) => profile with { DisableMemoryIndex = b },
             "disable_memory_index" => throw new ArgumentException($"Invalid value for disable_memory_index: '{value}'. Must be true or false."),
+            "disable_coordination_notices" when bool.TryParse(value, out var b) => profile with { DisableCoordinationNotices = b },
+            "disable_coordination_notices" => throw new ArgumentException($"Invalid value for disable_coordination_notices: '{value}'. Must be true or false."),
             "disable_workitems_nudge" when bool.TryParse(value, out var b) => profile with { DisableWorkItemsNudge = b },
             "disable_workitems_nudge" => throw new ArgumentException($"Invalid value for disable_workitems_nudge: '{value}'. Must be true or false."),
             "use_provider_api_key" when bool.TryParse(value, out var b) => profile with { UseProviderApiKey = b },

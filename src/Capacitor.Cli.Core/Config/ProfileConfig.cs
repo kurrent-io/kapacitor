@@ -71,6 +71,17 @@ public record Profile {
     public bool? DisableWorkItemsNudge { get; init; }
 
     /// <summary>
+    /// when true, kcap does NOT advertise the coordination-notices capability at SessionStart,
+    /// so the server injects no coordination notices (heads-up about other people's in-flight work
+    /// that may overlap yours) into the agent's context — those notices still reach the in-app
+    /// notification centre and Slack. Independent of the memory-index, guidelines and work-items
+    /// opt-outs so each SessionStart injection can be toggled separately. Mirrors
+    /// <see cref="DisableMemoryIndex"/>.
+    /// </summary>
+    [JsonPropertyName("disable_coordination_notices")]
+    public bool? DisableCoordinationNotices { get; init; }
+
+    /// <summary>
     /// When true, kcap keeps <c>ANTHROPIC_API_KEY</c> / <c>OPENAI_API_KEY</c>
     /// in the spawn environment for headless agent CLIs (title generation,
     /// summaries, judges). Default <c>false</c> scrubs them so subscription

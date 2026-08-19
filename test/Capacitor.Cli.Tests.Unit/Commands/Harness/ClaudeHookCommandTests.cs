@@ -323,6 +323,90 @@ public class ClaudeHookCommandTests {
         await Assert.That(fx.SpoolFiles.Any()).IsTrue(); // still durably spooled for retry
     }
 
+    // ── SessionStart coordination-notices lane: capability advertise + response render ───────
+
+    [Test, NotInParallel]
+    public async Task session_start_advertises_the_coordination_notices_capability_by_default() {
+        using var fx = new Fixture();
+        var sid = Guid.NewGuid().ToString("N");
+
+        var (exit, _) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        await Assert.That(exit).IsEqualTo(0);
+
+        var posted = fx.Sent.Single(s => s.StartsWith("/hooks/session-start|", StringComparison.Ordinal));
+        var body   = JsonNode.Parse(posted[(posted.IndexOf('|') + 1)..]);
+        await Assert.That(body!["coordination_notices"]?.GetValue<string>()).IsEqualTo("v1");
+    }
+
+    [Test, NotInParallel]
+    public async Task disable_coordination_notices_omits_the_capability_from_the_post() {
+        using var fx = new Fixture();
+        var sid = Guid.NewGuid().ToString("N");
+
+        var (exit, _) = await WithProfileAsync(new Profile { DisableCoordinationNotices = true }, () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        await Assert.That(exit).IsEqualTo(0);
+
+        var posted = fx.Sent.Single(s => s.StartsWith("/hooks/session-start|", StringComparison.Ordinal));
+        var body   = JsonNode.Parse(posted[(posted.IndexOf('|') + 1)..]);
+        await Assert.That(body!["coordination_notices"]).IsNull();
+    }
+
+    [Test, NotInParallel]
+    public async Task session_start_renders_coordination_notices_from_the_response() {
+        using var fx = new Fixture {
+            RespondJson = """{"coordination_notices":[{"text":"Sam is also on AUTH-12"},{"text":"+2 more in the notification centre"}]}"""
+        };
+        var sid = Guid.NewGuid().ToString("N");
+
+        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        await Assert.That(exit).IsEqualTo(0);
+
+        var ctx = JsonNode.Parse(stdout)!["hookSpecificOutput"]!["additionalContext"]!.GetValue<string>();
+        await Assert.That(ctx).Contains("## Coordination notices");
+        await Assert.That(ctx).Contains("- Sam is also on AUTH-12");
+        await Assert.That(ctx).Contains("- +2 more in the notification centre");
+    }
+
+    /// <summary>Non-vacuous control for the opt-out: the SAME server response that renders above
+    /// produces NOTHING when disable_coordination_notices is set — proving the opt-out suppresses
+    /// the block (and the capability), not that the fixture never produced one.</summary>
+    [Test, NotInParallel]
+    public async Task disable_coordination_notices_suppresses_both_the_capability_and_the_render() {
+        using var fx = new Fixture {
+            RespondJson = """{"coordination_notices":[{"text":"Sam is also on AUTH-12"}]}"""
+        };
+        var sid = Guid.NewGuid().ToString("N");
+
+        var (exit, stdout) = await WithProfileAsync(new Profile { DisableCoordinationNotices = true }, () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        await Assert.That(exit).IsEqualTo(0);
+
+        // Capability never sent.
+        var posted = fx.Sent.Single(s => s.StartsWith("/hooks/session-start|", StringComparison.Ordinal));
+        var body   = JsonNode.Parse(posted[(posted.IndexOf('|') + 1)..]);
+        await Assert.That(body!["coordination_notices"]).IsNull();
+
+        // Nothing rendered (no other fragments in this response either).
+        await Assert.That(stdout).DoesNotContain("## Coordination notices");
+        await Assert.That(stdout).DoesNotContain("Sam is also on AUTH-12");
+    }
+
+    [Test, NotInParallel]
+    public async Task malformed_coordination_notices_field_does_not_fail_the_hook() {
+        // Server echoes the capability token back as a bare string instead of the {text}[] array.
+        using var fx = new Fixture { RespondJson = """{"coordination_notices":"v1"}""" };
+        var sid = Guid.NewGuid().ToString("N");
+
+        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(stdout).DoesNotContain("## Coordination notices");
+    }
+
     /// <summary>Runs <paramref name="action"/> with <see cref="AppConfig.ResolvedProfile"/> set to
     /// <paramref name="profile"/>, restoring whatever was resolved before (or the closest
     /// equivalent to "untouched" — see <c>AppConfig.SetResolvedState</c>'s lack of an "unset"
