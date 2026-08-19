@@ -2,8 +2,14 @@ name: CI
 
 on:
   pull_request:
-    paths-ignore:
-      - '**.md'
+    # Skip markdown-only PRs, EXCEPT under kcap/ — every file in the shipped plugin is a SKILL.md, so
+    # adding a skill is a markdown-only change. Ignoring those let two skills ship unlisted in
+    # AgentsSkillsInstaller.SourceNames without a red build; the guard that now catches it only helps
+    # if it runs on the PR that causes it. Order matters: later patterns re-include.
+    paths:
+      - '**'
+      - '!**.md'
+      - 'kcap/**'
   push:
     branches: [main]
     paths-ignore:

@@ -31,10 +31,11 @@ namespace Capacitor.Cli.Harness.Antigravity;
 /// transcript, so import leaves <c>cwd</c> null (no repo enrichment / exclusion on historical
 /// import — a v1 limitation shared with Gemini; live capture gets cwd from the hook payload).</para>
 ///
-/// <para>Token/model cost lives off-transcript in each conversation's <c>gen_metadata</c>
-/// db; the live path streams it as synthetic USAGE lines. Injecting it on historical import
-/// is a follow-up (it needs completeness tracking so a failed USAGE send after a complete
-/// transcript still retries) — so imported sessions currently carry content but not cost.</para>
+/// <para>Token/model cost lives off-transcript in each conversation's <c>gen_metadata</c> db; the
+/// live path streams it as synthetic USAGE lines and import injects it via
+/// <see cref="PostUsageLinesAsync"/>. **Subagents are the exception**: each child is its own
+/// conversation with its own db, and <see cref="ImportChildrenAsync"/> posts child content without a
+/// usage pass, so imported subagents carry content but not cost.</para>
 /// </summary>
 internal sealed class AntigravityImportSource : IImportSource {
     static readonly HashSet<string> RelevantTypes = new(StringComparer.Ordinal) {

@@ -77,4 +77,4 @@ no breakdown.
 ## Requirements
 
 Requires `kcap login`. The `kcap-workitems` MCP server is auto-registered for
-Claude Code by `kcap setup`; it is not offered for Cursor or Codex.
+every supported harness by `kcap setup` and by `kcap plugin install`.

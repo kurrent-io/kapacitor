@@ -298,7 +298,7 @@ public class SetupCommandTests {
         // Vendors match a user's message against the frontmatter `description:` only — the body
         // is read after the skill fires. So asserting the phrase is somewhere in the file would
         // pass even if it moved below the fences, where it can no longer trigger anything.
-        var skill = Path.Combine(RepoRoot(), "kcap", "skills", SetupCommand.GuidedTourSkillName, "SKILL.md");
+        var skill = Path.Combine(RepoTree.SkillsSource(), SetupCommand.GuidedTourSkillName, "SKILL.md");
 
         await Assert.That(File.Exists(skill)).IsTrue();
 
@@ -345,16 +345,6 @@ public class SetupCommandTests {
         if (!inValue) throw new InvalidOperationException("SKILL.md frontmatter has no description field.");
 
         return string.Join(' ', value).Trim();
-    }
-
-    /// <summary>Walks up from the test binary to the repo root (the directory holding `kcap/`).</summary>
-    static string RepoRoot() {
-        var dir = AppContext.BaseDirectory;
-
-        while (dir is not null && !Directory.Exists(Path.Combine(dir, "kcap", "skills")))
-            dir = Path.GetDirectoryName(dir);
-
-        return dir ?? throw new DirectoryNotFoundException("Could not locate the repo root from the test binary.");
     }
 
     [Test]

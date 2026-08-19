@@ -4,18 +4,8 @@ using Capacitor.Cli.Core.Mcp;
 namespace Capacitor.Cli.Core.Tests.Unit.Mcp;
 
 public class McpCanonicalContractTests {
-    // Resolve the repo's kcap/ dir relative to the test assembly (…/src/cli).
-    static string KcapDir() {
-        var d = new DirectoryInfo(AppContext.BaseDirectory);
-        for (; d is not null; d = d.Parent)
-            if (Directory.Exists(Path.Combine(d.FullName, "kcap")) &&
-                File.Exists(Path.Combine(d.FullName, "kcap", ".mcp.json")))
-                return Path.Combine(d.FullName, "kcap");
-        throw new DirectoryNotFoundException("kcap/ not found above test base dir");
-    }
-
     static string[] Keys(string file) =>
-        [.. ((JsonObject)JsonNode.Parse(File.ReadAllText(Path.Combine(KcapDir(), file)))!["mcpServers"]!)
+        [.. ((JsonObject)JsonNode.Parse(File.ReadAllText(Path.Combine(RepoTree.KcapDir(), file)))!["mcpServers"]!)
             .Select(kv => kv.Key)];
 
     [Test]
@@ -35,7 +25,7 @@ public class McpCanonicalContractTests {
 
     [Test]
     public async Task Every_bundled_claude_mcp_server_has_a_description() {
-        var servers = (JsonObject)JsonNode.Parse(File.ReadAllText(Path.Combine(KcapDir(), ".mcp.json")))!["mcpServers"]!;
+        var servers = (JsonObject)JsonNode.Parse(File.ReadAllText(Path.Combine(RepoTree.KcapDir(), ".mcp.json")))!["mcpServers"]!;
         foreach (var (name, node) in servers)
             await Assert.That(string.IsNullOrWhiteSpace(node?["description"]?.GetValue<string>()))
                 .IsFalse().Because($"{name} in .mcp.json must have a non-empty description");

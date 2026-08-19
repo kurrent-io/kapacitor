@@ -268,21 +268,6 @@ public class PluginCommandCodexTests {
     }
 
     [Test]
-    public async Task SourceNames_contains_expected_skills() {
-        var expected = new[] {
-            "recap",
-            "errors",
-            "hide",
-            "disable",
-            "validate-plan",
-            "review-flows",
-            "guided-tour"
-        };
-
-        await Assert.That(AgentsSkillsInstaller.SourceNames).IsEquivalentTo(expected);
-    }
-
-    [Test]
     public async Task Install_returns_false_when_known_folder_missing() {
         using var tmp    = new TempDir();
         var       source = tmp.PathTo("skills");

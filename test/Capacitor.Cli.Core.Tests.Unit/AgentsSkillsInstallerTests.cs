@@ -1,13 +1,42 @@
 namespace Capacitor.Cli.Core.Tests.Unit;
 
 public class AgentsSkillsInstallerTests {
-    static readonly string[] SourceNames = ["recap", "errors", "disable", "hide", "validate-plan", "review-flows", "guided-tour"];
+    static readonly string[] SourceNames = ["recap", "errors", "disable", "hide", "validate-plan", "review-flows", "agent-flows", "work-items", "guided-tour"];
 
     [Test]
     public async Task Mirror_of_SourceNames_matches_the_installer() {
         // Every test below builds its fixture from the local mirror, so a skill added to the
         // installer but not here would be silently uncovered. Pin the two together.
         await Assert.That(SourceNames).IsEquivalentTo(AgentsSkillsInstaller.SourceNames);
+    }
+
+    [Test]
+    public async Task SourceNames_covers_every_shipped_skill() {
+        // Install refuses a SourceName with no SKILL.md, but nothing catches the reverse: agent-flows
+        // and work-items sat in kcap/skills/ unlisted, so every tree this list feeds went without them
+        // and no build failed.
+        var shipped = Directory
+            .EnumerateDirectories(RepoTree.SkillsSource())
+            .Where(d => File.Exists(Path.Combine(d, "SKILL.md")))
+            .Select(Path.GetFileName)
+            .OfType<string>()
+            .ToArray();
+
+        await Assert.That(AgentsSkillsInstaller.SourceNames)
+                    .IsEquivalentTo(shipped)
+                    .Because("every skill under kcap/skills/ must be listed in AgentsSkillsInstaller.SourceNames, "
+                           + "or it ships to users and reaches no agent. Add it there, and to help-plugin.txt.");
+    }
+
+    [Test]
+    public async Task Help_text_lists_every_installed_skill() {
+        // help-plugin.txt spells the list out by hand and nothing else reads it, so it drifts silently
+        // — it was already two skills behind when this test was written.
+        var help = await File.ReadAllTextAsync(
+            Path.Combine(RepoTree.Root(), "src", "Capacitor.Cli.Core", "Resources", "help-plugin.txt"));
+
+        foreach (var name in AgentsSkillsInstaller.SourceNames)
+            await Assert.That(help).Contains(name);
     }
 
     [Test]

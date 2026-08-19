@@ -1,12 +1,16 @@
 namespace Capacitor.Cli.Core;
 
 /// <summary>
-/// Copies kcap skills from a source tree to the user's
-/// <c>~/.agents/skills/</c> directory, prefixing each folder name with
-/// <c>kcap-</c> and rewriting the <c>name:</c> field in SKILL.md to
-/// match. Also handles cleanup of legacy <c>~/.codex/skills/kcap-*</c>
-/// folders left by prior installer versions.
+/// Copies kcap skills from a source tree to a target directory, prefixing each folder name with
+/// <c>kcap-</c> and rewriting the <c>name:</c> field in SKILL.md to match. Also handles cleanup of
+/// legacy <c>~/.codex/skills/kcap-*</c> folders left by prior installer versions.
 /// </summary>
+/// <remarks>
+/// The target is a parameter because there are three: the agent-agnostic <c>~/.agents/skills/</c>,
+/// plus <c>~/.kiro/skills/</c> and <c>~/.gemini/skills/</c> for the two vendors that read their own
+/// tree instead. So <see cref="SourceNames"/> decides what all three receive — a skill added here
+/// reaches Kiro and Antigravity as well.
+/// </remarks>
 public static class AgentsSkillsInstaller {
     /// <summary>
     /// File name written into the target directory after a successful install.
@@ -16,9 +20,10 @@ public static class AgentsSkillsInstaller {
     public const string MarkerFileName = ".kcap-version";
 
     /// <summary>
-    /// Source folder names under <c>capacitor/skills/</c>. On install each
+    /// Source folder names under <c>kcap/skills/</c>. On install each
     /// becomes <c>kcap-&lt;name&gt;</c> under the target directory.
-    /// Add a new skill here when adding it to <c>capacitor/skills/</c>.
+    /// Add a new skill here when adding it to <c>kcap/skills/</c>, and to
+    /// <c>Resources/help-plugin.txt</c>; both are pinned by tests.
     /// </summary>
     public static readonly string[] SourceNames = [
         "recap",
@@ -27,6 +32,8 @@ public static class AgentsSkillsInstaller {
         "disable",
         "validate-plan",
         "review-flows",
+        "agent-flows",
+        "work-items",
         "guided-tour"
     ];
 

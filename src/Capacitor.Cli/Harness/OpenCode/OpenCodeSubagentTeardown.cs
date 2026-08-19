@@ -25,8 +25,8 @@ static class OpenCodeSubagentTeardown {
     /// <summary>
     /// Shared budget for the best-effort kill+drain cleanup ACROSS all children, so a slow
     /// first child can't consume it and starve later children. <c>subagent-stop</c> is ALWAYS
-    /// attempted per child regardless of this budget (the critical <c>SubagentCompleted</c>;
-    /// OpenCode has no historical import, so a missed stop is unrecoverable). Self-bounding —
+    /// attempted per child regardless of this budget (the critical <c>SubagentCompleted</c>, and a
+    /// missed one leaves the child open until something else closes it). Self-bounding —
     /// the caller awaits <see cref="DrainAsync"/> directly without an outer time cap.
     /// </summary>
     internal static readonly TimeSpan CleanupBudget = TimeSpan.FromSeconds(6);

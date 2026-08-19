@@ -482,12 +482,9 @@ public class FlowsDriverSchemaConformanceTests {
     // below load-bearing rather than advisory -- delete it and a stale driver takes the server
     // default and reports that the user's named reviewer ran, the exact claim the design forbids.
     //
-    // Reach is NOT uniform across the two skills. `review-flows` is in
-    // AgentsSkillsInstaller.SourceNames (so `kcap update` refreshes it everywhere) and is the one
-    // covering `start_review_flow`, the reserved alias this is about; `agent-flows` is absent from
-    // that list and reaches only plugin-loaded surfaces. Scoped to that reality rather than assuming
-    // parity -- whether agent-flows should join the distributed set is a separate decision, and the
-    // tripwire below pins the half this relies on.
+    // Reach is uniform across both skills: each is in AgentsSkillsInstaller.SourceNames, so `kcap
+    // update` refreshes both everywhere. (`agent-flows` was absent from that list until the drift fix
+    // that added it; the tripwire below pins the property this relies on for both.)
 
     /// <summary>The two skills that teach a driver to start a flow, and the heading introducing the
     /// stale-schema case in each.</summary>
@@ -558,14 +555,15 @@ public class FlowsDriverSchemaConformanceTests {
             .Because("the supported recovery is restarting the harness; kcap cannot refresh a cached schema");
     }
 
-    // The invariant above is only as good as the skill's reach. `review-flows` carries it for the
-    // reserved review alias on every agent-skills surface -- but ONLY because it is in the
-    // distributed list. Dropping it there would silently revoke the guidance from every harness
+    // The invariant above is only as good as each skill's reach, and that holds ONLY because both are
+    // in the distributed list. Dropping either would silently revoke the guidance from every harness
     // that installs skills, while the content assertion above stayed green against the package
     // source it reads directly.
     [Test]
-    public async Task The_review_flows_skill_is_actually_distributed_to_agent_skill_surfaces() {
-        await Assert.That(AgentsSkillsInstaller.SourceNames).Contains("review-flows")
+    [MethodDataSource(nameof(FlowSkillFiles))]
+    public async Task The_flow_skills_are_actually_distributed_to_agent_skill_surfaces(
+            (string Skill, string Anchor) flowSkill) {
+        await Assert.That(AgentsSkillsInstaller.SourceNames).Contains(flowSkill.Skill)
             .Because("a skill outside SourceNames is never refreshed onto agent-skills surfaces, "
                    + "so its stale-schema guidance would not reach the drivers that need it");
     }
