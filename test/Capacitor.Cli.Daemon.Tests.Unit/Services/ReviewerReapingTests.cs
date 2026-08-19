@@ -68,7 +68,7 @@ public class ReviewerReapingTests {
 
         var activeTime  = new FakeTimeProvider();
         var activeClock = new AgentActivityClock(activeTime);
-        activeTime.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1));
+        activeTime.Advance(TimeSpan.FromHours(7) + TimeSpan.FromMinutes(1)); // past the 6h+60m hard ceiling
         activeClock.Advance(); // genuinely active at the moment of the check — idle ~0, only the TTL can fire
         orch.SeedAgentForTest("bound-active-old", LaunchKind.ReviewFlow, status: "Running",
             activityClock: activeClock, inactivityBoundSeconds: 600);
@@ -163,7 +163,7 @@ public class ReviewerReapingTests {
 
         var activeTime  = new FakeTimeProvider();
         var activeClock = new AgentActivityClock(activeTime);
-        activeTime.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1));
+        activeTime.Advance(TimeSpan.FromHours(7) + TimeSpan.FromMinutes(1)); // past the 6h+60m hard ceiling
         activeClock.Advance(); // genuinely active right up to the moment of the check — idle ~0
         orch.SeedAgentForTest("active-old", LaunchKind.ReviewFlow, status: "Running", activityClock: activeClock);
 

@@ -774,28 +774,17 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// share one decision.
     ///
     /// <para><b>Decision table</b>, in this order. A <see cref="TimeSpan.Zero"/> config value disables
-    /// its own rule:
-    /// <list type="number">
-    /// <item>the HARD lifetime ceiling — <see cref="DaemonConfig.ReviewerMaxLifetime"/> plus one
-    ///   <see cref="DaemonConfig.ReviewerTurnWedgeCeiling"/> — vs <c>AgeMs</c> ⇒
-    ///   <c>reviewer_ttl_expired</c>, unfenced. Absolute: it holds regardless of activity or a held
-    ///   turn, so a runaway turn (or output stream) that keeps advancing the seq stays mortal.</item>
-    /// <item><see cref="DaemonConfig.ReviewerMaxLifetime"/> (6h) vs <c>AgeMs</c> with NO turn held ⇒
-    ///   <c>reviewer_ttl_expired</c>, FENCED on activity: reaping an actively-working reviewer
-    ///   mid-round burns the dispatched round and its accumulated context, so a held turn defers
-    ///   the cap (bounded by rule 1) and a delivery racing the sweep aborts the claim — the reap
-    ///   lands on the first genuinely quiet sweep past the lifetime instead. A disabled wedge
-    ///   ceiling collapses rule 1 onto the lifetime, restoring the original absolute cap.</item>
-    /// <item>a HELD TURN suppresses the idle rule (a long tool run is legitimate) UNLESS
-    ///   <c>IdleForMs</c> passes <see cref="DaemonConfig.ReviewerTurnWedgeCeiling"/> ⇒
-    ///   <c>turn_wedged</c>. Any mid-turn envelope calls <c>Advance()</c> and re-arms it, so only a
-    ///   genuinely frozen turn is wedge-reaped.</item>
-    /// <item><see cref="DaemonConfig.ReviewerIdleTimeout"/> (2h) vs <c>IdleForMs</c> ⇒
-    ///   <c>reviewer_idle_expired</c>.</item>
-    /// </list>
-    /// A PTY vendor never sets <c>TurnInFlight</c>, so mid-round it gets only rule 2's activity
-    /// fence (every output chunk advances the seq), not rule 2's held-turn deferral — a quiet
-    /// tool wait past the lifetime can still be reaped there.</para>
+    /// its own rule. The lifetime cap (<see cref="DaemonConfig.ReviewerMaxLifetime"/>, 6h) is
+    /// two-tier: past lifetime + one <see cref="DaemonConfig.ReviewerTurnWedgeCeiling"/> it is
+    /// absolute and unfenced (a runaway turn or output stream must stay mortal, and a disabled
+    /// wedge ceiling collapses this tier onto the lifetime); in between it selects only a
+    /// visibly-at-rest reviewer — a held turn defers it, and so does activity within
+    /// <see cref="LifetimeReapQuietWindow"/>, because reaping mid-round burns the dispatched round
+    /// plus the reviewer's context, and a just-delivered round may not have flagged its turn yet
+    /// (the busy signal is asynchronous — e.g. Pi's <c>agent_start</c>). The wedge rule
+    /// (<c>turn_wedged</c>) and the idle rule (<c>reviewer_idle_expired</c>) are unchanged. A PTY
+    /// vendor never sets <c>TurnInFlight</c>; mid-round it relies on the quiet window and the
+    /// activity fence alone.</para>
     ///
     /// <para><b>The server's <see cref="AgentInstance.InactivityBoundSeconds"/> must never appear in
     /// that table.</b> It is ROUND-SCOPED — the server applies it only while a round is in flight, and
@@ -840,14 +829,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                     continue;
                 }
 
-                if (!clock.TurnInFlight) {
-                    // Fenced: a delivery between this selection and the claim means a round just
-                    // started — abort and let a quieter sweep reap it (decision table rule 2).
+                if (!clock.TurnInFlight && clock.IdleForMs > (ulong) LifetimeReapQuietWindow.TotalMilliseconds) {
                     result.Add(new ReapCandidate(a, "reviewer_ttl_expired", clock.ActivitySeq, FencedOnActivity: true));
                     continue;
                 }
-                // Past the lifetime with a held turn: deferred to the hard ceiling. Fall through so
-                // the wedge rule still owns a frozen turn.
+                // Held turn, or activity inside the quiet window (a delivered round whose busy
+                // signal has not landed yet): deferred to the hard ceiling. Fall through so the
+                // wedge rule still owns a frozen turn.
             }
 
             if (clock.TurnInFlight) {
@@ -2752,6 +2740,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// rather than by inflating this wait, which would only restore the deadlock it exists to
     /// prevent.</para></summary>
     internal TimeSpan ReapClaimGateWait { get; set; } = TimeSpan.FromSeconds(20);
+
+    /// <summary>How long a mid-band lifetime candidate (past <see cref="DaemonConfig.ReviewerMaxLifetime"/>,
+    /// under the hard ceiling, no turn held) must have been quiet before selection. One heartbeat:
+    /// long enough for a just-delivered round's asynchronous busy signal to land, short enough that
+    /// a genuinely between-rounds reviewer is reaped on the next sweep.</summary>
+    internal TimeSpan LifetimeReapQuietWindow { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>Execute one selected reap: claim it under the per-agent fence, and stop the agent only
     /// if the claim was WON. Fire-and-forget from the heartbeat, so it contains its own faults —
