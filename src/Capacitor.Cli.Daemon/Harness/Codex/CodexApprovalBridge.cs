@@ -57,9 +57,11 @@ internal sealed class CodexApprovalBridge {
             return DeclineNonApproval(method);
 
         // The permissions grant is a DIFFERENT response shape ({permissions,scope}) with no decision
-        // enum — a bare {decision:"decline"} is malformed for it, so route it separately.
-        var isPermissionsGrant = method.Contains("permissions", StringComparison.OrdinalIgnoreCase)
-                              || method.Contains("request_permissions", StringComparison.OrdinalIgnoreCase);
+        // enum — a bare {decision:"decline"} is malformed for it, so route it separately. Match on the
+        // ITEM-TYPE segment (item/<type>/requestApproval), not a whole-method substring, so an unrelated
+        // path segment can't misroute a command/file-change approval into the grant shape.
+        var itemType = ItemType(method);
+        var isPermissionsGrant = itemType.Contains("permission", StringComparison.OrdinalIgnoreCase);
 
         JsonElement Deny() => isPermissionsGrant ? EmptyGrant() : DeclineDecision();
 
@@ -75,7 +77,7 @@ internal sealed class CodexApprovalBridge {
             AgentId:      _agentId,
             AcpSessionId: threadId,
             Kind:         "permission",
-            ToolName:     DescribeTool(method),
+            ToolName:     itemType,
             ToolInput:    request.Params,
             ToolCallId:   TryGetString(request.Params, "itemId"),
             Prompt:       null,
@@ -112,13 +114,16 @@ internal sealed class CodexApprovalBridge {
         return DeclineDecision();
     }
 
-    // permissions requestApproval → {permissions, scope}. Grant echoes the requested profile; a denial
-    // is a valid EMPTY grant (the current always-decline bridge emits {decision:decline}, malformed here).
+    // permissions requestApproval → {permissions, scope}. Grant echoes the requested profile ONLY when
+    // it is a well-formed object; an affirmative decision over an absent/non-object profile falls to the
+    // empty grant (deny) rather than an affirmative-scoped empty one — never grant a profile we can't
+    // read back. A denial is likewise a valid EMPTY grant (the always-decline bridge emits
+    // {decision:decline}, which is malformed for this method).
     static JsonElement MapPermissionsGrant(AcpInteractionDecision decision, JsonElement? requestParams) {
         if (AffirmativeOutcomes.Contains(decision.Outcome)
-         && decision.SelectedOptionId is "accept" or "acceptForSession") {
-            var granted = ClonePropertyOrEmpty(requestParams, "permissions");
-            var scope   = decision.SelectedOptionId == "acceptForSession" ? "session" : "turn";
+         && decision.SelectedOptionId is "accept" or "acceptForSession"
+         && TryCloneObject(requestParams, "permissions") is { } granted) {
+            var scope = decision.SelectedOptionId == "acceptForSession" ? "session" : "turn";
             return ToElement(new JsonObject { ["permissions"] = granted, ["scope"] = scope });
         }
 
@@ -139,9 +144,9 @@ internal sealed class CodexApprovalBridge {
             : new JsonObject { ["decision"] = "decline" });
     }
 
-    // A short, non-identifying tool label for the prompt — the item type from the method
-    // (item/<type>/requestApproval). Never the params content.
-    static string DescribeTool(string method) {
+    // The item type from the method (item/<type>/requestApproval) — used both to route the permissions
+    // grant and as a short, non-identifying prompt label. Never the params content.
+    static string ItemType(string method) {
         var parts = method.Split('/');
         return parts.Length >= 2 ? parts[^2] : method;
     }
@@ -152,13 +157,13 @@ internal sealed class CodexApprovalBridge {
             ? value.GetString()
             : null;
 
-    // Deep-copy the requested permissions profile out of the params (detached from the request frame),
-    // or an empty object when absent.
-    static JsonNode ClonePropertyOrEmpty(JsonElement? element, string property) =>
+    // Deep-copy a named OBJECT property out of the params (detached from the request frame), or null when
+    // it is absent or not an object — the caller must decide what a missing profile means.
+    static JsonNode? TryCloneObject(JsonElement? element, string property) =>
         element is { } e && e.ValueKind == JsonValueKind.Object
             && e.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Object
-            ? JsonNode.Parse(value.GetRawText()) ?? new JsonObject()
-            : new JsonObject();
+            ? JsonNode.Parse(value.GetRawText())
+            : null;
 
     // JsonNode → JsonElement without reflection (AOT-safe), matching the runtime's own helper.
     static JsonElement ToElement(JsonNode node) =>

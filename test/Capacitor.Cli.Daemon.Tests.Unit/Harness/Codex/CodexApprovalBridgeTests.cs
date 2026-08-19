@@ -130,6 +130,19 @@ public class CodexApprovalBridgeTests {
         await Assert.That(r.GetProperty("scope").GetString()).IsEqualTo("turn");
     }
 
+    [Test]
+    public async Task Permissions_grant_accept_over_non_object_profile_falls_to_empty_deny() {
+        // Even an affirmative decision must not grant a profile we can't read back as an object — echoing
+        // {} at the affirmative "session" scope could over-grant if the server treats it as defaults.
+        var bridge = Deciding(new AcpInteractionDecision("allow", "accept", null, null, null, null));
+        var paramsJson = """{"threadId":"thread-1","itemId":"item-1","permissions":"all"}"""; // non-object profile
+        var result = await bridge.HandleAsync(ApprovalRequest(PermsMethod, paramsJson), CancellationToken.None);
+
+        var r = result!.Value;
+        await Assert.That(r.GetProperty("permissions").EnumerateObject().Any()).IsFalse(); // empty, not the string
+        await Assert.That(r.GetProperty("scope").GetString()).IsEqualTo("turn");           // deny scope, never "session"
+    }
+
     // ── Non-approval requests keep the always-decline shapes ─────────────────────────────────────
     [Test]
     public async Task Elicitation_request_declines_with_action_shape() {
