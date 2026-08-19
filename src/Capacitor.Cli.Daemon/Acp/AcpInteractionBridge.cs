@@ -76,6 +76,22 @@ internal sealed partial class AcpInteractionBridge(
     static string ForbiddenInteractionReason(string method) => $"unattended_interaction_forbidden:{method}";
 
     /// <summary>
+    /// Reaps for a <c>session/request_permission</c> frame this launch cannot admit — a tool it does
+    /// not trust, or one it trusts but whose options we can't safely resolve. Logs the untrusted,
+    /// agent-supplied tool title + kind (the same "explicitly untrusted context" convention the
+    /// auto-approve audit uses) so the leaked frame is diagnosable: the coded reason forwarded to the
+    /// server names only the method, and no other record captured the tool. The published coded reason
+    /// is unchanged — always the forbidden-method coding of <c>session/request_permission</c>.
+    /// </summary>
+    JsonElement? ReapForbiddenPermissionFrame(JsonElement toolCall) {
+        LogUnattendedPermissionFrameForbidden(
+            agentId, TryGetToolTitle(toolCall) ?? "(untitled)", TryGetToolKind(toolCall) ?? "(none)");
+        unexpectedUnattendedInteraction?.Invoke(ForbiddenInteractionReason("session/request_permission"));
+
+        return CancelledResult();
+    }
+
+    /// <summary>
     /// Handles one inbound <see cref="AcpRequest"/>. Returns <see langword="null"/> for any method
     /// this bridge doesn't recognize (letting <see cref="AcpConnection.HandleServerRequestAsync"/>'s
     /// existing default-decline posture answer with a JSON-RPC "Method not found" error, unchanged
@@ -172,12 +188,8 @@ internal sealed partial class AcpInteractionBridge(
         // correctly-configured reviewer never raises a frame is measurably false on Kiro, which
         // intermittently prompts for a tool that is in its own trust list.
         if (unattendedPolicy == AcpUnattendedInteractionPolicy.AllowlistedAutoApprove) {
-            if (!UnattendedToolAdmission.IsAdmitted(parsed.ToolCall, admittedToolIds ?? EmptyAdmitted)) {
-                LogUnexpectedUnattendedInteraction(agentId, request.Method);
-                unexpectedUnattendedInteraction?.Invoke(ForbiddenInteractionReason(request.Method));
-
-                return CancelledResult();
-            }
+            if (!UnattendedToolAdmission.IsAdmitted(parsed.ToolCall, admittedToolIds ?? EmptyAdmitted))
+                return ReapForbiddenPermissionFrame(parsed.ToolCall);
 
             var admittedChoice = TrySelectLeastPrivilegeAllow(options);
 
@@ -190,10 +202,7 @@ internal sealed partial class AcpInteractionBridge(
 
             // Admitted tool, but no allow option we can identify. Reap rather than guess: an
             // unrecognised option set is exactly where a wrong pick grants something nobody asked for.
-            LogUnexpectedUnattendedInteraction(agentId, request.Method);
-            unexpectedUnattendedInteraction?.Invoke(ForbiddenInteractionReason(request.Method));
-
-            return CancelledResult();
+            return ReapForbiddenPermissionFrame(parsed.ToolCall);
         }
 
         // Unattended reviewer: auto-approve a least-privilege allow option without a human, fail
@@ -547,6 +556,12 @@ internal sealed partial class AcpInteractionBridge(
 
     [LoggerMessage(Level = LogLevel.Error, Message = "ACP: unattended reviewer {AgentId} emitted forbidden interaction request {Method}; terminating reviewer")]
     partial void LogUnexpectedUnattendedInteraction(string agentId, string method);
+
+    // The permission-frame reap under AllowlistedAutoApprove. Carries the tool title + kind as
+    // EXPLICITLY untrusted, agent-supplied context (same convention as LogUnattendedAutoApproved) so
+    // the leaked frame is diagnosable — the forwarded coded reason names only the method.
+    [LoggerMessage(Level = LogLevel.Error, Message = "ACP: unattended reviewer {AgentId} emitted forbidden session/request_permission frame (tool title, untrusted: {ToolTitle}; kind: {ToolKind}); terminating reviewer")]
+    partial void LogUnattendedPermissionFrameForbidden(string agentId, string toolTitle, string toolKind);
 
     /// <summary>
     /// Maps a resolved <see cref="AcpInteractionDecision"/> to the ACP outcome result shape.

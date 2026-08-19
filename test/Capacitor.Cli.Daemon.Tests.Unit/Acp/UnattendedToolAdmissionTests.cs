@@ -87,12 +87,14 @@ public class UnattendedToolAdmissionTests {
             Admitted("@kcap-flow-result-abc/submit_review_result"))).IsFalse();
 
     /// <summary>
-    /// The admitted set and the trust list are ONE derivation. If they diverged, the reviewer could be
-    /// trusted to call a tool the policy then refuses to approve — a round that dies on its own
-    /// result call, which is the failure this whole policy exists to remove.
+    /// The admitted set and the trust list are ONE derivation — the WHOLE list, native tools
+    /// included, not just its namespaced half. If admission were narrower than trust, the reviewer
+    /// could be trusted to call a tool (e.g. the native <c>fs_read</c> the trust argv grants) that the
+    /// policy then refuses to approve when the vendor leaks a prompt for it — the exact
+    /// workspace-backed launch reap this admission set exists to remove.
     /// </summary>
     [Test]
-    public async Task TheAdmittedSetIsExactlyTheTrustListsNamespacedHalf() {
+    public async Task TheAdmittedSetIsExactlyTheTrustList() {
         var identity = LaunchIdentity.ForLaunch(aliasResultChannel: true);
         var specs = new List<AcpMcpServerSpec> {
             new(identity.ResultChannelWireName, "kcap", ["mcp", "flow-result"], []),
@@ -102,14 +104,51 @@ public class UnattendedToolAdmissionTests {
         var admitted = UnattendedToolAdmission.AdmittedFor(specs, identity);
         var trusted  = KiroReviewerTrustList.Build(specs, identity)
                                             .Split(',')
-                                            .Where(e => e.StartsWith('@'))
                                             .ToHashSet(StringComparer.Ordinal);
 
         await Assert.That(admitted.SetEquals(trusted)).IsTrue();
 
-        // And it really does cover both injected servers, so the equality above is not vacuous.
+        // Not vacuous: it covers the native trusted tools AND both injected servers.
+        await Assert.That(admitted).Contains("fs_read");
+        await Assert.That(admitted).Contains("thinking");
         await Assert.That(admitted).Contains(
             $"@{identity.ResultChannelWireName}/{KcapMcpRegistry.ReservedResultChannelTools[0].Name}");
         await Assert.That(admitted.Any(e => e.Contains("kcap-review", StringComparison.Ordinal))).IsTrue();
+    }
+
+    /// <summary>
+    /// A frame naming a NATIVE tool the launch trusts (<c>--trust-tools fs_read,thinking</c>) is
+    /// admitted, so a vendor prompt leaked for it on the workspace path is auto-approved rather than
+    /// reaping the reviewer. Kiro leaks prompts even for trusted tools, so this closes the same gap
+    /// for native tools that the namespaced entries already close for the injected result channel.
+    /// </summary>
+    [Test]
+    [Arguments("Running: fs_read")]
+    [Arguments("fs_read")]
+    [Arguments("Running: thinking")]
+    public async Task AdmitsANativeTrustedToolFrame(string title) {
+        var identity = LaunchIdentity.ForLaunch(aliasResultChannel: true);
+        var specs = new List<AcpMcpServerSpec> {
+            new(identity.ResultChannelWireName, "kcap", ["mcp", "flow-result"], []),
+        };
+
+        await Assert.That(UnattendedToolAdmission.IsAdmitted(
+            ToolCall(title), UnattendedToolAdmission.AdmittedFor(specs, identity))).IsTrue();
+    }
+
+    /// <summary>The containment floor holds: <c>fs_write</c> and <c>execute_bash</c> are in neither the
+    /// trust argv nor the admitted set, so a leaked prompt for either still reaps.</summary>
+    [Test]
+    [Arguments("Running: fs_write")]
+    [Arguments("Running: execute_bash")]
+    [Arguments("execute_bash")]
+    public async Task RefusesAnUntrustedNativeToolFrame(string title) {
+        var identity = LaunchIdentity.ForLaunch(aliasResultChannel: true);
+        var specs = new List<AcpMcpServerSpec> {
+            new(identity.ResultChannelWireName, "kcap", ["mcp", "flow-result"], []),
+        };
+
+        await Assert.That(UnattendedToolAdmission.IsAdmitted(
+            ToolCall(title), UnattendedToolAdmission.AdmittedFor(specs, identity))).IsFalse();
     }
 }
