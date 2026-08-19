@@ -76,8 +76,7 @@ public class WizardSimpleStepsTests {
 
         // InstallCommand's IsExecuting/CanExecute/End notifications ride the dispatcher scheduler;
         // drain them on the session thread before returning so this shared-session test leaves no
-        // dispatcher-queued work a sibling's frame could later surface off the UI thread. Also
-        // fully quiesces the first click before a second one starts.
+        // dispatcher-queued work a sibling's frame could later surface off the UI thread.
         public async Task Install() {
             await Vm.InstallCommand.Execute().ToTask();
             Dispatcher.UIThread.RunJobs();
@@ -242,8 +241,7 @@ public class WizardSimpleStepsTests {
 
             h.Runner.Enqueue(new ProcessResult(0, "", "", false));
             h.Probe.KcapOnPathBehavior = _ => Task.FromResult<bool?>(true);
-            await h.Install();
-            Dispatcher.UIThread.RunJobs();
+            await h.Install(); // Install() already drains the dispatcher
 
             var successAfter = window.GetVisualDescendants().OfType<TextBlock>().FirstOrDefault(t => t.Name == "ShimSuccessText")?.IsVisible;
             var installEnabledAfter = installButton?.IsEnabled;
