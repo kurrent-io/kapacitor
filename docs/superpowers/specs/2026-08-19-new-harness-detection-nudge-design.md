@@ -50,8 +50,12 @@ surface silences every surface.
 A vendor V is **nudgeable** when all of:
 
 1. `AgentDetection.Detect(...)` reports V detected (existing probes, unchanged).
-2. kcap's integration is not installed for V — the vendor's existing installer `IsInstalled(path)`
-   returns false (same probes `kcap status` uses today).
+2. kcap's integration is not installed for V — the vendor's **hooks/plugin installer**
+   `IsInstalled(path)` returns false. This is the installer-class check (`CursorHooksInstaller`,
+   `KiroHooksInstaller`, …, and for Claude the differently-shaped
+   `ClaudePluginInstaller.IsInstalled(ClaudePaths.UserSettings)`), NOT the `*Paths` harness-presence
+   check of clause 1. `StatusCommand.BuildHooksStatusLine`'s existing installer + path-argument
+   mapping is the gold standard the probe replicates for all 9 vendors.
 3. The offer ledger does not record V as declined, and any prior offer is older than the re-offer
    interval (below).
 
@@ -66,9 +70,11 @@ Today the only table binding vendor label + install flag + detection selector is
 CLI cannot reference. Hoist it:
 
 - New `Capacitor.Cli.Core/Setup/HarnessCatalog.cs`:
-  `record KnownHarness(string VendorId, string Label, string InstallFlag, Func<AgentDetectionResult, DetectedAgent> Select)`
-  with `HarnessCatalog.All` (9 entries; `VendorId` matches the `VendorSelection.KnownVendorFlags`
-  token, `InstallFlag` is the `kcap plugin install` flag, empty for Claude which is flagless).
+  `record KnownHarness(string VendorId, string Label, string? InstallFlag, Func<AgentDetectionResult, DetectedAgent> Select)`
+  with `HarnessCatalog.All` (9 entries). `VendorId` is the **bare** lowercase name
+  (`"antigravity"`); `InstallFlag` is `"--" + VendorId` for the 8 flagged vendors and `null` for
+  flagless Claude — the conformance test pins exactly that relationship against
+  `VendorSelection.KnownVendorFlags` (which stores the `--`-prefixed forms).
 - `AgentVendors.All` in the App re-derives from `HarnessCatalog.All` (label + flag come from the
   catalog; the App keeps only its own view concerns).
 - The driver-schema conformance suite that today pins `VendorSelection.KnownVendorFlags` gains a pin
@@ -126,16 +132,22 @@ temp+rename like `AppState`):
   mentions ("… or `kcap harness dismiss antigravity` to stop asking"). `kcap harness dismiss --all`
   declines exactly the vendors currently detected-and-unwired — deliberately NOT all 9: a harness
   installed *after* the dismiss is a new event and nudges once. "Never ask about any harness ever"
-  is the profile opt-out, not `--all`; the command's help text states this.
+  is the profile opt-out, not `--all`; the command's help text states this. `dismiss` runs its own
+  detection pass, **bypassing the 6h throttle stamp** (the command's purpose requires current
+  state; it neither reads nor claims the stamp).
+- **Recovery and visibility:** `kcap harness list` prints per-vendor detection, wired, and
+  declined state (the human-readable view of predicate + ledger); `kcap harness reset <vendor>`
+  clears a decline (and the `last_offered` stamp) so a mistaken dismiss is recoverable without
+  hand-editing the ledger. Both bypass the throttle like `dismiss`.
 - **Re-offer floor:** predicate clause 3 requires `last_offered` older than 7 days, so a given
   vendor nudges **at most once per 7 days even on a fully active machine** — the 6h throttle
   (S3 below) governs only how often the *evaluation* runs, never how often a vendor re-nudges.
   Emitting a nudge stamps that vendor's `last_offered`, which is what starts its 7-day quiet
   period. An ignored nudge therefore resurfaces weekly instead of dying after one ignored session
   or spamming every session.
-- **Opt-out:** `Profile.DisableHarnessNudge` (bool, default false) alongside the existing four
-  `Disable*` profile bools; when set, surfaces 1 and 2 emit nothing (surface 3/4 dismissal is
-  server-side, below).
+- **Opt-out:** `Profile.DisableHarnessNudge` — `bool?` with JSON name `disable_harness_nudge`,
+  `null` meaning unset/default, matching the four existing `Disable*` profile bools exactly; when
+  true, surfaces 1 and 2 emit nothing (surface 3/4 dismissal is server-side, below).
 
 ### S3. Throttled evaluation
 
@@ -146,7 +158,19 @@ I/O errors fail open to "don't check"). Throttle: 6 hours. Within the window, su
 nothing — not even the probe. The read-mtime-then-write claim is **not atomic** and this is
 accepted: two hook processes starting within the same instant can both claim it, and the worst
 case is the same nudge fragment appearing in two simultaneously-started sessions once per 6h
-window — benign, and the per-vendor 7-day floor still bounds real repetition. No lock file. The evaluation itself (9 dir/PATH probes + one small JSON read) is
+window — benign, and the per-vendor 7-day floor still bounds real repetition. No lock file.
+
+Sharing one stamp across surfaces 1 and 2 is a deliberate hierarchy, not an accident: whichever
+fires first in a window claims it, and surface 1 (the in-session nudge, where the agent can act
+immediately) is the primary channel; surface 2 is the fallback for users not currently inside a
+wired session. A claim by surface 1 that the user never notices is re-covered by the 7-day floor
+and by surfaces 3–4, which do not use the stamp.
+
+The ledger and stamp live under `PathHelpers.ConfigPath` and therefore inherit the
+`KCAP_CONFIG_DIR` override like all kcap config. A daemon installed under a different config dir
+would read a different ledger than the user's CLI — the same divergence every profile-backed
+feature already has; the daemon resolves the ledger from the same config dir as its profile, and
+this spec adds no new mitigation. The evaluation itself (9 dir/PATH probes + one small JSON read) is
 well under a millisecond of filesystem work; the throttle exists to keep hook latency identical on
 the common path, not because the probe is expensive.
 
@@ -211,16 +235,22 @@ Same `last_offered` stamping as surface 1. This mirrors the update-available not
 
 Client side (this repo):
 
-- New payload fragment `harness_inventory`: `{ vendor_id: { detected: bool, wired: bool } }` for
-  all 9 vendors, plus `declined: [vendor_id]` from the ledger so the server can suppress declined
-  vendors without a second round-trip.
+- New payload fragment `harness_inventory`:
+  `{ machine_id, vendors: { vendor_id: { detected: bool, wired: bool } }, declined: [vendor_id] }`
+  for all 9 vendors, with `declined` from the ledger so the server can suppress declined vendors
+  without a second round-trip. `machine_id` (from the existing config-dir `MachineId` fixture) is
+  carried **inside the fragment** because the SessionStart hook POST does not reliably carry it
+  today — embedding it keys the inventory per machine without touching any of the 9 hook commands'
+  payload shapes.
 - Carriers, both cheap and already flowing:
-  - **Daemon heartbeat** (the existing periodic heartbeat in `AgentOrchestrator`): the daemon
-    evaluates the inventory once at startup and then re-evaluates every 6h from its own in-memory
-    timestamp — it must NOT claim the shared on-disk stamp, or a resident daemon would perpetually
-    starve surfaces 1–2 of their claim. Every heartbeat attaches the **last cached** inventory;
-    heartbeats never trigger a probe themselves. No install-event signal: a `plugin install` is
-    picked up by the next 6h re-evaluation (and immediately by the hook-ingest carrier). This is the resident carrier — it works
+  - **Daemon status report** (the existing periodic `DaemonStatusReport` on its ~60s loop — NOT
+    the `DaemonPing` liveness heartbeat, which carries no payload): the fragment rides as a new
+    nullable trailing field. The daemon evaluates the inventory once at startup and then
+    re-evaluates every 6h from its own in-memory timestamp — it must NOT claim the shared on-disk
+    stamp, or a resident daemon would perpetually starve surfaces 1–2 of their claim. Every status
+    report attaches the **last cached** inventory; the report loop never triggers a probe itself.
+    No install-event signal: a `plugin install` is picked up by the next 6h re-evaluation (and
+    immediately by the hook-ingest carrier). This is the resident carrier — it works
     with zero sessions and zero manual kcap use. Note: this is pure filesystem probing; the
     trust-by-default precedent against daemon-side probing rejected *spawning vendor binaries* for
     version checks, which this does not do.
@@ -256,7 +286,9 @@ signal: sessions from that machine stopped arriving.
   for 14 days, raise a one-time notification:
   *"‹machine› hasn't recorded a session since ‹date›. If you've switched coding tools, run
   `kcap setup` there to wire the new one in."*
-- One-shot per quiet period: re-arms only after the machine records again. Dismissible in the UI.
+- One-shot per quiet period, and UI dismissal is **permanent for that quiet period**: a dismissed
+  notification never reappears while the machine stays dark. It re-arms only after the machine
+  records again and then goes quiet again — so a decommissioned machine nags at most once, ever.
 - Entirely kcap-server work; no client change. The 14-day/5-session thresholds are server config.
 
 ## What this does NOT change
@@ -270,10 +302,10 @@ signal: sessions from that machine stopped arriving.
 
 ## Delivery slicing (one issue, ordered PRs)
 
-1. **kcap-cli:** catalog hoist (S1) + ledger (S2) + throttle (S3) + `kcap harness dismiss` +
-   surface 1 + surface 2 + the `kcap status` line + setup stamping. New user-facing surface
-   (`kcap harness dismiss`, the status line, the stderr notice) means README + help-text updates in
-   the same PR.
+1. **kcap-cli:** catalog hoist (S1) + ledger (S2) + throttle (S3) + the `kcap harness` group
+   (`dismiss`, `list`, `reset`) + surface 1 + surface 2 + the `kcap status` line + setup stamping.
+   New user-facing surface (the `harness` verbs, the status line, the stderr notice) means README +
+   help-text updates in the same PR.
 2. **kcap-cli:** surface 3 client fragment on heartbeat + hook ingest.
 3. **kcap-server:** surface 3 notification + surface 4 backstop.
 
@@ -286,8 +318,9 @@ all" majority; PRs 2–3 add the resident and fully-dark coverage.
   `AgentDetectionResult` field is selected by exactly one entry.
 - Ledger: corrupt/missing file → empty; setup stamping (offered vs `--skip`-gated); a named test
   that setup stamping with a pre-existing `declined: true` entry leaves `declined: true` intact
-  (the regression would revive an explicit dismissal); dismiss command; atomic write
-  (partial-write torn file reads as empty).
+  (the regression would revive an explicit dismissal); `dismiss`/`list`/`reset` verbs (including
+  reset clearing both `declined` and `last_offered`, and all three bypassing the throttle); atomic
+  write (partial-write torn file reads as empty).
 - Predicate unit tests per vendor over injected `AgentDetectionInputs` + fake installer state,
   including the Gemini/Antigravity shared-dir disambiguation pair and Claude/Codex PATH-only cases.
 - Emitter tests mirror `VersionNudgeEmitter`'s: fragment text, throttle respected, multi-vendor
