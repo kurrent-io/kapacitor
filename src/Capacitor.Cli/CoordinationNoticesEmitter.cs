@@ -4,23 +4,17 @@ using System.Text.Json.Nodes;
 namespace Capacitor.Cli;
 
 /// <summary>
-/// Builds the SessionStart "coordination notices" text fragment from a server
-/// <c>/hooks/session-start</c> response body. Returns plain text, not a JSON
-/// envelope — the caller (see <c>SessionStartAdditionalContext</c>) joins this
-/// fragment with the others (guidelines, version nudge, team-memory index) and
-/// serializes a single Claude Code <c>hookSpecificOutput</c> envelope.
+/// Builds the SessionStart "coordination notices" fragment from a server
+/// <c>/hooks/session-start</c> response. Plain text, not a JSON envelope — the caller
+/// (<c>SessionStartAdditionalContext</c>) joins it with the other fragments and wraps one
+/// Claude Code <c>hookSpecificOutput</c> envelope.
 /// <para>
-/// The server's terminal-delivery lane returns <c>coordination_notices</c> as a
-/// bounded JSON array of <c>{ text }</c> one-line warnings (with an optional
-/// "+N more in the notification centre" tail line) about other people's in-flight
-/// work that may overlap this session — the same notices that also reach the
-/// in-app notification centre and Slack. Each entry renders as one bullet under a
-/// <b>"Coordination notices"</b> heading.
-/// </para>
-/// <para>
-/// Returns <c>null</c> when disabled, absent, empty, or malformed — the caller
-/// drops null fragments, so a missing or empty field emits nothing (fail-open,
-/// same as guideline injection and the memory index).
+/// The server returns <c>coordination_notices</c> as a bounded array of <c>{ text }</c> one-line
+/// warnings (optionally with a "+N more in the notification centre" tail) about others' in-flight
+/// work that may overlap this session — the same notices that also reach the notification centre
+/// and Slack. Each renders as one bullet under a <b>Coordination notices</b> heading. Returns
+/// <c>null</c> when disabled, absent, empty, or malformed, so the caller emits nothing (fail-open,
+/// like the guidelines and memory-index fragments).
 /// </para>
 /// </summary>
 static class CoordinationNoticesEmitter {

@@ -206,6 +206,7 @@ public static class ConfigCommand {
         Console.Error.WriteLine("  default_visibility          Default session visibility (private, project, org_public, public)");
         Console.Error.WriteLine("  disable_session_guidelines  Skip injecting recurring-lessons context at SessionStart (true/false)");
         Console.Error.WriteLine("  disable_workitems_nudge     Skip injecting the work-items nudge at SessionStart (true/false)");
+        Console.Error.WriteLine("  disable_coordination_notices  Skip injecting coordination notices (others' overlapping work) at SessionStart (true/false)");
         Console.Error.WriteLine("  use_provider_api_key        Keep ANTHROPIC_API_KEY/OPENAI_API_KEY in headless agent spawns (true/false)");
         Console.Error.WriteLine("  excluded_repos              Excluded repos, comma-separated (owner/repo,owner/repo)");
         Console.Error.WriteLine("  flows.reviewer_vendor       Preferred review-flow reviewer vendor (used only when the definition names none)");

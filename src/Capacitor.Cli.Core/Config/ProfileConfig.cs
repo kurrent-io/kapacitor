@@ -71,12 +71,10 @@ public record Profile {
     public bool? DisableWorkItemsNudge { get; init; }
 
     /// <summary>
-    /// when true, kcap does NOT advertise the coordination-notices capability at SessionStart,
-    /// so the server injects no coordination notices (heads-up about other people's in-flight work
-    /// that may overlap yours) into the agent's context — those notices still reach the in-app
-    /// notification centre and Slack. Independent of the memory-index, guidelines and work-items
-    /// opt-outs so each SessionStart injection can be toggled separately. Mirrors
-    /// <see cref="DisableMemoryIndex"/>.
+    /// when true, kcap does not advertise the coordination-notices capability at SessionStart, so the
+    /// server injects no coordination notices (heads-up about others' in-flight work that may overlap
+    /// yours) — they still reach the notification centre and Slack. Independent of the other SessionStart
+    /// opt-outs. Mirrors <see cref="DisableMemoryIndex"/>.
     /// </summary>
     [JsonPropertyName("disable_coordination_notices")]
     public bool? DisableCoordinationNotices { get; init; }

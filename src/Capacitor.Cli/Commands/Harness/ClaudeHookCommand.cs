@@ -579,24 +579,23 @@ public static class ClaudeHookCommand {
                 return 0;
             }
 
-            // Advertise the coordination-notices capability so the server MAY return
-            // work-overlap / work-item-adjacency notices to inject into this live agent's
-            // context below (rendered next to the team-memory index). Injected ONLY here — onto
-            // the LIVE Claude/generic session-start POST body — and deliberately AFTER the
-            // ordering-guard/backlog return above, so a spooled body never carries the promise
-            // (matching the memory fetch's "don't pay for what a replay won't use" rule).
-            // `kcap import` posts /hooks/session-start/{vendor} with origin=historical and never
-            // reaches this path; the server also refuses a historical origin. Suppressed by the
-            // disable_coordination_notices opt-out, read from the EFFECTIVE profile so it is
-            // honoured for KCAP_URL users too — mirroring the sibling guidelines opt-out below
-            // (the same defect the memory read above still carries).
+            // Advertise the coordination-notices capability so the server MAY return work-overlap
+            // notices to render below (next to the memory index). Injected into a SEPARATE postBody,
+            // never `body`: `body` is what the transient-failure and ordering-guard paths spool, and a
+            // replay is a catch-up, not a live render — a spooled capability would let the server mark
+            // notices delivered that the replay can never inject (they stay in the bell/Slack and reach
+            // the next LIVE session-start instead). Live-only by construction: `kcap import` posts
+            // /hooks/session-start/{vendor} with origin=historical and never reaches here. Suppressed by
+            // the disable_coordination_notices opt-out, read from the EFFECTIVE profile (honoured for
+            // KCAP_URL users too, unlike the memory read above). Fail-open.
             var coordinationNoticesDisabled = activeProfile?.DisableCoordinationNotices is true;
+            var postBody = body;
             if (!coordinationNoticesDisabled) {
                 try {
                     var node = JsonNode.Parse(body);
                     if (node is not null) {
                         node["coordination_notices"] = CoordinationNoticesEmitter.CapabilityVersion;
-                        body                          = node.ToJsonString();
+                        postBody                      = node.ToJsonString();
                     }
                 } catch {
                     // Best effort — never fail the hook building the capability field.
@@ -626,7 +625,9 @@ public static class ClaudeHookCommand {
             HttpResponseMessage? resp = null;
             try {
                 if (remaining > TimeSpan.Zero) {
-                    using var content = new StringContent(body, Encoding.UTF8, "application/json");
+                    // postBody carries the coordination-notices capability; the spool below uses the
+                    // capability-free `body` so a replay never claims notices it cannot render.
+                    using var content = new StringContent(postBody, Encoding.UTF8, "application/json");
                     resp = await client.PostOnceAsync($"{baseUrl}/hooks/session-start", content, remaining, CancellationToken.None);
                 }
             } catch { resp = null; }

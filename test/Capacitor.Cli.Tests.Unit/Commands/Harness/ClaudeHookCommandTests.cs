@@ -407,6 +407,31 @@ public class ClaudeHookCommandTests {
         await Assert.That(stdout).DoesNotContain("## Coordination notices");
     }
 
+    /// <summary>The capability rides only the POST (postBody); the SPOOLED body (for replay on the
+    /// next hook) must stay capability-free, so a catch-up replay never makes the server mark
+    /// coordination notices delivered that the replay can't render into a live agent.</summary>
+    [Test, NotInParallel]
+    public async Task transient_post_failure_spools_a_body_without_the_coordination_notices_capability() {
+        using var fx = new Fixture(HttpStatusCode.InternalServerError); // 5xx → transient → spooled
+        var sid = Guid.NewGuid().ToString("N");
+
+        var (exit, _) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        await Assert.That(exit).IsEqualTo(0);
+
+        // The live POST DID advertise the capability...
+        var posted = fx.Sent.Single(s => s.StartsWith("/hooks/session-start|", StringComparison.Ordinal));
+        await Assert.That(JsonNode.Parse(posted[(posted.IndexOf('|') + 1)..])!["coordination_notices"]?.GetValue<string>())
+            .IsEqualTo("v1");
+
+        // ...but the spooled body (replayed later) did NOT.
+        var files = fx.SpoolFiles.ToList();
+        await Assert.That(files.Count).IsEqualTo(1);
+        var content     = await File.ReadAllTextAsync(files[0]);
+        var spooledBody = JsonNode.Parse(JsonNode.Parse(content.Split('\n')[0])!["body"]!.GetValue<string>());
+        await Assert.That(spooledBody!["coordination_notices"]).IsNull();
+    }
+
     /// <summary>Runs <paramref name="action"/> with <see cref="AppConfig.ResolvedProfile"/> set to
     /// <paramref name="profile"/>, restoring whatever was resolved before (or the closest
     /// equivalent to "untouched" — see <c>AppConfig.SetResolvedState</c>'s lack of an "unset"
