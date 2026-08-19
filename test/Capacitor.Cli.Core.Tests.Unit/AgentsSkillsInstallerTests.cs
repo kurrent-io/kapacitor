@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace Capacitor.Cli.Core.Tests.Unit;
 
 public class AgentsSkillsInstallerTests {
@@ -31,12 +33,29 @@ public class AgentsSkillsInstallerTests {
     [Test]
     public async Task Help_text_lists_every_installed_skill() {
         // help-plugin.txt spells the list out by hand and nothing else reads it, so it drifts silently
-        // — it was already two skills behind when this test was written.
+        // — it was already two skills behind when this test was written. Parse its `kcap-{a,b,c}` brace
+        // list rather than substring-matching each name: the file says "disabled/autoApprove"
+        // elsewhere, so a Contains("disable") check passes whatever the list actually holds.
         var help = await File.ReadAllTextAsync(
             Path.Combine(RepoTree.Root(), "src", "Capacitor.Cli.Core", "Resources", "help-plugin.txt"));
 
-        foreach (var name in AgentsSkillsInstaller.SourceNames)
-            await Assert.That(help).Contains(name);
+        var braceList = Regex.Match(help, @"kcap-\{([^}]*)\}");
+
+        await Assert.That(braceList.Success)
+                    .IsTrue()
+                    .Because("help-plugin.txt should carry the skills as a `kcap-{a,b,c}/` list; "
+                           + "reformatting it away leaves nothing pinning the help text to SourceNames");
+
+        var listed = braceList.Groups[1].Value
+            .Split(',')
+            .Select(n => n.Trim())
+            .Where(n => n.Length > 0)
+            .ToArray();
+
+        await Assert.That(listed)
+                    .IsEquivalentTo(AgentsSkillsInstaller.SourceNames)
+                    .Because("help-plugin.txt names the skills users get, so a skill added to or "
+                           + "removed from SourceNames has to be added or removed here too");
     }
 
     [Test]

@@ -5,12 +5,8 @@ namespace Capacitor.Tests.Helpers;
 /// MCP manifests — for guard tests that pin code against them.
 /// </summary>
 /// <remarks>
-/// Walks up from the test binary rather than using <c>[CallerFilePath]</c>, which several older
-/// guards here do: that bakes the authoring machine's absolute path into the assembly, so it resolves
-/// to nothing once the repo is checked out somewhere else. Both approaches need the repo on disk;
-/// neither survives a test host published outside the tree.
-/// Named for the checkout's layout, not for the daemon's <c>AllowedRepoPaths</c> config — this type is
-/// a global using in every test project, so a name that reads as either would be a trap.
+/// Walks up from the test binary rather than using <c>[CallerFilePath]</c>, which bakes the authoring
+/// machine's path into the assembly and resolves to nothing on another checkout.
 /// </remarks>
 public static class RepoTree {
     /// <summary>
