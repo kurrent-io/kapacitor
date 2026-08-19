@@ -86,13 +86,8 @@ public class UnattendedToolAdmissionTests {
             JsonSerializer.Deserialize<JsonElement>(json),
             Admitted("@kcap-flow-result-abc/submit_review_result"))).IsFalse();
 
-    /// <summary>
-    /// The admitted set and the trust list are ONE derivation — the WHOLE list, native tools
-    /// included, not just its namespaced half. If admission were narrower than trust, the reviewer
-    /// could be trusted to call a tool (e.g. the native <c>fs_read</c> the trust argv grants) that the
-    /// policy then refuses to approve when the vendor leaks a prompt for it — the exact
-    /// workspace-backed launch reap this admission set exists to remove.
-    /// </summary>
+    /// <summary>Admission must equal the WHOLE trust list, native tools included — if it were narrower,
+    /// a leaked prompt for a trusted-but-unadmitted tool (e.g. native <c>fs_read</c>) reaps the reviewer.</summary>
     [Test]
     public async Task TheAdmittedSetIsExactlyTheTrustList() {
         var identity = LaunchIdentity.ForLaunch(aliasResultChannel: true);
@@ -116,12 +111,8 @@ public class UnattendedToolAdmissionTests {
         await Assert.That(admitted.Any(e => e.Contains("kcap-review", StringComparison.Ordinal))).IsTrue();
     }
 
-    /// <summary>
-    /// A frame naming a NATIVE tool the launch trusts (<c>--trust-tools fs_read,thinking</c>) is
-    /// admitted, so a vendor prompt leaked for it on the workspace path is auto-approved rather than
-    /// reaping the reviewer. Kiro leaks prompts even for trusted tools, so this closes the same gap
-    /// for native tools that the namespaced entries already close for the injected result channel.
-    /// </summary>
+    /// <summary>A frame naming a native trusted tool (<c>fs_read</c>/<c>thinking</c>) is admitted, so a
+    /// leaked prompt for it is auto-approved instead of reaping.</summary>
     [Test]
     [Arguments("Running: fs_read")]
     [Arguments("fs_read")]

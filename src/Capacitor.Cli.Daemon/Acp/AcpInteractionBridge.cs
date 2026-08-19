@@ -75,14 +75,9 @@ internal sealed partial class AcpInteractionBridge(
     /// caller downstream matches on.</summary>
     static string ForbiddenInteractionReason(string method) => $"unattended_interaction_forbidden:{method}";
 
-    /// <summary>
-    /// Reaps for a <c>session/request_permission</c> frame this launch cannot admit — a tool it does
-    /// not trust, or one it trusts but whose options we can't safely resolve. Logs the untrusted,
-    /// agent-supplied tool title + kind (the same "explicitly untrusted context" convention the
-    /// auto-approve audit uses) so the leaked frame is diagnosable: the coded reason forwarded to the
-    /// server names only the method, and no other record captured the tool. The published coded reason
-    /// is unchanged — always the forbidden-method coding of <c>session/request_permission</c>.
-    /// </summary>
+    /// <summary>Reaps a <c>session/request_permission</c> frame this launch cannot admit. Logs the
+    /// untrusted tool title + kind — the forwarded coded reason names only the method, so nothing else
+    /// records which tool leaked; the coded reason itself is unchanged.</summary>
     JsonElement? ReapForbiddenPermissionFrame(JsonElement toolCall) {
         LogUnattendedPermissionFrameForbidden(
             agentId, TryGetToolTitle(toolCall) ?? "(untitled)", TryGetToolKind(toolCall) ?? "(none)");
@@ -557,9 +552,7 @@ internal sealed partial class AcpInteractionBridge(
     [LoggerMessage(Level = LogLevel.Error, Message = "ACP: unattended reviewer {AgentId} emitted forbidden interaction request {Method}; terminating reviewer")]
     partial void LogUnexpectedUnattendedInteraction(string agentId, string method);
 
-    // The permission-frame reap under AllowlistedAutoApprove. Carries the tool title + kind as
-    // EXPLICITLY untrusted, agent-supplied context (same convention as LogUnattendedAutoApproved) so
-    // the leaked frame is diagnosable — the forwarded coded reason names only the method.
+    // ToolTitle/ToolKind are EXPLICITLY untrusted, agent-supplied context (as in LogUnattendedAutoApproved).
     [LoggerMessage(Level = LogLevel.Error, Message = "ACP: unattended reviewer {AgentId} emitted forbidden session/request_permission frame (tool title, untrusted: {ToolTitle}; kind: {ToolKind}); terminating reviewer")]
     partial void LogUnattendedPermissionFrameForbidden(string agentId, string toolTitle, string toolKind);
 
