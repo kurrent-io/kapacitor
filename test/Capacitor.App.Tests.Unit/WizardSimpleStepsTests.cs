@@ -74,7 +74,14 @@ public class WizardSimpleStepsTests {
             Vm          = new ShimStepViewModel(true, Installer, Store, Target, Destination);
         }
 
-        public Task Install() => Vm.InstallCommand.Execute().ToTask();
+        // InstallCommand's IsExecuting/CanExecute/End notifications ride the dispatcher scheduler;
+        // drain them on the session thread before returning so this shared-session test leaves no
+        // dispatcher-queued work a sibling's frame could later surface off the UI thread. Also
+        // fully quiesces the first click before a second one starts.
+        public async Task Install() {
+            await Vm.InstallCommand.Execute().ToTask();
+            Dispatcher.UIThread.RunJobs();
+        }
 
         public void Dispose() => _tmp.Dispose();
     }
@@ -185,6 +192,7 @@ public class WizardSimpleStepsTests {
             var vm = new ShimStepViewModel(true, h.Installer, h.Store, null, h.Destination);
 
             await vm.InstallCommand.Execute().ToTask();
+            Dispatcher.UIThread.RunJobs(); // drain the command's dispatcher-scheduled notifications, as ShimHarness.Install does
 
             return (vm.Satisfied, vm.Message, h.Store.Updates);
         });
