@@ -89,6 +89,35 @@ public class AgentOrchestratorSourceClaimTests {
     }
 
     [Test]
+    public async Task First_turn_failure_after_a_successful_claim_tears_the_agent_down() {
+        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        try {
+            var launchFailed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var server  = new CaptureServerConnection { LaunchFailedEntered = launchFailed }; // claim succeeds (default Bound)
+            // The claim commits, then the held first turn's dispatch fails — the launch cannot run.
+            var factory = DeferredFactory(beginFirstTurnThrow: new InvalidOperationException("turn/start failed"));
+
+            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+                server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [factory]);
+            orch.AcpFinalDrainBudget = TimeSpan.FromMilliseconds(200);
+
+            await orch.HandleLaunchAgentForTest(AgentOrchestratorHarness.NewCursorLaunch("agent-ft", repoPath));
+
+            await launchFailed.Task.WaitAsync(WaitHarness.AcpHangGuard);
+
+            await Assert.That(server.AcpCallOrder).Contains("sourceClaim:agent-ft"); // the claim DID commit
+            await Assert.That(factory.LastRuntime!.BeginFirstTurnCalls).IsEqualTo(1); // the first turn WAS attempted
+            await Assert.That(server.LaunchFailedCalls.Select(c => c.AgentId)).Contains("agent-ft");
+            await Assert.That(server.AgentUnregisteredCalls).Contains("agent-ft"); // torn down (no zombie slot)
+            await Assert.That(factory.LastRuntime!.DisposeCount).IsGreaterThan(0);
+            await Assert.That(server.ConfirmTokens).IsEmpty();                       // confirm never fired
+        } finally {
+            cleanup();
+        }
+    }
+
+    [Test]
     public async Task Method_not_found_claim_is_a_coded_launch_failure_with_teardown() {
         var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
         try {

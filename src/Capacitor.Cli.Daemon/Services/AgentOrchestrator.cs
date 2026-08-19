@@ -3802,15 +3802,20 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             await runtime.BeginFirstTurnAsync(acpCts.Token);
 
             // Clear the ledger's provisional flag in the background: retries transient failures for as
-            // long as the agent lives and NEVER tears it down. A BeginFirstTurn failure above skips
-            // this, leaving the row provisional for the server's Rule-2 expiry to close.
+            // long as the agent lives and NEVER tears it down. Reached only on a SUCCESSFUL first turn;
+            // a first-turn failure throws into the catch below (which tears the agent down) and never
+            // fires this.
             _ = ConfirmSessionLaunchLoopAsync(agent, transcript.AcpSessionId, claim.OwnershipToken, acpCts.Token);
         } catch (OperationCanceledException) when (acpCts.IsCancellationRequested) {
             LogAcpBindAbortedAgentGone(agent.Id);
         } catch (Exception ex) {
-            // Forwarder-setup or first-turn failure: the confirm never fires, so the server closes the
-            // still-provisional session via Rule 2. Log and leave the agent's own lifecycle to reap it.
+            // Forwarder-setup or first-turn DISPATCH failure — the launch cannot run, so tear it down,
+            // symmetric with a claim failure (the alternative would leave a zombie holding a slot). This
+            // fires ONLY for a real error; a finalize during BeginFirstTurnAsync is the OCE arm above. The
+            // confirm never fired, so the still-provisional ledger row is closed by the server's Rule-2
+            // expiry. FailEnvelopeSourcedLaunchAsync is no-throw, so awaiting it here is safe.
             LogAcpBindFailed(ex, agent.Id);
+            await FailEnvelopeSourcedLaunchAsync(agent.Id, AcpHostedAgentRuntimeFactory.DescribeLaunchFailure(ex));
         }
     }
 
