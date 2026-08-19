@@ -243,10 +243,14 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         _runLoop  = RunConnectionAsync(connection, _childCts.Token);
         _clock?.SetLaunchStage("spawned");
 
+        // With the envelope transcript ON, the mapper's ephemeral lane consumes exactly the delta streams
+        // DeltaOptOut suppresses, so opting out would silence the live lane the gate is meant to enable —
+        // receive everything. With it OFF (reviewer path), keep the perf opt-out.
+        var optOut = _emitEnvelopeTranscript ? Array.Empty<string>() : DeltaOptOut;
         var initParams = new JsonObject {
             ["clientInfo"]   = new JsonObject { ["name"] = ClientName, ["version"] = _launch.ClientVersion },
             ["capabilities"] = new JsonObject {
-                ["optOutNotificationMethods"] = new JsonArray(DeltaOptOut.Select(m => (JsonNode?) m).ToArray()),
+                ["optOutNotificationMethods"] = new JsonArray(optOut.Select(m => (JsonNode?) m).ToArray()),
             },
         };
         await RequestAsync("initialize", initParams, ct).ConfigureAwait(false);

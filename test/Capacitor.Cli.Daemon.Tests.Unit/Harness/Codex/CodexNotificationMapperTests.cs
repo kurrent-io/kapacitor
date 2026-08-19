@@ -38,8 +38,9 @@ public class CodexNotificationMapperTests {
 
     [Test]
     public async Task Reasoning_completed_renders_content_blocks_preferring_content_over_summary() {
+        // content/summary are arrays of plain strings per the pinned schema.
         var e = Single(Run(NewMapper(), "item/completed",
-            """{"item":{"type":"reasoning","id":"r1","content":[{"type":"reasoning_text","text":"step A"},{"type":"text","text":"step B"}],"summary":[{"type":"summary_text","text":"S"}]}}"""));
+            """{"item":{"type":"reasoning","id":"r1","content":["step A","step B"],"summary":["S"]}}"""));
         await Assert.That(e.Kind).IsEqualTo(AcpEventKind.AssistantThinking);
         await Assert.That(e.Text).IsEqualTo("step A\nstep B");
         await Assert.That(e.ItemId).IsEqualTo("r1");
@@ -48,7 +49,7 @@ public class CodexNotificationMapperTests {
     [Test]
     public async Task Reasoning_completed_falls_back_to_summary_when_content_empty() {
         var e = Single(Run(NewMapper(), "item/completed",
-            """{"item":{"type":"reasoning","id":"r1","content":[],"summary":[{"type":"summary_text","text":"the gist"}]}}"""));
+            """{"item":{"type":"reasoning","id":"r1","content":[],"summary":["the gist"]}}"""));
         await Assert.That(e.Text).IsEqualTo("the gist");
     }
 

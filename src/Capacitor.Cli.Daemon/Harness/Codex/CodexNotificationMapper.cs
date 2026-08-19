@@ -237,12 +237,24 @@ internal sealed partial class CodexNotificationMapper {
     static string? IsoFromMs(long? ms) =>
         ms is { } v ? DateTimeOffset.FromUnixTimeMilliseconds(v).ToString("O", CultureInfo.InvariantCulture) : null;
 
-    // Reasoning renders its content blocks, falling back to the summary blocks when content is empty.
+    // Reasoning content/summary are arrays of plain STRINGS (per the pinned schema), so join the string
+    // elements directly — falling back to the summary blocks when content is empty.
     static string RenderReasoning(JsonElement item) {
-        var content = JoinTexts(item.Arr("content"));
-        return content.Length > 0 ? content : JoinTexts(item.Arr("summary"));
+        var content = JoinStrings(item.Arr("content"));
+        return content.Length > 0 ? content : JoinStrings(item.Arr("summary"));
     }
 
+    // For a string[] (reasoning content/summary): join the non-empty string elements.
+    static string JoinStrings(JsonElement? arr) {
+        if (arr is not { } a) return "";
+        var parts = new List<string>();
+        foreach (var el in a.EnumerateArray())
+            if (el.IsString && el.GetString() is { Length: > 0 } s) parts.Add(s);
+        return string.Join("\n", parts);
+    }
+
+    // For a UserInput[] (userMessage content): each element is an object with a `text` field (image
+    // inputs have no text and are skipped).
     static string JoinTexts(JsonElement? arr) {
         if (arr is not { } a) return "";
         var parts = new List<string>();
@@ -308,29 +320,21 @@ internal sealed partial class CodexNotificationMapper {
 
     // MCP arguments are opaque JSON — forwarded only when they are an object (the server expects a JSON
     // object string for tool arguments); otherwise omitted rather than passing a non-object through.
-    static string? McpArguments(JsonElement item) =>
-        item.TryGetProperty("arguments", out var a) && a.ValueKind == JsonValueKind.Object ? a.GetRawText() : null;
+    static string? McpArguments(JsonElement item) => item.Obj("arguments")?.GetRawText();
 
-    static string RenderMcpResult(JsonElement item) {
+    static string RenderMcpResult(JsonElement item) =>
         // Error content wins over result: a failed call that also carries a result body must not render
         // the result as if it succeeded (keeps the payload consistent with IsMcpError's flag).
-        if (TryContent(item, "error", out var e))  return e;
-        if (TryContent(item, "result", out var r)) return r;
-        return "";
-    }
+        Content(item, "error") ?? Content(item, "result") ?? "";
 
-    static bool TryContent(JsonElement item, string property, out string value) {
-        if (item.TryGetProperty(property, out var v) && v.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined) {
-            value = v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : v.GetRawText();
-            return true;
-        }
-        value = "";
-        return false;
-    }
+    // A property rendered as a string: the string value if it is a string, else the raw JSON of an
+    // object/array. Null when absent or JSON null. Uses the JsonElementExtensions accessors rather than
+    // inspecting ValueKind directly.
+    static string? Content(JsonElement item, string property) =>
+        item.Str(property) ?? item.Obj(property)?.GetRawText() ?? item.Arr(property)?.GetRawText();
 
     static bool IsMcpError(JsonElement item) =>
-        (item.TryGetProperty("error", out var e) && e.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
-     || item.Str("status") == "failed";
+        Content(item, "error") is not null || item.Str("status") == "failed";
 
     static bool IsCommandError(JsonElement item) =>
         item.Str("status") is "failed" or "declined" || item.Num("exitCode") is { } code && code != 0;

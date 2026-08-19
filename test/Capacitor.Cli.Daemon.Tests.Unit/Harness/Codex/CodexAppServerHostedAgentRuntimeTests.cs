@@ -81,6 +81,10 @@ public class CodexAppServerHostedAgentRuntimeTests {
         var (runtime, _, _) = Build(_ => fake, Launch(), emitEnvelopes: true);
         await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
 
+        // With the transcript on, the mapper needs the delta streams, so initialize must opt out of none
+        // (otherwise the app-server would never send the ephemeral notifications the gate is meant to enable).
+        await Assert.That(fake.InitializeOptOuts).IsEmpty();
+
         await runtime.SendUserInputAsync("go").WaitAsync(HangGuard);
         await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
 

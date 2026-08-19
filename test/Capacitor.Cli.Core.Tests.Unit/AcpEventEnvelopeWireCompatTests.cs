@@ -80,8 +80,6 @@ public class AcpEventEnvelopeWireCompatTests {
 
     [Test]
     public async Task AcpEventEnvelope_defaults_the_ephemeral_lane_fields_to_canonical() {
-        // A canonical envelope leaves the ephemeral lane fields at their defaults — Ephemeral=false so
-        // the server sequences/persists it as today, and no ItemId unless the mapper stamps one.
         var env = new AcpEventEnvelope(Seq: 4, Kind: AcpEventKind.AssistantText, Text: "hi");
 
         await Assert.That(env.Ephemeral).IsFalse();
