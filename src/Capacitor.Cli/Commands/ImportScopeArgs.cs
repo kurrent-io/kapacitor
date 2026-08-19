@@ -7,12 +7,12 @@ namespace Capacitor.Cli.Commands;
 /// </summary>
 public static class ImportScopeArgs {
     public sealed record ParsedFlags(
-            bool    All,
-            bool    Org,
-            string? RepoArg,
-            bool    Yes,
-            bool    Private,
-            string? OrgArg = null // explicit owner after `--org`, or null for bare `--org`
+            bool                  All,
+            bool                  Org,
+            IReadOnlyList<string> RepoArgs,
+            bool                  Yes,
+            bool                  Private,
+            string?               OrgArg = null // explicit owner after `--org`, or null for bare `--org`
         );
 
     public sealed record ResolveInput(
@@ -32,9 +32,18 @@ public static class ImportScopeArgs {
         );
 
     public static ParsedFlags ParseFlags(string[] args) {
-        string? repo                                = null;
-        var     repoIdx                             = Array.IndexOf(args, "--repo");
-        if (repoIdx >= 0 && repoIdx + 1 < args.Length) repo = args[repoIdx + 1];
+        // Repeatable: one occurrence per repo. A trailing `--repo`, or one followed by another flag,
+        // records the empty string so Resolve can say the value is missing — dropping it silently would
+        // let `--repo a/b --repo` import half of what was asked for and report nothing.
+        var repos = new List<string>();
+
+        for (var i = 0; i < args.Length; i++) {
+            if (args[i] != "--repo") continue;
+
+            var value = i + 1 < args.Length ? args[i + 1] : "";
+
+            repos.Add(value.StartsWith('-') ? "" : value);
+        }
 
         // `--org` may be bare or take an explicit owner. Only treat the next token
         // as the owner when it isn't another flag (so `--org --yes` stays bare).
@@ -45,7 +54,7 @@ public static class ImportScopeArgs {
         return new(
             All: args.Contains("--all"),
             Org: args.Contains("--org"),
-            RepoArg: repo,
+            RepoArgs: repos,
             Yes: args.Contains("--yes") || args.Contains("-y"),
             Private: args.Contains("--private"),
             OrgArg: org
@@ -54,7 +63,7 @@ public static class ImportScopeArgs {
 
     public static ResolveResult Resolve(ResolveInput input) {
         var f     = input.Flags;
-        var count = (f.All ? 1 : 0) + (f.Org ? 1 : 0) + (f.RepoArg is null ? 0 : 1);
+        var count = (f.All ? 1 : 0) + (f.Org ? 1 : 0) + (f.RepoArgs.Count == 0 ? 0 : 1);
 
         switch (count) {
             case > 1:
@@ -115,35 +124,51 @@ public static class ImportScopeArgs {
             );
         }
 
-        // --repo <value>
-        var value = f.RepoArg!;
+        // Every value must parse before any is used: a malformed one is a usage error, and importing
+        // the rest would act on a command the user did not write.
+        var repos = new List<(string Owner, string Name)>();
+        var seen  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        if (value is "." or "current") {
-            if (input.CurrentRepo is null) {
+        foreach (var value in f.RepoArgs) {
+            if (value is "." or "current") {
+                if (input.CurrentRepo is null) {
+                    return new(
+                        null,
+                        f.Yes,
+                        f.Private,
+                        "--repo . requires the current directory to be in a git repo with an origin remote."
+                    );
+                }
+
+                Add(input.CurrentRepo.Value);
+
+                continue;
+            }
+
+            if (value.Length == 0) {
+                return new(null, f.Yes, f.Private, "--repo needs a value: pass `--repo <owner/name>`.");
+            }
+
+            var parts = value.Split('/');
+
+            if (parts.Length != 2 || parts[0].Length == 0 || parts[1].Length == 0) {
                 return new(
                     null,
                     f.Yes,
                     f.Private,
-                    "--repo . requires the current directory to be in a git repo with an origin remote."
+                    $"--repo expects owner/name (got '{value}')."
                 );
             }
 
-            var (owner, name) = input.CurrentRepo.Value;
-
-            return new(new ImportScope.Repo(owner, name), f.Yes, f.Private, null);
+            Add((parts[0], parts[1]));
         }
 
-        var parts = value.Split('/');
+        return new(new ImportScope.Repo(repos), f.Yes, f.Private, null);
 
-        if (parts.Length != 2 || parts[0].Length == 0 || parts[1].Length == 0) {
-            return new(
-                null,
-                f.Yes,
-                f.Private,
-                $"--repo expects owner/name (got '{value}')."
-            );
+        // `--repo . --repo owner/name` naming the same repo twice must not double-count it in the
+        // confirmation summary.
+        void Add((string Owner, string Name) repo) {
+            if (seen.Add($"{repo.Owner}/{repo.Name}")) repos.Add(repo);
         }
-
-        return new(new ImportScope.Repo(parts[0], parts[1]), f.Yes, f.Private, null);
     }
 }

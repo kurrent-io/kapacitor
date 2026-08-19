@@ -858,6 +858,25 @@ static class ImportCommand {
             }
         }
 
+        // A repo that is spelled plausibly but wrongly resolves fine and simply matches nothing, so the
+        // run imports the others and says nothing. Naming the misses is the only way that reads as a
+        // mistake rather than as a smaller history than expected.
+        if (scope is ImportScope.Repo requested) {
+            var matched = new HashSet<(string Owner, string Name)>(ImportScope.RepoComparer);
+
+            foreach (var repo in sampleRepos) {
+                var parts = repo.Split('/');
+                if (parts.Length == 2) matched.Add((parts[0], parts[1]));
+            }
+
+            var missed = requested.Repos.Where(r => !matched.Contains(r)).ToList();
+
+            if (missed.Count > 0) {
+                display.Line(
+                    $"No sessions found for {string.Join(", ", missed.Select(m => $"{m.Owner}/{m.Name}"))} — check the spelling, or `kcap remap` if the directory was renamed.");
+            }
+        }
+
         var visibilityDesc = forcePrivate
             ? "private (--private)"
             : $"{profile?.DefaultVisibility ?? "org_public"} (from profile)";

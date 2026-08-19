@@ -14,6 +14,12 @@ public static class ImportScopeFilter {
         CancellationToken                                                                            ct = default) {
         if (scope is ImportScope.All) return [..transcripts];
 
+        // Hoisted so the set is built once rather than per session, and keyed on the tuple so no
+        // string is allocated inside the loop.
+        var wanted = scope is ImportScope.Repo r
+            ? new HashSet<(string Owner, string Name)>(r.Repos, ImportScope.RepoComparer)
+            : null;
+
         var kept = new List<(string, string, string)>(transcripts.Count);
 
         foreach (var t in transcripts) {
@@ -21,11 +27,9 @@ public static class ImportScopeFilter {
             var (owner, name) = await resolveRepo(t, ct);
 
             var match = (scope, owner, name) switch {
-                (ImportScope.Org o,  not null, _) => string.Equals(owner, o.OrgLogin, StringComparison.OrdinalIgnoreCase),
-                (ImportScope.Repo r, not null, not null) =>
-                    string.Equals(owner, r.Owner, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(name,  r.Name,  StringComparison.OrdinalIgnoreCase),
-                _ => false,
+                (ImportScope.Org o, not null, _)      => string.Equals(owner, o.OrgLogin, StringComparison.OrdinalIgnoreCase),
+                (ImportScope.Repo, not null, not null) when wanted is not null => wanted.Contains((owner, name)),
+                _                                     => false,
             };
 
             if (match) kept.Add(t);

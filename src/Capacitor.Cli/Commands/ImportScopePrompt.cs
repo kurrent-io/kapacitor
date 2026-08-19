@@ -83,7 +83,11 @@ public static partial class ImportScopePrompt {
     static string ScopeLabel(ImportScope scope) => scope switch {
         ImportScope.All    => "everything",
         ImportScope.Org o  => $"org repos only ({o.OrgLogin})",
-        ImportScope.Repo r => $"repository {r.Owner}/{r.Name}",
+        ImportScope.Repo { Repos: [var only] } => $"repository {only.Owner}/{only.Name}",
+        // Named, not counted: the `repos:` line below lists what MATCHED, so a repo that was asked for
+        // and found nothing appears nowhere else — and this is the text a --yes run leaves in CI logs.
+        ImportScope.Repo r                     =>
+            $"{r.Repos.Count} repositories ({RepoLine([.. r.Repos.Select(x => $"{x.Owner}/{x.Name}")])})",
         _                  => "?"
     };
 

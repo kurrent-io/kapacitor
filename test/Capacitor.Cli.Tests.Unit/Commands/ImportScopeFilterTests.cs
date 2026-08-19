@@ -69,4 +69,45 @@ public class ImportScopeFilterTests {
 
         await Assert.That(kept.Select(x => x.SessionId).ToArray()).IsEquivalentTo(["a", "c"]);
     }
+
+    [Test]
+    public async Task Repo_scope_keeps_every_named_repo() {
+        var transcripts = new[] { T("a"), T("b"), T("c"), T("d") };
+        var resolver = Resolver(new() {
+            ["a"] = ("EventStore", "kcap"),
+            ["b"] = ("EventStore", "kurrentdb"),
+            ["c"] = ("Acme", "widgets"),
+            ["d"] = ("EventStore", "gaffer"),
+        });
+
+        var kept = await ImportScopeFilter.Apply(
+            transcripts,
+            new ImportScope.Repo([("EventStore", "kcap"), ("Acme", "widgets")]),
+            resolver);
+
+        await Assert.That(kept.Select(x => x.SessionId).ToArray()).IsEquivalentTo(["a", "c"]);
+    }
+
+    [Test]
+    public async Task Repo_scope_matches_each_repo_case_insensitively() {
+        var transcripts = new[] { T("a"), T("b") };
+        var resolver = Resolver(new() {
+            ["a"] = ("EventStore", "kcap"),
+            ["b"] = ("Acme", "Widgets"),
+        });
+
+        var kept = await ImportScopeFilter.Apply(
+            transcripts,
+            new ImportScope.Repo([("eventstore", "KCAP"), ("ACME", "widgets")]),
+            resolver);
+
+        await Assert.That(kept.Select(x => x.SessionId).ToArray()).IsEquivalentTo(["a", "b"]);
+    }
+
+    [Test]
+    public async Task An_empty_repo_set_is_refused_rather_than_guessed_at() {
+        // It would have to mean "everything" or "nothing", and a scope that silently picks one when the
+        // caller meant the other is worse than a construction that fails.
+        await Assert.That(() => new ImportScope.Repo([])).Throws<ArgumentException>();
+    }
 }

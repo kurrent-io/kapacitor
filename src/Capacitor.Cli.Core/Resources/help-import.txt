@@ -37,7 +37,8 @@ Scope (one of, required for non-interactive use):
   --org <owner>           Import only sessions whose git-remote owner matches <owner>
   --org                   Bare: pick an org from discovered repos (interactive) and
                           remember it; reuses the remembered org on later runs
-  --repo <owner/name>     Import only sessions from a specific repo
+  --repo <owner/name>     Import only sessions from a specific repo. Repeatable:
+                          pass it once per repo to select several
   --repo .                Import only sessions from the current cwd's repo
 
 The org is the git-remote owner (GitHub org/user), independent of your profile

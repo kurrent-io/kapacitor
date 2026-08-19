@@ -160,7 +160,7 @@ In `--no-prompt` mode, the wizard installs hooks for every detected agent by def
 kcap import                     # every detected agent (Claude, Codex, Cursor, Copilot, Gemini, Kiro, Pi, OpenCode, Antigravity)
 kcap import --org EventStore    # sessions whose git-remote owner is EventStore
 kcap import --org               # pick an org from your discovered repos (and remember it)
-kcap import --repo owner/repo   # sessions for one specific repo
+kcap import --repo owner/repo   # sessions for one specific repo (repeat --repo for several)
 kcap import --cursor            # only Cursor
 kcap import --copilot           # only Copilot
 kcap import --gemini            # only Gemini
@@ -616,6 +616,7 @@ kcap import --all                            # every discovered session from eve
 kcap import --org EventStore                 # sessions whose git-remote owner is EventStore
 kcap import --org                            # pick an owner from discovered repos, then remember it
 kcap import --repo owner/repo                # one specific repo
+kcap import --repo owner/one --repo owner/two  # several — repeat the flag per repo
 kcap import --repo .                         # the repo at the current cwd (must be a git repo with an origin remote)
 ```
 

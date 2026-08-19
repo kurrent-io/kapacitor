@@ -118,6 +118,21 @@ public class ImportScopePromptTests {
     }
 
     [Test]
+    public async Task FormatSummary_multi_repo_names_what_was_asked_for_not_just_a_count() {
+        // The `repos:` line lists what MATCHED, so a repo that was requested and found nothing appears
+        // nowhere else — and with --yes this text is the only record of the run.
+        var s = ImportScopePrompt.FormatSummary(
+            scope: new ImportScope.Repo([("EventStore", "kcap"), ("EventStore", "gaffer")]),
+            matchedCount: 3,
+            repoSamples: ["EventStore/kcap"],
+            visibilityDescription: "org_public (from profile)"
+        );
+
+        await Assert.That(s).Contains("2 repositories");
+        await Assert.That(s).Contains("EventStore/gaffer");
+    }
+
+    [Test]
     public async Task FormatSummary_caps_repo_samples_at_5() {
         var samples = Enumerable.Range(1, 9).Select(i => $"EventStore/r{i}").ToArray();
 
