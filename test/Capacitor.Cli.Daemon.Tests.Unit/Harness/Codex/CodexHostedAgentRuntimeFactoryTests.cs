@@ -160,9 +160,6 @@ public class CodexHostedAgentRuntimeFactoryTests {
     [Test]
     [NotInParallel("HomeEnvVarMutation")]
     public async Task App_server_launch_is_envelope_sourced_after_activation() {
-        // Activation: a real app-server launch stamps the KCAP_HOSTED_APPSERVER marker (guard-1 stands the
-        // rollout watcher down), carries a Transcript for the forwarder to drain, and defers the first turn
-        // behind the source claim.
         var originalHome = Environment.GetEnvironmentVariable("HOME");
         var originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
         using var home = new TempDir();

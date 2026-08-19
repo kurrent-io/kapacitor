@@ -141,6 +141,25 @@ public class CodexAppServerHostedAgentRuntimeTests {
     }
 
     [Test]
+    public async Task Cancelled_BeginFirstTurn_does_not_dispatch_the_held_turn() {
+        // A launch cancelled during the source claim must not release the held first turn — BeginFirstTurn
+        // observes the token BEFORE unsealing, so turn/start never leaves for a finalizing agent.
+        var fake = new FakeCodexAppServer();
+        var (runtime, _, _) = Build(_ => fake, Launch(prompt: "review this"), deferFirstTurn: true);
+
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+        await Assert.That(fake.ReceivedMethods).DoesNotContain("turn/start");
+
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.That(async () => await runtime.BeginFirstTurnAsync(cts.Token)).Throws<OperationCanceledException>();
+        await Assert.That(fake.ReceivedMethods).DoesNotContain("turn/start"); // never unsealed ⇒ never dispatched
+
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
     public async Task Single_phase_launch_dispatches_the_initial_prompt_at_start() {
         var fake = new FakeCodexAppServer();
         var (runtime, _, _) = Build(_ => fake, Launch(prompt: "review this")); // deferFirstTurn defaults false
