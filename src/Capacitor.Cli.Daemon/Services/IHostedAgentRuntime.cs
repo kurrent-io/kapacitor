@@ -13,6 +13,13 @@ internal interface IHostedAgentRuntime : IAsyncDisposable {
     /// <summary>Vendor token this runtime hosts ("claude", "codex", "cursor").</summary>
     string Vendor { get; }
 
+    /// <summary>The wire transport label reported to the server on registration so it can validate its
+    /// launch decision against the transport actually used (defense-in-depth). "pty" is the universal
+    /// default — the label every interactive-PTY and ACP runtime reports — matching the server's PTY
+    /// contract; only the Codex app-server runtime overrides it. A runtime owns its own transport, so
+    /// the orchestrator never type-switches to derive it.</summary>
+    string RuntimeTransport => "pty";
+
     /// <summary>OS process id of the hosted agent (for logging).</summary>
     int Pid { get; }
 

@@ -101,12 +101,10 @@ internal record AgentInstance(
     public string?              PermissionPreset  { get; init; }
 
     /// <summary>The runtime transport this agent actually launched on, reported to the server on
-    /// AgentRegistered so it can validate its launch decision. The codex app-server runtime is the
-    /// ONLY app-server transport; every other runtime (PTY codex, PTY claude, and all ACP vendors) is
-    /// PTY. Derived from the runtime instance so initial registration and every reconnect
-    /// re-registration report the same value (the same instance survives a reconnect).</summary>
-    public string RuntimeTransport =>
-        Runtime is CodexAppServerHostedAgentRuntime ? CodexTransportDecision.AppServer : CodexTransportDecision.Pty;
+    /// AgentRegistered so it can validate its launch decision. Each runtime owns its own transport
+    /// (<see cref="IHostedAgentRuntime.RuntimeTransport"/>), so this reports the same value on initial
+    /// registration and every reconnect re-registration (the same instance survives a reconnect).</summary>
+    public string RuntimeTransport => Runtime.RuntimeTransport;
 
     /// <summary>Phase B (D1): single-flight teardown latch — a plain field (not a property) so
     /// <see cref="System.Threading.Interlocked.CompareExchange(ref int,int,int)"/> can gate it. Exactly

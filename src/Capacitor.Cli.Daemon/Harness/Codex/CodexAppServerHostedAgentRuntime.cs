@@ -186,6 +186,9 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     public int?   ExitCode            => _process?.ExitCode;
     public bool   EmitsTerminalOutput => false;
 
+    // The one runtime that reports app-server; every other runtime keeps the interface's "pty" default.
+    public string RuntimeTransport    => CodexTransportDecision.AppServer;
+
     /// <summary>Resolved model from the <c>thread/start</c> response (never the requested one);
     /// null until the handshake completes. Feeds the existing launch-attempt reporting.</summary>
     public string? ResolvedModel => _resolvedModel;
