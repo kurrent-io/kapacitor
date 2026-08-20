@@ -455,6 +455,11 @@ static class CodexHookCommand {
     // own internal throttle/budget/try-catch make it safe to abandon if the process exits first;
     // reliable delivery for Codex sessions is carried by the daemon's periodic drain pass,
     // not by this opportunistic best-effort attempt.
+    // guard-1: an envelope-sourced hosted session's transcript comes from the daemon, so spawning a
+    // rollout watcher here would double-ingest it. Marker absent on every other session.
+    static bool IsEnvelopeSourcedHostedSession() =>
+        Environment.GetEnvironmentVariable("KCAP_HOSTED_APPSERVER") is "1";
+
     static Task RunPostStdoutWork(
             string baseUrl, HookSpool spool, JsonNode? enrichedNode, string? sessionId, HookPostOutcome outcome) {
         var transcriptSpool = new TranscriptSpool(PathHelpers.ConfigPath("transcript-spool"));
@@ -466,7 +471,7 @@ static class CodexHookCommand {
         var transcript = TryGetString(enrichedNode, "transcript_path");
         var cwd        = TryGetString(enrichedNode, "cwd");
 
-        return sessionId is not null && transcript is not null
+        return sessionId is not null && transcript is not null && !IsEnvelopeSourcedHostedSession()
             ? WatcherManager.EnsureWatcherRunning(
                 baseUrl, sessionId, transcript,
                 agentId: null, sessionIdOverride: null, cwd: cwd,
@@ -492,11 +497,15 @@ static class CodexHookCommand {
         var cwd        = TryGetString(node, "cwd");
 
         if (sessionId is not null && transcript is not null) {
-            await WatcherManager.EnsureWatcherRunning(
-                baseUrl, sessionId, transcript,
-                agentId: null, sessionIdOverride: null, cwd: cwd,
-                skipTitle: false, vendor: "codex"
-            );
+            // Guard-1: skip the watcher restart for an envelope-sourced hosted session (the daemon owns
+            // its transcript); the idle-marker stop POST still fires so the "working" indicator clears.
+            if (!IsEnvelopeSourcedHostedSession()) {
+                await WatcherManager.EnsureWatcherRunning(
+                    baseUrl, sessionId, transcript,
+                    agentId: null, sessionIdOverride: null, cwd: cwd,
+                    skipTitle: false, vendor: "codex"
+                );
+            }
 
             await PostBestEffortAsync(baseUrl, "stop", node, TimeSpan.FromSeconds(2));
         }

@@ -426,6 +426,15 @@ public partial class App : Application {
         var result = await attempt.Result.ConfigureAwait(false);
 
         switch (result) {
+            // Sign-in succeeded and the workspace is on its way; closing the window mid-poll is not a
+            // failure, and stderr saying so would be untrue. The guidance is spelled out here rather
+            // than carried on the message: in the wizard it arrives through the progress sink, and
+            // repeating it there would say the same thing twice — but by now that view is gone, so
+            // this line is the only thing left telling the user how to resume.
+            case AuthResult.Failed { Reason: AuthFailureReason.ProvisioningInProgress } pending:
+                Console.Error.WriteLine(
+                    $"kcap: {pending.Message} Join it from the Connect step once it is ready.");
+                break;
             case AuthResult.Failed failed:
                 Console.Error.WriteLine($"kcap: onboarding sign-in ended with a failure: {failed.Message}");
                 break;

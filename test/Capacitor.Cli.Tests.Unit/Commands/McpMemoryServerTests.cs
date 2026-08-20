@@ -73,10 +73,69 @@ public class McpMemoryServerTests {
     }
 
     [Test]
+    public async Task Save_body_carries_audience_project_for_project_audience() {
+        var body = McpMemoryServer.BuildSaveBody(
+            Args("""{"audience":"project","slug":"s","description":"d","content":"c","kind":"project","audience_project":"capacitor"}"""),
+            "abc123", "mach-1");
+
+        await Assert.That(body["audience"]!.GetValue<string>()).IsEqualTo("project");
+        await Assert.That(body["audience_project"]!.GetValue<string>()).IsEqualTo("capacitor");
+    }
+
+    [Test]
+    public async Task Save_body_omits_audience_project_when_absent() {
+        var body = McpMemoryServer.BuildSaveBody(
+            Args("""{"audience":"org","slug":"s","description":"d","content":"c","kind":"feedback"}"""),
+            "abc123", "mach-1");
+
+        await Assert.That(body["audience_project"]).IsNull();
+    }
+
+    [Test]
     public async Task Get_url_escapes_slug_and_carries_context() {
         var url = McpMemoryServer.BuildGetUrl("http://x", Args("""{"id_or_slug":"my-slug"}"""), "abc123", "mach-1");
 
         await Assert.That(url).IsEqualTo("http://x/api/memories/my-slug?repo=abc123&machine=mach-1");
+    }
+
+    [Test]
+    public async Task Rescope_body_carries_audience_and_team() {
+        var body = McpMemoryServer.BuildRescopeBody(Args("""{"id":"m1","audience":"team","team":"payments"}"""));
+
+        await Assert.That(body["audience"]!.GetValue<string>()).IsEqualTo("team");
+        await Assert.That(body["team"]!.GetValue<string>()).IsEqualTo("payments");
+        await Assert.That(body["project"]).IsNull();
+    }
+
+    [Test]
+    public async Task Rescope_body_carries_project_without_audience() {
+        var body = McpMemoryServer.BuildRescopeBody(Args("""{"id":"m1","project":"capacitor"}"""));
+
+        await Assert.That(body["project"]!.GetValue<string>()).IsEqualTo("capacitor");
+        await Assert.That(body["audience"]).IsNull();
+    }
+
+    [Test]
+    public async Task Rescope_body_carries_audience_project_for_project_audience() {
+        var body = McpMemoryServer.BuildRescopeBody(Args("""{"id":"m1","audience":"project","audience_project":"capacitor"}"""));
+
+        await Assert.That(body["audience"]!.GetValue<string>()).IsEqualTo("project");
+        await Assert.That(body["audience_project"]!.GetValue<string>()).IsEqualTo("capacitor");
+        // Distinct from the place-axis project, which stays absent here.
+        await Assert.That(body["project"]).IsNull();
+    }
+
+    [Test]
+    public async Task Rescope_body_throws_without_audience_or_project() {
+        await Assert.That(() => McpMemoryServer.BuildRescopeBody(Args("""{"id":"m1"}""")))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Rescope_body_treats_whitespace_project_as_absent() {
+        // A blank slug never resolves server-side, so it counts as absent → the required-one-of check fires.
+        await Assert.That(() => McpMemoryServer.BuildRescopeBody(Args("""{"id":"m1","project":"   "}""")))
+            .Throws<ArgumentException>();
     }
 
     [Test]

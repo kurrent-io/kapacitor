@@ -154,16 +154,4 @@ public class PluginCommandKiroTests {
         Stderr:            TextWriter.Null
     ) { ResolveMcpBinaryPath = () => TestBinaryPath };
 
-    // Sets an env var for the test's lifetime and restores it on Dispose. Clears KIRO_HOME so
-    // KiroPaths resolves under the fake home.
-    sealed class EnvScope : IDisposable {
-        readonly string  _key;
-        readonly string? _prev;
-        public EnvScope(string key, string? value) {
-            _key  = key;
-            _prev = Environment.GetEnvironmentVariable(key);
-            Environment.SetEnvironmentVariable(key, value);
-        }
-        public void Dispose() => Environment.SetEnvironmentVariable(_key, _prev);
-    }
 }

@@ -55,6 +55,35 @@ sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
         string.IsNullOrWhiteSpace(message) || message.StartsWith(' ') ? message : $"  {message}";
 }
 
+/// <summary>Step 1b's rendering, at setup's two-space indent. The code is printed here because the
+/// browser showing one is only half a comparison — the half that makes it a defence is the copy
+/// printed by the machine being paired.</summary>
+sealed class SpectrePairingProgress : IPairingProgress {
+    bool _waiting;
+
+    public void AwaitingApproval(string userCode, string setupUrl) {
+        _waiting = true;
+
+        AnsiConsole.MarkupLine(SetupAuthProgress.Indent("Opening your browser to finish setup."));
+        AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[dim]If it didn't open:[/]  {Markup.Escape(setupUrl)}"));
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"Your code:  [bold cyan]{Markup.Escape(userCode)}[/]"));
+        AnsiConsole.MarkupLine(SetupAuthProgress.Indent(
+            "[yellow]Check the browser shows the same code before you approve.[/]"));
+        AnsiConsole.WriteLine();
+        AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
+    }
+
+    public void PollTick() => AnsiConsole.Write(".");
+
+    public void WaitEnded() {
+        if (!_waiting) return;
+
+        _waiting = false;
+        AnsiConsole.WriteLine();
+    }
+}
+
 public static class SetupCommand {
     public static async Task<int> HandleAsync(string[] args) {
         var serverUrlArg     = GetArg(args, "--server-url");
@@ -165,11 +194,36 @@ public static class SetupCommand {
 
         await Console.Out.WriteLineAsync();
 
+        // Step 1b: machine pairing. Needs a resolved server to mint on, and nothing to do when
+        // discovery has already signed the user in — bare `kcap setup` gets neither yet.
+        var pairing = loginComplete ? null : await RunPairingStepAsync(serverUrl, provider, noPrompt);
+
+        switch (pairing) {
+            case PairingResult.Denied:
+                await Console.Error.WriteLineAsync("  Setup was declined in the browser.");
+
+                return 1;
+
+            case PairingResult.Expired:
+                await Console.Error.WriteLineAsync("  This setup request expired before it was approved.");
+                await Console.Error.WriteLineAsync("  Run `kcap setup` again to start a new one.");
+
+                return 1;
+
+            case PairingResult.Untrusted untrusted:
+                await Console.Error.WriteLineAsync($"  {untrusted.Message}");
+
+                return 1;
+        }
+
         // Step 2: Login
         AnsiConsole.Write(new Rule("[yellow]Step 2/6 — Login[/]").LeftJustified());
 
         var loginStepResult = await RunLoginStepAsync(loginComplete, provider, serverUrl, forceDevice, activeProfile);
         if (loginStepResult != 0) return loginStepResult;
+
+        if (pairing is PairingResult.Approved approved
+         && await AssertPairingIdentityAsync(approved, activeProfile) != 0) return 1;
 
         await Console.Out.WriteLineAsync();
 
@@ -546,6 +600,10 @@ public static class SetupCommand {
 
         SetupFunnel.Succeeded(agentsConfigured);
 
+        // Last: completion invalidates the secret, so the channel stays open for everything above it.
+        if (pairing is PairingResult.Approved settling
+         && await CompletePairingAsync(settling, activeProfile) != 0) return 1;
+
         return 0;
     }
 
@@ -807,6 +865,109 @@ public static class SetupCommand {
             return null;
         }
     }
+
+    /// <summary>
+    /// Step 1b — hands the browser a pairing and waits for a human to approve it.
+    ///
+    /// <para>Skipped rather than failed wherever it cannot help: a server that does not serve the
+    /// routes, a headless machine with no browser to open, <c>--no-prompt</c>, and the <c>None</c>
+    /// provider, which has no identity for an approval to be about. A transport failure is a skip
+    /// too — sign-in below still works, and a blip in a new leg must not break a path that did.</para>
+    /// </summary>
+    static async Task<PairingResult?> RunPairingStepAsync(string serverUrl, string provider, bool noPrompt) {
+        if (noPrompt || provider == AuthProvider.None || HeadlessEnvironment.IsHeadless()) return null;
+
+        PairingResult result;
+
+        using (var http = new HttpClient { Timeout = PairingHttpTimeout }) {
+            // Nothing else in this leg throws: PairingClient degrades, and the flow answers with a
+            // result. This catches what neither can — a malformed URL reaching HttpRequestMessage,
+            // say — so a new step cannot crash setup where every branch of it promises to degrade.
+            try {
+                result = await new BrowserPairingFlow(new PairingClient(http), new SpectrePairingProgress())
+                    .RunAsync(serverUrl, MachineId.Get(), Environment.MachineName, CancellationToken.None);
+            } catch (Exception ex) when (ex is not OperationCanceledException) {
+                AnsiConsole.MarkupLine($"  [yellow]![/] Could not start browser setup: {Markup.Escape(ex.Message)}");
+                AnsiConsole.MarkupLine("  [dim]Continuing with sign-in.[/]");
+
+                return null;
+            }
+        }
+
+        switch (result) {
+            case PairingResult.Unavailable:
+                return null;
+
+            case PairingResult.Failed failed:
+                AnsiConsole.MarkupLine($"  [yellow]![/] {Markup.Escape(failed.Message)}");
+                AnsiConsole.MarkupLine("  [dim]Continuing with sign-in.[/]");
+
+                return null;
+
+            default:
+                return result;
+        }
+    }
+
+    /// <summary>Checks that the account which approved is the account that just signed in — see
+    /// <see cref="PairingIdentity"/>. Runs before anything else in setup, because every later step
+    /// configures this machine for whoever this turns out to be.</summary>
+    static async Task<int> AssertPairingIdentityAsync(PairingResult.Approved approved, string activeProfile) {
+        var tokens = await TokenStore.LoadAsync(activeProfile);
+
+        switch (PairingIdentity.Compare(approved.UserId, tokens?.AccessToken)) {
+            case PairingContinuity.Match:
+                return 0;
+
+            case PairingContinuity.Mismatch:
+                await Console.Error.WriteLineAsync(
+                    "  Setup was approved by a different account than the one that just signed in.");
+                await Console.Error.WriteLineAsync(
+                    "  Run `kcap setup` again and approve it as the account you signed in with.");
+
+                return 1;
+
+            // Not the same message: the fault is this build, not the user's choice of account, and
+            // telling them a colleague approved their machine would send them somewhere useless.
+            default:
+                await Console.Error.WriteLineAsync(
+                    "  This version of kcap cannot confirm which account approved setup.");
+                await Console.Error.WriteLineAsync(
+                    "  Update kcap (`npm install -g @kurrent/kcap`) and run setup again.");
+
+                return 1;
+        }
+    }
+
+    /// <summary>
+    /// Releases the pairing, last: completion invalidates the secret, and the channel is how this
+    /// machine reports progress, so ending it at sign-in would shut the door before the steps worth
+    /// reporting had run.
+    ///
+    /// <para>403 is the one status worth acting on — the server disagreeing with the identity check
+    /// above. See <see cref="PairingClient.CompleteAsync"/> for why the rest are not.</para>
+    /// </summary>
+    static async Task<int> CompletePairingAsync(PairingResult.Approved approved, string activeProfile) {
+        var tokens = await TokenStore.LoadAsync(activeProfile);
+
+        using var http = new HttpClient { Timeout = PairingHttpTimeout };
+
+        var status = await new PairingClient(http).CompleteAsync(
+            approved.ServerUrl, approved.PairingId, approved.Secret, tokens?.AccessToken, CancellationToken.None);
+
+        if (status != 403) return 0;
+
+        await Console.Error.WriteLineAsync(
+            "  The server rejected this machine: setup was approved by a different account.");
+        await Console.Error.WriteLineAsync(
+            "  Run `kcap setup` again and approve it as the account you signed in with.");
+
+        return 1;
+    }
+
+    /// <summary>Bounded well under HttpClient's 100s default: the poll runs on a 2s interval, and a
+    /// stalled connection must not leave setup silent for a minute and a half.</summary>
+    static readonly TimeSpan PairingHttpTimeout = TimeSpan.FromSeconds(15);
 
     /// <summary>Test seam: overrides façade construction for Step 1/2. Reset to null in a finally block.</summary>
     internal static Func<ITenantProvisioner?, OnboardingFacade>? FacadeOverride;

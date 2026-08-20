@@ -413,6 +413,15 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
                 RetargetRequested?.Invoke(retarget.ServerInput);
 
                 break;
+            // Provisioning outran its poll window. Sign-in itself succeeded and the workspace is on its
+            // way, so headlining a failure here would tell the user something untrue.
+            case AuthResult.Failed { Reason: AuthFailureReason.ProvisioningInProgress } pending:
+                SetStatus(pending.Message, isError: false);
+                // The headline is the fact; the sink's line is what to do about it, and SetStatus
+                // drops the detail on a non-error.
+                StatusDetail ??= _lastReport;
+
+                break;
             // Already rendered through the sink; the last reported line stands in when none was an error.
             default:
                 Status        = "Sign-in failed.";

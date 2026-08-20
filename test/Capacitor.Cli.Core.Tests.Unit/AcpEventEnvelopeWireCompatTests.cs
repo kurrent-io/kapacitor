@@ -175,4 +175,41 @@ public class AcpEventEnvelopeWireCompatTests {
         await Assert.That(json).Contains(@"""accepted_seq"":10");
         await Assert.That(json).Contains(@"""expected_next_seq"":null");
     }
+
+    // ── Source-claim / confirm outcomes (mirror the server's AcpSessionSourceClaim / ConfirmSessionLaunch) ──
+    // These are RETURNED BY the server hub methods, so the daemon only ever DESERIALIZES them (never
+    // sends them). The contract is therefore: the daemon must decode the exact shape the server emits —
+    // snake_case properties + camelCase enum values (JsonNamingPolicy.CamelCase on the server's
+    // JsonStringEnumConverter). JsonStringEnumConverter deserialization is case-insensitive, so the
+    // server's camelCase maps onto the daemon's members; these tests lock that in against the real
+    // server wire strings.
+
+    [Test]
+    public async Task AcpSourceClaimOutcome_deserializes_the_servers_wire_shape() {
+        // Exactly what the server's AcpSessionSourceClaim emits for a Bound claim.
+        var bound = JsonSerializer.Deserialize(
+            @"{""outcome"":""bound"",""ownership_token"":3,""accepted_seq"":-1}",
+            CapacitorJsonContext.Default.AcpSourceClaimOutcome);
+        await Assert.That(bound.Outcome).IsEqualTo(AcpBindOutcome.Bound);
+        await Assert.That(bound.OwnershipToken).IsEqualTo(3L);
+        await Assert.That(bound.AcceptedSeq).IsEqualTo(-1L);
+
+        var rejected = JsonSerializer.Deserialize(
+            @"{""outcome"":""rejected"",""ownership_token"":0,""accepted_seq"":0}",
+            CapacitorJsonContext.Default.AcpSourceClaimOutcome);
+        await Assert.That(rejected.Outcome).IsEqualTo(AcpBindOutcome.Rejected);
+    }
+
+    [Test]
+    public async Task AcpLaunchConfirmOutcome_deserializes_every_server_camelCase_value() {
+        // Including the multi-word member, which rides the wire as "alreadyConfirmed" — the one most
+        // likely to silently mismatch a naming policy.
+        await Assert.That(Decode(@"""confirmed""")).IsEqualTo(AcpLaunchConfirmOutcome.Confirmed);
+        await Assert.That(Decode(@"""alreadyConfirmed""")).IsEqualTo(AcpLaunchConfirmOutcome.AlreadyConfirmed);
+        await Assert.That(Decode(@"""superseded""")).IsEqualTo(AcpLaunchConfirmOutcome.Superseded);
+        await Assert.That(Decode(@"""notFound""")).IsEqualTo(AcpLaunchConfirmOutcome.NotFound);
+
+        static AcpLaunchConfirmOutcome Decode(string json) =>
+            JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.AcpLaunchConfirmOutcome);
+    }
 }

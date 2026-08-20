@@ -579,6 +579,29 @@ public static class ClaudeHookCommand {
                 return 0;
             }
 
+            // Advertise the coordination-notices capability so the server MAY return work-overlap
+            // notices to render below (next to the memory index). Injected into a SEPARATE postBody,
+            // never `body`: `body` is what the transient-failure and ordering-guard paths spool, and a
+            // replay is a catch-up, not a live render — a spooled capability would let the server mark
+            // notices delivered that the replay can never inject (they stay in the bell/Slack and reach
+            // the next LIVE session-start instead). Live-only by construction: `kcap import` posts
+            // /hooks/session-start/{vendor} with origin=historical and never reaches here. Suppressed by
+            // the disable_coordination_notices opt-out, read from the EFFECTIVE profile (honoured for
+            // KCAP_URL users too, unlike the memory read above). Fail-open.
+            var coordinationNoticesDisabled = activeProfile?.DisableCoordinationNotices is true;
+            var postBody = body;
+            if (!coordinationNoticesDisabled) {
+                try {
+                    var node = JsonNode.Parse(body);
+                    if (node is not null) {
+                        node["coordination_notices"] = CoordinationNoticesEmitter.CapabilityVersion;
+                        postBody                      = node.ToJsonString();
+                    }
+                } catch {
+                    // Best effort — never fail the hook building the capability field.
+                }
+            }
+
             // kick off the team-memory index fetch in PARALLEL with the hook POST so
             // it adds no latency to the critical path. Fully best-effort / fail-open: any failure,
             // a 401, or a budget overrun yields a null fragment and nothing is injected. Started
@@ -602,7 +625,9 @@ public static class ClaudeHookCommand {
             HttpResponseMessage? resp = null;
             try {
                 if (remaining > TimeSpan.Zero) {
-                    using var content = new StringContent(body, Encoding.UTF8, "application/json");
+                    // postBody carries the coordination-notices capability; the spool below uses the
+                    // capability-free `body` so a replay never claims notices it cannot render.
+                    using var content = new StringContent(postBody, Encoding.UTF8, "application/json");
                     resp = await client.PostOnceAsync($"{baseUrl}/hooks/session-start", content, remaining, CancellationToken.None);
                 }
             } catch { resp = null; }
@@ -670,13 +695,20 @@ public static class ClaudeHookCommand {
                     // hook budget so a slow fetch can't delay the hook (fail-open → null).
                     var memoryFragment = await AwaitMemoryFragmentAsync(memoryIndexTask, processStart);
 
+                    // Coordination notices ride the hook POST response (no extra fetch), same as the
+                    // guidelines fragment. Gated on the same opt-out that suppressed the capability
+                    // above: when disabled the server was never asked and returns nothing, but the
+                    // gate is defense-in-depth so the opt-out holds even against an over-eager server.
+                    var coordinationFragment = CoordinationNoticesEmitter.BuildFragment(
+                        responseNode, coordinationNoticesDisabled);
+
                     // The static work-items nudge. Claude has always carried kcap-workitems, so
                     // the availability gate is always satisfied here; only the opt-out can suppress it.
                     var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
                         SessionStartHarness.Claude, sessionId, activeProfile?.DisableWorkItemsNudge is true);
 
                     var envelope = SessionStartAdditionalContext.BuildEnvelope(
-                        lessonsFragment, nudgeFragment, memoryFragment, workItemsNudge);
+                        lessonsFragment, nudgeFragment, memoryFragment, coordinationFragment, workItemsNudge);
 
                     if (envelope is not null) {
                         writer.WriteLine(envelope);

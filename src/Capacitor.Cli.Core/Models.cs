@@ -957,6 +957,9 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Auth.GitHubCodeExchangeRequest))]
 [JsonSerializable(typeof(Auth.WorkOSAuthResponse))]
 [JsonSerializable(typeof(Auth.WorkOSUserInfo))]
+[JsonSerializable(typeof(Auth.MintPairingRequest))]
+[JsonSerializable(typeof(Auth.MintPairingResponse))]
+[JsonSerializable(typeof(Auth.PairingStatusResponse))]
 [JsonSerializable(typeof(Auth.ProxyConfigResponse))]
 [JsonSerializable(typeof(Auth.DiscoveredTenant[]))]
 [JsonSerializable(typeof(LaunchAgentCommand))]
@@ -1076,6 +1079,8 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(AcpEventEnvelope[]))]
 [JsonSerializable(typeof(AcpBatchAck))]
 [JsonSerializable(typeof(AcpBindOutcome))]
+[JsonSerializable(typeof(AcpSourceClaimOutcome))]
+[JsonSerializable(typeof(AcpLaunchConfirmOutcome))]
 [JsonSerializable(typeof(TranscriptBatchAck))]
 // The AcpSessionStarted hub method's optional metadata argument. Registered as its own root type
 // (not just nested inside another JsonSerializable graph) because SignalR's JsonHubProtocol
@@ -1355,6 +1360,30 @@ public readonly record struct AcpBatchAck(long AcceptedSeq, long PersistedSeq, l
 /// declined a stale/foreign/conflicting binding; the daemon stands down without a retry storm.
 /// </summary>
 public enum AcpBindOutcome { Bound = 0, Rejected = 1 }
+
+/// <summary>
+/// Ack of the server's <c>AcpSessionSourceClaim</c> hub method — the durable, deferred-first-turn
+/// source claim that binds the canonical session AND writes the hosted-session ownership ledger row
+/// before the orchestrator dispatches the first turn. A field-for-field mirror of the server-side
+/// <c>Capacitor.Server.Core.Acp.AcpSourceClaimOutcome</c>. <see cref="Outcome"/> mirrors
+/// <see cref="AcpBindOutcome"/> (a stale/foreign bind is <c>Rejected</c> and the daemon stands down);
+/// on <see cref="AcpBindOutcome.Bound"/> the <see cref="OwnershipToken"/> is the ledger's claim/rebind
+/// revision to pass back to <c>ConfirmSessionLaunch</c> after the first <c>turn/start</c> succeeds, and
+/// <see cref="AcceptedSeq"/> is the canonical cursor the forwarder resumes from (<c>-1</c> for a
+/// brand-new session). Both numeric fields are meaningless on a <c>Rejected</c> outcome.
+/// </summary>
+public readonly record struct AcpSourceClaimOutcome(AcpBindOutcome Outcome, long OwnershipToken, long AcceptedSeq);
+
+/// <summary>
+/// Token-fenced outcome of the server's <c>ConfirmSessionLaunch</c> hub method — clearing the ledger
+/// row's provisional flag once the first turn is dispatched. A mirror of the server-side
+/// <c>Capacitor.Server.Core.Acp.AcpLaunchConfirmOutcome</c>. <see cref="Confirmed"/> is <c>0</c> so an
+/// OLD server's void return decodes to it (legacy success). Idempotent under the token
+/// (<see cref="AlreadyConfirmed"/> on a retry after the clear landed); <see cref="Superseded"/> is
+/// permanent (a rebind advanced the token past the caller's — stop retrying); <see cref="NotFound"/>
+/// means no ledger row (the claim never committed, or the session closed).
+/// </summary>
+public enum AcpLaunchConfirmOutcome { Confirmed = 0, AlreadyConfirmed = 1, Superseded = 2, NotFound = 3 }
 
 /// <summary>
 /// Ack returned from the server's <c>SendTranscriptBatchAcked</c> hub method (D3).

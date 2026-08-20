@@ -141,6 +141,32 @@ public class ConfigCommandTests {
     }
 
     [Test]
+    public async Task ApplySet_DisableCoordinationNotices_True_UpdatesProfile() {
+        var profile = new Profile();
+
+        var updated = ConfigCommand.ApplySet(profile, "disable_coordination_notices", "true");
+
+        await Assert.That(updated.DisableCoordinationNotices).IsTrue();
+    }
+
+    [Test]
+    public async Task ApplySet_DisableCoordinationNotices_False_UpdatesProfile() {
+        var profile = new Profile { DisableCoordinationNotices = true };
+
+        var updated = ConfigCommand.ApplySet(profile, "disable_coordination_notices", "false");
+
+        await Assert.That(updated.DisableCoordinationNotices).IsFalse();
+    }
+
+    [Test]
+    public async Task ApplySet_DisableCoordinationNotices_InvalidValue_Throws() {
+        var profile = new Profile();
+
+        await Assert.That(() => ConfigCommand.ApplySet(profile, "disable_coordination_notices", "nope"))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
     public async Task ApplySet_UnknownKey_Throws() {
         var profile = new Profile();
 

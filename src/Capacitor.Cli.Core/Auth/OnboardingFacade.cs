@@ -300,7 +300,7 @@ public sealed class OnboardingFacade(
         return flow switch {
             WorkOSDiscoveryFlow.Ready ready       => await WorkOSDiscovery.PublishAsync(ready, progress, beforeCommit, ct),
             WorkOSDiscoveryFlow.Retarget retarget => new AuthResult.Retarget(retarget.ServerInput),
-            WorkOSDiscoveryFlow.Failed failed     => Stop(failed.Message, ct),
+            WorkOSDiscoveryFlow.Failed failed     => Stop(failed.Message, ct, failed.Reason),
             _                                     => Stop("No Capacitor tenants are linked to your account.", ct,
                                                           AuthFailureReason.NoTenantsFound)
         };

@@ -717,6 +717,9 @@ public static class PluginCommand {
         if (!args.Contains("--skip-cursor-mcp"))
             await RegisterCursorMcpServersAsync(env);
 
+        if (!args.Contains("--skip-cursor-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
+
         return 0;
     }
 
@@ -850,6 +853,11 @@ public static class PluginCommand {
         // Gemini refresh heals MCP + instructions even when a prior version had hooks only.
         if (refreshOnly && !PiExtensionInstaller.IsInstalled(extensionPath)) return 0;
 
+        // No stale-session report for Pi: it runs through a node shim, and node's process.title setter
+        // rewrites the argv region — so the process is named `pi` with a command line of just "pi", or
+        // named `node` with the package path intact, never both. A name this generic needs
+        // corroboration, and the only corroborating signal disappears exactly when the name appears.
+
         // Fresh install needs kcap on PATH: both extensions shell out to the bare
         // `kcap` command (ingest → `kcap hook --pi`; bridge → `kcap mcp <name>`), so
         // pi must find kcap on PATH. Skipped on the postinstall (--if-installed) path.
@@ -895,6 +903,9 @@ public static class PluginCommand {
         //    toward the kcap tools. Non-destructive (only our block) + idempotent. Never fails.
         if (!skipInstructions)
             await InstallPiInstructionsAsync(env);
+
+        if (!args.Contains("--skip-pi-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
 
         // Non-zero only when a FRESH ingest install failed (the integration is incomplete) —
         // the independent MCP bridge + AGENTS.md steering above were still installed.
@@ -1047,6 +1058,9 @@ public static class PluginCommand {
         // tools. Non-destructive (only our marker block) + idempotent. Never fails the install.
         if (!args.Contains("--skip-opencode-instructions"))
             await InstallOpenCodeInstructionsAsync(env);
+
+        if (!args.Contains("--skip-opencode-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
 
         return 0;
     }
@@ -1224,24 +1238,60 @@ public static class PluginCommand {
         }
     }
 
-    /// <summary>Copies the kcap skills into <c>~/.gemini/skills</c> (where Antigravity reads them, unlike
-    /// the agent-agnostic <c>~/.agents/skills</c>). Idempotent (version marker); never fails the install.</summary>
-    static async Task InstallAntigravitySkillsAsync(PluginEnvironment env, bool refreshOnly) {
-        // Fast path: on-disk skills already match this build (marker + all folders present).
-        if (AgentsSkillsInstaller.IsCurrent(env.AntigravitySkillsDir)) return;
+    /// <summary>
+    /// Copies the kcap skills into <paramref name="targetDir"/> for a vendor that reads a skills tree.
+    /// Which tree differs by vendor — the agent-agnostic <c>~/.agents/skills</c> for most, their own
+    /// for Kiro and Antigravity — so the caller names it.
+    /// </summary>
+    /// <remarks>
+    /// A refresh tops up a tree the user already has; it never creates one. `plugin remove --skills`
+    /// deletes the marker precisely so an upgrade cannot silently undo it, and the npm postinstall
+    /// runs the `--if-installed` form of every vendor on each `npm install -g` — without this gate a
+    /// deliberate removal would come back on a command the user never ran.
+    /// Never fails the install: hooks and MCP registration are what make capture work, so a skills
+    /// copy that fails is a warning and the vendor is still wired up.
+    /// </remarks>
+    static async Task InstallVendorSkillsAsync(
+            PluginEnvironment env, string targetDir, string label, bool refreshOnly) {
+        if (refreshOnly && !AgentsSkillsInstaller.IsInstalled(targetDir)) return;
+
+        // The sweep runs even when the tree is already current: a Cursor-first install stamps the
+        // marker, so gating it on the copy would mean the stale dir outlives every later install.
+        if (targetDir == env.AgentsSkillsDir)
+            AgentsSkillsInstaller.CleanLegacyCodexSkills(env.LegacyCodexSkills);
+
+        if (AgentsSkillsInstaller.IsCurrent(targetDir)) return;
 
         var pluginPath = env.ResolvePluginPath();
         var src        = pluginPath is null ? null : Path.Combine(pluginPath, "skills");
         if (src is null || !Directory.Exists(src)) {
             if (!refreshOnly)
-                await env.Stderr.WriteLineAsync("Warning: could not install Antigravity skills — kcap plugin 'skills' folder not found.");
+                await env.Stderr.WriteLineAsync($"Warning: could not install {label} skills — kcap plugin 'skills' folder not found.");
             return;
         }
 
-        if (AgentsSkillsInstaller.Install(src, env.AntigravitySkillsDir))
-            await env.Stdout.WriteLineAsync($"Antigravity skills installed ({env.AntigravitySkillsDir}).");
+        if (AgentsSkillsInstaller.Install(src, targetDir))
+            await env.Stdout.WriteLineAsync($"{label} skills installed ({targetDir}).");
         else
-            await env.Stderr.WriteLineAsync($"Warning: could not install Antigravity skills to {env.AntigravitySkillsDir}.");
+            await env.Stderr.WriteLineAsync($"Warning: could not install {label} skills to {targetDir}.");
+    }
+
+    /// <summary>Antigravity reads <c>~/.gemini/skills</c>, not the agent-agnostic tree.</summary>
+    static Task InstallAntigravitySkillsAsync(PluginEnvironment env, bool refreshOnly) =>
+        InstallVendorSkillsAsync(env, env.AntigravitySkillsDir, "Antigravity", refreshOnly);
+
+    /// <summary>
+    /// Reports the sessions sampled before the install, once that install has actually landed. Saying
+    /// "anything from now on is captured" after a failed one would be untrue in the direction that
+    /// matters.
+    /// </summary>
+    static async Task ReportStaleAgentsAsync(
+            PluginEnvironment env, IReadOnlyList<StaleAgentProcess> runningBefore, bool installed) {
+        if (!installed) return;
+
+        foreach (var line in StaleAgentDetector.Describe(runningBefore)) {
+            await env.Stdout.WriteLineAsync(line);
+        }
     }
 
     static async Task<int> RemoveAntigravity(string[] args, PluginEnvironment env) {
@@ -1374,6 +1424,9 @@ public static class PluginCommand {
         // tools. Non-destructive (only our marker block) + idempotent. Never fails the install.
         if (!args.Contains("--skip-copilot-instructions"))
             await InstallCopilotInstructionsAsync(env);
+
+        if (!args.Contains("--skip-copilot-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
 
         return 0;
     }
@@ -1529,6 +1582,8 @@ public static class PluginCommand {
         // can leave an MCP-only install with no agent marker.
         var mcpInstalled = HarnessMcpProjections.Kiro.OwnsAnything(mcpPath);
 
+        var kiroAlreadyInstalled = KiroHooksInstaller.IsInstalled(agentPath);
+
         if (refreshOnly) {
             // Never touch a machine that never opted in (neither hooks nor MCP).
             if (!KiroHooksInstaller.IsInstalled(agentPath) && !mcpInstalled) return 0;
@@ -1555,6 +1610,13 @@ public static class PluginCommand {
 
             return 1;
         }
+
+        // Sampled after the early returns above and before anything is written: a refresh that bails
+        // should not sweep the process table, and a session started DURING the install loaded the
+        // integration, so it must not be reported as predating it.
+        var kiroRunningBefore = kiroAlreadyInstalled
+            ? []
+            : env.FindStaleAgents([new StaleAgentTarget("kiro", KiroPaths.ProcessName)]);
 
         // Clone/refresh the agent unless a refresh finds it on disk AND current (File.Exists so a
         // deleted kcap.json is recreated). MCP is registered below regardless of the clone outcome.
@@ -1593,6 +1655,8 @@ public static class PluginCommand {
         if (!args.Contains("--skip-kiro-skills"))
             await InstallKiroSkillsAsync(env, refreshOnly);
 
+        await ReportStaleAgentsAsync(env, kiroRunningBefore, installed: !hooksFailed);
+
         // A fresh agent-clone failure is still an error exit (capture won't work without it), but the
         // independent MCP file + skills were still written above.
         return hooksFailed && !refreshOnly ? 1 : 0;
@@ -1604,22 +1668,8 @@ public static class PluginCommand {
     /// toward the kcap MCP tools. Fast-path skips when already at the current version. Never fails the
     /// install: a copy error is a warning.
     /// </summary>
-    static async Task InstallKiroSkillsAsync(PluginEnvironment env, bool refreshOnly) {
-        if (AgentsSkillsInstaller.IsCurrent(env.KiroSkillsDir)) return;
-
-        var pluginPath = env.ResolvePluginPath();
-        var src        = pluginPath is null ? null : Path.Combine(pluginPath, "skills");
-        if (src is null || !Directory.Exists(src)) {
-            if (!refreshOnly)
-                await env.Stderr.WriteLineAsync("Warning: could not install Kiro skills — kcap plugin 'skills' folder not found.");
-            return;
-        }
-
-        if (AgentsSkillsInstaller.Install(src, env.KiroSkillsDir))
-            await env.Stdout.WriteLineAsync($"Kiro skills installed ({env.KiroSkillsDir}).");
-        else
-            await env.Stderr.WriteLineAsync($"Warning: could not install Kiro skills to {env.KiroSkillsDir}.");
-    }
+    static Task InstallKiroSkillsAsync(PluginEnvironment env, bool refreshOnly) =>
+        InstallVendorSkillsAsync(env, env.KiroSkillsDir, "Kiro", refreshOnly);
 
     /// <summary>
     /// Registers the kcap MCP servers in Kiro's <c>~/.kiro/settings/mcp.json</c> (<c>mcpServers</c>
@@ -1960,6 +2010,9 @@ public static class PluginCommand {
         // toward the kcap MCP tools. Non-destructive (only our marker block) + idempotent. Never fails.
         if (!args.Contains("--skip-gemini-instructions"))
             await InstallGeminiInstructionsAsync(env);
+
+        if (!args.Contains("--skip-gemini-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
 
         // Non-zero only when a FRESH hook install failed (the integration is incomplete) — the
         // independent GEMINI.md steering above was still installed.

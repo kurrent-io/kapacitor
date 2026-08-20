@@ -68,6 +68,23 @@ internal interface IHostedAgentRuntime : IAsyncDisposable {
     Task WaitForTurnIdleAsync(CancellationToken ct) => Task.CompletedTask;
 
     /// <summary>
+    /// True when this runtime returns from its start WITHOUT dispatching the first turn — it holds the
+    /// initial prompt and seals input — and the orchestrator MUST durably source-claim the session and
+    /// then call <see cref="BeginFirstTurnAsync"/>. Only the envelope-sourced hosted-Codex runtime does
+    /// this; every other runtime keeps the single-phase launch (default false), so the orchestrator
+    /// skips the extra handshake for them.
+    /// </summary>
+    bool RequiresSourceClaimBeforeFirstTurn => false;
+
+    /// <summary>
+    /// Dispatch the held initial prompt as the first turn and unseal any queued input, completing when
+    /// the first turn's transport response has landed. Called once by the orchestrator after the source
+    /// claim acks, only when <see cref="RequiresSourceClaimBeforeFirstTurn"/> is true. No-op default for
+    /// every single-phase runtime.
+    /// </summary>
+    Task BeginFirstTurnAsync(CancellationToken ct = default) => Task.CompletedTask;
+
+    /// <summary>
     /// Hosted-UI special key (server <c>SendSpecialKey</c>). PTY runtimes translate via
     /// <see cref="SpecialKeyMap"/> and write the bytes; the ACP runtime maps or ignores.
     /// </summary>

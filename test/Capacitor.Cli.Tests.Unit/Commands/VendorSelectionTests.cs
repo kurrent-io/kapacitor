@@ -156,6 +156,8 @@ public class VendorSelectionTests {
             "--yes",
             "-y",
             "--generate-summaries",
+            "--skip-title",
+            "--reimport",
             "--server-url", "http://x",
             "--no-update-check",
             "--profile", "p"

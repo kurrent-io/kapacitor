@@ -555,13 +555,15 @@ public class OnboardingFacadeTests {
 
     [Test]
     public async Task DiscoverAsync_workos_in_progress_provisioning_fails_with_nothing_durable() =>
-        await AssertProvisionOfferFails(ProvisionOffer.InProgress);
+        await AssertProvisionOfferFails(ProvisionOffer.InProgress("acme"),
+                                        AuthFailureReason.ProvisioningInProgress);
 
     [Test]
     public async Task DiscoverAsync_workos_failed_provisioning_fails_with_nothing_durable() =>
         await AssertProvisionOfferFails(ProvisionOffer.Failed);
 
-    static async Task AssertProvisionOfferFails(ProvisionOffer offer) {
+    static async Task AssertProvisionOfferFails(
+            ProvisionOffer offer, AuthFailureReason expected = AuthFailureReason.Other) {
         using var handler = AuthHttp.Script(
             proxyConfig: """{"workos_client_id":"client_d"}""",
             workosTenants: "[]");
@@ -575,6 +577,10 @@ public class OnboardingFacadeTests {
         var result = await facade.DiscoverAsync(AuthProvider.WorkOS, forceDevice: false, CancellationToken.None);
 
         await Assert.That(result).IsTypeOf<AuthResult.Failed>();
+        await Assert.That(((AuthResult.Failed)result).Reason)
+                    .IsEqualTo(expected)
+                    .Because("the reason has to survive the flow-to-AuthResult mapping, or a caller "
+                           + "cannot tell a pending workspace from a failed sign-in");
         await Assert.That(File.Exists(ConfigPath)).IsFalse();
         await Assert.That(TokenFileExists("acme")).IsFalse();
     }

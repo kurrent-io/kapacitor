@@ -75,6 +75,17 @@ internal sealed partial class AcpInteractionBridge(
     /// caller downstream matches on.</summary>
     static string ForbiddenInteractionReason(string method) => $"unattended_interaction_forbidden:{method}";
 
+    /// <summary>Reaps a <c>session/request_permission</c> frame this launch cannot admit. Logs the
+    /// untrusted tool title + kind — the forwarded coded reason names only the method, so nothing else
+    /// records which tool leaked; the coded reason itself is unchanged.</summary>
+    JsonElement? ReapForbiddenPermissionFrame(JsonElement toolCall) {
+        LogUnattendedPermissionFrameForbidden(
+            agentId, TryGetToolTitle(toolCall) ?? "(untitled)", TryGetToolKind(toolCall) ?? "(none)");
+        unexpectedUnattendedInteraction?.Invoke(ForbiddenInteractionReason("session/request_permission"));
+
+        return CancelledResult();
+    }
+
     /// <summary>
     /// Handles one inbound <see cref="AcpRequest"/>. Returns <see langword="null"/> for any method
     /// this bridge doesn't recognize (letting <see cref="AcpConnection.HandleServerRequestAsync"/>'s
@@ -172,12 +183,8 @@ internal sealed partial class AcpInteractionBridge(
         // correctly-configured reviewer never raises a frame is measurably false on Kiro, which
         // intermittently prompts for a tool that is in its own trust list.
         if (unattendedPolicy == AcpUnattendedInteractionPolicy.AllowlistedAutoApprove) {
-            if (!UnattendedToolAdmission.IsAdmitted(parsed.ToolCall, admittedToolIds ?? EmptyAdmitted)) {
-                LogUnexpectedUnattendedInteraction(agentId, request.Method);
-                unexpectedUnattendedInteraction?.Invoke(ForbiddenInteractionReason(request.Method));
-
-                return CancelledResult();
-            }
+            if (!UnattendedToolAdmission.IsAdmitted(parsed.ToolCall, admittedToolIds ?? EmptyAdmitted))
+                return ReapForbiddenPermissionFrame(parsed.ToolCall);
 
             var admittedChoice = TrySelectLeastPrivilegeAllow(options);
 
@@ -190,10 +197,7 @@ internal sealed partial class AcpInteractionBridge(
 
             // Admitted tool, but no allow option we can identify. Reap rather than guess: an
             // unrecognised option set is exactly where a wrong pick grants something nobody asked for.
-            LogUnexpectedUnattendedInteraction(agentId, request.Method);
-            unexpectedUnattendedInteraction?.Invoke(ForbiddenInteractionReason(request.Method));
-
-            return CancelledResult();
+            return ReapForbiddenPermissionFrame(parsed.ToolCall);
         }
 
         // Unattended reviewer: auto-approve a least-privilege allow option without a human, fail
@@ -547,6 +551,10 @@ internal sealed partial class AcpInteractionBridge(
 
     [LoggerMessage(Level = LogLevel.Error, Message = "ACP: unattended reviewer {AgentId} emitted forbidden interaction request {Method}; terminating reviewer")]
     partial void LogUnexpectedUnattendedInteraction(string agentId, string method);
+
+    // ToolTitle/ToolKind are EXPLICITLY untrusted, agent-supplied context (as in LogUnattendedAutoApproved).
+    [LoggerMessage(Level = LogLevel.Error, Message = "ACP: unattended reviewer {AgentId} emitted forbidden session/request_permission frame (tool title, untrusted: {ToolTitle}; kind: {ToolKind}); terminating reviewer")]
+    partial void LogUnattendedPermissionFrameForbidden(string agentId, string toolTitle, string toolKind);
 
     /// <summary>
     /// Maps a resolved <see cref="AcpInteractionDecision"/> to the ACP outcome result shape.

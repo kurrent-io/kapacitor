@@ -255,4 +255,51 @@ public class WorkOSDiscoveryTests {
         await Assert.That(flow).IsTypeOf<WorkOSDiscoveryFlow.Failed>();
         await Assert.That(switchCalled).IsFalse();
     }
+
+    // A provisioning poll that outran its window is a pending workspace, not a failed sign-in — sign-in
+    // already succeeded to get here. Undistinguished, every caller headlines it as a failure.
+    [Test]
+    public async Task DiscoverAsync_reports_a_provisioning_timeout_as_in_progress_and_names_the_slug() {
+        var flow = await DiscoverWithOffer(ProvisionOffer.InProgress("acme"));
+
+        var failed = (WorkOSDiscoveryFlow.Failed)flow;
+
+        await Assert.That(failed.Reason).IsEqualTo(AuthFailureReason.ProvisioningInProgress);
+        await Assert.That(failed.Message)
+                    .Contains("acme")
+                    .Because("the user is being told to come back to it, so it has to be named");
+    }
+
+    [Test]
+    public async Task DiscoverAsync_reports_in_progress_even_when_no_slug_was_settled_on() {
+        var failed = (WorkOSDiscoveryFlow.Failed)await DiscoverWithOffer(ProvisionOffer.InProgress());
+
+        await Assert.That(failed.Reason).IsEqualTo(AuthFailureReason.ProvisioningInProgress);
+        await Assert.That(failed.Message).IsNotEmpty();
+    }
+
+    // A provisioning FAILURE stays undistinguished: it really did fail, and the provisioner has said so.
+    [Test]
+    public async Task DiscoverAsync_leaves_a_provisioning_failure_generic() {
+        var failed = (WorkOSDiscoveryFlow.Failed)await DiscoverWithOffer(ProvisionOffer.Failed);
+
+        await Assert.That(failed.Reason).IsEqualTo(AuthFailureReason.Other);
+    }
+
+    static async Task<WorkOSDiscoveryFlow> DiscoverWithOffer(ProvisionOffer offer) {
+        var proxy = Substitute.For<IAuthProxyClient>();
+        proxy.DiscoverWorkOSTenantsAsync(Arg.Any<string>(), Arg.Any<string>())
+             .Returns(Task.FromResult(new Cli.Core.Auth.DiscoveryResult([], DiscoveryError.None)));
+
+        var provisioner = Substitute.For<ITenantProvisioner>();
+        provisioner.OfferCreateAsync(Arg.Any<WorkOSTokenSource>(), Arg.Any<CancellationToken>())
+                   .Returns(Task.FromResult(offer));
+
+        return await WorkOSDiscovery.DiscoverAsync(
+            "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_p" },
+            proxy, Substitute.For<ITenantPicker>(),
+            ()     => Task.FromResult<WorkOSAuthResponse?>(new WorkOSAuthResponse { AccessToken = "acc", RefreshToken = "rt" }),
+            (_, _) => Task.FromResult<WorkOSAuthResponse?>(null),
+            provisioner: provisioner);
+    }
 }

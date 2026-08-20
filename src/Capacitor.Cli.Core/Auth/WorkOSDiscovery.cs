@@ -19,8 +19,12 @@ public abstract record WorkOSDiscoveryFlow {
 
     public sealed record NoTenants : WorkOSDiscoveryFlow;
 
-    /// <param name="Message">Already emitted through <see cref="IAuthProgress"/>.</param>
-    public sealed record Failed(string Message) : WorkOSDiscoveryFlow;
+    /// <param name="Message">Already emitted through <see cref="IAuthProgress"/>, except where the
+    /// reason needs re-presenting in the caller's own words — see
+    /// <see cref="AuthFailureReason.ProvisioningInProgress"/>.</param>
+    public sealed record Failed(
+        string            Message,
+        AuthFailureReason Reason = AuthFailureReason.Other) : WorkOSDiscoveryFlow;
 }
 
 /// <summary>
@@ -125,9 +129,20 @@ public static class WorkOSDiscovery {
                 : new WorkOSDiscoveryFlow.Retarget(target);
         }
 
+        if (offer.Status == ProvisionOfferStatus.InProgress) {
+            // Not a failure: the workspace is being created and the poll outran its window. Carried
+            // with its own reason so the caller headlines a pending state rather than "sign-in failed".
+            // Deliberately just the fact, no guidance — the provisioner's own line says what to do
+            // next, and both land in front of the same reader.
+            var pending = offer.PendingSlug is { Length: > 0 } slug ? $"'{slug}'" : "Your workspace";
+
+            return new WorkOSDiscoveryFlow.Failed(
+                $"{pending} is still being created.", AuthFailureReason.ProvisioningInProgress);
+        }
+
         if (offer.Status != ProvisionOfferStatus.Created || offer.Tenant is null) {
-            // Declined / InProgress / Failed — the provisioner already printed the
-            // outcome-appropriate message; don't stack the legacy dead-end on top.
+            // Declined / Failed — the provisioner already printed the outcome-appropriate message;
+            // don't stack the legacy dead-end on top.
             return new WorkOSDiscoveryFlow.Failed($"Workspace creation did not complete ({offer.Status}).");
         }
 

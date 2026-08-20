@@ -144,6 +144,79 @@ public class CodexHostedAgentRuntimeFactoryTests {
         }
     }
 
+    // ── Guard-1 marker (§2.5) ──────────────────────────────────────────────────────────
+    [Test]
+    public async Task BuildEnv_stamps_the_hosted_appserver_marker_only_when_emitting_envelopes() {
+        using var wt = new TempDir();
+        var ctx = Ctx(isReviewFlow: true, wt.Path);
+
+        var off = CodexHostedAgentRuntimeFactory.BuildEnv(ctx, emitEnvelopeTranscript: false);
+        var on  = CodexHostedAgentRuntimeFactory.BuildEnv(ctx, emitEnvelopeTranscript: true);
+
+        await Assert.That(off.ContainsKey("KCAP_HOSTED_APPSERVER")).IsFalse();
+        await Assert.That(on["KCAP_HOSTED_APPSERVER"]).IsEqualTo("1");
+    }
+
+    [Test]
+    [NotInParallel("HomeEnvVarMutation")]
+    public async Task App_server_launch_is_envelope_sourced_after_activation() {
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        using var home = new TempDir();
+        using var wt   = new TempDir();
+        WriteWorktreeHooks(wt);
+        await using var fake = new FakeCodexAppServer();
+        IReadOnlyDictionary<string, string>? capturedEnv = null;
+
+        try {
+            Environment.SetEnvironmentVariable("HOME", home.Path);
+            Environment.SetEnvironmentVariable("CODEX_HOME", home.PathTo(".codex"));
+
+            CodexAppServerSpawnFactory seam = (_, _, _, _, env, _, _) => {
+                capturedEnv = env;
+                return Task.FromResult<(CodexAppServerConnection, IAcpProcess)>((fake.ConnectClient(), new FakeAcpProcess()));
+            };
+            var factory = Factory(new RecordingPtyFactory(), appServerActive: true, seam);
+
+            var start = await factory.StartAsync(Ctx(isReviewFlow: true, wt.Path), CancellationToken.None).WaitAsync(HangGuard);
+
+            await Assert.That(start.Transcript).IsNotNull();
+            await Assert.That(start.Runtime.RequiresSourceClaimBeforeFirstTurn).IsTrue();
+
+            await start.Runtime.DisposeAsync();
+        } finally {
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            Environment.SetEnvironmentVariable("CODEX_HOME", originalCodexHome);
+        }
+
+        await Assert.That(capturedEnv).IsNotNull();
+        await Assert.That(capturedEnv!["KCAP_HOSTED_APPSERVER"]).IsEqualTo("1");
+    }
+
+    [Test]
+    public async Task ApplyChildEnv_clears_an_inherited_marker_when_the_overlay_does_not_emit() {
+        // A daemon whose OWN environment carries the marker must not leak it to a non-emitting child —
+        // that child's hook would suppress the only watcher and lose the transcript.
+        var childEnv = new Dictionary<string, string?> { ["KCAP_HOSTED_APPSERVER"] = "1", ["PATH"] = "/usr/bin" };
+        var overlay  = new Dictionary<string, string> { ["KCAP_AGENT_ID"] = "agent-1" }; // dormant: no marker
+
+        CodexHostedAgentRuntimeFactory.ApplyChildEnv(childEnv, overlay);
+
+        await Assert.That(childEnv.ContainsKey("KCAP_HOSTED_APPSERVER")).IsFalse();
+        await Assert.That(childEnv["KCAP_AGENT_ID"]).IsEqualTo("agent-1");
+        await Assert.That(childEnv["PATH"]).IsEqualTo("/usr/bin");
+    }
+
+    [Test]
+    public async Task ApplyChildEnv_sets_the_marker_when_the_overlay_emits() {
+        var childEnv = new Dictionary<string, string?>();
+        var overlay  = new Dictionary<string, string> { ["KCAP_HOSTED_APPSERVER"] = "1" };
+
+        CodexHostedAgentRuntimeFactory.ApplyChildEnv(childEnv, overlay);
+
+        await Assert.That(childEnv["KCAP_HOSTED_APPSERVER"]).IsEqualTo("1");
+    }
+
     [Test]
     [NotInParallel("HomeEnvVarMutation")]
     public async Task Missing_hooks_on_the_app_server_route_fails_closed() {

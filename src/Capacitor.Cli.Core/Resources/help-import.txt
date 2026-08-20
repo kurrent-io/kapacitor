@@ -60,6 +60,12 @@ Options:
   --cwd <path>            Filter by working directory (composes with scope)
   --session <id>          Import a specific session only (composes with scope)
   --min-lines <n>         Skip sessions shorter than n lines (default: 15)
+  --skip-title            Don't generate titles for imported Claude and Codex
+                          sessions. Titling shells out to your own `claude` /
+                          `codex`, once per session, on your subscription — the
+                          same opt-out `kcap watch` takes. Sessions are searchable
+                          without a title, and the other seven agents never title
+                          locally, so this changes nothing for them.
   --generate-summaries    Also generate per-session what's-done summaries
   --reimport              Force OpenCode sessions to re-import even if a local
                           ledger records them as complete (use after deleting a

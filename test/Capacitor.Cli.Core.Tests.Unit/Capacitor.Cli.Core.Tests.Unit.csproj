@@ -15,6 +15,7 @@
         <PackageReference Include="Tomlyn" />
         <PackageReference Include="WireMock.Net" />
         <PackageReference Include="NSubstitute" />
+        <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
     </ItemGroup>
     <ItemGroup>
         <Using Include="Capacitor.Tests.Helpers" />

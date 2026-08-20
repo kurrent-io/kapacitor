@@ -144,6 +144,11 @@ public class DaemonConfig {
     /// Never set from config directly.</summary>
     public bool CodexAppServerActive { get; set; }
 
+    /// <summary>Seconds an interactive hosted Codex approval (<c>*/requestApproval</c>) waits for the
+    /// user before failing closed (deny). Overridable via <c>KCAP_CODEX_APPSERVER_APPROVAL_TIMEOUT_SECONDS</c>.
+    /// Consumed as <c>TimeSpan.FromSeconds(Math.Max(1, …))</c>.</summary>
+    public int CodexAppServerApprovalTimeoutSeconds { get; set; } = 45;
+
     /// <summary>
     /// Path or bare command for the Cursor CLI's ACP entry point, spawned as
     /// <c>{CursorPath} acp</c> by <c>AcpHostedAgentRuntimeFactory</c>. Overridable

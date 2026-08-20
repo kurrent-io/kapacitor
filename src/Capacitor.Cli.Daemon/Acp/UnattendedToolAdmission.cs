@@ -5,7 +5,8 @@ using Capacitor.Cli.Daemon.Harness.Kiro;
 namespace Capacitor.Cli.Daemon.Acp;
 
 /// <summary>
-/// Decides whether ONE unattended permission frame names exactly one tool this launch injected.
+/// Decides whether ONE unattended permission frame names exactly one tool this launch trusts —
+/// a native tool the trust argv granted (<c>fs_read</c>, <c>thinking</c>) or a server it injected.
 ///
 /// <para><b>Why this exists.</b> The <c>Fail</c> policy assumes a correctly-configured reviewer emits
 /// no interaction frame at all. Measured against kiro-cli 2.16.0 that is false: a frame appears
@@ -35,13 +36,16 @@ internal static class UnattendedToolAdmission {
     /// loosely: everything after it must BE an admitted id.</summary>
     const string TitlePrefix = "Running: ";
 
-    /// <summary>The admitted <c>@server/tool</c> identities for a launch, built from the same injected
-    /// specs and identity the trust argv is built from — precisely, from another call of the same
-    /// deterministic builder over the same context, not a literally shared list. One BUILDER: a
-    /// second would admit a set that does not match what was actually injected.</summary>
+    /// <summary>The admitted identities: the SAME set the <c>--trust-tools</c> argv grants — native
+    /// tools (<c>fs_read</c>, <c>thinking</c>) AND the <c>@server/tool</c> namespaced entries, from one
+    /// shared builder so admission can't diverge from what was injected. The native half is
+    /// load-bearing (the vendor leaks prompts even for trusted tools); <c>fs_write</c>/<c>execute_bash</c>
+    /// are in neither set, so the read-only floor is unchanged.</summary>
     internal static IReadOnlySet<string> AdmittedFor(
             IReadOnlyList<AcpMcpServerSpec> injected, LaunchIdentity identity) =>
-        KiroReviewerTrustList.NamespacedEntries(injected, identity).ToHashSet(StringComparer.Ordinal);
+        KiroReviewerTrustList.NativeTools
+            .Concat(KiroReviewerTrustList.NamespacedEntries(injected, identity))
+            .ToHashSet(StringComparer.Ordinal);
 
     /// <summary>
     /// True when this frame's title is EXACTLY one admitted tool, modulo the measured prefix.

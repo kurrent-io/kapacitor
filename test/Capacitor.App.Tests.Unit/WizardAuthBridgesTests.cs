@@ -253,8 +253,12 @@ public class WizardAuthBridgesTests {
         var offer = await Drive(provisioner.OfferCreateAsync(Tokens()), time);
 
         await Assert.That(offer.Status).IsEqualTo(ProvisionOfferStatus.InProgress);
+        await Assert.That(offer.PendingSlug)
+            .IsEqualTo("acme")
+            .Because("the caller names the workspace when telling the user to come back to it");
         await Assert.That(polls.Count).IsEqualTo(WizardTenantProvisioner.MaxPolls);
-        await Assert.That(progress.Errors)
+        // A Notice, not an Error: the workspace is being created, nothing has gone wrong.
+        await Assert.That(progress.Notices)
             .Contains("Still provisioning — finish later by joining 'acme' from the Connect step.");
     }
 

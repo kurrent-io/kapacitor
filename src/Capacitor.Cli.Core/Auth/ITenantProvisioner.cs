@@ -16,11 +16,16 @@ public sealed record ProvisionOffer(
     // expands to {slug}.kcap.ai), so provider selection happens exactly once, against the target
     // server's own /auth/config — which is how this path reaches a GitHub-App tenant that WorkOS
     // discovery structurally cannot return.
-    string?              ExistingWorkspaceInput = null) {
+    string?              ExistingWorkspaceInput = null,
+    // InProgress only: the slug being provisioned, so a caller can name it when telling the user to
+    // come back to it. Null when the poll timed out before a slug was settled on.
+    string?              PendingSlug = null) {
     public static ProvisionOffer Created(ProvisionedTenant t) => new(ProvisionOfferStatus.Created, t);
-    public static readonly ProvisionOffer Declined   = new(ProvisionOfferStatus.Declined,   null);
-    public static readonly ProvisionOffer InProgress = new(ProvisionOfferStatus.InProgress, null);
-    public static readonly ProvisionOffer Failed     = new(ProvisionOfferStatus.Failed,     null);
+    public static readonly ProvisionOffer Declined = new(ProvisionOfferStatus.Declined, null);
+    public static readonly ProvisionOffer Failed   = new(ProvisionOfferStatus.Failed,   null);
+
+    public static ProvisionOffer InProgress(string? slug = null) =>
+        new(ProvisionOfferStatus.InProgress, null, PendingSlug: slug);
 
     public static ProvisionOffer ExistingWorkspace(string input) =>
         new(ProvisionOfferStatus.ExistingWorkspace, null, input);

@@ -39,16 +39,29 @@ internal sealed class CodexTurnInputDispatcher {
     bool      _dispatching;              // guards the fire-outside-lock dispatch against re-entrancy
     bool      _lastInFlight;             // last value handed to _onTurnInFlight, so it fires only on change
     bool      _faulted;                 // FaultAll ran; a dispatch resuming after it must not resurrect state
+    bool      _sealed;                  // pre-first-turn seal: input enqueues and WAITS; nothing dispatches until Unseal
 
     public CodexTurnInputDispatcher(
             Func<string, CancellationToken, Task<CodexTurnStarted>> startTurn,
             Func<string, string, CancellationToken, Task> steerTurn,
-            ILogger logger, CancellationToken ct, Action<bool>? onTurnInFlight = null) {
+            ILogger logger, CancellationToken ct, Action<bool>? onTurnInFlight = null,
+            bool sealedAtStart = false) {
         _startTurn      = startTurn;
         _steerTurn      = steerTurn;
         _logger         = logger;
         _ct             = ct;
         _onTurnInFlight = onTurnInFlight;
+        _sealed         = sealedAtStart;
+    }
+
+    /// <summary>Lifts the pre-first-turn seal and pumps the queue. Called once, from the runtime's
+    /// <c>BeginFirstTurnAsync</c>, after the server's source claim acks — so the held initial prompt
+    /// (enqueued first, at the head) dispatches as the first <c>turn/start</c>, then any input that
+    /// arrived during the sealed claim window drains FIFO behind it. Idempotent: a second call is a
+    /// harmless pump.</summary>
+    public void Unseal() {
+        lock (_gate) _sealed = false;
+        PumpDispatch();
     }
 
     /// <summary>True while a turn is live — including a <c>turn/start</c> whose response hasn't landed
@@ -139,7 +152,9 @@ internal sealed class CodexTurnInputDispatcher {
             string turnId;
 
             lock (_gate) {
-                if (_pending is not Pending.None || _queue.Count == 0) {
+                // While sealed, input stays queued and NOTHING dispatches — no turn/* request leaves,
+                // so no hook can fire before the source claim commits (the guard-2 ordering).
+                if (_sealed || _pending is not Pending.None || _queue.Count == 0) {
                     _dispatching = false;
                     return;
                 }

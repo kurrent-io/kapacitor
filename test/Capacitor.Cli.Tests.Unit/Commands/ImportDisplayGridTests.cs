@@ -75,10 +75,23 @@ public class ImportDisplayGridTests {
     [Test, NotInParallel]
     public async Task done_grid_renders_titles_and_summaries_rows_when_background_ran() {
         var output = CaptureNonTtyOutput(d => d.WriteDoneGrid(
-            MakeFinal(loaded: 3, ranBackground: true, requestedSummaries: true, titlesGenerated: 3, summariesGenerated: 3),
+            MakeFinal(loaded: 3, ranBackground: true, requestedTitles: true, requestedSummaries: true,
+                      titlesGenerated: 3, summariesGenerated: 3),
             bySource: null));
 
         await Assert.That(output).Contains("Titles");
+        await Assert.That(output).Contains("Summaries");
+    }
+
+    [Test, NotInParallel]
+    public async Task done_grid_omits_the_titles_row_when_titling_was_skipped() {
+        // --skip-title --generate-summaries: background work ran, but no titling did. A row of zeroes
+        // here would read as titling that found nothing.
+        var output = CaptureNonTtyOutput(d => d.WriteDoneGrid(
+            MakeFinal(loaded: 3, ranBackground: true, requestedSummaries: true, summariesGenerated: 3),
+            bySource: null));
+
+        await Assert.That(output).DoesNotContain("Titles");
         await Assert.That(output).Contains("Summaries");
     }
 
@@ -95,6 +108,7 @@ public class ImportDisplayGridTests {
     static ImportCommand.FinalCounts MakeFinal(
             int  loaded,
             bool ranBackground      = false,
+            bool requestedTitles    = false,
             bool requestedSummaries = false,
             int  titlesGenerated    = 0,
             int  summariesGenerated = 0
@@ -112,7 +126,8 @@ public class ImportDisplayGridTests {
         SummariesGenerated: summariesGenerated,
         SummariesFailed: 0,
         RanBackground: ranBackground,
-        RequestedSummaries: requestedSummaries
+        RequestedSummaries: requestedSummaries,
+        RequestedTitles: requestedTitles
     );
 
     static string CaptureNonTtyOutput(Action<ImportCommand.ImportDisplay> render) {

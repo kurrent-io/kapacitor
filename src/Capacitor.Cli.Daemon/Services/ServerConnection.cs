@@ -1210,6 +1210,60 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
         ) => _hub.InvokeAsync<AcpBatchAck>("AcpSessionEvents", agentId, acpSessionId, envelopes, cancellationToken: ct);
 
     /// <summary>
+    /// The deferred-first-turn SOURCE CLAIM: durably records this hosted session's ownership (the
+    /// guard-2 substrate) BEFORE the orchestrator dispatches the first turn. Gated exactly like
+    /// <see cref="AcpSessionStartedAsync"/> — <see cref="ConnectionRetry"/> waits for
+    /// <see cref="IsReady"/> before every attempt. Returns the server's full outcome (bind result +
+    /// ownership token + canonical resume cursor); the caller acts on <see cref="AcpBindOutcome.Rejected"/>
+    /// (coded launch failure + teardown) and carries the token to <see cref="ConfirmSessionLaunchAsync"/>.
+    /// </summary>
+    public virtual Task<AcpSourceClaimOutcome> AcpSessionSourceClaimAsync(
+            string agentId, string acpSessionId, CancellationToken ct = default
+        ) => ConnectionRetry.InvokeWithConnectionRetryAsync(
+            () => InvokeAcpSessionSourceClaimRawAsync(agentId, acpSessionId, ct),
+            () => IsReady,
+            AcpRetryPollInterval,
+            attempt => LogAcpSourceClaimRetry(agentId, attempt),
+            ct
+        );
+
+    /// <summary>
+    /// The token-fenced CONFIRM: clears the ledger row's provisional flag once the first turn has been
+    /// dispatched. Gated on <see cref="IsReady"/>. Returns the token-fenced outcome; the caller's
+    /// confirm loop treats <see cref="AcpLaunchConfirmOutcome.Confirmed"/>/<see cref="AcpLaunchConfirmOutcome.AlreadyConfirmed"/>
+    /// as done, <see cref="AcpLaunchConfirmOutcome.Superseded"/>/<see cref="AcpLaunchConfirmOutcome.NotFound"/>
+    /// as terminal-stop, and a transient connection failure as a retry — a confirm failure never tears
+    /// down the running agent.
+    /// </summary>
+    public virtual Task<AcpLaunchConfirmOutcome> ConfirmSessionLaunchAsync(
+            string acpSessionId, long ownershipToken, CancellationToken ct = default
+        ) => ConnectionRetry.InvokeWithConnectionRetryAsync(
+            () => InvokeConfirmSessionLaunchRawAsync(acpSessionId, ownershipToken, ct),
+            () => IsReady,
+            AcpRetryPollInterval,
+            attempt => LogConfirmSessionLaunchRetry(acpSessionId, attempt),
+            ct
+        );
+
+    /// <summary>
+    /// The actual <c>AcpSessionSourceClaim</c> hub invocation, isolated into its own <c>virtual</c>
+    /// method so <see cref="AcpSessionSourceClaimAsync"/>'s gating can be tested without a live hub.
+    /// A pre-source-claim server has no such method, so <c>InvokeAsync</c> throws (method-not-found) —
+    /// which the launch path treats as a coded launch failure (the reverse-skew contract).
+    /// </summary>
+    internal virtual Task<AcpSourceClaimOutcome> InvokeAcpSessionSourceClaimRawAsync(
+            string agentId, string acpSessionId, CancellationToken ct
+        ) => _hub.InvokeAsync<AcpSourceClaimOutcome>("AcpSessionSourceClaim", agentId, acpSessionId, cancellationToken: ct);
+
+    /// <summary>
+    /// The actual <c>ConfirmSessionLaunch</c> hub invocation, isolated into its own <c>virtual</c>
+    /// method so <see cref="ConfirmSessionLaunchAsync"/>'s gating can be tested without a live hub.
+    /// </summary>
+    internal virtual Task<AcpLaunchConfirmOutcome> InvokeConfirmSessionLaunchRawAsync(
+            string acpSessionId, long ownershipToken, CancellationToken ct
+        ) => _hub.InvokeAsync<AcpLaunchConfirmOutcome>("ConfirmSessionLaunch", acpSessionId, ownershipToken, cancellationToken: ct);
+
+    /// <summary>
     /// Queues a base64 PTY chunk for the hosted-agent terminal mirror:
     /// chunks are drained by <see cref="TerminalOutputSender"/>'s single ordered loop
     /// instead of being fired at <c>SendAsync</c> fire-and-forget, so they reach the
@@ -1434,6 +1488,12 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
 
     [LoggerMessage(Level = LogLevel.Information, Message = "AcpSessionEvents for agent {AgentId} interrupted by a connection drop (retry {Attempt}); waiting for the daemon connection to recover before retrying")]
     partial void LogAcpEventsRetry(string agentId, int attempt);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "AcpSessionSourceClaim for agent {AgentId} interrupted by a connection drop (retry {Attempt}); waiting for the daemon connection to recover before retrying")]
+    partial void LogAcpSourceClaimRetry(string agentId, int attempt);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "ConfirmSessionLaunch for session {AcpSessionId} interrupted by a connection drop (retry {Attempt}); waiting for the daemon connection to recover before retrying")]
+    partial void LogConfirmSessionLaunchRetry(string acpSessionId, int attempt);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Reconnect re-bind of ACP session {AcpSessionId} for agent {AgentId} failed (attempt {Attempt}/{MaxAttempts})")]
     partial void LogAcpRebindFailed(Exception ex, string agentId, string acpSessionId, int attempt, int maxAttempts);

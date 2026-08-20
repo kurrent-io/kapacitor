@@ -592,6 +592,7 @@ switch (command) {
 
         var generateSummaries = args.Contains("--generate-summaries");
         var reimport          = args.Contains("--reimport");
+        var skipTitle         = args.Contains("--skip-title");
         var discoverOnly      = args.Contains("--discover");
         var discoverJson      = args.Contains("--json");
 
@@ -663,6 +664,7 @@ switch (command) {
             needOrgPick:             resolveResult.NeedOrgPick,
             storedOrg:               storedOrg,
             reimport:                reimport,
+            skipTitle:               skipTitle,
             discoverOnly:            discoverOnly,
             discoverJson:            discoverJson);
     }

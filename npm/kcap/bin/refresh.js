@@ -18,7 +18,9 @@ const fs = require("fs");
 
 // One entry per agent. Order is independent — each refresh is gated by its own
 // marker via `--if-installed`, which no-ops unless the user has previously
-// opted in (marker file present OR pre-marker install detected).
+// opted in (marker file present OR pre-marker install detected). A vendor entry
+// also refreshes the shared ~/.agents/skills tree, but only tops up one that is
+// already there: `plugin remove --skills` must survive an upgrade.
 const REFRESHES = [
   ["plugin", "install", "--skills",  "--if-installed"],
   ["plugin", "install", "--codex",   "--if-installed"],

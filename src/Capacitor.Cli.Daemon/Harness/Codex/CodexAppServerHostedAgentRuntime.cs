@@ -124,19 +124,53 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     // together with the factory's Transcript wiring and the dedup guards.
     readonly bool _emitEnvelopeTranscript;
 
+    // Whether the FIRST turn is deferred behind a source claim (the §2.5 deferred-first-turn contract).
+    // Distinct from _emitEnvelopeTranscript (envelope EMISSION, §2.4): the two are logically separable
+    // (emission needs no seal; a seal needs no emission) and each is independently testable, even
+    // though production flips BOTH together at the envelope-source activation.
+    readonly bool _deferFirstTurn;
+
+    // The held initial prompt's dispatch, when the first turn is DEFERRED: its turn/start is enqueued
+    // sealed at StartAsync (so it sits at the head) but not sent until the orchestrator's source claim
+    // acks and calls BeginFirstTurnAsync. The task completes when that first turn/start's RESPONSE
+    // lands — the signal the orchestrator confirms on. Null with no initial prompt, or single-phase.
+    Task? _firstTurnDispatch;
+
+    // §2.3 interactive approvals: non-null only for an INTERACTIVE launch (approvalPolicy != never) that
+    // was given a requestInteraction delegate — it forwards server-initiated requestApproval to the user
+    // and answers with their decision. Null on the reviewer path (never), which keeps DeclineServerRequestAsync.
+    readonly CodexApprovalBridge? _approvalBridge;
+
+    const double DefaultApprovalTimeoutSeconds = 45;
+
     public CodexAppServerHostedAgentRuntime(
             CodexAppServerSpawn spawn, CodexAppServerLaunch launch, AgentActivityClock? clock,
             ILogger logger, TimeProvider? timeProvider = null, TimeSpan? forwardStallTimeout = null,
-            bool emitEnvelopeTranscript = false) {
+            bool emitEnvelopeTranscript = false, bool deferFirstTurn = false,
+            string? agentId = null,
+            Func<AcpInteractionRequest, CancellationToken, Task<AcpInteractionDecision>>? requestInteraction = null,
+            TimeSpan? approvalTimeout = null) {
         _spawn   = spawn;
         _launch  = launch;
         _clock   = clock;
         _logger  = logger;
         _time    = timeProvider ?? TimeProvider.System;
         _emitEnvelopeTranscript = emitEnvelopeTranscript;
+        _deferFirstTurn = deferFirstTurn;
+        // Interactive iff approvals are actually raised (never ⇒ reviewer ⇒ decline path) AND we can both
+        // correlate (agentId) and reach the user (requestInteraction).
+        if (requestInteraction is not null && agentId is not null
+         && !string.Equals(_launch.Approval, "never", StringComparison.Ordinal)) {
+            _approvalBridge = new CodexApprovalBridge(
+                requestInteraction, agentId, logger,
+                approvalTimeout ?? TimeSpan.FromSeconds(DefaultApprovalTimeoutSeconds));
+        }
         _dispatcher = new CodexTurnInputDispatcher(
             startTurn: IssueTurnStartAsync, steerTurn: IssueTurnSteerAsync,
-            logger: logger, ct: _cts.Token, onTurnInFlight: flip => _clock?.SetTurnInFlight(flip));
+            logger: logger, ct: _cts.Token, onTurnInFlight: flip => _clock?.SetTurnInFlight(flip),
+            // Deferring the first turn seals the dispatcher — externally-reachable input arriving during
+            // the source-claim window enqueues and waits; BeginFirstTurnAsync unseals it.
+            sealedAtStart: deferFirstTurn);
         _mapper = new CodexNotificationMapper(() => _resolvedModel, logger);
         _forwardBuffer = new CodexForwardBuffer(
             ForwardBufferCapacity,
@@ -227,8 +261,51 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         await StartThreadAsync(linked.Token).ConfigureAwait(false);
         _clock?.ClearLaunchStage();
 
-        if (!string.IsNullOrEmpty(_launch.InitialPrompt))
-            await _dispatcher.EnqueueAsync(_launch.InitialPrompt, linked.Token).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(_launch.InitialPrompt)) {
+            if (_deferFirstTurn) {
+                // DEFERRED first turn: the dispatcher is sealed, so this enqueue parks the prompt at the
+                // head of the queue and dispatches NOTHING now — we must NOT await it (the ack cannot
+                // complete until BeginFirstTurnAsync unseals). Use CancellationToken.None as the per-input
+                // token because StartAsync's `linked` is disposed on return, long before the deferred
+                // send; the dispatcher's own runtime token (_cts.Token) still aborts it on teardown.
+                _firstTurnDispatch = _dispatcher.EnqueueAsync(_launch.InitialPrompt, CancellationToken.None);
+            } else {
+                await _dispatcher.EnqueueAsync(_launch.InitialPrompt, linked.Token).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// When true, <see cref="StartAsync"/> has established the thread and HELD the first turn (sealed
+    /// the input dispatcher) instead of dispatching it — the orchestrator must durably source-claim
+    /// this session, then call <see cref="BeginFirstTurnAsync"/>, before any turn (and therefore any
+    /// hook or rollout line) can exist. Driven by the deferred-first-turn flag (production flips it with
+    /// the envelope-source activation); every single-phase launch keeps the immediate first turn.
+    /// </summary>
+    public bool RequiresSourceClaimBeforeFirstTurn => _deferFirstTurn;
+
+    /// <summary>
+    /// Unseals the input dispatcher — dispatching the held initial prompt as the first <c>turn/start</c>,
+    /// then any input that arrived during the sealed claim window FIFO — and awaits the first turn's
+    /// JSON-RPC RESPONSE (the signal the orchestrator confirms the launch on). Called once, only when
+    /// <see cref="RequiresSourceClaimBeforeFirstTurn"/> is true and only after the source claim acks.
+    /// With no initial prompt it simply unseals (a subsequent user input becomes the first turn).
+    /// </summary>
+    public async Task BeginFirstTurnAsync(CancellationToken ct = default) {
+        // A launch cancelled during the source-claim / forwarder setup must NOT release the held first
+        // turn — dispatching turn/start after finalization began races the teardown. Observe the token
+        // BEFORE unsealing: the dispatch runs on CancellationToken.None and can't be recalled once it
+        // leaves, so this is the only safe gate. (A cancel in the sliver between here and Unseal is the
+        // same benign post-unseal race the comment below covers — teardown kills the process.)
+        ct.ThrowIfCancellationRequested();
+        _dispatcher.Unseal();
+        // If ct fires after the unseal, the held turn/start may already have left (the dispatch used
+        // CancellationToken.None) — cancelling this await does NOT recall it. That is fine: a cancel here
+        // means the orchestrator is aborting the launch and will tear this runtime down, killing the
+        // process; any dispatched turn dies with it, and its late response hits the dispatcher's faulted
+        // guard and is discarded.
+        if (_firstTurnDispatch is { } dispatch)
+            await dispatch.WaitAsync(ct).ConfigureAwait(false);
     }
 
     async Task SpawnAndInitializeAsync(string? hookStateSeed, CancellationToken ct) {
@@ -237,7 +314,9 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         _process    = process;
 
         connection.OnNotification  += HandleNotification;
-        connection.OnServerRequest  = DeclineServerRequestAsync;
+        // Interactive launches forward requestApproval to the user (§2.3); reviewers (approvalPolicy:never)
+        // keep declining, since a request there is a protocol violation, not a prompt.
+        connection.OnServerRequest  = _approvalBridge is { } bridge ? bridge.HandleAsync : DeclineServerRequestAsync;
 
         _childCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
         _runLoop  = RunConnectionAsync(connection, _childCts.Token);
@@ -514,6 +593,15 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         // the loop started) so a ReadOutputAsync consumer never hangs.
         _runtimeTerminal.TrySetResult();
         _dispatcher.FaultAll(new ObjectDisposedException(nameof(CodexAppServerHostedAgentRuntime)));
+
+        // A deferred first turn that was HELD but never begun (teardown before the source claim reached
+        // BeginFirstTurnAsync) leaves _firstTurnDispatch faulted-but-unawaited by the FaultAll above.
+        // Await it with SuppressThrowing to OBSERVE the fault (never an unobserved task exception) and to
+        // let Dispose complete only once it settles — it is already faulted/completed here (FaultAll just
+        // ran, or the normal path already awaited it), so this returns immediately.
+        if (_firstTurnDispatch is { } firstTurn)
+            await firstTurn.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+
         _forwardBuffer.Complete(); // end the envelope stream so a draining forwarder's ReadAllAsync completes
         _cts.Dispose();
     }

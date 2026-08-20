@@ -31,19 +31,25 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
     readonly ILoggerFactory              _loggerFactory;
     readonly ILogger                     _logger;
     readonly CodexAppServerSpawnFactory  _spawnFactory;
+    readonly ServerConnection?           _connection;
 
     /// <param name="spawnFactory">Test seam only: production passes <see langword="null"/> and the
     /// real <c>codex app-server</c> child is spawned via <see cref="Process"/>. A test can substitute
     /// an in-process fake peer to drive the app-server route without a child process.</param>
+    /// <param name="connection">The server connection whose <c>RequestAcpInteractionAsync</c> forwards an
+    /// interactive launch's approvals to the user (§2.3). Null in tests that never exercise interactive
+    /// approvals; reviewers (approvalPolicy:never) never build an approval bridge regardless.</param>
     public CodexHostedAgentRuntimeFactory(
             CodexLauncher launcher, IHostedAgentRuntimeFactory ptyDelegate, DaemonConfig config,
-            ILoggerFactory loggerFactory, CodexAppServerSpawnFactory? spawnFactory = null) {
+            ILoggerFactory loggerFactory, CodexAppServerSpawnFactory? spawnFactory = null,
+            ServerConnection? connection = null) {
         _launcher      = launcher;
         _pty           = ptyDelegate;
         _config        = config;
         _loggerFactory = loggerFactory;
         _logger        = loggerFactory.CreateLogger<CodexHostedAgentRuntimeFactory>();
         _spawnFactory  = spawnFactory ?? DefaultSpawnFactory;
+        _connection    = connection;
     }
 
     public string Vendor => "codex";
@@ -76,7 +82,13 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
 
         var (sandbox, approval) = CodexPosturePolicy.Resolve(ctx.Work, ctx.IsReviewFlow, ctx.CodexPosture);
         var appServerArgs = _launcher.BuildAppServerLaunchArgs(launcherCtx);
-        var env           = BuildEnv(ctx);
+
+        // The app-server path is envelope-sourced: the daemon emits the transcript and defers the first
+        // turn behind a source claim, guard-1 stands the rollout watcher down (the marker), and guard-2
+        // backstops server-side. ONE decision drives all four (marker, emission, deferral, forwarder) so
+        // they can never desync. Rollback is codex.transport=pty — this method is not reached then.
+        const bool envelopeSourced = true;
+        var env = BuildEnv(ctx, envelopeSourced);
 
         var launch = new CodexAppServerLaunch(
             Cwd:           ctx.Worktree.Path,
@@ -93,7 +105,12 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
 
         var runtime = new CodexAppServerHostedAgentRuntime(
             spawn, launch, ctx.ActivityClock,
-            _loggerFactory.CreateLogger<CodexAppServerHostedAgentRuntime>());
+            _loggerFactory.CreateLogger<CodexAppServerHostedAgentRuntime>(),
+            emitEnvelopeTranscript: envelopeSourced,
+            deferFirstTurn: envelopeSourced,
+            agentId: ctx.AgentId,
+            requestInteraction: _connection is { } c ? c.RequestAcpInteractionAsync : null,
+            approvalTimeout: TimeSpan.FromSeconds(Math.Max(1, _config.CodexAppServerApprovalTimeoutSeconds)));
 
         // StartAsync may spawn a child before it throws (a failed hooks/list, thread/start, or initial
         // turn on the fail-closed paths). The orchestrator never receives a runtime it did not get a
@@ -104,7 +121,10 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
             await runtime.DisposeAsync().ConfigureAwait(false);
             throw;
         }
-        return new HostedRuntimeStart(runtime, McpConfigPath: null);
+        // Transcript: runtime → the orchestrator drains the runtime's envelopes through an
+        // AcpTranscriptForwarder and, because RequiresSourceClaimBeforeFirstTurn is now set, runs the
+        // source-claim → BeginFirstTurn → confirm sequence before the first turn is dispatched.
+        return new HostedRuntimeStart(runtime, McpConfigPath: null, Transcript: runtime);
     }
 
     static LauncherContext BuildLauncherContext(RuntimeStartContext ctx) => new(
@@ -126,7 +146,9 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
         CodexPosture = ctx.CodexPosture,
     };
 
-    static Dictionary<string, string> BuildEnv(RuntimeStartContext ctx) {
+    internal const string HostedAppServerMarkerEnv = "KCAP_HOSTED_APPSERVER";
+
+    internal static Dictionary<string, string> BuildEnv(RuntimeStartContext ctx, bool emitEnvelopeTranscript) {
         var env = new Dictionary<string, string> {
             ["KCAP_RENDERED_AGENT"] = "1",
             ["KCAP_AGENT_ID"]       = ctx.AgentId,
@@ -135,7 +157,19 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
         if (!string.IsNullOrEmpty(ctx.DaemonEpoch))     env["KCAP_DAEMON_EPOCH"] = ctx.DaemonEpoch;
         if (!string.IsNullOrEmpty(ctx.ServerUrl))       env["KCAP_URL"]          = ctx.ServerUrl;
         if (!string.IsNullOrEmpty(ctx.DaemonBridgeUrl)) env["KCAP_DAEMON_URL"]   = ctx.DaemonBridgeUrl;
+        // guard-1: only an envelope-sourced session carries this marker; the codex hook + watcher read it
+        // and stand down so the rollout is not double-ingested alongside the envelopes.
+        if (emitEnvelopeTranscript) env[HostedAppServerMarkerEnv] = "1";
         return env;
+    }
+
+    // Materialize the child's environment. The marker must reflect THIS launch's emit decision only —
+    // never a value inherited from the daemon's own environment, or a non-emitting child would suppress
+    // its hook watcher and lose transcript ingestion. Clear any inherited marker, then apply the overlay
+    // (which carries the marker only when emitting).
+    internal static void ApplyChildEnv(IDictionary<string, string?> childEnv, IReadOnlyDictionary<string, string> overlay) {
+        childEnv.Remove(HostedAppServerMarkerEnv);
+        foreach (var (k, v) in overlay) childEnv[k] = v;
     }
 
     /// <summary>The real spawn: <c>codex app-server</c> as a child process, its stdio wrapped by the
@@ -157,7 +191,7 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
             UseShellExecute        = false,
             WorkingDirectory       = cwd,
         };
-        foreach (var (k, v) in env) psi.Environment[k] = v;
+        ApplyChildEnv(psi.Environment, env);
 
         var process = Process.Start(psi)
             ?? throw new InvalidOperationException($"Failed to start '{cliPath} {string.Join(' ', argv)}'.");

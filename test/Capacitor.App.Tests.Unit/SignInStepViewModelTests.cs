@@ -192,6 +192,36 @@ public class SignInStepViewModelTests {
         await Assert.That(detail).IsNull();
     }
 
+    // The defect this ticket is about: sign-in succeeded and the workspace is being created, so the
+    // generic failure headline below would tell the user something untrue.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_provisioning_timeout_headlines_the_pending_workspace_and_is_not_an_error() {
+        var (status, isError, detail, satisfied) = await AvaloniaSession.DispatchAsync(async () => {
+            using var h = new Harness();
+            h.Connect.Choice = ConnectChoice.Create;
+            h.Operation = (_, _) => {
+                h.Progress.Notice("Still provisioning — finish later by joining 'acme' from the Connect step.");
+
+                return Task.FromResult<AuthResult>(new AuthResult.Failed(
+                    "'acme' is still being created.", AuthFailureReason.ProvisioningInProgress));
+            };
+
+            await h.SignIn();
+
+            return (h.Vm.Status, h.Vm.StatusIsError, h.Vm.StatusDetail, h.Vm.Satisfied);
+        });
+
+        await Assert.That(status).IsEqualTo("'acme' is still being created.");
+        await Assert.That(isError)
+                    .IsFalse()
+                    .Because("nothing failed — the poll outran its window while the workspace was "
+                           + "still being created");
+        await Assert.That(detail).IsEqualTo("Still provisioning — finish later by joining 'acme' from the Connect step.");
+        // Still not signed in to anything, so the step cannot be satisfied.
+        await Assert.That(satisfied).IsFalse();
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task A_failure_shows_one_generic_headline_and_never_re_logs_the_facade_message() {

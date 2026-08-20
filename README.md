@@ -97,6 +97,18 @@ kcap setup --server-url <url>   # explicit server (self-hosted, or a full URL)
 The setup wizard walks you through:
 
 1. **Server** — with no `--server-url`/`<tenant>`, kcap **discovers** your tenant: it signs you in with your organization's single sign-on (pass `--github` to use GitHub instead), then lets you choose from the tenants you belong to. A bare `<tenant>` slug expands to `https://<tenant>.kcap.ai`; a full URL is used as-is. If you sign in with your organization's single sign-on and discovery finds no Capacitor tenant, `kcap setup` asks how to continue: create one for you (name + workspace URL, provisioned and waited for until it's live), point at a workspace you already belong to (enter its slug or URL — the same as `kcap setup <tenant>`), or cancel. That middle choice matters because SSO discovery only lists workspaces that use org SSO: a workspace whose members sign in with the GitHub App shows up here as "no tenant", so pick **I already have a workspace**, or re-run with `--github`.
+
+   **Approving this machine.** When you name a tenant (`kcap setup <tenant>` or `--server-url`) and that server offers browser setup, kcap opens your browser to finish setup there and prints a short code:
+
+   ```
+   Opening your browser to finish setup.
+     If it didn't open:  https://acme.kcap.ai/setup?p=b7f3…
+
+     Your code:  7Q2F-KX9M
+     Check the browser shows the same code before you approve.
+   ```
+
+   **Compare the two codes before approving.** The code in your terminal is the only thing that proves the page you are looking at belongs to the machine you are setting up. kcap then waits for you to approve, and refuses to continue if the account you approve as is not the account you go on to sign in as. Skipped — with no change to how setup behaves today — on servers that don't offer it, in headless environments, and under `--no-prompt`.
 2. **Login** — authenticates via your tenant's configured sign-in method; discovery completes the sign-in inline
 3. **Default visibility** — choose how your sessions are visible to others
 4. **Coding-agent hooks** — detects Claude Code and Codex CLI on `PATH`, Cursor by user-dir presence (`~/.cursor/`), GitHub Copilot CLI by `~/.copilot/` or `copilot` on `PATH`, Google Gemini CLI by `~/.gemini/` or `gemini` on `PATH`, AWS Kiro CLI by `~/.kiro/` or `kiro`/`kiro-cli` on `PATH`, Pi by `~/.pi/` or `pi` on `PATH`, SST OpenCode by `~/.config/opencode/` (or `~/.local/share/opencode/`) or `opencode` on `PATH`, and Google Antigravity by `~/.gemini/antigravity/` (GUI) or `~/.gemini/antigravity-cli/` (the `agy` CLI) or `antigravity`/`agy` on `PATH`, lists what it found, then asks **one** yes/no prompt to install kcap for every detected agent (hooks — or, for Pi/OpenCode/Antigravity, the live-ingest plugin — plus skills, instructions, and MCP) — plus a single shared set of agent skills under `~/.agents/skills/`, installed once when any of Codex, Cursor, Copilot, Gemini, Pi, or OpenCode is detected (Claude gets its skills from the bundled plugin; AWS Kiro and Google Antigravity read their own skills dirs — `~/.kiro/skills` and `~/.gemini/skills` respectively — so each gets its own copy there instead of the shared tree) — all user-wide. For Codex it also offers to enable **sandbox network access** for kcap (see below) — Codex blocks sandbox network by default, so the kcap skills can't reach the server without it. Each agent's own config-relocation environment variable is honored when set: `CLAUDE_CONFIG_DIR` (Claude), `CODEX_HOME` (Codex), `GEMINI_CLI_HOME` (Gemini — names the parent of `.gemini`), `KIRO_HOME` (Kiro), `COPILOT_HOME` (Copilot), `OPENCODE_CONFIG_DIR` (OpenCode), and `PI_CODING_AGENT_DIR` (Pi). Cursor's hooks path is fixed at `~/.cursor/hooks.json` and is not relocated.
@@ -146,7 +158,7 @@ In `--no-prompt` mode, the wizard installs hooks for every detected agent by def
 > **Behavior change: `--no-prompt` now also imports this repo's history.** The Step 6 import (above) defaults to yes like every other prompt in the wizard, so `kcap setup --no-prompt` now uploads this repository's past sessions too — when run inside a git repo with an origin remote and authentication requirements are satisfied (including no-auth/provider-`None` servers). Existing unattended/scripted `kcap setup --no-prompt` invocations will start uploading current-repo session history unless you add `--skip-import`.
 
 > **Need hooks for an agent installed after setup, or scoped to a single repo?**
-> Run `kcap plugin install [--codex|--cursor|--copilot|--gemini|--kiro|--pi|--opencode|--antigravity]` (omit the flag for the Claude Code plugin), or pair Codex with `--project` for a per-repo install. Use `--skills` instead of `--codex` if you only want the agent skills without Codex hooks. Cursor uses user-scope only — `--project` has no effect with `--cursor`. After installing Codex hooks, the next `codex` launch prompts to trust the new hooks — accept once to trust them all (run `/hooks` inside Codex if you'd rather trust each entry individually). After a `--project` install, also run `codex` once in the repo and accept the workspace trust prompt. Re-running after a kcap upgrade is rarely needed for user-scope installs — the npm postinstall hook auto-refreshes them on every `npm install -g @kurrent/kcap`, and `kcap update` refreshes them too (npm 11+ blocks install scripts by default — `kcap update` works regardless, or add `allow-scripts[]=@kurrent/kcap` to `~/.npmrc` to opt the postinstall in once).
+> Run `kcap plugin install [--codex|--cursor|--copilot|--gemini|--kiro|--pi|--opencode|--antigravity]` (omit the flag for the Claude Code plugin), or pair Codex with `--project` for a per-repo install. Every per-vendor install also writes the agent skills to `~/.agents/skills/` (Kiro and Antigravity get their own copies under `~/.kiro/skills` and `~/.gemini/skills`), so `--skills` is only needed to install or refresh them on their own — for instance for an agent kcap has no integration for. Cursor uses user-scope only — `--project` has no effect with `--cursor`. After installing Codex hooks, the next `codex` launch prompts to trust the new hooks — accept once to trust them all (run `/hooks` inside Codex if you'd rather trust each entry individually). After a `--project` install, also run `codex` once in the repo and accept the workspace trust prompt. Re-running after a kcap upgrade is rarely needed for user-scope installs — the npm postinstall hook auto-refreshes them on every `npm install -g @kurrent/kcap`, and `kcap update` refreshes them too (npm 11+ blocks install scripts by default — `kcap update` works regardless, or add `allow-scripts[]=@kurrent/kcap` to `~/.npmrc` to opt the postinstall in once).
 
 > **Need at least one agent to capture sessions:** the setup wizard runs to completion without an agent CLI on `PATH` (it'll still configure your profile, auth, and daemon), but kcap only records work once Claude Code or Codex CLI is installed and the hooks are in place.
 
@@ -169,6 +181,8 @@ kcap import --pi                # only Pi (badlogic/pi-mono)
 kcap import --opencode          # only OpenCode
 kcap import --antigravity       # only Antigravity
 ```
+
+> **Already-running sessions.** On a *first* `plugin install --kiro`, any Kiro session already running loaded no kcap integration, so it isn't captured live — the install names it and where it is. It is not lost: the agent writes its transcript to disk regardless, so `kcap import --kiro` backfills it once it ends. kcap deliberately does not offer to restart it, which would mean killing an interactive session on a terminal it does not own with no way to relaunch it. Nothing is printed when there is no such session, or when you re-run an install you already had — that session started *with* the integration and is being captured.
 
 > **Pi** has no shell hooks, so live capture uses a shipped Pi extension rather than a hooks file: run `kcap plugin install --pi` (or accept the `kcap setup` prompt) to write `~/.pi/agent/extensions/kcap.ts`, which `pi` auto-loads and streams each session live. Because Pi also ships no built-in MCP, the same command installs an MCP-bridge extension (`~/.pi/agent/extensions/kcap-mcp.ts`, opt out `--skip-pi-mcp`) that exposes the kcap MCP servers as native Pi tools, plus a steering block in `~/.pi/agent/AGENTS.md` (opt out `--skip-pi-instructions`). Historical `kcap import --pi` works with or without any of it.
 
@@ -219,8 +233,9 @@ Once set up, Capacitor runs silently in the background. Every Claude Code (and C
 - **Repository context** — git repo, branch, and PR linkage
 - **In-agent upgrade prompts** — in Claude Code sessions, when the server is running a newer kcap release than the local CLI, additional context is injected into the session so the agent can offer the user an upgrade via `kcap update`. The stderr `kcap` update hint continues to fire for direct command-line use, and every request also carries the CLI's version to the server so it can surface its own out-of-date banner/notification (see [`kcap update`](#other-commands) for the full picture, including how `update_check: false` turns all of this off).
 - **SessionStart context injection** — at every session start the server injects top evaluation-derived fact clusters for the current repo into the session's context. The injected block is split into two sections: `## Known patterns` (repo/project facts relevant to any reader) and `## Guidance from past sessions` (agent-targeted action items derived from prior eval suggestions with `audience: "agent"`). Delivered for every supported harness (Claude Code, Codex CLI, GitHub Copilot CLI, Gemini CLI, AWS Kiro CLI, Google Antigravity, Pi, OpenCode, and Cursor's `cursor-agent`): Claude reads it from its hook response, while the other eight fetch `GET /api/repositories/{hash}/guidelines` alongside the team-memory index and emit both in one combined block, through the same per-harness delivery seam as that index (see the next bullet). Opt out by setting `disable_session_guidelines: true` in `~/.config/kcap/config.json` or via `kcap config set disable_session_guidelines true`.
-- **SessionStart team-memory index** — at every session start (Claude Code, Codex CLI, GitHub Copilot CLI, Gemini CLI, AWS Kiro CLI, Google Antigravity, Pi, OpenCode, and Cursor CLI's `cursor-agent` — see the capability matrix below for the full per-harness rollout) `kcap` also fetches a compact index of durable [team memories](#memory-mcp-server-for-agents) visible for the current repo/machine and appends a `## Team memory` block to the session's injected context (`additionalContext` for Claude, Codex, Copilot, and Gemini, `additional_context` for Cursor, raw stdout for Kiro, `injectSteps`/`userMessage` for Antigravity, system-prompt append via the kcap Pi extension for Pi, and system-entry append via the kcap OpenCode plugin for OpenCode): one `slug: description` line per memory, grouped **Org / Team / Yours**, with a nudge to call `get_memory` / `search_memories` for full content. Only the index is injected — never the bodies — so the cost stays roughly flat as the pool grows (mirrors a local `MEMORY.md`). Best-effort and fail-open (a slow or failed fetch injects nothing, never blocking the hook), and only ever injected once per conversation. Opt out with `disable_memory_index: true` in `~/.config/kcap/config.json` or `kcap config set disable_memory_index true`.
+- **SessionStart team-memory index** — at every session start (Claude Code, Codex CLI, GitHub Copilot CLI, Gemini CLI, AWS Kiro CLI, Google Antigravity, Pi, OpenCode, and Cursor CLI's `cursor-agent` — see the capability matrix below for the full per-harness rollout) `kcap` also fetches a compact index of durable [team memories](#memory-mcp-server-for-agents) visible for the current repo/machine and appends a `## Team memory` block to the session's injected context (`additionalContext` for Claude, Codex, Copilot, and Gemini, `additional_context` for Cursor, raw stdout for Kiro, `injectSteps`/`userMessage` for Antigravity, system-prompt append via the kcap Pi extension for Pi, and system-entry append via the kcap OpenCode plugin for OpenCode): one `slug [scope]: description` line per memory, grouped **Org / Team / Yours**, with a nudge to call `get_memory` / `search_memories` for full content. The `[scope]` tag annotates the memory's home scope — a project memory shows `[project: <slug>]`, a repo one `[repo]`, and org-scoped memories stay untagged. Only the index is injected — never the bodies — so the cost stays roughly flat as the pool grows (mirrors a local `MEMORY.md`). Best-effort and fail-open (a slow or failed fetch injects nothing, never blocking the hook), and only ever injected once per conversation. Opt out with `disable_memory_index: true` in `~/.config/kcap/config.json` or `kcap config set disable_memory_index true`.
 - **SessionStart work-items nudge** — at every session start (Claude Code, Codex CLI, GitHub Copilot CLI, Gemini CLI, AWS Kiro CLI, Google Antigravity, Pi, OpenCode, and Cursor CLI's `cursor-agent`) `kcap` appends a short `## Work items` block carrying the current session id and a reminder to register the session with its work item via the [`kcap-workitems` MCP tools](#work-items-mcp-server-for-agents) (`declare_work_item`) and to declare structure as it is discovered (`declare_work_breakdown` for a parent→parts split, `declare_work_relation` for a `blocks`/`blocked_by` dependency). It rides the same per-harness delivery seam as the team-memory index, is composed independently of that index (so it never affects the index's once-per-session lease), and is shown only when `kcap-workitems` is actually registered for the harness. Opt out with `disable_workitems_nudge: true` in `~/.config/kcap/config.json` or `kcap config set disable_workitems_nudge true`.
+- **SessionStart coordination notices** — at every session start (Claude Code / the generic route only) `kcap` advertises a `coordination_notices` capability on its `/hooks/session-start` request, and when the server has pending coordination notices for you — a heads-up that other people have in-flight work that may overlap yours (work-overlap / work-item adjacency) — it appends a `## Coordination notices` block to the session's injected context (`additionalContext`), one short line per notice (bounded, with a `+N more in the notification centre` tail when there are more). The same notices always reach the in-app notification centre and Slack regardless; this block just surfaces the most relevant few directly in the agent's context at the moment you start. Best-effort and fail-open (a missing or malformed field injects nothing, never blocking the hook), and the capability is advertised only on a live session start — never from `kcap import`/backfill. Opt out with `disable_coordination_notices: true` in `~/.config/kcap/config.json` or `kcap config set disable_coordination_notices true`; when set, the capability is not sent at all, so the notices stay in the notification centre / Slack only.
 - **Crash resilience** — if a `kcap` command hits an unexpected error it records the exception (with stack trace) to `~/.config/kcap/crash.log` (honours `KCAP_CONFIG_DIR`; size-capped) and exits cleanly instead of aborting. Hook and detached-generator commands the coding agent spawns **fail open** (exit 0, nothing surfaced to the agent); other commands exit non-zero with a one-line stderr message pointing at the log.
 
 The SessionStart memory foundation is deliberately separate from harness activation. Every row uses
@@ -281,6 +296,8 @@ kcap setup --server-url <url> --no-prompt    # CI / scripted
 ```
 
 With no server argument, setup (and `kcap login`) runs **tenant discovery**: it signs you in with your organization's single sign-on, then lets you pick from the tenants you belong to. Pass `--github` to sign in with GitHub instead; `--discover` forces discovery even when a server is configured.
+
+When you name a tenant — `kcap setup <tenant>` or `--server-url` — and that server offers browser setup, setup opens your browser to finish there and prints a short code beside the fallback link. **Compare the code in the terminal against the one on screen before approving:** the terminal's copy is the only thing tying that page to this machine. Setup waits for approval and then refuses to continue if the account that approved is not the account it goes on to sign in as. It is skipped, with no change to how setup behaved before, on servers that do not offer it, in headless environments, and under `--no-prompt`.
 
 SSO discovery needs an interactive terminal: it signs in through a `127.0.0.1` browser callback, which a browser on another machine can't reach. In SSH / headless environments plain discovery stops before signing you in and points you at creating a workspace in a browser, then running `kcap setup <tenant>`. Three things still work headless: `--server-url <url>` to configure a workspace you already have, and `--device` or `--github` to discover via GitHub Device Flow (the legacy GitHub App path — being phased out, so prefer the first two).
 
@@ -551,9 +568,9 @@ It provides six tools:
 
 - **`search_memories`** — hybrid semantic + keyword search over memories visible to you (your own, your teams', and org-wide). Agents are told to call this before saving a new memory.
 - **`get_memory`** — fetch a memory's full content by id or slug.
-- **`save_memory`** — save a new memory with an `audience` (`user`, `team`, or `org`), `slug`, `description`, `content`, and `kind`. Scoped to the current repo by default; pass `global: true` to save it repo-independent, or `machine_specific: true` (user audience only) to tag it to this machine.
+- **`save_memory`** — save a new memory with an `audience` (`user`, `team`, `org`, or `project`), `slug`, `description`, `content`, and `kind`. For `audience: "project"` pass `audience_project: <slug>` — that project's members can then see and edit it (you must be a member). Scoped to the current repo by default; pass `global: true` to save it repo-independent, or `machine_specific: true` (user audience only) to tag it to this machine.
 - **`update_memory`** — update an existing memory's description, content, and/or kind.
-- **`rescope_memory`** — change a memory's audience, e.g. promote a personal memory to the team or org.
+- **`rescope_memory`** — change a memory's **audience** (who can see + edit it — promote a personal memory to the team, the org, or a **project's members** with `audience: "project"` + `audience_project: <slug>`), or move its home **context** to a project with `project: <slug>` (where it surfaces). These are orthogonal axes: `audience_project` sets the people, `project` sets the place — a context move is independent of audience and takes precedence over it, so pass `audience` **or** `project` (or both).
 - **`archive_memory`** — soft-delete a memory.
 
 The server is repo- and machine-aware: it resolves the current working directory to a repo hash and the local persisted machine id at startup, and uses both to scope `save_memory` and to bias `search_memories` / `get_memory` results.
@@ -658,6 +675,7 @@ kcap import --org EventStore --private        # mark every imported session as O
 kcap import --org EventStore --since 2026-01-01  # only sessions on or after this date
 kcap import --org EventStore --cwd /path/to/project  # filter by working directory
 kcap import --org EventStore --session abc123    # single session
+kcap import --org EventStore --skip-title    # don't spend your own agent quota on titles
 kcap import --opencode --session ses_x --reimport  # force one OpenCode session past its ledger entry
 ```
 
@@ -666,6 +684,8 @@ kcap import --opencode --session ses_x --reimport  # force one OpenCode session 
 `--discover --json` emits the same report as JSON on stdout and nothing else, so it can be piped. Each window carries its own `since` (null for "everything") rather than a label, so a consumer reads the boundaries off the report instead of re-deriving them. Each vendor is dated the way `--since` dates it — Codex by the rollout's day directory, Claude by the transcript's first timestamp — so a window's count predicts what importing with that `--since` would actually select.
 
 `--reimport` forces OpenCode sessions to re-import even when the local completeness ledger (described above) records them as already loaded — the escape hatch for a session that was deleted server-side (e.g. via `kcap disable`) but is still marked complete locally, which a plain re-run would otherwise skip. Scope it with the usual vendor/`--repo`/`--cwd`/`--session` filters to force just the affected sessions; the re-send is idempotent, and a successful forced import refreshes the ledger entry. It has no effect on other vendors, which already re-classify every run.
+
+Import generates a title for each **Claude and Codex** session it loads by shelling out to your own `claude` / `codex` — once per session, on your subscription, in the background. `--skip-title` turns that off, the same opt-out `kcap watch` takes for the same generator. Sessions are fully searchable without a title; it only affects how recognisable they look to you. The other seven agents never generate one locally, so the flag changes nothing for them: Cursor and Copilot forward the name their transcript already carries, OpenCode forwards its native title, and Antigravity, Gemini, Kiro and Pi leave the server to derive one.
 
 Non-interactive runs (no TTY, e.g. CI) must pass both a scope flag and `--yes`. The command is idempotent and resumable — re-running with the same scope only uploads what's missing or incomplete. A server-side tracker deduplicates events on `(stream, eventId)` so previously-imported turns don't get re-appended.
 
@@ -1102,7 +1122,7 @@ kcap plugin install --codex --if-installed           # refresh Codex hooks only 
 kcap plugin install --if-installed                   # refresh Claude plugin registration only if previously installed (used by npm postinstall)
 ```
 
-Installing with `--codex` (or `--skills`) writes nine skills under `~/.agents/skills/`:
+Installing any vendor that reads the shared tree — `--codex`, `--cursor`, `--copilot`, `--gemini`, `--pi`, `--opencode` — writes these nine skills under `~/.agents/skills/` (`--skills` installs them alone; Kiro and Antigravity get their own copies, and the bare Claude install uses the plugin bundle). Opt out per vendor with `--skip-<vendor>-skills`:
 
 | Skill | Wraps | Purpose |
 |---|---|---|
@@ -1173,7 +1193,7 @@ PR review is supported for hosted Codex agents as well as Claude — the same `k
 Cursor is detected by the presence of `~/.cursor/` — you don't need the `cursor` shell command on `PATH`. If `kcap setup` found Cursor and you said yes, hooks are already in place. Installing also registers the six kcap MCP servers in `~/.cursor/mcp.json` (non-destructive, idempotent); pass `--skip-cursor-mcp` to opt out. To install or remove later:
 
 ```bash
-kcap plugin install --cursor                # writes ~/.cursor/hooks.json + registers kcap MCP servers
+kcap plugin install --cursor                # writes ~/.cursor/hooks.json + agent skills + registers kcap MCP servers
 kcap plugin install --cursor --skip-cursor-mcp  # hooks only, skip ~/.cursor/mcp.json
 kcap plugin remove --cursor                 # remove Cursor hooks + kcap MCP servers
 ```
@@ -1206,7 +1226,7 @@ something you need to run day to day.
 Copilot CLI is detected via `~/.copilot/` (created on Copilot's first run) or the `copilot` binary on `PATH`. kcap writes its own hooks file — Copilot merges every `*.json` under `~/.copilot/hooks/`, so your other hook files are never touched. Copilot loads hook config at startup: restart any running `copilot` session after installing.
 
 ```bash
-kcap plugin install --copilot               # writes ~/.copilot/hooks/kcap.json
+kcap plugin install --copilot               # writes ~/.copilot/hooks/kcap.json + agent skills
 kcap plugin remove --copilot                # deletes ~/.copilot/hooks/kcap.json
 ```
 
@@ -1217,7 +1237,7 @@ Live sessions stream from `~/.copilot/session-state/<session-id>/events.jsonl` (
 Gemini CLI is detected via `~/.gemini/` (created on Gemini's first run) or the `gemini` binary on `PATH`. Gemini keeps its hooks in the shared `~/.gemini/settings.json`, so kcap **merges** its entries into the `hooks` block and preserves your other settings and any hand-authored hook entries. Gemini loads hook config at startup: restart any running `gemini` session after installing.
 
 ```bash
-kcap plugin install --gemini                # merges kcap hooks into ~/.gemini/settings.json
+kcap plugin install --gemini                # merges kcap hooks into ~/.gemini/settings.json, writes agent skills
 kcap plugin remove --gemini                 # removes only kcap's entries
 ```
 
@@ -1251,7 +1271,7 @@ Pi (`badlogic/pi-mono`) is detected via `~/.pi/agent/` or the `pi` binary on `PA
 `kcap` must be on `PATH` (both extensions shell out to it). Restart any running `pi` session after installing.
 
 ```bash
-kcap plugin install --pi                    # write kcap.ts + kcap-mcp.ts + AGENTS.md block
+kcap plugin install --pi                    # write kcap.ts + kcap-mcp.ts + AGENTS.md block + agent skills
 kcap plugin install --pi --skip-pi-mcp      # ingest + steering only, no MCP bridge
 kcap plugin remove --pi                     # delete both extensions + strip the AGENTS.md block
 ```
@@ -1263,11 +1283,11 @@ Live sessions stream from `~/.pi/agent/sessions/` (honours `PI_CODING_AGENT_DIR`
 SST OpenCode is detected via `~/.config/opencode/` (or `~/.local/share/opencode/`) or the `opencode` binary on `PATH`. OpenCode has **no shell hooks** — it exposes an in-process plugin API — so `install --opencode` writes a dependency-free plugin to `~/.config/opencode/plugins/kcap.ts`, which `opencode` auto-loads at startup. Restart any running `opencode` session after installing.
 
 ```bash
-kcap plugin install --opencode              # write ~/.config/opencode/plugins/kcap.ts
+kcap plugin install --opencode              # write ~/.config/opencode/plugins/kcap.ts + agent skills
 kcap plugin remove --opencode               # delete it
 ```
 
-Beyond the capture plugin, `install --opencode` (and `kcap setup`) also **registers the six kcap MCP servers** in `~/.config/opencode/opencode.json` — OpenCode's `mcp` block, each entry `type: "local"` with `command` as an array and `enabled: true` (non-destructive/idempotent, preserving `$schema` and any user servers; opt out `--skip-opencode-mcp`) — and installs a kcap-owned **steering block** into `~/.config/opencode/AGENTS.md` (opt out `--skip-opencode-instructions`). `remove --opencode` reverses all three. (OpenCode reads the agent-agnostic `~/.agents/skills/` for kcap's skills, so no separate skills copy is needed.)
+Beyond the capture plugin, `install --opencode` (and `kcap setup`) also **registers the six kcap MCP servers** in `~/.config/opencode/opencode.json` — OpenCode's `mcp` block, each entry `type: "local"` with `command` as an array and `enabled: true` (non-destructive/idempotent, preserving `$schema` and any user servers; opt out `--skip-opencode-mcp`) — and installs a kcap-owned **steering block** into `~/.config/opencode/AGENTS.md` (opt out `--skip-opencode-instructions`). `remove --opencode` reverses all three. (OpenCode reads the agent-agnostic `~/.agents/skills/`, and `install --opencode` writes it, so no separate `--skills` run is needed.)
 
 On `session.created` the plugin runs `kcap hook --opencode` (POSTs lifecycle + spawns the watcher); on each `session.idle` it fetches the session's full messages via OpenCode's in-process SDK and appends them as native `{info, parts}` JSONL to a file the watcher tails (`vendor=opencode`) — so kcap must be on `PATH`. Since OpenCode has **no session-end event**, the watcher synthesizes session-end when the `opencode` process exits. OpenCode records per-message tokens/cost, so those flow through. Historical `kcap import --opencode` reads the SQLite db directly — see [Loading historical sessions](#loading-historical-sessions).
 

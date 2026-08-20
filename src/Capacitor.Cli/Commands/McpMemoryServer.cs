@@ -296,6 +296,8 @@ static class McpMemoryServer {
             ["content"]           = Req("content"),
             ["kind"]              = Req("kind"),
             ["team"]              = args?["team"]?.GetValue<string>(),
+            // audience 'project' target — the people axis, distinct from rescope's place-axis project.
+            ["audience_project"]  = args?["audience_project"]?.GetValue<string>(),
             ["repo_hash"]         = global ? null : cwdRepoHash,
             ["machine_tag"]       = machineSpecific ? machineId : null,
             ["machine_context"]   = machineId,
@@ -310,10 +312,23 @@ static class McpMemoryServer {
         ["kind"]        = args?["kind"]?.GetValue<string>()
     };
 
-    internal static JsonObject BuildRescopeBody(JsonObject? args) => new() {
-        ["audience"] = args?["audience"]?.GetValue<string>() is { Length: > 0 } a ? a : throw new ArgumentException("audience is required"),
-        ["team"]     = args?["team"]?.GetValue<string>()
-    };
+    internal static JsonObject BuildRescopeBody(JsonObject? args) {
+        var audience = args?["audience"]?.GetValue<string>();
+        var project  = args?["project"]?.GetValue<string>();
+        // Mirror the server: a project context move takes precedence and is audience-independent, so
+        // audience is required ONLY when project is absent. Whitespace-only counts as absent — a blank
+        // slug would never resolve server-side, so reject it locally instead of sending an invalid move.
+        if (string.IsNullOrWhiteSpace(audience) && string.IsNullOrWhiteSpace(project))
+            throw new ArgumentException("audience or project is required");
+        return new() {
+            ["audience"] = string.IsNullOrWhiteSpace(audience) ? null : audience,
+            ["team"]     = args?["team"]?.GetValue<string>(),
+            ["project"]  = string.IsNullOrWhiteSpace(project) ? null : project,
+            // audience 'project' target (people axis) — distinct from the place-axis 'project' above; raw
+            // like team, not whitespace-nulled, since unlike project it has no precedence branch to guard.
+            ["audience_project"] = args?["audience_project"]?.GetValue<string>(),
+        };
+    }
 
     /// <summary>
     /// Reads a numeric field as int, tolerant of JsonValue holding any underlying numeric type
@@ -398,14 +413,15 @@ static class McpMemoryServer {
                 ["id_or_slug"] = new("string", "Memory id (32 hex) or slug.")
             }, ["id_or_slug"])),
         new("save_memory",
-            "Save a durable learning to the server. audience: 'user' (private), 'team', or 'org' (everyone). Saves are repo-scoped by default (to the cwd's git checkout); if the current repo can't be resolved, pass global: true for a repo-independent memory, or the save fails. Prefer update_memory when the result reports a nearDuplicate.",
+            "Save a durable learning to the server. audience: 'user' (private), 'team', 'org' (everyone), or 'project' (that project's members can see + edit — pass audience_project). Saves are repo-scoped by default (to the cwd's git checkout); if the current repo can't be resolved, pass global: true for a repo-independent memory, or the save fails. Prefer update_memory when the result reports a nearDuplicate.",
             new("object", new() {
-                ["audience"]         = new("string", "user | team | org"),
+                ["audience"]         = new("string", "user | team | org | project"),
                 ["slug"]             = new("string", "kebab-case identifier, unique within the audience+repo pool"),
                 ["description"]      = new("string", "One-line summary (max 300 chars)"),
                 ["content"]          = new("string", "Full memory body (max 64 KiB)"),
                 ["kind"]             = new("string", "preference | feedback | project | reference"),
                 ["team"]             = new("string", "Team name or id — required for audience 'team' if you are in several teams"),
+                ["audience_project"] = new("string", "Project slug — required for audience 'project'; that project's members become editors (you must be a member)"),
                 ["global"]           = new("boolean", "true = not tied to the current repo (required if not run from a git checkout; default: scoped to cwd repo)"),
                 ["machine_specific"] = new("boolean", "true = only relevant on this machine (user audience only)")
             }, ["audience", "slug", "description", "content", "kind"])),
@@ -418,12 +434,14 @@ static class McpMemoryServer {
                 ["kind"]        = new("string", "preference | feedback | project | reference")
             }, ["id"])),
         new("rescope_memory",
-            "Change a memory's audience (e.g. promote your user memory to team or org).",
+            "Change a memory's audience — who can see + edit it (promote your user memory to team, org, or a project's members) — or move its home context to a project (where it surfaces). Two orthogonal axes: audience_project sets the PEOPLE (audience 'project'); project sets the PLACE (context move — takes precedence and is independent of audience).",
             new("object", new() {
-                ["id"]       = new("string", "Memory id"),
-                ["audience"] = new("string", "user | team | org"),
-                ["team"]     = new("string", "Target team when audience is 'team'")
-            }, ["id", "audience"])),
+                ["id"]               = new("string", "Memory id"),
+                ["audience"]         = new("string", "user | team | org | project"),
+                ["team"]             = new("string", "Target team when audience is 'team'"),
+                ["audience_project"] = new("string", "Target project slug when audience is 'project' — the PEOPLE axis (its members become editors; you must be a member). Distinct from 'project' below"),
+                ["project"]          = new("string", "Target project slug — the PLACE axis: moves the memory's home context to that project (takes precedence over audience)")
+            }, ["id"])),
         new("archive_memory",
             "Archive (soft-delete) a memory.",
             new("object", new() { ["id"] = new("string", "Memory id") }, ["id"]))

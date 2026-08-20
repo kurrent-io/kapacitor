@@ -7,7 +7,13 @@ public sealed record AuthIdentity(string Profile, string CanonicalServer);
 /// Why an operation failed, for callers that must react differently per cause (the setup funnel
 /// distinguishes a denied sign-in from a tenant-less account). <see cref="Other"/> carries no claim.
 /// </summary>
-public enum AuthFailureReason { Other, Unreachable, SigninDenied, NoTenantsFound }
+/// <remarks>
+/// <see cref="ProvisioningInProgress"/> is not really a failure: the workspace is being created and
+/// the poll simply outlived its window. It rides <see cref="AuthResult.Failed"/> because nothing
+/// durable was published, the same way <see cref="SigninDenied"/> does — but a caller that headlines
+/// it as an error is telling the user something untrue.
+/// </remarks>
+public enum AuthFailureReason { Other, Unreachable, SigninDenied, NoTenantsFound, ProvisioningInProgress }
 
 /// <summary>
 /// Outcome of an onboarding operation. <see cref="Cancelled"/> is strictly pre-boundary — once the
@@ -25,7 +31,9 @@ public abstract record AuthResult {
 
     public sealed record Cancelled : AuthResult;
 
-    /// <param name="Message">Already rendered through <see cref="IAuthProgress"/>; carried for callers that log or re-present it.</param>
+    /// <param name="Message">Rendered through <see cref="IAuthProgress"/> and carried for callers that
+    /// log or re-present it — except for <see cref="AuthFailureReason.ProvisioningInProgress"/>, whose
+    /// message is composed for a headline and complements the sink line rather than repeating it.</param>
     public sealed record Failed(string Message, AuthFailureReason Reason = AuthFailureReason.Other) : AuthResult;
 
     public sealed record Retarget(string ServerInput) : AuthResult;

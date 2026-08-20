@@ -202,16 +202,6 @@ public class FlowsDriverSchemaConformanceTests {
         public void Dispose() { foreach (var s in _scopes) s.Dispose(); }
     }
 
-    sealed class EnvScope : IDisposable {
-        readonly string  _key;
-        readonly string? _prev;
-        public EnvScope(string key, string? value) {
-            _key = key; _prev = Environment.GetEnvironmentVariable(key);
-            Environment.SetEnvironmentVariable(key, value);
-        }
-        public void Dispose() => Environment.SetEnvironmentVariable(_key, _prev);
-    }
-
     /// <summary>Deterministic native-binary path injected into every installer arm. Registration
     /// writes the resolved binary as the command (default: Environment.ProcessPath) — under the
     /// test host that default would be the test-runner executable, so the suite injects its own

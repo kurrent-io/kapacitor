@@ -24,14 +24,17 @@ public class CodexAppServerHostedAgentRuntimeTests {
         public ValueTask DisposeAsync() { HasExited = true; return ValueTask.CompletedTask; }
     }
 
-    static CodexAppServerLaunch Launch(string? model = null, string? prompt = null, string sandbox = "read-only", string? effort = null) =>
+    static CodexAppServerLaunch Launch(string? model = null, string? prompt = null, string sandbox = "read-only",
+            string? effort = null, string approval = "never") =>
         new(Cwd: "/tmp/wt", Model: model, Effort: effort, InitialPrompt: prompt, Sandbox: sandbox,
-            Approval: "never", WritableRoots: ["/tmp/wt"], ClientVersion: "0.146.0");
+            Approval: approval, WritableRoots: ["/tmp/wt"], ClientVersion: "0.146.0");
 
     /// <summary>Builds a spawn delegate that hands each spawn a fresh fake (indexed), recording the
     /// seed passed on each call so the restart path is assertable.</summary>
     static (CodexAppServerHostedAgentRuntime Runtime, List<string?> Seeds, Func<int, FakeCodexAppServer> Fake)
-            Build(Func<int, FakeCodexAppServer> fakeFor, CodexAppServerLaunch launch, bool emitEnvelopes = false) {
+            Build(Func<int, FakeCodexAppServer> fakeFor, CodexAppServerLaunch launch,
+                  bool emitEnvelopes = false, bool deferFirstTurn = false,
+                  Func<AcpInteractionRequest, CancellationToken, Task<AcpInteractionDecision>>? requestInteraction = null) {
         var seeds  = new List<string?>();
         var fakes  = new List<FakeCodexAppServer>();
         var index  = 0;
@@ -45,7 +48,11 @@ public class CodexAppServerHostedAgentRuntimeTests {
         };
 
         var runtime = new CodexAppServerHostedAgentRuntime(
-            spawn, launch, clock: null, NullLogger.Instance, emitEnvelopeTranscript: emitEnvelopes);
+            spawn, launch, clock: null, NullLogger.Instance,
+            emitEnvelopeTranscript: emitEnvelopes, deferFirstTurn: deferFirstTurn,
+            agentId: requestInteraction is null ? null : "agent-1",
+            requestInteraction: requestInteraction,
+            approvalTimeout: TimeSpan.FromSeconds(5));
         return (runtime, seeds, i => fakes[i]);
     }
 
@@ -109,6 +116,58 @@ public class CodexAppServerHostedAgentRuntimeTests {
         await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
 
         await Assert.That(DrainAvailable(runtime)).IsEmpty();
+
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Deferred_first_turn_holds_the_initial_prompt_until_BeginFirstTurn() {
+        // The load-bearing ordering: with deferral on, StartAsync must establish the thread but leave NO
+        // turn/start behind (a hook could otherwise fire before the source claim commits).
+        var fake = new FakeCodexAppServer();
+        var (runtime, _, _) = Build(_ => fake, Launch(prompt: "review this"), deferFirstTurn: true);
+
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(runtime.RequiresSourceClaimBeforeFirstTurn).IsTrue();
+        await Assert.That(runtime.ThreadId).IsEqualTo("thread-abc");
+        await Assert.That(fake.ReceivedMethods).DoesNotContain("turn/start");
+
+        await runtime.BeginFirstTurnAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(fake.ReceivedMethods).Contains("turn/start");
+
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Cancelled_BeginFirstTurn_does_not_dispatch_the_held_turn() {
+        // A launch cancelled during the source claim must not release the held first turn — BeginFirstTurn
+        // observes the token BEFORE unsealing, so turn/start never leaves for a finalizing agent.
+        var fake = new FakeCodexAppServer();
+        var (runtime, _, _) = Build(_ => fake, Launch(prompt: "review this"), deferFirstTurn: true);
+
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+        await Assert.That(fake.ReceivedMethods).DoesNotContain("turn/start");
+
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.That(async () => await runtime.BeginFirstTurnAsync(cts.Token)).Throws<OperationCanceledException>();
+        await Assert.That(fake.ReceivedMethods).DoesNotContain("turn/start"); // never unsealed ⇒ never dispatched
+
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Single_phase_launch_dispatches_the_initial_prompt_at_start() {
+        var fake = new FakeCodexAppServer();
+        var (runtime, _, _) = Build(_ => fake, Launch(prompt: "review this")); // deferFirstTurn defaults false
+
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(runtime.RequiresSourceClaimBeforeFirstTurn).IsFalse();
+        await Assert.That(fake.ReceivedMethods).Contains("turn/start"); // no deferral ⇒ the prompt drives the first turn at start
 
         await runtime.DisposeAsync();
     }
@@ -211,6 +270,26 @@ public class CodexAppServerHostedAgentRuntimeTests {
         // The client answered the approval with a valid decline result, never a JSON-RPC error.
         await Assert.That(fake.ApprovalResponse).IsNotNull();
         await Assert.That(fake.ApprovalResponse!.Value.GetProperty("decision").GetString()).IsEqualTo("decline");
+
+        await runtime.DisposeAsync();
+    }
+
+    [Test]
+    public async Task Interactive_approval_is_forwarded_and_the_user_decision_is_returned_on_the_wire() {
+        // An interactive launch (approvalPolicy != never) with a requestInteraction delegate routes the
+        // server's approval request to the user and answers with their mapped decision — NOT the reviewer
+        // decline. This proves the OnServerRequest wiring reaches the bridge end to end.
+        var fake = new FakeCodexAppServer { InjectApprovalDuringTurn = true };
+        var (runtime, _, _) = Build(_ => fake, Launch(approval: "on-request"),
+            requestInteraction: (_, _) => Task.FromResult(
+                new AcpInteractionDecision("allow", "accept", "Allow", null, null, null)));
+        await runtime.StartAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await runtime.SendUserInputAsync("do it").WaitAsync(HangGuard);
+        await runtime.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(fake.ApprovalResponse).IsNotNull();
+        await Assert.That(fake.ApprovalResponse!.Value.GetProperty("decision").GetString()).IsEqualTo("accept");
 
         await runtime.DisposeAsync();
     }

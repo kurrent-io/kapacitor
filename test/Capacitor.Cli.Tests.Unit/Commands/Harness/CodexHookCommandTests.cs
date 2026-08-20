@@ -477,6 +477,94 @@ public class CodexHookCommandTests : IDisposable {
         }
     }
 
+    // ---- Guard-1: envelope-sourced hosted session suppresses the watcher (§2.5) ----
+
+    [Test, NotInParallel]
+    public async Task Stop_skips_the_watcher_for_an_envelope_sourced_hosted_session() {
+        StubNoAuthRequired();
+        _server.Given(Request.Create().WithPath("/hooks/stop").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
+
+        var previousMarker = Environment.GetEnvironmentVariable("KCAP_HOSTED_APPSERVER");
+        var spawned = new List<string>();
+        Capacitor.Cli.WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
+        using var capture = ConsoleOutput.StartCapture();
+
+        try {
+            Environment.SetEnvironmentVariable("KCAP_HOSTED_APPSERVER", "1");
+            var payload = """{"hook_event_name":"Stop","session_id":"g1-stop-suppressed","transcript_path":"/tmp/r.jsonl","cwd":"/tmp"}""";
+
+            var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
+            await Assert.That(exit).IsEqualTo(0);
+
+            // The watcher never spawns for an envelope-sourced session...
+            await Assert.That(spawned.Count).IsEqualTo(0);
+            // ...but only the watcher is suppressed: the idle-marker stop POST still fires.
+            var stopRequests = _server.FindLogEntries(Request.Create().WithPath("/hooks/stop").UsingPost());
+            await Assert.That(stopRequests.Count).IsEqualTo(1);
+
+            var doc = JsonDocument.Parse(capture.GetCapturedOutput());
+            await Assert.That(doc.RootElement.GetProperty("continue").GetBoolean()).IsTrue();
+        } finally {
+            Environment.SetEnvironmentVariable("KCAP_HOSTED_APPSERVER", previousMarker);
+            Capacitor.Cli.WatcherManager.SpawnOverrideForTesting = null;
+        }
+    }
+
+    [Test, NotInParallel]
+    public async Task Stop_spawns_the_watcher_without_the_hosted_appserver_marker() {
+        // Positive control for the suppression test above: without the marker the watcher spawns, so the
+        // suppression assertion can actually fail if guard-1 regresses.
+        StubNoAuthRequired();
+        _server.Given(Request.Create().WithPath("/hooks/stop").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
+
+        var previousMarker = Environment.GetEnvironmentVariable("KCAP_HOSTED_APPSERVER");
+        var spawned = new List<string>();
+        Capacitor.Cli.WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
+        using var capture = ConsoleOutput.StartCapture();
+
+        try {
+            Environment.SetEnvironmentVariable("KCAP_HOSTED_APPSERVER", null);
+            var payload = """{"hook_event_name":"Stop","session_id":"g1-stop-control","transcript_path":"/tmp/r.jsonl","cwd":"/tmp"}""";
+
+            var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
+            await Assert.That(exit).IsEqualTo(0);
+
+            await Assert.That(spawned.Count).IsEqualTo(1);
+        } finally {
+            Environment.SetEnvironmentVariable("KCAP_HOSTED_APPSERVER", previousMarker);
+            Capacitor.Cli.WatcherManager.SpawnOverrideForTesting = null;
+        }
+    }
+
+    [Test, NotInParallel]
+    public async Task SessionStart_skips_the_watcher_for_an_envelope_sourced_hosted_session() {
+        StubNoAuthRequired();
+        _server.Given(Request.Create().WithPath("/hooks/session-start/codex").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
+
+        var previousMarker = Environment.GetEnvironmentVariable("KCAP_HOSTED_APPSERVER");
+        var spawned = new List<string>();
+        Capacitor.Cli.WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
+
+        try {
+            Environment.SetEnvironmentVariable("KCAP_HOSTED_APPSERVER", "1");
+            var payload = """{"hook_event_name":"SessionStart","session_id":"g1-start-suppressed","transcript_path":"/tmp/r.jsonl","cwd":"/tmp"}""";
+
+            var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
+            await Assert.That(exit).IsEqualTo(0);
+
+            // No watcher for an envelope-sourced session; the session-start POST is untouched.
+            await Assert.That(spawned.Count).IsEqualTo(0);
+            var startRequests = _server.FindLogEntries(Request.Create().WithPath("/hooks/session-start/codex").UsingPost());
+            await Assert.That(startRequests.Count).IsEqualTo(1);
+        } finally {
+            Environment.SetEnvironmentVariable("KCAP_HOSTED_APPSERVER", previousMarker);
+            Capacitor.Cli.WatcherManager.SpawnOverrideForTesting = null;
+        }
+    }
+
     // ---- PermissionRequest daemon-bridge tests ----
     //
     // The no-daemon-URL "stub" branch is covered by the regression test
