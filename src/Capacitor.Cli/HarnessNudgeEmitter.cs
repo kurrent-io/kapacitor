@@ -64,7 +64,9 @@ static class HarnessNudgeEmitter {
             var nudgeable = HarnessNudge.Nudgeable(detected, id => wired(id, inputs), ledger, now);
             if (nudgeable.Count == 0) return [];
 
-            store.StampOffered(nudgeable.Select(h => h.VendorId), now);
+            // Zero-wait lock on the hook path: never spend a SessionStart hook's exit budget waiting
+            // on the ledger mutex — skip stamping on contention (re-nudges next window).
+            store.StampOffered(nudgeable.Select(h => h.VendorId), now, TimeSpan.Zero);
             return nudgeable;
         } catch {
             return []; // a nudge must never break a hook or a command

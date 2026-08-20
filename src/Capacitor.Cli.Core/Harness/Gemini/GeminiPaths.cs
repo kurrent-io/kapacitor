@@ -72,6 +72,12 @@ public static class GeminiPaths {
     public static string SettingsJson(string? home = null, string? geminiCliHome = null)
         => Path.Combine(Root(home, geminiCliHome), "settings.json");
 
+    /// <summary>Pure settings path for fully-injected callers (nudge wiring-probe): built from
+    /// <see cref="RootPure"/>, so a null <paramref name="geminiCliHome"/> means "unset → home
+    /// default", never a real <c>GEMINI_CLI_HOME</c> read.</summary>
+    public static string SettingsJsonPure(string? home, string? geminiCliHome)
+        => Path.Combine(RootPure(home, geminiCliHome), "settings.json");
+
     /// <summary>
     /// Global context/memory file (<c>~/.gemini/GEMINI.md</c>) — Gemini CLI loads it for
     /// every project (top of the hierarchical GEMINI.md chain), so it is where kcap installs

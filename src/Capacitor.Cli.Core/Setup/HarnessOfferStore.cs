@@ -69,18 +69,17 @@ public sealed class HarnessOfferStore {
         }
     }
 
-    /// <summary>Non-blocking lock try for the hook/best-effort path: a SessionStart hook must not
-    /// spend ANY of its (already-tight) exit budget waiting on the ledger mutex, so on contention it
-    /// simply skips stamping — a missed stamp just re-nudges the vendor once more next window.</summary>
-    static readonly TimeSpan HookLockTimeout = TimeSpan.Zero;
-
     /// <summary>
     /// Records that these vendors were offered now (updating <c>last_offered</c>, seeding
     /// <c>first_seen</c> once). Never writes a dismissal and never overwrites an existing one — a
     /// vendor the user explicitly dismissed stays dismissed even if setup offers it again.
-    /// Best-effort (hook path): short lock wait, persistence result ignored.
+    /// <paramref name="lockTimeout"/> controls the lock wait: the hook path passes
+    /// <see cref="TimeSpan.Zero"/> (never spend a SessionStart hook's exit budget on the mutex;
+    /// skip on contention), while setup omits it and gets the normal serialized wait so it reliably
+    /// records the 7-day floor for the vendors it just offered. Best-effort — persistence result
+    /// ignored either way.
     /// </summary>
-    public void StampOffered(IEnumerable<string> vendorIds, DateTimeOffset now) =>
+    public void StampOffered(IEnumerable<string> vendorIds, DateTimeOffset now, TimeSpan? lockTimeout = null) =>
         Update(l => {
             var vendors = new Dictionary<string, HarnessOfferEntry>(l.Vendors);
             foreach (var id in vendorIds) {
@@ -93,7 +92,7 @@ public sealed class HarnessOfferStore {
                 };
             }
             return l with { Vendors = vendors };
-        }, HookLockTimeout);
+        }, lockTimeout);
 
     /// <summary>
     /// Cross-process evaluation throttle shared by surfaces 1 and 2: returns true (and stamps the

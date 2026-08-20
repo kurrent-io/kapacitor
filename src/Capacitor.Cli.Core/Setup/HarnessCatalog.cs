@@ -25,10 +25,18 @@ public sealed record KnownHarness(
 public static class HarnessCatalog {
     /// <summary>
     /// Every supported harness, in setup/display order (Claude first). The <c>IsWired</c> delegate
-    /// resolves each installer's config path from the injected <see cref="AgentDetectionInputs"/>
-    /// (same snapshot detection uses) so it never touches process-wide state, and calls the
-    /// vendor's own installer — the wired-check the <c>kcap status</c> Hooks line uses, so the
-    /// passive status line and the active nudge can never disagree about a vendor.
+    /// calls the vendor's own installer — the wired-check the <c>kcap status</c> Hooks line uses, so
+    /// the passive status line and the active nudge can never disagree about a vendor.
+    ///
+    /// <para><b>Snapshot purity.</b> Every override the injected <see cref="AgentDetectionInputs"/>
+    /// carries is resolved through the vendor's <c>*Pure</c> path helper, so a null override means
+    /// "unset → home default" (never a re-read of ambient env) and wiring consumes the SAME snapshot
+    /// detection does. Claude and Codex are the sole exception: their config-dir overrides
+    /// (<c>CLAUDE_CONFIG_DIR</c>/<c>CODEX_HOME</c>) are not part of the snapshot at all — detection
+    /// for those two is PATH-only — so the wired-probe reads them from ambient env. In production the
+    /// snapshot is <see cref="AgentDetection.FromEnvironment"/>, so ambient and snapshot coincide and
+    /// nothing diverges; only a synthetic snapshot that disagrees with current ambient state could,
+    /// and that is accepted.</para>
     /// </summary>
     public static readonly IReadOnlyList<KnownHarness> All = [
         new("claude", "Claude Code", null, r => r.Claude,
@@ -38,9 +46,9 @@ public static class HarnessCatalog {
         new("cursor", "Cursor", "--cursor", r => r.Cursor,
             i => CursorHooksInstaller.IsInstalled(CursorPaths.UserHooksJson(i.Home))),
         new("copilot", "Copilot", "--copilot", r => r.Copilot,
-            i => CopilotHooksInstaller.IsInstalled(CopilotPaths.KcapHooksJson(i.Home, i.CopilotHome))),
+            i => CopilotHooksInstaller.IsInstalled(CopilotPaths.KcapHooksJsonPure(i.Home, i.CopilotHome))),
         new("gemini", "Gemini", "--gemini", r => r.Gemini,
-            i => GeminiHooksInstaller.IsInstalled(GeminiPaths.SettingsJson(i.Home, i.GeminiCliHome))),
+            i => GeminiHooksInstaller.IsInstalled(GeminiPaths.SettingsJsonPure(i.Home, i.GeminiCliHome))),
         new("kiro", "Kiro", "--kiro", r => r.Kiro,
             i => KiroHooksInstaller.IsInstalled(KiroPaths.KcapAgentJsonPure(i.Home, i.KiroHome))),
         new("pi", "Pi", "--pi", r => r.Pi,
@@ -48,7 +56,7 @@ public static class HarnessCatalog {
         new("opencode", "OpenCode", "--opencode", r => r.OpenCode,
             i => OpenCodeExtensionInstaller.IsInstalled(OpenCodePaths.KcapPluginPure(i.Home, i.OpenCodeConfigDir, i.XdgConfigHome))),
         new("antigravity", "Antigravity", "--antigravity", r => r.Antigravity,
-            i => AntigravityHooksInstaller.IsInstalled(AntigravityPaths.GlobalHooksJson(i.Home, i.GeminiCliHome))),
+            i => AntigravityHooksInstaller.IsInstalled(AntigravityPaths.GlobalHooksJsonPure(i.Home, i.GeminiCliHome))),
     ];
 
     public static KnownHarness? ById(string vendorId) =>

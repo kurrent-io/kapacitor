@@ -48,6 +48,12 @@ public static class CopilotPaths {
     public static string KcapHooksJson(string? home = null, string? copilotHome = null)
         => Path.Combine(HooksDir(home, copilotHome), "kcap.json");
 
+    /// <summary>Pure kcap-hooks path for fully-injected callers (nudge wiring-probe): built from
+    /// <see cref="RootPure"/>, so a null <paramref name="copilotHome"/> means "unset → home default",
+    /// never a real <c>COPILOT_HOME</c> read.</summary>
+    public static string KcapHooksJsonPure(string? home, string? copilotHome)
+        => Path.Combine(RootPure(home, copilotHome), "hooks", "kcap.json");
+
     /// <summary>
     /// User-level MCP server config (<c>mcpServers</c> object, each entry
     /// <c>type: "stdio"</c>). Copilot reads it from the root dir, so it honors
