@@ -123,6 +123,7 @@ static class OpenCodeHookCommand {
             forwarded["default_visibility"] = visibility;
         }
 
+        SessionStartInventory.Stamp(forwarded);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos

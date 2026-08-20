@@ -259,6 +259,7 @@ static class CopilotHookCommand {
             forwarded["default_visibility"] = visibility;
         }
 
+        SessionStartInventory.Stamp(forwarded);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(forwarded.ToJsonString());
 
         // Repo exclusion after enrichment (fast in-payload path) — mark the

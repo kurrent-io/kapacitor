@@ -136,6 +136,7 @@ static class PiHookCommand {
         // JsonString round-trip (same rationale as the Codex/Copilot dispatchers).
         if (activeProfile?.DefaultVisibility is { } visibility) forwarded["default_visibility"] = visibility;
 
+        SessionStartInventory.Stamp(forwarded);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos

@@ -120,6 +120,33 @@ public class SessionStartVisibilityTests : IDisposable {
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("org_public");
     }
 
+    // Surface 3: the session-start body carries this machine's harness inventory (machine id + all
+    // nine vendors) — the hook-ingest carrier the server reads when no daemon runs. Same fragment
+    // shape the daemon sends on its status report.
+    [Test, NotInParallel("AppConfig_FileState")]
+    public async Task Stamps_harness_inventory_onto_session_start_body() {
+        var config = new ProfileConfig {
+            ActiveProfile = "work",
+            Profiles = new() { ["work"] = new Profile { ServerUrl = _server.Url } }
+        };
+        await ConfigMutator.MutateAsync(_ => config);
+
+        _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
+
+        await ClaudeHookCommand.Handle(_server.Url!, new StringReader(SessionStartPayloadWithoutTranscriptPath()));
+
+        var requests = _server.FindLogEntries(Request.Create().WithPath("/hooks/session-start").UsingPost());
+        await Assert.That(requests.Count).IsEqualTo(1);
+
+        var body = JsonNode.Parse(requests[0].RequestMessage.Body!)!;
+        var inv  = body["harness_inventory"];
+        await Assert.That(inv).IsNotNull();
+        await Assert.That(string.IsNullOrEmpty(inv!["machine_id"]?.GetValue<string>())).IsFalse();
+        await Assert.That(inv["vendors"]!.AsObject().Count).IsEqualTo(9);
+        await Assert.That(inv["vendors"]!["claude"]!["wired"]).IsNotNull(); // per-vendor {detected,wired} shape
+    }
+
     [Test, NotInParallel("AppConfig_FileState")]
     public async Task Skips_session_start_when_repo_is_excluded_by_active_profile_v2_config() {
         var config = new ProfileConfig {

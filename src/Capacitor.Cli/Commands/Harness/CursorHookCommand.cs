@@ -254,6 +254,9 @@ public static class CursorHookCommand {
             var agentHostId = Environment.GetEnvironmentVariable("KCAP_AGENT_ID");
             if (agentHostId is not null) node["agent_host_id"] = agentHostId;
 
+            // Surface 3: attach this machine's harness inventory, session-start only.
+            if (eventName == "sessionStart") SessionStartInventory.Stamp(node.AsObject());
+
             if (eventName == "afterAgentThought") {
                 var sid = TryGetString(node, "session_id") ?? "";
                 var gen = TryGetString(node, "generation_id") ?? "";

@@ -214,6 +214,7 @@ static class KiroHookCommand {
             forwarded["model"] = model;
         }
 
+        SessionStartInventory.Stamp(forwarded);
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos

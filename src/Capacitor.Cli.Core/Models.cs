@@ -997,6 +997,10 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(LiveAgentInfo))]
 [JsonSerializable(typeof(QuarantinedAgentInfo))]
 [JsonSerializable(typeof(DaemonStatusReport))]
+// Surface 3 (new-harness detection): per-machine coding-agent inventory carried on the status report.
+[JsonSerializable(typeof(Capacitor.Cli.Core.Setup.HarnessInventory))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Setup.HarnessInventoryEntry))]
+[JsonSerializable(typeof(Dictionary<string, Capacitor.Cli.Core.Setup.HarnessInventoryEntry>))]
 // Phase B2-b (sequenced-settlement design): report / connect side wire DTOs.
 [JsonSerializable(typeof(ResolvedStartupCandidate))]
 [JsonSerializable(typeof(ResolvedStartupCandidate[]))]
@@ -1653,7 +1657,10 @@ public readonly record struct DaemonStatusReport(
         // Phase B2-b (sequenced-settlement design §5.5): the daemon-lifetime monotonic high-water of the
         // resolved-candidates ledger, advertised alongside ResolvedStartupCandidates so that once sparse
         // acks prune entries the server still knows the generation frontier. Additive/optional.
-        long?                         HighestResolutionGeneration   = null
+        long?                         HighestResolutionGeneration   = null,
+        // Surface 3 (new-harness detection): this machine's coding-agent inventory. Additive/optional
+        // — recomputed by the daemon on its own 6h in-memory cadence, attached to every report.
+        Capacitor.Cli.Core.Setup.HarnessInventory? HarnessInventory = null
     );
 
 // ── Phase B2-b (sequenced-settlement design): startup-completeness / heal-barrier report DTOs ──

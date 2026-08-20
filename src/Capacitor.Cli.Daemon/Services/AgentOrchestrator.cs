@@ -869,6 +869,37 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         public string Id => Agent.Id;
     }
 
+    // Surface 3 (new-harness detection): the machine's coding-agent inventory, cached and recomputed
+    // on a 6h in-memory cadence. Deliberately does NOT touch the on-disk nudge throttle stamp
+    // (HarnessOfferStore.TryClaimCheck) — claiming it here would starve the hook/CLI nudge surfaces.
+    // The recompute runs in the send path (RefreshHarnessInventoryIfStale, at most once per 6h);
+    // BuildStatusReport only READS the cache so it stays pure and deterministic for tests.
+    static readonly TimeSpan HarnessInventoryTtl = TimeSpan.FromHours(6);
+    readonly object _harnessInventoryGate = new();
+    Capacitor.Cli.Core.Setup.HarnessInventory? _harnessInventory;
+    DateTimeOffset _harnessInventoryEvaluatedAt;
+
+    /// <summary>Recomputes the cached harness inventory if it's never been evaluated or is older than
+    /// <see cref="HarnessInventoryTtl"/>. Evaluated outside the lock (filesystem/PATH probes); never
+    /// throws — a probe failure keeps the last cached value so it can't break the status report.</summary>
+    void RefreshHarnessInventoryIfStale() {
+        lock (_harnessInventoryGate) {
+            if (_harnessInventory is not null &&
+                DateTimeOffset.UtcNow - _harnessInventoryEvaluatedAt < HarnessInventoryTtl) return;
+        }
+        Capacitor.Cli.Core.Setup.HarnessInventory? evaluated;
+        try { evaluated = Capacitor.Cli.Core.Setup.HarnessInventory.EvaluateCurrent(); }
+        catch { return; } // keep last cached (or null); inventory must never break the report path
+        lock (_harnessInventoryGate) {
+            _harnessInventory = evaluated;
+            _harnessInventoryEvaluatedAt = DateTimeOffset.UtcNow;
+        }
+    }
+
+    Capacitor.Cli.Core.Setup.HarnessInventory? CurrentHarnessInventory() {
+        lock (_harnessInventoryGate) return _harnessInventory;
+    }
+
     /// <summary>Phase B (D2): the daemon's self-report snapshot — its authoritative
     /// <see cref="ActiveCount"/> plus the live-agent metadata (and, once D4/Task 8 lands, the
     /// kill-quarantine). Pure; the send loop + tests share it.</summary>
@@ -894,7 +925,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             StartupDiscovery: _orphanReaper?.CurrentDiscovery,
             // Phase B2-b (sequenced-settlement design §5.5): the resolved-candidates ledger's monotonic
             // high-water, so once sparse acks prune entries the server still knows the generation frontier.
-            HighestResolutionGeneration: _resolvedLedger?.HighestResolutionGeneration);
+            HighestResolutionGeneration: _resolvedLedger?.HighestResolutionGeneration,
+            // Surface 3 (new-harness detection): the last cached machine inventory (null until the first
+            // send refreshes it); the server raises the "installed but not configured" notification from it.
+            HarnessInventory: CurrentHarnessInventory());
 
     /// <summary>Phase B2-b (sequenced-settlement design): the per-platform startup-reap-complete
     /// roll-up. A blocked known-id candidate (pending_marker / legacy_unresolvable /
@@ -1243,6 +1277,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// dropping the wait here is safe while dropping the invocation itself out from under the gate
     /// would not be.</summary>
     internal async Task SendDaemonStatusReportOnceAsync() {
+        // Surface 3: refresh the machine inventory before building the report. Cheap and self-throttled
+        // (recomputes at most once per 6h); the first send is the effective startup evaluation.
+        RefreshHarnessInventoryIfStale();
+
         try {
             await _statusReportOrderingGate.WaitAsync(_shutdownCts.Token);
         } catch (OperationCanceledException) {

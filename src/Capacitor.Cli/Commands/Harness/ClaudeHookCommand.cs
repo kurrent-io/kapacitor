@@ -289,6 +289,10 @@ public static class ClaudeHookCommand {
                     node["agent_host_id"] = agentHostId;
                 }
 
+                // Surface 3: attach this machine's harness inventory, session-start only (the
+                // injections above apply to every event; the inventory is a session-start signal).
+                if (command == "session-start") SessionStartInventory.Stamp(node.AsObject());
+
                 body = node.ToJsonString();
             }
         } catch {

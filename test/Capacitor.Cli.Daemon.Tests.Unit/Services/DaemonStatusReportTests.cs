@@ -25,4 +25,20 @@ public class DaemonStatusReportTests {
         await Assert.That(report.LiveAgents.Select(x => x.Id)).IsEquivalentTo(new[] { "a1", "a2" });
         await Assert.That(report.Quarantined).IsEmpty(); // until D4/Task 8
     }
+
+    // Surface 3: a sent status report carries this machine's harness inventory (all nine vendors +
+    // machine id). BuildStatusReport itself only reads the cache; the send path refreshes it first.
+    [Test]
+    public async Task Sent_status_report_carries_harness_inventory() {
+        var capture = new CaptureServerConnection();
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            capture, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        await orch.SendDaemonStatusReportOnceAsync();
+
+        var report = capture.StatusReports[^1];
+        await Assert.That(report.HarnessInventory).IsNotNull();
+        await Assert.That(report.HarnessInventory!.Vendors.Count).IsEqualTo(9);
+        await Assert.That(string.IsNullOrEmpty(report.HarnessInventory!.MachineId)).IsFalse();
+    }
 }

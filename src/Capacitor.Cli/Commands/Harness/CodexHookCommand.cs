@@ -369,6 +369,7 @@ static class CodexHookCommand {
             node["workspace_root"] = workspaceRoot;
         }
 
+        SessionStartInventory.Stamp(node.AsObject());
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(node.ToJsonString());
 
         // Repo exclusion runs here (not above the event switch) so that the
