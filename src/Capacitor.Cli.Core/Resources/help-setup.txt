@@ -10,8 +10,11 @@ Options:
   --github                    Sign in with GitHub instead of org SSO during
                               the login step (default is org SSO when a
                               browser is available)
-  --device                    Force GitHub Device Flow during the login step
-                              (use in SSH / headless envs)
+  --device                    Skip the browser during the login step and use a
+                              device code instead — you open a URL and type a
+                              short code, on any machine. Works with org SSO and
+                              with GitHub. Without it the browser is opened and
+                              you can still press "d" to switch.
   --skip-claude-hooks         Don't install the Claude Code plugin even if
                               the claude CLI is detected on PATH.
   --skip-codex-hooks          Don't install Codex CLI hooks/skills even if

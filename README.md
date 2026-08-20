@@ -286,7 +286,7 @@ kcap setup --server-url <url> --no-prompt    # CI / scripted
 
 With no server argument, setup (and `kcap login`) runs **tenant discovery**: it signs you in with your organization's single sign-on, then lets you pick from the tenants you belong to. Pass `--github` to sign in with GitHub instead; `--discover` forces discovery even when a server is configured.
 
-SSO discovery needs an interactive terminal: it signs in through a `127.0.0.1` browser callback, which a browser on another machine can't reach. In SSH / headless environments plain discovery stops before signing you in and points you at creating a workspace in a browser, then running `kcap setup <tenant>`. Three things still work headless: `--server-url <url>` to configure a workspace you already have, and `--device` or `--github` to discover via GitHub Device Flow (the legacy GitHub App path — being phased out, so prefer the first two).
+SSO discovery signs in through a `127.0.0.1` browser callback, which a browser on another machine can't reach. So it also offers a **device code**: kcap prints a URL and a short code, and you approve on whatever machine has a browser. Press `d` while the browser sign-in is waiting to switch to it, or pass `--device` up front to skip the browser entirely — the flag works the same way for org SSO and for GitHub. `--server-url <url>` remains the way to configure a workspace you already have, and `--github` still routes discovery to the legacy GitHub App path, which is being phased out.
 
 The setup wizard detects every supported coding agent, asks **one** yes/no prompt to install kcap (hooks, skills, instructions, MCP) for all of them, configures the daemon, and finishes with an offer to import this repository's past sessions. Claude Code and Codex CLI are detected via `PATH`; Cursor is detected by user-dir presence (`~/.cursor/`), so IDE users without the `cursor` shell command are covered; GitHub Copilot CLI is detected via `~/.copilot/` or `copilot` on `PATH`; Google Gemini CLI via `~/.gemini/` or `gemini` on `PATH`; AWS Kiro CLI via `~/.kiro/` or `kiro`/`kiro-cli` on `PATH`; Pi via `~/.pi/agent/` or `pi` on `PATH`; SST OpenCode via `~/.config/opencode/` (or `~/.local/share/opencode/`) or `opencode` on `PATH`; and Google Antigravity via `~/.gemini/antigravity/` (GUI) or `~/.gemini/antigravity-cli/` (the `agy` CLI) or `antigravity`/`agy` on `PATH` (Pi, OpenCode, and Antigravity have no shell hooks, so for those the wizard installs a live-ingest plugin rather than hook config). Re-run any time to update the configuration.
 
@@ -1944,7 +1944,7 @@ after a `--all` dismiss is still offered once.
 kcap status         # server health check
 kcap whoami         # show current identity + ask the server if it accepts your token
 kcap login          # authenticate via OAuth (browser flow by default)
-kcap login --device # force device-code flow (use in SSH / headless envs)
+kcap login --device # skip the browser, sign in with a device code instead
 kcap update         # upgrade the CLI and refresh agent plugins (npm-global installs)
 kcap update --beta  # switch to the beta channel and update to the latest beta
 kcap update --stable # switch back to the stable channel (the default)

@@ -143,6 +143,13 @@ public sealed class OnboardingFacade(
 
     internal string? WorkOSApiBaseOverride { get; init; }
 
+    /// <summary>
+    /// Escape-hatch keyboard. Defaults to none for the same reason <see cref="IAuthProgress"/> is
+    /// injected rather than defaulted: a GUI host has no console, and only a terminal host knows it
+    /// does. <c>Capacitor.Cli</c> supplies <see cref="ConsoleKeyWatcher"/>.
+    /// </summary>
+    internal IKeyWatcher KeyWatcher { get; init; } = NoKeyWatcher.Instance;
+
     /// <param name="adoptServer">
     /// When the profile doesn't already name this server: true writes its <c>server_url</c> and the
     /// provider stamp, false leaves config untouched (a <c>None</c> server then has nothing to sign in with).
@@ -190,7 +197,7 @@ public sealed class OnboardingFacade(
         return config.Provider switch {
             AuthProvider.None      => await LoginNoneAsync(target, ct),
             AuthProvider.GitHubApp => await LoginGitHubAsync(http, config, forceDevice, target, ct),
-            AuthProvider.WorkOS    => await LoginWorkOSAsync(config, target, ct),
+            AuthProvider.WorkOS    => await LoginWorkOSAsync(http, config, forceDevice, target, ct),
             _                      => UnknownProvider(config.Provider)
         };
     }
@@ -232,11 +239,12 @@ public sealed class OnboardingFacade(
         return await CommitTokensAsync(exchanged.Value.Tokens, exchanged.Value.Username, config.Provider, target, ct);
     }
 
-    async Task<AuthResult> LoginWorkOSAsync(AuthDiscoveryResponse config, LoginTarget target, CancellationToken ct) {
+    async Task<AuthResult> LoginWorkOSAsync(
+            HttpClient http, AuthDiscoveryResponse config, bool forceDevice, LoginTarget target, CancellationToken ct) {
         var authenticated = await OAuthLoginFlow.WorkOSTokensForServerAsync(
-            target.ServerUrl, config.ClientId!, config.OrganizationId,
+            http, target.ServerUrl, config.ClientId!, config.OrganizationId, forceDevice,
             WorkOSBrowser ?? new LoopbackBrowser(progress: progress), ct, progress,
-            WorkOSApiBaseOverride ?? OAuthLoginFlow.WorkOSApiBase);
+            WorkOSApiBaseOverride ?? OAuthLoginFlow.WorkOSApiBase, KeyWatcher);
 
         if (authenticated is null) return Stop("WorkOS sign-in did not complete.", ct, AuthFailureReason.SigninDenied);
 
@@ -273,22 +281,25 @@ public sealed class OnboardingFacade(
         }
 
         return provider switch {
-            AuthProvider.WorkOS    => await DiscoverWorkOSAsync(http, proxy, proxyConfig, ct),
+            AuthProvider.WorkOS    => await DiscoverWorkOSAsync(http, proxy, proxyConfig, forceDevice, ct),
             AuthProvider.GitHubApp => await DiscoverGitHubAsync(http, proxy, proxyConfig, forceDevice, ct),
             _                      => UnknownProvider(provider)
         };
     }
 
     async Task<AuthResult> DiscoverWorkOSAsync(
-            HttpClient http, IAuthProxyClient proxy, ProxyConfigResponse proxyConfig, CancellationToken ct) {
+            HttpClient http, IAuthProxyClient proxy, ProxyConfigResponse proxyConfig, bool forceDevice, CancellationToken ct) {
         var clientId = proxyConfig.WorkOSClientId ?? "";
 
         var flow = await WorkOSDiscovery.DiscoverAsync(
             AuthProxyEndpoint.Url, proxyConfig, proxy, picker,
             orglessLogin: () => WorkOSOrglessLogin is not null
                 ? WorkOSOrglessLogin(ct)
-                : OAuthLoginFlow.AuthenticateWorkOSAsync(
-                    clientId, organizationId: null, new LoopbackBrowser(progress: progress), ct: ct, progress: progress),
+                // Org-less: the sign-in picks the organization, and discovery reconciles it afterwards.
+                : OAuthLoginFlow.AcquireWorkOSAsync(
+                    http, clientId, organizationId: null, forceDevice, browser: null,
+                    apiBase: WorkOSApiBaseOverride ?? OAuthLoginFlow.WorkOSApiBase,
+                    ct: ct, progress: progress, keys: KeyWatcher),
             orgSwitch: (refreshToken, organizationId) => OAuthLoginFlow.SwitchWorkOSOrgAsync(
                 http, OAuthLoginFlow.WorkOSApiBase, clientId, refreshToken, organizationId, ct),
             orglessRefresh: (refreshToken, refreshCt) => OAuthLoginFlow.RefreshWorkOSTokenAsync(

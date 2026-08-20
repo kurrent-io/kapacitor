@@ -509,6 +509,33 @@ public class OnboardingFacadeTests {
         await Assert.That(progress.Notices).Contains("Logged in as Ada → Eventuous");
     }
 
+    /// <summary>
+    /// AI-2052 — the call site the ticket exists for. Bare `kcap setup` over SSH lands on org-less
+    /// discovery, not on the named-server path, and that lambda used to call the loopback browser
+    /// unconditionally with no way to ask for anything else. Threading forceDevice only through
+    /// WorkOSTokensForServerAsync would have left this exactly as it was.
+    /// </summary>
+    [Test]
+    public async Task DiscoverAsync_workos_force_device_signs_in_through_the_device_grant() {
+        using var handler = AuthHttp.Script(
+            proxyConfig: """{"workos_client_id":"client_d"}""",
+            workosTenants: WorkOSTenants,
+            workosDevice: AuthHttp.WorkOSDeviceCode,
+            orgSwitch: """{"user":{"first_name":"Ada"},"organization_id":"org_a","access_token":"acc2","refresh_token":"rt2"}""");
+
+        var progress = new RecordingAuthProgress();
+        var facade   = NewFacade(progress, handler, PickerReturningFirst());   // no workosLogin seam: the real ladder runs
+
+        var result = await facade.DiscoverAsync(AuthProvider.WorkOS, forceDevice: true, CancellationToken.None);
+
+        await Assert.That(result).IsTypeOf<AuthResult.Committed>();
+        await Assert.That(handler.Seen.Any(s => s.Contains("/user_management/authorize/device"))).IsTrue();
+        await Assert.That(progress.DeviceCodes).Count().IsEqualTo(1);
+
+        var stored = await TokenStore.LoadAsync("eventuous");
+        await Assert.That(stored!.AccessToken).IsEqualTo("acc2");
+    }
+
     [Test]
     public async Task DiscoverAsync_workos_retarget_hands_back_the_input_with_nothing_durable() {
         using var handler = AuthHttp.Script(

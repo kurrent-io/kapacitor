@@ -24,6 +24,10 @@ public static class AuthHttp {
 
     public const string DeviceCode = """{"device_code":"dc","user_code":"UC","verification_uri":"","interval":0}""";
 
+    /// <summary>WorkOS's RFC 8628 authorize response, with expires_in so the poll loop is bounded.</summary>
+    public const string WorkOSDeviceCode =
+        """{"device_code":"dc","user_code":"WXYZ-1234","verification_uri":"https://signin.example/device","interval":0,"expires_in":900}""";
+
     /// <param name="tokenExchange">POST {tenant}/auth/token — defaults to a JWT for "alice".</param>
     public static AuthHttpScript Script(
             string?                                        authConfig    = null,
@@ -32,7 +36,8 @@ public static class AuthHttp {
             string?                                        workosTenants = null,
             string?                                        orgSwitch     = null,
             Func<HttpRequestMessage, HttpResponseMessage>? tokenExchange = null,
-            Func<HttpResponseMessage>?                     devicePoll    = null) =>
+            Func<HttpResponseMessage>?                     devicePoll    = null,
+            string?                                        workosDevice  = null) =>
         new(request => {
             var path = request.RequestUri!.AbsolutePath;
 
@@ -50,6 +55,12 @@ public static class AuthHttp {
 
             if (path == "/discover-tenants-workos") {
                 return workosTenants is null ? Status(HttpStatusCode.InternalServerError) : Json(workosTenants);
+            }
+
+            // Must precede /user_management/authenticate: the device grant polls that same endpoint,
+            // so the authorize leg is only distinguishable by its own path.
+            if (path == "/user_management/authorize/device") {
+                return workosDevice is null ? Status(HttpStatusCode.BadRequest) : Json(workosDevice);
             }
 
             if (path == "/user_management/authenticate") {

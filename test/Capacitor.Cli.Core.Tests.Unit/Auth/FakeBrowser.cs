@@ -33,3 +33,12 @@ public sealed class FakeBrowser(Func<string, BrowserResult> respond) : IBrowser 
             return new BrowserResult { ResultType = type };
         });
 }
+
+/// <summary>A browser leg that never answers — what the user abandons by taking the escape hatch.</summary>
+public sealed class HangingBrowser : IBrowser {
+    public async Task<BrowserResult> InvokeAsync(BrowserOptions options, CancellationToken ct = default) {
+        await Task.Delay(Timeout.Infinite, ct);
+
+        return new BrowserResult { ResultType = BrowserResultType.UnknownError };
+    }
+}
