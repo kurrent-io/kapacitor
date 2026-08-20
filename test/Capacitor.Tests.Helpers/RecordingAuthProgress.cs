@@ -13,6 +13,6 @@ public sealed class RecordingAuthProgress : IAuthProgress {
     public void Notice(string message) => Notices.Add(message);
     public void Error(string message) => Errors.Add(message);
     public void BrowserOpening(string url) => BrowserOpenings.Add(url);
-    public void DeviceCode(string code, string verificationUri) => DeviceCodes.Add((code, verificationUri));
+    public void DeviceCode(string code, string verificationUri, string provider) => DeviceCodes.Add((code, verificationUri));
     public void PollTick() => PollTicks++;
 }

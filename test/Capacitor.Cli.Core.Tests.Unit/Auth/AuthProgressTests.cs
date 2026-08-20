@@ -81,7 +81,7 @@ public class AuthProgressTests {
     public async Task ConsoleAuthProgress_DeviceCode_matches_todays_banner_lines() {
         using var capture = ConsoleOutput.StartCapture();
 
-        new ConsoleAuthProgress().DeviceCode("UC123", "https://github.com/login/device");
+        new ConsoleAuthProgress().DeviceCode("UC123", "https://github.com/login/device", "GitHub");
 
         await Assert.That(capture.GetCapturedOutput()).IsEqualTo(
             "  2. Enter the code: UC123" + Environment.NewLine

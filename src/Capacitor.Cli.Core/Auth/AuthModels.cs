@@ -66,8 +66,8 @@ public record AuthErrorResponse {
     public string? Error { get; init; }
 }
 
-// GitHub Device Flow: POST https://github.com/login/device/code
-public record GitHubDeviceCodeResponse {
+// RFC 8628 device authorization response. Shared: GitHub and WorkOS return the same shape.
+public record DeviceCodeResponse {
     [JsonPropertyName("device_code")]
     public string DeviceCode { get; init; } = "";
 
@@ -119,6 +119,10 @@ public record WorkOSAuthResponse {
     /// (<c>authorization_pending</c>, <c>slow_down</c>, <c>access_denied</c>, <c>expired_token</c>).</summary>
     [JsonPropertyName("error")]
     public string? Error { get; init; }
+
+    // Deliberately does not model authkit_authorization_code: the device grant returns one, it is
+    // exchangeable for tokens by another application, and nothing here needs it. Not modelling it is
+    // what keeps it out of logs and transcripts.
 }
 
 public record WorkOSUserInfo {

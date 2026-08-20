@@ -32,7 +32,7 @@ sealed class RecordingAuthProgress : IAuthProgress {
     public void Notice(string message) => Notices.Add(message);
     public void Error(string message) => Errors.Add(message);
     public void BrowserOpening(string url) { }
-    public void DeviceCode(string code, string verificationUri) { }
+    public void DeviceCode(string code, string verificationUri, string provider) { }
     public void PollTick() { }
 }
 
@@ -126,7 +126,7 @@ public class WizardAuthBridgesTests {
         progress.Notice("hello");
         progress.Error("bad");
         progress.BrowserOpening("https://login.example");
-        progress.DeviceCode("ABCD-1234", "https://github.com/login/device");
+        progress.DeviceCode("ABCD-1234", "https://github.com/login/device", "GitHub");
         progress.PollTick();
 
         await Assert.That(posts).IsEqualTo(5);

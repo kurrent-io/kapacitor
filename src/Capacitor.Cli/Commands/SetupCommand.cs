@@ -41,7 +41,7 @@ sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
 
     public void BrowserOpening(string url) => inner.BrowserOpening(url);
 
-    public void DeviceCode(string code, string verificationUri) => inner.DeviceCode(code, verificationUri);
+    public void DeviceCode(string code, string verificationUri, string provider) => inner.DeviceCode(code, verificationUri, provider);
 
     public void PollTick() => inner.PollTick();
 

@@ -124,7 +124,7 @@ public static class OAuthLoginFlow {
             return null;
         }
 
-        var device   = (await deviceResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.GitHubDeviceCodeResponse, ct))!;
+        var device   = (await deviceResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.DeviceCodeResponse, ct))!;
         var interval = device.IntervalOrDefault;
 
         var copied = Clipboard.TryCopy(device.UserCode);
@@ -151,7 +151,7 @@ public static class OAuthLoginFlow {
         if (browserOpened) progress.Notice("     (if it didn't open, go to that URL yourself)");
 
         // Clipboard-copy suffix folds into the code: DeviceCode's contract carries no separate flag for it.
-        progress.DeviceCode(device.UserCode + (copied ? "  (copied to clipboard)" : ""), device.VerificationUri);
+        progress.DeviceCode(device.UserCode + (copied ? "  (copied to clipboard)" : ""), device.VerificationUri, "GitHub");
 
         return await PollDeviceGrantAsync(
             http, "https://github.com/login/oauth/access_token",
@@ -173,7 +173,7 @@ public static class OAuthLoginFlow {
             HttpClient http, string tokenUrl, Dictionary<string, string> form,
             System.Text.Json.Serialization.Metadata.JsonTypeInfo<TResponse> typeInfo,
             Func<TResponse, (T? Value, string? Error)> read,
-            GitHubDeviceCodeResponse device, int interval,
+            DeviceCodeResponse device, int interval,
             CancellationToken ct, IAuthProgress progress, TimeProvider? time = null)
         where T : class where TResponse : class {
         time ??= TimeProvider.System;
@@ -630,6 +630,63 @@ public static class OAuthLoginFlow {
         }
 
         return JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.WorkOSAuthResponse);
+    }
+
+    /// <summary>
+    /// RFC 8628 against AuthKit (<c>api.workos.com/user_management/*</c>), NOT Connect's
+    /// <c>{authkit-domain}/oauth2/*</c> — that one returns no organization and requires a client secret.
+    /// Public client: no secret anywhere in this flow, so the proxy is not involved.
+    /// </summary>
+    internal static async Task<WorkOSAuthResponse?> RunWorkOSDeviceFlowAsync(
+            HttpClient http, string clientId, CancellationToken ct = default,
+            IAuthProgress? progress = null, string apiBase = WorkOSApiBase, TimeProvider? time = null) {
+        progress ??= ConsoleAuthProgress.Instance;
+
+        var authorize = await PostFormForJsonAsync(
+            http, $"{apiBase}/user_management/authorize/device", new() { ["client_id"] = clientId }, ct);
+
+        if (!authorize.IsSuccessStatusCode) {
+            // Step 1 failing is the rollout hazard, not a user error: if CLI Auth is not enabled on this
+            // AuthKit client every headless sign-in dies here, and a generic message would send people
+            // hunting through the rest of setup.
+            progress.Error("Could not start device sign-in with WorkOS.");
+            progress.Error($"  {(int)authorize.StatusCode} from {apiBase}/user_management/authorize/device");
+            progress.Error("  If this persists, device authorization may not be enabled for this");
+            progress.Error("  workspace's AuthKit application — an administrator has to turn it on.");
+
+            return null;
+        }
+
+        DeviceCodeResponse? device = null;
+
+        try {
+            device = await authorize.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.DeviceCodeResponse, ct);
+        } catch (System.Text.Json.JsonException) {
+            // fall through
+        }
+
+        if (device is null || string.IsNullOrEmpty(device.DeviceCode)) {
+            progress.Error("WorkOS returned no device code.");
+
+            return null;
+        }
+
+        progress.Notice("");
+        progress.Notice("To finish signing in:");
+        progress.Notice("");
+        progress.Notice($"  1. Open {device.VerificationUri} in a browser");
+
+        // No clipboard copy, unlike the GitHub flow: the code has to be READ ALOUD OR RETYPED on
+        // another device for this flow to mean anything, and a silent copy invites pasting it into
+        // whatever page is already open.
+        progress.DeviceCode(device.UserCode, device.VerificationUri, "WorkOS");
+
+        return await PollDeviceGrantAsync(
+            http, $"{apiBase}/user_management/authenticate",
+            new() { ["client_id"] = clientId, ["device_code"] = device.DeviceCode },
+            CapacitorJsonContext.Default.WorkOSAuthResponse,
+            r => (string.IsNullOrEmpty(r.AccessToken) ? null : r, r.Error),
+            device, device.IntervalOrDefault, ct, progress, time);
     }
 
     /// <summary>Maps an OidcClient WorkOS failure to a user-facing message, preserving the actionable detail.</summary>
