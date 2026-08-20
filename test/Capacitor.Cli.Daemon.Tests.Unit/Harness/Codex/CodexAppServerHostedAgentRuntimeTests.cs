@@ -1,6 +1,7 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Harness.Codex;
+using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Codex;
@@ -403,6 +404,18 @@ public class CodexAppServerHostedAgentRuntimeTests {
 
         // "max" maps to "xhigh", mirroring the PTY launcher.
         await Assert.That(fake.LastTurnEffort).IsEqualTo("xhigh");
+        await runtime.DisposeAsync();
+    }
+
+    // The daemon reports "app-server" only for the app-server codex runtime.
+    [Test]
+    public async Task AgentInstance_reports_app_server_transport_for_the_app_server_runtime() {
+        var (runtime, _, _) = Build(_ => new FakeCodexAppServer(), Launch());
+        var agent = new AgentInstance(
+            "a1", null, null, null, "/r", "codex", runtime,
+            new WorktreeInfo("/r", "", "/r", IsStandalone: true), new CancellationTokenSource());
+
+        await Assert.That(agent.RuntimeTransport).IsEqualTo(CodexTransportDecision.AppServer);
         await runtime.DisposeAsync();
     }
 }

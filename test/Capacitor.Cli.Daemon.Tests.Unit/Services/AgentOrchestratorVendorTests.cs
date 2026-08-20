@@ -80,6 +80,25 @@ public class AgentOrchestratorVendorTests {
         await Assert.That(server.AgentRegisteredCallCount).IsEqualTo(2);
     }
 
+    // A PTY codex runtime reports "pty" on AgentRegistered — the transport rides the runtime TYPE,
+    // not the vendor (a codex agent is not automatically app-server).
+    [Test]
+    public async Task ReRegister_reports_pty_transport_for_a_pty_codex_runtime() {
+        var server = new CaptureServerConnection();
+
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        orch.RegisterAgentForTest(new AgentInstance(
+            "agent-codex-pty", null, "", null, "/tmp", "codex",
+            new PtyHostedAgentRuntime("codex", new StubPtyProcess()), new WorktreeInfo("/tmp", "", "/tmp", IsStandalone: true), new CancellationTokenSource()
+        ));
+
+        await server.ReRegisterAgentsHook!();
+
+        var (_, transport) = server.AgentRegisteredTransports.Single();
+        await Assert.That(transport).IsEqualTo(CodexTransportDecision.Pty);
+    }
+
     [Test]
     public async Task Launch_with_unknown_vendor_emits_launch_failed_and_does_not_spawn_pty() {
         var server     = new CaptureServerConnection();

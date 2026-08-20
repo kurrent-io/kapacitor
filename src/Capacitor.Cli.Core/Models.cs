@@ -1991,7 +1991,11 @@ public readonly record struct AgentRegistered(
         // Applied ACP permission preset echo: the preset actually in effect for a hosted interactive
         // ACP launch, non-null only for such a launch. Trailing name-bound field — an older server
         // ignores it, an older daemon never sets it.
-        string? PermissionPreset = null
+        string? PermissionPreset = null,
+        // The runtime transport this agent launched on — "pty" | "app-server". The server validates
+        // it against its own launch decision and refuses a mismatch. Trailing name-bound field — an
+        // older server ignores it, an older daemon never sets it (null there).
+        string? RuntimeTransport = null
     );
 
 public readonly record struct AgentStatusChanged(

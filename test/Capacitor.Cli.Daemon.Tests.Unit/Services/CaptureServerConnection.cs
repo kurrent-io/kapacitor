@@ -97,13 +97,19 @@ sealed class CaptureServerConnection() : ServerConnection(
     /// initial registration and every reconnect re-registration report the same pair.</summary>
     public List<(string AgentId, string? Sandbox, string? Approval)> AgentRegisteredPostures { get; } = [];
 
+    /// <summary>The runtime transport ("pty" | "app-server") echoed on each registration, in call
+    /// order — proves initial and reconnect re-registration report the same value.</summary>
+    public List<(string AgentId, string? Transport)> AgentRegisteredTransports { get; } = [];
+
     public override async Task AgentRegisteredAsync(
         string  agentId,              string? prompt, string? model, string? effort, string? repoPath,
-        string? sandboxPolicy = null, string? approvalPolicy = null, string? permissionPreset = null) {
+        string? sandboxPolicy = null, string? approvalPolicy = null, string? permissionPreset = null,
+        string? runtimeTransport = null) {
         AgentRegisteredCallCount++;
         lock (AcpCallOrder) AcpCallOrder.Add($"register:{agentId}");
         lock (AgentRegisteredCalls) AgentRegisteredCalls.Add((agentId, model));
         lock (AgentRegisteredPostures) AgentRegisteredPostures.Add((agentId, sandboxPolicy, approvalPolicy));
+        lock (AgentRegisteredTransports) AgentRegisteredTransports.Add((agentId, runtimeTransport));
 
         AgentRegisteredEntered?.TrySetResult();
         if (AgentRegisteredGate is { } gate) await gate.Task.ConfigureAwait(false);

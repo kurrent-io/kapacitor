@@ -30,5 +30,6 @@ internal sealed class SeqCaptureServerConnection() : ServerConnection(
 
     public override Task AgentRegisteredAsync(
         string  agentId,              string? prompt, string? model, string? effort, string? repoPath,
-        string? sandboxPolicy = null, string? approvalPolicy = null, string? permissionPreset = null) => Task.CompletedTask;
+        string? sandboxPolicy = null, string? approvalPolicy = null, string? permissionPreset = null,
+        string? runtimeTransport = null) => Task.CompletedTask;
 }

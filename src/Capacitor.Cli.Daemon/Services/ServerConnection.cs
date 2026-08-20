@@ -815,10 +815,11 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     // Outgoing messages to server
     public virtual Task AgentRegisteredAsync(
             string agentId, string? prompt, string? model, string? effort, string? repoPath,
-            string? sandboxPolicy = null, string? approvalPolicy = null, string? permissionPreset = null)
+            string? sandboxPolicy = null, string? approvalPolicy = null, string? permissionPreset = null,
+            string? runtimeTransport = null)
         => _hub.InvokeAsync(
             "AgentRegistered",
-            new AgentRegistered(agentId, prompt, model, effort, repoPath, sandboxPolicy, approvalPolicy, permissionPreset),
+            new AgentRegistered(agentId, prompt, model, effort, repoPath, sandboxPolicy, approvalPolicy, permissionPreset, runtimeTransport),
             cancellationToken: _ct);
 
     /// <summary>
