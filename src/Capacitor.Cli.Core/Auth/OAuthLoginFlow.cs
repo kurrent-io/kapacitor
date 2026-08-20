@@ -129,15 +129,7 @@ public static class OAuthLoginFlow {
 
         var copied = Clipboard.TryCopy(device.UserCode);
 
-        bool browserOpened;
-
-        try {
-            Process.Start(new ProcessStartInfo(device.VerificationUri) { UseShellExecute = true });
-            browserOpened = true;
-        } catch {
-            // Browser open is best-effort — headless environments (devcontainers, SSH) have none.
-            browserOpened = false;
-        }
+        var browserOpened = TryOpenBrowser(device.BrowserUri);
 
         progress.Notice("");
         progress.Notice("To finish signing in to GitHub:");
@@ -632,6 +624,17 @@ public static class OAuthLoginFlow {
         return JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.WorkOSAuthResponse);
     }
 
+    /// <summary>Best-effort — the environments this flow serves often have no browser at all.</summary>
+    static bool TryOpenBrowser(string url) {
+        try {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
     /// <summary>
     /// RFC 8628 against AuthKit (<c>api.workos.com/user_management/*</c>), NOT Connect's
     /// <c>{authkit-domain}/oauth2/*</c> — that one returns no organization and requires a client secret.
@@ -671,10 +674,16 @@ public static class OAuthLoginFlow {
             return null;
         }
 
+        // Best-effort: the population this flow exists for has no browser here at all.
+        var browserOpened = TryOpenBrowser(device.BrowserUri);
+
         progress.Notice("");
         progress.Notice("To finish signing in:");
         progress.Notice("");
-        progress.Notice($"  1. Open {device.VerificationUri} in a browser");
+        progress.Notice(
+            browserOpened
+                ? $"  1. Your browser should have opened {device.VerificationUri}"
+                : $"  1. Open {device.VerificationUri} in a browser");
 
         // No clipboard copy, unlike the GitHub flow: the code has to be READ ALOUD OR RETYPED on
         // another device for this flow to mean anything, and a silent copy invites pasting it into

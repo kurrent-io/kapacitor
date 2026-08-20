@@ -77,6 +77,15 @@ public record DeviceCodeResponse {
     [JsonPropertyName("verification_uri")]
     public string VerificationUri { get; init; } = "";
 
+    /// <summary>RFC 8628 §3.3.1 — the same page with the code pre-filled. Open this when a browser is
+    /// available; print <see cref="VerificationUri"/> for the code being typed on another device.</summary>
+    [JsonPropertyName("verification_uri_complete")]
+    public string? VerificationUriComplete { get; init; }
+
+    /// <summary>What to open on a best-effort browser launch, falling back when the server omits it.</summary>
+    public string BrowserUri =>
+        string.IsNullOrEmpty(VerificationUriComplete) ? VerificationUri : VerificationUriComplete;
+
     // Both default to 0 when the server omits them: a property initializer does NOT survive
     // source-generated deserialization. Read them through the accessors below, never directly.
     [JsonPropertyName("interval")]

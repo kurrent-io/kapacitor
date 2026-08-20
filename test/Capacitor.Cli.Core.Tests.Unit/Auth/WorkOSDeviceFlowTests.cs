@@ -21,6 +21,27 @@ public class WorkOSDeviceFlowTests {
 
     const string Device = """{"device_code":"dc","user_code":"WXYZ-1234","verification_uri":"","interval":0,"expires_in":900}""";
 
+    /// <summary>
+    /// Live response, 2026-08-20: WorkOS returns both, and verification_uri points at signin.kcap.ai
+    /// rather than a workos.com host. The complete form pre-fills the code, so it is what a browser
+    /// should open — while the bare one is what a human retypes on another device.
+    /// </summary>
+    [Test]
+    public async Task Opens_the_prefilled_uri_but_shows_the_bare_one() {
+        var device = new DeviceCodeResponse {
+            DeviceCode      = "dc",
+            UserCode        = "ZFVC-JDNH",
+            VerificationUri = "https://signin.kcap.ai/device",
+            VerificationUriComplete = "https://signin.kcap.ai/device?user_code=ZFVC-JDNH"
+        };
+
+        await Assert.That(device.BrowserUri).IsEqualTo("https://signin.kcap.ai/device?user_code=ZFVC-JDNH");
+
+        var withoutComplete = device with { VerificationUriComplete = null };
+
+        await Assert.That(withoutComplete.BrowserUri).IsEqualTo("https://signin.kcap.ai/device");
+    }
+
     [Test]
     public async Task Completes_and_returns_the_full_token_envelope() {
         using var server = WithAuthorize(Device);
