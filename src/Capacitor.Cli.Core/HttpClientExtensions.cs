@@ -174,10 +174,6 @@ public static class HttpClientExtensions {
     /// </summary>
     public const string UpdateCheckHeader = "X-Kcap-Update-Check";
 
-    /// <summary>Authenticates a machine-pairing poll. Must match the server's
-    /// <c>PairingEndpoints.SecretHeader</c> exactly.</summary>
-    public const string PairingSecretHeader = "X-Kcap-Pairing-Secret";
-
     /// <summary>Value <see cref="UpdateCheckHeader"/> carries when sent.</summary>
     public const string UpdateCheckOffValue = "off";
 

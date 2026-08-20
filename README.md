@@ -97,18 +97,6 @@ kcap setup --server-url <url>   # explicit server (self-hosted, or a full URL)
 The setup wizard walks you through:
 
 1. **Server** — with no `--server-url`/`<tenant>`, kcap **discovers** your tenant: it signs you in with your organization's single sign-on (pass `--github` to use GitHub instead), then lets you choose from the tenants you belong to. A bare `<tenant>` slug expands to `https://<tenant>.kcap.ai`; a full URL is used as-is. If you sign in with your organization's single sign-on and discovery finds no Capacitor tenant, `kcap setup` asks how to continue: create one for you (name + workspace URL, provisioned and waited for until it's live), point at a workspace you already belong to (enter its slug or URL — the same as `kcap setup <tenant>`), or cancel. That middle choice matters because SSO discovery only lists workspaces that use org SSO: a workspace whose members sign in with the GitHub App shows up here as "no tenant", so pick **I already have a workspace**, or re-run with `--github`.
-
-   **Approving this machine.** When you name a tenant (`kcap setup <tenant>` or `--server-url`) and that server offers browser setup, kcap opens your browser to finish setup there and prints a short code:
-
-   ```
-   Opening your browser to finish setup.
-     If it didn't open:  https://acme.kcap.ai/setup?p=b7f3…
-
-     Your code:  7Q2F-KX9M
-     Check the browser shows the same code before you approve.
-   ```
-
-   **Compare the two codes before approving.** The code in your terminal is the only thing that proves the page you are looking at belongs to the machine you are setting up. kcap then waits for you to approve, and refuses to continue if the account you approve as is not the account you go on to sign in as. Skipped — with no change to how setup behaves today — on servers that don't offer it, in headless environments, and under `--no-prompt`.
 2. **Login** — authenticates via your tenant's configured sign-in method; discovery completes the sign-in inline
 3. **Default visibility** — choose how your sessions are visible to others
 4. **Coding-agent hooks** — detects Claude Code and Codex CLI on `PATH`, Cursor by user-dir presence (`~/.cursor/`), GitHub Copilot CLI by `~/.copilot/` or `copilot` on `PATH`, Google Gemini CLI by `~/.gemini/` or `gemini` on `PATH`, AWS Kiro CLI by `~/.kiro/` or `kiro`/`kiro-cli` on `PATH`, Pi by `~/.pi/` or `pi` on `PATH`, SST OpenCode by `~/.config/opencode/` (or `~/.local/share/opencode/`) or `opencode` on `PATH`, and Google Antigravity by `~/.gemini/antigravity/` (GUI) or `~/.gemini/antigravity-cli/` (the `agy` CLI) or `antigravity`/`agy` on `PATH`, lists what it found, then asks **one** yes/no prompt to install kcap for every detected agent (hooks — or, for Pi/OpenCode/Antigravity, the live-ingest plugin — plus skills, instructions, and MCP) — plus a single shared set of agent skills under `~/.agents/skills/`, installed once when any of Codex, Cursor, Copilot, Gemini, Pi, or OpenCode is detected (Claude gets its skills from the bundled plugin; AWS Kiro and Google Antigravity read their own skills dirs — `~/.kiro/skills` and `~/.gemini/skills` respectively — so each gets its own copy there instead of the shared tree) — all user-wide. For Codex it also offers to enable **sandbox network access** for kcap (see below) — Codex blocks sandbox network by default, so the kcap skills can't reach the server without it. Each agent's own config-relocation environment variable is honored when set: `CLAUDE_CONFIG_DIR` (Claude), `CODEX_HOME` (Codex), `GEMINI_CLI_HOME` (Gemini — names the parent of `.gemini`), `KIRO_HOME` (Kiro), `COPILOT_HOME` (Copilot), `OPENCODE_CONFIG_DIR` (OpenCode), and `PI_CODING_AGENT_DIR` (Pi). Cursor's hooks path is fixed at `~/.cursor/hooks.json` and is not relocated.
@@ -297,8 +285,6 @@ kcap setup --server-url <url> --no-prompt    # CI / scripted
 ```
 
 With no server argument, setup (and `kcap login`) runs **tenant discovery**: it signs you in with your organization's single sign-on, then lets you pick from the tenants you belong to. Pass `--github` to sign in with GitHub instead; `--discover` forces discovery even when a server is configured.
-
-When you name a tenant — `kcap setup <tenant>` or `--server-url` — and that server offers browser setup, setup opens your browser to finish there and prints a short code beside the fallback link. **Compare the code in the terminal against the one on screen before approving:** the terminal's copy is the only thing tying that page to this machine. Setup waits for approval and then refuses to continue if the account that approved is not the account it goes on to sign in as. It is skipped, with no change to how setup behaved before, on servers that do not offer it, in headless environments, and under `--no-prompt`.
 
 SSO discovery needs an interactive terminal: it signs in through a `127.0.0.1` browser callback, which a browser on another machine can't reach. In SSH / headless environments plain discovery stops before signing you in and points you at creating a workspace in a browser, then running `kcap setup <tenant>`. Three things still work headless: `--server-url <url>` to configure a workspace you already have, and `--device` or `--github` to discover via GitHub Device Flow (the legacy GitHub App path — being phased out, so prefer the first two).
 

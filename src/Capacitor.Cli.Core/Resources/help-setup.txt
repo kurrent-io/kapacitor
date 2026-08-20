@@ -94,15 +94,6 @@ skills, instructions, MCP) for all of them, instead of one prompt per agent.
 Hooks are installed user-wide (Pi, OpenCode, and Antigravity install a
 plugin/hooks-block rather than a shell-hooks file).
 
-When you name a tenant (`kcap setup <tenant>` or --server-url) and that server
-offers browser setup, setup opens your browser to finish there and prints a short
-code alongside the fallback link. Compare the code in the terminal against the one
-the browser shows before approving: the terminal's copy is the only thing tying
-that page to this machine. Setup then waits for approval, and stops if the account
-that approved is not the account you go on to sign in as. Skipped, with no change
-to today's behavior, on servers that do not offer it, in headless environments,
-and under --no-prompt.
-
 When you sign in with Kurrent's hosted auth and discovery finds no tenant, setup
 asks how to continue: create one for you (organization name + workspace slug) and
 wait for it to go live, point at a workspace you already belong to (enter its slug
