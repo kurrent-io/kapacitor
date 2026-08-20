@@ -105,10 +105,6 @@ public class ImportDisplayGridTests {
         await Assert.That(output).DoesNotContain("Summaries");
     }
 
-    /// <summary>
-    /// The headline: three buckets, because import distinguishes three. Rounding them into one number
-    /// would hide a failure the command already knows about.
-    /// </summary>
     [Test, NotInParallel]
     public async Task done_grid_leads_with_imported_skipped_and_failed() {
         var output = CaptureNonTtyOutput(d => d.WriteDoneGrid(
@@ -119,8 +115,7 @@ public class ImportDisplayGridTests {
                 RanBackground: false, RequestedSummaries: false),
             bySource: null));
 
-        // A resume is an import that finished; too-short and already-there are choices, not failures;
-        // a probe error and an upload error are both "did not land".
+        // 140+8 imported, 3+1 skipped, 1+1 failed: a resume counts as imported, a probe error as failed.
         await Assert.That(output).Contains("148 imported · 4 skipped · 2 failed");
     }
 
@@ -132,8 +127,7 @@ public class ImportDisplayGridTests {
 
         await Assert.That(output).Contains("2 didn't land");
         await Assert.That(output).Contains("re-run to retry");
-        // The run itself succeeded — it exits 0 — so the note has to place the failure against what
-        // did land, rather than leave a bare red count reading as a broken import.
+        // The run exits 0, so a bare count must not be left reading as a broken import.
         await Assert.That(output).Contains("Everything else is in");
     }
 

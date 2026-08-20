@@ -121,16 +121,13 @@ static class ImportCommand {
                 FinalCounts                               f,
                 IReadOnlyDictionary<string, FinalCounts>? bySource = null
             ) {
-            // A failed session is not a failed import: the rest landed and the command still exits 0.
-            // Naming the remedy is honest rather than hopeful — classification skips what is already on
-            // the server, so a second run retries the failures and nothing else.
+            // Re-running is safe: classification skips what the server already has.
             var failureNote = $"{f.Failed} didn't land. Everything else is in — re-run to retry them.";
 
             if (Tty) {
                 AnsiConsole.Write(new Rule("[green]Done[/]").LeftJustified());
 
-                // The three buckets import actually distinguishes, ahead of the per-reason detail.
-                // Rolling them into one number would hide a failure the command already knows about.
+                // Three buckets, not one: import knows the difference and a single number would hide it.
                 AnsiConsole.MarkupLine(
                     $"[green]{f.Imported}[/] imported · {f.Skipped} skipped · "
                   + (f.Failed > 0 ? $"[red]{f.Failed}[/] failed" : "0 failed"));
