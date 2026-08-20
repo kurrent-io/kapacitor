@@ -5,17 +5,10 @@ namespace Capacitor.Cli.Core.Setup;
 public sealed record HarnessInventoryEntry(bool Detected, bool Wired);
 
 /// <summary>
-/// A machine's coding-agent inventory reported to the server (surface 3): for every supported
-/// vendor, whether it's detected and whether kcap is wired in, plus the vendors the user has
-/// dismissed. The server raises the "installed but not configured" notification for a vendor that
-/// is <c>detected &amp;&amp; !wired</c> and not in <see cref="Declined"/>. Additive on the wire — an
-/// older server ignores it; an older client never sends it (the server treats an absent inventory
-/// as "unknown", never "nothing detected").
-///
-/// <para>Serialized snake_case by <c>CapacitorJsonContext</c> (<c>machine_id</c>, <c>vendors</c>,
-/// <c>detected</c>, <c>wired</c>, <c>declined</c>). <c>MachineId</c> is <see cref="Core.MachineId.Get"/>
-/// — the same id the daemon sends on <c>DaemonConnect</c> — so the server correlates a machine's
-/// connect record, status-report inventory, and hook-ingest inventory to one machine.</para>
+/// A machine's coding-agent inventory (surface 3): per vendor, detected + kcap-wired, plus the
+/// dismissed vendors. Additive on the wire (an old server ignores it; an old client never sends it).
+/// <c>MachineId</c> is <see cref="Core.MachineId.Get"/> — the same id the daemon sends on
+/// <c>DaemonConnect</c> — so the server can correlate one machine's reports.
 /// </summary>
 public sealed record HarnessInventory(
     string MachineId,

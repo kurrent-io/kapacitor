@@ -6,13 +6,10 @@ using Capacitor.Cli.Core.Setup;
 namespace Capacitor.Cli;
 
 /// <summary>
-/// Surface 3 (new-harness detection), hook carrier: stamps this machine's coding-agent inventory
-/// onto a SessionStart hook body, so a machine with no daemon still reports it whenever a wired
-/// harness is used. The value is the same <see cref="HarnessInventory"/> the daemon attaches to its
-/// status report, serialized through the SAME <see cref="CapacitorJsonContext"/> so the two carriers
-/// are byte-identical on the wire (<c>machine_id</c> travels inside the fragment). Computed fresh —
-/// current-state metadata on an already-happening POST, so no throttle. Never throws: a probe
-/// failure just omits the field (a nudge/inventory must never break a hook).
+/// Surface 3 hook carrier: stamps this machine's harness inventory onto a SessionStart body, so a
+/// daemonless machine still reports it. Serialized through the same <see cref="CapacitorJsonContext"/>
+/// as the daemon's copy, so both carriers are byte-identical. Never throws — a probe failure just
+/// omits the field (must never break a hook).
 /// </summary>
 static class SessionStartInventory {
     public static void Stamp(JsonObject body) {

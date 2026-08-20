@@ -869,11 +869,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         public string Id => Agent.Id;
     }
 
-    // Surface 3 (new-harness detection): the machine's coding-agent inventory, cached and recomputed
-    // on a 6h in-memory cadence. Deliberately does NOT touch the on-disk nudge throttle stamp
-    // (HarnessOfferStore.TryClaimCheck) — claiming it here would starve the hook/CLI nudge surfaces.
-    // The recompute runs in the send path (RefreshHarnessInventoryIfStale, at most once per 6h);
-    // BuildStatusReport only READS the cache so it stays pure and deterministic for tests.
+    // Surface 3: cached machine inventory, recomputed on a 6h in-memory cadence. Deliberately never
+    // claims the on-disk nudge throttle stamp — that would starve the hook/CLI nudge surfaces.
+    // BuildStatusReport only reads the cache (stays pure); the send path refreshes.
     static readonly TimeSpan HarnessInventoryTtl = TimeSpan.FromHours(6);
     readonly object _harnessInventoryGate = new();
     Capacitor.Cli.Core.Setup.HarnessInventory? _harnessInventory;
@@ -892,10 +890,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 DateTimeOffset.UtcNow - _harnessInventoryEvaluatedAt < HarnessInventoryTtl) return;
             try {
                 _harnessInventory = Capacitor.Cli.Core.Setup.HarnessInventory.EvaluateCurrent();
-                _harnessInventoryEvaluatedAt = DateTimeOffset.UtcNow;
-            } catch {
-                // keep last cached (or null); inventory must never break the report path
+            } catch (Exception ex) {
+                // Keep the last cached value (or null); inventory must never break the report path.
+                _logger.LogDebug(ex, "Harness inventory evaluation failed — keeping last cached");
             }
+            // Advance on success AND failure: a persistently-failing environment (e.g. a read-only
+            // config dir) then backs off to the TTL instead of re-probing on every 60s send. The
+            // evaluation's sub-probes are already defensive, so a throw here is rare/environmental.
+            _harnessInventoryEvaluatedAt = DateTimeOffset.UtcNow;
         }
     }
 
