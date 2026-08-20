@@ -32,9 +32,15 @@ public static class OpenCodePaths {
     }
 
     /// <summary>Auto-discovered global plugins dir; kcap installs <see cref="KcapPlugin"/> here.</summary>
-    public static string PluginsDir(string? home = null, string? xdgConfigHome = null, string? configDir = null) => Path.Combine(ConfigDir(home, configDir, xdgConfigHome), "plugins");
+    public static string PluginsDir(string? home = null, string? xdgConfigHome = null) => Path.Combine(ConfigDir(home, xdgConfigHome: xdgConfigHome), "plugins");
 
-    public static string KcapPlugin(string? home = null, string? xdgConfigHome = null, string? configDir = null) => Path.Combine(PluginsDir(home, xdgConfigHome, configDir), "kcap.ts");
+    public static string KcapPlugin(string? home = null, string? xdgConfigHome = null) => Path.Combine(PluginsDir(home, xdgConfigHome), "kcap.ts");
+
+    /// <summary>Pure kcap-plugin path for fully-injected callers (nudge wiring-probe): built from
+    /// <see cref="ConfigDirPure"/>, so a null <paramref name="configDir"/>/<paramref name="xdgConfigHome"/>
+    /// means "unset → home default", never a real <c>OPENCODE_CONFIG_DIR</c>/<c>XDG_CONFIG_HOME</c> read.</summary>
+    public static string KcapPluginPure(string? home, string? configDir, string? xdgConfigHome) =>
+        Path.Combine(ConfigDirPure(home, configDir, xdgConfigHome), "plugins", "kcap.ts");
 
     /// <summary>Marker recording the installed plugin version (sibling of kcap.ts).</summary>
     public static string KcapPluginMarker(string? home = null, string? xdgConfigHome = null) =>

@@ -55,25 +55,24 @@ public sealed class HarnessOfferStore {
     /// <summary>
     /// Read-modify-write, serialized across processes by <see cref="ConfigFileLock"/> so a
     /// concurrent hook/setup/command can't overwrite another's change (in particular, lose a
-    /// dismissal). Never throws: if the lock can't be taken within <paramref name="lockTimeout"/>
-    /// (default 5s) it degrades to a lockless write. Returns whether the change was PERSISTED —
-    /// management commands surface a false (honest failure); the hook path ignores it (best-effort).
+    /// dismissal). Never throws. If the lock can't be acquired within <paramref name="lockTimeout"/>
+    /// (default 5s) it does NOT mutate — a lockless write could reintroduce the lost-dismissal race
+    /// — and returns false. Returns whether the change was PERSISTED: management commands surface a
+    /// false as an honest failure; the hook path ignores it (best-effort, re-nudges next window).
     /// </summary>
     public bool Update(Func<HarnessOfferLedger, HarnessOfferLedger> mutate, TimeSpan? lockTimeout = null) {
-        IDisposable? lease = null;
+        IDisposable lease;
         try { lease = ConfigFileLock.Acquire(_ledgerPath, lockTimeout ?? TimeSpan.FromSeconds(5)); }
-        catch { /* timeout or foreign-owned mutex → degrade to a lockless best-effort write */ }
-        try {
+        catch { return false; } // timeout or foreign-owned mutex → skip rather than risk a lockless overwrite
+        using (lease) {
             return Save(mutate(Load()));
-        } finally {
-            lease?.Dispose();
         }
     }
 
-    /// <summary>Short lock wait for the hook/best-effort path, so a contended ledger can't stall a
-    /// SessionStart hook past its host budget (some hosts cap the hook at ~5s). A missed stamp just
-    /// re-nudges the vendor once more.</summary>
-    static readonly TimeSpan HookLockTimeout = TimeSpan.FromSeconds(1);
+    /// <summary>Non-blocking lock try for the hook/best-effort path: a SessionStart hook must not
+    /// spend ANY of its (already-tight) exit budget waiting on the ledger mutex, so on contention it
+    /// simply skips stamping — a missed stamp just re-nudges the vendor once more next window.</summary>
+    static readonly TimeSpan HookLockTimeout = TimeSpan.Zero;
 
     /// <summary>
     /// Records that these vendors were offered now (updating <c>last_offered</c>, seeding

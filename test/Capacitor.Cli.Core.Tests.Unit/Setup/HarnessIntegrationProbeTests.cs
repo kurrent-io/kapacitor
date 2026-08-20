@@ -41,4 +41,20 @@ public class HarnessIntegrationProbeTests {
         using var tmp = new TempDir();
         await Assert.That(HarnessIntegrationProbe.IsWired("claude", Home(tmp.Path))).IsFalse();
     }
+
+    // Detection and the wired-probe must consume the SAME injected snapshot: an injected KiroHome
+    // override is honored by the wired-probe (via the pure path helper), not silently replaced by an
+    // ambient KIRO_HOME. Home points elsewhere with no marker, so a true result proves the override
+    // (not Home) drove the probe.
+    [Test]
+    public async Task Kiro_wired_probe_honors_injected_kiro_home_override() {
+        using var tmp = new TempDir();
+        tmp.CreateDir("kh");
+        tmp.CreateDir(["kh", "agents"]);
+        var inputs = Home("/nonexistent-home") with { KiroHome = tmp.PathTo("kh") };
+        await Assert.That(HarnessIntegrationProbe.IsWired("kiro", inputs)).IsFalse();
+
+        tmp.CreateFile(["kh", "agents", ".kcap-hooks-version"], "0.1.0");
+        await Assert.That(HarnessIntegrationProbe.IsWired("kiro", inputs)).IsTrue();
+    }
 }

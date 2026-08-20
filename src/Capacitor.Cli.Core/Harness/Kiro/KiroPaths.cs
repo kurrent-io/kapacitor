@@ -38,7 +38,7 @@ public static class KiroPaths {
         Path.Combine(SessionsDir(home), $"{sessionId}.json");
 
     /// <summary>User-level agent config dir (<c>~/.kiro/agents</c>).</summary>
-    public static string AgentsDir(string? home = null, string? kiroHome = null) => Path.Combine(ConfigRoot(home, kiroHome), "agents");
+    public static string AgentsDir(string? home = null) => Path.Combine(ConfigRoot(home), "agents");
 
     /// <summary>
     /// Kiro CLI settings file (<c>~/.kiro/settings/cli.json</c>). Holds dotted
@@ -68,7 +68,13 @@ public static class KiroPaths {
     /// Kiro reads every <c>agents/*.json</c>, so the lifecycle hooks here apply to
     /// Kiro sessions.
     /// </summary>
-    public static string KcapAgentJson(string? home = null, string? kiroHome = null) => Path.Combine(AgentsDir(home, kiroHome), "kcap.json");
+    public static string KcapAgentJson(string? home = null) => Path.Combine(AgentsDir(home), "kcap.json");
+
+    /// <summary>Pure kcap-agent path for fully-injected callers (nudge wiring-probe): built from
+    /// <see cref="ConfigRootPure"/>, so a null <paramref name="kiroHome"/> means "unset → home
+    /// default", never a real <c>KIRO_HOME</c> read — matching how detection resolves the root.</summary>
+    public static string KcapAgentJsonPure(string? home, string? kiroHome) =>
+        Path.Combine(ConfigRootPure(home, kiroHome), "agents", "kcap.json");
 
     /// <summary>
     /// Detection: the config tree exists. The binary name (<c>kiro</c> /
