@@ -167,7 +167,7 @@ public static class TokenStore {
     // backoff; a genuine, persistent failure (e.g. the target is a directory) still surfaces by
     // rethrowing after the budget is spent. File.Move(overwrite: true) is atomic on NTFS, so a
     // reader only ever sees the old or the new complete document, never a splice.
-    const int ReplaceMaxAttempts   = 5;
+    const int ReplaceMaxAttempts   = 10;
     const int ReplaceBackoffBaseMs = 20;
 
     static async Task ReplaceWithRetryAsync(string tempPath, string path, CancellationToken ct = default) {
@@ -178,8 +178,9 @@ public static class TokenStore {
                 return;
             } catch (Exception ex) when ((ex is UnauthorizedAccessException or IOException)
                                          && attempt < ReplaceMaxAttempts) {
-                // Linear backoff (20/40/60/80ms) to let the peer holding the target close it.
-                await Task.Delay(ReplaceBackoffBaseMs * attempt, ct);
+                // Jitter the backoff so concurrent writers don't wake in lockstep and re-collide on
+                // the shared target every attempt (the Windows sharing-violation thundering herd).
+                await Task.Delay(ReplaceBackoffBaseMs * attempt + Random.Shared.Next(ReplaceBackoffBaseMs), ct);
             }
         }
     }
