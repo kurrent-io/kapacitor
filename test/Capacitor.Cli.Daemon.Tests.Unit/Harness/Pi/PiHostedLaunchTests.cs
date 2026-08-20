@@ -97,10 +97,8 @@ public class PiHostedLaunchTests {
 
     [Test]
     public async Task BuildPsi_OmitsServerUrl_WhenContextCarriesNone() {
-        // Compared against what the daemon already had, not against absence: ProcessStartInfo seeds
-        // its environment from the current process, and the repo's own .envrc exports KCAP_URL — so
-        // asserting the key is missing tests the developer's shell. The invariant is that BuildPsi
-        // contributes nothing when the context carries no URL, whatever it inherited.
+        // Not absence: psi inherits this process's environment, and .envrc exports KCAP_URL — so
+        // asserting the key is missing would test the developer's shell.
         var inherited = Environment.GetEnvironmentVariable("KCAP_URL");
 
         var psi = PiRpcHostedAgentRuntimeFactory.BuildPsi(new DaemonConfig(), Ctx(serverUrl: null));
