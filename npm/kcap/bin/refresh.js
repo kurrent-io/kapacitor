@@ -28,6 +28,9 @@ const REFRESHES = [
   ["plugin", "install", "--copilot", "--if-installed"],
   ["plugin", "install", "--pi",      "--if-installed"], // Pi extension (~/.pi/agent/extensions/kcap.ts)
   ["plugin", "install", "--opencode", "--if-installed"], // OpenCode plugin (~/.config/opencode/plugins/kcap.ts)
+  ["plugin", "install", "--gemini",  "--if-installed"], // Gemini hooks/MCP/instructions (~/.gemini)
+  ["plugin", "install", "--kiro",    "--if-installed"], // Kiro agent hooks (~/.kiro/agents/kcap.json)
+  ["plugin", "install", "--antigravity", "--if-installed"], // Antigravity hooks (~/.gemini/config/plugins/kcap)
   ["plugin", "install",              "--if-installed"], // Claude
 ];
 
