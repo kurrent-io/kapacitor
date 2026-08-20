@@ -121,8 +121,9 @@ static class ImportCommand {
                 FinalCounts                               f,
                 IReadOnlyDictionary<string, FinalCounts>? bySource = null
             ) {
-            // Re-running is safe: classification skips what the server already has.
-            var failureNote = $"{f.Failed} didn't land. Everything else is in — re-run to retry them.";
+            // Says nothing about the skipped: too-short and excluded were never sent, so "everything else
+            // is in" would claim they landed. Re-running is safe — classification asks the server first.
+            var failureNote = $"{f.Failed} didn't land. Re-run to retry them — anything already imported isn't sent again.";
 
             if (Tty) {
                 AnsiConsole.Write(new Rule("[green]Done[/]").LeftJustified());

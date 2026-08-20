@@ -126,9 +126,24 @@ public class ImportDisplayGridTests {
             bySource: null));
 
         await Assert.That(output).Contains("2 didn't land");
-        await Assert.That(output).Contains("re-run to retry");
-        // The run exits 0, so a bare count must not be left reading as a broken import.
-        await Assert.That(output).Contains("Everything else is in");
+        // The run exits 0, so a bare count must not be left reading as a broken import: the remedy is
+        // named, and it is true because import is idempotent.
+        await Assert.That(output).Contains("Re-run to retry");
+    }
+
+    /// <summary>
+    /// Skipped is not imported. Too-short and excluded sessions were deliberately never sent, so a
+    /// failure note may not sweep them into a claim that everything else landed.
+    /// </summary>
+    [Test, NotInParallel]
+    public async Task a_mixed_run_does_not_claim_the_skipped_sessions_landed() {
+        var output = CaptureNonTtyOutput(d => d.WriteDoneGrid(
+            MakeFinal(loaded: 10) with { Excluded = 1, TooShort = 1, Errored = 1 },
+            bySource: null));
+
+        await Assert.That(output).Contains("10 imported · 2 skipped · 1 failed");
+        await Assert.That(output).Contains("1 didn't land");
+        await Assert.That(output).DoesNotContain("Everything else is in");
     }
 
     [Test, NotInParallel]
