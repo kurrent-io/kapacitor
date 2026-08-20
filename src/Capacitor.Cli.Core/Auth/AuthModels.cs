@@ -77,8 +77,19 @@ public record GitHubDeviceCodeResponse {
     [JsonPropertyName("verification_uri")]
     public string VerificationUri { get; init; } = "";
 
+    // Both default to 0 when the server omits them: a property initializer does NOT survive
+    // source-generated deserialization. Read them through the accessors below, never directly.
     [JsonPropertyName("interval")]
-    public int Interval { get; init; } = 5;
+    public int Interval { get; init; }
+
+    [JsonPropertyName("expires_in")]
+    public int ExpiresIn { get; init; }
+
+    /// <summary>RFC 8628 §3.5's default when the server omits it.</summary>
+    public int IntervalOrDefault => Interval > 0 ? Interval : 5;
+
+    /// <summary>Bounds the poll loop. §3.2 makes it REQUIRED, but an absent one must not mean forever.</summary>
+    public int ExpiresInOrDefault => ExpiresIn > 0 ? ExpiresIn : 900;
 }
 
 // GitHub Device Flow: POST https://github.com/login/oauth/access_token
@@ -103,6 +114,11 @@ public record WorkOSAuthResponse {
 
     [JsonPropertyName("refresh_token")]
     public string? RefreshToken { get; init; }
+
+    /// <summary>Only the device grant polls this endpoint, so only it ever sees an error body here
+    /// (<c>authorization_pending</c>, <c>slow_down</c>, <c>access_denied</c>, <c>expired_token</c>).</summary>
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
 }
 
 public record WorkOSUserInfo {

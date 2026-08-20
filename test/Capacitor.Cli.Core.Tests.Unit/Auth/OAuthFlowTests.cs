@@ -22,6 +22,23 @@ public class OAuthFlowTests {
         await Assert.That(options.LoadProfile).IsFalse();
     }
 
+    /// <summary>
+    /// AI-2052 — the WorkOS browser runs INSIDE <c>OidcClient.LoginAsync</c>, unlike the GitHub flow
+    /// which calls <c>InvokeAsync</c> itself. Duende does not wrap it, so a loopback bind failure
+    /// surfaces as an exception rather than <c>result.IsError</c>, and the device-code fallback can
+    /// catch it exactly as the GitHub arm already does. If a Duende upgrade starts folding it into an
+    /// error result, that fallback goes silently dead and this test is what says so.
+    /// </summary>
+    [Test]
+    public async Task WorkOS_login_lets_a_loopback_bind_failure_propagate() {
+        using var server  = WireMockServer.Start();
+        var       thrower = new FakeBrowser(_ => throw new System.Net.HttpListenerException(5, "Access is denied"));
+
+        await Assert.That(async () => await OAuthLoginFlow.AuthenticateWorkOSAsync(
+                  "client_d", "org_a", thrower, apiBase: server.Urls[0]))
+            .Throws<System.Net.HttpListenerException>();
+    }
+
     [Test]
     public async Task WorkOS_authorize_url_omits_org_when_null() {
         var options = OAuthLoginFlow.BuildWorkOSOptions("client_d", "https://api.workos.com", "http://127.0.0.1:5555/callback");

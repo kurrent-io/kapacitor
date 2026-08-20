@@ -104,7 +104,8 @@ public static class OAuthLoginFlow {
     // HttpClient-injectable core — the test seam for pinning the device-code/poll endpoints
     // to a fake handler (RunDeviceFlowAsync(clientId) hardcodes github.com and can't be redirected).
     internal static async Task<string?> RunDeviceFlowAsync(
-            HttpClient http, string clientId, CancellationToken ct = default, IAuthProgress? progress = null) {
+            HttpClient http, string clientId, CancellationToken ct = default, IAuthProgress? progress = null,
+            TimeProvider? time = null) {
         progress ??= ConsoleAuthProgress.Instance;
 
         var deviceResponse = await PostFormForJsonAsync(
@@ -124,7 +125,7 @@ public static class OAuthLoginFlow {
         }
 
         var device   = (await deviceResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.GitHubDeviceCodeResponse, ct))!;
-        var interval = device.Interval;
+        var interval = device.IntervalOrDefault;
 
         var copied = Clipboard.TryCopy(device.UserCode);
 
@@ -152,30 +153,83 @@ public static class OAuthLoginFlow {
         // Clipboard-copy suffix folds into the code: DeviceCode's contract carries no separate flag for it.
         progress.DeviceCode(device.UserCode + (copied ? "  (copied to clipboard)" : ""), device.VerificationUri);
 
+        return await PollDeviceGrantAsync(
+            http, "https://github.com/login/oauth/access_token",
+            new() { ["client_id"] = clientId, ["device_code"] = device.DeviceCode },
+            CapacitorJsonContext.Default.GitHubTokenResponse,
+            r => (r.AccessToken, r.Error),
+            device, interval, ct, progress, time);
+    }
+
+    /// <summary>
+    /// RFC 8628 §3.4-3.5 polling, shared by every provider. Parameterised on the token URL, the extra
+    /// form fields, and how to read a token and an error code out of the response.
+    /// </summary>
+    /// <param name="device">
+    /// Carries the <c>expires_in</c> that bounds the loop. Without it the poll ran forever against a
+    /// code the server had already discarded.
+    /// </param>
+    internal static async Task<T?> PollDeviceGrantAsync<T, TResponse>(
+            HttpClient http, string tokenUrl, Dictionary<string, string> form,
+            System.Text.Json.Serialization.Metadata.JsonTypeInfo<TResponse> typeInfo,
+            Func<TResponse, (T? Value, string? Error)> read,
+            GitHubDeviceCodeResponse device, int interval,
+            CancellationToken ct, IAuthProgress progress, TimeProvider? time = null)
+        where T : class where TResponse : class {
+        time ??= TimeProvider.System;
+        form["grant_type"] = "urn:ietf:params:oauth:grant-type:device_code";
+
+        var deadline = time.GetUtcNow().AddSeconds(device.ExpiresInOrDefault);
+
         while (true) {
+            // The sleep stays on the real clock deliberately: `time` exists to bound the deadline, and
+            // a fake one here would leave the timer waiting for an advance nobody makes.
             await Task.Delay(TimeSpan.FromSeconds(interval), ct);
             ct.ThrowIfCancellationRequested();
 
-            var tokenResponse = await PostFormForJsonAsync(
-                http,
-                "https://github.com/login/oauth/access_token",
-                new() {
-                    ["client_id"]   = clientId,
-                    ["device_code"] = device.DeviceCode,
-                    ["grant_type"]  = "urn:ietf:params:oauth:grant-type:device_code"
-                },
-                ct
-            );
+            if (time.GetUtcNow() >= deadline) {
+                progress.Error($"\nThe code expired before it was approved. Re-run to get a new one.");
 
-            var tokenResult = (await tokenResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.GitHubTokenResponse, ct))!;
-
-            if (tokenResult.AccessToken is not null) {
-                progress.Notice(" done!");
-
-                return tokenResult.AccessToken;
+                return null;
             }
 
-            switch (tokenResult.Error) {
+            var response = await PostFormForJsonAsync(http, tokenUrl, form, ct);
+
+            // Parse the body whatever the status: RFC 8628 §3.5 carries authorization_pending in a 400,
+            // and GitHub returns it in a 200. Only an UNREADABLE body is a transport problem, and it is
+            // retried rather than force-unwrapped — a 429 or a 5xx HTML page used to be an NRE here.
+            TResponse? parsed = null;
+
+            try {
+                parsed = await response.Content.ReadFromJsonAsync(typeInfo, ct);
+            } catch (Exception ex) when (ex is System.Text.Json.JsonException or HttpRequestException) {
+                // fall through to the transient arm below
+            }
+
+            if (parsed is null) {
+                if (response.IsSuccessStatusCode) {
+                    progress.Error("\nThe sign-in service returned an unreadable response.");
+
+                    return null;
+                }
+
+                // Transient by elimination: a non-2xx we could not parse. Back off and keep polling
+                // until the deadline rather than failing a sign-in the user may still be completing.
+                interval += 5;
+                progress.PollTick();
+
+                continue;
+            }
+
+            var (value, error) = read(parsed);
+
+            if (value is not null) {
+                progress.Notice(" done!");
+
+                return value;
+            }
+
+            switch (error) {
                 case "authorization_pending":
                     progress.PollTick();
 
@@ -184,8 +238,16 @@ public static class OAuthLoginFlow {
                     interval += 5;
 
                     continue;
+                case "expired_token":
+                    progress.Error("\nThe code expired before it was approved. Re-run to get a new one.");
+
+                    return null;
+                case "access_denied":
+                    progress.Error("\nThe request was denied.");
+
+                    return null;
                 default:
-                    progress.Error($"\nError: {tokenResult.Error}");
+                    progress.Error($"\nError: {error ?? "unknown error"}");
 
                     return null;
             }
