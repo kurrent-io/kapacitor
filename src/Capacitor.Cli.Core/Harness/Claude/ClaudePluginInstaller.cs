@@ -63,6 +63,25 @@ public static class ClaudePluginInstaller {
         return false;
     }
 
+    /// <summary>
+    /// True iff <paramref name="settingsPath"/> has <c>enabledPlugins["kcap@kcap"] == true</c> — the
+    /// "is kcap wired into Claude?" check the <c>kcap status</c> Hooks line has always used, now the
+    /// single source of truth shared with the new-harness nudge. Distinct from <see cref="IsInstalled"/>
+    /// (marker/legacy-key refresh gate) and <see cref="IsEffectivelyInstalled"/> (destructive-decision
+    /// gate). Reads with shared access so it never blocks Claude writing its own settings.
+    /// </summary>
+    public static bool IsPluginEnabled(string settingsPath) {
+        try {
+            if (!File.Exists(settingsPath)) return false;
+            if (JsonNode.Parse(SharedFileText.ReadAllText(settingsPath)) is not JsonObject root) return false;
+            if (root["enabledPlugins"] is not JsonObject enabled) return false;
+
+            return enabled["kcap@kcap"]?.GetValue<bool>() == true;
+        } catch {
+            return false;
+        }
+    }
+
     static bool HasEnabledFlag(JsonObject enabled, string key) =>
         enabled[key] is JsonValue v && v.TryGetValue<bool>(out var on) && on;
 

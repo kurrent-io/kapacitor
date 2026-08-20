@@ -22,6 +22,18 @@ public class HarnessOfferStoreTests {
         await Assert.That(ledger.Vendors).IsEmpty();
     }
 
+    // A syntactically valid file with an explicit null vendors member must normalize to an empty
+    // dictionary, or list/dismiss/reset/StampOffered would null-dereference (corrupt-to-empty).
+    [Test]
+    public async Task Null_vendors_member_normalizes_to_empty() {
+        using var tmp = new TempDir();
+        tmp.CreateFile(["harness-offers-v1.json"], """{"version":1,"vendors":null}""");
+        var ledger = StoreIn(tmp).Load();
+        await Assert.That(ledger.Vendors).IsNotNull();
+        await Assert.That(ledger.Vendors).IsEmpty();
+        await Assert.That(ledger.Entry("antigravity")).IsNull();
+    }
+
     [Test]
     public async Task Save_then_load_round_trips_entry() {
         using var tmp = new TempDir();

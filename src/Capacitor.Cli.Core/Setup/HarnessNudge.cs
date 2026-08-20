@@ -23,11 +23,12 @@ public static class HarnessNudge {
         var result = new List<KnownHarness>();
 
         foreach (var h in HarnessCatalog.All) {
-            if (!h.Select(detected).Detected) continue;   // clause 1: installed harness
-            if (isWired(h.VendorId)) continue;             // clause 2: kcap not wired in
+            if (!h.Select(detected).Detected) continue;
+            if (isWired(h.VendorId)) continue;
             var entry = ledger.Entry(h.VendorId);
-            if (entry is { Declined: true }) continue;     // clause 3a: not dismissed
-            if (entry?.LastOffered is { } last && now - last < ReofferFloor) continue; // clause 3b: past floor
+            if (entry is { Declined: true }) continue;
+            // A given vendor re-nudges at most once per floor even on a fully active machine.
+            if (entry?.LastOffered is { } last && now - last < ReofferFloor) continue;
             result.Add(h);
         }
 

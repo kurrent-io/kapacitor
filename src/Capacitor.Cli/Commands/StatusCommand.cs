@@ -258,12 +258,12 @@ public static class StatusCommand {
     /// one wired-check definition.
     /// </summary>
     public static bool IsClaudePluginInstalled(string settingsPath) =>
-        HarnessIntegrationProbe.ClaudePluginEnabled(settingsPath);
+        ClaudePluginInstaller.IsPluginEnabled(settingsPath);
 
     /// <summary>
     /// True iff <paramref name="hooksPath"/> exists and any hook entry under any
     /// event references the <c>kcap codex-hook</c> command. Delegates to the Core source of truth.
     /// </summary>
     public static bool IsCodexHooksInstalled(string hooksPath) =>
-        HarnessIntegrationProbe.CodexHooksReferenced(hooksPath);
+        CodexHooksInstaller.ReferencesKcapHook(hooksPath);
 }

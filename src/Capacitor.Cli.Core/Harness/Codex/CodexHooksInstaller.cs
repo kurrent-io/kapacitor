@@ -59,6 +59,28 @@ public static class CodexHooksInstaller {
     }
 
     /// <summary>
+    /// True iff <paramref name="hooksPath"/> has any hook entry referencing the
+    /// <c>kcap codex-hook</c> command — the "is kcap wired into Codex?" check the <c>kcap status</c>
+    /// Hooks line has always used (reference only, NOT the marker), now shared with the new-harness
+    /// nudge. Reads with shared access so it never blocks Codex writing its own hooks.json.
+    /// </summary>
+    public static bool ReferencesKcapHook(string hooksPath) {
+        try {
+            if (!File.Exists(hooksPath)) return false;
+            if (JsonNode.Parse(SharedFileText.ReadAllText(hooksPath)) is not JsonObject root) return false;
+            if (root["hooks"] is not JsonObject hooks) return false;
+
+            foreach (var (_, value) in hooks)
+                if (value is JsonArray entries && entries.Any(CodexHooksParser.EntryReferencesCapacitorCodexHook))
+                    return true;
+
+            return false;
+        } catch {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Returns the version string from the marker, or null when absent or
     /// unreadable.
     /// </summary>

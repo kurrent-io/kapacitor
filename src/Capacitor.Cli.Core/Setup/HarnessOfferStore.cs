@@ -21,24 +21,29 @@ public sealed class HarnessOfferStore {
     public static HarnessOfferStore Default() =>
         new(PathHelpers.ConfigPath("harness-offers-v1.json"), PathHelpers.ConfigPath("harness-offers.last-check"));
 
-    /// <summary>Missing or corrupt file → empty ledger; never throws.</summary>
+    /// <summary>Missing or corrupt file → empty ledger; never throws. A syntactically valid file
+    /// with a null <c>vendors</c> member is normalized to an empty dictionary so callers never
+    /// dereference null (the corrupt-to-empty contract).</summary>
     public HarnessOfferLedger Load() {
         try {
             if (!File.Exists(_ledgerPath)) return new HarnessOfferLedger();
-            return JsonSerializer.Deserialize(File.ReadAllText(_ledgerPath), HarnessOfferLedgerJsonContext.Default.HarnessOfferLedger)
-                   ?? new HarnessOfferLedger();
+            var ledger = JsonSerializer.Deserialize(SharedFileText.ReadAllText(_ledgerPath), HarnessOfferLedgerJsonContext.Default.HarnessOfferLedger)
+                         ?? new HarnessOfferLedger();
+            return ledger.Vendors is null ? ledger with { Vendors = new() } : ledger;
         } catch {
             return new HarnessOfferLedger();
         }
     }
 
-    /// <summary>Atomic temp-write + rename. Returns false (never throws) on any I/O failure.</summary>
+    /// <summary>Atomic write. The temp file carries a per-process-unique suffix so two concurrent
+    /// writers never collide on the same temp path before their renames. Returns false (never
+    /// throws) on any I/O failure.</summary>
     public bool Save(HarnessOfferLedger ledger) {
         try {
             var dir = Path.GetDirectoryName(_ledgerPath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
-            var tmp = _ledgerPath + ".tmp";
+            var tmp = $"{_ledgerPath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
             File.WriteAllText(tmp, JsonSerializer.Serialize(ledger, HarnessOfferLedgerJsonContext.Default.HarnessOfferLedger));
             File.Move(tmp, _ledgerPath, overwrite: true);
             return true;
@@ -47,11 +52,22 @@ public sealed class HarnessOfferStore {
         }
     }
 
-    /// <summary>Read-modify-write convenience; returns the mutated ledger (persisted best-effort).</summary>
+    /// <summary>
+    /// Read-modify-write, serialized across processes by <see cref="ConfigFileLock"/> so a
+    /// concurrent hook/setup/command can't overwrite another's change (in particular, lose a
+    /// dismissal). Best-effort and never-throw: if the lock can't be taken it degrades to a lockless
+    /// write rather than failing a hook. Returns the mutated ledger.
+    /// </summary>
     public HarnessOfferLedger Update(Func<HarnessOfferLedger, HarnessOfferLedger> mutate) {
-        var next = mutate(Load());
-        Save(next);
-        return next;
+        IDisposable? lease = null;
+        try { lease = ConfigFileLock.Acquire(_ledgerPath, TimeSpan.FromSeconds(5)); } catch { /* degrade to lockless */ }
+        try {
+            var next = mutate(Load());
+            Save(next);
+            return next;
+        } finally {
+            lease?.Dispose();
+        }
     }
 
     /// <summary>
