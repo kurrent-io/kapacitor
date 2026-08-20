@@ -80,6 +80,15 @@ public record Profile {
     public bool? DisableCoordinationNotices { get; init; }
 
     /// <summary>
+    /// when true, kcap emits no new-harness setup nudges — neither the SessionStart nudge nor the
+    /// interactive CLI stderr notice — for harnesses that are installed but not yet wired into kcap.
+    /// The total "never ask about any harness" switch, distinct from a per-vendor
+    /// <c>kcap harness dismiss</c>. Independent of the other SessionStart opt-outs.
+    /// </summary>
+    [JsonPropertyName("disable_harness_nudge")]
+    public bool? DisableHarnessNudge { get; init; }
+
+    /// <summary>
     /// When true, kcap keeps <c>ANTHROPIC_API_KEY</c> / <c>OPENAI_API_KEY</c>
     /// in the spawn environment for headless agent CLIs (title generation,
     /// summaries, judges). Default <c>false</c> scrubs them so subscription

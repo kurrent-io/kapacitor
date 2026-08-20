@@ -323,8 +323,9 @@ static class CopilotHookCommand {
 
         // Copilot parses this hook's stdout as its (optional) single JSON result document. Silent when
         // there is neither a fragment nor a nudge, which keeps all pre-existing paths byte-identical.
-        var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
-            SessionStartHarness.Copilot, sessionId, activeProfile?.DisableWorkItemsNudge is true);
+        var workItemsNudge = HarnessNudgeEmitter.Combine(
+            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Copilot, sessionId, activeProfile?.DisableWorkItemsNudge is true),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true));
         WriteSessionStartOutput(Console.Out, fragment, workItemsNudge);
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return 0;

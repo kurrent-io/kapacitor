@@ -212,8 +212,9 @@ static class AntigravityHookCommand {
         // subtracts HookBudget.Safety — do NOT subtract it again. Written even when the watcher-spawn
         // gate below returns early — a withheld watcher must not suppress injection.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
-        var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
-            SessionStartHarness.Antigravity, sessionId, activeProfile?.DisableWorkItemsNudge is true);
+        var workItemsNudge = HarnessNudgeEmitter.Combine(
+            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Antigravity, sessionId, activeProfile?.DisableWorkItemsNudge is true),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true));
         WritePreInvocationOutput(stdout, fragment, workItemsNudge);
         await stdout.FlushAsync();
 

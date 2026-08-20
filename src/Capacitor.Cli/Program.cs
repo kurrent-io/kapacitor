@@ -332,6 +332,8 @@ switch (command) {
         return await UseCommand.HandleAsync(args);
     case "status":
         return await StatusCommand.HandleAsync(baseUrl, args);
+    case "harness":
+        return await HarnessCommand.HandleAsync(args);
     case "config":
         return await ConfigCommand.HandleAsync(args);
     case "ignore":
@@ -828,6 +830,7 @@ return 1;
 
 } finally {
     await UpdateNotice.FlushAsync(command, args);
+    await HarnessSetupNotice.FlushAsync(command);
 }
 
 static string? GetArg(string[] arguments, string flag) {

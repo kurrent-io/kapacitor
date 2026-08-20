@@ -259,8 +259,9 @@ static class KiroHookCommand {
         // a fragment sitting in a buffer when Kiro's hook timeout kills the process is a fragment
         // whose lease was spent for nothing.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
-        var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
-            SessionStartHarness.Kiro, sessionId, activeProfile?.DisableWorkItemsNudge is true);
+        var workItemsNudge = HarnessNudgeEmitter.Combine(
+            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Kiro, sessionId, activeProfile?.DisableWorkItemsNudge is true),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true));
         WriteAgentSpawnOutput(Console.Out, fragment, workItemsNudge);
         await Console.Out.FlushAsync();
 

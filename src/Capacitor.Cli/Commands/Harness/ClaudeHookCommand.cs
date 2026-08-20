@@ -706,9 +706,10 @@ public static class ClaudeHookCommand {
                     // the availability gate is always satisfied here; only the opt-out can suppress it.
                     var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
                         SessionStartHarness.Claude, sessionId, activeProfile?.DisableWorkItemsNudge is true);
+                    var harnessNudge = HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true);
 
                     var envelope = SessionStartAdditionalContext.BuildEnvelope(
-                        lessonsFragment, nudgeFragment, memoryFragment, coordinationFragment, workItemsNudge);
+                        lessonsFragment, nudgeFragment, memoryFragment, coordinationFragment, workItemsNudge, harnessNudge);
 
                     if (envelope is not null) {
                         writer.WriteLine(envelope);

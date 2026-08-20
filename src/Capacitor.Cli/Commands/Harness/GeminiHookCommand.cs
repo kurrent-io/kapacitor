@@ -361,8 +361,9 @@ static class GeminiHookCommand {
         // capture — a server rejecting the POST has not invalidated an index already fetched — and Gemini
         // parses hook stdout unconditionally, with the exit code only setting its own `success` flag.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
-        var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
-            SessionStartHarness.Gemini, sessionId, activeProfile?.DisableWorkItemsNudge is true);
+        var workItemsNudge = HarnessNudgeEmitter.Combine(
+            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Gemini, sessionId, activeProfile?.DisableWorkItemsNudge is true),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true));
         result.Write(RenderSessionStartPayload(fragment, workItemsNudge));
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return outcome == HookPostOutcome.Failed ? 1 : 0;

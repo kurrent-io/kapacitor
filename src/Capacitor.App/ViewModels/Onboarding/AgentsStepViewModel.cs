@@ -7,22 +7,15 @@ using ReactiveUI;
 namespace Capacitor.App.ViewModels.Onboarding;
 
 /// One coding-agent vendor: label, its exclusive plugin-install flag (null = Claude's flagless
-/// default), and its AgentDetectionResult selector. Order here is display AND sequential-install
+/// default), and its AgentDetectionResult selector. Order is display AND sequential-install
 /// order (spec §5's exclusive-flag list, Claude first) — shared by the Agents and Import steps.
 internal sealed record AgentVendor(string Label, string? Flag, Func<AgentDetectionResult, DetectedAgent> Select);
 
+/// Re-derived from the Core <see cref="HarnessCatalog"/> so the app and the CLI enumerate the same
+/// vendors, in the same order — a tenth harness added to the catalog appears here automatically.
 internal static class AgentVendors {
-    public static readonly IReadOnlyList<AgentVendor> All = [
-        new("Claude Code", null,            r => r.Claude),
-        new("Codex",       "--codex",       r => r.Codex),
-        new("Cursor",      "--cursor",      r => r.Cursor),
-        new("Copilot",     "--copilot",     r => r.Copilot),
-        new("Gemini",      "--gemini",      r => r.Gemini),
-        new("Kiro",        "--kiro",        r => r.Kiro),
-        new("Pi",          "--pi",          r => r.Pi),
-        new("OpenCode",    "--opencode",    r => r.OpenCode),
-        new("Antigravity", "--antigravity", r => r.Antigravity),
-    ];
+    public static readonly IReadOnlyList<AgentVendor> All =
+        HarnessCatalog.All.Select(h => new AgentVendor(h.Label, h.InstallFlag, h.Select)).ToList();
 }
 
 public enum AgentInstallStatus { NotRun, Installing, Succeeded, Failed }

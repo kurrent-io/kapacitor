@@ -514,9 +514,11 @@ public static class CursorHookCommand {
             // merged only at render. The opt-out flag is not in scope here (it lives inside the
             // orchestration), so re-read it; sessionStart fires once per session and the read is
             // fail-open under the surrounding catch.
-            var nudgeOptOut    = (await AppConfig.GetActiveProfileAsync(ct))?.DisableWorkItemsNudge is true;
-            var workItemsNudge = WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Cursor, sessionId, nudgeOptOut);
-            return SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, fragment, workItemsNudge);
+            var nudgeProfile   = await AppConfig.GetActiveProfileAsync(ct);
+            var workItemsNudge = WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Cursor, sessionId, nudgeProfile?.DisableWorkItemsNudge is true);
+            var harnessNudge   = HarnessNudgeEmitter.ResolveFragmentForHook(nudgeProfile?.DisableHarnessNudge is true);
+            return SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, fragment,
+                HarnessNudgeEmitter.Combine(workItemsNudge, harnessNudge));
         } catch {
             // Fail-open per design: any exception (budget cancellation,
             // transcript-file IO race, JSON quirk we missed) must never crash Cursor's agent

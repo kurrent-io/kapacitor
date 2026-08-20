@@ -29,6 +29,11 @@ Configuration:
   remap --list                     List configured cwd remaps
   remap --remove <from>            Remove a cwd remap entry
 
+Harness setup nudges:
+  harness list                     Show which coding agents are installed and whether kcap is set up for each
+  harness dismiss <vendor…>|--all  Stop nudging to set kcap up for an installed-but-unconfigured harness
+  harness reset <vendor…>|--all    Offer a previously-dismissed harness again
+
 Agents:
   agent start <vendor> [-d] [--worktree] [--private] [-- <args>]  Start a daemon-hosted agent
   agent ls                         List this daemon's agents (id, status, kind, repo)

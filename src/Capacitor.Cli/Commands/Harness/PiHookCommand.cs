@@ -171,8 +171,9 @@ static class PiHookCommand {
         // an injection whose once-per-session lease is already spent. pi.exec hands the extension
         // stdout regardless of exit code, so no commit gate is needed (unlike Copilot).
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
-        var workItemsNudge = WorkItemsNudgeEmitter.Resolve(
-            SessionStartHarness.Pi, sessionId, activeProfile?.DisableWorkItemsNudge is true);
+        var workItemsNudge = HarnessNudgeEmitter.Combine(
+            WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Pi, sessionId, activeProfile?.DisableWorkItemsNudge is true),
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true));
         await WriteMemoryFragment(stdout, fragment, workItemsNudge);
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return outcome == HookPostOutcome.Failed ? 1 : 0;

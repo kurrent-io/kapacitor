@@ -173,7 +173,11 @@ static class OpenCodeHookCommand {
         var workItemsNudge = canConsumeFragment
             ? WorkItemsNudgeEmitter.Resolve(SessionStartHarness.OpenCode, sessionId, activeProfile?.DisableWorkItemsNudge is true)
             : null;
-        await WriteMemoryFragment(stdout, fragment, workItemsNudge);
+        // The harness nudge is independent of the once-per-session memory lease — it has its own
+        // 6h evaluation throttle, so it can surface even on a re-fired session that can't reconsume.
+        var combinedNudge = HarnessNudgeEmitter.Combine(
+            workItemsNudge, HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true));
+        await WriteMemoryFragment(stdout, fragment, combinedNudge);
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return 0;
 

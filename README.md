@@ -283,6 +283,7 @@ At a glance — each links to its section below:
 | [`kcap update`](#other-commands) | Upgrade the CLI and refresh agent plugins |
 | [`kcap uninstall`](#uninstalling) | Remove kcap from this machine |
 | [`kcap status` / `whoami` / `login` / `logout`](#other-commands) | Health, identity, and auth |
+| [`kcap harness`](#new-harness-detection) | List / dismiss / reset the "set kcap up for this agent" nudges |
 | [`kcap feedback`](#other-commands) | Report a bug or send feedback to Kurrent support |
 
 ### Initial setup
@@ -1912,6 +1913,36 @@ kcap uninstall --keep-config    # remove integrations, keep ~/.config/kcap
 `--project` additionally cleans up `<repo>/.claude/settings.local.json` and `<repo>/.codex/hooks.json` in the current git working tree (errors if you're not inside one). Cursor only has a user-scope `hooks.json`, so `--project` does not affect it. Project-scope hooks in other repos are not touched — re-run from each repo that has them.
 
 Use `--keep-config` to preserve profiles, tokens, and ignore lists when you plan to reinstall. Per-agent selective cleanup is not exposed here — use `kcap plugin remove [--codex|--cursor|--copilot|--gemini|--kiro|--pi|--opencode|--antigravity|--skills]` for finer-grained removal.
+
+### New-harness detection
+
+`kcap setup` only sees the coding agents installed **at the time you run it**. If you install
+another agent later — say you set kcap up while using Claude Code, then later add Antigravity —
+kcap notices and offers to wire that agent in too (hooks, skills, MCP), so sessions there start
+being recorded. Detection is filesystem-cheap and check-on-occasion (no watcher), and kcap asks
+about a given agent at most once a week and remembers a dismissal, so it never nags.
+
+You'll see the offer on whichever surface reaches you:
+
+- **Inside a session** in an already-configured agent, kcap tells that agent to offer to run the
+  install for you.
+- **On the command line**, running an interactive `kcap` command prints a one-line notice to
+  stderr (never in scripts or pipes), like the "update available" notice.
+- **`kcap status`** always lists any installed-but-unconfigured agent with the command to fix it —
+  even one you've dismissed (status tells the whole truth).
+
+Manage the nudges with `kcap harness`:
+
+```bash
+kcap harness list                     # detected / kcap-wired / dismissed, per agent
+kcap harness dismiss antigravity      # stop asking about one agent
+kcap harness dismiss --all            # stop asking about every currently-detected agent
+kcap harness reset antigravity        # ask again (undo a dismissal)
+```
+
+To turn off the nudges entirely (both the in-session and command-line surfaces), set
+`kcap config set disable_harness_nudge true`. Dismissing is per-agent; a brand-new agent installed
+after a `--all` dismiss is still offered once.
 
 ### Other commands
 

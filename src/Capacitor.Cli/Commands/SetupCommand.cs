@@ -416,6 +416,23 @@ public static class SetupCommand {
         var installResult = await CodingAgentsStep.RunAsync(
             stepOptions, detected, stepPaths, stepInstallers, PromptYesNo, WriteLine);
 
+        // Record that setup offered these detected agents, so the new-harness nudge doesn't later
+        // re-offer a vendor the user just saw at the Step 4 prompt (whether they said yes or no).
+        // A vendor skipped by its own --skip-<vendor> flag was not meaningfully offered, so it is
+        // left unstamped and can still nudge later. Never writes/overwrites a dismissal.
+        var offeredNow = new List<string>();
+        void OfferedIf(bool wasDetected, bool skipped, string id) { if (wasDetected && !skipped) offeredNow.Add(id); }
+        OfferedIf(detected.Claude,      skipClaude,          "claude");
+        OfferedIf(detected.Codex,       skipCodexFlag,       "codex");
+        OfferedIf(detected.Cursor,      skipCursorFlag,      "cursor");
+        OfferedIf(detected.Copilot,     skipCopilotFlag,     "copilot");
+        OfferedIf(detected.Gemini,      skipGeminiFlag,      "gemini");
+        OfferedIf(detected.Kiro,        skipKiroFlag,        "kiro");
+        OfferedIf(detected.Pi,          skipPiFlag,          "pi");
+        OfferedIf(detected.OpenCode,    skipOpenCodeFlag,    "opencode");
+        OfferedIf(detected.Antigravity, skipAntigravityFlag, "antigravity");
+        HarnessOfferStore.Default().StampOffered(offeredNow, DateTimeOffset.UtcNow);
+
         // Provider API key handling. kcap scrubs ANTHROPIC_API_KEY / OPENAI_API_KEY
         // from headless agent CLI spawns by default so subscription auth
         // wins. PAYG users with the keys set in their environment can opt back in

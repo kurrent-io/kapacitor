@@ -1,7 +1,7 @@
-using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
@@ -88,6 +88,18 @@ public static class StatusCommand {
             antigravity: AntigravityHooksInstaller.IsInstalled(AntigravityPaths.GlobalHooksJson()));
 
         await Console.Out.WriteLineAsync(line);
+
+        // Newly-installed-but-unconfigured harnesses. Ledger-independent (a dismissed vendor is
+        // still surfaced here) — status always tells the truth, unlike the nudge which respects
+        // dismissals. Shares the wired-check with the Hooks line above, so the two never disagree.
+        var detectionInputs = AgentDetection.FromEnvironment();
+        var detectedAgents  = AgentDetection.Detect(detectionInputs);
+        foreach (var h in HarnessCatalog.All) {
+            if (!h.Select(detectedAgents).Detected) continue;
+            if (HarnessIntegrationProbe.IsWired(h.VendorId, detectionInputs)) continue;
+            var install = h.InstallFlag is null ? "kcap plugin install" : $"kcap plugin install {h.InstallFlag}";
+            await Console.Out.WriteLineAsync($"           {h.Label} installed but kcap not configured — run `{install}`");
+        }
 
         // Daemon: read per-name PID files under
         // ~/.config/kcap/daemons/ instead of the legacy singleton
@@ -241,41 +253,17 @@ public static class StatusCommand {
 
     /// <summary>
     /// True iff <paramref name="settingsPath"/> exists and has
-    /// <c>enabledPlugins["kcap@kcap"] == true</c>.
+    /// <c>enabledPlugins["kcap@kcap"] == true</c>. Delegates to the Core source of truth
+    /// (<see cref="HarnessIntegrationProbe"/>) so the status line and the new-harness nudge share
+    /// one wired-check definition.
     /// </summary>
-    public static bool IsClaudePluginInstalled(string settingsPath) {
-        try {
-            if (!File.Exists(settingsPath)) return false;
-            if (JsonNode.Parse(File.ReadAllText(settingsPath)) is not JsonObject root) return false;
-            if (root["enabledPlugins"] is not JsonObject enabled) return false;
-
-            return enabled["kcap@kcap"]?.GetValue<bool>() == true;
-        } catch {
-            return false;
-        }
-    }
+    public static bool IsClaudePluginInstalled(string settingsPath) =>
+        HarnessIntegrationProbe.ClaudePluginEnabled(settingsPath);
 
     /// <summary>
     /// True iff <paramref name="hooksPath"/> exists and any hook entry under any
-    /// event references the <c>kcap codex-hook</c> command.
+    /// event references the <c>kcap codex-hook</c> command. Delegates to the Core source of truth.
     /// </summary>
-    public static bool IsCodexHooksInstalled(string hooksPath) {
-        try {
-            if (!File.Exists(hooksPath)) return false;
-            if (JsonNode.Parse(File.ReadAllText(hooksPath)) is not JsonObject root) return false;
-            if (root["hooks"] is not JsonObject hooks) return false;
-
-            foreach (var (_, value) in hooks) {
-                if (value is not JsonArray entries) continue;
-
-                if (entries.Any(CodexHooksParser.EntryReferencesCapacitorCodexHook)) {
-                    return true;
-                }
-            }
-
-            return false;
-        } catch {
-            return false;
-        }
-    }
+    public static bool IsCodexHooksInstalled(string hooksPath) =>
+        HarnessIntegrationProbe.CodexHooksReferenced(hooksPath);
 }
