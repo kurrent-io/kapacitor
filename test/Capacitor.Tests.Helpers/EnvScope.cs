@@ -46,7 +46,7 @@ public sealed class EnvScope : IDisposable {
     static void RequireExclusion(string key, bool exclusive) {
         var context = TestContext.Current
                    ?? throw new InvalidOperationException(
-                          $"EnvScope needs a running test to read '{key}''s parallel constraints from. "
+                          $"EnvScope needs a running test to read the parallel constraints for '{key}'. "
                         + "A process-wide pin that must be in place before any test runs belongs in "
                         + "Guards/, setting the variable directly.");
 
