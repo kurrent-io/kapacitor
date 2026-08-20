@@ -95,6 +95,18 @@ internal interface IImportSource {
     bool IsAvailable { get; }
 
     /// <summary>
+    /// How old a discovered session is, by the rule THIS source's <c>--since</c> applies to it — so a
+    /// window's count predicts the import that window would produce.
+    /// </summary>
+    /// <remarks>
+    /// Most sources resolve a <c>FirstTimestamp</c> during discovery and filter on it, which is the
+    /// default. Claude and Codex do not and override: their <c>--since</c> reads a rollout's day
+    /// directory and a transcript's first timestamp respectively. Answering here rather than in a
+    /// switch keeps a new harness from having to edit shared code to be dated correctly.
+    /// </remarks>
+    DateTimeOffset? DiscoveryAge(DiscoveredSession session) => session.FirstTimestamp;
+
+    /// <summary>
     /// True if title-generation background tasks should be scheduled for
     /// sessions imported via this source. Claude and Codex return true;
     /// Cursor returns false because the composer header carries a name that

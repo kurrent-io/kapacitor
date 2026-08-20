@@ -292,6 +292,12 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     /// With no initial prompt it simply unseals (a subsequent user input becomes the first turn).
     /// </summary>
     public async Task BeginFirstTurnAsync(CancellationToken ct = default) {
+        // A launch cancelled during the source-claim / forwarder setup must NOT release the held first
+        // turn — dispatching turn/start after finalization began races the teardown. Observe the token
+        // BEFORE unsealing: the dispatch runs on CancellationToken.None and can't be recalled once it
+        // leaves, so this is the only safe gate. (A cancel in the sliver between here and Unseal is the
+        // same benign post-unseal race the comment below covers — teardown kills the process.)
+        ct.ThrowIfCancellationRequested();
         _dispatcher.Unseal();
         // If ct fires after the unseal, the held turn/start may already have left (the dispatch used
         // CancellationToken.None) — cancelling this await does NOT recall it. That is fine: a cancel here

@@ -182,6 +182,8 @@ kcap import --opencode          # only OpenCode
 kcap import --antigravity       # only Antigravity
 ```
 
+> **Already-running sessions.** On a *first* `plugin install --kiro`, any Kiro session already running loaded no kcap integration, so it isn't captured live — the install names it and where it is. It is not lost: the agent writes its transcript to disk regardless, so `kcap import --kiro` backfills it once it ends. kcap deliberately does not offer to restart it, which would mean killing an interactive session on a terminal it does not own with no way to relaunch it. Nothing is printed when there is no such session, or when you re-run an install you already had — that session started *with* the integration and is being captured.
+
 > **Pi** has no shell hooks, so live capture uses a shipped Pi extension rather than a hooks file: run `kcap plugin install --pi` (or accept the `kcap setup` prompt) to write `~/.pi/agent/extensions/kcap.ts`, which `pi` auto-loads and streams each session live. Because Pi also ships no built-in MCP, the same command installs an MCP-bridge extension (`~/.pi/agent/extensions/kcap-mcp.ts`, opt out `--skip-pi-mcp`) that exposes the kcap MCP servers as native Pi tools, plus a steering block in `~/.pi/agent/AGENTS.md` (opt out `--skip-pi-instructions`). Historical `kcap import --pi` works with or without any of it.
 
 > **OpenCode** likewise has no shell hooks: live capture uses a shipped OpenCode plugin. Run `kcap plugin install --opencode` (or accept the `kcap setup` prompt) to write `~/.config/opencode/plugins/kcap.ts`, which `opencode` auto-loads and streams each session live (`vendor=opencode`). Subagents (the `task` tool / `@agent`) are captured too — the plugin fetches each child session via the SDK and streams it, so it nests under the parent in the trace. Historical `kcap import --opencode` reads OpenCode's SQLite database (`~/.local/share/opencode/opencode.db`) and imports every transitive descendant session (children, grandchildren, and so on — see [Loading historical sessions](#loading-historical-sessions)), so it backfills sessions from before the plugin was installed.
@@ -633,6 +635,8 @@ kcap import --org EventStore                 # sessions whose git-remote owner i
 kcap import --org                            # pick an owner from discovered repos, then remember it
 kcap import --repo owner/repo                # one specific repo
 kcap import --repo owner/one --repo owner/two  # several — repeat the flag per repo
+kcap import --discover                       # what's on disk, per repo, without importing
+kcap import --discover --json                # the same report, machine-readable
 kcap import --repo .                         # the repo at the current cwd (must be a git repo with an origin remote)
 ```
 
@@ -675,6 +679,10 @@ kcap import --org EventStore --session abc123    # single session
 kcap import --org EventStore --skip-title    # don't spend your own agent quota on titles
 kcap import --opencode --session ses_x --reimport  # force one OpenCode session past its ledger entry
 ```
+
+`--discover` reports what is on disk and exits without importing anything: sessions and most-recent date per repository, how many could not be matched to one (those are the sessions `--all` includes and any `--repo`/`--org` selection drops — usually a renamed directory, see `kcap remap`), and a total for each `--since` window the CLI offers. It needs no scope flag, since it is what you run to decide which one to use, and it needs no server or login — the whole report comes off local disk.
+
+`--discover --json` emits the same report as JSON on stdout and nothing else, so it can be piped. Each window carries its own `since` (null for "everything") rather than a label, so a consumer reads the boundaries off the report instead of re-deriving them. Each vendor is dated the way `--since` dates it — Codex by the rollout's day directory, Claude by the transcript's first timestamp — so a window's count predicts what importing with that `--since` would actually select.
 
 `--reimport` forces OpenCode sessions to re-import even when the local completeness ledger (described above) records them as already loaded — the escape hatch for a session that was deleted server-side (e.g. via `kcap disable`) but is still marked complete locally, which a plain re-run would otherwise skip. Scope it with the usual vendor/`--repo`/`--cwd`/`--session` filters to force just the affected sessions; the re-send is idempotent, and a successful forced import refreshes the ledger entry. It has no effect on other vendors, which already re-classify every run.
 

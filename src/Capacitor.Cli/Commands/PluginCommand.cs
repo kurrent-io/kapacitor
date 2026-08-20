@@ -853,6 +853,11 @@ public static class PluginCommand {
         // Gemini refresh heals MCP + instructions even when a prior version had hooks only.
         if (refreshOnly && !PiExtensionInstaller.IsInstalled(extensionPath)) return 0;
 
+        // No stale-session report for Pi: it runs through a node shim, and node's process.title setter
+        // rewrites the argv region — so the process is named `pi` with a command line of just "pi", or
+        // named `node` with the package path intact, never both. A name this generic needs
+        // corroboration, and the only corroborating signal disappears exactly when the name appears.
+
         // Fresh install needs kcap on PATH: both extensions shell out to the bare
         // `kcap` command (ingest → `kcap hook --pi`; bridge → `kcap mcp <name>`), so
         // pi must find kcap on PATH. Skipped on the postinstall (--if-installed) path.
@@ -1275,6 +1280,20 @@ public static class PluginCommand {
     static Task InstallAntigravitySkillsAsync(PluginEnvironment env, bool refreshOnly) =>
         InstallVendorSkillsAsync(env, env.AntigravitySkillsDir, "Antigravity", refreshOnly);
 
+    /// <summary>
+    /// Reports the sessions sampled before the install, once that install has actually landed. Saying
+    /// "anything from now on is captured" after a failed one would be untrue in the direction that
+    /// matters.
+    /// </summary>
+    static async Task ReportStaleAgentsAsync(
+            PluginEnvironment env, IReadOnlyList<StaleAgentProcess> runningBefore, bool installed) {
+        if (!installed) return;
+
+        foreach (var line in StaleAgentDetector.Describe(runningBefore)) {
+            await env.Stdout.WriteLineAsync(line);
+        }
+    }
+
     static async Task<int> RemoveAntigravity(string[] args, PluginEnvironment env) {
         var hooksPath = GetArg(args, "--antigravity-hooks-path") ?? env.AntigravityHooksJson;
 
@@ -1563,6 +1582,8 @@ public static class PluginCommand {
         // can leave an MCP-only install with no agent marker.
         var mcpInstalled = HarnessMcpProjections.Kiro.OwnsAnything(mcpPath);
 
+        var kiroAlreadyInstalled = KiroHooksInstaller.IsInstalled(agentPath);
+
         if (refreshOnly) {
             // Never touch a machine that never opted in (neither hooks nor MCP).
             if (!KiroHooksInstaller.IsInstalled(agentPath) && !mcpInstalled) return 0;
@@ -1589,6 +1610,13 @@ public static class PluginCommand {
 
             return 1;
         }
+
+        // Sampled after the early returns above and before anything is written: a refresh that bails
+        // should not sweep the process table, and a session started DURING the install loaded the
+        // integration, so it must not be reported as predating it.
+        var kiroRunningBefore = kiroAlreadyInstalled
+            ? []
+            : env.FindStaleAgents([new StaleAgentTarget("kiro", KiroPaths.ProcessName)]);
 
         // Clone/refresh the agent unless a refresh finds it on disk AND current (File.Exists so a
         // deleted kcap.json is recreated). MCP is registered below regardless of the clone outcome.
@@ -1626,6 +1654,8 @@ public static class PluginCommand {
         // of the agent clone; non-fatal (a copy error is a warning). Mirrors the Antigravity path.
         if (!args.Contains("--skip-kiro-skills"))
             await InstallKiroSkillsAsync(env, refreshOnly);
+
+        await ReportStaleAgentsAsync(env, kiroRunningBefore, installed: !hooksFailed);
 
         // A fresh agent-clone failure is still an error exit (capture won't work without it), but the
         // independent MCP file + skills were still written above.

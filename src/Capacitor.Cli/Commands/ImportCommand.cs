@@ -23,12 +23,22 @@ static class ImportCommand {
     internal readonly struct ImportDisplay {
         public bool Tty { get; init; }
 
+        /// <summary>
+        /// Suppresses every progress line. Set for <c>--discover --json</c>, whose whole stdout has to
+        /// parse — one "Found 24 sessions." ahead of the payload and it does not.
+        /// </summary>
+        public bool Quiet { get; init; }
+
         public void Line(string plain, string? markup = null) {
+            if (Quiet) return;
+
             if (Tty) AnsiConsole.MarkupLine(markup ?? Markup.Escape(plain));
             else Console.WriteLine(plain);
         }
 
         public void BeginPhase(string title) {
+            if (Quiet) return;
+
             if (Tty) {
                 AnsiConsole.Write(new Rule($"[yellow]{Markup.Escape(title)}[/]").LeftJustified());
             } else {
@@ -228,7 +238,8 @@ static class ImportCommand {
             }
         }
 
-        public static ImportDisplay Create() => new() { Tty = !Console.IsOutputRedirected };
+        public static ImportDisplay Create(bool quiet = false) =>
+            new() { Tty = !quiet && !Console.IsOutputRedirected, Quiet = quiet };
     }
 
     internal enum ClassificationStatus {
@@ -563,6 +574,34 @@ static class ImportCommand {
         );
 
     /// <summary>
+    /// Every "found nothing" exit still reports. Zero sessions is an answer; no output at all is
+    /// indistinguishable from the process having died.
+    /// </summary>
+    static int WriteEmptyDiscoveryReport(bool asJson) {
+        WriteDiscoveryReport(
+            ImportDiscoverySummary.Build([], new Dictionary<string, (string, string)?>(), DiscoveryWindows()),
+            asJson);
+
+        return 0;
+    }
+
+    static void WriteDiscoveryReport(ImportDiscoverySummary summary, bool asJson) =>
+        Console.WriteLine(asJson
+            ? ImportDiscoveryRender.ToJson(summary)
+            : ImportDiscoveryRender.ToText(summary));
+
+    /// <summary>
+    /// The <c>--since</c> windows discovery reports totals for, newest first, ending in "everything".
+    /// Callers that offer a different set pass their own to
+    /// <see cref="ImportDiscoverySummary.Build"/> — these are the defaults the CLI itself offers.
+    /// </summary>
+    internal static IReadOnlyList<DateOnly?> DiscoveryWindows(DateTimeOffset? now = null) {
+        var today = DateOnly.FromDateTime((now ?? DateTimeOffset.UtcNow).UtcDateTime);
+
+        return [today.AddDays(-30), today.AddDays(-90), null];
+    }
+
+    /// <summary>
     /// Builds the Spectre markup for the "✗ Skipping {sid} [reason]" line.
     /// The outer literal brackets around <paramref name="reason"/> MUST be
     /// doubled — Spectre treats a bare <c>[word ...]</c> as a markup tag and
@@ -601,10 +640,16 @@ static class ImportCommand {
             bool                          autoSkipExclusions      = false,
             string?                       defaultVisibility       = null,
             bool                          reimport                = false,
-            bool                          skipTitle               = false
+            bool                          skipTitle               = false,
+            bool                          discoverOnly            = false,
+            bool                          discoverJson            = false
         ) {
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
-        var       display    = ImportDisplay.Create();
+        // Discovery is a local scan and never touches this client, so building the authenticated one
+        // would probe the server and warn an unauthenticated user about a command that needs neither.
+        using var httpClient = discoverOnly
+            ? new HttpClient()
+            : await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+        var       display    = ImportDisplay.Create(quiet: discoverJson);
 
         // --- Sources ---
         // Back-compat: a null caller (legacy or test) means "Claude only". Once
@@ -627,6 +672,8 @@ static class ImportCommand {
                 return 1;
             }
 
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+
             display.Line("No coding-agent sessions found. Install Claude, Codex, or Cursor and try again.");
 
             return 0;
@@ -646,7 +693,10 @@ static class ImportCommand {
         var filters = new DiscoveryFilters(
             FilterCwd: filterCwd,
             FilterSession: filterSession,
-            Since: since,
+            // A report of what each window WOULD select cannot start from a set one window already
+            // pruned: 8 of the 9 sources filter on --since during discovery, which would collapse
+            // every row to the same total and make the "everything" row untrue.
+            Since: discoverOnly ? null : since,
             MinLines: minLines
         );
 
@@ -667,10 +717,14 @@ static class ImportCommand {
             // Keep the message aligned with the dead branch lower in this method
             // (cleanup follow-up) so downstream tooling sees consistent output.
             if (filterSession is not null) {
+                if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+
                 await Console.Error.WriteLineAsync($"Session not found: {NormalizeGuid(filterSession)}");
 
                 return 1;
             }
+
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
 
             display.Line("No transcript files found.");
 
@@ -782,6 +836,20 @@ static class ImportCommand {
         // repo scope, and can fix it by adding cwd_remap entries.
         ReportWorktreeAttributions(worktreeAttributed.Count, display);
         ReportMissingCwds(sessionCwds, cwdRemap, display);
+
+        if (discoverOnly) {
+            WriteDiscoveryReport(
+                ImportDiscoverySummary.Build(
+                    // Each source dates its own sessions: the rule differs per vendor and only the
+                    // source knows which one its --since applies.
+                    sources.SelectMany((src, i) =>
+                        discoveriesPerSource[i].Select(d => (d.SessionId, src.DiscoveryAge(d)))),
+                    resolved,
+                    DiscoveryWindows()),
+                discoverJson);
+
+            return 0;
+        }
 
         // --- Scope picker ---
         var profile = await AppConfig.GetActiveProfileAsync();

@@ -162,7 +162,12 @@ if (args.Skip(1).Any(a => a is "--help" or "-h")) {
 // "No server configured" exit 1 this gate would otherwise produce.
 string[] offlineCommands = ["--help", "-h", "help", "--version", "-v", "logout", "cleanup", "config", "daemon", "setup", "status", "harness", "update", "plugin", "profile", "use", "repos", "login", "ignore", "remap", "uninstall", "cursor-verify-appendonly", "agent", "report-version"];
 
-if (baseUrl is null && !offlineCommands.Contains(command)) {
+// `import --discover` reads local transcripts and never calls the server, so it belongs with the
+// offline commands — and it is most useful before setup has run, which is exactly when there is no
+// server configured. Only that form: a real import obviously needs one.
+var offlineDiscover = command == "import" && args.Contains("--discover");
+
+if (baseUrl is null && !offlineCommands.Contains(command) && !offlineDiscover) {
     Console.Error.WriteLine("No server configured. Run `kcap setup` or set KCAP_URL.");
 
     return 1;
@@ -590,6 +595,16 @@ switch (command) {
         var generateSummaries = args.Contains("--generate-summaries");
         var reimport          = args.Contains("--reimport");
         var skipTitle         = args.Contains("--skip-title");
+        var discoverOnly      = args.Contains("--discover");
+        var discoverJson      = args.Contains("--json");
+
+        // Silently ignoring it would turn "report as JSON" into a real import, which is the one
+        // mistake this flag pair can make that costs something.
+        if (discoverJson && !discoverOnly) {
+            Console.Error.WriteLine("--json only applies to `kcap import --discover`.");
+
+            return 1;
+        }
 
         // Build sources
         var explicitVendorSelection = vsel.Vendors.Count > 0;
@@ -626,13 +641,16 @@ switch (command) {
             CurrentRepo:   currentRepo,
             StoredOrg:     storedOrg));
 
-        if (resolveResult.Error is not null) {
+        // `--discover` reports what a scope WOULD select, so requiring one first is backwards — it is
+        // the answer to "what should I pick", asked before anything is uploaded.
+        if (resolveResult.Error is not null && !discoverOnly) {
             Console.Error.WriteLine(resolveResult.Error);
             return 1;
         }
 
         return await ImportCommand.HandleImport(
-            baseUrl!,
+            // Discovery never calls the server, and reaches here with no configured one.
+            baseUrl ?? "",
             filterCwd,
             filterSession,
             minLines,
@@ -648,7 +666,9 @@ switch (command) {
             needOrgPick:             resolveResult.NeedOrgPick,
             storedOrg:               storedOrg,
             reimport:                reimport,
-            skipTitle:               skipTitle);
+            skipTitle:               skipTitle,
+            discoverOnly:            discoverOnly,
+            discoverJson:            discoverJson);
     }
     case "watch" when args.Length < 3:
         Console.Error.WriteLine("Usage: kcap watch <sessionId> <transcriptPath> [--agent-id <agentId>] [--cwd <cwd>] [--skip-title] [--parent-pid <pid>] [--vendor claude|codex|copilot|gemini|kiro|pi|opencode|antigravity|cursor]");

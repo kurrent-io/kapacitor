@@ -3817,6 +3817,17 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // is running BEFORE the first turn dispatches, so it captures that turn's envelopes.
             StartForwarderAfterBind(agent, transcript, vendor, acpCts);
 
+            // StartForwarderAfterBind aborts silently if finalize ran (cancelled acpCts and/or removed the
+            // agent) during the bind — re-check the SAME liveness before releasing the held first turn, so a
+            // launch that finalized while binding never dispatches turn/start into a teardown. (The runtime
+            // also observes acpCts inside BeginFirstTurnAsync; this closes the agent-removed-but-token-live
+            // arm StartForwarderAfterBind guards on.)
+            if (acpCts.IsCancellationRequested || !_agents.ContainsKey(agent.Id)) {
+                LogAcpBindAbortedAgentGone(agent.Id);
+
+                return;
+            }
+
             // Dispatch the held first turn and await its response — the signal we confirm on.
             await runtime.BeginFirstTurnAsync(acpCts.Token);
 
