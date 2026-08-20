@@ -8,11 +8,6 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Pty.Unix;
 /// (bypassing UnixPtyProcess/the spawner thread, which Task 4/5 layer on top). These tests
 /// exercise the raw native contract in isolation.
 /// </summary>
-/// <remarks>
-/// Bare <c>[NotInParallel]</c>: these waitpid a reaped pid, which the OS can reassign to a concurrent spawn.
-/// Stealing a child System.Diagnostics.Process owns FailFasts the host, killing the whole run.
-/// </remarks>
-[NotInParallel]
 public class PtySpawnTests {
     [Test, RunOn(OS.Linux | OS.MacOs)]
     public async Task Successful_spawn_returns_a_reapable_child_and_a_captured_identity() {
@@ -58,9 +53,13 @@ public class PtySpawnTests {
             await Assert.That(rc).IsEqualTo(-1);
             await Assert.That(result.FailedStep).IsEqualTo(5 /* PTY_STEP_EXEC */);
             await Assert.That(result.ErrNo).IsEqualTo(2 /* ENOENT */);
-            // No zombie/phantom: waitpid on the reported pid must fail with ECHILD (already reaped by pty_spawn).
-            var wpRc = UnixPtyInterop.waitpid(result.Pid, out _, 0);
-            await Assert.That(wpRc).IsEqualTo(-1);
+            // Capture-binding holds on the failure paths too, so there is an identity to assert
+            // against — without this the IsGone check below could pass vacuously on an empty token.
+            await Assert.That(result.StartIdentityString).IsNotEmpty();
+            // No zombie/phantom: pty_spawn reaped the child, so its identity is gone from the
+            // process table. Stronger than waiting for ECHILD, which cannot tell a reaped child
+            // from a wait some concurrent peer stole — an unreaped zombie still carries its token.
+            await Assert.That(PidIdentity.IsGone(result.Pid, result.StartIdentityString)).IsTrue();
         } finally { Free(plan); }
     }
 

@@ -389,36 +389,31 @@ public class AgentOrchestratorLocalAttachTests {
     [NotInParallel]
     public async Task Registered_spawn_env_includes_daemon_bridge_url_and_preserves_api_key() {
         using var tmp = new TempDir();
-        var prevKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
-        Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-test-key");
+        using var apiKey = EnvScope.Exclusive("ANTHROPIC_API_KEY", "sk-test-key");
+
+        var server    = new TripwireServerConnection();
+        var pty       = new EnvCapturingPtyFactory();
+        var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = new SpyHostedAgentLauncher("claude", "spy-claude") };
+
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, pty, launchers);
+        await orch.PermissionBridgeForTest.StartAsync(default); // binds 127.0.0.1 + sets BaseUrl
 
         try {
-            var server    = new TripwireServerConnection();
-            var pty       = new EnvCapturingPtyFactory();
-            var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = new SpyHostedAgentLauncher("claude", "spy-claude") };
+            var readBuf = new MemoryStream();
+            await FrameCodec.WriteAsync(readBuf, LocalFrame.Detach(), default);
+            readBuf.Position = 0;
+            using var client = new DuplexTestStream(readBuf, new MemoryStream());
 
-            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, pty, launchers);
-            await orch.PermissionBridgeForTest.StartAsync(default); // binds 127.0.0.1 + sets BaseUrl
+            var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate: false, tmp.Path, [], 80, 24);
+            await orch.HandleLocalSpawnAsync(spawn, client, default);
 
-            try {
-                var readBuf = new MemoryStream();
-                await FrameCodec.WriteAsync(readBuf, LocalFrame.Detach(), default);
-                readBuf.Position = 0;
-                using var client = new DuplexTestStream(readBuf, new MemoryStream());
+            var deadline = DateTime.UtcNow + WaitHarness.Bounded;
+            while (orch.ActiveAgentCountForTest > 0 && DateTime.UtcNow < deadline) await Task.Delay(20);
 
-                var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate: false, tmp.Path, [], 80, 24);
-                await orch.HandleLocalSpawnAsync(spawn, client, default);
-
-                var deadline = DateTime.UtcNow + WaitHarness.Bounded;
-                while (orch.ActiveAgentCountForTest > 0 && DateTime.UtcNow < deadline) await Task.Delay(20);
-
-                await Assert.That(pty.LastEnv!["KCAP_DAEMON_URL"]).IsEqualTo(orch.PermissionBridgeForTest.BaseUrl);
-                await Assert.That(pty.LastEnv!["ANTHROPIC_API_KEY"]).IsEqualTo("sk-test-key");
-            } finally {
-                await orch.PermissionBridgeForTest.StopAsync(default);
-            }
+            await Assert.That(pty.LastEnv!["KCAP_DAEMON_URL"]).IsEqualTo(orch.PermissionBridgeForTest.BaseUrl);
+            await Assert.That(pty.LastEnv!["ANTHROPIC_API_KEY"]).IsEqualTo("sk-test-key");
         } finally {
-            Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", prevKey);
+            await orch.PermissionBridgeForTest.StopAsync(default);
         }
     }
 

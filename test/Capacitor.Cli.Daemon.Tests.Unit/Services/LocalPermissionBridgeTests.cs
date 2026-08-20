@@ -12,7 +12,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
-[NotInParallel]
 public class LocalPermissionBridgeTests {
     static (LocalPermissionBridge bridge, FakeServerConnection server) CreateBridge(
             Func<string, string?, JsonElement?, JsonElement?, CancellationToken, Task<PermissionDecision>>? respond = null,

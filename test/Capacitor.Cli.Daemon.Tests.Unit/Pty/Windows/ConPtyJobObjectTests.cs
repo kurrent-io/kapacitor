@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Capacitor.Cli.Daemon.Pty.Windows;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Pty.Windows;
@@ -23,14 +22,15 @@ public class ConPtyJobObjectTests {
 
         await Task.Delay(500); // let the grandchild actually spawn before we kill the job
 
+        // Capture while it is alive: Windows frees the pid as soon as the last handle to the dead
+        // process closes, so a bare GetProcessById would read a reassigned number as still-alive.
+        var identity = PidIdentity.Capture(proc.Pid);
+
         await proc.DisposeAsync();
 
         // Job-handle close is synchronous-ish from the OS's perspective, but process exit
         // notification can lag slightly — poll rather than assert instantly.
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (DateTime.UtcNow < deadline && IsProcessAlive(proc.Pid)) await Task.Delay(200);
-
-        await Assert.That(IsProcessAlive(proc.Pid)).IsFalse();
+        await PidIdentity.WaitUntilGoneAsync(proc.Pid, identity, TimeSpan.FromSeconds(10));
     }
 
     [Test]
@@ -106,10 +106,5 @@ public class ConPtyJobObjectTests {
         }
 
         await Assert.That(threw).IsTrue();
-    }
-
-    static bool IsProcessAlive(int pid) {
-        try { using var p = Process.GetProcessById(pid); return !p.HasExited; }
-        catch { return false; }
     }
 }

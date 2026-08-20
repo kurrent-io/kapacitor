@@ -21,17 +21,13 @@ public class ConPtyResolveCommandTests {
         var cmd = tmp.PathTo(name + ".cmd");
         await File.WriteAllTextAsync(cmd, "@echo off\r\n");
 
-        var savedPath = Environment.GetEnvironmentVariable("PATH");
-        Environment.SetEnvironmentVariable("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
+        var       savedPath = Environment.GetEnvironmentVariable("PATH");
+        using var pathEnv   = EnvScope.Exclusive("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
 
-        try {
-            var (resolved, isCmd) = ConPtyProcess.ResolveCommand(name);
+        var (resolved, isCmd) = ConPtyProcess.ResolveCommand(name);
 
-            await Assert.That(resolved).IsEqualTo(cmd, StringComparison.OrdinalIgnoreCase);
-            await Assert.That(isCmd).IsTrue(); // drives the cmd.exe /c wrapper in Spawn
-        } finally {
-            Environment.SetEnvironmentVariable("PATH", savedPath);
-        }
+        await Assert.That(resolved).IsEqualTo(cmd, StringComparison.OrdinalIgnoreCase);
+        await Assert.That(isCmd).IsTrue(); // drives the cmd.exe /c wrapper in Spawn
     }
 
     /// <summary>A plain <c>.exe</c> still resolves and is NOT flagged as a <c>.cmd</c>, so it
@@ -45,16 +41,12 @@ public class ConPtyResolveCommandTests {
         var exe  = tmp.PathTo(name + ".exe");
         await File.WriteAllTextAsync(exe, "");
 
-        var savedPath = Environment.GetEnvironmentVariable("PATH");
-        Environment.SetEnvironmentVariable("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
+        var       savedPath = Environment.GetEnvironmentVariable("PATH");
+        using var pathEnv   = EnvScope.Exclusive("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
 
-        try {
-            var (resolved, isCmd) = ConPtyProcess.ResolveCommand(name);
+        var (resolved, isCmd) = ConPtyProcess.ResolveCommand(name);
 
-            await Assert.That(resolved).IsEqualTo(exe, StringComparison.OrdinalIgnoreCase);
-            await Assert.That(isCmd).IsFalse();
-        } finally {
-            Environment.SetEnvironmentVariable("PATH", savedPath);
-        }
+        await Assert.That(resolved).IsEqualTo(exe, StringComparison.OrdinalIgnoreCase);
+        await Assert.That(isCmd).IsFalse();
     }
 }

@@ -9,7 +9,6 @@ using TUnit.Assertions.Enums;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Codex;
 
-[NotInParallel("HomeEnvVarMutation")]
 public class CodexLauncherTests {
     // Review-flow arg tests must be deterministic w.r.t. the developer's real
     // ~/.codex/config.toml, so the inherited-server seam defaults to empty. Tests that
@@ -412,32 +411,27 @@ public class CodexLauncherTests {
             .Throws<CodexReviewerMcpIsolationException>();
     }
 
-    [Test]
+    [Test, NotInParallel]
     public async Task Prepare_overlays_codex_settings_dir_from_source_repo() {
         using var tmp = new TempDir();
         var sourceRepo = tmp.CreateDir("src");
         var worktree = tmp.CreateDir("wt");
         var home = tmp.CreateDir("home");
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", tmp.GetResolvedPath("home"));
+        using var homeEnv = EnvScope.Exclusive("HOME", tmp.GetResolvedPath("home"));
 
-        try {
-            var srcCodex = sourceRepo.CreateDir(".codex");
-            srcCodex.CreateFile("hooks.json", """
-                {"hooks":{
-                    "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
-                    "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
-                    "PermissionRequest":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}]
-                }}
-                """);
+        var srcCodex = sourceRepo.CreateDir(".codex");
+        srcCodex.CreateFile("hooks.json", """
+            {"hooks":{
+                "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
+                "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
+                "PermissionRequest":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}]
+            }}
+            """);
 
-            var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
-            NewLauncher().Prepare(ctx);
+        var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
+        NewLauncher().Prepare(ctx);
 
-            await Assert.That(File.Exists(worktree.PathTo(".codex", "hooks.json"))).IsTrue();
-        } finally {
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-        }
+        await Assert.That(File.Exists(worktree.PathTo(".codex", "hooks.json"))).IsTrue();
     }
 
     /// <summary>
@@ -449,149 +443,124 @@ public class CodexLauncherTests {
     /// <para><c>hooks.json</c> must still arrive — that is what the overlay is FOR, and a fix that dropped
     /// it would break project-scope hooks while looking like it had contained something.</para>
     /// </summary>
-    [Test]
+    [Test, NotInParallel]
     public async Task Prepare_does_not_reintroduce_workspace_mcp_config_via_the_codex_overlay() {
         using var tmp = new TempDir();
         var sourceRepo = tmp.CreateDir("src");
         var worktree = tmp.CreateDir("wt");
         var home = tmp.CreateDir("home");
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", tmp.GetResolvedPath("home"));
+        using var homeEnv = EnvScope.Exclusive("HOME", tmp.GetResolvedPath("home"));
 
-        try {
-            var srcCodex = sourceRepo.CreateDir(".codex");
-            srcCodex.CreateFile("hooks.json", """
-                {"hooks":{
-                    "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
-                    "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
-                    "PermissionRequest":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}]
-                }}
-                """);
-            // The branch-authored file the worktree strip removes; the source still has it.
-            srcCodex.CreateFile("config.toml",
-                "[mcp_servers.pwn]\ncommand = \"/bin/sh\"\n");
+        var srcCodex = sourceRepo.CreateDir(".codex");
+        srcCodex.CreateFile("hooks.json", """
+            {"hooks":{
+                "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
+                "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
+                "PermissionRequest":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}]
+            }}
+            """);
+        // The branch-authored file the worktree strip removes; the source still has it.
+        srcCodex.CreateFile("config.toml",
+            "[mcp_servers.pwn]\ncommand = \"/bin/sh\"\n");
 
-            var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
-            NewLauncher().Prepare(ctx);
+        var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
+        NewLauncher().Prepare(ctx);
 
-            await Assert.That(File.Exists(worktree.PathTo(".codex", "config.toml"))).IsFalse();
-            // ...and the thing the overlay exists for still arrives.
-            await Assert.That(File.Exists(worktree.PathTo(".codex", "hooks.json"))).IsTrue();
-        } finally {
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-        }
+        await Assert.That(File.Exists(worktree.PathTo(".codex", "config.toml"))).IsFalse();
+        // ...and the thing the overlay exists for still arrives.
+        await Assert.That(File.Exists(worktree.PathTo(".codex", "hooks.json"))).IsTrue();
     }
 
-    [Test]
+    [Test, NotInParallel]
     public async Task Prepare_throws_when_no_hooks_json_anywhere() {
         using var tmp = new TempDir();
         var sourceRepo = tmp.CreateDir("src");
         var worktree = tmp.CreateDir("wt");
         var home = tmp.CreateDir("home");
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", tmp.GetResolvedPath("home"));
+        using var homeEnv = EnvScope.Exclusive("HOME", tmp.GetResolvedPath("home"));
 
-        try {
-            var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
-            var ex = await Assert.ThrowsAsync<CodexHooksNotInstalledException>(async () => {
-                NewLauncher().Prepare(ctx);
-                await Task.CompletedTask;
-            });
-            await Assert.That(ex!.Message).Contains("kcap plugin install --codex");
-        } finally {
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-        }
+        var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
+        var ex = await Assert.ThrowsAsync<CodexHooksNotInstalledException>(async () => {
+            NewLauncher().Prepare(ctx);
+            await Task.CompletedTask;
+        });
+        await Assert.That(ex!.Message).Contains("kcap plugin install --codex");
     }
 
-    [Test]
+    [Test, NotInParallel]
     public async Task Prepare_succeeds_when_user_scope_hooks_json_has_all_three_critical_events() {
         using var tmp = new TempDir();
         var sourceRepo = tmp.CreateDir("src");
         var worktree = tmp.CreateDir("wt");
         var home = tmp.CreateDir("home");
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", tmp.GetResolvedPath("home"));
+        using var homeEnv = EnvScope.Exclusive("HOME", tmp.GetResolvedPath("home"));
 
-        try {
-            home.CreateDir(".codex");
-            home.CreateFile([".codex", "hooks.json"], """
-                {"hooks":{
-                    "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
-                    "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
-                    "PermissionRequest":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}]
-                }}
-                """);
+        home.CreateDir(".codex");
+        home.CreateFile([".codex", "hooks.json"], """
+            {"hooks":{
+                "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
+                "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
+                "PermissionRequest":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}]
+            }}
+            """);
 
-            var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
-            NewLauncher().Prepare(ctx);
+        var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
+        NewLauncher().Prepare(ctx);
 
-            await Assert.That(File.Exists(home.PathTo(".codex", "config.toml"))).IsTrue();
-        } finally {
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-        }
+        await Assert.That(File.Exists(home.PathTo(".codex", "config.toml"))).IsTrue();
     }
 
-    [Test]
+    [Test, NotInParallel]
     public async Task Prepare_succeeds_when_project_scope_hooks_json_present_after_overlay() {
         using var tmp = new TempDir();
         var sourceRepo = tmp.CreateDir("src");
         var worktree = tmp.CreateDir("wt");
         var home = tmp.CreateDir("home");
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", tmp.GetResolvedPath("home"));
+        using var homeEnv = EnvScope.Exclusive("HOME", tmp.GetResolvedPath("home"));
 
-        try {
-            sourceRepo.CreateDir(".codex");
-            sourceRepo.CreateFile([".codex", "hooks.json"], """
-                {"hooks":{
-                    "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
-                    "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
-                    "PermissionRequest":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}]
-                }}
-                """);
+        sourceRepo.CreateDir(".codex");
+        sourceRepo.CreateFile([".codex", "hooks.json"], """
+            {"hooks":{
+                "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
+                "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
+                "PermissionRequest":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}]
+            }}
+            """);
 
-            var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
-            NewLauncher().Prepare(ctx);
-            await Assert.That(File.Exists(home.PathTo(".codex", "config.toml"))).IsTrue();
-        } finally {
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-        }
+        var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
+        NewLauncher().Prepare(ctx);
+        await Assert.That(File.Exists(home.PathTo(".codex", "config.toml"))).IsTrue();
     }
 
-    [Test]
+    [Test, NotInParallel]
     public async Task Prepare_invokes_codex_config_writer_with_worktree_path() {
         using var tmp = new TempDir();
         var sourceRepo = tmp.CreateDir("src");
         var worktree = tmp.CreateDir("wt");
         var home = tmp.CreateDir("home");
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-        Environment.SetEnvironmentVariable("HOME", tmp.GetResolvedPath("home"));
+        using var homeEnv = EnvScope.Exclusive("HOME", tmp.GetResolvedPath("home"));
 
-        try {
-            home.CreateDir(".codex");
-            home.CreateFile([".codex", "hooks.json"], """
-                {"hooks":{
-                    "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
-                    "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
-                    "PermissionRequest":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}]
-                }}
-                """);
+        home.CreateDir(".codex");
+        home.CreateFile([".codex", "hooks.json"], """
+            {"hooks":{
+                "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
+                "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
+                "PermissionRequest":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}]
+            }}
+            """);
 
-            var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
-            NewLauncher().Prepare(ctx);
+        var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
+        NewLauncher().Prepare(ctx);
 
-            var configToml = File.ReadAllText(home.PathTo(".codex", "config.toml"));
-            // The key is written in Codex's own normalised form (absolute, lowercased on
-            // Windows — see CodexPaths.NormalizeProjectKey), not the raw worktree path. The TOML
-            // writer then emits it as a basic (double-quoted) key, so backslashes are escaped
-            // per spec (\ → \\); match the escaped form so this holds on Windows too (both are
-            // no-ops on POSIX paths).
-            var escapedWorktree = CodexPaths.NormalizeProjectKey(worktree).Replace("\\", "\\\\");
-            await Assert.That(configToml).Contains($"\"{escapedWorktree}\"");
-            await Assert.That(configToml).Contains("trust_level = \"trusted\"");
-        } finally {
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-        }
+        var configToml = File.ReadAllText(home.PathTo(".codex", "config.toml"));
+        // The key is written in Codex's own normalised form (absolute, lowercased on
+        // Windows — see CodexPaths.NormalizeProjectKey), not the raw worktree path. The TOML
+        // writer then emits it as a basic (double-quoted) key, so backslashes are escaped
+        // per spec (\ → \\); match the escaped form so this holds on Windows too (both are
+        // no-ops on POSIX paths).
+        var escapedWorktree = CodexPaths.NormalizeProjectKey(worktree).Replace("\\", "\\\\");
+        await Assert.That(configToml).Contains($"\"{escapedWorktree}\"");
+        await Assert.That(configToml).Contains("trust_level = \"trusted\"");
     }
 
     static LauncherContext NewCtxWith(string source, string worktree) => new(

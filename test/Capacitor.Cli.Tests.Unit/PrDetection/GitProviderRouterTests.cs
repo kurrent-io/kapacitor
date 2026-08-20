@@ -2,6 +2,9 @@ using Capacitor.Cli.PrDetection;
 
 namespace Capacitor.Cli.Tests.Unit.PrDetection;
 
+// The router memoizes into a production static, and the per-test reset that clears it is itself a
+// process-global mutation — a concurrent peer's reset or memo entry decides what this class observes.
+[NotInParallel]
 public class GitProviderRouterTests {
     [Before(Test)]
     public void Reset() => GitProviderRouter.ResetMemoForTests();

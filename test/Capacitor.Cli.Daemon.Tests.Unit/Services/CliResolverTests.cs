@@ -48,10 +48,6 @@ public class CliResolverTests {
         await Assert.That(CliResolver.Exists(missing)).IsFalse();
     }
 
-    // NotInParallel: this test mutates the process-global PATH env var,
-    // which races with any other test reading PATH (e.g. plugin installers,
-    // resolver tests below). A unique group key isn't enough because
-    // cross-group tests can still race; running fully alone is safe.
     [Test, NotInParallel]
     public async Task ReturnsTrue_WhenBareCommandResolvesOnPath() {
         // Drop a fake "kcap-pathprobe-{guid}" binary into a temp dir,
@@ -62,14 +58,10 @@ public class CliResolverTests {
         var binaryPath = tmp.CreateFile(binaryName, "");
         MakeExecutable(binaryPath);
 
-        var savedPath = Environment.GetEnvironmentVariable("PATH");
-        Environment.SetEnvironmentVariable("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
+        var       savedPath = Environment.GetEnvironmentVariable("PATH");
+        using var pathEnv   = EnvScope.Exclusive("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
 
-        try {
-            await Assert.That(CliResolver.Exists(name)).IsTrue();
-        } finally {
-            Environment.SetEnvironmentVariable("PATH", savedPath);
-        }
+        await Assert.That(CliResolver.Exists(name)).IsTrue();
     }
 
     /// <summary>
@@ -85,14 +77,10 @@ public class CliResolverTests {
         var binaryPath = tmp.CreateFile(name, "");
         File.SetUnixFileMode(binaryPath, UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
 
-        var savedPath = Environment.GetEnvironmentVariable("PATH");
-        Environment.SetEnvironmentVariable("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
+        var       savedPath = Environment.GetEnvironmentVariable("PATH");
+        using var pathEnv   = EnvScope.Exclusive("PATH", $"{tmp.Path}{Path.PathSeparator}{savedPath}");
 
-        try {
-            await Assert.That(CliResolver.Exists(name)).IsFalse();
-        } finally {
-            Environment.SetEnvironmentVariable("PATH", savedPath);
-        }
+        await Assert.That(CliResolver.Exists(name)).IsFalse();
     }
 
     [Test]

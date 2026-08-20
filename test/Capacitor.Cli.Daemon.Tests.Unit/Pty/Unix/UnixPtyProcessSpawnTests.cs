@@ -68,20 +68,16 @@ public class UnixPtyProcessSpawnTests {
         try {
             var childPid = await ReadReportedChildPidAsync(proc);
             await Assert.That(childPid).IsGreaterThan(0);
-            // Positive control: the helper is alive before the terminate, so the "dead after"
-            // assertion below cannot pass vacuously on a pid that never existed.
-            await Assert.That(UnixPtyInterop.kill(childPid, 0)).IsEqualTo(0);
+            // Capture while it is provably alive: this is init's child once the leader dies, not
+            // ours, so the pid alone would read as live again the moment the OS reassigns it.
+            var childIdentity = PidIdentity.Capture(childPid);
 
             await proc.TerminateAsync(TimeSpan.FromSeconds(5));
             await Assert.That(proc.HasExited).IsTrue();
 
-            // The orphaned helper is reparented to init, which reaps it once it dies — poll
-            // briefly for ESRCH rather than racing the reap.
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-            while (UnixPtyInterop.kill(childPid, 0) == 0 && DateTime.UtcNow < deadline)
-                await Task.Delay(50);
-
-            await Assert.That(UnixPtyInterop.kill(childPid, 0)).IsNotEqualTo(0);
+            // Reparented to init, which reaps it once it dies — poll for the identity leaving the
+            // process table rather than racing the reap.
+            await PidIdentity.WaitUntilGoneAsync(childPid, childIdentity, TimeSpan.FromSeconds(5));
         } finally {
             await proc.DisposeAsync();
         }

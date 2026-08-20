@@ -111,37 +111,30 @@ public class CodexHostedAgentRuntimeFactoryTests {
 
     // ── App-server route (spawn seam; isolated HOME so TrustWorktree touches nothing real) ──────
     [Test]
-    [NotInParallel("HomeEnvVarMutation")]
+    [NotInParallel]
     public async Task Active_review_flow_produces_an_app_server_runtime_via_the_spawn_seam() {
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-        var originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
         using var home = new TempDir();
         using var wt   = new TempDir();
         WriteWorktreeHooks(wt);
         await using var fake = new FakeCodexAppServer();
 
-        try {
-            Environment.SetEnvironmentVariable("HOME", home.Path);
-            Environment.SetEnvironmentVariable("CODEX_HOME", home.PathTo(".codex"));
+        using var homeEnv  = EnvScope.Exclusive("HOME", home.Path);
+        using var codexEnv = EnvScope.Exclusive("CODEX_HOME", home.PathTo(".codex"));
 
-            var pty = new RecordingPtyFactory();
-            CodexAppServerSpawnFactory seam = (_, _, _, _, _, _, _) =>
-                Task.FromResult<(CodexAppServerConnection, IAcpProcess)>((fake.ConnectClient(), new FakeAcpProcess()));
-            var factory = Factory(pty, appServerActive: true, seam);
+        var pty = new RecordingPtyFactory();
+        CodexAppServerSpawnFactory seam = (_, _, _, _, _, _, _) =>
+            Task.FromResult<(CodexAppServerConnection, IAcpProcess)>((fake.ConnectClient(), new FakeAcpProcess()));
+        var factory = Factory(pty, appServerActive: true, seam);
 
-            var start = await factory.StartAsync(Ctx(isReviewFlow: true, wt.Path), CancellationToken.None).WaitAsync(HangGuard);
+        var start = await factory.StartAsync(Ctx(isReviewFlow: true, wt.Path), CancellationToken.None).WaitAsync(HangGuard);
 
-            await Assert.That(pty.StartCalls).IsEqualTo(0);
-            await Assert.That(start.Runtime).IsTypeOf<CodexAppServerHostedAgentRuntime>();
-            await Assert.That(start.Runtime.EmitsTerminalOutput).IsFalse();
-            await Assert.That(((CodexAppServerHostedAgentRuntime) start.Runtime).ThreadId).IsEqualTo("thread-abc");
-            await Assert.That(fake.ReceivedMethods).Contains("thread/start");
+        await Assert.That(pty.StartCalls).IsEqualTo(0);
+        await Assert.That(start.Runtime).IsTypeOf<CodexAppServerHostedAgentRuntime>();
+        await Assert.That(start.Runtime.EmitsTerminalOutput).IsFalse();
+        await Assert.That(((CodexAppServerHostedAgentRuntime) start.Runtime).ThreadId).IsEqualTo("thread-abc");
+        await Assert.That(fake.ReceivedMethods).Contains("thread/start");
 
-            await start.Runtime.DisposeAsync();
-        } finally {
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-            Environment.SetEnvironmentVariable("CODEX_HOME", originalCodexHome);
-        }
+        await start.Runtime.DisposeAsync();
     }
 
     // ── Guard-1 marker (§2.5) ──────────────────────────────────────────────────────────
@@ -158,36 +151,29 @@ public class CodexHostedAgentRuntimeFactoryTests {
     }
 
     [Test]
-    [NotInParallel("HomeEnvVarMutation")]
+    [NotInParallel]
     public async Task App_server_launch_is_envelope_sourced_after_activation() {
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-        var originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
         using var home = new TempDir();
         using var wt   = new TempDir();
         WriteWorktreeHooks(wt);
         await using var fake = new FakeCodexAppServer();
         IReadOnlyDictionary<string, string>? capturedEnv = null;
 
-        try {
-            Environment.SetEnvironmentVariable("HOME", home.Path);
-            Environment.SetEnvironmentVariable("CODEX_HOME", home.PathTo(".codex"));
+        using var homeEnv  = EnvScope.Exclusive("HOME", home.Path);
+        using var codexEnv = EnvScope.Exclusive("CODEX_HOME", home.PathTo(".codex"));
 
-            CodexAppServerSpawnFactory seam = (_, _, _, _, env, _, _) => {
-                capturedEnv = env;
-                return Task.FromResult<(CodexAppServerConnection, IAcpProcess)>((fake.ConnectClient(), new FakeAcpProcess()));
-            };
-            var factory = Factory(new RecordingPtyFactory(), appServerActive: true, seam);
+        CodexAppServerSpawnFactory seam = (_, _, _, _, env, _, _) => {
+            capturedEnv = env;
+            return Task.FromResult<(CodexAppServerConnection, IAcpProcess)>((fake.ConnectClient(), new FakeAcpProcess()));
+        };
+        var factory = Factory(new RecordingPtyFactory(), appServerActive: true, seam);
 
-            var start = await factory.StartAsync(Ctx(isReviewFlow: true, wt.Path), CancellationToken.None).WaitAsync(HangGuard);
+        var start = await factory.StartAsync(Ctx(isReviewFlow: true, wt.Path), CancellationToken.None).WaitAsync(HangGuard);
 
-            await Assert.That(start.Transcript).IsNotNull();
-            await Assert.That(start.Runtime.RequiresSourceClaimBeforeFirstTurn).IsTrue();
+        await Assert.That(start.Transcript).IsNotNull();
+        await Assert.That(start.Runtime.RequiresSourceClaimBeforeFirstTurn).IsTrue();
 
-            await start.Runtime.DisposeAsync();
-        } finally {
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-            Environment.SetEnvironmentVariable("CODEX_HOME", originalCodexHome);
-        }
+        await start.Runtime.DisposeAsync();
 
         await Assert.That(capturedEnv).IsNotNull();
         await Assert.That(capturedEnv!["KCAP_HOSTED_APPSERVER"]).IsEqualTo("1");
@@ -218,57 +204,43 @@ public class CodexHostedAgentRuntimeFactoryTests {
     }
 
     [Test]
-    [NotInParallel("HomeEnvVarMutation")]
+    [NotInParallel]
     public async Task Missing_hooks_on_the_app_server_route_fails_closed() {
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-        var originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
         using var home = new TempDir(); // empty — no user-scope hooks
         using var wt   = new TempDir(); // empty — no worktree hooks
 
-        try {
-            Environment.SetEnvironmentVariable("HOME", home.Path);
-            Environment.SetEnvironmentVariable("CODEX_HOME", home.PathTo(".codex"));
+        using var homeEnv  = EnvScope.Exclusive("HOME", home.Path);
+        using var codexEnv = EnvScope.Exclusive("CODEX_HOME", home.PathTo(".codex"));
 
-            CodexAppServerSpawnFactory seam = (_, _, _, _, _, _, _) =>
-                throw new InvalidOperationException("spawn must never be reached when hooks are missing");
-            var factory = Factory(new RecordingPtyFactory(), appServerActive: true, seam);
+        CodexAppServerSpawnFactory seam = (_, _, _, _, _, _, _) =>
+            throw new InvalidOperationException("spawn must never be reached when hooks are missing");
+        var factory = Factory(new RecordingPtyFactory(), appServerActive: true, seam);
 
-            await Assert.ThrowsAsync<CodexHooksNotInstalledException>(
-                () => factory.StartAsync(Ctx(isReviewFlow: true, wt.Path), CancellationToken.None));
-        } finally {
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-            Environment.SetEnvironmentVariable("CODEX_HOME", originalCodexHome);
-        }
+        await Assert.ThrowsAsync<CodexHooksNotInstalledException>(
+            () => factory.StartAsync(Ctx(isReviewFlow: true, wt.Path), CancellationToken.None));
     }
 
     [Test]
-    [NotInParallel("HomeEnvVarMutation")]
+    [NotInParallel]
     public async Task Handshake_failure_disposes_the_spawned_child() {
-        var originalHome = Environment.GetEnvironmentVariable("HOME");
-        var originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
         using var home = new TempDir();
         using var wt   = new TempDir();
         WriteWorktreeHooks(wt);
         await using var fake = new FakeCodexAppServer { ThreadId = "" }; // thread/start returns no id -> StartAsync throws
 
-        try {
-            Environment.SetEnvironmentVariable("HOME", home.Path);
-            Environment.SetEnvironmentVariable("CODEX_HOME", home.PathTo(".codex"));
+        using var homeEnv  = EnvScope.Exclusive("HOME", home.Path);
+        using var codexEnv = EnvScope.Exclusive("CODEX_HOME", home.PathTo(".codex"));
 
-            var process = new FakeAcpProcess();
-            CodexAppServerSpawnFactory seam = (_, _, _, _, _, _, _) =>
-                Task.FromResult<(CodexAppServerConnection, IAcpProcess)>((fake.ConnectClient(), process));
-            var factory = Factory(new RecordingPtyFactory(), appServerActive: true, seam);
+        var process = new FakeAcpProcess();
+        CodexAppServerSpawnFactory seam = (_, _, _, _, _, _, _) =>
+            Task.FromResult<(CodexAppServerConnection, IAcpProcess)>((fake.ConnectClient(), process));
+        var factory = Factory(new RecordingPtyFactory(), appServerActive: true, seam);
 
-            await Assert.ThrowsAsync<InvalidOperationException>(
-                () => factory.StartAsync(Ctx(isReviewFlow: true, wt.Path), CancellationToken.None).WaitAsync(HangGuard));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => factory.StartAsync(Ctx(isReviewFlow: true, wt.Path), CancellationToken.None).WaitAsync(HangGuard));
 
-            // The factory disposed the runtime on the failed handshake, so the spawned child is not leaked.
-            await Assert.That(process.HasExited).IsTrue();
-        } finally {
-            Environment.SetEnvironmentVariable("HOME", originalHome);
-            Environment.SetEnvironmentVariable("CODEX_HOME", originalCodexHome);
-        }
+        // The factory disposed the runtime on the failed handshake, so the spawned child is not leaked.
+        await Assert.That(process.HasExited).IsTrue();
     }
 
     static void WriteWorktreeHooks(TempDir worktree) =>

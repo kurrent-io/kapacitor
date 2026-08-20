@@ -74,25 +74,15 @@ public class GitConfigTransportTests {
     [Test]
     [NotInParallel]
     public async Task An_inherited_count_is_appended_to_rather_than_overwritten() {
-        var restore = (
-            Count: Environment.GetEnvironmentVariable("GIT_CONFIG_COUNT"),
-            Key: Environment.GetEnvironmentVariable("GIT_CONFIG_KEY_0"),
-            Value: Environment.GetEnvironmentVariable("GIT_CONFIG_VALUE_0"));
-        try {
-            Environment.SetEnvironmentVariable("GIT_CONFIG_COUNT", "1");
-            Environment.SetEnvironmentVariable("GIT_CONFIG_KEY_0", "kcap.inherited");
-            Environment.SetEnvironmentVariable("GIT_CONFIG_VALUE_0", "yes");
+        using var count = EnvScope.Exclusive("GIT_CONFIG_COUNT", "1");
+        using var key   = EnvScope.Exclusive("GIT_CONFIG_KEY_0", "kcap.inherited");
+        using var value = EnvScope.Exclusive("GIT_CONFIG_VALUE_0", "yes");
 
-            var records = await EffectiveConfigAsync(
-                sourceReadOnly: false, new GitConfigOverride("filter.evil=x.smudge", ""));
+        var records = await EffectiveConfigAsync(
+            sourceReadOnly: false, new GitConfigOverride("filter.evil=x.smudge", ""));
 
-            await Assert.That(records).Contains("kcap.inherited\nyes");
-            await Assert.That(records).Contains("filter.evil=x.smudge\n");
-        } finally {
-            Environment.SetEnvironmentVariable("GIT_CONFIG_COUNT", restore.Count);
-            Environment.SetEnvironmentVariable("GIT_CONFIG_KEY_0", restore.Key);
-            Environment.SetEnvironmentVariable("GIT_CONFIG_VALUE_0", restore.Value);
-        }
+        await Assert.That(records).Contains("kcap.inherited\nyes");
+        await Assert.That(records).Contains("filter.evil=x.smudge\n");
     }
 
     /// <summary>A count we cannot parse means we do not know which indices are taken. Refused rather than

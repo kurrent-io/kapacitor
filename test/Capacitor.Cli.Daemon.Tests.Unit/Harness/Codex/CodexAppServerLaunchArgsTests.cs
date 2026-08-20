@@ -9,7 +9,6 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Harness.Codex;
 /// <c>--disable apps</c> and per-whitelisted-server <c>default_tools_approval_mode="approve"</c>.
 /// Sandbox / approval / model / effort are per-turn protocol params on this transport, so none of
 /// the PTY-only flags appear.</summary>
-[NotInParallel("HomeEnvVarMutation")]
 public class CodexAppServerLaunchArgsTests {
     static CodexLauncher NewLauncher() =>
         new(new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" },

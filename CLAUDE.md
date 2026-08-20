@@ -154,13 +154,14 @@ dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj
 - A class whose time goes into real child processes (git, a vendor CLI, a PTY) can draw from `[ParallelLimiter<SubprocessLimit>]` — one pool of half the cores, shared by every class in the assembly that names it. TUnit's own cap is 4x the cores, sized for IO-bound tests; at that width these classes starve each other's timing assertions. Pool the CPU hogs, not the test that failed. Today the pool is the daemon suite's; elsewhere a whole-class `[NotInParallel(nameof(TheClass))]` is the cheaper tool when the point is to keep one class's own tests apart.
 - Spawning the real `kcap` binary goes through Helpers' `KcapProcess`, which requires a `DaemonStore` and pins it for the child. The assembly-wide `KCAP_DAEMONS_DIR` pin is a path that cannot be created, so a hand-rolled spawn dies with a bare ENOTDIR `IOException` instead of quietly resolving the developer's own daemons directory.
 - Capture console output with `ConsoleOutput.StartCapture()` / `StartErrorCapture()`, never a hand-rolled `Console.SetOut`/`SetError` save-restore — TUnit0055 is an error. Console is process-global, so every caller needs bare `[NotInParallel]`; a group key is not enough.
-- The same bare `[NotInParallel]` applies to any test that reaps a child itself (a raw `waitpid`). Once a pid is reaped the OS may reassign the number, so a concurrent spawn can make the wait land on someone else's child — and stealing one that `System.Diagnostics.Process` owns leaves .NET's SIGCHLD handler with ECHILD, which it answers by FailFast-ing the test host. A whole suite then dies mid-run with no failing assertion to point at.
-- **`Capacitor.Cli.Daemon.Tests.Unit` is not parallel-safe** — it spawns real processes, unix sockets and PTYs, and around 39 of its tests collide concurrently. Run it the way CI does, or it fails for reasons that have nothing to do with your change:
-  ```bash
-  dotnet run --project test/Capacitor.Cli.Daemon.Tests.Unit/Capacitor.Cli.Daemon.Tests.Unit.csproj -- --maximum-parallel-tests 1
-  ```
-  A TUnit assembly-level `[ParallelLimiter<T>]` is **not** a substitute: it serialises by wall-clock but still leaves `CodexLauncherTests` failing intermittently, where the command-line flag does not.
 - Never assert that an environment variable is *absent* from a built `ProcessStartInfo`: its environment is seeded from the current process, and the repo's own `.envrc` exports several. Assert what the code under test contributed, by comparing against the inherited value.
+
+**Parallelism:** bare `[NotInParallel]` is exclusive against the whole assembly and its tests run last, one at a time; keyed `[NotInParallel("k")]` excludes only tests carrying `k`.
+
+- Bare is what process-global state needs: an environment variable, `Console`, a mutable static in production code, the working directory. Keyed is sound only when every *reader* is in the cohort too, not just every writer — an env var fails that as soon as a concurrent peer spawns a child (it inherits) or calls a path helper (it reads).
+- A method-level `[NotInParallel(…)]` shadows a class-level one: the first constraint wins and the method's comes first. Never carry both.
+- Mutate an environment variable through Helpers' `EnvScope` — `EnvScope.Exclusive(key, value)` for one a child inherits or a path helper reads, the constructor for one whose readers all carry the same key. It checks the constraint and throws naming the fix, so the rule is enforced rather than commented.
+- Reaping a child you forked is safe: the zombie holds its pid until you wait on it. Asserting on a pid you *no longer own* is not — one the shim already reaped, or a grandchild reparented to init. `kill(pid, 0)` reads a squatter as your process still alive, and stealing a wait from a child `System.Diagnostics.Process` owns FailFasts the test host. Use Helpers' `PidIdentity`: `Capture` while alive, then `IsGone`/`WaitUntilGoneAsync`.
 
 ## Running tests
 
@@ -175,6 +176,10 @@ A single suite still runs directly as an executable, which is the faster loop wh
 ```bash
 dotnet run --project test/Capacitor.Cli.Core.Tests.Unit/Capacitor.Cli.Core.Tests.Unit.csproj
 ```
+
+Every suite, the daemon one included, runs green at full parallelism — no flag needed. CI's
+`--maximum-parallel-tests 1` caps only the unconstrained bucket, so it narrows race windows rather
+than closing them; a test that needs exclusion carries the constraint itself.
 
 ## Publishing
 

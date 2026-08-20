@@ -1854,7 +1854,6 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
     /// token. An interactive agent runs as the user, with the user's own vendor profile and
     /// credentials — redirecting those would break it, and doing so silently would be worse.</summary>
     [Test]
-    [NotInParallel("HomeEnvVarMutation")] // psi snapshots HOME; this compares it to a later live read
     public async Task BuildProcessStartInfo_Copilot_NonBorrowedReview_LeavesTheEnvironmentAlone() {
         var ctx = ReviewContext(["kcap-review"]) with { Work = WorkLocation.OwnedWorktree };
         var supported = CopilotBorrowedReviewPolicy.Resolve(

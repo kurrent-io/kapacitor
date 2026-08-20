@@ -18,14 +18,14 @@ public class UnixSpawnerThreadTests {
 
         using var host = StartHost("spawn-dummy");
         var childPid = await ReadPidLineAsync(host);
+        // The child belongs to the host process, not to us, so once pdeathsig fires and init reaps
+        // it the pid is free — assert on the incarnation, not the number.
+        var childIdentity = PidIdentity.Capture(childPid);
 
         host.Kill(entireProcessTree: false); // simulate an external daemon crash (SIGKILL)
         host.WaitForExit(5000);
 
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (DateTime.UtcNow < deadline && IsAlive(childPid)) await Task.Delay(200);
-
-        await Assert.That(IsAlive(childPid)).IsFalse();
+        await PidIdentity.WaitUntilGoneAsync(childPid, childIdentity, TimeSpan.FromSeconds(10));
     }
 
     [Test]
@@ -67,7 +67,9 @@ public class UnixSpawnerThreadTests {
             await Assert.That(result.Pid).IsGreaterThan(0);
             for (var i = 0; i < 5; i++) await Task.Run(() => { });
             await Task.Delay(300);
-            await Assert.That(IsAlive(result.Pid)).IsTrue();
+            // Still the SAME incarnation. kill(pid, 0) would also pass on a squatter that took the
+            // number over after the agent died — the exact failure this test exists to catch.
+            await Assert.That(PidIdentity.IsGone(result.Pid, result.StartIdentityString)).IsFalse();
         } finally {
             // Guard against pid<=0: kill(0, sig)/kill(-1, sig) have special "whole process
             // group"/"every process" meanings on Unix — never pass through a failed spawn's
@@ -96,8 +98,6 @@ public class UnixSpawnerThreadTests {
 
         await Assert.That(spawner.IsThreadAlive).IsFalse();
     }
-
-    static bool IsAlive(int pid) => UnixPtyInterop.kill(pid, 0) == 0;
 
     static Process StartHost(string mode) {
         var dll = ResolveNativeHostDll();

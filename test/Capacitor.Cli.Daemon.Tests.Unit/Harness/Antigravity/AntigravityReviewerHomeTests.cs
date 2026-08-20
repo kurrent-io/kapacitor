@@ -254,26 +254,20 @@ public class AntigravityReviewerHomeTests {
     /// isolated home. The guard is shared, and settings.json is the file it was extended to cover.
     /// </summary>
     [Test]
-    [NotInParallel("HomeEnvVarMutation")]
+    [NotInParallel]
     public async Task A_daemon_wide_gemini_cli_home_cannot_redirect_the_homes_writes() {
         if (OperatingSystem.IsWindows()) return;
         using var root     = new TempDir();
         using var elsewhere = new TempDir();
 
-        var previous = Environment.GetEnvironmentVariable("GEMINI_CLI_HOME");
+        using var env = EnvScope.Exclusive("GEMINI_CLI_HOME", elsewhere.Path);
 
-        try {
-            Environment.SetEnvironmentVariable("GEMINI_CLI_HOME", elsewhere.Path);
+        var ex = Assert.Throws<InvalidOperationException>(() => AntigravityReviewerHome.Create(
+            root.Path, "epoch1", "agent1", [ResultChannel], grantInjectedMcpTools: true));
 
-            var ex = Assert.Throws<InvalidOperationException>(() => AntigravityReviewerHome.Create(
-                root.Path, "epoch1", "agent1", [ResultChannel], grantInjectedMcpTools: true));
+        await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_home_escaped_root");
 
-            await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_home_escaped_root");
-
-            // Refused, not merely reported: nothing was written into the operator's tree.
-            await Assert.That(Directory.Exists(elsewhere.PathTo(".gemini"))).IsFalse();
-        } finally {
-            Environment.SetEnvironmentVariable("GEMINI_CLI_HOME", previous);
-        }
+        // Refused, not merely reported: nothing was written into the operator's tree.
+        await Assert.That(Directory.Exists(elsewhere.PathTo(".gemini"))).IsFalse();
     }
 }
