@@ -150,6 +150,13 @@ dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj
 
 - Throwaway directories come from Helpers' `TempDir` — `using var tmp = new TempDir();` — never a per-class copy. Build paths under it with its own members — `tmp.PathTo(…)` for a path that must not exist yet, `tmp.CreateDir(…)`, `tmp.CreateFile(…)` — not `Path.Combine(tmp.Path, …)` + `Directory.CreateDirectory`/`File.WriteAllText`. A class that keeps one as a field must implement `IDisposable` and dispose it: CA1001 is an error, so an `[After(Test)]` hook will not build.
 - Capture console output with `ConsoleOutput.StartCapture()` / `StartErrorCapture()`, never a hand-rolled `Console.SetOut`/`SetError` save-restore — TUnit0055 is an error. Console is process-global, so every caller needs bare `[NotInParallel]`; a group key is not enough.
+- The same bare `[NotInParallel]` applies to any test that reaps a child itself (a raw `waitpid`). Once a pid is reaped the OS may reassign the number, so a concurrent spawn can make the wait land on someone else's child — and stealing one that `System.Diagnostics.Process` owns leaves .NET's SIGCHLD handler with ECHILD, which it answers by FailFast-ing the test host. A whole suite then dies mid-run with no failing assertion to point at.
+- **`Capacitor.Cli.Daemon.Tests.Unit` is not parallel-safe** — it spawns real processes, unix sockets and PTYs, and around 39 of its tests collide concurrently. Run it the way CI does, or it fails for reasons that have nothing to do with your change:
+  ```bash
+  dotnet run --project test/Capacitor.Cli.Daemon.Tests.Unit/Capacitor.Cli.Daemon.Tests.Unit.csproj -- --maximum-parallel-tests 1
+  ```
+  A TUnit assembly-level `[ParallelLimiter<T>]` is **not** a substitute: it serialises by wall-clock but still leaves `CodexLauncherTests` failing intermittently, where the command-line flag does not.
+- Never assert that an environment variable is *absent* from a built `ProcessStartInfo`: its environment is seeded from the current process, and the repo's own `.envrc` exports several. Assert what the code under test contributed, by comparing against the inherited value.
 
 ## Running tests
 

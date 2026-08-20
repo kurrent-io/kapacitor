@@ -8,6 +8,15 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Pty.Unix;
 /// (bypassing UnixPtyProcess/the spawner thread, which Task 4/5 layer on top). These tests
 /// exercise the raw native contract in isolation.
 /// </summary>
+/// <remarks>
+/// Bare <c>[NotInParallel]</c>, for the same reason Console needs one: child reaping is process-global.
+/// These tests waitpid a pid pty_spawn has already reaped, so the number is free for the OS to
+/// reassign — and a concurrent spawn landing on it turns the wait into a wait on someone else's child.
+/// Winning that race is worse than losing it: System.Diagnostics.Process owns most of the others, and
+/// stealing one leaves .NET's SIGCHLD handler with ECHILD, which it answers by FailFast-ing the host.
+/// The whole suite then dies mid-run with no failing assertion to point at. A group key is not enough.
+/// </remarks>
+[NotInParallel]
 public class PtySpawnTests {
     [Test, RunOn(OS.Linux | OS.MacOs)]
     public async Task Successful_spawn_returns_a_reapable_child_and_a_captured_identity() {
