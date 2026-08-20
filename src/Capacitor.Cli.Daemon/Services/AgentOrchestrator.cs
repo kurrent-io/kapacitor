@@ -880,19 +880,22 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     DateTimeOffset _harnessInventoryEvaluatedAt;
 
     /// <summary>Recomputes the cached harness inventory if it's never been evaluated or is older than
-    /// <see cref="HarnessInventoryTtl"/>. Evaluated outside the lock (filesystem/PATH probes); never
-    /// throws — a probe failure keeps the last cached value so it can't break the status report.</summary>
+    /// <see cref="HarnessInventoryTtl"/>. Single-flight: the whole check-evaluate-publish runs under
+    /// the gate, so overlapping report calls (periodic loop, OnRequestStatusReport, launch-stage,
+    /// delivered-input) can't each probe, and a slower probe can't overwrite a newer one and reset the
+    /// TTL to stale content. The evaluation is a handful of dir/PATH stats + a small JSON read, so
+    /// holding the gate across it is cheap. Never throws, and a probe failure does NOT advance the
+    /// timestamp — it retries on the next report rather than waiting a full TTL.</summary>
     void RefreshHarnessInventoryIfStale() {
         lock (_harnessInventoryGate) {
             if (_harnessInventory is not null &&
                 DateTimeOffset.UtcNow - _harnessInventoryEvaluatedAt < HarnessInventoryTtl) return;
-        }
-        Capacitor.Cli.Core.Setup.HarnessInventory? evaluated;
-        try { evaluated = Capacitor.Cli.Core.Setup.HarnessInventory.EvaluateCurrent(); }
-        catch { return; } // keep last cached (or null); inventory must never break the report path
-        lock (_harnessInventoryGate) {
-            _harnessInventory = evaluated;
-            _harnessInventoryEvaluatedAt = DateTimeOffset.UtcNow;
+            try {
+                _harnessInventory = Capacitor.Cli.Core.Setup.HarnessInventory.EvaluateCurrent();
+                _harnessInventoryEvaluatedAt = DateTimeOffset.UtcNow;
+            } catch {
+                // keep last cached (or null); inventory must never break the report path
+            }
         }
     }
 

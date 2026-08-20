@@ -153,6 +153,9 @@ public static class ClaudeHookCommand {
             NormalizeGuidField(node, "agent_id");
             if (command == "session-end" && node["ended_at"] is null)
                 node["ended_at"] = DateTimeOffset.UtcNow.ToString("O");
+            // Surface 3: the degraded arm spools via this path and bypasses HandleCore's stamp, so a
+            // replayed session-start must still carry the harness inventory (the hook-ingest carrier).
+            if (command == "session-start") SessionStartInventory.Stamp(node.AsObject());
             return node.ToJsonString();
         } catch { return body; }
     }
