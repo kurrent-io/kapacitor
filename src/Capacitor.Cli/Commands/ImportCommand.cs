@@ -121,8 +121,19 @@ static class ImportCommand {
                 FinalCounts                               f,
                 IReadOnlyDictionary<string, FinalCounts>? bySource = null
             ) {
+            // A failed session is not a failed import: the rest landed and the command still exits 0.
+            // Naming the remedy is honest rather than hopeful — classification skips what is already on
+            // the server, so a second run retries the failures and nothing else.
+            var failureNote = $"{f.Failed} didn't land. Everything else is in — re-run to retry them.";
+
             if (Tty) {
                 AnsiConsole.Write(new Rule("[green]Done[/]").LeftJustified());
+
+                // The three buckets import actually distinguishes, ahead of the per-reason detail.
+                // Rolling them into one number would hide a failure the command already knows about.
+                AnsiConsole.MarkupLine(
+                    $"[green]{f.Imported}[/] imported · {f.Skipped} skipped · "
+                  + (f.Failed > 0 ? $"[red]{f.Failed}[/] failed" : "0 failed"));
 
                 if (bySource is { Count: > 1 }) {
                     AnsiConsole.Write(new Rule("[green]By source[/]").LeftJustified());
@@ -187,9 +198,12 @@ static class ImportCommand {
                 }
 
                 AnsiConsole.Write(grid);
+
+                if (f.Failed > 0) AnsiConsole.MarkupLine($"[dim]{failureNote}[/]");
             } else {
                 Console.WriteLine();
                 Console.WriteLine("== Done ==");
+                Console.WriteLine($"  {f.Imported} imported · {f.Skipped} skipped · {f.Failed} failed");
 
                 if (bySource is { Count: > 1 }) {
                     Console.WriteLine();
@@ -225,6 +239,8 @@ static class ImportCommand {
                     if (f.RequestedSummaries)
                         Console.WriteLine($"  Summaries           {f.SummariesGenerated} generated, {f.SummariesFailed} failed");
                 }
+
+                if (f.Failed > 0) Console.WriteLine($"  {failureNote}");
             }
         }
 
@@ -560,7 +576,16 @@ static class ImportCommand {
             bool RanBackground,
             bool RequestedSummaries,
             bool RequestedTitles = false
-        );
+        ) {
+        /// <summary>Reached the server this run. A resume is an import that finished, not a third thing.</summary>
+        internal int Imported => Loaded + Resumed;
+
+        /// <summary>Deliberately not sent — already there, too short, or an excluded repo. Not failures.</summary>
+        internal int Skipped => AlreadyLoaded + TooShort + Excluded;
+
+        /// <summary>Should have landed and did not. Re-running retries exactly these.</summary>
+        internal int Failed => ProbeError + Errored;
+    }
 
     /// <summary>
     /// Builds the Spectre markup for the "✗ Skipping {sid} [reason]" line.
