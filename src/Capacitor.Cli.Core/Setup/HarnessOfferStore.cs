@@ -55,25 +55,31 @@ public sealed class HarnessOfferStore {
     /// <summary>
     /// Read-modify-write, serialized across processes by <see cref="ConfigFileLock"/> so a
     /// concurrent hook/setup/command can't overwrite another's change (in particular, lose a
-    /// dismissal). Best-effort and never-throw: if the lock can't be taken it degrades to a lockless
-    /// write rather than failing a hook. Returns the mutated ledger.
+    /// dismissal). Never throws: if the lock can't be taken within <paramref name="lockTimeout"/>
+    /// (default 5s) it degrades to a lockless write. Returns whether the change was PERSISTED —
+    /// management commands surface a false (honest failure); the hook path ignores it (best-effort).
     /// </summary>
-    public HarnessOfferLedger Update(Func<HarnessOfferLedger, HarnessOfferLedger> mutate) {
+    public bool Update(Func<HarnessOfferLedger, HarnessOfferLedger> mutate, TimeSpan? lockTimeout = null) {
         IDisposable? lease = null;
-        try { lease = ConfigFileLock.Acquire(_ledgerPath, TimeSpan.FromSeconds(5)); } catch { /* degrade to lockless */ }
+        try { lease = ConfigFileLock.Acquire(_ledgerPath, lockTimeout ?? TimeSpan.FromSeconds(5)); }
+        catch { /* timeout or foreign-owned mutex → degrade to a lockless best-effort write */ }
         try {
-            var next = mutate(Load());
-            Save(next);
-            return next;
+            return Save(mutate(Load()));
         } finally {
             lease?.Dispose();
         }
     }
 
+    /// <summary>Short lock wait for the hook/best-effort path, so a contended ledger can't stall a
+    /// SessionStart hook past its host budget (some hosts cap the hook at ~5s). A missed stamp just
+    /// re-nudges the vendor once more.</summary>
+    static readonly TimeSpan HookLockTimeout = TimeSpan.FromSeconds(1);
+
     /// <summary>
     /// Records that these vendors were offered now (updating <c>last_offered</c>, seeding
     /// <c>first_seen</c> once). Never writes a dismissal and never overwrites an existing one — a
     /// vendor the user explicitly dismissed stays dismissed even if setup offers it again.
+    /// Best-effort (hook path): short lock wait, persistence result ignored.
     /// </summary>
     public void StampOffered(IEnumerable<string> vendorIds, DateTimeOffset now) =>
         Update(l => {
@@ -88,13 +94,14 @@ public sealed class HarnessOfferStore {
                 };
             }
             return l with { Vendors = vendors };
-        });
+        }, HookLockTimeout);
 
     /// <summary>
     /// Cross-process evaluation throttle shared by surfaces 1 and 2: returns true (and stamps the
     /// attempt) only when the last recorded check is older than <paramref name="throttle"/>. Every
-    /// hook is a fresh AOT process, so the guard must be on disk — mtime is the clock. Fail-open: any
-    /// stamp I/O error returns true so a hiccup never permanently suppresses the check.
+    /// hook is a fresh AOT process, so the guard must be on disk — mtime is the clock. Fail-CLOSED:
+    /// a stamp I/O error suppresses (returns false), because the same failure would also block the
+    /// per-vendor ledger stamp and cause a nudge on every hook — see the catch below.
     /// </summary>
     public bool TryClaimCheck(TimeSpan throttle) {
         try {
@@ -106,7 +113,10 @@ public sealed class HarnessOfferStore {
             File.WriteAllText(_stampPath, ""); // touch — mtime is the throttle clock
             return true;
         } catch {
-            return true;
+            // Fail-CLOSED: if we can't persist the throttle stamp, the per-vendor last_offered
+            // ledger almost certainly can't persist either, so returning true would re-run
+            // detection AND re-emit the same nudge on every hook — nudge spam. Suppress instead.
+            return false;
         }
     }
 }

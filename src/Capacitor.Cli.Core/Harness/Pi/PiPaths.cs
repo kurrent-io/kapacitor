@@ -47,9 +47,9 @@ public static class PiPaths {
     public static string SessionsDir(string? home = null) => Path.Combine(AgentDir(home), "sessions");
 
     /// <summary>Auto-discovered extensions dir; kcap installs <see cref="KcapExtension"/> here.</summary>
-    public static string ExtensionsDir(string? home = null) => Path.Combine(AgentDir(home), "extensions");
+    public static string ExtensionsDir(string? home = null, string? agentDir = null) => Path.Combine(AgentDir(home, agentDir), "extensions");
 
-    public static string KcapExtension(string? home = null) => Path.Combine(ExtensionsDir(home), "kcap.ts");
+    public static string KcapExtension(string? home = null, string? agentDir = null) => Path.Combine(ExtensionsDir(home, agentDir), "kcap.ts");
 
     /// <summary>Marker recording the installed extension version (sibling of kcap.ts).</summary>
     public static string KcapExtensionMarker(string? home = null) => Path.Combine(ExtensionsDir(home), ".kcap-extension-version");

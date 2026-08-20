@@ -9,7 +9,10 @@ namespace Capacitor.Cli.Core;
 /// </summary>
 public static class SharedFileText {
     public static string ReadAllText(string path) {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        // FileShare.Delete too: a concurrent atomic replace (write-temp + File.Move overwrite) of the
+        // file we're reading needs delete/rename sharing on our open handle, or the move fails with a
+        // sharing violation on Windows — which for the offer ledger would silently drop a dismissal.
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         using var reader = new StreamReader(stream);
         return reader.ReadToEnd();
     }

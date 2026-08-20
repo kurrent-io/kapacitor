@@ -66,7 +66,10 @@ public static class HarnessCommand {
         }
 
         var now = DateTimeOffset.UtcNow;
-        store.Update(l => l with { Vendors = WithDismissed(l, targets, now) });
+        if (!store.Update(l => l with { Vendors = WithDismissed(l, targets, now) })) {
+            Console.Error.WriteLine("kcap: could not persist the dismissal (failed to write the offer ledger).");
+            return 1;
+        }
         Console.WriteLine($"Dismissed: {string.Join(", ", targets.Select(t => t.Label))}. Re-enable with `kcap harness reset <vendor>`.");
         return 0;
     }
@@ -90,7 +93,10 @@ public static class HarnessCommand {
 
         // Removing the entry clears both the dismissal and the last-offered stamp, so the vendor is
         // treated as freshly seen and nudges again on the next eligible evaluation.
-        store.Update(l => l with { Vendors = Without(l, ids) });
+        if (!store.Update(l => l with { Vendors = Without(l, ids) })) {
+            Console.Error.WriteLine("kcap: could not persist the reset (failed to write the offer ledger).");
+            return 1;
+        }
         Console.WriteLine($"Reset: {string.Join(", ", ids)}. These will be offered again.");
         return 0;
     }

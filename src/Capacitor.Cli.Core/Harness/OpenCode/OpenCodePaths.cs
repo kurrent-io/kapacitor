@@ -32,9 +32,9 @@ public static class OpenCodePaths {
     }
 
     /// <summary>Auto-discovered global plugins dir; kcap installs <see cref="KcapPlugin"/> here.</summary>
-    public static string PluginsDir(string? home = null, string? xdgConfigHome = null) => Path.Combine(ConfigDir(home, xdgConfigHome: xdgConfigHome), "plugins");
+    public static string PluginsDir(string? home = null, string? xdgConfigHome = null, string? configDir = null) => Path.Combine(ConfigDir(home, configDir, xdgConfigHome), "plugins");
 
-    public static string KcapPlugin(string? home = null, string? xdgConfigHome = null) => Path.Combine(PluginsDir(home, xdgConfigHome), "kcap.ts");
+    public static string KcapPlugin(string? home = null, string? xdgConfigHome = null, string? configDir = null) => Path.Combine(PluginsDir(home, xdgConfigHome, configDir), "kcap.ts");
 
     /// <summary>Marker recording the installed plugin version (sibling of kcap.ts).</summary>
     public static string KcapPluginMarker(string? home = null, string? xdgConfigHome = null) =>
