@@ -111,10 +111,14 @@ public sealed class SignInStepViewModel : ReactiveObject, IWizardStep {
             BrowserUrl = url;
             Append($"Opening your browser. If it doesn't open, visit: {url}");
         };
-        bridges.Progress.DeviceCodeReceived += (code, verificationUri) => {
+        bridges.Progress.DeviceCodeReceived += (code, verificationUri, prefilled) => {
             DeviceCode      = StripClipboardNote(code);
             VerificationUri = verificationUri;
-            Append($"Enter the code {code} at {verificationUri}");
+            // Raw here, stripped above: the chip is what the user reads, the log records what was
+            // actually reported - including the clipboard note. Pinned by the view-model tests.
+            Append(prefilled
+                ? $"Check the code shown is {code} at {verificationUri}"
+                : $"Enter the code {code} at {verificationUri}");
         };
         bridges.Progress.PollTicked += () => WaitingText = "Waiting for you to authorize…";
 

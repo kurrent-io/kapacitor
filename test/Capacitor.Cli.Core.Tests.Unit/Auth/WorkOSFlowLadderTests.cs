@@ -31,11 +31,35 @@ public class WorkOSFlowLadderTests {
     public async Task Only_an_explicit_request_skips_loopback(bool forceDevice, WorkOSFlow expected) =>
         await Assert.That(OAuthLoginFlow.ChooseWorkOSFlow(forceDevice)).IsEqualTo(expected);
 
+    /// <summary>
+    /// The hint is withheld rather than reworded when there is no keyboard. It used to say "re-run with
+    /// --device", which the default no-keyboard host - a GUI - cannot act on at all.
+    /// </summary>
     [Test]
-    public async Task Offers_the_flag_instead_of_the_key_when_there_is_no_keyboard() {
-        await Assert.That(OAuthLoginFlow.WorkOSBrowserHint(canWatchKeys: true)).Contains("press d");
-        await Assert.That(OAuthLoginFlow.WorkOSBrowserHint(canWatchKeys: false)).DoesNotContain("press d");
-        await Assert.That(OAuthLoginFlow.WorkOSBrowserHint(canWatchKeys: false)).Contains("--device");
+    [Arguments(true, 1)]
+    [Arguments(false, 0)]
+    public async Task The_browser_offers_the_hint_only_when_one_is_supplied(bool withHint, int expectedNotices) {
+        var progress = new RecordingAuthProgress();
+        var browser  = new LoopbackBrowser(
+            openBrowser: _ => true, progress: progress,
+            hint: withHint ? OAuthLoginFlow.WorkOSBrowserHint() : null);
+
+        var       port = OAuthLoginFlow.GetAvailablePort();
+        using var cts  = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        // Cancelled up front: the announce happens before the wait, so this exercises the output and
+        // then leaves rather than sitting on the listener.
+        await Assert.That(async () => await browser.InvokeAsync(
+                  new Duende.IdentityModel.OidcClient.Browser.BrowserOptions(
+                      "https://example.test/authorize", $"http://127.0.0.1:{port}/callback") {
+                      Timeout = TimeSpan.FromMinutes(5)
+                  }, cts.Token))
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(progress.BrowserOpenings).Count().IsEqualTo(1);
+        await Assert.That(progress.Notices).Count().IsEqualTo(expectedNotices);
+        await Assert.That(OAuthLoginFlow.WorkOSBrowserHint()).Contains("press d");
     }
 
     [Test]

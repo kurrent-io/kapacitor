@@ -13,7 +13,7 @@ public sealed class UiAuthProgress(Action<Action> post) : IAuthProgress {
     public event Action<string>?         NoticeReceived;
     public event Action<string>?         ErrorReceived;
     public event Action<string>?         BrowserOpened;
-    public event Action<string, string>? DeviceCodeReceived;
+    public event Action<string, string, bool>? DeviceCodeReceived;
     public event Action?                 PollTicked;
 
     public void Notice(string message) => post(() => NoticeReceived?.Invoke(message));
@@ -22,8 +22,10 @@ public sealed class UiAuthProgress(Action<Action> post) : IAuthProgress {
 
     public void BrowserOpening(string url) => post(() => BrowserOpened?.Invoke(url));
 
+    // `provider` is deliberately dropped: it exists to name who is asking in a sentence this host
+    // does not render. `prefilled` is not - it changes whether the code is typed or checked.
     public void DeviceCode(string code, string verificationUri, string? provider, bool prefilled) =>
-        post(() => DeviceCodeReceived?.Invoke(code, verificationUri));
+        post(() => DeviceCodeReceived?.Invoke(code, verificationUri, prefilled));
 
     public void PollTick() => post(() => PollTicked?.Invoke());
 }

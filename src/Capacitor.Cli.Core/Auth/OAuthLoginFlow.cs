@@ -130,9 +130,12 @@ public static class OAuthLoginFlow {
         var device   = (await deviceResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.DeviceCodeResponse, ct))!;
         var interval = device.IntervalOrDefault;
 
-        var copied = Clipboard.TryCopy(device.UserCode);
-
         var browserOpened = SystemBrowser.TryOpen(device.BrowserUri);
+        var prefilled     = browserOpened && !string.IsNullOrEmpty(device.VerificationUriComplete);
+
+        // Not copied when the page already carries the code: there is nothing to paste it into, and the
+        // note is folded INTO the code below, so it would read as part of "Check the code shown is ...".
+        var copied = !prefilled && Clipboard.TryCopy(device.UserCode);
 
         progress.Notice("");
         progress.Notice("To finish signing in to GitHub:");
@@ -146,8 +149,7 @@ public static class OAuthLoginFlow {
         if (browserOpened) progress.Notice("     (if it didn't open, go to that URL yourself)");
 
         // Clipboard-copy suffix folds into the code: DeviceCode's contract carries no separate flag for it.
-        progress.DeviceCode(device.UserCode + (copied ? "  (copied to clipboard)" : ""), device.VerificationUri, "GitHub",
-            prefilled: browserOpened && !string.IsNullOrEmpty(device.VerificationUriComplete));
+        progress.DeviceCode(device.UserCode + (copied ? "  (copied to clipboard)" : ""), device.VerificationUri, "GitHub", prefilled);
 
         return await PollDeviceGrantAsync(
             http, "https://github.com/login/oauth/access_token",
@@ -209,6 +211,10 @@ public static class OAuthLoginFlow {
 
                 continue;
             }
+
+            // Disposed at the end of every iteration, whichever way this one leaves: a long poll
+            // otherwise piles up one undisposed response per tick for the code's whole lifetime.
+            using var polled = response;
 
             // Parse the body whatever the status: RFC 8628 §3.5 carries authorization_pending in a 400,
             // and GitHub returns it in a 200. Only an UNREADABLE body is a transport problem, and it is
@@ -738,7 +744,10 @@ public static class OAuthLoginFlow {
 
         var login = AuthenticateWorkOSAsync(
             clientId, organizationId,
-            browser ?? new LoopbackBrowser(progress: progress, hint: WorkOSBrowserHint(keys.CanWatch)),
+            // No keyboard, no hint. It once advised "--device" instead, which a GUI host cannot act on
+            // at all; and a console host that gets here HAS launched a browser locally (the launch
+            // failure rung is above), so loopback is very likely reachable and no escape is needed.
+            browser ?? new LoopbackBrowser(progress: progress, hint: keys.CanWatch ? WorkOSBrowserHint() : null),
             apiBase, escape.Token, progress);
         var watch = WatchForEscapeHatchAsync(keys, escape, settled.Token);
 
@@ -765,14 +774,11 @@ public static class OAuthLoginFlow {
     }
 
     /// <summary>
-    /// The escape hatch, worded to sit directly under the "visit:" URL as an alternative to it. Names
-    /// the keypress only when there is a keyboard to take it with; with stdin redirected the flag is
-    /// the only route, and offering the key would send the user to press something nothing can read.
+    /// The escape hatch, worded to sit directly under the "visit:" URL as an alternative to it. Offered
+    /// only where there is a keyboard to take it with - see the caller for why there is no wording for
+    /// the other case rather than a different one.
     /// </summary>
-    internal static string WorkOSBrowserHint(bool canWatchKeys) =>
-        canWatchKeys
-            ? $"  Or press {EscapeHatchKey} to switch to a device code."
-            : "  Or re-run with --device to use a device code.";
+    internal static string WorkOSBrowserHint() => $"  Or press {EscapeHatchKey} to switch to a device code.";
 
     /// <summary>
     /// Polls for the escape-hatch key while the browser leg is in flight, cancelling
