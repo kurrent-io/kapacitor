@@ -56,6 +56,24 @@ public class McpFlowsServerReviewerVendorsTests {
     }
 
     [Test]
+    public async Task Repo_unresolved_short_circuits_before_any_request() {
+        using var server = WireMockServer.Start();
+        // Would be an auth error if the tool called it — it must not, because repo_unresolved is a
+        // local precondition that outranks any lookup/auth failure.
+        server.Given(Request.Create().WithPath("/api/daemons").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(401));
+        using var client = new HttpClient();
+
+        var response = await McpFlowsServer.HandleToolCallAsync(
+            JsonNode.Parse("1")!, ToolCall(), client, server.Url!,
+            cwd: "/x", repoRoot: null, repoInfo: null, driverVendor: null);
+
+        await Assert.That(JsonNode.Parse(response)!["result"]!["isError"]).IsNull();
+        await Assert.That(ResultJson(response)["diagnostics"]!["reason"]!.GetValue<string>()).IsEqualTo("repo_unresolved");
+        await Assert.That(server.LogEntries.Count).IsEqualTo(0); // never hit the server
+    }
+
+    [Test]
     public async Task Repo_unresolved_when_no_repo_root() {
         using var server = WireMockServer.Start();
         server.Given(Request.Create().WithPath("/api/daemons").UsingGet())

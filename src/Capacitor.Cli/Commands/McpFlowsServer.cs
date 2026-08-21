@@ -389,6 +389,14 @@ static class McpFlowsServer {
             // ReviewerVendorLookup). Its own branch — it hits /api/daemons, not a flow URL, and never
             // mutates anything.
             if (toolName is "list_reviewer_vendors") {
+                // repo_unresolved is a local precondition AND the highest-precedence reason — settle it
+                // before any network call, so an unresolved repo can never surface as an auth/lookup
+                // error from GET /api/daemons instead of the contractual repo_unresolved result.
+                if (string.IsNullOrEmpty(repoRoot))
+                    return BuildToolResult(id, JsonSerializer.Serialize(
+                        ReviewerVendorLookup.Aggregate(null, repoRoot, MachineId.Get(), driverVendor),
+                        McpJsonContext.Default.ReviewerVendorsResult));
+
                 using var daemonsResp = await SendWithRefreshRetryAsync(
                     client, apiRoot, (c, ct) => c.GetAsync(apiRoot + "/api/daemons", ct));
 
