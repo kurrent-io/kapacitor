@@ -125,6 +125,24 @@ public class ReviewerVendorLookupTests {
         await Assert.That(r.Reviewers.Count).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task Identity_is_the_non_sensitive_repo_id_not_the_local_path() {
+        var r = ReviewerVendorLookup.Aggregate(
+            [Daemon(["/repo/a"], "m1", ["codex"])], "/repo/a", "m1", null, repoIdentity: "acme/widgets");
+        await Assert.That(r.Repo.Identity).IsEqualTo("acme/widgets");
+        await Assert.That(r.Repo.Resolved).IsTrue();
+        await Assert.That(r.Repo.Identity).IsNotEqualTo("/repo/a"); // the local path must not leak
+    }
+
+    [Test]
+    public async Task Repo_path_matches_across_separators_and_trailing_slash() {
+        // Backslashes + a trailing separator must not produce a false no_repo_hosting_daemon.
+        var r = ReviewerVendorLookup.Aggregate(
+            [Daemon(["\\repo\\a\\"], "m1", ["codex"])], "/repo/a", "m1", null);
+        await Assert.That(r.Reviewers.Count).IsEqualTo(1);
+        await Assert.That(r.Diagnostics.Reason).IsNull();
+    }
+
     // --- ParseDaemons ---
 
     [Test]

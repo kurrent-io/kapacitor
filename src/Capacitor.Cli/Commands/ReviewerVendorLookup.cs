@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Commands;
 
@@ -37,10 +38,12 @@ public sealed record ReviewerVendorDiagnostics(
     [property: JsonPropertyName("reason")]                       string? Reason);
 
 /// <summary>Pure repo-aware aggregation behind the <c>list_reviewer_vendors</c> MCP tool: given the
-/// daemons the server reports and the current session's repo identity, returns the reviewer vendors
-/// that can ACTUALLY run an unattended review flow for this repo right now. All the failure modes are
+/// daemons the server reports and the current session's repo, returns the reviewer vendors that can
+/// ACTUALLY run an unattended review flow for this repo right now. All the failure modes are
 /// disambiguated by a single <c>reason</c> so an empty result never reads as one specific cause it is
-/// not (see <see cref="Reason"/> and its precedence).</summary>
+/// not (see <see cref="Reason"/> and its precedence). <c>Identity</c> is a NON-sensitive repo id
+/// (e.g. owner/repo) supplied by the caller — never the local repo path, which must not leak to the
+/// model — while the local <c>repoRoot</c> argument is used only for the on-disk hosting match.</summary>
 public static class ReviewerVendorLookup {
     public static class Reason {
         public const string RepoUnresolved      = "repo_unresolved";
@@ -53,6 +56,8 @@ public static class ReviewerVendorLookup {
 
     /// <param name="daemons">Parsed daemon records, or null when the lookup itself failed
     /// (transport/auth/API) — distinct from an empty list, which is "connected zero daemons".</param>
+    /// <param name="repoIdentity">A non-sensitive, stable id for the repo (e.g. owner/repo), surfaced
+    /// as <c>repo.identity</c>. Never the local path.</param>
     /// <param name="schemaSkew">Set when the server response could not be parsed at all (client too
     /// old, or every record unparseable): reported as its own reason so it can never masquerade as an
     /// authoritative empty set.</param>
@@ -62,9 +67,10 @@ public static class ReviewerVendorLookup {
             string? requesterMachineId,
             string? driverVendor,
             bool schemaSkew = false,
-            int skippedRecords = 0) {
+            int skippedRecords = 0,
+            string? repoIdentity = null) {
         var resolved = !string.IsNullOrEmpty(repoRoot);
-        var repo     = new RepoIdent(repoRoot, resolved);
+        var repo     = new RepoIdent(repoIdentity, resolved);
 
         // Empty-result reasons, most-fundamental first — the caller maps exactly one to guidance.
         if (!resolved)
@@ -74,9 +80,8 @@ public static class ReviewerVendorLookup {
         if (daemons is null)
             return Empty(repo, driverVendor, 0, 0, skippedRecords, Reason.LookupFailed);
 
-        var norm = Normalize(repoRoot!);
         var hosting = daemons
-            .Where(d => d.RepoPaths.Any(p => Normalize(p) == norm) &&
+            .Where(d => d.RepoPaths.Any(p => RepoPathMatches(p, repoRoot!)) &&
                         (requesterMachineId is null || d.MachineId == requesterMachineId))
             .ToList();
 
@@ -121,20 +126,30 @@ public static class ReviewerVendorLookup {
             RepoIdent repo, string? driver, int connected, int hosting, int skipped, string reason)
         => new(repo, driver, [], new ReviewerVendorDiagnostics(connected, hosting, skipped, [], reason));
 
-    static string Normalize(string path) => path.TrimEnd('/', '\\');
+    // Filesystem paths compare case-insensitively on Windows and macOS (case-preserving but
+    // case-insensitive volumes) and case-sensitively on Linux; separators are unified and a trailing
+    // one trimmed so a '\'-vs-'/' or trailing-slash difference between a daemon's RepoPaths and the
+    // local repoRoot never produces a false no_repo_hosting_daemon. The conservative same-machine
+    // filter means both sides come from the same OS, so one OS-appropriate rule is correct.
+    static readonly StringComparison PathComparison =
+        OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+
+    static bool RepoPathMatches(string daemonPath, string repoRoot)
+        => string.Equals(Normalize(daemonPath), Normalize(repoRoot), PathComparison);
+
+    static string Normalize(string path) => path.Replace('\\', '/').TrimEnd('/');
 
     /// <summary>Tolerantly parse a <c>GET /api/daemons</c> body into the records
-    /// <see cref="Aggregate"/> consumes. Property lookup is case-insensitive so the wire casing
-    /// (camelCase today) can change without breaking this. A body that is not a JSON array, or an
-    /// array whose every element is unparseable, sets <c>SchemaSkew</c> — so schema skew can never be
-    /// mistaken for an authoritative empty set; a single malformed element is skipped and counted.
-    /// Only called on a 2xx; a non-2xx maps to <c>Aggregate(daemons: null, …)</c> = lookup_failed.</summary>
+    /// <see cref="Aggregate"/> consumes. A body that is not a JSON array, or an array whose every
+    /// element is unparseable, sets <c>SchemaSkew</c> — so schema skew can never be mistaken for an
+    /// authoritative empty set; a single malformed element is skipped and counted. Only called on a
+    /// 2xx; a non-2xx maps to <c>Aggregate(daemons: null, …)</c> = lookup_failed.</summary>
     public static (IReadOnlyList<DaemonVendorRecord> Records, int Skipped, bool SchemaSkew) ParseDaemons(string body) {
         JsonDocument doc;
         try { doc = JsonDocument.Parse(body); } catch { return ([], 0, true); }
 
         using (doc) {
-            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            if (!doc.RootElement.IsArray)
                 return ([], 0, true);
 
             var records = new List<DaemonVendorRecord>();
@@ -145,50 +160,35 @@ public static class ReviewerVendorLookup {
                 total++;
                 // RepoPaths is the one field required to place a daemon against a repo; without it the
                 // record cannot participate in the intersection, so it is malformed → skip + count.
-                if (el.ValueKind != JsonValueKind.Object ||
-                    !TryProp(el, "repoPaths", out var rp) || rp.ValueKind != JsonValueKind.Array) {
+                if (!el.IsObject || el.Arr("repoPaths") is not { } rp) {
                     skipped++;
                     continue;
                 }
 
-                var machineId  = TryProp(el, "machineId", out var mi) && mi.ValueKind == JsonValueKind.String ? mi.GetString() : null;
-                var supported  = TryProp(el, "supportedVendors", out var sv) && sv.ValueKind == JsonValueKind.Array ? StringArray(sv) : null;
-                var unattended = TryProp(el, "unattendedVendors", out var uv) && uv.ValueKind == JsonValueKind.Array ? StringArray(uv) : null;
+                var supported  = el.Arr("supportedVendors") is { } sv ? StringArray(sv) : null;
+                var unattended = el.Arr("unattendedVendors") is { } uv ? StringArray(uv) : null;
 
                 List<UnattendedVendorCapabilityLite>? caps = null;
-                if (TryProp(el, "unattendedVendorCapabilities", out var cv) && cv.ValueKind == JsonValueKind.Array) {
+                if (el.Arr("unattendedVendorCapabilities") is { } cv) {
                     caps = [];
                     foreach (var c in cv.EnumerateArray()) {
-                        if (c.ValueKind != JsonValueKind.Object) continue;
-                        var vendor = TryProp(c, "vendor", out var cn) && cn.ValueKind == JsonValueKind.String ? cn.GetString() : null;
-                        if (vendor is null) continue;
-                        var supports = TryProp(c, "supportsReviewerModelResolution", out var sr) &&
-                                       sr.ValueKind is JsonValueKind.True or JsonValueKind.False && sr.GetBoolean();
-                        caps.Add(new UnattendedVendorCapabilityLite(vendor, supports));
+                        if (c.Str("vendor") is not { } vendor) continue;
+                        caps.Add(new UnattendedVendorCapabilityLite(
+                            vendor, c.Bool("supportsReviewerModelResolution") == true));
                     }
                 }
 
-                records.Add(new DaemonVendorRecord(StringArray(rp), machineId, supported, unattended, caps));
+                records.Add(new DaemonVendorRecord(StringArray(rp), el.Str("machineId"), supported, unattended, caps));
             }
 
             return (records, skipped, total > 0 && records.Count == 0);
         }
     }
 
-    static bool TryProp(JsonElement obj, string name, out JsonElement value) {
-        foreach (var p in obj.EnumerateObject())
-            if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)) {
-                value = p.Value;
-                return true;
-            }
-        value = default;
-        return false;
-    }
-
     static string[] StringArray(JsonElement arr) {
         var list = new List<string>();
         foreach (var e in arr.EnumerateArray())
-            if (e.ValueKind == JsonValueKind.String && e.GetString() is { } s)
+            if (e.IsString && e.GetString() is { } s)
                 list.Add(s);
         return list.ToArray();
     }

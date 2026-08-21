@@ -389,12 +389,22 @@ static class McpFlowsServer {
             // ReviewerVendorLookup). Its own branch — it hits /api/daemons, not a flow URL, and never
             // mutates anything.
             if (toolName is "list_reviewer_vendors") {
+                // Surface a NON-sensitive repo id (owner/repo), never the local repoRoot path, which
+                // must not leak to the model — repoRoot is used only for the on-disk hosting match.
+                var repoIdentity = repoInfo is { Owner.Length: > 0, RepoName.Length: > 0 }
+                    ? $"{repoInfo.Owner}/{repoInfo.RepoName}"
+                    : null;
+                // Read-only: never MachineId.Get() here — that would persist machine.json on first
+                // use, breaking this tool's read-only/side-effect-free contract. A null id (no
+                // machine.json yet) just drops the same-machine filter for this call.
+                var machineId = MachineId.ReadPersisted();
+
                 // repo_unresolved is a local precondition AND the highest-precedence reason — settle it
                 // before any network call, so an unresolved repo can never surface as an auth/lookup
                 // error from GET /api/daemons instead of the contractual repo_unresolved result.
                 if (string.IsNullOrEmpty(repoRoot))
                     return BuildToolResult(id, JsonSerializer.Serialize(
-                        ReviewerVendorLookup.Aggregate(null, repoRoot, MachineId.Get(), driverVendor),
+                        ReviewerVendorLookup.Aggregate(null, repoRoot, machineId, driverVendor, repoIdentity: repoIdentity),
                         McpJsonContext.Default.ReviewerVendorsResult));
 
                 using var daemonsResp = await SendWithRefreshRetryAsync(
@@ -405,12 +415,13 @@ static class McpFlowsServer {
 
                 ReviewerVendorsResult result;
                 if (!daemonsResp.IsSuccessStatusCode) {
-                    result = ReviewerVendorLookup.Aggregate(null, repoRoot, MachineId.Get(), driverVendor);
+                    result = ReviewerVendorLookup.Aggregate(null, repoRoot, machineId, driverVendor, repoIdentity: repoIdentity);
                 } else {
                     var daemonsBody = await daemonsResp.Content.ReadAsStringAsync();
                     var (records, skipped, skew) = ReviewerVendorLookup.ParseDaemons(daemonsBody);
                     result = ReviewerVendorLookup.Aggregate(
-                        records, repoRoot, MachineId.Get(), driverVendor, schemaSkew: skew, skippedRecords: skipped);
+                        records, repoRoot, machineId, driverVendor,
+                        schemaSkew: skew, skippedRecords: skipped, repoIdentity: repoIdentity);
                 }
 
                 return BuildToolResult(id, JsonSerializer.Serialize(result, McpJsonContext.Default.ReviewerVendorsResult));

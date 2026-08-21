@@ -18,7 +18,10 @@ public class McpFlowsServerReviewerVendorsTests {
 
     [Test]
     public async Task Lists_repo_hosting_reviewers_for_this_machine() {
-        var machine = MachineId.Get(); // the tool matches the daemon on the requester's own machine id
+        // The tool reads the machine id read-only (ReadPersisted, never Get) and filters on it; mirror
+        // that so the stub daemon matches whether or not machine.json exists in the test env (a null id
+        // drops the filter, so the daemon is included either way).
+        var machine = MachineId.ReadPersisted() ?? "test-machine";
         using var server = WireMockServer.Start();
         server.Given(Request.Create().WithPath("/api/daemons").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""
