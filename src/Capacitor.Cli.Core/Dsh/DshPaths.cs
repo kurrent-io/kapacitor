@@ -42,6 +42,15 @@ public static class DshPaths {
     public static string KcapPluginMarker(string? home = null) =>
         Path.Combine(DshHome(home), ".kcap-extension-version");
 
+    /// <summary>dsh profiles root (<c>$DSH_HOME/profiles</c>). Each profile subdir has a
+    /// <c>package.json</c> + a live-watched <c>cordis.patch.yml</c> where the plugin registers.</summary>
+    public static string ProfilesDir(string? home = null) =>
+        Path.Combine(DshHome(home), "profiles");
+
+    /// <summary>A profile's user patch file (<c>&lt;profile&gt;/cordis.patch.yml</c>).</summary>
+    public static string CordisPatch(string profileDir) =>
+        Path.Combine(profileDir, "cordis.patch.yml");
+
     /// <summary>Detection: the dsh home exists (callers also OR
     /// <c>AgentDetector.IsInstalled("dsh")</c> for binary-name coverage).</summary>
     public static bool IsInstalled(string? home = null) => Directory.Exists(DshHome(home));

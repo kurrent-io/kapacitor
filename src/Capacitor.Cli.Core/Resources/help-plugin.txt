@@ -60,6 +60,13 @@ Options:
                       hooks.json). Antigravity has no shell hooks; the GUI loads
                       plugins at startup and streams each conversation. User-wide
                       only — --project has no effect with --antigravity.
+  --dsh               Target DeepSeek Harness (dsh): install the Cordis observer
+                      plugin to $DSH_HOME/kcap-dsh.plugin.mjs (default ~/.dsh) and
+                      register it in each profile's live-watched cordis.patch.yml
+                      (an idempotent managed block). dsh has no shell hooks; the
+                      plugin writes ~/.cache/kcap/dsh/<id>.jsonl and spawns
+                      `kcap hook --dsh` so the watcher captures each session.
+                      (MCP registration is documented in DSH_NORMALIZER.md.)
   --skills            Install only the agent-agnostic skills to ~/.agents/skills/.
                       Use this if you only have Cursor (or another agent that
                       reads ~/.agents/skills/) and don't want Codex hooks.

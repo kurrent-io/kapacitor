@@ -38,6 +38,56 @@ public class DshExtensionInstallerTests {
         await Assert.That(DshExtensionInstaller.IsInstalled(pluginPath)).IsTrue();
     }
 
+    [Test]
+    public async Task RegisterInCordisPatch_is_idempotent_and_preserves_user_entries() {
+        using var tmp = new TempDir();
+        var patch  = Path.Combine(tmp.Path, "cordis.patch.yml");
+        var plugin = Path.Combine(tmp.Path, "kcap-dsh.plugin.mjs");
+
+        // empty array base
+        await File.WriteAllTextAsync(patch, "[]\n");
+        await Assert.That(DshExtensionInstaller.RegisterInCordisPatch(patch, plugin)).IsTrue();
+        var once = await File.ReadAllTextAsync(patch);
+        await Assert.That(once.Contains("id: kcap")).IsTrue();
+        await Assert.That(once.Contains("kcap-dsh.plugin.mjs")).IsTrue();
+        await Assert.That(DshExtensionInstaller.IsRegisteredInCordisPatch(patch)).IsTrue();
+        await Assert.That(once.Contains("[]")).IsFalse();   // [] base replaced, not appended-to
+
+        // re-register → still exactly one managed block
+        DshExtensionInstaller.RegisterInCordisPatch(patch, plugin);
+        var twice = await File.ReadAllTextAsync(patch);
+        await Assert.That(CountOccurrences(twice, "kcap-dsh:begin")).IsEqualTo(1);
+
+        // unregister → block gone, empty array restored
+        await Assert.That(DshExtensionInstaller.UnregisterFromCordisPatch(patch)).IsTrue();
+        await Assert.That(DshExtensionInstaller.IsRegisteredInCordisPatch(patch)).IsFalse();
+        await Assert.That((await File.ReadAllTextAsync(patch)).Trim()).IsEqualTo("[]");
+    }
+
+    [Test]
+    public async Task RegisterInCordisPatch_preserves_existing_block_style_entries() {
+        using var tmp = new TempDir();
+        var patch  = Path.Combine(tmp.Path, "cordis.patch.yml");
+        var plugin = Path.Combine(tmp.Path, "kcap-dsh.plugin.mjs");
+
+        await File.WriteAllTextAsync(patch, "- id: directory-picker\n  disabled: true\n");
+        DshExtensionInstaller.RegisterInCordisPatch(patch, plugin);
+        var content = await File.ReadAllTextAsync(patch);
+        await Assert.That(content.Contains("directory-picker")).IsTrue();   // user entry preserved
+        await Assert.That(content.Contains("id: kcap")).IsTrue();
+
+        DshExtensionInstaller.UnregisterFromCordisPatch(patch);
+        var after = await File.ReadAllTextAsync(patch);
+        await Assert.That(after.Contains("directory-picker")).IsTrue();     // still there after remove
+        await Assert.That(after.Contains("id: kcap")).IsFalse();
+    }
+
+    static int CountOccurrences(string s, string sub) {
+        int n = 0, i = 0;
+        while ((i = s.IndexOf(sub, i, StringComparison.Ordinal)) >= 0) { n++; i += sub.Length; }
+        return n;
+    }
+
     sealed class TempDir : IDisposable {
         public string Path { get; } = System.IO.Path.Combine(
             System.IO.Path.GetTempPath(),
