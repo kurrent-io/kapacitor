@@ -49,10 +49,14 @@ namespace Capacitor.Cli.Daemon.Services;
 /// advances its <c>ExpectedNextSeq</c> each round and so never trips the guard. Deeper reconnect
 /// resilience beyond this remains.
 ///
-/// Out of scope here: building/emitting the <c>SessionStarted</c> envelope (it is passed
+/// Out of scope here: building/emitting the <c>SessionStarted</c> envelope (a fresh session passes it
 /// in pre-built as <c>initialEnvelope</c>) or calling <c>AcpSessionStarted</c> — the bind
 /// always precedes starting this forwarder. This forwarder also never emits a <c>session_ended</c>
 /// envelope; the server's <c>EndAgentSession</c> is the sole <c>SessionEnded</c> owner.
+///
+/// <para>§2.7 B4 resume/rebind: a rebind passes null <c>initialEnvelope</c> and <c>resumeFromSeq</c> =
+/// the source-claim's canonical <c>AcceptedSeq</c> — the forwarder sends NO SessionStarted and numbers the
+/// first new event at <c>AcceptedSeq + 1</c>, so round-2 events aren't deduped (<c>≤ AcceptedSeq</c>) and lost.</para>
 /// </summary>
 internal sealed class AcpTranscriptForwarder {
     static readonly TimeSpan DefaultInitialSendRetryDelay = TimeSpan.FromSeconds(1);
@@ -63,7 +67,7 @@ internal sealed class AcpTranscriptForwarder {
     readonly Func<AcpEventEnvelope[], CancellationToken, Task<AcpBatchAck>> _send;
     readonly ChannelReader<AcpEventEnvelope>                                _envelopes;
     readonly ILogger                                                       _logger;
-    readonly AcpEventEnvelope                                              _initialEnvelope;
+    readonly AcpEventEnvelope?                                             _initialEnvelope;
     readonly TimeSpan                                                      _initialSendRetryDelay;
     readonly TimeSpan                                                      _maxSendRetryDelay;
     readonly int                                                           _maxStalledGapResends;
@@ -101,20 +105,35 @@ internal sealed class AcpTranscriptForwarder {
     /// (production) but are overridable so unit tests can exercise <see cref="SendWithRetryAsync"/>'s
     /// backoff without real sleeping.
     /// </summary>
+    /// <param name="resumeFromSeq">
+    /// §2.7 B4 resume/rebind: the canonical AcceptedSeq this forwarder resumes from. When set, do NOT
+    /// (re)send SessionStarted and number the first new event at <paramref name="resumeFromSeq"/>+1, so a
+    /// resumed incarnation's events land at the next canonical sequence instead of being deduped against
+    /// the prior incarnation's cursor. Null = a fresh session (SessionStarted@0, today's behaviour).
+    /// </param>
     public AcpTranscriptForwarder(
             Func<AcpEventEnvelope[], CancellationToken, Task<AcpBatchAck>> send,
-            AcpEventEnvelope                                               initialEnvelope,
+            AcpEventEnvelope?                                              initialEnvelope,
             ChannelReader<AcpEventEnvelope>                                envelopes,
             ILogger                                                        logger,
             TimeSpan?                                                      initialSendRetryDelay = null,
             TimeSpan?                                                      maxSendRetryDelay = null,
             int?                                                           maxStalledGapResends = null,
-            TimeSpan?                                                      stalledGapResendDelay = null
+            TimeSpan?                                                      stalledGapResendDelay = null,
+            long?                                                          resumeFromSeq = null
         ) {
         _send                   = send;
         _envelopes              = envelopes;
         _logger                 = logger;
-        _initialEnvelope        = initialEnvelope with { Seq = 0 };
+        if (resumeFromSeq is { } rs) {
+            // Resume/rebind: canonical already holds events through rs. No SessionStarted (the source-claim
+            // rebind is idempotent by thread id), and new events start at rs+1.
+            _initialEnvelope = null;
+            _nextSeq         = rs + 1;
+            _highestSent     = rs;
+        } else {
+            _initialEnvelope = (initialEnvelope ?? throw new ArgumentNullException(nameof(initialEnvelope))) with { Seq = 0 };
+        }
         _initialSendRetryDelay  = initialSendRetryDelay ?? DefaultInitialSendRetryDelay;
         _maxSendRetryDelay      = maxSendRetryDelay ?? DefaultMaxSendRetryDelay;
         _maxStalledGapResends   = maxStalledGapResends ?? DefaultMaxStalledGapResends;
@@ -135,7 +154,9 @@ internal sealed class AcpTranscriptForwarder {
     /// </summary>
     public async Task RunAsync(CancellationToken ct) {
         try {
-            var    pendingInitial = true;
+            // Resume mode (_initialEnvelope null) skips the initial-send branch entirely and drains new
+            // envelopes straight from _nextSeq (== resumeFromSeq+1); a fresh session sends SessionStarted@0.
+            var    pendingInitial = _initialEnvelope is not null;
             long?  resendFrom     = null;
 
             while (true) {
@@ -156,9 +177,12 @@ internal sealed class AcpTranscriptForwarder {
                     }
                 } else if (pendingInitial) {
                     pendingInitial = false;
-                    _unacked[_initialEnvelope.Seq] = _initialEnvelope;
-                    _highestSent = _initialEnvelope.Seq;
-                    batch = [_initialEnvelope];
+                    // Only reachable when pendingInitial started true, i.e. _initialEnvelope is non-null
+                    // (fresh session); resume mode never sets pendingInitial and so never dereferences it.
+                    var initial = _initialEnvelope!.Value;
+                    _unacked[initial.Seq] = initial;
+                    _highestSent = initial.Seq;
+                    batch = [initial];
                 } else {
                     var drained = await DrainNewEnvelopesAsync(ct).ConfigureAwait(false);
 

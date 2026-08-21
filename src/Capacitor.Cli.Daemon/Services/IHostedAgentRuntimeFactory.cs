@@ -231,5 +231,10 @@ internal sealed record RuntimeStartContext(
         // LaunchAgentCommand.AcpPermissionPreset. The ACP factory resolves it (for non-review-flow
         // launches only) into an AcpLaunchPermissionPreset and wires it onto the interaction bridge.
         // Null for every non-preset launch and constructions predating this field.
-        string?             AcpPermissionPreset = null
+        string?             AcpPermissionPreset = null,
+        // The hosted Codex thread to RESUME, carried verbatim from LaunchAgentCommand.ResumeSessionId.
+        // Non-null only for a parked reviewer relaunch: the Codex app-server runtime reopens this thread
+        // via thread/resume instead of thread/start, and suppresses the second SessionStarted. Null for
+        // a fresh launch, every non-Codex/non-app-server launch, and constructions predating this field.
+        string?             ResumeSessionId = null
     );

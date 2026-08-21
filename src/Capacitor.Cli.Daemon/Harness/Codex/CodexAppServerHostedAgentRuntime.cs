@@ -31,6 +31,10 @@ internal delegate Task<(CodexAppServerConnection Connection, IAcpProcess Process
 /// <param name="WritableRoots">Writable roots for <c>workspace-write</c> (the owned worktree);
 /// ignored for the other sandboxes.</param>
 /// <param name="ClientVersion">Daemon version stamped into <c>initialize.clientInfo.version</c>.</param>
+/// <param name="ResumeSessionId">A parked Codex thread id to REOPEN via <c>thread/resume</c> instead of
+/// minting a fresh one with <c>thread/start</c>. Non-null only for a parked reviewer relaunch; the
+/// resumed thread keeps its id, so no second SessionStarted is emitted. A resume that the app-server
+/// rejects fails the launch (coded) rather than silently starting a new thread.</param>
 internal sealed record CodexAppServerLaunch(
     string                Cwd,
     string?               Model,
@@ -39,7 +43,8 @@ internal sealed record CodexAppServerLaunch(
     string                Sandbox,
     string                Approval,
     IReadOnlyList<string> WritableRoots,
-    string                ClientVersion);
+    string                ClientVersion,
+    string?               ResumeSessionId = null);
 
 /// <summary>
 /// A <see cref="IHostedAgentRuntime"/> that hosts a Codex agent over the <c>codex app-server</c>
@@ -376,9 +381,19 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
     }
 
     async Task StartThreadAsync(CancellationToken ct) {
+        // §2.7 B4: a non-null ResumeSessionId REOPENS that thread via thread/resume (no round-1 replay, no
+        // second SessionStarted); null ⇒ first launch via thread/start. A present-but-blank id is NOT a
+        // valid "no resume" sentinel — treating it as absent would silently thread/start and FORK the
+        // transcript, breaking the never-silently-fork invariant — so fail the launch loudly instead.
+        var isResume = _launch.ResumeSessionId is not null;
+        if (isResume && string.IsNullOrWhiteSpace(_launch.ResumeSessionId))
+            throw new InvalidOperationException(
+                "codex app-server: ResumeSessionId is present but blank; refusing to silently start a fresh thread.");
+        var method = isResume ? "thread/resume" : "thread/start";
+
         var startParams = new JsonObject {
             ["cwd"]               = _launch.Cwd,
-            // thread/start.sandbox is the coarse SandboxMode STRING (read-only / workspace-write /
+            // thread/{start,resume}.sandbox is the coarse SandboxMode STRING (read-only / workspace-write /
             // danger-full-access) — a different wire shape from turn/start.sandboxPolicy's object.
             // The resolved posture token already IS that string; the per-turn sandboxPolicy object
             // is the load-bearing containment.
@@ -388,15 +403,26 @@ internal sealed partial class CodexAppServerHostedAgentRuntime : IHostedAgentRun
         };
         if (!string.IsNullOrEmpty(_launch.Model))
             startParams["model"] = _launch.Model;
+        if (isResume)
+            startParams["threadId"] = _launch.ResumeSessionId; // resume-by-thread_id; response.thread.id == this id
 
-        var result = await RequestAsync("thread/start", startParams, ct).ConfigureAwait(false);
+        // A resume the app-server rejects is a clean JSON-RPC error out of RequestAsync -> the launch fails
+        // coded; it NEVER silently starts a new thread (that would fork the transcript).
+        var result = await RequestAsync(method, startParams, ct).ConfigureAwait(false);
 
-        _threadId      = result.Obj("thread")?.Str("id");
+        _threadId      = result.Obj("thread")?.Str("id"); // same read for both start and resume
         _resolvedModel = result.Str("model");
-        _clock?.SetLaunchStage("thread_started");
+        _clock?.SetLaunchStage(isResume ? "thread_resumed" : "thread_started");
 
         if (string.IsNullOrEmpty(_threadId))
-            throw new InvalidOperationException("codex app-server: thread/start returned no thread id.");
+            throw new InvalidOperationException($"codex app-server: {method} returned no thread id.");
+
+        // §2.7 B4 usage baseline: on resume the first thread/tokenUsage/updated carries the thread-CUMULATIVE
+        // total, so baseline off the next snapshot (emits nothing) to avoid double-counting round 1 as the
+        // first delta. Bounded fallback (an exact thread/read baseline is a follow-up); set before the
+        // deferred first turn so it lands ahead of any post-resume usage notification.
+        if (isResume)
+            _mapper.UsageBaselineOnNextNotification();
     }
 
     // ── Turns / rounds ─────────────────────────────────────────────────────────────────────────

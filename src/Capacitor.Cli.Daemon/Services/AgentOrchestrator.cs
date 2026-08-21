@@ -1979,7 +1979,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 ActivityClock: activityClock,
                 // Carried verbatim; the ACP factory resolves it (non-review-flow launches only) into the
                 // interaction bridge's preset.
-                AcpPermissionPreset: cmd.AcpPermissionPreset
+                AcpPermissionPreset: cmd.AcpPermissionPreset,
+                // Carried verbatim; the Codex app-server factory branches thread/start -> thread/resume
+                // on it for a parked reviewer relaunch. Ignored by every other runtime.
+                ResumeSessionId: cmd.ResumeSessionId
             );
 
             HostedRuntimeStart start;
@@ -3753,7 +3756,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 acpCts.Token
             );
 
-            StartForwarderAfterBind(agent, transcript, vendor, acpCts);
+            // Non-envelope AcpSessionStarted bind: no source-claim cursor, so always a fresh forwarder
+            // (SessionStarted@0). §2.7 B4's rebind cursor rides ONLY the source-claim path below.
+            StartForwarderAfterBind(agent, transcript, vendor, acpCts, acceptedSeq: -1);
         } catch (Exception ex) {
             LogAcpBindFailed(ex, agent.Id);
         }
@@ -3764,11 +3769,17 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// liveness / TOCTOU guards, the local reconnect-binding registration, and the transcript
     /// forwarder build + run. Factored out of <see cref="StartAcpForwardingAsync"/> so the §2.5
     /// deferred-first-turn source-claim path — which binds via <c>AcpSessionSourceClaim</c>, NOT
-    /// <c>AcpSessionStarted</c> — can reuse it verbatim without re-binding. Synchronous (no awaits): the
-    /// forwarder's local seq always starts at 0 and the server drives resume via the AcpBatchAck, so
-    /// this needs no cursor from either bind path. The CALLER owns the try/catch.
+    /// <c>AcpSessionStarted</c> — can reuse it verbatim without re-binding. Synchronous (no awaits). The
+    /// CALLER owns the try/catch.
+    ///
+    /// <para><paramref name="acceptedSeq"/> (§2.7 B4): a FRESH bind (<c>-1</c>, the default) builds the
+    /// SessionStarted@0 initial envelope and the forwarder's local seq starts at 0. An envelope-sourced
+    /// REBIND (a parked reviewer relaunch, <c>≥ 0</c>) initializes the forwarder from the source-claim's
+    /// canonical <c>AcceptedSeq</c> instead — no SessionStarted, new events numbered from that seq + 1
+    /// (see §2.5 item 6). Only the <see cref="StartEnvelopeSourcedSessionAsync"/> source-claim path can
+    /// carry a cursor; the non-envelope <see cref="StartAcpForwardingAsync"/> path always passes -1.</para>
     /// </summary>
-    void StartForwarderAfterBind(AgentInstance agent, IAcpTranscriptSource transcript, string vendor, CancellationTokenSource acpCts) {
+    void StartForwarderAfterBind(AgentInstance agent, IAcpTranscriptSource transcript, string vendor, CancellationTokenSource acpCts, long acceptedSeq = -1) {
         // Liveness check: the bind await (either path) can span a reconnect outage. If finalize already
         // ran (cancelling acpCts and/or removing the agent from _agents) while we waited, abort — do not
         // register a binding, build a forwarder, or start it for an agent that's finalizing or gone.
@@ -3795,7 +3806,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return;
         }
 
-        var sessionStarted = AcpEventTranslator.BuildSessionStarted(
+        // §2.7 B4: a fresh bind (acceptedSeq < 0) synthesizes SessionStarted@0 and starts the local seq at
+        // 0; an envelope-sourced rebind (acceptedSeq >= 0) suppresses SessionStarted and resumes numbering
+        // from the canonical cursor, so round-2 events aren't deduped away against round-1's high-water.
+        var isRebind = acceptedSeq >= 0;
+
+        var sessionStarted = isRebind ? (AcpEventEnvelope?) null : AcpEventTranslator.BuildSessionStarted(
             seq: 0,
             DateTimeOffset.UtcNow.ToString("O"),
             cwd: transcript.Cwd,
@@ -3807,7 +3823,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             send: (batch, ct) => _server.SendAcpEventsAsync(agent.Id, transcript.AcpSessionId, batch, ct),
             initialEnvelope: sessionStarted,
             envelopes: transcript.Envelopes,
-            logger: _logger
+            logger: _logger,
+            resumeFromSeq: isRebind ? acceptedSeq : null
         );
 
         var runTask = ForwardAcpTranscriptAsync(agent, forwarder, acpCts.Token);
@@ -3862,8 +3879,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         try {
             // The claim already bound server-side, so build the forwarder WITHOUT AcpSessionStarted. It
-            // is running BEFORE the first turn dispatches, so it captures that turn's envelopes.
-            StartForwarderAfterBind(agent, transcript, vendor, acpCts);
+            // is running BEFORE the first turn dispatches, so it captures that turn's envelopes. §2.7 B4:
+            // pass the claim's canonical AcceptedSeq — -1 for a brand-new session (fresh SessionStarted@0),
+            // or the resume high-water for a parked-reviewer rebind (suppress SessionStarted, resume seq).
+            StartForwarderAfterBind(agent, transcript, vendor, acpCts, acceptedSeq: claim.AcceptedSeq);
 
             // StartForwarderAfterBind aborts silently if finalize ran (cancelled acpCts and/or removed the
             // agent) during the bind — re-check the SAME liveness before releasing the held first turn, so a

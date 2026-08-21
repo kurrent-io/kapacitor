@@ -47,6 +47,7 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
     public readonly List<string>       ReceivedMethods    = [];
     public readonly List<string>       InitializeOptOuts  = [];
     public string?                     LastThreadStartSandbox;
+    public string?                     LastResumeThreadId; // §2.7 B4: the threadId carried on thread/resume
     public string?                     LastTurnApprovalPolicy;
     public string?                     LastTurnEffort;
     public string?                     LastSteerExpectedTurnId;
@@ -120,6 +121,19 @@ sealed class FakeCodexAppServer : IAsyncDisposable {
                     ["modelProvider"] = "openai",
                 }, ct);
                 break;
+
+            case "thread/resume": {
+                // §2.7 B4 resume-by-thread_id: echo the requested thread id back (response.thread.id ==
+                // the requested id, per the app-server schema). The daemon reads it exactly as thread/start.
+                LastResumeThreadId = Str(@params, "threadId");
+                var resumedId = LastResumeThreadId ?? ThreadId;
+                await RespondAsync(id, new JsonObject {
+                    ["thread"]        = new JsonObject { ["id"] = resumedId, ["sessionId"] = resumedId, ["path"] = "/tmp/r.jsonl" },
+                    ["model"]         = Model,
+                    ["modelProvider"] = "openai",
+                }, ct);
+                break;
+            }
 
             case "turn/start": {
                 _turnStartCount++;

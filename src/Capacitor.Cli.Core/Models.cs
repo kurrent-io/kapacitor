@@ -1480,7 +1480,11 @@ public readonly record struct LaunchAgentCommand(
         // orchestrator's pre-flight AcpPermissionPresetPolicy fails closed on a preset supplied for a
         // review-flow / borrowed / non-ACP-routed launch. Appended last so the SignalR positional
         // binding stays wire-compatible — old daemons ignore it, old servers never set it.
-        string?           AcpPermissionPreset = null
+        string?           AcpPermissionPreset = null,
+        // §2.7 B4: the hosted Codex thread to RESUME (via thread/resume, no second SessionStarted) instead
+        // of starting fresh — set by the server only for a parked-reviewer relaunch, else null. Appended
+        // last so the SignalR positional binding stays wire-compatible with old daemons.
+        string?           ResumeSessionId = null
     );
 
 /// <summary>Caller-selected Codex launch posture. Valid ONLY for interactive, daemon-owned-worktree
