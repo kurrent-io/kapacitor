@@ -92,6 +92,10 @@ static class DshHookCommand {
         if (GetArg(args, "--provider") is { } provider) forwarded["provider"]    = provider;
         if (GetArg(args, "--version")  is { } version)  forwarded["dsh_version"] = version;
 
+        // Subagent: the child transcript header names its parent (parentSession, origin=subagent).
+        // Surface it (canonicalized) so the server adopts the child under the parent.
+        if (TryReadParentSession(file) is { } parent) forwarded["parent_session_id"] = parent;
+
         if (Environment.GetEnvironmentVariable("KCAP_AGENT_ID") is { } agentHostId) {
             forwarded["agent_host_id"] = agentHostId;
         }
@@ -182,5 +186,28 @@ static class DshHookCommand {
     static string? GetArg(string[] args, string flag) {
         var idx = Array.IndexOf(args, flag);
         return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : null;
+    }
+
+    /// <summary>Reads the child's <c>parentSession</c> (canonicalized) from the transcript header
+    /// (<c>{$kcap:"header", ...}</c> / <c>{type:"session"}</c>), or null. Fail-open.</summary>
+    static string? TryReadParentSession(string file) {
+        try {
+            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+            for (var i = 0; i < 8; i++) {
+                var line = reader.ReadLine();
+                if (line is null) break;
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                var node = System.Text.Json.Nodes.JsonNode.Parse(line);
+                if (node?["parentSession"]?.GetValue<string>() is { Length: > 0 } parent)
+                    return DshSessionId.Canonicalize(parent);
+
+                // Header seen without a parent → not a subagent; stop scanning.
+                if (node?["$kcap"]?.GetValue<string>() == "header" || node?["type"]?.GetValue<string>() == "session")
+                    return null;
+            }
+        } catch { /* fail-open */ }
+        return null;
     }
 }

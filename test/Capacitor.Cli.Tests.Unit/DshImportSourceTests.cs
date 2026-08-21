@@ -51,6 +51,19 @@ public class DshImportSourceTests {
     }
 
     [Test]
+    public async Task discovery_surfaces_subagent_parent_from_header() {
+        using var tmp = new TempDir();
+        const string childHeader = """{"$kcap":"header","version":0,"id":"session-child","cwd":"/work","parentSession":"session-parent-abc","origin":"subagent"}""";
+        await File.WriteAllTextAsync(Path.Combine(tmp.Path, "session-child.jsonl"), childHeader + "\n" + UserLine + "\n");
+
+        var found = await new DshImportSource(sessionsDirOverride: tmp.Path)
+            .DiscoverAsync(new DiscoveryFilters(null, null, null, 1), CancellationToken.None);
+
+        await Assert.That(found.Count).IsEqualTo(1);
+        await Assert.That(found[0].SourceMeta!["ParentSession"]).IsEqualTo("session-parent-abc");
+    }
+
+    [Test]
     public async Task discovery_session_filter_matches_dashless_id() {
         using var tmp = new TempDir();
         await File.WriteAllTextAsync(Path.Combine(tmp.Path, "sess-abc.jsonl"), Header + "\n" + UserLine + "\n");

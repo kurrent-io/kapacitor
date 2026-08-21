@@ -103,6 +103,7 @@ internal sealed class DshImportSource : IImportSource {
                     ["TranscriptPath"]  = jsonl,
                     ["DashedSessionId"] = sessionId,   // canonical id for lifecycle + transcript (one stream)
                     ["Cwd"]             = header?.Cwd,
+                    ["ParentSession"]   = header?.ParentSession,   // subagent parent (canonicalized at import)
                 }));
         }
 
@@ -210,6 +211,13 @@ internal sealed class DshImportSource : IImportSource {
         var startPayload = BuildSessionStartPayload(lifecycleId, cwd, classification.Meta.FirstTimestamp);
         if (!ctx.ForcePrivate && classification.Status == ImportCommand.ClassificationStatus.New && ctx.DefaultVisibility is not null) {
             startPayload["default_visibility"] = ctx.DefaultVisibility;
+        }
+
+        // Subagent: adopt the child under its parent (canonicalize the parent id the same way as
+        // the session id so it keys to the parent's stream).
+        if (classification.SourceMeta!.TryGetValue("ParentSession", out var ps) && ps is string parentRaw
+         && !string.IsNullOrWhiteSpace(parentRaw)) {
+            startPayload["parent_session_id"] = DshSessionId.Canonicalize(parentRaw);
         }
 
         // Enrich with git repo info detected from the captured cwd (adds the "repository" field
@@ -380,7 +388,7 @@ internal sealed class DshImportSource : IImportSource {
 /// <c>session.jsonl</c>): the few fields import needs (cwd, created-at). A parse
 /// failure must never break discovery (returns null / partial data).
 /// </summary>
-internal sealed record DshSessionHeader(string? Cwd, DateTimeOffset? CreatedAt) {
+internal sealed record DshSessionHeader(string? Cwd, DateTimeOffset? CreatedAt, string? ParentSession) {
     public static DshSessionHeader? TryRead(string transcriptPath) {
         try {
             using var stream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -404,7 +412,8 @@ internal sealed record DshSessionHeader(string? Cwd, DateTimeOffset? CreatedAt) 
                 if (root.TryGetProperty("createdAt", out var ca) && ca.ValueKind == JsonValueKind.Number)
                     createdAt = DateTimeOffset.FromUnixTimeMilliseconds(ca.GetInt64());
 
-                return new DshSessionHeader(root.Str("cwd"), createdAt);
+                // A subagent child's header names its parent inline (parentSession + origin=subagent).
+                return new DshSessionHeader(root.Str("cwd"), createdAt, root.Str("parentSession"));
             }
         } catch {
             // fall through
