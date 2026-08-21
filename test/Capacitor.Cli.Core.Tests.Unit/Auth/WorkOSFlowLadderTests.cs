@@ -145,18 +145,26 @@ public class WorkOSFlowLadderTests {
         await Assert.That(progress.Errors).IsEmpty();
     }
 
-    /// <summary>The listener never waits out its timeout for a callback nothing can send.</summary>
+    /// <summary>
+    /// The listener never waits out its timeout for a callback nothing can send, and - the part that
+    /// was wrong first time - says nothing at all on the way out. Announcing before launching printed
+    /// the browser narrative and a 300-character authorize URL, then retracted both.
+    /// </summary>
     [Test]
-    public async Task The_loopback_browser_gives_up_immediately_when_it_cannot_launch() {
-        var browser = new LoopbackBrowser(openBrowser: _ => false, progress: new RecordingAuthProgress());
-        var port    = OAuthLoginFlow.GetAvailablePort();
+    public async Task The_loopback_browser_gives_up_silently_when_it_cannot_launch() {
+        var progress = new RecordingAuthProgress();
+        var browser  = new LoopbackBrowser(openBrowser: _ => false, progress: progress);
+        var port     = OAuthLoginFlow.GetAvailablePort();
 
         await Assert.That(async () => await browser.InvokeAsync(
                   new Duende.IdentityModel.OidcClient.Browser.BrowserOptions(
-                      $"https://example.test/authorize", $"http://127.0.0.1:{port}/callback") {
+                      "https://example.test/authorize", $"http://127.0.0.1:{port}/callback") {
                       Timeout = TimeSpan.FromMinutes(5)
                   }))
             .Throws<BrowserLaunchException>();
+
+        await Assert.That(progress.BrowserOpenings).IsEmpty();
+        await Assert.That(progress.Notices).IsEmpty();
     }
 
     /// <summary>A caller cancel must not be mistaken for the escape hatch and rewarded with a device code.</summary>

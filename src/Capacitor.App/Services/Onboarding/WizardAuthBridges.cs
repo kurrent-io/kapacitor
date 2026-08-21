@@ -22,7 +22,7 @@ public sealed class UiAuthProgress(Action<Action> post) : IAuthProgress {
 
     public void BrowserOpening(string url) => post(() => BrowserOpened?.Invoke(url));
 
-    public void DeviceCode(string code, string verificationUri, string? provider) =>
+    public void DeviceCode(string code, string verificationUri, string? provider, bool prefilled) =>
         post(() => DeviceCodeReceived?.Invoke(code, verificationUri));
 
     public void PollTick() => post(() => PollTicked?.Invoke());

@@ -81,11 +81,29 @@ public class AuthProgressTests {
     public async Task ConsoleAuthProgress_DeviceCode_matches_todays_banner_lines() {
         using var capture = ConsoleOutput.StartCapture();
 
-        new ConsoleAuthProgress().DeviceCode("UC123", "https://github.com/login/device", "GitHub");
+        new ConsoleAuthProgress().DeviceCode("UC123", "https://github.com/login/device", "GitHub", prefilled: false);
 
         await Assert.That(capture.GetCapturedOutput()).IsEqualTo(
             "  2. Enter the code: UC123" + Environment.NewLine
           + "  3. Approve access when GitHub asks." + Environment.NewLine
+          + Environment.NewLine
+          + "Waiting for you to authorize...");
+    }
+
+    /// <summary>
+    /// AI-2052 — the two variations the sink is allowed. A pre-filled code is checked rather than
+    /// typed, because pre-filling removes the comparison the code exists to allow; and our own
+    /// provider goes unnamed, because WorkOS is a white-label supplier the user has no use for.
+    /// </summary>
+    [Test]
+    public async Task ConsoleAuthProgress_DeviceCode_checks_a_prefilled_code_and_names_no_provider() {
+        using var capture = ConsoleOutput.StartCapture();
+
+        new ConsoleAuthProgress().DeviceCode("UC123", "https://signin.kcap.ai/device", provider: null, prefilled: true);
+
+        await Assert.That(capture.GetCapturedOutput()).IsEqualTo(
+            "  2. Check the code shown is UC123" + Environment.NewLine
+          + "  3. Approve access when asked." + Environment.NewLine
           + Environment.NewLine
           + "Waiting for you to authorize...");
     }

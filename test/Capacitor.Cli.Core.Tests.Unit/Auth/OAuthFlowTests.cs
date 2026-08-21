@@ -98,9 +98,9 @@ public class OAuthFlowTests {
     public async Task WorkOSSignInError_preserves_actionable_detail() {
         await Assert.That(OAuthLoginFlow.WorkOSSignInError("Timeout", null)).Contains("Timed out");
         await Assert.That(OAuthLoginFlow.WorkOSSignInError("Invalid state.", null))
-            .IsEqualTo("WorkOS sign-in failed: Invalid state.");
+            .IsEqualTo("Sign-in failed: Invalid state.");
         await Assert.That(OAuthLoginFlow.WorkOSSignInError("invalid_grant", "bad code"))
-            .IsEqualTo("WorkOS sign-in failed: invalid_grant — bad code");
+            .IsEqualTo("Sign-in failed: invalid_grant - bad code");
     }
 
     [Test]

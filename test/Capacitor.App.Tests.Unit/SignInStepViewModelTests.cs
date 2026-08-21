@@ -273,7 +273,7 @@ public class SignInStepViewModelTests {
             h.Connect.Choice = ConnectChoice.Discover;
             var gate = new TaskCompletionSource<AuthResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             h.Operation = (_, _) => {
-                h.Progress.DeviceCode("ABCD-1234  (copied to clipboard)", "https://github.com/login/device", "GitHub");
+                h.Progress.DeviceCode("ABCD-1234  (copied to clipboard)", "https://github.com/login/device", "GitHub", prefilled: false);
 
                 return gate.Task;
             };
@@ -650,7 +650,7 @@ public class SignInStepViewModelTests {
             var started = new TaskCompletionSource();
             h.Operation = async (_, ct) => {
                 h.Progress.BrowserOpening("https://auth.example/authorize");
-                h.Progress.DeviceCode("ABCD-1234", "https://github.com/login/device", "GitHub");
+                h.Progress.DeviceCode("ABCD-1234", "https://github.com/login/device", "GitHub", prefilled: false);
                 h.Progress.PollTick();
                 started.TrySetResult();
                 await Task.Delay(Timeout.Infinite, ct);

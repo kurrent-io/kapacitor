@@ -74,6 +74,9 @@ public class WorkOSDeviceFlowTests {
 
         await Assert.That(result).IsNull();
         await Assert.That(string.Join("\n", progress.Errors)).Contains("may not be enabled");
+        // Ours to know, not theirs: no provider name, no internal endpoint.
+        await Assert.That(string.Join("\n", progress.Errors)).DoesNotContain("WorkOS");
+        await Assert.That(string.Join("\n", progress.Errors)).DoesNotContain("workos.com");
     }
 
     [Test]

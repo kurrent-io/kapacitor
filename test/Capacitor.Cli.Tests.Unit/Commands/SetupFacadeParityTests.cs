@@ -202,7 +202,7 @@ public class SetupFacadeParityTests {
         progress.Notice("");
         progress.Notice("  1. Open https://github.com/login/device in a browser");
         progress.BrowserOpening("https://auth.example/authorize");
-        progress.DeviceCode("UC", "https://github.com/login/device", "GitHub");
+        progress.DeviceCode("UC", "https://github.com/login/device", "GitHub", prefilled: false);
         progress.PollTick();
 
         await Assert.That(inner.Notices).IsEquivalentTo(new[] {

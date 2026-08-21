@@ -146,7 +146,8 @@ public static class OAuthLoginFlow {
         if (browserOpened) progress.Notice("     (if it didn't open, go to that URL yourself)");
 
         // Clipboard-copy suffix folds into the code: DeviceCode's contract carries no separate flag for it.
-        progress.DeviceCode(device.UserCode + (copied ? "  (copied to clipboard)" : ""), device.VerificationUri, "GitHub");
+        progress.DeviceCode(device.UserCode + (copied ? "  (copied to clipboard)" : ""), device.VerificationUri, "GitHub",
+            prefilled: browserOpened && !string.IsNullOrEmpty(device.VerificationUriComplete));
 
         return await PollDeviceGrantAsync(
             http, "https://github.com/login/oauth/access_token",
@@ -169,7 +170,8 @@ public static class OAuthLoginFlow {
             System.Text.Json.Serialization.Metadata.JsonTypeInfo<TResponse> typeInfo,
             Func<TResponse, (T? Value, string? Error)> read,
             DeviceCodeResponse device, int interval,
-            CancellationToken ct, IAuthProgress progress, TimeProvider? time = null)
+            CancellationToken ct, IAuthProgress progress, TimeProvider? time = null,
+            TimeSpan? attemptTimeout = null)
         where T : class where TResponse : class {
         time ??= TimeProvider.System;
         form["grant_type"] = "urn:ietf:params:oauth:grant-type:device_code";
@@ -188,7 +190,25 @@ public static class OAuthLoginFlow {
                 return null;
             }
 
-            var response = await PostFormForJsonAsync(http, tokenUrl, form, ct);
+            // Bound each attempt well inside the code's own lifetime. HttpClient's default timeout is
+            // 100 seconds, which on a 300-second device code spends a third of the window waiting on
+            // one hung request - and did exactly that, killing a real sign-in on 2026-08-21.
+            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            attempt.CancelAfter(attemptTimeout ?? TimeSpan.FromSeconds(20));
+
+            HttpResponseMessage response;
+
+            try {
+                response = await PostFormForJsonAsync(http, tokenUrl, form, attempt.Token);
+            } catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException && !ct.IsCancellationRequested) {
+                // A blip mid-poll is not a failed sign-in - the human is still at the browser, and the
+                // deadline above is what ends this loop. The send used to be unguarded while the parse
+                // below was not, so a slow POST was fatal and a malformed body was not.
+                interval += 5;
+                progress.PollTick();
+
+                continue;
+            }
 
             // Parse the body whatever the status: RFC 8628 §3.5 carries authorization_pending in a 400,
             // and GitHub returns it in a 200. Only an UNREADABLE body is a transport problem, and it is
@@ -196,8 +216,9 @@ public static class OAuthLoginFlow {
             TResponse? parsed = null;
 
             try {
-                parsed = await response.Content.ReadFromJsonAsync(typeInfo, ct);
-            } catch (Exception ex) when (ex is System.Text.Json.JsonException or HttpRequestException) {
+                parsed = await response.Content.ReadFromJsonAsync(typeInfo, attempt.Token);
+            } catch (Exception ex) when (ex is System.Text.Json.JsonException or HttpRequestException
+                                          || (ex is OperationCanceledException && !ct.IsCancellationRequested)) {
                 // fall through to the transient arm below
             }
 
@@ -646,10 +667,10 @@ public static class OAuthLoginFlow {
             // Step 1 failing is the rollout hazard, not a user error: if CLI Auth is not enabled on this
             // AuthKit client every headless sign-in dies here, and a generic message would send people
             // hunting through the rest of setup.
-            progress.Error("Could not start device sign-in with WorkOS.");
-            progress.Error($"  {(int)authorize.StatusCode} from {apiBase}/user_management/authorize/device");
-            progress.Error("  If this persists, device authorization may not be enabled for this");
-            progress.Error("  workspace's AuthKit application — an administrator has to turn it on.");
+            progress.Error("Could not start device sign-in.");
+            progress.Error($"  The sign-in service answered {(int)authorize.StatusCode}.");
+            progress.Error("  If this persists, device sign-in may not be enabled for this workspace,");
+            progress.Error("  and an administrator has to turn it on.");
 
             return null;
         }
@@ -663,7 +684,7 @@ public static class OAuthLoginFlow {
         }
 
         if (device is null || string.IsNullOrEmpty(device.DeviceCode)) {
-            progress.Error("WorkOS returned no device code.");
+            progress.Error("The sign-in service returned no device code.");
 
             return null;
         }
@@ -682,7 +703,7 @@ public static class OAuthLoginFlow {
         // No clipboard copy, unlike the GitHub flow: the code has to be READ ALOUD OR RETYPED on
         // another device for this flow to mean anything, and a silent copy invites pasting it into
         // whatever page is already open.
-        progress.DeviceCode(device.UserCode, device.VerificationUri, provider: null);
+        progress.DeviceCode(device.UserCode, device.VerificationUri, provider: null, prefilled: browserOpened && !string.IsNullOrEmpty(device.VerificationUriComplete));
 
         return await PollDeviceGrantAsync(
             http, $"{apiBase}/user_management/authenticate",
@@ -786,9 +807,9 @@ public static class OAuthLoginFlow {
     /// <summary>Maps an OidcClient WorkOS failure to a user-facing message, preserving the actionable detail.</summary>
     internal static string WorkOSSignInError(string? error, string? description) => error switch {
         "Timeout"    => "Timed out waiting for authorization. Re-run `kcap login` to try again.",
-        "UserCancel" => "WorkOS sign-in was cancelled.",
-        _            => $"WorkOS sign-in failed: {error ?? "unknown error"}"
-                      + (string.IsNullOrEmpty(description) ? "" : $" — {description}")
+        "UserCancel" => "Sign-in was cancelled.",
+        _            => $"Sign-in failed: {error ?? "unknown error"}"
+                      + (string.IsNullOrEmpty(description) ? "" : $" - {description}")
     };
 
     /// <summary>
@@ -815,7 +836,7 @@ public static class OAuthLoginFlow {
             json = await CorrectWorkOSOrgAsync(http, apiBase, clientId, json, organizationId, ct);
 
             if (json is null) {
-                progress.Error($"Error: signed in to the wrong WorkOS organization (expected {organizationId}). Re-run `kcap login` and pick the correct organization.");
+                progress.Error("Error: signed in to the wrong workspace. Re-run `kcap login` and choose the one this server belongs to.");
 
                 return null;
             }

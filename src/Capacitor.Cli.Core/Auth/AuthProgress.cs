@@ -22,7 +22,13 @@ public interface IAuthProgress {
     /// <paramref name="provider"/> names who is asking when that is a brand the user recognises and is
     /// about to see, as GitHub is. It is null for our own sign-in: WorkOS is a white-label supplier, and
     /// naming it tells the user nothing they need and something we would rather not advertise.</summary>
-    void DeviceCode(string code, string verificationUri, string? provider);
+    /// <param name="prefilled">
+    /// True when the browser was opened at RFC 8628 §3.3.1's <c>verification_uri_complete</c>, so the
+    /// code is already in the box. The user then checks it rather than typing it - and that check is
+    /// the point: pre-filling removes the comparison the code exists to allow, so a sink that keeps
+    /// saying "enter this" turns a verification step into a no-op.
+    /// </param>
+    void DeviceCode(string code, string verificationUri, string? provider, bool prefilled);
 
     /// <summary>One device-flow poll attempt came back pending.</summary>
     void PollTick();
@@ -41,8 +47,8 @@ public sealed class ConsoleAuthProgress : IAuthProgress {
         Console.Out.WriteLine($"  If the browser doesn't open, visit: {url}");
     }
 
-    public void DeviceCode(string code, string verificationUri, string? provider) {
-        Console.Out.WriteLine($"  2. Enter the code: {code}");
+    public void DeviceCode(string code, string verificationUri, string? provider, bool prefilled) {
+        Console.Out.WriteLine(prefilled ? $"  2. Check the code shown is {code}" : $"  2. Enter the code: {code}");
         Console.Out.WriteLine(provider is null ? "  3. Approve access when asked." : $"  3. Approve access when {provider} asks.");
         Console.Out.WriteLine();
         Console.Write("Waiting for you to authorize...");
