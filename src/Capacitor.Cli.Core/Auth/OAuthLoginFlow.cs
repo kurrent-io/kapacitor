@@ -79,6 +79,19 @@ public static class OAuthLoginFlow {
         => args.Contains("--github") ? AuthProvider.GitHubApp : AuthProvider.WorkOS;
 
     /// <summary>
+    /// What a session with no keyboard is told once discovery has found no workspace. This used to
+    /// fire BEFORE authenticating, as HeadlessDiscoveryUnsupportedMessage, on the reasoning that org
+    /// SSO needed a local browser at all. AI-2052's device grant removed that reason — a headless
+    /// user now signs in fine — but not this one: creating a workspace asks for an organization name
+    /// and a slug, and there is nothing to ask on. So the same two routes, moved to the only step
+    /// that still genuinely needs a terminal.
+    /// </summary>
+    internal static string WorkspaceCreationNeedsATerminalMessage() =>
+        "Creating a workspace needs an interactive terminal, and this session is non-interactive.\n"
+      + $"  • Create one at {ProvisioningEndpoint.Url}/signup, then run: kcap setup <slug>\n"
+      + "  • Or point at a workspace you already belong to: kcap setup --server-url <url>";
+
+    /// <summary>
     /// `kcap login` runs tenant discovery when there's no configured server (nothing to log into yet)
     /// or the user explicitly asked with <c>--discover</c>; otherwise it logs into the configured server.
     /// </summary>

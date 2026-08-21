@@ -22,6 +22,21 @@ public sealed class SpectreTenantProvisioner(TenantProvisioningClient client, st
         AnsiConsole.MarkupLine("  [yellow]Single sign-on found no Capacitor workspace for your account.[/]");
         AnsiConsole.MarkupLine("  [dim]A workspace that signs in with the GitHub App won't appear here.[/]");
 
+        // Every way out of this fork is a prompt, so with no terminal there is nothing to offer.
+        // Spectre throws NotSupportedException from inside the prompt rather than returning, which
+        // turned `kcap login --discover` on a piped stdin into a crash the moment AI-2052 armed the
+        // provisioner for headless sessions. Deliberately fires no funnel event: nothing was offered,
+        // and recording a decline would attribute to the user a choice they were never shown.
+        if (!AnsiConsole.Profile.Capabilities.Interactive) {
+            // Console rather than AnsiConsole, alone in this class: Spectre hard-wraps at the profile
+            // width, which broke `kcap setup <slug>` across a line and handed the reader a command
+            // that does not survive being copied. stderr also matches the non-zero exit this leads to.
+            Console.Error.WriteLine();
+            Console.Error.WriteLine(OAuthLoginFlow.WorkspaceCreationNeedsATerminalMessage());
+
+            return ProvisionOffer.Declined;
+        }
+
         SetupFunnel.WorkspaceOffered();
 
         // Three ways out, not two: discovery finding nothing does NOT mean the user has no
