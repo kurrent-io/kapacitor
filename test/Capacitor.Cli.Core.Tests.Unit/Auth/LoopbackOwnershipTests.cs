@@ -206,15 +206,17 @@ public class LoopbackOwnershipTests {
         await Assert.That(violations).IsEmpty();
     }
 
-    // A guard that finds nothing to check reports success. The three sites today are the two auth
-    // flows plus the wizard's orgless login; a drop means one was removed or renamed, and the count
-    // is worth re-deriving by hand rather than silently scanning an empty set.
+    // A guard that finds nothing to check reports success, so the floor is asserted rather than
+    // assumed. Both sites live in OAuthLoginFlow now — the GitHub flow and the WorkOS ladder —
+    // after upstream moved construction out of OnboardingFacade and into the ladder. The floor
+    // dropped from three sites in two files to two in one when that happened, which is exactly the
+    // kind of change worth re-deriving by hand rather than letting a scan quietly go empty.
     [Test]
     public async Task The_scan_actually_reaches_the_construction_sites() {
         var sites = FindSites(Path.Combine(RepoRoot(), "src"));
 
-        await Assert.That(sites.Count).IsGreaterThanOrEqualTo(3);
-        await Assert.That(sites.Select(s => s.File).Distinct().Count()).IsGreaterThanOrEqualTo(2);
+        await Assert.That(sites.Count).IsGreaterThanOrEqualTo(2);
+        await Assert.That(sites.Select(s => s.File).Distinct().Count()).IsGreaterThanOrEqualTo(1);
     }
 
     // === Scanner self-tests: prove the detector detects, and that the accepted forms are accepted,
@@ -366,7 +368,7 @@ public class LoopbackOwnershipTests {
     /// <c>see cref</c>. Adding a sixth is a deliberate edit here, and that is the point — it is the
     /// one check no construction syntax can slip past.</summary>
     static readonly string[] BrowserNamingFiles = [
-        "LoopbackBrowser.cs", "OAuthLoginFlow.cs", "OnboardingFacade.cs", "SetupJoin.cs", "SetupCommand.cs",
+        "LoopbackBrowser.cs", "OAuthLoginFlow.cs", "SetupJoin.cs", "SetupCommand.cs",
     ];
 
     // A using-alias inside a file that is ALREADY allowlisted defeats both other checks at once: the

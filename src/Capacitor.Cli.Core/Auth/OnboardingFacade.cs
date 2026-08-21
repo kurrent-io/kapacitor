@@ -2,8 +2,6 @@ using Capacitor.Cli.Core.Config;
 using Duende.IdentityModel.OidcClient.Browser;
 using Config_Profile = Capacitor.Cli.Core.Config.Profile;
 
-using Capacitor.Cli.Core.Telemetry;
-
 namespace Capacitor.Cli.Core.Auth;
 
 /// <summary>One durable publication set: the config mutation and provider stamp, followed by token writes tracked so a partial failure is known.</summary>

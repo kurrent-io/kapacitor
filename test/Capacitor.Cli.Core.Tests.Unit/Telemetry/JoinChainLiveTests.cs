@@ -79,7 +79,7 @@ public class JoinChainLiveTests : IDisposable {
             var port     = OAuthLoginFlow.GetAvailablePort();
             var redirect = $"http://127.0.0.1:{port}/callback";
 
-            using var browser = new LoopbackBrowser(openBrowser: _ => { }, join: SetupJoin.Loopback) {
+            using var browser = new LoopbackBrowser(openBrowser: _ => true, join: SetupJoin.Loopback) {
                 DrainCap = TimeSpan.FromSeconds(30), DisposeWait = TimeSpan.FromSeconds(10),
             };
 

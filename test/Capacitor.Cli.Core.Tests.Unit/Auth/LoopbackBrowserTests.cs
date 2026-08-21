@@ -88,7 +88,7 @@ public class LoopbackBrowserTests {
     public async Task A_callback_without_the_authorize_state_is_not_told_the_key(string callback) {
         var (port, redirect) = Loopback();
         var join = new RecordingJoin("https://example.test/api/cli/return?j=deadbeef&p=1");
-        using var browser = new LoopbackBrowser(openBrowser: _ => { }, join: join) {
+        using var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
             DrainCap = TimeSpan.FromSeconds(30), DisposeWait = TimeSpan.FromMilliseconds(200),
         };
 
@@ -109,7 +109,7 @@ public class LoopbackBrowserTests {
     public async Task A_callback_echoing_the_authorize_state_still_gets_the_redirect() {
         var (port, redirect) = Loopback();
         var join = new RecordingJoin($"https://example.test/api/cli/return?j=deadbeef&p={port}");
-        using var browser = new LoopbackBrowser(openBrowser: _ => { }, join: join) {
+        using var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
             DrainCap = TimeSpan.FromMilliseconds(400), DisposeWait = TimeSpan.FromMilliseconds(400),
         };
 
@@ -130,7 +130,7 @@ public class LoopbackBrowserTests {
     public async Task An_authorize_url_with_no_state_never_emits_a_redirect() {
         var (port, redirect) = Loopback();
         var join = new RecordingJoin("https://example.test/api/cli/return?j=deadbeef&p=1");
-        using var browser = new LoopbackBrowser(openBrowser: _ => { }, join: join);
+        using var browser = new LoopbackBrowser(openBrowser: _ => true, join: join);
 
         var invoke = browser.InvokeAsync(new BrowserOptions("http://example.test/authorize", redirect));
 
