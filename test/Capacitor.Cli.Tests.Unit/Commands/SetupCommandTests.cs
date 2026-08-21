@@ -4,6 +4,7 @@ using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.FirstRun;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -11,6 +12,52 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class SetupCommandTests {
+    // --- The browser leg's one outcome line ---
+
+    [Test]
+    public async Task BrowserFlowOutcome_marks_only_a_finished_flow_as_a_success() {
+        await Assert.That(SetupCommand.BrowserFlowOutcome(new FirstRunFlowResult.Finished(new() { FlowId = "x" })))
+                    .Contains("[green]");
+    }
+
+    [Test]
+    [Arguments(typeof(FirstRunFlowResult.Expired))]
+    [Arguments(typeof(FirstRunFlowResult.Abandoned))]
+    public async Task BrowserFlowOutcome_warns_about_a_flow_that_did_not_finish(Type kind) {
+        var result = kind == typeof(FirstRunFlowResult.Expired)
+            ? new FirstRunFlowResult.Expired()
+            : (FirstRunFlowResult)new FirstRunFlowResult.Abandoned(null);
+
+        await Assert.That(SetupCommand.BrowserFlowOutcome(result)).Contains("[yellow]");
+    }
+
+    // A keypress is a choice, and dressing a chosen thing up as something gone wrong is how a CLI
+    // teaches people to read past its warnings.
+    [Test]
+    public async Task BrowserFlowOutcome_does_not_warn_about_a_wait_the_user_ended() {
+        var line = SetupCommand.BrowserFlowOutcome(new FirstRunFlowResult.Dismissed(null));
+
+        await Assert.That(line).DoesNotContain("[yellow]");
+        await Assert.That(line).DoesNotContain("[green]");
+    }
+
+    [Test]
+    public async Task BrowserFlowOutcome_reports_the_rate_limit_in_whole_minutes() {
+        // Rounded UP and floored at one: "available again in 0 min" reads as "try now", which is the
+        // one thing the server has just refused.
+        await Assert.That(SetupCommand.BrowserFlowOutcome(new FirstRunFlowResult.RateLimited(TimeSpan.FromMinutes(10))))
+                    .Contains("10 min");
+        await Assert.That(SetupCommand.BrowserFlowOutcome(new FirstRunFlowResult.RateLimited(TimeSpan.FromSeconds(30))))
+                    .Contains("1 min");
+    }
+
+    [Test]
+    public async Task BrowserFlowOutcome_escapes_a_failure_message__which_reaches_Spectre_markup() {
+        var line = SetupCommand.BrowserFlowOutcome(new FirstRunFlowResult.Failed("bad [thing] here"));
+
+        await Assert.That(line).Contains("[[thing]]");
+    }
+
     // --- Step 6 import auth-eligibility probe (IsAuthSatisfiedAsync) ---
 
     [Test]
