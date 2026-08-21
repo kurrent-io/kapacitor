@@ -28,10 +28,10 @@ public sealed class LoopbackBrowser(
         listener.Prefixes.Add($"http://127.0.0.1:{port}/");
         listener.Start(); // bind failure propagates (HttpListenerException / PlatformNotSupportedException)
 
-        // Bind, launch, THEN announce. Announcing first meant a failed launch had already printed the
-        // whole browser narrative and a 300-character authorize URL before we could say none of it
-        // applied - a wall of text for a route the reader cannot take. Nothing is said until there is
-        // something true to say. (The listener still binds first, so a fast browser cannot beat it.)
+        // Bind, launch, THEN announce: nothing is said until there is something true to say, or a
+        // failed launch has already printed the browser narrative and a 300-character authorize URL
+        // for a route the reader cannot take. (The listener still binds first, so a fast browser
+        // cannot beat it.)
         //
         // Thrown rather than waited out: with no browser here, the callback can only be reached from a
         // browser on this machine, and there isn't one. Five minutes of listening ends in the same

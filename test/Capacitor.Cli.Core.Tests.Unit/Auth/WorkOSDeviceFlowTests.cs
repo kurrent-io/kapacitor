@@ -27,7 +27,7 @@ public class WorkOSDeviceFlowTests {
     /// should open — while the bare one is what a human retypes on another device.
     /// </summary>
     [Test]
-    public async Task Opens_the_prefilled_uri_but_shows_the_bare_one() {
+    public async Task The_complete_uri_is_what_a_browser_opens() {
         var device = new DeviceCodeResponse {
             DeviceCode      = "dc",
             UserCode        = "ZFVC-JDNH",
@@ -125,5 +125,46 @@ public class WorkOSDeviceFlowTests {
 
         await Assert.That(progress.DeviceCodes).Count().IsEqualTo(1);
         await Assert.That(progress.DeviceCodes[0].Code).IsEqualTo("WXYZ-1234");
+    }
+
+    /// <summary>
+    /// The URL reported and the instruction under it have to agree, and the two ways of getting that
+    /// wrong are symmetric: print the bare URL after opening the complete one and "check the code
+    /// shown" lands on an empty box; print the complete one when nothing opened and "enter the code"
+    /// describes a box already filled in.
+    /// </summary>
+    [Test]
+    [Arguments(true,  "https://signin.example/device?user_code=WXYZ-1234", true)]
+    [Arguments(false, "https://signin.example/device",                     false)]
+    public async Task The_uri_it_reports_matches_the_instruction(bool opened, string expectedUri, bool expectedPrefilled) {
+        using var server = WithAuthorize(
+            """{"device_code":"dc","user_code":"WXYZ-1234","verification_uri":"https://signin.example/device","verification_uri_complete":"https://signin.example/device?user_code=WXYZ-1234","interval":0,"expires_in":900}""");
+        Authenticated(server, """{"access_token":"acc"}""");
+        using var http     = new HttpClient();
+        var       progress = new RecordingAuthProgress();
+
+        await OAuthLoginFlow.RunWorkOSDeviceFlowAsync(
+            http, "client_d", progress: progress, apiBase: server.Urls[0], openBrowser: _ => opened);
+
+        await Assert.That(progress.DeviceCodes[0].Uri).IsEqualTo(expectedUri);
+        await Assert.That(progress.DeviceCodes[0].Prefilled).IsEqualTo(expectedPrefilled);
+        await Assert.That(string.Join("\n", progress.Notices)).Contains(expectedUri);
+    }
+
+    /// <summary>The complete URI is the one handed to the browser either way — it is only the printed
+    /// line that changes.</summary>
+    [Test]
+    public async Task It_always_opens_the_prefilled_uri() {
+        using var server = WithAuthorize(
+            """{"device_code":"dc","user_code":"WXYZ-1234","verification_uri":"https://signin.example/device","verification_uri_complete":"https://signin.example/device?user_code=WXYZ-1234","interval":0,"expires_in":900}""");
+        Authenticated(server, """{"access_token":"acc"}""");
+        using var http   = new HttpClient();
+        var       opened = new List<string>();
+
+        await OAuthLoginFlow.RunWorkOSDeviceFlowAsync(
+            http, "client_d", progress: new RecordingAuthProgress(), apiBase: server.Urls[0],
+            openBrowser: url => { opened.Add(url); return false; });
+
+        await Assert.That(opened).IsEquivalentTo(["https://signin.example/device?user_code=WXYZ-1234"]);
     }
 }

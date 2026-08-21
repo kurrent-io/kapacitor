@@ -49,35 +49,36 @@ public static class OAuthLoginFlow {
     /// Only an explicit request skips the browser. There is deliberately no environment heuristic
     /// here: HeadlessEnvironment.IsHeadless() is true for every SSH session, including Remote-SSH and
     /// `ssh -L` where loopback works perfectly, so selecting on it would demote the largest developer
-    /// population from "the browser opens" to "read a URL, type a code". It briefly survived as a
-    /// wording variant that said "this looks like a remote session"; that went when the escape hatch
-    /// moved under the URL, where it is equally visible to everyone and the guess earns nothing.
+    /// population from "the browser opens" to "read a URL, type a code".
     /// </summary>
     internal static WorkOSFlow ChooseWorkOSFlow(bool forceDevice)
         => forceDevice ? WorkOSFlow.Device : WorkOSFlow.Browser;
 
     /// <summary>
+    /// Whether a console can complete anything BUT the device grant. Redirected stdin cannot press the
+    /// escape-hatch key, and a browser that launches without being able to reach us at 127.0.0.1 then
+    /// costs the whole listener timeout and ends in nothing.
+    /// <para>Console hosts only: a GUI has no keyboard either and rescues in its own UI, which is why
+    /// this is not read off <see cref="IKeyWatcher.CanWatch"/> inside the ladder.</para>
+    /// </summary>
+    internal static bool DeviceRouteRequired(bool userAsked, bool consoleHasKeyboard)
+        => userAsked || !consoleHasKeyboard;
+
+    /// <summary>
     /// Picks the discovery provider before any auth runs: <c>--github</c> selects the GitHub App
     /// path, and everything else uses the org SSO path (WorkOS).
     ///
-    /// <para>Both of the escape hatches that used to live here are gone. The implicit no-flag headless
-    /// fallback to the GitHub App went first: it was the only remaining source of NEW GitHub App
-    /// sign-ins and it dead-ended, since that branch has no provisioning path. <c>--device</c>'s
-    /// explicit one went when the org SSO path gained a device grant of its own — so the flag now
-    /// means what it says everywhere, "use the device flow", and no longer doubles as a way to route
-    /// discovery off org SSO. <c>--github</c> keeps its discovery meaning, and is the route for a
-    /// GitHub-App-only user.</para>
+    /// <para><c>--device</c> deliberately does NOT route here: it means "use the device flow" on
+    /// whichever provider discovery picked, and the org SSO path has one of its own. <c>--github</c> is
+    /// the only route for a GitHub-App-only user, so it keeps its discovery meaning.</para>
     /// </summary>
     internal static string ChooseDiscoveryProvider(string[] args)
         => args.Contains("--github") ? AuthProvider.GitHubApp : AuthProvider.WorkOS;
 
     /// <summary>
-    /// What a session with no keyboard is told once discovery has found no workspace. This used to
-    /// fire BEFORE authenticating, as HeadlessDiscoveryUnsupportedMessage, on the reasoning that org
-    /// SSO needed a local browser at all. The device grant removed that reason — a headless
-    /// user now signs in fine — but not this one: creating a workspace asks for an organization name
-    /// and a slug, and there is nothing to ask on. So the same two routes, moved to the only step
-    /// that still genuinely needs a terminal.
+    /// What a session with no keyboard is told once discovery has found no workspace. Signing in
+    /// headless works; creating a workspace asks for an organization name and a slug, and there is
+    /// nothing to ask on — so this is the only step of the two that still needs a terminal.
     /// </summary>
     internal static string WorkspaceCreationNeedsATerminalMessage() =>
         "Creating a workspace needs an interactive terminal, and this session is non-interactive.\n"
@@ -108,8 +109,9 @@ public static class OAuthLoginFlow {
     // to a fake handler (RunDeviceFlowAsync(clientId) hardcodes github.com and can't be redirected).
     internal static async Task<string?> RunDeviceFlowAsync(
             HttpClient http, string clientId, CancellationToken ct = default, IAuthProgress? progress = null,
-            TimeProvider? time = null) {
-        progress ??= ConsoleAuthProgress.Instance;
+            TimeProvider? time = null, Func<string, bool>? openBrowser = null) {
+        progress    ??= ConsoleAuthProgress.Instance;
+        openBrowser ??= SystemBrowser.TryOpen;
 
         var deviceResponse = await PostFormForJsonAsync(
             http,
@@ -130,26 +132,32 @@ public static class OAuthLoginFlow {
         var device   = (await deviceResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.DeviceCodeResponse, ct))!;
         var interval = device.IntervalOrDefault;
 
-        var browserOpened = SystemBrowser.TryOpen(device.BrowserUri);
+        var browserOpened = openBrowser(device.BrowserUri);
         var prefilled     = browserOpened && !string.IsNullOrEmpty(device.VerificationUriComplete);
 
         // Not copied when the page already carries the code: there is nothing to paste it into, and the
         // note is folded INTO the code below, so it would read as part of "Check the code shown is ...".
         var copied = !prefilled && Clipboard.TryCopy(device.UserCode);
 
+        // The URL printed always matches the instruction under it. Opened: the complete one, which is
+        // where the browser actually went, so following the line by hand lands on the same prefilled
+        // page step 2 describes. Not opened: the bare one, because that URL is about to be retyped on
+        // another device and a query string is the worst part of it to retype.
+        var shownUri = browserOpened ? device.BrowserUri : device.VerificationUri;
+
         progress.Notice("");
         progress.Notice("To finish signing in to GitHub:");
         progress.Notice("");
         progress.Notice(
             browserOpened
-                ? $"  1. Your browser should have opened {device.VerificationUri}"
-                : $"  1. Open {device.VerificationUri} in a browser"
+                ? $"  1. Your browser should have opened {shownUri}"
+                : $"  1. Open {shownUri} in a browser"
         );
 
         if (browserOpened) progress.Notice("     (if it didn't open, go to that URL yourself)");
 
         // Clipboard-copy suffix folds into the code: DeviceCode's contract carries no separate flag for it.
-        progress.DeviceCode(device.UserCode + (copied ? "  (copied to clipboard)" : ""), device.VerificationUri, "GitHub", prefilled);
+        progress.DeviceCode(device.UserCode + (copied ? "  (copied to clipboard)" : ""), shownUri, "GitHub", prefilled);
 
         return await PollDeviceGrantAsync(
             http, "https://github.com/login/oauth/access_token",
@@ -192,9 +200,9 @@ public static class OAuthLoginFlow {
                 return null;
             }
 
-            // Bound each attempt well inside the code's own lifetime. HttpClient's default timeout is
-            // 100 seconds, which on a 300-second device code spends a third of the window waiting on
-            // one hung request - and did exactly that, killing a real sign-in on 2026-08-21.
+            // Bound each attempt well inside the code's own lifetime: HttpClient's default timeout is
+            // 100 seconds, which on a 300-second device code spends a third of the window on one hung
+            // request.
             using var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct);
             attempt.CancelAfter(attemptTimeout ?? TimeSpan.FromSeconds(20));
 
@@ -204,8 +212,7 @@ public static class OAuthLoginFlow {
                 response = await PostFormForJsonAsync(http, tokenUrl, form, attempt.Token);
             } catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException && !ct.IsCancellationRequested) {
                 // A blip mid-poll is not a failed sign-in - the human is still at the browser, and the
-                // deadline above is what ends this loop. The send used to be unguarded while the parse
-                // below was not, so a slow POST was fatal and a malformed body was not.
+                // deadline above is what ends this loop.
                 interval += 5;
                 progress.PollTick();
 
@@ -217,8 +224,8 @@ public static class OAuthLoginFlow {
             using var polled = response;
 
             // Parse the body whatever the status: RFC 8628 §3.5 carries authorization_pending in a 400,
-            // and GitHub returns it in a 200. Only an UNREADABLE body is a transport problem, and it is
-            // retried rather than force-unwrapped — a 429 or a 5xx HTML page used to be an NRE here.
+            // and GitHub returns it in a 200. Only an UNREADABLE body is a transport problem - a 429 or
+            // a 5xx HTML page - and it is retried rather than force-unwrapped.
             TResponse? parsed = null;
 
             try {
@@ -269,6 +276,17 @@ public static class OAuthLoginFlow {
 
                     return null;
                 default:
+                    // A non-2xx carrying no RFC 8628 error code is the service having a moment, not a
+                    // decision about this sign-in: a 5xx `{"message":"..."}` parses cleanly into a
+                    // response with every field defaulted, so only the status tells the two apart.
+                    // On a 2xx an unrecognised code IS the answer, and stays fatal.
+                    if (!response.IsSuccessStatusCode) {
+                        interval += 5;
+                        progress.PollTick();
+
+                        continue;
+                    }
+
                     progress.Error($"\nError: {error ?? "unknown error"}");
 
                     return null;
@@ -663,8 +681,10 @@ public static class OAuthLoginFlow {
     /// </summary>
     internal static async Task<WorkOSAuthResponse?> RunWorkOSDeviceFlowAsync(
             HttpClient http, string clientId, CancellationToken ct = default,
-            IAuthProgress? progress = null, string apiBase = WorkOSApiBase, TimeProvider? time = null) {
-        progress ??= ConsoleAuthProgress.Instance;
+            IAuthProgress? progress = null, string apiBase = WorkOSApiBase, TimeProvider? time = null,
+            Func<string, bool>? openBrowser = null) {
+        progress    ??= ConsoleAuthProgress.Instance;
+        openBrowser ??= SystemBrowser.TryOpen;
 
         var authorize = await PostFormForJsonAsync(
             http, $"{apiBase}/user_management/authorize/device", new() { ["client_id"] = clientId }, ct);
@@ -696,20 +716,27 @@ public static class OAuthLoginFlow {
         }
 
         // Best-effort: the population this flow exists for has no browser here at all.
-        var browserOpened = SystemBrowser.TryOpen(device.BrowserUri);
+        var browserOpened = openBrowser(device.BrowserUri);
+
+        // The URL printed always matches the instruction under it. Opened: the complete one, which is
+        // where the browser actually went, so following the line by hand lands on the same prefilled
+        // page step 2 describes. Not opened: the bare one, because that URL is about to be retyped on
+        // another device and a query string is the worst part of it to retype.
+        var shownUri = browserOpened ? device.BrowserUri : device.VerificationUri;
 
         progress.Notice("");
         progress.Notice("To finish signing in:");
         progress.Notice("");
         progress.Notice(
             browserOpened
-                ? $"  1. Your browser should have opened {device.VerificationUri}"
-                : $"  1. Open {device.VerificationUri} in a browser");
+                ? $"  1. Your browser should have opened {shownUri}"
+                : $"  1. Open {shownUri} in a browser");
 
         // No clipboard copy, unlike the GitHub flow: the code has to be READ ALOUD OR RETYPED on
         // another device for this flow to mean anything, and a silent copy invites pasting it into
         // whatever page is already open.
-        progress.DeviceCode(device.UserCode, device.VerificationUri, provider: null, prefilled: browserOpened && !string.IsNullOrEmpty(device.VerificationUriComplete));
+        progress.DeviceCode(device.UserCode, shownUri, provider: null,
+            prefilled: browserOpened && !string.IsNullOrEmpty(device.VerificationUriComplete));
 
         return await PollDeviceGrantAsync(
             http, $"{apiBase}/user_management/authenticate",
@@ -731,12 +758,13 @@ public static class OAuthLoginFlow {
     internal static async Task<WorkOSAuthResponse?> AcquireWorkOSAsync(
             HttpClient http, string clientId, string? organizationId, bool forceDevice,
             IBrowser? browser = null, string apiBase = WorkOSApiBase, CancellationToken ct = default,
-            IAuthProgress? progress = null, IKeyWatcher? keys = null, TimeProvider? time = null) {
+            IAuthProgress? progress = null, IKeyWatcher? keys = null, TimeProvider? time = null,
+            Func<string, bool>? openBrowser = null) {
         progress ??= ConsoleAuthProgress.Instance;
         keys     ??= ConsoleKeyWatcher.Instance;
 
         if (ChooseWorkOSFlow(forceDevice) is WorkOSFlow.Device) {
-            return await RunWorkOSDeviceFlowAsync(http, clientId, ct, progress, apiBase, time);
+            return await RunWorkOSDeviceFlowAsync(http, clientId, ct, progress, apiBase, time, openBrowser);
         }
 
         using var escape = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -744,10 +772,9 @@ public static class OAuthLoginFlow {
 
         var login = AuthenticateWorkOSAsync(
             clientId, organizationId,
-            // No keyboard, no hint. It once advised "--device" instead, which a GUI host cannot act on
-            // at all; and a console host that gets here HAS launched a browser locally (the launch
-            // failure rung is above), so loopback is very likely reachable and no escape is needed.
-            browser ?? new LoopbackBrowser(progress: progress, hint: keys.CanWatch ? WorkOSBrowserHint() : null),
+            // No keyboard, no hint: a GUI host cannot act on one, and a console without a keyboard
+            // never reaches here (DeviceRouteRequired sent it to the device grant already).
+            browser ?? new LoopbackBrowser(openBrowser, progress, keys.CanWatch ? WorkOSBrowserHint() : null),
             apiBase, escape.Token, progress);
         var watch = WatchForEscapeHatchAsync(keys, escape, settled.Token);
 
@@ -770,7 +797,7 @@ public static class OAuthLoginFlow {
             await watch;
         }
 
-        return await RunWorkOSDeviceFlowAsync(http, clientId, ct, progress, apiBase, time);
+        return await RunWorkOSDeviceFlowAsync(http, clientId, ct, progress, apiBase, time, openBrowser);
     }
 
     /// <summary>

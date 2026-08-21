@@ -33,4 +33,6 @@ Options:
                 Works with org SSO and with GitHub. Useful for SSH sessions,
                 containers without a browser, or any environment where the
                 loopback callback can't be reached. You don't need it up front —
-                press "d" while the browser sign-in is waiting to switch.
+                press "d" while the browser sign-in is waiting to switch. A run
+                with redirected input has no key to press, so it uses a device
+                code without being asked.

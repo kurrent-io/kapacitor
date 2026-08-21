@@ -1,28 +1,24 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.Auth;
-using Spectre.Console;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 /// <summary>
-/// Found by running the real CLI, not by these tests. Arming the provisioner for headless
-/// sessions (which the device grant made reachable) sent a piped stdin straight into a Spectre
-/// SelectionPrompt, and Spectre throws rather than returning, so `kcap login --discover` crashed with
-/// NotSupportedException after a SUCCESSFUL sign-in. The façade tests never saw it because they
-/// substitute ITenantProvisioner, so the prompt these cover never runs there.
+/// A non-interactive session reaches the create-a-workspace fork, where every way out is a Spectre
+/// prompt and Spectre throws rather than returning. The façade tests substitute ITenantProvisioner, so
+/// the prompt these cover never runs there.
 /// </summary>
 public class TenantProvisionerHeadlessTests {
     static WorkOSTokenSource Tokens() =>
         new("access-token", refreshToken: null, (_, _) => Task.FromResult<WorkOSAuthResponse?>(null));
 
+    /// <summary>Interactivity is injected, not read: the ambient value belongs to whatever host the
+    /// suite is running under, so reading it would pass in CI and fail in a developer's terminal.</summary>
     [Test]
     public async Task Declines_instead_of_throwing_when_there_is_no_terminal_to_prompt_on() {
-        // Asserted, not assumed: this is the condition under test, and a test host that happened to
-        // own a TTY would otherwise pass it vacuously.
-        await Assert.That(AnsiConsole.Profile.Capabilities.Interactive).IsFalse();
-
         var provisioner = new SpectreTenantProvisioner(
-            new TenantProvisioningClient(new HttpClient()), "https://signup.example");
+            new TenantProvisioningClient(new HttpClient()), "https://signup.example",
+            isInteractive: () => false);
 
         var offer = await provisioner.OfferCreateAsync(Tokens());
 

@@ -64,7 +64,10 @@ public static class SetupCommand {
         if (serverUrlArg is null && args.Length > 1 && !args[1].StartsWith('-'))
             serverUrlArg = ServerInput.ResolveTenantArg(args[1]);
         var noPrompt         = args.Contains("--no-prompt");
-        var forceDevice      = args.Contains("--device");
+        // Also when there is no keyboard: a redirected stdin cannot press the escape-hatch key, so a
+        // loopback wait there can only end in the listener timeout. Not a headless guess - an
+        // interactive SSH session has a keyboard and keeps the browser.
+        var forceDevice      = OAuthLoginFlow.DeviceRouteRequired(args.Contains("--device"), ConsoleKeyWatcher.Instance.CanWatch);
         var skipClaudeFlag   = args.Contains("--skip-claude-hooks");
         var skipCodexFlag    = args.Contains("--skip-codex-hooks");
         var skipCodexNetworkFlag = args.Contains("--skip-codex-network-access");

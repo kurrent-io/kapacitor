@@ -7,7 +7,12 @@ namespace Capacitor.Cli.Commands;
 // Interactive create-a-tenant flow for `kcap setup` when WorkOS discovery finds
 // none. Prompts, provisions via kcap-web, polls until live. OWNS all user-facing
 // messaging for its non-Created outcomes.
-public sealed class SpectreTenantProvisioner(TenantProvisioningClient client, string baseUrl) : ITenantProvisioner {
+/// <param name="isInteractive">
+/// Test seam. The ambient value is a property of the host the suite runs under, so a test that read it
+/// directly would pass in CI and fail in a developer's terminal.
+/// </param>
+public sealed class SpectreTenantProvisioner(
+        TenantProvisioningClient client, string baseUrl, Func<bool>? isInteractive = null) : ITenantProvisioner {
     const int PollIntervalMs = 4000;
     const int MaxPolls       = 150; // ~10 minutes (server budget is 15)
 
@@ -22,15 +27,14 @@ public sealed class SpectreTenantProvisioner(TenantProvisioningClient client, st
         AnsiConsole.MarkupLine("  [yellow]Single sign-on found no Capacitor workspace for your account.[/]");
         AnsiConsole.MarkupLine("  [dim]A workspace that signs in with the GitHub App won't appear here.[/]");
 
-        // Every way out of this fork is a prompt, so with no terminal there is nothing to offer.
-        // Spectre throws NotSupportedException from inside the prompt rather than returning, which
-        // turned `kcap login --discover` on a piped stdin into a crash the moment we armed the
-        // provisioner for headless sessions. Deliberately fires no funnel event: nothing was offered,
-        // and recording a decline would attribute to the user a choice they were never shown.
-        if (!AnsiConsole.Profile.Capabilities.Interactive) {
+        // Every way out of this fork is a prompt, so with no terminal there is nothing to offer, and
+        // Spectre throws NotSupportedException from inside a prompt rather than returning. Deliberately
+        // fires no funnel event: nothing was offered, and recording a decline would attribute to the
+        // user a choice they were never shown.
+        if (!(isInteractive ?? (() => AnsiConsole.Profile.Capabilities.Interactive))()) {
             // Console rather than AnsiConsole, alone in this class: Spectre hard-wraps at the profile
-            // width, which broke `kcap setup <slug>` across a line and handed the reader a command
-            // that does not survive being copied. stderr also matches the non-zero exit this leads to.
+            // width, which breaks `kcap setup <slug>` across a line and hands the reader a command that
+            // does not survive being copied. stderr also matches the non-zero exit this leads to.
             Console.Error.WriteLine();
             Console.Error.WriteLine(OAuthLoginFlow.WorkspaceCreationNeedsATerminalMessage());
 

@@ -14,7 +14,10 @@ public static class LoginCommand {
 
     internal static async Task<int> HandleAsync(
             string[] args, string? baseUrl, OnboardingFacade facade, IAuthProgress progress) {
-        var forceDevice = args.Contains("--device");
+        // Also when there is no keyboard: a redirected stdin cannot press the escape-hatch key, so a
+        // loopback wait there can only end in the listener timeout. Not a headless guess - an
+        // interactive SSH session has a keyboard and keeps the browser.
+        var forceDevice = OAuthLoginFlow.DeviceRouteRequired(args.Contains("--device"), ConsoleKeyWatcher.Instance.CanWatch);
 
         // No configured server (or explicit --discover) → run tenant discovery (pick provider,
         // then your tenants). Otherwise log into the configured server.

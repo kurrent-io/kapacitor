@@ -90,10 +90,8 @@ public class DeviceGrantPollTests {
     }
 
     /// <summary>
-    /// Found live on 2026-08-21: one POST hung, HttpClient's 100-second default fired, and the
-    /// TaskCanceledException escaped to the top level as `[kcap] login failed: TaskCanceledException`
-    /// - killing a sign-in the user was still completing. The send was unguarded while the parse right
-    /// below it was not, so a slow request was fatal and a malformed body was survivable.
+    /// One hung POST used to reach HttpClient's 100-second default and escape as a
+    /// TaskCanceledException at the top level, killing a sign-in the user was still completing.
     /// </summary>
     [Test]
     public async Task A_hung_poll_is_retried_rather_than_ending_the_sign_in() {
@@ -113,5 +111,55 @@ public class DeviceGrantPollTests {
         await Assert.That(handler.Calls).IsEqualTo(2);
         // Reported as a tick, not a failure: nothing is wrong, the request just did not answer.
         await Assert.That(progress.Errors).IsEmpty();
+    }
+
+    /// <summary>
+    /// A parsed body is not a verdict. A 5xx that happens to be JSON deserializes into a response with
+    /// every field defaulted, so it reads as neither a token nor a known RFC 8628 error - and only the
+    /// status separates "the service is having a moment" from "the service answered you".
+    /// </summary>
+    [Test]
+    public async Task Keeps_polling_when_a_readable_5xx_carries_no_device_error() {
+        var polls = 0;
+
+        using var handler = new Handler(request => {
+            if (request.RequestUri!.AbsolutePath.Contains("device/code")) return DeviceCode(expiresIn: 900);
+
+            polls++;
+
+            return polls == 1
+                ? Json("""{"message":"temporarily unavailable"}""", HttpStatusCode.InternalServerError)
+                : Json("""{"access_token":"tok"}""");
+        });
+        using var http     = new HttpClient(handler);
+        var       progress = new RecordingAuthProgress();
+
+        var token = await OAuthLoginFlow.RunDeviceFlowAsync(
+            http, "client_id", progress: progress,
+            time: new FakeTimeProvider { AutoAdvanceAmount = TimeSpan.FromSeconds(1) },
+            openBrowser: _ => false);
+
+        await Assert.That(token).IsEqualTo("tok");
+        await Assert.That(polls).IsEqualTo(2);
+        await Assert.That(progress.Errors).IsEmpty();
+    }
+
+    /// <summary>The other half of the same rule: on a 2xx an unrecognised code IS the answer.</summary>
+    [Test]
+    public async Task An_unrecognised_error_on_a_success_status_still_ends_the_sign_in() {
+        using var handler = new Handler(request =>
+            request.RequestUri!.AbsolutePath.Contains("device/code")
+                ? DeviceCode(expiresIn: 900)
+                : Json("""{"error":"device_flow_disabled"}"""));
+        using var http     = new HttpClient(handler);
+        var       progress = new RecordingAuthProgress();
+
+        var token = await OAuthLoginFlow.RunDeviceFlowAsync(
+            http, "client_id", progress: progress,
+            time: new FakeTimeProvider { AutoAdvanceAmount = TimeSpan.FromSeconds(1) },
+            openBrowser: _ => false);
+
+        await Assert.That(token).IsNull();
+        await Assert.That(string.Join("\n", progress.Errors)).Contains("device_flow_disabled");
     }
 }

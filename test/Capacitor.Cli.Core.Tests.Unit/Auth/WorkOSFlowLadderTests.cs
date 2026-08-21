@@ -10,6 +10,20 @@ namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 public class WorkOSFlowLadderTests {
     const string Device = """{"device_code":"dc","user_code":"WXYZ-1234","verification_uri":"https://signin.example/device","interval":0,"expires_in":900}""";
 
+    /// <summary>
+    /// Every device-rung test needs one. The static SystemBrowser.TryOpen is the default, so a fixture
+    /// carrying a real https verification_uri opens actual tabs on a developer's machine.
+    /// </summary>
+    sealed class RecordingOpener {
+        public List<string> Opened { get; } = [];
+
+        public bool Open(string url) {
+            Opened.Add(url);
+
+            return false;
+        }
+    }
+
     static WireMockServer DeviceGrantServer(string authenticate = """{"access_token":"acc","refresh_token":"rt","organization_id":"org_a"}""") {
         var server = WireMockServer.Start();
         server.Given(Request.Create().WithPath("/user_management/authorize/device").UsingPost())
@@ -32,8 +46,23 @@ public class WorkOSFlowLadderTests {
         await Assert.That(OAuthLoginFlow.ChooseWorkOSFlow(forceDevice)).IsEqualTo(expected);
 
     /// <summary>
-    /// The hint is withheld rather than reworded when there is no keyboard. It used to say "re-run with
-    /// --device", which the default no-keyboard host - a GUI - cannot act on at all.
+    /// The rung above the ladder, and the one thing that is decided before it: a console whose stdin is
+    /// redirected cannot press <c>d</c>, and if a browser launches without being able to reach us at
+    /// 127.0.0.1 there is nothing left but the listener timeout. Deliberately not read off the key
+    /// watcher inside the ladder - a GUI has no keyboard either and must keep its browser.
+    /// </summary>
+    [Test]
+    [Arguments(false, true,  false)]
+    [Arguments(true,  true,  true)]
+    [Arguments(false, false, true)]
+    [Arguments(true,  false, true)]
+    public async Task A_console_with_no_keyboard_takes_the_device_route(
+            bool userAsked, bool consoleHasKeyboard, bool expected) =>
+        await Assert.That(OAuthLoginFlow.DeviceRouteRequired(userAsked, consoleHasKeyboard)).IsEqualTo(expected);
+
+    /// <summary>
+    /// The hint is withheld rather than reworded when there is no keyboard: any wording of it names an
+    /// action the default no-keyboard host - a GUI - cannot take.
     /// </summary>
     [Test]
     [Arguments(true, 1)]
@@ -68,11 +97,16 @@ public class WorkOSFlowLadderTests {
         using var http    = new HttpClient();
         var       browser = new FakeBrowser(_ => throw new InvalidOperationException("the browser must not be invoked"));
 
+        var opener = new RecordingOpener();
+
         var result = await OAuthLoginFlow.AcquireWorkOSAsync(
             http, "client_d", organizationId: null, forceDevice: true, browser,
-            server.Urls[0], progress: new RecordingAuthProgress(), keys: ScriptedKeyWatcher.Blind());
+            server.Urls[0], progress: new RecordingAuthProgress(), keys: ScriptedKeyWatcher.Blind(),
+            openBrowser: opener.Open);
 
         await Assert.That(result!.AccessToken).IsEqualTo("acc");
+        // The device page, never the authorize URL: "opens no browser" means no LOOPBACK browser.
+        await Assert.That(opener.Opened).IsEquivalentTo(["https://signin.example/device"]);
     }
 
     [Test]
@@ -84,7 +118,7 @@ public class WorkOSFlowLadderTests {
 
         var result = await OAuthLoginFlow.AcquireWorkOSAsync(
             http, "client_d", organizationId: null, forceDevice: false, new HangingBrowser(),
-            server.Urls[0], progress: progress, keys: keys);
+            server.Urls[0], progress: progress, keys: keys, openBrowser: _ => false);
 
         await Assert.That(result!.AccessToken).IsEqualTo("acc");
         await Assert.That(progress.DeviceCodes).Count().IsEqualTo(1);
@@ -107,7 +141,7 @@ public class WorkOSFlowLadderTests {
 
         await OAuthLoginFlow.AcquireWorkOSAsync(
             http, "client_d", organizationId: null, forceDevice: false, new HangingBrowser(),
-            server.Urls[0], progress: new RecordingAuthProgress(), keys: keys);
+            server.Urls[0], progress: new RecordingAuthProgress(), keys: keys, openBrowser: _ => false);
 
         await Assert.That(keys.Drained).IsEqualTo(2);
         await Assert.That(keys.KeyAvailable).IsFalse();
@@ -140,7 +174,7 @@ public class WorkOSFlowLadderTests {
         var result = await OAuthLoginFlow.AcquireWorkOSAsync(
             http, "client_d", organizationId: null, forceDevice: false,
             new FakeBrowser(_ => throw new HttpListenerException(5, "Access is denied")),
-            server.Urls[0], progress: progress, keys: ScriptedKeyWatcher.Blind());
+            server.Urls[0], progress: progress, keys: ScriptedKeyWatcher.Blind(), openBrowser: _ => false);
 
         await Assert.That(result!.AccessToken).IsEqualTo("acc");
         await Assert.That(string.Join("\n", progress.Errors)).Contains("Could not bind loopback listener");
@@ -161,7 +195,7 @@ public class WorkOSFlowLadderTests {
         var result = await OAuthLoginFlow.AcquireWorkOSAsync(
             http, "client_d", organizationId: null, forceDevice: false,
             new FakeBrowser(_ => throw new BrowserLaunchException()),
-            server.Urls[0], progress: progress, keys: ScriptedKeyWatcher.Blind());
+            server.Urls[0], progress: progress, keys: ScriptedKeyWatcher.Blind(), openBrowser: _ => false);
 
         await Assert.That(result!.AccessToken).IsEqualTo("acc");
         await Assert.That(string.Join("\n", progress.Notices)).Contains("use anywhere");
@@ -170,9 +204,9 @@ public class WorkOSFlowLadderTests {
     }
 
     /// <summary>
-    /// The listener never waits out its timeout for a callback nothing can send, and - the part that
-    /// was wrong first time - says nothing at all on the way out. Announcing before launching printed
-    /// the browser narrative and a 300-character authorize URL, then retracted both.
+    /// The listener never waits out its timeout for a callback nothing can send, and says nothing at
+    /// all on the way out: announcing before launching would print the browser narrative and a
+    /// 300-character authorize URL, then retract both.
     /// </summary>
     [Test]
     public async Task The_loopback_browser_gives_up_silently_when_it_cannot_launch() {
