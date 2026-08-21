@@ -151,6 +151,8 @@ public class ReviewerVendorFallbackTests {
     // === Wired into the start arm via HandleToolCallAsync (full dispatch, WireMock-backed) ===
 
     const string StartV2 = "/api/flows/review/start/v2";
+    // B3: the vendor-less first POST goes to /v2; the vendor-bearing preference retry goes to /v4.
+    const string StartV4 = "/api/flows/review/start/v4";
 
     const string VendorRequiredBody =
         """{"error":"reviewer_vendor_required","message":"no reviewer vendor was requested and the definition names none"}""";
@@ -206,14 +208,12 @@ public class ReviewerVendorFallbackTests {
     [Test]
     public async Task A_preference_saved_between_two_starts_is_seen_by_the_second() {
         using var server = WireMockServer.Start();
+        // Every vendor-less first POST refuses on /v2; the vendor-bearing retry (2nd call only) lands
+        // on /v4 and is accepted. Both /v2 refusals are identical, so a single always-400 stub is
+        // clearer than a scenario here.
         server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("saved-later").WillSetStateTo("second-start")
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
-        server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("saved-later").WhenStateIs("second-start").WillSetStateTo("accept")
-              .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
-        server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("saved-later").WhenStateIs("accept")
+        server.Given(Request.Create().WithPath(StartV4).UsingPost())
               .RespondWith(Response.Create().WithStatusCode(200).WithBody(StartedWithVendor("codex")));
         using var client = new HttpClient();
 
@@ -282,11 +282,10 @@ public class ReviewerVendorFallbackTests {
     [Test]
     public async Task Saved_preference_is_sent_as_an_explicit_vendor_on_exactly_one_retry() {
         using var server = WireMockServer.Start();
+        // The vendor-less first POST refuses on /v2; the vendor-bearing retry lands on /v4.
         server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("preference").WillSetStateTo("retried")
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
-        server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("preference").WhenStateIs("retried")
+        server.Given(Request.Create().WithPath(StartV4).UsingPost())
               .RespondWith(Response.Create().WithStatusCode(200).WithBody(StartedWithVendor("codex")));
         using var client = new HttpClient();
 
@@ -301,7 +300,9 @@ public class ReviewerVendorFallbackTests {
         await Assert.That(text).StartsWith("reviewer vendor 'codex' applied from your saved preference (flows.reviewer_vendor)");
         await Assert.That(text).Contains("flow_run_id: f1");
 
-        await Assert.That(PostCount(server, StartV2)).IsEqualTo(2);
+        // Exactly one vendor-less refusal (/v2) and one vendor-bearing retry (/v4) — no third start.
+        await Assert.That(PostCount(server, StartV2)).IsEqualTo(1);
+        await Assert.That(PostCount(server, StartV4)).IsEqualTo(1);
         // The first POST stayed vendor-less (the definition's authored vendor still gets its turn);
         // only the retry names one, which is also what makes the echo check assert against it.
         await Assert.That(PostedVendor(server, 0)).IsNull();
@@ -311,11 +312,10 @@ public class ReviewerVendorFallbackTests {
     [Test]
     public async Task Preference_is_normalized_before_it_reaches_the_wire() {
         using var server = WireMockServer.Start();
+        // Vendor-less first POST refuses on /v2; the normalized-vendor retry lands on /v4.
         server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("normalize").WillSetStateTo("retried")
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
-        server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("normalize").WhenStateIs("retried")
+        server.Given(Request.Create().WithPath(StartV4).UsingPost())
               .RespondWith(Response.Create().WithStatusCode(200).WithBody(StartedWithVendor("codex")));
         using var client = new HttpClient();
 
@@ -335,11 +335,10 @@ public class ReviewerVendorFallbackTests {
     [Test]
     public async Task A_stale_preference_is_terminal_and_says_to_re_ask_and_re_save() {
         using var server = WireMockServer.Start();
+        // Vendor-less first POST refuses on /v2; the stale-vendor retry lands on /v4 and is rejected.
         server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("stale").WillSetStateTo("retried")
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
-        server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("stale").WhenStateIs("retried")
+        server.Given(Request.Create().WithPath(StartV4).UsingPost())
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(
                   """{"error":"reviewer_vendor_unavailable","message":"codex is not certified unattended on any eligible daemon"}"""));
         using var client = new HttpClient();
@@ -355,17 +354,17 @@ public class ReviewerVendorFallbackTests {
         await Assert.That(text).Contains("Your saved preference 'codex' (flows.reviewer_vendor, profile: default) no longer");
         await Assert.That(text).Contains("kcap config set flows.reviewer_vendor");
 
-        await Assert.That(PostCount(server, StartV2)).IsEqualTo(2);
+        await Assert.That(PostCount(server, StartV2)).IsEqualTo(1);
+        await Assert.That(PostCount(server, StartV4)).IsEqualTo(1);
     }
 
     [Test]
     public async Task An_unknown_vendor_on_the_retry_is_also_read_as_a_stale_preference() {
         using var server = WireMockServer.Start();
+        // Vendor-less first POST refuses on /v2; the unknown-vendor retry lands on /v4 and is rejected.
         server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("unknown").WillSetStateTo("retried")
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
-        server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("unknown").WhenStateIs("retried")
+        server.Given(Request.Create().WithPath(StartV4).UsingPost())
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(
                   """{"error":"unknown_vendor","message":"'kodex' is not a known vendor"}"""));
         using var client = new HttpClient();
@@ -378,7 +377,8 @@ public class ReviewerVendorFallbackTests {
         var (_, text) = Unwrap(response);
         await Assert.That(text).Contains("unknown_vendor");
         await Assert.That(text).Contains("Your saved preference 'kodex' (flows.reviewer_vendor, profile: default) no longer");
-        await Assert.That(PostCount(server, StartV2)).IsEqualTo(2);
+        await Assert.That(PostCount(server, StartV2)).IsEqualTo(1);
+        await Assert.That(PostCount(server, StartV4)).IsEqualTo(1);
     }
 
     /// <summary>A retry failure the preference did not cause must surface as itself — blaming the
@@ -386,11 +386,10 @@ public class ReviewerVendorFallbackTests {
     [Test]
     public async Task An_unrelated_retry_failure_carries_no_stale_preference_advice() {
         using var server = WireMockServer.Start();
+        // Vendor-less first POST refuses on /v2; the retry lands on /v4 and hits an unrelated failure.
         server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("unrelated").WillSetStateTo("retried")
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
-        server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("unrelated").WhenStateIs("retried")
+        server.Given(Request.Create().WithPath(StartV4).UsingPost())
               .RespondWith(Response.Create().WithStatusCode(409).WithBody(
                   """{"error":"server_catching_up","message":"the flows read model is replaying"}"""));
         using var client = new HttpClient();
@@ -404,7 +403,8 @@ public class ReviewerVendorFallbackTests {
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("server_catching_up");
         await Assert.That(text).DoesNotContain("no longer works");
-        await Assert.That(PostCount(server, StartV2)).IsEqualTo(2);
+        await Assert.That(PostCount(server, StartV2)).IsEqualTo(1);
+        await Assert.That(PostCount(server, StartV4)).IsEqualTo(1);
     }
 
     /// <summary>The single-retry guarantee, stated as its worst case: a server that keeps answering
@@ -413,7 +413,11 @@ public class ReviewerVendorFallbackTests {
     [Test]
     public async Task The_retry_never_retries_itself() {
         using var server = WireMockServer.Start();
+        // Vendor-less first POST refuses on /v2; the vendor-bearing retry lands on /v4 and the server
+        // (pathologically) refuses again — the explicit-vendor retry must NOT trigger a third start.
         server.Given(Request.Create().WithPath(StartV2).UsingPost())
+              .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
+        server.Given(Request.Create().WithPath(StartV4).UsingPost())
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
         using var client = new HttpClient();
 
@@ -425,9 +429,11 @@ public class ReviewerVendorFallbackTests {
         var (isError, text) = Unwrap(response);
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("reviewer_vendor_required");
-        // Not a stale-preference code, so no re-save advice — and, above all, exactly two POSTs.
+        // Not a stale-preference code, so no re-save advice — and, above all, exactly one initial
+        // refusal plus one retry, never a third start.
         await Assert.That(text).DoesNotContain("no longer works");
-        await Assert.That(PostCount(server, StartV2)).IsEqualTo(2);
+        await Assert.That(PostCount(server, StartV2)).IsEqualTo(1);
+        await Assert.That(PostCount(server, StartV4)).IsEqualTo(1);
     }
 
     /// <summary>The retry is an EXPLICIT vendor request, so it inherits the explicit-vendor echo
@@ -436,11 +442,11 @@ public class ReviewerVendorFallbackTests {
     [Test]
     public async Task A_mismatched_echo_on_the_retry_closes_the_run() {
         using var server = WireMockServer.Start();
+        // Vendor-less first POST refuses on /v2; the vendor-bearing retry lands on /v4 and the server
+        // applies a DIFFERENT vendor than requested.
         server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("echo").WillSetStateTo("retried")
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
-        server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("echo").WhenStateIs("retried")
+        server.Given(Request.Create().WithPath(StartV4).UsingPost())
               .RespondWith(Response.Create().WithStatusCode(200).WithBody(StartedWithVendor("claude")));
         server.Given(Request.Create().WithPath("/api/flows/f1/close").UsingPost())
               .RespondWith(Response.Create().WithStatusCode(200));
@@ -458,13 +464,15 @@ public class ReviewerVendorFallbackTests {
         await Assert.That(PostCount(server, "/api/flows/f1/close")).IsEqualTo(1);
 
         // The mismatch is terminal: the defensive close must not be followed by a third start.
-        await Assert.That(PostCount(server, StartV2)).IsEqualTo(2);
+        await Assert.That(PostCount(server, StartV2)).IsEqualTo(1);
+        await Assert.That(PostCount(server, StartV4)).IsEqualTo(1);
     }
 
     [Test]
     public async Task An_explicit_vendor_never_triggers_the_preference_retry() {
         using var server = WireMockServer.Start();
-        server.Given(Request.Create().WithPath(StartV2).UsingPost())
+        // An explicit vendor is carried on the first POST, which a B3 client routes straight to /v4.
+        server.Given(Request.Create().WithPath(StartV4).UsingPost())
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
         using var client = new HttpClient();
 
@@ -477,7 +485,7 @@ public class ReviewerVendorFallbackTests {
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("reviewer_vendor_required");
         await Assert.That(text).DoesNotContain("saved preference");
-        await Assert.That(PostCount(server, StartV2)).IsEqualTo(1);
+        await Assert.That(PostCount(server, StartV4)).IsEqualTo(1);
     }
 
     [Test]
@@ -592,11 +600,10 @@ public class ReviewerVendorFallbackTests {
     [Test]
     public async Task An_expired_token_on_the_retry_says_to_log_in() {
         using var server = WireMockServer.Start();
+        // Vendor-less first POST refuses on /v2; the vendor-bearing retry lands on /v4 and 401s.
         server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("auth").WillSetStateTo("retried")
               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
-        server.Given(Request.Create().WithPath(StartV2).UsingPost())
-              .InScenario("auth").WhenStateIs("retried")
+        server.Given(Request.Create().WithPath(StartV4).UsingPost())
               .RespondWith(Response.Create().WithStatusCode(401));
         using var client = new HttpClient();
 
@@ -611,7 +618,8 @@ public class ReviewerVendorFallbackTests {
         await Assert.That(text).DoesNotContain("no longer works");
 
         // An auth failure ends the call too — no third start behind the login message.
-        await Assert.That(PostCount(server, StartV2)).IsEqualTo(2);
+        await Assert.That(PostCount(server, StartV2)).IsEqualTo(1);
+        await Assert.That(PostCount(server, StartV4)).IsEqualTo(1);
     }
 
     /// <summary>The preference is read only when the trigger fires — a successful start must not

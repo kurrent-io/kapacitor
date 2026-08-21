@@ -8,7 +8,8 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 /// <summary>
-/// Vendor-neutral catalog-start v2 plus the requested/applied echo defense-in-depth check.
+/// Vendor-bearing catalog start routing (B3 /v4 primary with /v2 fallback) plus the
+/// requested/applied echo defense-in-depth check.
 /// </summary>
 public class McpFlowsServerVendorOverrideTests {
     static JsonObject StartArguments(string? vendor = null) {
@@ -35,9 +36,11 @@ public class McpFlowsServerVendorOverrideTests {
     // === StartFlowAsync: vendor threading + route selection ===
 
     [Test]
-    public async Task StartFlowAsync_with_vendor_posts_to_the_versioned_route_and_carries_vendor() {
+    public async Task StartFlowAsync_with_vendor_posts_to_v4_with_protocol_4_and_carries_vendor() {
+        // §2.7 B3: a park-capable client routes every vendor-bearing catalog start to /v4
+        // (protocol 4). A current server has the route, so a single POST lands on /v4 — no v2 hit.
         using var server = WireMockServer.Start();
-        server.Given(Request.Create().WithPath("/api/flows/review/start/v2").UsingPost())
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody(
                 """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_vendor":"claude"}"""));
         using var client = new HttpClient();
@@ -49,11 +52,38 @@ public class McpFlowsServerVendorOverrideTests {
         await Assert.That(server.LogEntries.Count).IsEqualTo(1);
 
         var hit  = server.LogEntries.Single();
-        await Assert.That(hit.RequestMessage.Path).IsEqualTo("/api/flows/review/start/v2");
+        await Assert.That(hit.RequestMessage.Path).IsEqualTo("/api/flows/review/start/v4");
 
         var body = JsonNode.Parse(hit.RequestMessage.Body!)!.AsObject();
         await Assert.That(body["vendor"]!.GetValue<string>()).IsEqualTo("claude");
-        await Assert.That(body["client_flow_protocol_version"]!.GetValue<int>()).IsEqualTo(2);
+        await Assert.That(body["client_flow_protocol_version"]!.GetValue<int>()).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task StartFlowAsync_with_vendor_falls_back_to_v2_when_v4_is_absent() {
+        // Cross-rollout safety: an older server lacks /v4 and 404s it. The client must fall back to
+        // the pre-B3 /v2 route (protocol 2) — two POSTs, /v4 then /v2 — and still succeed. On that
+        // path a resumable park later reports the legacy participant_stopped, which is still a
+        // resubmit trigger, so a crossed round never stalls.
+        using var server = WireMockServer.Start();
+        // /v4 deliberately left unstubbed — WireMock's default 404 simulates the old server.
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v2").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody(
+                """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_vendor":"claude"}"""));
+        using var client = new HttpClient();
+
+        using var response = await McpFlowsServer.StartFlowAsync(
+            client, server.Url!, StartArguments("claude"), cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
+
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(2);
+        await Assert.That(server.LogEntries.ElementAt(0).RequestMessage.Path).IsEqualTo("/api/flows/review/start/v4");
+        await Assert.That(server.LogEntries.ElementAt(1).RequestMessage.Path).IsEqualTo("/api/flows/review/start/v2");
+
+        // The fallback body carries protocol 2 (the v4 attempt's protocol-4 body is discarded on 404).
+        var v2Body = JsonNode.Parse(server.LogEntries.ElementAt(1).RequestMessage.Body!)!.AsObject();
+        await Assert.That(v2Body["vendor"]!.GetValue<string>()).IsEqualTo("claude");
+        await Assert.That(v2Body["client_flow_protocol_version"]!.GetValue<int>()).IsEqualTo(2);
     }
 
     [Test]
@@ -202,8 +232,9 @@ public class McpFlowsServerVendorOverrideTests {
     [Test]
     public async Task New_CLI_old_server_404_fails_closed_before_any_close_call() {
         using var server = WireMockServer.Start();
-        // The versioned route is deliberately left unstubbed — WireMock's default 404 response
-        // simulates a server that predates reviewer vendor override.
+        // Both /v4 and its /v2 fallback are deliberately left unstubbed — WireMock's default 404 for
+        // each simulates a server that predates /v4 AND reviewer vendor override. The final /v2 404
+        // is the one the vendor-override guard fails closed on.
         using var client = new HttpClient();
 
         var response = await McpFlowsServer.HandleToolCallAsync(
@@ -222,7 +253,7 @@ public class McpFlowsServerVendorOverrideTests {
     [Test]
     public async Task Echo_match_returns_normal_result_with_no_close_call() {
         using var server = WireMockServer.Start();
-        server.Given(Request.Create().WithPath("/api/flows/review/start/v2").UsingPost())
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody(
                 """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_vendor":"claude"}"""));
         using var client = new HttpClient();
@@ -240,7 +271,7 @@ public class McpFlowsServerVendorOverrideTests {
     [Test]
     public async Task Echo_mismatch_fails_and_closes_the_run_defensively() {
         using var server = WireMockServer.Start();
-        server.Given(Request.Create().WithPath("/api/flows/review/start/v2").UsingPost())
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody(
                 """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_vendor":"codex"}"""));
         server.Given(Request.Create().WithPath("/api/flows/f1/close").UsingPost())
@@ -263,7 +294,7 @@ public class McpFlowsServerVendorOverrideTests {
     [Test]
     public async Task Echo_mismatch_close_failure_is_swallowed_mismatch_error_still_returned() {
         using var server = WireMockServer.Start();
-        server.Given(Request.Create().WithPath("/api/flows/review/start/v2").UsingPost())
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody(
                 """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_vendor":"codex"}"""));
         server.Given(Request.Create().WithPath("/api/flows/f1/close").UsingPost())

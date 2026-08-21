@@ -1095,10 +1095,27 @@ static class McpFlowsServer {
             Model:                model
         );
 
-        // Route selection IS the server-capability signal, so it fails closed before a run starts:
-        //  - a reviewer-model override → POST /review/start/v3 (an old server 404s the route before
-        //    any handler runs — mapped to reviewer_model_protocol_required, never downgraded to v2);
-        //  - every other catalog start → POST /review/start/v2 (protocol 2, unchanged);
+        // §2.7 B3: a participant_parked-capable client routes every non-dynamic, vendor-bearing
+        // start through /review/start/v4 (protocol 4), so the server returns the version-gated
+        // `participant_parked` result when a resumable park crosses a round. An older server lacks the
+        // route and 404s it → fall back to the pre-B3 endpoint (protocol 3/2), where a park reports the
+        // legacy `participant_stopped`; both are resubmit triggers, so the crossed round never stalls
+        // across the rollout. Only a 404 falls back — any other response (incl. a real 4xx) is returned
+        // as-is, never a silent downgrade. A dynamic (definition_yaml) or vendor-less start keeps its
+        // pre-B3 route (v4 requires a vendor).
+        if (vendor is not null && definitionYaml is null) {
+            var v4Resp = await client.PostAsync(
+                $"{apiRoot}/api/flows/review/start/v4",
+                JsonContent.Create(body with { ClientFlowProtocolVersion = 4 }, McpJsonContext.Default.StartReviewFlowDto),
+                ct);
+            if (v4Resp.StatusCode != System.Net.HttpStatusCode.NotFound) return v4Resp;
+            v4Resp.Dispose(); // old server without /v4 — fall through to the pre-B3 route below
+        }
+
+        // Pre-B3 route selection (and the /v4 fallback), the server-capability signal that fails closed:
+        //  - a reviewer-model override → POST /review/start/v3 (an old server 404s it — mapped to
+        //    reviewer_model_protocol_required, never downgraded to v2);
+        //  - every other catalog start → POST /review/start/v2 (protocol 2);
         //  - a dynamic (definition_yaml) start → the legacy generic route with its inline contract.
         var startPath = model is not null
             ? $"{apiRoot}/api/flows/review/start/v3"

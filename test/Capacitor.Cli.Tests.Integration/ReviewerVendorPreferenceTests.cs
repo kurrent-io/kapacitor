@@ -139,6 +139,8 @@ public class ReviewerVendorPreferenceTests : IDisposable {
     };
 
     const string StartV2 = "/api/flows/review/start/v2";
+    // B3: the vendor-less first POST goes to /v2; the vendor-bearing preference retry goes to /v4.
+    const string StartV4 = "/api/flows/review/start/v4";
 
     const string VendorRequired =
         """{"error":"reviewer_vendor_required","message":"no reviewer vendor was requested and the definition names none"}""";
@@ -146,8 +148,11 @@ public class ReviewerVendorPreferenceTests : IDisposable {
     static string Text(JsonObject response) =>
         response["result"]!["content"]![0]!["text"]!.GetValue<string>();
 
+    // All catalog start POSTs — the vendor-less first attempt on /v2 and the vendor-bearing retry on
+    // /v4 — in the order the server received them.
     IReadOnlyList<string> StartBodies() =>
-        _server.FindLogEntries(Request.Create().WithPath(StartV2).UsingPost())
+        _server.LogEntries
+               .Where(e => e.RequestMessage.Path == StartV2 || e.RequestMessage.Path == StartV4)
                .Select(e => e.RequestMessage.Body ?? "")
                .ToList();
 
@@ -159,11 +164,10 @@ public class ReviewerVendorPreferenceTests : IDisposable {
     public async Task A_saved_preference_is_read_from_disk_and_applied_to_the_retry() {
         await SeedConfigAsync("codex");
 
+        // The vendor-less first POST refuses on /v2; the vendor-bearing retry lands on /v4.
         _server.Given(Request.Create().WithPath(StartV2).UsingPost())
-               .InScenario("pref").WillSetStateTo("retry")
                .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequired));
-        _server.Given(Request.Create().WithPath(StartV2).UsingPost())
-               .InScenario("pref").WhenStateIs("retry")
+        _server.Given(Request.Create().WithPath(StartV4).UsingPost())
                .RespondWith(Response.Create().WithStatusCode(200).WithBody(
                    """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_vendor":"codex"}"""));
 
@@ -188,14 +192,11 @@ public class ReviewerVendorPreferenceTests : IDisposable {
     public async Task A_preference_saved_after_startup_is_seen_by_the_next_start() {
         await SeedConfigAsync(null);
 
+        // Every vendor-less first POST refuses on /v2; the one vendor-bearing retry (2nd start, after
+        // the preference is saved) lands on /v4 and is accepted.
         _server.Given(Request.Create().WithPath(StartV2).UsingPost())
-               .InScenario("fresh").WillSetStateTo("second-start")
                .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequired));
-        _server.Given(Request.Create().WithPath(StartV2).UsingPost())
-               .InScenario("fresh").WhenStateIs("second-start").WillSetStateTo("accept")
-               .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequired));
-        _server.Given(Request.Create().WithPath(StartV2).UsingPost())
-               .InScenario("fresh").WhenStateIs("accept")
+        _server.Given(Request.Create().WithPath(StartV4).UsingPost())
                .RespondWith(Response.Create().WithStatusCode(200).WithBody(
                    """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_vendor":"codex"}"""));
 

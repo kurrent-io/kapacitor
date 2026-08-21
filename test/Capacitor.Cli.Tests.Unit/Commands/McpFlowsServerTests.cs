@@ -454,12 +454,14 @@ public class McpFlowsServerTests {
     // --- StartFlowAsync: route selection + local vendor requirement ---
 
     [Test]
-    public async Task StartFlowAsync_with_model_posts_exactly_one_v3_request_with_protocol_3_body() {
+    public async Task StartFlowAsync_with_model_posts_exactly_one_v4_request_with_protocol_4_body() {
+        // §2.7 B3: a model override is orthogonal to park-capability, so a v4 client routes a
+        // model start to /v4 too (the superset route applies the model AND records protocol 4).
         using var server = WireMockServer.Start();
-        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody(V3RunningWithAck));
-        // /v2 is deliberately left unstubbed — WireMock's default 404 proves the model path
-        // never touches it (zero v2/legacy retry).
+        // /v3 and /v2 are deliberately left unstubbed — WireMock's default 404 proves the model path
+        // lands on /v4 with no fallback (zero v3/v2/legacy retry).
         using var client = new HttpClient();
 
         using var response = await McpFlowsServer.StartFlowAsync(
@@ -470,13 +472,37 @@ public class McpFlowsServerTests {
         await Assert.That(server.LogEntries.Count).IsEqualTo(1);
 
         var hit = server.LogEntries.Single();
-        await Assert.That(hit.RequestMessage.Path).IsEqualTo("/api/flows/review/start/v3");
-        await Assert.That(server.LogEntries.Any(e => e.RequestMessage.Path.Contains("/v2"))).IsFalse();
+        await Assert.That(hit.RequestMessage.Path).IsEqualTo("/api/flows/review/start/v4");
+        await Assert.That(server.LogEntries.Any(e => e.RequestMessage.Path.EndsWith("/v3", StringComparison.Ordinal) || e.RequestMessage.Path.EndsWith("/v2", StringComparison.Ordinal))).IsFalse();
 
         var body = JsonNode.Parse(hit.RequestMessage.Body!)!.AsObject();
         await Assert.That(body["model"]!.GetValue<string>()).IsEqualTo("opus");
         await Assert.That(body["vendor"]!.GetValue<string>()).IsEqualTo("claude");
-        await Assert.That(body["client_flow_protocol_version"]!.GetValue<int>()).IsEqualTo(3);
+        await Assert.That(body["client_flow_protocol_version"]!.GetValue<int>()).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task StartFlowAsync_with_model_falls_back_to_v3_when_v4_is_absent() {
+        // Cross-rollout safety for a model override: an old server lacks /v4 → 404 → fall back to /v3
+        // (protocol 3), still applying the model. Two POSTs, /v4 then /v3.
+        using var server = WireMockServer.Start();
+        // /v4 left unstubbed → default 404 simulates the old server.
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody(V3RunningWithAck));
+        using var client = new HttpClient();
+
+        using var response = await McpFlowsServer.StartFlowAsync(
+            client, server.Url!, ModelStartArguments("claude", "opus"),
+            cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
+
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(server.LogEntries.Count).IsEqualTo(2);
+        await Assert.That(server.LogEntries.ElementAt(0).RequestMessage.Path).IsEqualTo("/api/flows/review/start/v4");
+        await Assert.That(server.LogEntries.ElementAt(1).RequestMessage.Path).IsEqualTo("/api/flows/review/start/v3");
+
+        var v3Body = JsonNode.Parse(server.LogEntries.ElementAt(1).RequestMessage.Body!)!.AsObject();
+        await Assert.That(v3Body["model"]!.GetValue<string>()).IsEqualTo("opus");
+        await Assert.That(v3Body["client_flow_protocol_version"]!.GetValue<int>()).IsEqualTo(3);
     }
 
     [Test]
@@ -549,8 +575,8 @@ public class McpFlowsServerTests {
     // has to be caught here.
     [Arguments("start_review_flow", null, "/api/flows/review/start/v2")]
     [Arguments("start_flow", null, "/api/flows/review/start/v2")]
-    [Arguments("start_review_flow", "opus", "/api/flows/review/start/v3")]
-    [Arguments("start_flow", "opus", "/api/flows/review/start/v3")]
+    [Arguments("start_review_flow", "opus", "/api/flows/review/start/v4")]
+    [Arguments("start_flow", "opus", "/api/flows/review/start/v4")]
     public async Task HandleToolCall_posts_the_requesting_session_id_it_was_given(
             string toolName, string? model, string expectedPath) {
         // Guards the wiring the live defect ran through: RunAsync resolves the requesting session
@@ -562,9 +588,9 @@ public class McpFlowsServerTests {
         server.Given(Request.Create().WithPath("/api/flows/review/start/v2").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody(
                 """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null}"""));
-        // The v3 route needs the model acknowledgement fields, or the response is rejected before the
-        // body assertion below is reached.
-        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+        // The model path now lands on /v4 (B3 superset route); it needs the model acknowledgement
+        // fields, or the response is rejected before the body assertion below is reached.
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody(V3RunningWithAck));
         using var client = new HttpClient();
 
@@ -661,8 +687,9 @@ public class McpFlowsServerTests {
     [Test]
     public async Task HandleToolCall_with_model_old_server_404_maps_to_protocol_required_no_v2_retry() {
         using var server = WireMockServer.Start();
-        // /v3 is left unstubbed — WireMock's default 404 simulates a server that predates the
-        // reviewer-model override protocol.
+        // Both /v4 and its /v3 fallback are left unstubbed — WireMock's default 404 for each
+        // simulates a server that predates /v4 AND the reviewer-model override protocol. The model
+        // path never falls to /v2, so the final /v3 404 maps to reviewer_model_protocol_required.
         using var client = new HttpClient();
 
         var response = await McpFlowsServer.HandleToolCallAsync(
@@ -687,7 +714,7 @@ public class McpFlowsServerTests {
         // intercepted by the model-specific protocol-skew gate (which only fires for 404/405/uncoded/
         // protocol-skew-coded bodies).
         using var server = WireMockServer.Start();
-        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(400).WithBody(
                 """{"error":"reviewer_model_unavailable","message":"the requested model is not available"}"""));
         using var client = new HttpClient();
@@ -705,16 +732,17 @@ public class McpFlowsServerTests {
         await Assert.That(text).Contains("the requested model is not available");
         await Assert.That(text).DoesNotContain("reviewer_model_protocol_required");
 
-        // Exactly one POST — no v2 fallback, and nothing to close (no run ever started).
+        // A coded 400 is not a 404, so /v4 answers it directly — exactly one POST, no v3/v2
+        // fallback, and nothing to close (no run ever started).
         await Assert.That(server.LogEntries.Count).IsEqualTo(1);
-        await Assert.That(server.LogEntries.Single().RequestMessage.Path).IsEqualTo("/api/flows/review/start/v3");
+        await Assert.That(server.LogEntries.Single().RequestMessage.Path).IsEqualTo("/api/flows/review/start/v4");
         await Assert.That(server.LogEntries.Any(e => e.RequestMessage.Path.Contains("/close"))).IsFalse();
     }
 
     [Test]
     public async Task HandleToolCall_with_model_success_missing_ack_fails_and_closes_defensively() {
         using var server = WireMockServer.Start();
-        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody(
                 """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null}"""));
         server.Given(Request.Create().WithPath("/api/flows/f1/close").UsingPost())
@@ -731,9 +759,9 @@ public class McpFlowsServerTests {
     }
 
     [Test]
-    public async Task HandleToolCall_with_model_valid_ack_renders_model_audit_and_posts_v3_only() {
+    public async Task HandleToolCall_with_model_valid_ack_renders_model_audit_and_posts_v4_only() {
         using var server = WireMockServer.Start();
-        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody(
                 """
                 {"flow_run_id":"f1","round_id":"r1","status":"findings","result_kind":"findings",
@@ -757,18 +785,19 @@ public class McpFlowsServerTests {
         await Assert.That(text).Contains("resolved_reviewer_model: claude-opus-4-20260101");
         await Assert.That(text).Contains("reviewer_model_source: explicit");
 
-        // Exactly one POST, to v3 — no polling GET, no v2 fallback.
-        await Assert.That(server.LogEntries.Count(e => e.RequestMessage.Path == "/api/flows/review/start/v3")).IsEqualTo(1);
-        await Assert.That(server.LogEntries.Any(e => e.RequestMessage.Path.Contains("/v2"))).IsFalse();
+        // Exactly one POST, to v4 — no polling GET, no v3/v2 fallback.
+        await Assert.That(server.LogEntries.Count(e => e.RequestMessage.Path == "/api/flows/review/start/v4")).IsEqualTo(1);
+        await Assert.That(server.LogEntries.Any(e => e.RequestMessage.Path.EndsWith("/v3", StringComparison.Ordinal) || e.RequestMessage.Path.EndsWith("/v2", StringComparison.Ordinal))).IsFalse();
     }
 
     [Test]
-    public async Task HandleToolCall_with_model_settlement_busy_posts_v3_exactly_once_and_surfaces_the_coded_error() {
-        // A model-bearing v3 start mints AND launches a run on every POST, so a retryable settlement
-        // 409 must NOT be auto-retried (that would violate exactly-one-v3-POST and churn reviewer
-        // launches). The coded error surfaces so the caller retries the whole start.
+    public async Task HandleToolCall_with_model_settlement_busy_posts_v4_exactly_once_and_surfaces_the_coded_error() {
+        // A model-bearing start mints AND launches a run on every POST, so a retryable settlement
+        // 409 must NOT be auto-retried (that would violate exactly-one-POST and churn reviewer
+        // launches). The coded error surfaces so the caller retries the whole start. A 409 is not a
+        // 404, so /v4 answers it directly (no fallback).
         using var server = WireMockServer.Start();
-        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(409).WithBody(
                 """{"error":"flow_settlement_busy","message":"A concurrent settlement operation is racing this flow run."}"""));
         using var client = new HttpClient();
@@ -782,9 +811,9 @@ public class McpFlowsServerTests {
         var text = result["result"]!["content"]![0]!["text"]!.GetValue<string>();
         await Assert.That(text).Contains("flow_settlement_busy");
 
-        // EXACTLY ONE POST to v3 — a model-bearing start is never settlement-retried.
+        // EXACTLY ONE POST to v4 — a model-bearing start is never settlement-retried.
         await Assert.That(server.LogEntries.Count(
-            e => e.RequestMessage.Path == "/api/flows/review/start/v3")).IsEqualTo(1);
+            e => e.RequestMessage.Path == "/api/flows/review/start/v4")).IsEqualTo(1);
     }
 
     // Round-2 regression guard: dropping the settlement re-POST for a v3 model start must NOT also
@@ -823,19 +852,20 @@ public class McpFlowsServerTests {
 
     [Test]
     [NotInParallel("TokenStoreProfileTests")]
-    public async Task HandleToolCall_with_model_401_refreshes_token_and_resends_v3_exactly_once() {
-        // A model-bearing v3 start keeps the one-shot 401 token refresh (SendWithRefreshRetryAsync):
-        // in a long-lived flows MCP process the cached token can expire after startup, and on 401 the
-        // client re-reads a fresh token and re-sends the SAME v3 POST once. The 401 is rejected at the
-        // auth layer BEFORE any run is created, so the re-send is the only POST that reaches business
-        // logic — exactly-one-EFFECTIVE-v3-POST still holds.
+    public async Task HandleToolCall_with_model_401_refreshes_token_and_resends_v4_exactly_once() {
+        // A model-bearing start keeps the one-shot 401 token refresh (SendWithRefreshRetryAsync, which
+        // wraps the whole StartFlowAsync including the B3 /v4 attempt): in a long-lived flows MCP
+        // process the cached token can expire after startup, and on 401 the client re-reads a fresh
+        // token and re-sends the SAME /v4 POST once. The 401 is rejected at the auth layer BEFORE any
+        // run is created, so the re-send is the only POST that reaches business logic —
+        // exactly-one-EFFECTIVE-POST still holds. (A 401 is not a 404, so /v4 never falls back to /v3.)
         await SeedDefaultTokenAsync();
         try {
             using var server = WireMockServer.Start();
-            server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+            server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
                 .InScenario("model-401").WillSetStateTo("after-401")
                 .RespondWith(Response.Create().WithStatusCode(401).WithBody(""));
-            server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+            server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
                 .InScenario("model-401").WhenStateIs("after-401")
                 .RespondWith(Response.Create().WithStatusCode(200).WithBody(V3RunningWithAck));
             using var client = new HttpClient();
@@ -848,12 +878,12 @@ public class McpFlowsServerTests {
             // The refreshed 2nd send succeeded — NOT surfaced as the friendly "Not logged in".
             await Assert.That(result["result"]!["isError"]).IsNull();
 
-            // Exactly two v3 POSTs (the original 401 + one refreshed re-send).
+            // Exactly two v4 POSTs (the original 401 + one refreshed re-send).
             await Assert.That(server.FindLogEntries(
-                Request.Create().WithPath("/api/flows/review/start/v3").UsingPost()).Count).IsEqualTo(2);
+                Request.Create().WithPath("/api/flows/review/start/v4").UsingPost()).Count).IsEqualTo(2);
             // Only the 2nd carries the refreshed bearer (the first client had no auth header).
             await Assert.That(server.FindLogEntries(
-                Request.Create().WithPath("/api/flows/review/start/v3")
+                Request.Create().WithPath("/api/flows/review/start/v4")
                     .WithHeader("Authorization", $"Bearer {FreshBearer}").UsingPost()).Count).IsEqualTo(1);
         } finally {
             CleanupDefaultToken();
@@ -866,7 +896,7 @@ public class McpFlowsServerTests {
         // must ALSO pass the ordinal vendor-echo check. A mismatch salvages + closes the run and
         // returns an error.
         using var server = WireMockServer.Start();
-        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody(
                 """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_model":"claude/opus-4","reviewer_model_equivalence_key":"claude/opus","applied_reviewer_vendor":"codex"}"""));
         server.Given(Request.Create().WithPath("/api/flows/f1/close").UsingPost())
