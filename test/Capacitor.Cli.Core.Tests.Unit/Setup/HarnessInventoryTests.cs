@@ -7,7 +7,7 @@ public class HarnessInventoryTests {
         new() { Vendors = rows.ToDictionary(r => r.Vendor, r => r.Entry, StringComparer.Ordinal) };
 
     [Test]
-    public async Task Covers_all_nine_vendors_with_detected_and_wired() {
+    public async Task Covers_all_ten_vendors_with_detected_and_wired() {
         var inv = HarnessInventory.Evaluate(
             HarnessCatalogTests.DetectionWithOnly("cursor", "antigravity"),
             isWired: id => id == "cursor",
@@ -15,7 +15,7 @@ public class HarnessInventoryTests {
             "machine-1");
 
         await Assert.That(inv.MachineId).IsEqualTo("machine-1");
-        await Assert.That(inv.Vendors.Count).IsEqualTo(9);
+        await Assert.That(inv.Vendors.Count).IsEqualTo(10);
 
         await Assert.That(inv.Vendors["antigravity"]).IsEqualTo(new HarnessInventoryEntry(Detected: true, Wired: false));
         await Assert.That(inv.Vendors["cursor"]).IsEqualTo(new HarnessInventoryEntry(Detected: true, Wired: true));

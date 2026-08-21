@@ -1,7 +1,7 @@
 namespace Capacitor.Cli.Core.Dsh;
 
 /// <summary>
-/// Installs / removes kcap's live-ingest plugin for DeepSeek Harness (dsh), AI-2020.
+/// Installs / removes kcap's live-ingest plugin for DeepSeek Harness (dsh).
 /// dsh is a Cordis-based agent whose session module declares "persistence is a plugin
 /// concern" — so kcap ships a dependency-free Cordis persistence plugin that forwards
 /// every appended <c>SessionEvent</c> to <c>~/.cache/kcap/dsh/{id}.jsonl</c>, writes the

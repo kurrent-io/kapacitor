@@ -9,7 +9,7 @@ namespace Capacitor.Cli.Commands;
 
 /// <summary>
 /// Discover + classify + import historical DeepSeek Harness (dsh) sessions from the
-/// kcap Cordis plugin's per-session logs at <c>~/.cache/kcap/dsh/{id}.jsonl</c> (AI-2020).
+/// kcap Cordis plugin's per-session logs at <c>~/.cache/kcap/dsh/{id}.jsonl</c>.
 /// dsh's session module makes persistence a plugin concern — the plugin forwards each
 /// <c>SessionEvent</c> to that file, which the live watcher tails too, so live and
 /// historical ingest converge on the server's <c>DeepSeekHarnessTranscriptNormalizer</c>.

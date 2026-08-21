@@ -19,7 +19,7 @@ static class VendorDetection {
         return new(
             Claude: Agent("claude"), Codex: Agent("codex"), Cursor: Agent("cursor"), Copilot: Agent("copilot"),
             Gemini: Agent("gemini"), Kiro: Agent("kiro"), Pi: Agent("pi"), OpenCode: Agent("opencode"),
-            Antigravity: Agent("antigravity"));
+            Antigravity: Agent("antigravity"), Dsh: Agent("dsh"));
     }
 }
 
@@ -645,10 +645,10 @@ public class AgentsImportTemplateTests {
         });
 
         await Assert.That(result.installButton).IsNotNull();
-        await Assert.That(result.AgentRows).IsEqualTo(9);
+        await Assert.That(result.AgentRows).IsEqualTo(10);
         await Assert.That(result.runButton).IsNotNull();
         await Assert.That(result.everythingChoice).IsNotNull();
         await Assert.That(result.everythingChoice!.IsChecked).IsTrue();
-        await Assert.That(result.ImportRows).IsEqualTo(9);
+        await Assert.That(result.ImportRows).IsEqualTo(10);
     }
 }

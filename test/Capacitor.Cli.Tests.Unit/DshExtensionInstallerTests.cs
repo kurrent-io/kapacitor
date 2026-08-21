@@ -3,8 +3,8 @@ using Capacitor.Cli.Core.Dsh;
 namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
-/// Covers the install/remove/marker MECHANICS of <see cref="DshExtensionInstaller"/>
-/// (AI-2020). The embedded plugin body is a documented placeholder pending dsh's real
+/// Covers the install/remove/marker MECHANICS of <see cref="DshExtensionInstaller"/>.
+/// The embedded plugin body is a documented placeholder pending dsh's real
 /// plugin API, but the file/marker lifecycle is final and asserted here.
 /// </summary>
 public class DshExtensionInstallerTests {

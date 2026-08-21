@@ -5,7 +5,7 @@ namespace Capacitor.Cli.Core.Dsh;
 
 /// <summary>
 /// Canonicalizes a DeepSeek Harness session id to the system's ≤36-char, GUID-shaped
-/// session-id contract (AI-2020). dsh names sessions <c>session-&lt;guid&gt;</c> /
+/// session-id contract. dsh names sessions <c>session-&lt;guid&gt;</c> /
 /// <c>main-session-&lt;guid&gt;</c> (44–49 chars), which the read model's pervasive
 /// <c>length(session_id) &lt;= 36</c> guard filters out of every session query. We extract
 /// the embedded GUID as its dashless ("N") form (32 chars) so a dsh session keys exactly

@@ -4,9 +4,9 @@ namespace Capacitor.Cli.Core.Tests.Unit.Setup;
 
 public class HarnessCatalogTests {
     [Test]
-    public async Task Covers_all_nine_vendors_with_unique_ids() {
-        await Assert.That(HarnessCatalog.All.Count).IsEqualTo(9);
-        await Assert.That(HarnessCatalog.All.Select(h => h.VendorId).Distinct().Count()).IsEqualTo(9);
+    public async Task Covers_all_ten_vendors_with_unique_ids() {
+        await Assert.That(HarnessCatalog.All.Count).IsEqualTo(10);
+        await Assert.That(HarnessCatalog.All.Select(h => h.VendorId).Distinct().Count()).IsEqualTo(10);
     }
 
     [Test]
@@ -33,6 +33,7 @@ public class HarnessCatalogTests {
     [Arguments("pi")]
     [Arguments("opencode")]
     [Arguments("antigravity")]
+    [Arguments("dsh")]
     public async Task Each_selector_maps_to_exactly_one_distinct_detection_field(string vendorId) {
         var result = DetectionWithOnly(vendorId);
         var matches = HarnessCatalog.All.Where(h => h.Select(result).Detected).ToList();
@@ -47,6 +48,6 @@ public class HarnessCatalogTests {
         return new(
             Claude: A("claude"), Codex: A("codex"), Cursor: A("cursor"), Copilot: A("copilot"),
             Gemini: A("gemini"), Kiro: A("kiro"), Pi: A("pi"), OpenCode: A("opencode"),
-            Antigravity: A("antigravity"));
+            Antigravity: A("antigravity"), Dsh: A("dsh"));
     }
 }

@@ -1,7 +1,7 @@
 namespace Capacitor.Cli.Core.Dsh;
 
 /// <summary>
-/// Filesystem layout for DeepSeek Harness (dsh), AI-2020. dsh is a Cordis-based agent
+/// Filesystem layout for DeepSeek Harness (dsh). dsh is a Cordis-based agent
 /// whose session module declares "persistence is a plugin concern". The shipped kcap
 /// Cordis plugin (<see cref="DshExtensionInstaller"/>) forwards every appended
 /// <c>SessionEvent</c> to a per-session JSONL file under the kcap cache, which

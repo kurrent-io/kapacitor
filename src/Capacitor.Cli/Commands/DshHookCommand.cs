@@ -6,7 +6,7 @@ using Capacitor.Cli.Core.Dsh;
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
-/// Dispatcher for the DeepSeek Harness (dsh) live-ingest plugin (AI-2020). dsh has
+/// Dispatcher for the DeepSeek Harness (dsh) live-ingest plugin. dsh has
 /// no shell hooks; the shipped Cordis plugin invokes:
 ///   <c>kcap hook --dsh --event session-start --session &lt;id&gt; --file &lt;session.jsonl&gt; [--cwd] [--model] [--provider] [--version]</c>
 ///   <c>kcap hook --dsh --event session-end   --session &lt;id&gt; --file &lt;session.jsonl&gt; [--reason] [--cwd]</c>

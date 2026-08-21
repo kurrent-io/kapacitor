@@ -53,6 +53,7 @@ public class ReplayChildContentCapabilityTests {
     [Arguments("kiro")]
     [Arguments("pi")]
     [Arguments("opencode")]
+    [Arguments("dsh")]
     public async Task sources_whose_replay_cannot_attach_child_content_do_not_declare_the_capability(string vendor) {
         await Assert.That(MakeSource(vendor).AttachesChildContentOnReplay).IsFalse();
     }
@@ -65,7 +66,7 @@ public class ReplayChildContentCapabilityTests {
     [Test]
     public async Task every_import_source_is_covered_by_this_table() {
         var declared = new[] {
-            "cursor", "antigravity", "gemini", "claude", "codex", "copilot", "kiro", "pi", "opencode",
+            "cursor", "antigravity", "gemini", "claude", "codex", "copilot", "kiro", "pi", "opencode", "dsh",
         };
 
         var actual = typeof(IImportSource).Assembly.GetTypes()
@@ -94,6 +95,7 @@ public class ReplayChildContentCapabilityTests {
             "pi"          => new PiImportSource(),
             "opencode"    => new OpenCodeImportSource(Path.Combine(scratch, "db"), Path.Combine(scratch, "ledger")),
             "antigravity" => new AntigravityImportSource(home: scratch, geminiCliHome: ""),
+            "dsh"         => new DshImportSource(scratch),
             _             => throw new ArgumentOutOfRangeException(nameof(vendor), vendor, "unclassified import source"),
         };
     }
