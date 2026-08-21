@@ -21,10 +21,11 @@ static class McpFlowsServer {
         // KCAP_SESSION_ID / process cwd names the launching session instead of this driver. Both the
         // session id and the working directory come from the same resolution, so a flow can never be
         // attributed to one session while being reviewed in another session's checkout.
-        var requester = HarnessRequesterContext.Resolve();
-        var cwd       = requester.ProjectDir ?? Directory.GetCurrentDirectory();
-        var repoRoot  = GitRepository.FindRoot(cwd);
-        var tools     = BuildToolsList();
+        var requester    = HarnessRequesterContext.Resolve();
+        var cwd          = requester.ProjectDir ?? Directory.GetCurrentDirectory();
+        var repoRoot     = GitRepository.FindRoot(cwd);
+        var driverVendor = DriverVendor.Infer();
+        var tools        = BuildToolsList();
 
         RepositoryPayload? repoInfo = null;
         try {
@@ -76,7 +77,7 @@ static class McpFlowsServer {
 
                 return await HandleToolCallAsync(
                     callId, callRequest, client, baseUrl, cwd, repoRoot, repoInfo,
-                    requestingSessionId: requester.SessionId);
+                    requestingSessionId: requester.SessionId, driverVendor: driverVendor);
             } catch (Exception ex) {
                 // Unexpected: log the detail to stderr (not to the client, which could leak local
                 // paths from IO errors) and return a generic tool error, keeping the loop alive.
@@ -170,7 +171,10 @@ static class McpFlowsServer {
             // clock is: the real read resolves a profile from the user's own config file, which a
             // unit test must never depend on. Production passes nothing and gets the real read — a
             // fresh one per consultation, never a cached value (see LoadReviewerVendorPreferenceAsync).
-            Func<Task<SavedReviewerVendor>>? reviewerVendorPreference = null
+            Func<Task<SavedReviewerVendor>>? reviewerVendorPreference = null,
+            // The driver harness, inferred once by RunAsync from the running harness's env, so the
+            // reviewer-vendor lookup can echo driver_vendor without this handler reading the env.
+            string? driverVendor = null
         ) {
         clock                    ??= FlowRetryClock.System;
         backoff                  ??= SettlementBackoff.Default;
@@ -378,6 +382,30 @@ static class McpFlowsServer {
                     ?? throw new ArgumentException("Missing required argument: flow_run_id");
                 var waitResult = await PollStatusUntilTerminalAsync(client, apiRoot, waitFlowRunId, toolName, clock, backoff);
                 return BuildToolResult(id, waitResult.Payload, waitResult.IsError);
+            }
+
+            // Read-only availability lookup: reads GET /api/daemons and computes, client-side, which
+            // reviewer vendors can actually run an unattended review for THIS repo (see
+            // ReviewerVendorLookup). Its own branch — it hits /api/daemons, not a flow URL, and never
+            // mutates anything.
+            if (toolName is "list_reviewer_vendors") {
+                using var daemonsResp = await SendWithRefreshRetryAsync(
+                    client, apiRoot, (c, ct) => c.GetAsync(apiRoot + "/api/daemons", ct));
+
+                if (daemonsResp.StatusCode == HttpStatusCode.Unauthorized)
+                    return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), isError: true);
+
+                ReviewerVendorsResult result;
+                if (!daemonsResp.IsSuccessStatusCode) {
+                    result = ReviewerVendorLookup.Aggregate(null, repoRoot, MachineId.Get(), driverVendor);
+                } else {
+                    var daemonsBody = await daemonsResp.Content.ReadAsStringAsync();
+                    var (records, skipped, skew) = ReviewerVendorLookup.ParseDaemons(daemonsBody);
+                    result = ReviewerVendorLookup.Aggregate(
+                        records, repoRoot, MachineId.Get(), driverVendor, schemaSkew: skew, skippedRecords: skipped);
+                }
+
+                return BuildToolResult(id, JsonSerializer.Serialize(result, McpJsonContext.Default.ReviewerVendorsResult));
             }
 
             using var httpResponse = toolName switch {
@@ -2197,6 +2225,16 @@ static class McpFlowsServer {
                 },
                 ["flow_run_id"]
             )
+        ),
+        new(
+            "list_reviewer_vendors",
+            "List the reviewer vendors that can ACTUALLY run an unattended review flow for THIS repo right now — installed and certified on a connected daemon that hosts this repository. " +
+            "Read-only and side-effect-free: safe to call before offering a review, so you recommend a reviewer that will not be rejected. " +
+            "Returns reviewers[] (each with the canonical lowercase vendor token; empty when none, and diagnostics.reason then names why: repo_unresolved | schema_skew | lookup_failed | no_daemons_connected | no_repo_hosting_daemon | no_unattended_reviewer), " +
+            "driver_vendor (the harness running THIS session, or absent when it cannot be determined — treat absent as unknown, and do not claim a different model), " +
+            "and diagnostics counts. This does NOT start a review — it only reports availability; use start_review_flow to run one. " +
+            "Availability is a snapshot: a vendor listed here can still be rejected by start_review_flow if the daemon dropped in between.",
+            new("object", new(), [])
         )
     ];
 }

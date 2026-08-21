@@ -124,4 +124,61 @@ public class ReviewerVendorLookupTests {
             [Daemon(["/r"], "anything", ["codex"])], "/r", requesterMachineId: null, null);
         await Assert.That(r.Reviewers.Count).IsEqualTo(1);
     }
+
+    // --- ParseDaemons ---
+
+    [Test]
+    public async Task ParseDaemons_reads_camelcase_fields() {
+        const string body = """
+        [{"name":"d1","repoPaths":["/r"],"machineId":"m1","supportedVendors":["codex","kiro"],
+          "unattendedVendors":["codex"],
+          "unattendedVendorCapabilities":[{"vendor":"codex","supportsReviewerModelResolution":true}]}]
+        """;
+        var (records, skipped, skew) = ReviewerVendorLookup.ParseDaemons(body);
+        await Assert.That(records.Count).IsEqualTo(1);
+        await Assert.That(skipped).IsEqualTo(0);
+        await Assert.That(skew).IsFalse();
+        await Assert.That(records[0].RepoPaths[0]).IsEqualTo("/r");
+        await Assert.That(records[0].MachineId).IsEqualTo("m1");
+        await Assert.That(records[0].UnattendedVendors!).Contains("codex");
+        await Assert.That(records[0].Capabilities!.Single().SupportsReviewerModelResolution).IsTrue();
+    }
+
+    [Test]
+    public async Task ParseDaemons_non_array_is_schema_skew() {
+        var (records, _, skew) = ReviewerVendorLookup.ParseDaemons("""{"oops":true}""");
+        await Assert.That(records.Count).IsEqualTo(0);
+        await Assert.That(skew).IsTrue();
+    }
+
+    [Test]
+    public async Task ParseDaemons_unparseable_body_is_schema_skew() {
+        var (_, _, skew) = ReviewerVendorLookup.ParseDaemons("not json");
+        await Assert.That(skew).IsTrue();
+    }
+
+    [Test]
+    public async Task ParseDaemons_skips_malformed_element_but_keeps_good_one() {
+        const string body = """[{"noRepoPaths":true},{"repoPaths":["/r"],"unattendedVendors":["codex"]}]""";
+        var (records, skipped, skew) = ReviewerVendorLookup.ParseDaemons(body);
+        await Assert.That(records.Count).IsEqualTo(1);
+        await Assert.That(skipped).IsEqualTo(1);
+        await Assert.That(skew).IsFalse();
+    }
+
+    [Test]
+    public async Task ParseDaemons_all_malformed_is_schema_skew() {
+        var (records, skipped, skew) = ReviewerVendorLookup.ParseDaemons("""[{"x":1},{"y":2}]""");
+        await Assert.That(records.Count).IsEqualTo(0);
+        await Assert.That(skipped).IsEqualTo(2);
+        await Assert.That(skew).IsTrue();
+    }
+
+    [Test]
+    public async Task ParseDaemons_empty_array_is_not_skew() {
+        var (records, skipped, skew) = ReviewerVendorLookup.ParseDaemons("[]");
+        await Assert.That(records.Count).IsEqualTo(0);
+        await Assert.That(skipped).IsEqualTo(0);
+        await Assert.That(skew).IsFalse();
+    }
 }

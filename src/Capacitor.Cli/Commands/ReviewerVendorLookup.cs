@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Capacitor.Cli.Commands;
@@ -121,4 +122,74 @@ public static class ReviewerVendorLookup {
         => new(repo, driver, [], new ReviewerVendorDiagnostics(connected, hosting, skipped, [], reason));
 
     static string Normalize(string path) => path.TrimEnd('/', '\\');
+
+    /// <summary>Tolerantly parse a <c>GET /api/daemons</c> body into the records
+    /// <see cref="Aggregate"/> consumes. Property lookup is case-insensitive so the wire casing
+    /// (camelCase today) can change without breaking this. A body that is not a JSON array, or an
+    /// array whose every element is unparseable, sets <c>SchemaSkew</c> — so schema skew can never be
+    /// mistaken for an authoritative empty set; a single malformed element is skipped and counted.
+    /// Only called on a 2xx; a non-2xx maps to <c>Aggregate(daemons: null, …)</c> = lookup_failed.</summary>
+    public static (IReadOnlyList<DaemonVendorRecord> Records, int Skipped, bool SchemaSkew) ParseDaemons(string body) {
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(body); } catch { return ([], 0, true); }
+
+        using (doc) {
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                return ([], 0, true);
+
+            var records = new List<DaemonVendorRecord>();
+            var total = 0;
+            var skipped = 0;
+
+            foreach (var el in doc.RootElement.EnumerateArray()) {
+                total++;
+                // RepoPaths is the one field required to place a daemon against a repo; without it the
+                // record cannot participate in the intersection, so it is malformed → skip + count.
+                if (el.ValueKind != JsonValueKind.Object ||
+                    !TryProp(el, "repoPaths", out var rp) || rp.ValueKind != JsonValueKind.Array) {
+                    skipped++;
+                    continue;
+                }
+
+                var machineId  = TryProp(el, "machineId", out var mi) && mi.ValueKind == JsonValueKind.String ? mi.GetString() : null;
+                var supported  = TryProp(el, "supportedVendors", out var sv) && sv.ValueKind == JsonValueKind.Array ? StringArray(sv) : null;
+                var unattended = TryProp(el, "unattendedVendors", out var uv) && uv.ValueKind == JsonValueKind.Array ? StringArray(uv) : null;
+
+                List<UnattendedVendorCapabilityLite>? caps = null;
+                if (TryProp(el, "unattendedVendorCapabilities", out var cv) && cv.ValueKind == JsonValueKind.Array) {
+                    caps = [];
+                    foreach (var c in cv.EnumerateArray()) {
+                        if (c.ValueKind != JsonValueKind.Object) continue;
+                        var vendor = TryProp(c, "vendor", out var cn) && cn.ValueKind == JsonValueKind.String ? cn.GetString() : null;
+                        if (vendor is null) continue;
+                        var supports = TryProp(c, "supportsReviewerModelResolution", out var sr) &&
+                                       sr.ValueKind is JsonValueKind.True or JsonValueKind.False && sr.GetBoolean();
+                        caps.Add(new UnattendedVendorCapabilityLite(vendor, supports));
+                    }
+                }
+
+                records.Add(new DaemonVendorRecord(StringArray(rp), machineId, supported, unattended, caps));
+            }
+
+            return (records, skipped, total > 0 && records.Count == 0);
+        }
+    }
+
+    static bool TryProp(JsonElement obj, string name, out JsonElement value) {
+        foreach (var p in obj.EnumerateObject())
+            if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)) {
+                value = p.Value;
+                return true;
+            }
+        value = default;
+        return false;
+    }
+
+    static string[] StringArray(JsonElement arr) {
+        var list = new List<string>();
+        foreach (var e in arr.EnumerateArray())
+            if (e.ValueKind == JsonValueKind.String && e.GetString() is { } s)
+                list.Add(s);
+        return list.ToArray();
+    }
 }
