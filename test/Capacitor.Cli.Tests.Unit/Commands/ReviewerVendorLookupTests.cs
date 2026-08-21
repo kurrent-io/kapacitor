@@ -146,11 +146,12 @@ public class ReviewerVendorLookupTests {
     // --- ParseDaemons ---
 
     [Test]
-    public async Task ParseDaemons_reads_camelcase_fields() {
+    public async Task ParseDaemons_reads_snake_case_wire_fields() {
+        // Matches the server's SnakeCaseLower policy for /api/daemons (DaemonInfo).
         const string body = """
-        [{"name":"d1","repoPaths":["/r"],"machineId":"m1","supportedVendors":["codex","kiro"],
-          "unattendedVendors":["codex"],
-          "unattendedVendorCapabilities":[{"vendor":"codex","supportsReviewerModelResolution":true}]}]
+        [{"name":"d1","repo_paths":["/r"],"machine_id":"m1","supported_vendors":["codex","kiro"],
+          "unattended_vendors":["codex"],
+          "unattended_vendor_capabilities":[{"vendor":"codex","supports_reviewer_model_resolution":true}]}]
         """;
         var (records, skipped, skew) = ReviewerVendorLookup.ParseDaemons(body);
         await Assert.That(records.Count).IsEqualTo(1);
@@ -177,7 +178,7 @@ public class ReviewerVendorLookupTests {
 
     [Test]
     public async Task ParseDaemons_skips_malformed_element_but_keeps_good_one() {
-        const string body = """[{"noRepoPaths":true},{"repoPaths":["/r"],"unattendedVendors":["codex"]}]""";
+        const string body = """[{"no_repo_paths":true},{"repo_paths":["/r"],"unattended_vendors":["codex"]}]""";
         var (records, skipped, skew) = ReviewerVendorLookup.ParseDaemons(body);
         await Assert.That(records.Count).IsEqualTo(1);
         await Assert.That(skipped).IsEqualTo(1);

@@ -289,7 +289,7 @@ public class McpFlowsServerTests : IDisposable {
 
             var tools = response["result"]?["tools"]?.AsArray();
             await Assert.That(tools).IsNotNull();
-            await Assert.That(tools!.Count).IsEqualTo(8);
+            await Assert.That(tools!.Count).IsEqualTo(9);
 
             var names = tools.Select(t => t?["name"]?.GetValue<string>()).ToHashSet();
             await Assert.That(names.Contains("start_review_flow")).IsTrue();
@@ -300,6 +300,7 @@ public class McpFlowsServerTests : IDisposable {
             await Assert.That(names.Contains("send_to_participant")).IsTrue();
             await Assert.That(names.Contains("get_flow_status")).IsTrue();
             await Assert.That(names.Contains("close_flow")).IsTrue();
+            await Assert.That(names.Contains("list_reviewer_vendors")).IsTrue();
         } finally {
             await ShutdownAsync(proc);
         }

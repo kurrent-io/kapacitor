@@ -25,8 +25,8 @@ public class McpFlowsServerReviewerVendorsTests {
         using var server = WireMockServer.Start();
         server.Given(Request.Create().WithPath("/api/daemons").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""
-            [{"name":"d1","repoPaths":["/repo/a"],"machineId":"{{machine}}",
-              "supportedVendors":["codex","claude"],"unattendedVendors":["codex","claude"]}]
+            [{"name":"d1","repo_paths":["/repo/a"],"machine_id":"{{machine}}",
+              "supported_vendors":["codex","claude"],"unattended_vendors":["codex","claude"]}]
             """));
         using var client = new HttpClient();
 

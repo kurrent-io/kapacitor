@@ -156,29 +156,32 @@ public static class ReviewerVendorLookup {
             var total = 0;
             var skipped = 0;
 
+            // Field names are snake_case: the server serializes /api/daemons with
+            // JsonNamingPolicy.SnakeCaseLower (HttpJsonConfiguration), so DaemonInfo.RepoPaths is
+            // "repo_paths" on the wire, etc. — do not "correct" these to camelCase.
             foreach (var el in doc.RootElement.EnumerateArray()) {
                 total++;
-                // RepoPaths is the one field required to place a daemon against a repo; without it the
+                // repo_paths is the one field required to place a daemon against a repo; without it the
                 // record cannot participate in the intersection, so it is malformed → skip + count.
-                if (!el.IsObject || el.Arr("repoPaths") is not { } rp) {
+                if (!el.IsObject || el.Arr("repo_paths") is not { } rp) {
                     skipped++;
                     continue;
                 }
 
-                var supported  = el.Arr("supportedVendors") is { } sv ? StringArray(sv) : null;
-                var unattended = el.Arr("unattendedVendors") is { } uv ? StringArray(uv) : null;
+                var supported  = el.Arr("supported_vendors") is { } sv ? StringArray(sv) : null;
+                var unattended = el.Arr("unattended_vendors") is { } uv ? StringArray(uv) : null;
 
                 List<UnattendedVendorCapabilityLite>? caps = null;
-                if (el.Arr("unattendedVendorCapabilities") is { } cv) {
+                if (el.Arr("unattended_vendor_capabilities") is { } cv) {
                     caps = [];
                     foreach (var c in cv.EnumerateArray()) {
                         if (c.Str("vendor") is not { } vendor) continue;
                         caps.Add(new UnattendedVendorCapabilityLite(
-                            vendor, c.Bool("supportsReviewerModelResolution") == true));
+                            vendor, c.Bool("supports_reviewer_model_resolution") == true));
                     }
                 }
 
-                records.Add(new DaemonVendorRecord(StringArray(rp), el.Str("machineId"), supported, unattended, caps));
+                records.Add(new DaemonVendorRecord(StringArray(rp), el.Str("machine_id"), supported, unattended, caps));
             }
 
             return (records, skipped, total > 0 && records.Count == 0);
