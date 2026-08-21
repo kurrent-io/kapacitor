@@ -1,0 +1,127 @@
+using Capacitor.Cli.Commands;
+
+namespace Capacitor.Cli.Tests.Unit.Commands;
+
+public class ReviewerVendorLookupTests {
+    static DaemonVendorRecord Daemon(
+        string[] repoPaths, string? machineId, string[]? unattended,
+        string[]? supported = null, IReadOnlyList<UnattendedVendorCapabilityLite>? caps = null)
+        => new(repoPaths, machineId, supported, unattended, caps);
+
+    [Test]
+    public async Task Prefers_repo_hosting_intersection_and_sorts_alphabetically() {
+        var daemons = new[] {
+            Daemon(["/repo/a"], "m1", ["codex", "claude"]),
+            Daemon(["/other"],  "m1", ["cursor"]),
+        };
+
+        var r = ReviewerVendorLookup.Aggregate(daemons, "/repo/a", "m1", driverVendor: "claude");
+
+        await Assert.That(r.Reviewers.Count).IsEqualTo(2);
+        await Assert.That(r.Reviewers[0].Vendor).IsEqualTo("claude"); // alphabetical, cursor excluded (other repo)
+        await Assert.That(r.Reviewers[1].Vendor).IsEqualTo("codex");
+        await Assert.That(r.Diagnostics.Reason).IsNull();
+        await Assert.That(r.DriverVendor).IsEqualTo("claude");
+        await Assert.That(r.Repo.Resolved).IsTrue();
+    }
+
+    [Test]
+    public async Task Reason_null_iff_reviewers_nonempty() {
+        var r = ReviewerVendorLookup.Aggregate([Daemon(["/r"], "m1", ["codex"])], "/r", "m1", null);
+        await Assert.That(r.Reviewers.Count).IsEqualTo(1);
+        await Assert.That(r.Diagnostics.Reason).IsNull();
+    }
+
+    [Test]
+    public async Task Empty_reason_precedence_repo_unresolved_wins() {
+        var r = ReviewerVendorLookup.Aggregate([], repoRoot: null, "m1", null);
+        await Assert.That(r.Reviewers.Count).IsEqualTo(0);
+        await Assert.That(r.Repo.Resolved).IsFalse();
+        await Assert.That(r.Diagnostics.Reason).IsEqualTo("repo_unresolved");
+    }
+
+    [Test]
+    public async Task Schema_skew_beats_lookup_and_count_reasons() {
+        var r = ReviewerVendorLookup.Aggregate([], "/r", "m1", null, schemaSkew: true);
+        await Assert.That(r.Diagnostics.Reason).IsEqualTo("schema_skew");
+    }
+
+    [Test]
+    public async Task Null_daemons_is_lookup_failed() {
+        var r = ReviewerVendorLookup.Aggregate(null, "/r", "m1", null);
+        await Assert.That(r.Diagnostics.Reason).IsEqualTo("lookup_failed");
+    }
+
+    [Test]
+    public async Task No_daemons_connected_when_empty_list() {
+        var r = ReviewerVendorLookup.Aggregate([], "/r", "m1", null);
+        await Assert.That(r.Diagnostics.Reason).IsEqualTo("no_daemons_connected");
+    }
+
+    [Test]
+    public async Task No_repo_hosting_daemon_when_paths_disjoint() {
+        var r = ReviewerVendorLookup.Aggregate([Daemon(["/x"], "m1", ["codex"])], "/r", "m1", null);
+        await Assert.That(r.Diagnostics.RepoHostingDaemons).IsEqualTo(0);
+        await Assert.That(r.Diagnostics.Reason).IsEqualTo("no_repo_hosting_daemon");
+    }
+
+    [Test]
+    public async Task No_unattended_reviewer_when_hosting_daemon_advertises_none() {
+        var r = ReviewerVendorLookup.Aggregate([Daemon(["/r"], "m1", [])], "/r", "m1", null);
+        await Assert.That(r.Diagnostics.RepoHostingDaemons).IsEqualTo(1);
+        await Assert.That(r.Diagnostics.Reason).IsEqualTo("no_unattended_reviewer");
+    }
+
+    [Test]
+    public async Task Machine_mismatch_excludes_a_daemon_from_hosting() {
+        var r = ReviewerVendorLookup.Aggregate([Daemon(["/r"], "other-machine", ["codex"])], "/r", "m1", null);
+        await Assert.That(r.Diagnostics.Reason).IsEqualTo("no_repo_hosting_daemon");
+    }
+
+    [Test]
+    public async Task Model_override_is_conservative_AND_across_hosting_daemons() {
+        var caps1 = new[] { new UnattendedVendorCapabilityLite("codex", SupportsReviewerModelResolution: true) };
+        var daemons = new[] {
+            Daemon(["/r"], "m1", ["codex"], caps: caps1),
+            Daemon(["/r"], "m1", ["codex"], caps: null), // second hosting daemon lacks the resolver → AND is false
+        };
+        var r = ReviewerVendorLookup.Aggregate(daemons, "/r", "m1", null);
+        var codex = r.Reviewers.Single(e => e.Vendor == "codex");
+        await Assert.That(codex.Daemons).IsEqualTo(2);
+        await Assert.That(codex.ModelOverride).IsFalse();
+    }
+
+    [Test]
+    public async Task Model_override_true_when_every_hosting_daemon_supports_it() {
+        var caps = new[] { new UnattendedVendorCapabilityLite("codex", true) };
+        var daemons = new[] {
+            Daemon(["/r"], "m1", ["codex"], caps: caps),
+            Daemon(["/r"], "m1", ["codex"], caps: caps),
+        };
+        var r = ReviewerVendorLookup.Aggregate(daemons, "/r", "m1", null);
+        await Assert.That(r.Reviewers.Single(e => e.Vendor == "codex").ModelOverride).IsTrue();
+    }
+
+    [Test]
+    public async Task Supported_but_not_unattended_is_reported() {
+        var r = ReviewerVendorLookup.Aggregate(
+            [Daemon(["/r"], "m1", ["codex"], supported: ["codex", "kiro"])], "/r", "m1", null);
+        await Assert.That(r.Diagnostics.SupportedButNotUnattended).Contains("kiro");
+        await Assert.That(r.Reviewers.Single().Vendor).IsEqualTo("codex");
+    }
+
+    [Test]
+    public async Task Dedup_same_vendor_across_two_hosting_daemons() {
+        var daemons = new[] { Daemon(["/r"], "m1", ["codex"]), Daemon(["/r"], "m1", ["codex"]) };
+        var r = ReviewerVendorLookup.Aggregate(daemons, "/r", "m1", null);
+        await Assert.That(r.Reviewers.Count).IsEqualTo(1);
+        await Assert.That(r.Reviewers[0].Daemons).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Null_requester_machine_does_not_filter_on_machine() {
+        var r = ReviewerVendorLookup.Aggregate(
+            [Daemon(["/r"], "anything", ["codex"])], "/r", requesterMachineId: null, null);
+        await Assert.That(r.Reviewers.Count).IsEqualTo(1);
+    }
+}
