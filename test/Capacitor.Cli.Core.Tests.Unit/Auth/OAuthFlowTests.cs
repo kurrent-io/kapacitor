@@ -23,7 +23,7 @@ public class OAuthFlowTests {
     }
 
     /// <summary>
-    /// AI-2052 — the WorkOS browser runs INSIDE <c>OidcClient.LoginAsync</c>, unlike the GitHub flow
+    /// The WorkOS browser runs INSIDE <c>OidcClient.LoginAsync</c>, unlike the GitHub flow
     /// which calls <c>InvokeAsync</c> itself. Duende does not wrap it, so a loopback bind failure
     /// surfaces as an exception rather than <c>result.IsError</c>, and the device-code fallback can
     /// catch it exactly as the GitHub arm already does. If a Duende upgrade starts folding it into an
@@ -227,7 +227,7 @@ public class OAuthFlowTests {
     // Discovery no longer consults the environment at all. It used to: a non-interactive session fell
     // back to GitHub App auth (the only provider with a device flow), which dead-ended because that
     // branch cannot provision — and when that implicit fallback went, `--device` was left behind as an
-    // explicit way to reach it. AI-2052 gave WorkOS a device grant of its own, so neither is needed:
+    // explicit way to reach it. WorkOS has a device grant of its own now, so neither is needed:
     // headless discovery stays on org SSO and signs in with a device code.
     [Test]
     public async Task Discovery_stays_on_org_sso_whatever_the_environment() {

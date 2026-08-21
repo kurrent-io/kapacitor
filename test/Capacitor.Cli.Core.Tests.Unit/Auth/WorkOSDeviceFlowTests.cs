@@ -5,7 +5,7 @@ using WireMock.Server;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 
-/// <summary>AI-2052 — RFC 8628 against AuthKit's <c>user_management</c> endpoints.</summary>
+/// <summary>RFC 8628 against AuthKit's <c>user_management</c> endpoints.</summary>
 public class WorkOSDeviceFlowTests {
     static WireMockServer WithAuthorize(string body, int status = 200) {
         var server = WireMockServer.Start();

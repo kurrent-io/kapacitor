@@ -6,7 +6,7 @@ using WireMock.Server;
 namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 
 /// <summary>
-/// AI-2052 — check-then-correct. The device grant's authorize leg takes no organization_id, so the
+/// Check-then-correct. The device grant's authorize leg takes no organization_id, so the
 /// human picks at the AuthKit screen and the CLI cannot constrain it; the token that comes back names
 /// whichever org they chose.
 /// </summary>

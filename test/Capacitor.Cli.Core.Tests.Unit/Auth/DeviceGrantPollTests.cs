@@ -6,7 +6,7 @@ using Microsoft.Extensions.Time.Testing;
 namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 
 /// <summary>
-/// AI-2052 — the two defects in the RFC 8628 poll loop, both of which shipped in the GitHub flow.
+/// The defects in the RFC 8628 poll loop, all of which shipped in the GitHub flow first.
 /// </summary>
 public class DeviceGrantPollTests {
     sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler {

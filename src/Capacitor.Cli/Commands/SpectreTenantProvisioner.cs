@@ -24,7 +24,7 @@ public sealed class SpectreTenantProvisioner(TenantProvisioningClient client, st
 
         // Every way out of this fork is a prompt, so with no terminal there is nothing to offer.
         // Spectre throws NotSupportedException from inside the prompt rather than returning, which
-        // turned `kcap login --discover` on a piped stdin into a crash the moment AI-2052 armed the
+        // turned `kcap login --discover` on a piped stdin into a crash the moment we armed the
         // provisioner for headless sessions. Deliberately fires no funnel event: nothing was offered,
         // and recording a decline would attribute to the user a choice they were never shown.
         if (!AnsiConsole.Profile.Capabilities.Interactive) {

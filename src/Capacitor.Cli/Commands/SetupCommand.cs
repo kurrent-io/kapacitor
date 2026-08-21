@@ -888,7 +888,7 @@ public static class SetupCommand {
             : forceDevice || headless ? "device" : "browser";
         SetupFunnel.SigninOpened(signinMode, chosen);
 
-        // Armed for every WorkOS session, headless included: AI-2052 gave that path a device grant, so
+        // Armed for every WorkOS session, headless included: that path has a device grant now, so
         // a zero-workspace headless user now completes a sign-in and would otherwise hold a live
         // credential with nowhere to spend it. GitHub never provisions.
         var provisioner = chosen == AuthProvider.WorkOS

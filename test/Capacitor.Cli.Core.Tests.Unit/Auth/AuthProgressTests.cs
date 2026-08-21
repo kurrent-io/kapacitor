@@ -91,7 +91,7 @@ public class AuthProgressTests {
     }
 
     /// <summary>
-    /// AI-2052 — the two variations the sink is allowed. A pre-filled code is checked rather than
+    /// The two variations the sink is allowed. A pre-filled code is checked rather than
     /// typed, because pre-filling removes the comparison the code exists to allow; and our own
     /// provider goes unnamed, because WorkOS is a white-label supplier the user has no use for.
     /// </summary>

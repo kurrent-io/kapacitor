@@ -63,7 +63,7 @@ public static class OAuthLoginFlow {
     /// <para>Both of the escape hatches that used to live here are gone. The implicit no-flag headless
     /// fallback to the GitHub App went first: it was the only remaining source of NEW GitHub App
     /// sign-ins and it dead-ended, since that branch has no provisioning path. <c>--device</c>'s
-    /// explicit one went with AI-2052, which gave WorkOS a device grant of its own — so the flag now
+    /// explicit one went when the org SSO path gained a device grant of its own — so the flag now
     /// means what it says everywhere, "use the device flow", and no longer doubles as a way to route
     /// discovery off org SSO. <c>--github</c> keeps its discovery meaning, and is the route for a
     /// GitHub-App-only user.</para>
@@ -74,7 +74,7 @@ public static class OAuthLoginFlow {
     /// <summary>
     /// What a session with no keyboard is told once discovery has found no workspace. This used to
     /// fire BEFORE authenticating, as HeadlessDiscoveryUnsupportedMessage, on the reasoning that org
-    /// SSO needed a local browser at all. AI-2052's device grant removed that reason — a headless
+    /// SSO needed a local browser at all. The device grant removed that reason — a headless
     /// user now signs in fine — but not this one: creating a workspace asks for an organization name
     /// and a slug, and there is nothing to ask on. So the same two routes, moved to the only step
     /// that still genuinely needs a terminal.

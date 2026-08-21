@@ -62,7 +62,7 @@ public static class LoginCommand {
 
     /// <summary>
     /// The provisioner is not optional here. `kcap login --discover` is the reachable zero-workspace
-    /// path, and since AI-2052 gave WorkOS a device grant a user with no workspace completes the
+    /// path, and since org SSO gained a device grant a user with no workspace completes the
     /// sign-in rather than failing before it — without this they would hold a live credential and be
     /// told to ask an admin.
     /// </summary>

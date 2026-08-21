@@ -6,7 +6,7 @@ using WireMock.Server;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 
-/// <summary>AI-2052 — the WorkOS sign-in ladder: loopback, escape hatch, automatic fallback.</summary>
+/// <summary>The WorkOS sign-in ladder: loopback, escape hatch, automatic fallback.</summary>
 public class WorkOSFlowLadderTests {
     const string Device = """{"device_code":"dc","user_code":"WXYZ-1234","verification_uri":"https://signin.example/device","interval":0,"expires_in":900}""";
 

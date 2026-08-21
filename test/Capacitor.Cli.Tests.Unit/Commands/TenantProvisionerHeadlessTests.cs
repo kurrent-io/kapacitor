@@ -5,7 +5,7 @@ using Spectre.Console;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 /// <summary>
-/// AI-2052 — found by running the real CLI, not by these tests. Arming the provisioner for headless
+/// Found by running the real CLI, not by these tests. Arming the provisioner for headless
 /// sessions (which the device grant made reachable) sent a piped stdin straight into a Spectre
 /// SelectionPrompt, and Spectre throws rather than returning, so `kcap login --discover` crashed with
 /// NotSupportedException after a SUCCESSFUL sign-in. The façade tests never saw it because they
