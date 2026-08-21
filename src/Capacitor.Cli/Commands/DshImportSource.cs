@@ -10,11 +10,12 @@ namespace Capacitor.Cli.Commands;
 
 /// <summary>
 /// Discover + classify + import historical DeepSeek Harness (dsh) sessions from the
-/// per-session event logs at <c>&lt;sessions&gt;/&lt;id&gt;/session.jsonl</c> (AI-2020).
-/// dsh is event-sourced — the on-disk <c>session.jsonl</c> IS the <c>SessionEvent</c>
-/// stream the live watcher tails — so live and historical ingest converge on the
-/// server's <c>DeepSeekHarnessTranscriptNormalizer</c>. There is no sibling metadata
-/// file: cwd / created-at are read from the <c>{type:"session"}</c> header line.
+/// kcap Cordis plugin's per-session logs at <c>~/.cache/kcap/dsh/{id}.jsonl</c> (AI-2020).
+/// dsh's session module makes persistence a plugin concern — the plugin forwards each
+/// <c>SessionEvent</c> to that file, which the live watcher tails too, so live and
+/// historical ingest converge on the server's <c>DeepSeekHarnessTranscriptNormalizer</c>.
+/// There is no sibling metadata file: cwd / created-at are read from the plugin's
+/// <c>{$kcap:"header", ...}</c> line.
 /// Completeness is the server transcript watermark (no client ledger), mirroring
 /// <see cref="KiroImportSource"/> (NOT the SQLite-backed OpenCode source).
 /// </summary>
@@ -59,23 +60,20 @@ internal sealed class DshImportSource : IImportSource {
         if (!Directory.Exists(_sessionsDir))
             return Task.FromResult<IReadOnlyList<DiscoveredSession>>(result);
 
-        // Per-session layout: <sessions>/<id>/session.jsonl. Enumerate recursively so a
-        // nested store still resolves; the session id is the file's parent directory name.
-        foreach (var jsonl in GuardedDiscovery.EnumerateFiles(_sessionsDir, "session.jsonl", recursive: true)) {
+        // Flat layout: <sessions>/{id}.jsonl — the kcap dsh Cordis plugin writes
+        // ~/.cache/kcap/dsh/{id}.jsonl (one file per session), the same pattern OpenCode uses.
+        foreach (var jsonl in GuardedDiscovery.EnumerateFiles(_sessionsDir, "*.jsonl", recursive: false)) {
             ct.ThrowIfCancellationRequested();
 
-            var dir = Path.GetDirectoryName(jsonl);
-            if (string.IsNullOrEmpty(dir)) continue;
+            // Filename stem is the session id (the plugin names the file fileFor(session.id)).
+            // Use it RAW for both transcript and lifecycle: dsh ids can be non-GUID
+            // ("session-<uuid>"), which CanonicalSessionId.Normalize leaves dashed — pre-stripping
+            // dashes here (as GUID-id vendors do) would split the transcript and lifecycle onto two
+            // streams. The server canonicalizes both identically, so raw-everywhere converges.
+            var sessionId = Path.GetFileNameWithoutExtension(jsonl);
+            if (string.IsNullOrEmpty(sessionId)) continue;
 
-            var dirName = Path.GetFileName(dir);
-            if (string.IsNullOrEmpty(dirName)) continue;
-
-            // Keep the raw id for lifecycle and a dashless canonical id for the stream key
-            // (matches the live hook + the server's CanonicalSessionId.Normalize).
-            var dashed   = dirName;
-            var dashless = dirName.Replace("-", "");
-
-            if (sessionFilter is not null && !string.Equals(dashless, sessionFilter, StringComparison.Ordinal))
+            if (sessionFilter is not null && !string.Equals(sessionId, sessionFilter, StringComparison.Ordinal))
                 continue;
 
             var header = DshSessionHeader.TryRead(jsonl);
@@ -93,13 +91,13 @@ internal sealed class DshImportSource : IImportSource {
             if (sinceUtc is { } cutoff && firstTimestamp is { } ts && ts < cutoff) continue;
 
             result.Add(new DiscoveredSession(
-                SessionId:      dashless,
+                SessionId:      sessionId,
                 Vendor:         Vendor,
                 Cwd:            header?.Cwd,
                 FirstTimestamp: firstTimestamp,
                 SourceMeta:     new Dictionary<string, object?> {
                     ["TranscriptPath"]  = jsonl,
-                    ["DashedSessionId"] = dashed,
+                    ["DashedSessionId"] = sessionId,   // same raw id for lifecycle + transcript
                     ["Cwd"]             = header?.Cwd,
                 }));
         }
@@ -388,7 +386,10 @@ internal sealed record DshSessionHeader(string? Cwd, DateTimeOffset? CreatedAt) 
                 using var doc = JsonDocument.Parse(line);
                 var root = doc.RootElement;
                 if (root.ValueKind != JsonValueKind.Object) continue;
-                if (root.Str("type") != "session") continue;
+                // The plugin writes {$kcap:"header", ...session.header}; session.header may or may
+                // not carry type:"session" (the offline PoC omits it). Accept either marker.
+                var isHeader = root.Str("$kcap") == "header" || root.Str("type") == "session";
+                if (!isHeader) continue;
 
                 DateTimeOffset? createdAt = null;
                 if (root.TryGetProperty("createdAt", out var ca) && ca.ValueKind == JsonValueKind.Number)

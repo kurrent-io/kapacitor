@@ -3,22 +3,21 @@ using Capacitor.Cli.Commands;
 namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
-/// Covers <see cref="DshImportSource"/> discovery from the per-session
-/// <c>&lt;sessions&gt;/&lt;id&gt;/session.jsonl</c> layout (cwd read from the
-/// <c>{type:"session"}</c> header line) and the import-relevance line filter that keeps
-/// the watermark in sync with the server's DeepSeekHarnessTranscriptNormalizer.
+/// Covers <see cref="DshImportSource"/> discovery from the flat
+/// <c>~/.cache/kcap/dsh/{id}.jsonl</c> layout the kcap Cordis plugin writes (cwd read from
+/// the plugin's <c>{$kcap:"header", ...}</c> line) and the import-relevance line filter that
+/// keeps the watermark in sync with the server's DeepSeekHarnessTranscriptNormalizer.
 /// </summary>
 public class DshImportSourceTests {
-    const string Header = """{"type":"session","version":0,"id":"sess-abc","createdAt":1785730000000,"cwd":"/work"}""";
+    // The plugin's real header line: {$kcap:"header", ...session.header}. The PoC omits
+    // type:"session"; a real dsh session includes it. Either must be recognized.
+    const string Header   = """{"$kcap":"header","version":0,"id":"sess-abc","createdAt":1785730000000,"cwd":"/work"}""";
     const string UserLine = """{"type":"user/message","seq":2,"time":1785730000100,"data":{"id":"u1","content":[{"type":"text","text":"hi"}]}}""";
 
     [Test]
-    public async Task discovery_reads_per_session_jsonl_and_header_cwd() {
+    public async Task discovery_reads_flat_jsonl_and_header_cwd() {
         using var tmp = new TempDir();
-
-        var sessionDir = Path.Combine(tmp.Path, "sess-abc");
-        Directory.CreateDirectory(sessionDir);
-        await File.WriteAllTextAsync(Path.Combine(sessionDir, "session.jsonl"), Header + "\n" + UserLine + "\n");
+        await File.WriteAllTextAsync(Path.Combine(tmp.Path, "sess-abc.jsonl"), Header + "\n" + UserLine + "\n");
 
         var src = new DshImportSource(sessionsDirOverride: tmp.Path);
         await Assert.That(src.IsAvailable).IsTrue();
@@ -27,22 +26,22 @@ public class DshImportSourceTests {
 
         await Assert.That(found.Count).IsEqualTo(1);
         var s = found[0];
-        await Assert.That(s.SessionId).IsEqualTo("sessabc");       // dashless canonical id
+        // RAW id (dashes kept): dsh ids are non-GUID, so the server leaves them dashed; the
+        // CLI must send the SAME raw id for transcript + lifecycle or they split into two streams.
+        await Assert.That(s.SessionId).IsEqualTo("sess-abc");
         await Assert.That(s.Vendor).IsEqualTo("dsh");
-        await Assert.That(s.Cwd).IsEqualTo("/work");
+        await Assert.That(s.Cwd).IsEqualTo("/work");               // read from the $kcap header
         await Assert.That(s.SourceMeta!["DashedSessionId"]).IsEqualTo("sess-abc");
     }
 
     [Test]
     public async Task discovery_session_filter_matches_dashless_id() {
         using var tmp = new TempDir();
-        var sessionDir = Path.Combine(tmp.Path, "sess-abc");
-        Directory.CreateDirectory(sessionDir);
-        await File.WriteAllTextAsync(Path.Combine(sessionDir, "session.jsonl"), Header + "\n" + UserLine + "\n");
+        await File.WriteAllTextAsync(Path.Combine(tmp.Path, "sess-abc.jsonl"), Header + "\n" + UserLine + "\n");
 
         var src = new DshImportSource(sessionsDirOverride: tmp.Path);
 
-        var match = await src.DiscoverAsync(new DiscoveryFilters(null, "sessabc", null, 1), CancellationToken.None);
+        var match = await src.DiscoverAsync(new DiscoveryFilters(null, "sess-abc", null, 1), CancellationToken.None);
         await Assert.That(match.Count).IsEqualTo(1);
 
         var miss = await src.DiscoverAsync(new DiscoveryFilters(null, "nomatch", null, 1), CancellationToken.None);
@@ -54,7 +53,8 @@ public class DshImportSourceTests {
     [Arguments("""{"type":"assistant/message","data":{}}""", true)]
     [Arguments("""{"type":"tool/result","data":{}}""", true)]
     [Arguments("""{"type":"assistant/chunk","data":{}}""", false)]
-    [Arguments("""{"type":"session","id":"s"}""", false)]
+    [Arguments("""{"$kcap":"header","id":"s"}""", false)]
+    [Arguments("""{"$kcap":"disposed","id":"s"}""", false)]
     [Arguments("""not json""", false)]
     public async Task is_import_relevant_line(string line, bool expected) {
         await Assert.That(DshImportSource.IsImportRelevantLine(line)).IsEqualTo(expected);

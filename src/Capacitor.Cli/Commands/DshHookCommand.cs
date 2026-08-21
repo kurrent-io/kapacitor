@@ -33,9 +33,12 @@ static class DshHookCommand {
         var sessionIdRaw = GetArg(args, "--session");
         if (string.IsNullOrWhiteSpace(sessionIdRaw)) return 0;
 
-        // Keep the raw id for the server payload and a dashless form for local keys
-        // (mirrors every vendor dispatcher).
-        var sessionId = sessionIdRaw.Replace("-", "");
+        // Use the id RAW for the local key, the watcher/transcript stream, AND the lifecycle
+        // POST. dsh ids can be non-GUID ("session-<uuid>"), which the server's
+        // CanonicalSessionId.Normalize leaves dashed — pre-stripping dashes here (as GUID-id
+        // vendors do) would put the watcher's transcript on a different stream than the
+        // lifecycle POST. Raw-everywhere lets the server canonicalize both identically.
+        var sessionId = sessionIdRaw;
 
         var file = GetArg(args, "--file");
         if (string.IsNullOrWhiteSpace(file)) return 0; // no transcript path — nothing to tail/drain

@@ -1,50 +1,48 @@
 namespace Capacitor.Cli.Core.Dsh;
 
 /// <summary>
-/// Filesystem layout for DeepSeek Harness (dsh), AI-2020. dsh is event-sourced: it
-/// writes a per-session <c>session.jsonl</c> (its <c>SessionEvent</c> stream) on disk,
-/// which the kcap watcher tails directly and <c>kcap import --dsh</c> replays — one
-/// normalizer serves both feeds.
-///
-/// <para><b>TODO (AI-2020):</b> the exact on-disk root + per-session layout is a
-/// dsh-side detail not yet confirmed. kcap honors <c>KCAP_DSH_HOME</c> as an override
-/// and defaults to <c>~/.deepseek/harness</c> with a per-session
-/// <c>sessions/&lt;id&gt;/session.jsonl</c> layout. Confirm against a real dsh install
-/// and adjust the defaults here (the rest of the pipeline is location-agnostic).</para>
+/// Filesystem layout for DeepSeek Harness (dsh), AI-2020. dsh is a Cordis-based agent
+/// whose session module declares "persistence is a plugin concern". The shipped kcap
+/// Cordis plugin (<see cref="DshExtensionInstaller"/>) forwards every appended
+/// <c>SessionEvent</c> to a per-session JSONL file under the kcap cache, which
+/// <c>kcap watch --vendor dsh</c> tails and <c>kcap import --dsh</c> replays — one
+/// server-side normalizer serves both feeds. This mirrors OpenCode's
+/// <c>~/.cache/kcap/opencode/&lt;id&gt;.jsonl</c> layout exactly.
 /// </summary>
 public static class DshPaths {
-    /// <summary>dsh's config/data root (<c>~/.deepseek/harness</c>). Relocated by <c>KCAP_DSH_HOME</c>.</summary>
-    public static string ConfigRoot(string? home = null) {
-        var dshHome = Environment.GetEnvironmentVariable("KCAP_DSH_HOME");
+    /// <summary>dsh's home dir (<c>$DSH_HOME</c>, else <c>~/.dsh</c>) — the Cordis profile +
+    /// installed plugin live here.</summary>
+    public static string DshHome(string? home = null) {
+        var dshHome = Environment.GetEnvironmentVariable("DSH_HOME");
         if (!string.IsNullOrEmpty(dshHome)) return dshHome;
 
         home ??= PathHelpers.HomeDirectory;
-        return Path.Combine(home, ".deepseek", "harness");
+        return Path.Combine(home, ".dsh");
     }
 
-    /// <summary>Per-session store root (<c>&lt;root&gt;/sessions</c>); each session is a
-    /// subdirectory <c>&lt;id&gt;/session.jsonl</c>.</summary>
-    public static string SessionsDir(string? home = null) =>
-        Path.Combine(ConfigRoot(home), "sessions");
+    /// <summary>Per-session transcript cache the kcap plugin writes and the watcher tails:
+    /// <c>~/.cache/kcap/dsh</c> (flat <c>{id}.jsonl</c>). Matches the plugin's path verbatim
+    /// (<c>homedir()/.cache/kcap/dsh</c>, independent of <c>$DSH_HOME</c>).</summary>
+    public static string SessionsDir(string? home = null) {
+        home ??= PathHelpers.HomeDirectory;
+        return Path.Combine(home, ".cache", "kcap", "dsh");
+    }
 
-    /// <summary>The event-stream log for a session id.</summary>
+    /// <summary>The per-session transcript file (<c>~/.cache/kcap/dsh/{id}.jsonl</c>).</summary>
     public static string SessionJsonl(string sessionId, string? home = null) =>
-        Path.Combine(SessionsDir(home), sessionId, "session.jsonl");
+        Path.Combine(SessionsDir(home), $"{sessionId}.jsonl");
 
-    /// <summary>dsh plugin dir; kcap installs its Cordis plugin here.</summary>
-    public static string PluginsDir(string? home = null) =>
-        Path.Combine(ConfigRoot(home), "plugins");
-
-    /// <summary>kcap's installed dsh plugin file. TODO (AI-2020): confirm dsh's plugin
-    /// file name/format and auto-discovery dir.</summary>
+    /// <summary>kcap's Cordis plugin, installed into the dsh home
+    /// (<c>$DSH_HOME/kcap-dsh.plugin.mjs</c>). Loaded by adding an entry to dsh's
+    /// <c>cordis.yml</c> / profile config.</summary>
     public static string KcapPlugin(string? home = null) =>
-        Path.Combine(PluginsDir(home), "kcap.dsh.js");
+        Path.Combine(DshHome(home), "kcap-dsh.plugin.mjs");
 
     /// <summary>Version marker beside the installed plugin (mirrors the OpenCode installer).</summary>
     public static string KcapPluginMarker(string? home = null) =>
-        Path.Combine(PluginsDir(home), ".kcap-extension-version");
+        Path.Combine(DshHome(home), ".kcap-extension-version");
 
-    /// <summary>Detection: the config tree exists (callers also OR
+    /// <summary>Detection: the dsh home exists (callers also OR
     /// <c>AgentDetector.IsInstalled("dsh")</c> for binary-name coverage).</summary>
-    public static bool IsInstalled(string? home = null) => Directory.Exists(ConfigRoot(home));
+    public static bool IsInstalled(string? home = null) => Directory.Exists(DshHome(home));
 }

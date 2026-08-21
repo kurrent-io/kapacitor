@@ -2,24 +2,19 @@ namespace Capacitor.Cli.Core.Dsh;
 
 /// <summary>
 /// Installs / removes kcap's live-ingest plugin for DeepSeek Harness (dsh), AI-2020.
-/// dsh has no shell hooks, so — like OpenCode/Pi — kcap ships a plugin that dsh's
-/// Cordis plugin system auto-discovers and loads in-process. Because dsh is
-/// event-sourced and writes its own <c>session.jsonl</c>, the dsh plugin is far
-/// simpler than OpenCode's <c>kcap.ts</c>: it only shells the kcap CLI on lifecycle
-/// boundaries — on session create <c>kcap hook --dsh --event session-start --session
-/// &lt;id&gt; --file &lt;session.jsonl&gt; …</c> (which POSTs lifecycle + spawns the
-/// transcript watcher that tails the file directly), and on session idle/teardown
-/// <c>kcap hook --dsh --event session-end …</c>. No SDK fetch, no JSONL synthesis.
+/// dsh is a Cordis-based agent whose session module declares "persistence is a plugin
+/// concern" — so kcap ships a dependency-free Cordis persistence plugin that forwards
+/// every appended <c>SessionEvent</c> to <c>~/.cache/kcap/dsh/{id}.jsonl</c>, writes the
+/// durable header on <c>session/created</c> and a terminal marker on <c>session/disposed</c>,
+/// and spawns <c>kcap hook --dsh --event session-start</c> so the watcher tails that file
+/// (vendor=dsh). This mirrors the OpenCode plugin; the watcher owns session-end.
 ///
-/// <para><b>TODO (AI-2020):</b> <see cref="ExtensionContent"/> is a documented
-/// PLACEHOLDER — the real Cordis plugin manifest/language and dsh's plugin-discovery
-/// directory are not yet confirmed, so this installer is intentionally NOT wired into
-/// <c>kcap plugin install</c> / the setup wizard yet (auto-installing a non-functional
-/// plugin would be worse than none). The install/remove/marker MECHANICS below are
-/// final and unit-tested; only the embedded plugin body + <see cref="DshPaths.KcapPlugin"/>
-/// need filling once dsh's plugin API is known. A hand-written dsh plugin that invokes
-/// the <c>kcap hook --dsh</c> contract above works end-to-end with the rest of the
-/// pipeline today.</para>
+/// <para><b>Install</b> = copy <see cref="ExtensionContent"/> to <see cref="DshPaths.KcapPlugin"/>
+/// (<c>$DSH_HOME/kcap-dsh.plugin.mjs</c>) and add an entry to dsh's Cordis config
+/// (<c>cordis.yml</c> / the active profile): <c>- name: './kcap-dsh.plugin.mjs'</c>. The
+/// copy + version-marker mechanics below are the automatable part; registering the entry in
+/// dsh's profile/patch config is left to <c>dsh plugin</c> / a manual one-line edit (see the
+/// plugin comment) because that format is dsh-profile-specific.</para>
 ///
 /// <para><see cref="ExtensionContent"/> is embedded as a const (no manifest-resource
 /// reflection) to stay NativeAOT-safe, mirroring <see cref="OpenCode.OpenCodeExtensionInstaller"/>.</para>
@@ -28,28 +23,35 @@ public static class DshExtensionInstaller {
     public const string MarkerFileName = ".kcap-extension-version";
 
     /// <summary>
-    /// PLACEHOLDER dsh plugin (TODO AI-2020: replace with the real Cordis plugin once
-    /// dsh's plugin API is confirmed). Documents the exact CLI contract the real plugin
-    /// must implement so live capture lights up. Dependency-free + fail-safe by design.
+    /// The kcap dsh Cordis persistence plugin (plain-JS build, for dsh's <c>--patch install</c>).
+    /// Dependency-free (only <c>node:</c> builtins) and fail-open — a kcap/server problem must
+    /// never disrupt the dsh session. Kept byte-for-byte in sync with the source at
+    /// <c>deepseek-harness/kcap-dsh.mts</c>.
     /// </summary>
     public const string ExtensionContent =
         """
-        // kcap dsh live-ingest plugin — PLACEHOLDER (AI-2020).
-        //
-        // dsh is event-sourced: its on-disk session.jsonl IS the SessionEvent stream the
-        // kcap watcher tails, so this plugin only needs to notify kcap of lifecycle
-        // boundaries. On the real dsh/Cordis plugin API, subscribe to session lifecycle
-        // and shell the kcap CLI (fail-open — never disrupt the dsh session):
-        //
-        //   on session create/start:
-        //     kcap hook --dsh --event session-start --session <id> --file <path/to/session.jsonl> \
-        //       [--cwd <cwd>] [--model <m>] [--provider <p>] [--version <v>]
-        //
-        //   on session idle/teardown:
-        //     kcap hook --dsh --event session-end --session <id> --file <path> [--reason <r>] [--cwd <cwd>]
-        //
-        // The watcher tails <file> directly (vendor=dsh); the server normalizes it via the
-        // keyed DeepSeekHarnessTranscriptNormalizer. No SDK fetch or JSONL synthesis needed.
+        // kcap observer plugin for dsh (plain-JS build for --patch install). Fail-open.
+        import { appendFileSync, mkdirSync } from 'node:fs'
+        import { join } from 'node:path'
+        import { homedir } from 'node:os'
+        import { spawn } from 'node:child_process'
+        export const name = 'kcap'
+        export function apply(ctx) {
+          const dir = join(homedir(), '.cache', 'kcap', 'dsh')
+          try { mkdirSync(dir, { recursive: true }) } catch {}
+          const fileFor = id => join(dir, `${id}.jsonl`)
+          const write = (id, rec) => { try { appendFileSync(fileFor(id), JSON.stringify(rec) + '\n') } catch {} }
+          const ensureWatcher = id => {
+            try {
+              const c = spawn('kcap', ['hook','--dsh','--event','session-start','--session',id,'--file',fileFor(id)], { stdio: 'ignore', detached: true })
+              c.on('error', () => {}); c.unref()
+            } catch {}
+          }
+          ctx.on('session/created', s => { ensureWatcher(s.id); write(s.id, { $kcap: 'header', ...s.header }) })
+          ctx.on('session/event', (s, e) => write(s.id, e))
+          ctx.on('session/disposed', s => write(s.id, { $kcap: 'disposed', id: s.id }))
+        }
+        export default apply
         """;
 
     /// <summary>
