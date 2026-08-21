@@ -987,10 +987,12 @@ static class McpFlowsServer {
     }
 
     /// <summary>
-    /// Posts catalog starts to POST /api/flows/review/start/v2 and dynamic starts to the legacy
-    /// generic start route. Shared by start_review_flow (reads
-    /// the flow kind from the "kind" arg) and its generic alias start_flow (reads it from
-    /// "definition_id" — the server treats kind == definition id, phase C).
+    /// Routes a review-flow start to the versioned start endpoint. §2.7 B3: a vendor-bearing,
+    /// non-dynamic start POSTs to /api/flows/review/start/v4 (protocol 4, the resumable-park tier),
+    /// falling back on HTTP 404 (old server) to /v3 when a model was given else /v2; a vendor-less or
+    /// dynamic (definition_yaml) start keeps the pre-B3 route (/v2 or the legacy generic route). Shared
+    /// by start_review_flow (reads the flow kind from the "kind" arg) and its generic alias start_flow
+    /// (reads it from "definition_id" — the server treats kind == definition id, phase C).
     /// start_flow additionally accepts an inline "definition_yaml" (dynamic flows): the MCP
     /// schema can't express the xor, so exactly-one is enforced here, BEFORE any HTTP call;
     /// start_review_flow stays catalog-only (kind remains required there). Internal (not private)
@@ -1089,8 +1091,9 @@ static class McpFlowsServer {
             RequesterMachineId:   machineId,
             DefinitionYaml:       definitionYaml,
             Vendor:               vendor,
-            // Protocol version by route: a reviewer-model override is protocol 3 (v3 route); every
-            // other catalog start stays protocol 2 (v2 route); a dynamic start sends no version.
+            // The BASE-body protocol, used only on the pre-B3 fallback routes below: a reviewer-model
+            // override is 3 (v3), every other catalog start is 2 (v2), a dynamic start sends none. The
+            // §2.7 B3 primary attempt overrides this to 4 for the /v4 route (see the routing below).
             ClientFlowProtocolVersion: model is not null ? 3 : definitionYaml is null ? 2 : null,
             Model:                model
         );
