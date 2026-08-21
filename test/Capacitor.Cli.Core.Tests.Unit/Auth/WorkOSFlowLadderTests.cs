@@ -21,24 +21,21 @@ public class WorkOSFlowLadderTests {
     }
 
     /// <summary>
-    /// The load-bearing claim of §5's ladder. IsHeadless() is true for every SSH session, including
-    /// Remote-SSH and `ssh -L` where loopback works — so letting it select would demote the largest
-    /// developer population to typing a code.
+    /// The load-bearing claim of §5's ladder: nothing but an explicit request skips the browser. There
+    /// is no environment input at all, because IsHeadless() is true for every SSH session including
+    /// the ones where loopback works perfectly.
     /// </summary>
     [Test]
-    [Arguments(false, false, WorkOSFlow.Browser)]
-    [Arguments(false, true,  WorkOSFlow.BrowserRemote)]
-    [Arguments(true,  false, WorkOSFlow.Device)]
-    [Arguments(true,  true,  WorkOSFlow.Device)]
-    public async Task Only_an_explicit_request_skips_loopback(bool forceDevice, bool isHeadless, WorkOSFlow expected) =>
-        await Assert.That(OAuthLoginFlow.ChooseWorkOSFlow(forceDevice, isHeadless)).IsEqualTo(expected);
+    [Arguments(false, WorkOSFlow.Browser)]
+    [Arguments(true,  WorkOSFlow.Device)]
+    public async Task Only_an_explicit_request_skips_loopback(bool forceDevice, WorkOSFlow expected) =>
+        await Assert.That(OAuthLoginFlow.ChooseWorkOSFlow(forceDevice)).IsEqualTo(expected);
 
     [Test]
     public async Task Offers_the_flag_instead_of_the_key_when_there_is_no_keyboard() {
-        await Assert.That(OAuthLoginFlow.WorkOSBrowserNotice(WorkOSFlow.Browser, canWatchKeys: true)).Contains("Press d");
-        await Assert.That(OAuthLoginFlow.WorkOSBrowserNotice(WorkOSFlow.Browser, canWatchKeys: false)).DoesNotContain("Press d");
-        await Assert.That(OAuthLoginFlow.WorkOSBrowserNotice(WorkOSFlow.Browser, canWatchKeys: false)).Contains("--device");
-        await Assert.That(OAuthLoginFlow.WorkOSBrowserNotice(WorkOSFlow.BrowserRemote, canWatchKeys: true)).Contains("remote session");
+        await Assert.That(OAuthLoginFlow.WorkOSBrowserHint(canWatchKeys: true)).Contains("press d");
+        await Assert.That(OAuthLoginFlow.WorkOSBrowserHint(canWatchKeys: false)).DoesNotContain("press d");
+        await Assert.That(OAuthLoginFlow.WorkOSBrowserHint(canWatchKeys: false)).Contains("--device");
     }
 
     [Test]
@@ -70,8 +67,13 @@ public class WorkOSFlowLadderTests {
     }
 
     /// <summary>
-    /// The key is usually followed by a Return. Spectre's tenant picker runs next and would read the
-    /// leftover as an answer, silently choosing the first tenant.
+    /// Consumes whatever was already buffered alongside the <c>d</c>.
+    ///
+    /// <para><b>This is not what protects the next prompt, and believing it was cost a live bug.</b>
+    /// The Return usually lands *after* this drain and then waits out the entire device-code approval,
+    /// so the prompt is protected by draining at the prompt (<c>PromptHygiene.DiscardTypeAhead</c>),
+    /// not here. No unit test covers that one: it needs a real terminal buffer, so it lives in
+    /// flows-to-test.md.</para>
     /// </summary>
     [Test]
     public async Task Drains_what_is_still_buffered_before_handing_off() {
@@ -118,6 +120,43 @@ public class WorkOSFlowLadderTests {
 
         await Assert.That(result!.AccessToken).IsEqualTo("acc");
         await Assert.That(string.Join("\n", progress.Errors)).Contains("Could not bind loopback listener");
+    }
+
+    /// <summary>
+    /// Found by driving it: opening the printed authorize URL from a browser on another machine
+    /// completes the WorkOS half and then dies on `127.0.0.1:NNNNN` - connection refused - because the
+    /// listener is in the container. Failing to launch a browser HERE is the evidence that the user's
+    /// browser is elsewhere, so the loopback URL is worthless to them and a device code is not.
+    /// </summary>
+    [Test]
+    public async Task No_browser_on_this_machine_falls_through_to_the_device_grant() {
+        using var server   = DeviceGrantServer();
+        using var http     = new HttpClient();
+        var       progress = new RecordingAuthProgress();
+
+        var result = await OAuthLoginFlow.AcquireWorkOSAsync(
+            http, "client_d", organizationId: null, forceDevice: false,
+            new FakeBrowser(_ => throw new BrowserLaunchException()),
+            server.Urls[0], progress: progress, keys: ScriptedKeyWatcher.Blind());
+
+        await Assert.That(result!.AccessToken).IsEqualTo("acc");
+        await Assert.That(string.Join("\n", progress.Notices)).Contains("use anywhere");
+        // Reported as news, not as a failure: nothing went wrong, the route just changed.
+        await Assert.That(progress.Errors).IsEmpty();
+    }
+
+    /// <summary>The listener never waits out its timeout for a callback nothing can send.</summary>
+    [Test]
+    public async Task The_loopback_browser_gives_up_immediately_when_it_cannot_launch() {
+        var browser = new LoopbackBrowser(openBrowser: _ => false, progress: new RecordingAuthProgress());
+        var port    = OAuthLoginFlow.GetAvailablePort();
+
+        await Assert.That(async () => await browser.InvokeAsync(
+                  new Duende.IdentityModel.OidcClient.Browser.BrowserOptions(
+                      $"https://example.test/authorize", $"http://127.0.0.1:{port}/callback") {
+                      Timeout = TimeSpan.FromMinutes(5)
+                  }))
+            .Throws<BrowserLaunchException>();
     }
 
     /// <summary>A caller cancel must not be mistaken for the escape hatch and rewarded with a device code.</summary>

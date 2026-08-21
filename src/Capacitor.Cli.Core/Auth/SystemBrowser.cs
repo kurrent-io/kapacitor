@@ -5,17 +5,19 @@ namespace Capacitor.Cli.Core.Auth;
 /// <summary>
 /// Hands a URL to whatever the OS considers the browser.
 ///
-/// <para><b>Best-effort by design, and every caller must print the URL anyway.</b> There is no
-/// reliable way to learn that the browser opened — <c>UseShellExecute</c> succeeding says a handler
-/// was launched, not that a human saw a page — so a flow that treats this as confirmation strands
-/// anyone on a headless box, a broken desktop session, or an SSH forward.</para>
+/// <para><b>A true answer is not confirmation a human saw a page</b> - <c>UseShellExecute</c>
+/// succeeding says a handler was launched. A <b>false</b> answer is worth acting on, though: there is
+/// no browser on this machine, so the user's browser is on another one, and any 127.0.0.1 callback
+/// this process is listening on is unreachable from it.</para>
 /// </summary>
 public static class SystemBrowser {
-    public static void Open(string url) {
+    public static bool TryOpen(string url) {
         try {
             Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+
+            return true;
         } catch {
-            // Swallowed: the fallback link is already on screen, which is the actual remedy.
+            return false;
         }
     }
 }

@@ -37,6 +37,7 @@ public sealed class SpectreTenantProvisioner(TenantProvisioningClient client, st
             return ProvisionOffer.Declined;
         }
 
+        PromptHygiene.DiscardTypeAhead();
         SetupFunnel.WorkspaceOffered();
 
         // Three ways out, not two: discovery finding nothing does NOT mean the user has no

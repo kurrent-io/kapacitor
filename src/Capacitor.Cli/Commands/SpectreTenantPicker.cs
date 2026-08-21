@@ -5,6 +5,8 @@ namespace Capacitor.Cli.Commands;
 
 public class SpectreTenantPicker : ITenantPicker {
     public DiscoveredTenant Pick(DiscoveredTenant[] tenants) {
+        PromptHygiene.DiscardTypeAhead();
+
         var prompt = new SelectionPrompt<DiscoveredTenant>()
             .Title("Which Capacitor tenant would you like to use as default?")
             .UseConverter(t => $"{t.Label} · {t.Origin}")

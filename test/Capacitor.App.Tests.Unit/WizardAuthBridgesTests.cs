@@ -32,7 +32,7 @@ sealed class RecordingAuthProgress : IAuthProgress {
     public void Notice(string message) => Notices.Add(message);
     public void Error(string message) => Errors.Add(message);
     public void BrowserOpening(string url) { }
-    public void DeviceCode(string code, string verificationUri, string provider) { }
+    public void DeviceCode(string code, string verificationUri, string? provider) { }
     public void PollTick() { }
 }
 

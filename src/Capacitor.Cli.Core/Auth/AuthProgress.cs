@@ -19,8 +19,10 @@ public interface IAuthProgress {
     void BrowserOpening(string url);
 
     /// <summary>A device-flow user code is ready for the user to enter at <paramref name="verificationUri"/>.
-    /// <paramref name="provider"/> names who is asking, since more than one issuer uses this flow.</summary>
-    void DeviceCode(string code, string verificationUri, string provider);
+    /// <paramref name="provider"/> names who is asking when that is a brand the user recognises and is
+    /// about to see, as GitHub is. It is null for our own sign-in: WorkOS is a white-label supplier, and
+    /// naming it tells the user nothing they need and something we would rather not advertise.</summary>
+    void DeviceCode(string code, string verificationUri, string? provider);
 
     /// <summary>One device-flow poll attempt came back pending.</summary>
     void PollTick();
@@ -39,9 +41,9 @@ public sealed class ConsoleAuthProgress : IAuthProgress {
         Console.Out.WriteLine($"  If the browser doesn't open, visit: {url}");
     }
 
-    public void DeviceCode(string code, string verificationUri, string provider) {
+    public void DeviceCode(string code, string verificationUri, string? provider) {
         Console.Out.WriteLine($"  2. Enter the code: {code}");
-        Console.Out.WriteLine($"  3. Approve access when {provider} asks.");
+        Console.Out.WriteLine(provider is null ? "  3. Approve access when asked." : $"  3. Approve access when {provider} asks.");
         Console.Out.WriteLine();
         Console.Write("Waiting for you to authorize...");
     }

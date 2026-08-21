@@ -12,8 +12,13 @@ namespace Capacitor.Cli.Core.Auth;
 /// GitHub flow can fall back to device flow on a bind failure. A caller cancel throws
 /// <see cref="OperationCanceledException"/>; only the independent timeout returns Timeout.
 /// </summary>
-public sealed class LoopbackBrowser(Action<string>? openBrowser = null, IAuthProgress? progress = null) : IBrowser {
-    readonly Action<string> _openBrowser = openBrowser ?? SystemBrowser.Open;
+/// <param name="hint">
+/// An escape hatch offered while the wait runs, printed under the "visit:" line rather than before it:
+/// above, it reads as an alternative to signing in at all instead of an alternative to that URL.
+/// </param>
+public sealed class LoopbackBrowser(
+        Func<string, bool>? openBrowser = null, IAuthProgress? progress = null, string? hint = null) : IBrowser {
+    readonly Func<string, bool> _openBrowser = openBrowser ?? SystemBrowser.TryOpen;
     readonly IAuthProgress  _progress    = progress ?? ConsoleAuthProgress.Instance;
 
     public async Task<BrowserResult> InvokeAsync(BrowserOptions options, CancellationToken ct = default) {
@@ -24,7 +29,12 @@ public sealed class LoopbackBrowser(Action<string>? openBrowser = null, IAuthPro
         listener.Start(); // bind failure propagates (HttpListenerException / PlatformNotSupportedException)
 
         _progress.BrowserOpening(options.StartUrl);
-        _openBrowser(options.StartUrl);
+        if (hint is not null) _progress.Notice(hint);
+
+        // Thrown rather than waited out: with no browser here, the callback below can only be reached
+        // from a browser on this machine, and there isn't one. Five minutes of listening would end in
+        // the same place, having offered a URL that leads to a connection refused.
+        if (!_openBrowser(options.StartUrl)) throw new BrowserLaunchException();
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(options.Timeout);
@@ -75,4 +85,13 @@ public sealed class LoopbackBrowser(Action<string>? openBrowser = null, IAuthPro
         await ctx.Response.OutputStream.WriteAsync(buffer);
         ctx.Response.Close();
     }
+}
+
+/// <summary>No browser could be launched on this machine. Callers with a device-code rung take it.</summary>
+public sealed class BrowserLaunchException : Exception {
+    public BrowserLaunchException() : base("Could not launch a browser on this machine.") { }
+
+    public BrowserLaunchException(string message) : base(message) { }
+
+    public BrowserLaunchException(string message, Exception innerException) : base(message, innerException) { }
 }

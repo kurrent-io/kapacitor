@@ -243,7 +243,7 @@ public sealed class OnboardingFacade(
             HttpClient http, AuthDiscoveryResponse config, bool forceDevice, LoginTarget target, CancellationToken ct) {
         var authenticated = await OAuthLoginFlow.WorkOSTokensForServerAsync(
             http, target.ServerUrl, config.ClientId!, config.OrganizationId, forceDevice,
-            WorkOSBrowser ?? new LoopbackBrowser(progress: progress), ct, progress,
+            WorkOSBrowser, ct, progress,
             WorkOSApiBaseOverride ?? OAuthLoginFlow.WorkOSApiBase, KeyWatcher);
 
         if (authenticated is null) return Stop("WorkOS sign-in did not complete.", ct, AuthFailureReason.SigninDenied);

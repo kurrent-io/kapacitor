@@ -13,7 +13,7 @@ public class LoopbackBrowserTests {
     public async Task Returns_success_with_raw_query_on_callback() {
         var port     = OAuthLoginFlow.GetAvailablePort();
         var redirect = $"http://127.0.0.1:{port}/callback";
-        var browser  = new LoopbackBrowser(openBrowser: _ => { }); // don't launch a real browser
+        var browser  = new LoopbackBrowser(openBrowser: _ => true); // don't launch a real browser
 
         var invoke = browser.InvokeAsync(new BrowserOptions("http://example.test/authorize", redirect));
 
@@ -31,7 +31,7 @@ public class LoopbackBrowserTests {
     public async Task Returns_timeout_when_no_callback_arrives() {
         var port     = OAuthLoginFlow.GetAvailablePort();
         var redirect = $"http://127.0.0.1:{port}/callback";
-        var browser  = new LoopbackBrowser(openBrowser: _ => { });
+        var browser  = new LoopbackBrowser(openBrowser: _ => true);
 
         var result = await browser.InvokeAsync(
             new BrowserOptions("http://example.test/authorize", redirect) { Timeout = TimeSpan.FromMilliseconds(200) });
@@ -45,7 +45,7 @@ public class LoopbackBrowserTests {
     public async Task Caller_cancellation_propagates_instead_of_reporting_a_timeout() {
         var port     = OAuthLoginFlow.GetAvailablePort();
         var redirect = $"http://127.0.0.1:{port}/callback";
-        var browser  = new LoopbackBrowser(openBrowser: _ => { });
+        var browser  = new LoopbackBrowser(openBrowser: _ => true);
 
         using var cts = new CancellationTokenSource();
 

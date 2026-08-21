@@ -41,7 +41,7 @@ sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
 
     public void BrowserOpening(string url) => inner.BrowserOpening(url);
 
-    public void DeviceCode(string code, string verificationUri, string provider) => inner.DeviceCode(code, verificationUri, provider);
+    public void DeviceCode(string code, string verificationUri, string? provider) => inner.DeviceCode(code, verificationUri, provider);
 
     public void PollTick() => inner.PollTick();
 
@@ -884,7 +884,7 @@ public static class SetupCommand {
         // explicit --device takes the device grant. GitHub's exchange URL is not known until the proxy
         // answers inside DiscoverAsync, so its label stays the environment guess it has always been.
         var signinMode = chosen == AuthProvider.WorkOS
-            ? OAuthLoginFlow.ChooseWorkOSFlow(forceDevice, headless) == WorkOSFlow.Device ? "device" : "browser"
+            ? OAuthLoginFlow.ChooseWorkOSFlow(forceDevice) == WorkOSFlow.Device ? "device" : "browser"
             : forceDevice || headless ? "device" : "browser";
         SetupFunnel.SigninOpened(signinMode, chosen);
 

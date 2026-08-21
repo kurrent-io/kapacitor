@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -18,12 +17,7 @@ public static class AuthProvider {
 
 public enum GitHubFlow { Browser, Device }
 
-/// <summary>
-/// How a WorkOS sign-in opens. Unlike <see cref="GitHubFlow"/> the two browser values do not select
-/// anything — loopback runs either way, and they differ only in how the device-code escape hatch is
-/// worded. See <see cref="OAuthLoginFlow.ChooseWorkOSFlow"/>.
-/// </summary>
-public enum WorkOSFlow { Browser, BrowserRemote, Device }
+public enum WorkOSFlow { Browser, Device }
 
 public static class OAuthLoginFlow {
     /// <summary>GET <c>{serverUrl}/auth/config</c>, or <c>null</c> with the failure already reported.</summary>
@@ -52,16 +46,15 @@ public static class OAuthLoginFlow {
         => forceDevice || isHeadless || !hasExchangeUrl ? GitHubFlow.Device : GitHubFlow.Browser;
 
     /// <summary>
-    /// Orders the prompt, not the attempt. <paramref name="isHeadless"/> deliberately does NOT select
-    /// the device grant: it is true for every SSH session, including Remote-SSH and <c>ssh -L</c>,
-    /// where loopback works perfectly — selecting on it would demote the largest developer population
-    /// from "the browser opens" to "read a URL, type a code". Only an explicit
-    /// <paramref name="forceDevice"/> skips loopback.
+    /// Only an explicit request skips the browser. There is deliberately no environment heuristic
+    /// here: HeadlessEnvironment.IsHeadless() is true for every SSH session, including Remote-SSH and
+    /// `ssh -L` where loopback works perfectly, so selecting on it would demote the largest developer
+    /// population from "the browser opens" to "read a URL, type a code". It briefly survived as a
+    /// wording variant that said "this looks like a remote session"; that went when the escape hatch
+    /// moved under the URL, where it is equally visible to everyone and the guess earns nothing.
     /// </summary>
-    internal static WorkOSFlow ChooseWorkOSFlow(bool forceDevice, bool isHeadless)
-        => forceDevice ? WorkOSFlow.Device
-         : isHeadless  ? WorkOSFlow.BrowserRemote
-         : WorkOSFlow.Browser;
+    internal static WorkOSFlow ChooseWorkOSFlow(bool forceDevice)
+        => forceDevice ? WorkOSFlow.Device : WorkOSFlow.Browser;
 
     /// <summary>
     /// Picks the discovery provider before any auth runs: <c>--github</c> selects the GitHub App
@@ -139,7 +132,7 @@ public static class OAuthLoginFlow {
 
         var copied = Clipboard.TryCopy(device.UserCode);
 
-        var browserOpened = TryOpenBrowser(device.BrowserUri);
+        var browserOpened = SystemBrowser.TryOpen(device.BrowserUri);
 
         progress.Notice("");
         progress.Notice("To finish signing in to GitHub:");
@@ -553,6 +546,8 @@ public static class OAuthLoginFlow {
                 return token ??
                     // Browser flow ran but user cancelled / state mismatch — don't silently fall back.
                     null;
+            } catch (BrowserLaunchException) {
+                progress.Notice("No browser on this machine, so switching to a device code you can use anywhere.");
             } catch (HttpListenerException ex) {
                 progress.Error($"Could not bind loopback listener ({ex.Message}); falling back to device flow.");
             } catch (PlatformNotSupportedException ex) {
@@ -634,17 +629,6 @@ public static class OAuthLoginFlow {
         return JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.WorkOSAuthResponse);
     }
 
-    /// <summary>Best-effort — the environments this flow serves often have no browser at all.</summary>
-    static bool TryOpenBrowser(string url) {
-        try {
-            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-
-            return true;
-        } catch {
-            return false;
-        }
-    }
-
     /// <summary>
     /// RFC 8628 against AuthKit (<c>api.workos.com/user_management/*</c>), NOT Connect's
     /// <c>{authkit-domain}/oauth2/*</c> — that one returns no organization and requires a client secret.
@@ -685,7 +669,7 @@ public static class OAuthLoginFlow {
         }
 
         // Best-effort: the population this flow exists for has no browser here at all.
-        var browserOpened = TryOpenBrowser(device.BrowserUri);
+        var browserOpened = SystemBrowser.TryOpen(device.BrowserUri);
 
         progress.Notice("");
         progress.Notice("To finish signing in:");
@@ -698,7 +682,7 @@ public static class OAuthLoginFlow {
         // No clipboard copy, unlike the GitHub flow: the code has to be READ ALOUD OR RETYPED on
         // another device for this flow to mean anything, and a silent copy invites pasting it into
         // whatever page is already open.
-        progress.DeviceCode(device.UserCode, device.VerificationUri, "WorkOS");
+        progress.DeviceCode(device.UserCode, device.VerificationUri, provider: null);
 
         return await PollDeviceGrantAsync(
             http, $"{apiBase}/user_management/authenticate",
@@ -724,17 +708,17 @@ public static class OAuthLoginFlow {
         progress ??= ConsoleAuthProgress.Instance;
         keys     ??= ConsoleKeyWatcher.Instance;
 
-        var flow = ChooseWorkOSFlow(forceDevice, HeadlessEnvironment.IsHeadless());
-
-        if (flow is WorkOSFlow.Device) return await RunWorkOSDeviceFlowAsync(http, clientId, ct, progress, apiBase, time);
-
-        progress.Notice(WorkOSBrowserNotice(flow, keys.CanWatch));
+        if (ChooseWorkOSFlow(forceDevice) is WorkOSFlow.Device) {
+            return await RunWorkOSDeviceFlowAsync(http, clientId, ct, progress, apiBase, time);
+        }
 
         using var escape = CancellationTokenSource.CreateLinkedTokenSource(ct);
         using var settled = new CancellationTokenSource();
 
         var login = AuthenticateWorkOSAsync(
-            clientId, organizationId, browser ?? new LoopbackBrowser(progress: progress), apiBase, escape.Token, progress);
+            clientId, organizationId,
+            browser ?? new LoopbackBrowser(progress: progress, hint: WorkOSBrowserHint(keys.CanWatch)),
+            apiBase, escape.Token, progress);
         var watch = WatchForEscapeHatchAsync(keys, escape, settled.Token);
 
         try {
@@ -742,6 +726,11 @@ public static class OAuthLoginFlow {
         } catch (OperationCanceledException) when (escape.IsCancellationRequested && !ct.IsCancellationRequested) {
             // Only the watcher cancels `escape` without `ct`, so this is the escape hatch and nothing else.
             progress.Notice("Switching to a device code.");
+        } catch (BrowserLaunchException) {
+            // Not an error, and deliberately says nothing about the loopback URL: there is no browser
+            // here, so the user's is on another machine and 127.0.0.1 is not us. A device code is the
+            // route that works from any machine, which is what they actually need.
+            progress.Notice("No browser on this machine, so switching to a device code you can use anywhere.");
         } catch (HttpListenerException ex) {
             progress.Error($"Could not bind loopback listener ({ex.Message}); using a device code instead.");
         } catch (PlatformNotSupportedException ex) {
@@ -755,22 +744,14 @@ public static class OAuthLoginFlow {
     }
 
     /// <summary>
-    /// The line printed before the loopback attempt. Deliberately does not say "opening your browser" —
-    /// <see cref="LoopbackBrowser"/> prints that itself a moment later. Names the keypress only when
-    /// there is a keyboard to take it with; with stdin redirected the flag is the only route, and
-    /// offering the key would send the user to press something nothing can read.
+    /// The escape hatch, worded to sit directly under the "visit:" URL as an alternative to it. Names
+    /// the keypress only when there is a keyboard to take it with; with stdin redirected the flag is
+    /// the only route, and offering the key would send the user to press something nothing can read.
     /// </summary>
-    internal static string WorkOSBrowserNotice(WorkOSFlow flow, bool canWatchKeys) {
-        var remote = flow is WorkOSFlow.BrowserRemote
-            ? " This looks like a remote session, so it may open somewhere you can't reach."
-            : "";
-
-        var hatch = canWatchKeys
-            ? $" Press {EscapeHatchKey} to use a device code instead."
-            : " Re-run with --device to use a device code instead.";
-
-        return $"Signing in through your browser.{remote}{hatch}";
-    }
+    internal static string WorkOSBrowserHint(bool canWatchKeys) =>
+        canWatchKeys
+            ? $"  Or press {EscapeHatchKey} to switch to a device code."
+            : "  Or re-run with --device to use a device code.";
 
     /// <summary>
     /// Polls for the escape-hatch key while the browser leg is in flight, cancelling
