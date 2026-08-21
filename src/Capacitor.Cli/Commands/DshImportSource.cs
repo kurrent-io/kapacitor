@@ -65,15 +65,19 @@ internal sealed class DshImportSource : IImportSource {
         foreach (var jsonl in GuardedDiscovery.EnumerateFiles(_sessionsDir, "*.jsonl", recursive: false)) {
             ct.ThrowIfCancellationRequested();
 
-            // Filename stem is the session id (the plugin names the file fileFor(session.id)).
-            // Use it RAW for both transcript and lifecycle: dsh ids can be non-GUID
-            // ("session-<uuid>"), which CanonicalSessionId.Normalize leaves dashed — pre-stripping
-            // dashes here (as GUID-id vendors do) would split the transcript and lifecycle onto two
-            // streams. The server canonicalizes both identically, so raw-everywhere converges.
-            var sessionId = Path.GetFileNameWithoutExtension(jsonl);
-            if (string.IsNullOrEmpty(sessionId)) continue;
+            // Filename stem is the raw dsh session id (the plugin names the file fileFor(session.id)).
+            // Canonicalize it to the ≤36-char GUID-shaped contract (DshSessionId): a "session-<guid>"
+            // id reduces to its embedded dashless GUID, so it keys like every other vendor and isn't
+            // filtered out by the read model's length(session_id) <= 36 guard. The SAME canonical id
+            // feeds transcript + lifecycle (and DshHookCommand applies it identically) → one stream.
+            var rawId = Path.GetFileNameWithoutExtension(jsonl);
+            if (string.IsNullOrEmpty(rawId)) continue;
+            var sessionId = DshSessionId.Canonicalize(rawId);
 
-            if (sessionFilter is not null && !string.Equals(sessionId, sessionFilter, StringComparison.Ordinal))
+            // Accept a --session filter given as either the raw id or its canonical form.
+            if (sessionFilter is not null
+             && !string.Equals(sessionId, sessionFilter, StringComparison.Ordinal)
+             && !string.Equals(rawId, sessionFilter, StringComparison.Ordinal))
                 continue;
 
             var header = DshSessionHeader.TryRead(jsonl);
@@ -97,7 +101,7 @@ internal sealed class DshImportSource : IImportSource {
                 FirstTimestamp: firstTimestamp,
                 SourceMeta:     new Dictionary<string, object?> {
                     ["TranscriptPath"]  = jsonl,
-                    ["DashedSessionId"] = sessionId,   // same raw id for lifecycle + transcript
+                    ["DashedSessionId"] = sessionId,   // canonical id for lifecycle + transcript (one stream)
                     ["Cwd"]             = header?.Cwd,
                 }));
         }
@@ -208,7 +212,12 @@ internal sealed class DshImportSource : IImportSource {
             startPayload["default_visibility"] = ctx.DefaultVisibility;
         }
 
-        var startOk = await PostSyntheticHookAsync(ctx.HttpClient, ctx.BaseUrl, "session-start/dsh", startPayload, ct);
+        // Enrich with git repo info detected from the captured cwd (adds the "repository" field
+        // the server records as RepositoryDetectedEvent), so imported dsh sessions group under
+        // their repo — same path the live hook uses. Fail-open: no cwd/repo → payload unchanged.
+        var startJson = await RepositoryDetection.EnrichWithRepositoryInfo(startPayload.ToJsonString());
+
+        var startOk = await PostSyntheticHookAsync(ctx.HttpClient, ctx.BaseUrl, "session-start/dsh", startJson, ct);
         if (!startOk) return ImportOutcome.Failed;
 
         var startLine = classification.Status switch {
@@ -233,7 +242,7 @@ internal sealed class DshImportSource : IImportSource {
 
         var endOk = await PostSyntheticHookAsync(
             ctx.HttpClient, ctx.BaseUrl, "session-end/dsh",
-            BuildSessionEndPayload(lifecycleId, cwd, classification.Meta.LastTimestamp),
+            BuildSessionEndPayload(lifecycleId, cwd, classification.Meta.LastTimestamp).ToJsonString(),
             ct);
         if (!endOk) return ImportOutcome.Failed;
 
@@ -267,10 +276,10 @@ internal sealed class DshImportSource : IImportSource {
     }
 
     static async Task<bool> PostSyntheticHookAsync(
-        HttpClient client, string baseUrl, string routeSegment, JsonObject payload, CancellationToken ct
+        HttpClient client, string baseUrl, string routeSegment, string json, CancellationToken ct
     ) {
         try {
-            using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+            using var content = new StringContent(json, Encoding.UTF8, "application/json");
             using var resp    = await client.PostWithRetryAsync($"{baseUrl}/hooks/{routeSegment}", content, ct: ct);
             return resp.IsSuccessStatusCode;
         } catch {

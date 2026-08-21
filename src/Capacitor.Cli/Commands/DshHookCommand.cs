@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Dsh;
 
 namespace Capacitor.Cli.Commands;
 
@@ -33,12 +34,13 @@ static class DshHookCommand {
         var sessionIdRaw = GetArg(args, "--session");
         if (string.IsNullOrWhiteSpace(sessionIdRaw)) return 0;
 
-        // Use the id RAW for the local key, the watcher/transcript stream, AND the lifecycle
-        // POST. dsh ids can be non-GUID ("session-<uuid>"), which the server's
-        // CanonicalSessionId.Normalize leaves dashed — pre-stripping dashes here (as GUID-id
-        // vendors do) would put the watcher's transcript on a different stream than the
-        // lifecycle POST. Raw-everywhere lets the server canonicalize both identically.
-        var sessionId = sessionIdRaw;
+        // Canonicalize to the read model's ≤36-char, GUID-shaped session-id contract. A dsh id
+        // like "session-<guid>" (44 chars) reduces to its embedded GUID (dashless, 32 chars);
+        // otherwise every read-model query's `length(session_id) <= 36` guard filters the
+        // session out entirely. The SAME canonical id is used for the lifecycle POST and the
+        // watcher/transcript stream (and DshImportSource applies it identically), so both
+        // converge on one stream.
+        var sessionId = DshSessionId.Canonicalize(sessionIdRaw);
 
         var file = GetArg(args, "--file");
         if (string.IsNullOrWhiteSpace(file)) return 0; // no transcript path — nothing to tail/drain
@@ -75,7 +77,7 @@ static class DshHookCommand {
         ) {
         var forwarded = new JsonObject {
             ["hook_event_name"] = "sessionStart",
-            ["session_id"]      = sessionIdRaw,
+            ["session_id"]      = sessionId,
             ["home_dir"]        = PathHelpers.HomeDirectory,
             ["started_at"]      = DateTimeOffset.UtcNow.ToString("O")
         };
@@ -158,7 +160,7 @@ static class DshHookCommand {
 
         var forwarded = new JsonObject {
             ["hook_event_name"] = "sessionEnd",
-            ["session_id"]      = sessionIdRaw,
+            ["session_id"]      = sessionId,
             ["reason"]          = GetArg(args, "--reason") ?? "idle",
             ["home_dir"]        = PathHelpers.HomeDirectory,
             ["ended_at"]        = DateTimeOffset.UtcNow.ToString("O")

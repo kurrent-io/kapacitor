@@ -35,6 +35,22 @@ public class DshImportSourceTests {
     }
 
     [Test]
+    public async Task discovery_canonicalizes_a_session_guid_id_to_the_36_char_contract() {
+        using var tmp = new TempDir();
+        // Real dsh id shape: session-<guid> (44 chars). The file keeps the raw name; the
+        // discovered SessionId must be the embedded dashless GUID (<=36) so it lists.
+        const string rawId = "session-e1d79e8a-9b62-4b23-b576-7e7493c09dba";
+        await File.WriteAllTextAsync(Path.Combine(tmp.Path, rawId + ".jsonl"), Header + "\n" + UserLine + "\n");
+
+        var found = await new DshImportSource(sessionsDirOverride: tmp.Path)
+            .DiscoverAsync(new DiscoveryFilters(null, null, null, 1), CancellationToken.None);
+
+        await Assert.That(found.Count).IsEqualTo(1);
+        await Assert.That(found[0].SessionId).IsEqualTo("e1d79e8a9b624b23b5767e7493c09dba");
+        await Assert.That(found[0].SessionId.Length).IsLessThanOrEqualTo(36);
+    }
+
+    [Test]
     public async Task discovery_session_filter_matches_dashless_id() {
         using var tmp = new TempDir();
         await File.WriteAllTextAsync(Path.Combine(tmp.Path, "sess-abc.jsonl"), Header + "\n" + UserLine + "\n");
