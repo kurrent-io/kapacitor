@@ -15,10 +15,27 @@ public class SuggestReviewFlowSkillConformanceTests {
         => await Assert.That(AgentsSkillsInstaller.SourceNames).Contains("suggest-review-flow");
 
     [Test]
+    public async Task Description_stays_within_the_1024_char_skill_limit() {
+        // Strict harnesses (e.g. Copilot) reject a skill whose description exceeds 1024 chars and
+        // then SILENTLY fail to load it — so the skill never triggers there. Keep the folded
+        // description under the cap. (An over-length description shipped only in a held branch once;
+        // this guard stops it recurring.)
+        await Assert.That(FoldedDescription().Length).IsLessThanOrEqualTo(1024);
+    }
+
+    // The folded description — whitespace collapsed, as YAML unfolds a `>-` block and as the harness
+    // actually sees it. Raw-text substring checks are fragile to line wrapping (a wrapped phrase looks
+    // absent), so pin against the folded form.
+    static string FoldedDescription() {
+        var m = System.Text.RegularExpressions.Regex.Match(SkillText(), @"(?m)^description: >-\n((?:^  .*\n)+)");
+        return System.Text.RegularExpressions.Regex.Replace(m.Groups[1].Value, @"\s+", " ").Trim();
+    }
+
+    [Test]
     public async Task Description_carries_both_milestone_triggers() {
-        var text = SkillText();
-        await Assert.That(text).Contains("implementation is complete");
-        await Assert.That(text).Contains("spec is finalized");
+        var d = FoldedDescription();
+        await Assert.That(d).Contains("implementation is complete");
+        await Assert.That(d).Contains("spec is finalized");
     }
 
     [Test]

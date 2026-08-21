@@ -1,19 +1,15 @@
 ---
 name: suggest-review-flow
 description: >-
-  Use this skill to PROACTIVELY OFFER an independent review flow at a natural
-  milestone — right after you finish writing or finalizing a spec/design, and
-  right after implementation is complete (a feature or bugfix is functionally
-  finished, or you are about to commit / open a PR / merge). It suggests handing
-  the work to a SEPARATE reviewer harness and, using list_reviewer_vendors,
-  recommends a reviewer that will actually run for this repo. Triggers:
-  "implementation is complete", "I've finished implementing", "the feature is
-  done", "ready to commit", "about to open a PR", "spec is finalized", "just
-  wrote the design". It only OFFERS and asks — it never starts a flow on its
-  own, and it hands execution to the review-flows skill once the user accepts.
-  Do NOT use it when the user asks you to review something yourself ("review
-  this", "code review this", "look over my spec") — just do that review
-  directly; and do not use it to START a flow (that is the review-flows skill).
+  Use this skill when implementation is complete — a feature or bugfix is functionally
+  finished, tests pass, or you are about to commit / open a PR / merge — or when a spec is
+  finalized. At that moment, proactively OFFER an independent second-harness review even if
+  the user did not ask, because a fresh, separate reviewer catches what the author's own model
+  misses. It calls list_reviewer_vendors to recommend a reviewer that will actually run for
+  this repo, offers a spec-review or code-review flow, and hands off to the review-flows skill
+  only after the user accepts — it never starts a flow itself. Do NOT use it when the user
+  asks you to review something yourself ("review this", "code review this", "look over my
+  spec"), or mid-task before the work is finished.
 ---
 
 # Suggest a review flow

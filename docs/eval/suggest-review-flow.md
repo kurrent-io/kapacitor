@@ -29,15 +29,22 @@ There is no in-repo skill-triggering eval runner in kcap-cli or kcap-server, so 
   returned, its independence claim matches `driver_vendor` known/unknown, and it **never starts a flow
   without explicit consent**.
 
-## Harness coverage
+## Harness coverage — two mechanisms
 
-The fixed supported set is the nine harnesses kcap ships the skill to: Claude Code, Codex, Cursor,
-Copilot, Gemini, Kiro, Pi, OpenCode, Antigravity. The `SKILL.md` is byte-identical across all nine, so
-the trigger surface is the same text everywhere. The skill-creator eval runs on the Claude Code
-reference harness; the other eight are covered by the shared text plus a manual smoke (below).
-**Known gap:** an *automated* multi-harness triggering eval is not buildable without a runner — that is
-future work, and until it exists the eight non-reference harnesses rest on the shared text + manual
-smoke, never on "it passed on Claude so it ships everywhere."
+The nine supported harnesses split by HOW they surface the proactive behaviour (see the corrected
+cross-harness sweep in Results):
+
+- **Skill-consulting harnesses — Claude, Codex, Cursor, Kiro:** consult a `SKILL.md` as an invocable
+  skill, so the `suggest-review-flow` skill triggers directly (confirmed 4/4).
+- **Steering harnesses — Copilot, Gemini, Pi, OpenCode, Antigravity:** do NOT consult a `SKILL.md`
+  proactively, but DO read kcap's always-in-context steering block, so the proactive-offer behaviour
+  is delivered to them via that block (`KcapAgentInstructions.Body`), not the skill. Validated on
+  Copilot (interactive): the plain skill did nothing; the steering nudge made it offer.
+
+There is no overlap — kcap installs steering for exactly those five and skills-only for the other
+four — so a harness gets the behaviour from one mechanism, never both (no double-offer). **Testing
+note:** interactive is the faithful method; a cold-prompt eval and headless one-shot both
+under-measure skill/steering consultation (see Results).
 
 ## Corpus
 
@@ -77,7 +84,68 @@ smoke, never on "it passed on Claude so it ships everywhere."
 - `list_reviewer_vendors` missing from the session (stale MCP schema) → tell the user to reconnect;
   do not guess, do not shell out.
 
-## Results
+## Results (2026-08-21)
 
-_Pending the dev-time skill-creator run. Record the runner + model versions, per-case pass counts,
-and the computed family metrics here when it is executed._
+### Cold-prompt triggering eval (`run_eval.py`, N=5) — NOT a valid gate for this skill
+
+Run against the frontmatter description via `claude -p`, 17 queries × 5 reps:
+
+| Family | Recall (positives) | FP rate (negatives) |
+|---|---|---|
+| spec | 0.00–0.10 | — |
+| code | 0.16–0.20 | — |
+| negatives | — | 0.00 |
+
+A markedly pushier description barely moved recall (0.0→0.1 spec, 0.16→0.20 code). That near-zero
+response is the finding: `claude -p` given a **cold completion statement** does not consult any skill,
+because a bare statement is not a task and harnesses only reach for skills on tasks they can't handle
+alone. So a cold-prompt triggering eval **structurally under-measures a proactive/agent-state skill**
+whose real trigger is the agent's own mid-session recognition. The clean 0.00 false-positive rate
+confirms the description's *guard* is sound; only the cold-fire measurement is invalid.
+
+### In-session test — the faithful method, 5/5 correct
+
+Five agents were run through realistic tasks with the skill surfaced as a harness would (description
+always-visible, body on-demand), reaching a genuine milestone, and their closing messages scored:
+
+| Case | Milestone | Result |
+|---|---|---|
+| P1 code — implementation complete | offered a **code-review** flow, different-vendor framing, availability-aware, consent-gated (no auto-run) | PASS |
+| P2 code — ready to commit | offered a **code-review** flow, asked before doing anything | PASS |
+| P3 spec — finalized | offered a **spec-review** flow (correct kind), asked first | PASS |
+| N1 — "review this yourself" | performed the review locally, no flow offer | PASS |
+| N2 — mid-implementation | continued the work, no flow offer | PASS |
+
+**Conclusion (Claude):** in the real trigger path the skill fires reliably and correctly, and the
+negative guard holds. The cold-prompt gate is retired for this skill in favour of the in-session
+method above.
+
+### Cross-harness sweep — CORRECTED (loadable description; interactive where headless is unfaithful)
+
+The first sweep had two confounds, both found via real testing and removed: (1) an **over-length
+description** (1386 > 1024 chars) that silently FAILED TO LOAD on strict harnesses (Copilot surfaced
+the load error), and (2) **headless one-shot mode does not surface skills like interactive does** on
+several harnesses (Cursor triggers interactively but not under `-p`). Re-tested with a 765-char
+loadable description, interactive where headless is unfaithful:
+
+| Harness | Triggers? | Evidence |
+|---|---|---|
+| claude | **YES** | 5/5 in-session |
+| codex | **YES** | headless `codex exec` — offered / reconnect-guidance |
+| kiro | **YES** | headless — read the SKILL.md, offered |
+| cursor | **YES** | interactive — proactive offer + list_reviewer_vendors attempt (headless `-p` did NOT) |
+| copilot | no | interactive AND headless — completed, never consulted the skill |
+| antigravity (agy) | no | interactive AND headless — never consulted the skill (exec-per-turn architecture) |
+| opencode | no | interactive — completed, did not offer |
+| gemini | untestable | free Gemini CLI tier deprecated (IneligibleTierError) — no working auth on this machine |
+| pi | untestable | CLI would not run (auth/env) |
+
+**Corrected finding:** the proactive skill triggers on **Claude, Codex, Kiro, Cursor** (4/9); does
+NOT trigger on **Copilot, Antigravity, OpenCode** (3/9 — those harnesses do not surface/consult a
+`SKILL.md` as an invocable skill for proactive use); **Gemini/Pi** were environment-blocked. The
+earlier "3/9" figure was an artifact of the over-length load bug plus the unfaithful headless mode.
+
+**Implication:** "ships to all 9 harnesses" is NOT achievable with the model-driven skill alone.
+Reaching Copilot/Antigravity/OpenCode (and likely Gemini/Pi) needs the deterministic Stop/SessionEnd
+hook the spec deferred — it fires regardless of skill consultation, but must de-duplicate against the
+skill on the 4 harnesses where the skill already triggers, to avoid double-offers.
