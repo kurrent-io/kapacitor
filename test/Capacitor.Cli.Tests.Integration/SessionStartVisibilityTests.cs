@@ -143,7 +143,7 @@ public class SessionStartVisibilityTests : IDisposable {
         var inv  = body["harness_inventory"];
         await Assert.That(inv).IsNotNull();
         await Assert.That(string.IsNullOrEmpty(inv!["machine_id"]?.GetValue<string>())).IsFalse();
-        await Assert.That(inv["vendors"]!.AsObject().Count).IsEqualTo(9);
+        await Assert.That(inv["vendors"]!.AsObject().Count).IsEqualTo(10);
         await Assert.That(inv["vendors"]!["claude"]!["wired"]).IsNotNull(); // per-vendor {detected,wired} shape
     }
 
