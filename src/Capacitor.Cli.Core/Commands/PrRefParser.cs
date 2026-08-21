@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace Capacitor.Cli.Core.Commands;
@@ -16,21 +17,21 @@ public static partial class PrRefParser {
         var gh = GitHubUrlPattern().Match(input);
         if (gh.Success) {
             owner = gh.Groups[1].Value; repo = gh.Groups[2].Value;
-            prNumber = int.Parse(gh.Groups[3].Value);
+            prNumber = int.Parse(gh.Groups[3].Value, CultureInfo.InvariantCulture);
             return true;
         }
 
         var gl = GitLabUrlPattern().Match(input);
         if (gl.Success) {
             owner = gl.Groups[1].Value; repo = gl.Groups[2].Value;
-            prNumber = int.Parse(gl.Groups[3].Value);
+            prNumber = int.Parse(gl.Groups[3].Value, CultureInfo.InvariantCulture);
             return true;
         }
 
         var shortMatch = ShorthandPattern().Match(input);
         if (shortMatch.Success) {
             owner = shortMatch.Groups[1].Value; repo = shortMatch.Groups[2].Value;
-            prNumber = int.Parse(shortMatch.Groups[3].Value);
+            prNumber = int.Parse(shortMatch.Groups[3].Value, CultureInfo.InvariantCulture);
             return true;
         }
 

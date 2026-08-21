@@ -1,5 +1,5 @@
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
+using Capacitor.Cli.Harness.Gemini;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -18,8 +18,11 @@ namespace Capacitor.Cli.Tests.Integration;
 /// <c>AgentSubsession-*</c>.
 /// </summary>
 public class GeminiSubagentImportTests : IDisposable {
-    readonly WireMockServer _server  = WireMockServer.Start();
-    readonly string         _tempDir = Directory.CreateTempSubdirectory("kcap-gemini-sub-it").FullName;
+    readonly WireMockServer _server = WireMockServer.Start();
+    readonly TempDir        _tmp    = new();
+    readonly string         _tempDir;
+
+    public GeminiSubagentImportTests() => _tempDir = _tmp.Path;
 
     const string DashedParent   = "0a900000-0000-4000-8000-000000000903";
     const string DashlessParent = "0a900000000040008000000000000903";
@@ -28,7 +31,7 @@ public class GeminiSubagentImportTests : IDisposable {
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_tempDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     // Writes a parent main session (with an invoke_agent call) + the nested subagent file,

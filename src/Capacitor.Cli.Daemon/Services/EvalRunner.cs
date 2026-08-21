@@ -203,12 +203,11 @@ sealed class DaemonEvalObserver(
         string           sessionId,
         ILogger          logger
     ) : IEvalObserver {
-    // Serialize SignalR relays so concurrent Task.Runs don't interleave;
-    // the dashboard expects EvalStarted → question completions →
-    // EvalFinished/EvalFailed in order. SemaphoreSlim suffices because
-    // the observer is called synchronously from EvalService — only the
-    // async send to SignalR could otherwise reorder.
-    readonly SemaphoreSlim _relayLock = new(1, 1);
+    // The dashboard expects EvalStarted → question completions → EvalFinished/EvalFailed in order.
+    // A chain rather than a semaphore: relays are fire-and-forget, so there is no point at which a
+    // semaphore could be disposed without racing one still in flight.
+    readonly Lock _tailLock = new();
+    Task _tail = Task.CompletedTask;
 
     public void OnInfo(string message) =>
         logger.LogDebug("[eval {Run}] {Message}", evalRunId, message);
@@ -273,17 +272,18 @@ sealed class DaemonEvalObserver(
     }
 
     void Relay(Func<Task> send, string eventName) {
-        _ = Task.Run(async () => {
-                await _relayLock.WaitAsync();
-
-                try {
-                    await send();
-                } catch (Exception ex) {
-                    logger.LogWarning(ex, "Failed to relay {Event} for eval {Run}", eventName, evalRunId);
-                } finally {
-                    _relayLock.Release();
-                }
-            }
-        );
+        // Never ExecuteSynchronously: that would chain every relay onto SignalR's completion thread.
+        lock (_tailLock) {
+            _tail = _tail.ContinueWith(
+                async _ => {
+                    try {
+                        await send();
+                    } catch (Exception ex) {
+                        logger.LogWarning(ex, "Failed to relay {Event} for eval {Run}", eventName, evalRunId);
+                    }
+                },
+                CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default
+            ).Unwrap();
+        }
     }
 }

@@ -10,21 +10,21 @@ namespace Capacitor.Cli.Core;
 /// to stay NativeAOT-safe (no reflection serializer).
 /// </summary>
 public sealed record DaemonRestartMarker(string RunningVersion, string Reason, DateTimeOffset QueuedAt) {
-    public static void Write(string daemonName, DaemonRestartMarker m) {
-        DaemonLockPaths.EnsureDirectory();
+    public static void Write(DaemonStore store, string daemonName, DaemonRestartMarker m) {
+        store.EnsureDirectory();
         var obj = new JsonObject {
             ["running_version"] = m.RunningVersion,
             ["reason"]          = m.Reason,
             ["queued_at"]       = m.QueuedAt,
         };
-        var path = DaemonLockPaths.RestartPendingPath(daemonName);
+        var path = store.RestartPendingPath(daemonName);
         var tmp  = $"{path}.tmp";
         File.WriteAllText(tmp, obj.ToJsonString());
         File.Move(tmp, path, overwrite: true);
     }
 
-    public static DaemonRestartMarker? TryRead(string daemonName) {
-        var path = DaemonLockPaths.RestartPendingPath(daemonName);
+    public static DaemonRestartMarker? TryRead(DaemonStore store, string daemonName) {
+        var path = store.RestartPendingPath(daemonName);
         if (!File.Exists(path)) return null;
         try {
             var node = JsonNode.Parse(File.ReadAllText(path));
@@ -37,8 +37,8 @@ public sealed record DaemonRestartMarker(string RunningVersion, string Reason, D
         }
     }
 
-    public static void Delete(string daemonName) {
-        try { File.Delete(DaemonLockPaths.RestartPendingPath(daemonName)); } catch { /* best-effort */ }
+    public static void Delete(DaemonStore store, string daemonName) {
+        try { File.Delete(store.RestartPendingPath(daemonName)); } catch { /* best-effort */ }
     }
 
     /// <summary>One-line status text for <c>kcap daemon status</c>.</summary>

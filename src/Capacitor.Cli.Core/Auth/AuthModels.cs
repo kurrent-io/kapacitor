@@ -66,8 +66,8 @@ public record AuthErrorResponse {
     public string? Error { get; init; }
 }
 
-// GitHub Device Flow: POST https://github.com/login/device/code
-public record GitHubDeviceCodeResponse {
+// RFC 8628 device authorization response. Shared: GitHub and WorkOS return the same shape.
+public record DeviceCodeResponse {
     [JsonPropertyName("device_code")]
     public string DeviceCode { get; init; } = "";
 
@@ -77,8 +77,28 @@ public record GitHubDeviceCodeResponse {
     [JsonPropertyName("verification_uri")]
     public string VerificationUri { get; init; } = "";
 
+    /// <summary>RFC 8628 §3.3.1 — the same page with the code pre-filled. Open this when a browser is
+    /// available; print <see cref="VerificationUri"/> for the code being typed on another device.</summary>
+    [JsonPropertyName("verification_uri_complete")]
+    public string? VerificationUriComplete { get; init; }
+
+    /// <summary>What to open on a best-effort browser launch, falling back when the server omits it.</summary>
+    public string BrowserUri =>
+        string.IsNullOrEmpty(VerificationUriComplete) ? VerificationUri : VerificationUriComplete;
+
+    // Both default to 0 when the server omits them: a property initializer does NOT survive
+    // source-generated deserialization. Read them through the accessors below, never directly.
     [JsonPropertyName("interval")]
-    public int Interval { get; init; } = 5;
+    public int Interval { get; init; }
+
+    [JsonPropertyName("expires_in")]
+    public int ExpiresIn { get; init; }
+
+    /// <summary>RFC 8628 §3.5's default when the server omits it.</summary>
+    public int IntervalOrDefault => Interval > 0 ? Interval : 5;
+
+    /// <summary>Bounds the poll loop. §3.2 makes it REQUIRED, but an absent one must not mean forever.</summary>
+    public int ExpiresInOrDefault => ExpiresIn > 0 ? ExpiresIn : 900;
 }
 
 // GitHub Device Flow: POST https://github.com/login/oauth/access_token
@@ -103,6 +123,15 @@ public record WorkOSAuthResponse {
 
     [JsonPropertyName("refresh_token")]
     public string? RefreshToken { get; init; }
+
+    /// <summary>Only the device grant polls this endpoint, so only it ever sees an error body here
+    /// (<c>authorization_pending</c>, <c>slow_down</c>, <c>access_denied</c>, <c>expired_token</c>).</summary>
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
+
+    // Deliberately does not model authkit_authorization_code: the device grant returns one, it is
+    // exchangeable for tokens by another application, and nothing here needs it. Not modelling it is
+    // what keeps it out of logs and transcripts.
 }
 
 public record WorkOSUserInfo {

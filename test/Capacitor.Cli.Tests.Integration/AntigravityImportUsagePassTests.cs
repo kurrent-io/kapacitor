@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Harness.Antigravity;
 using Microsoft.Data.Sqlite;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -15,13 +16,16 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class AntigravityImportUsagePassTests : IDisposable {
     readonly WireMockServer _server = WireMockServer.Start();
-    readonly string         _home   = Directory.CreateTempSubdirectory("kcap-ag-usage-it").FullName;
+    readonly TempDir        _tmp    = new();
+    readonly string         _home;
+
+    public AntigravityImportUsagePassTests() => _home = _tmp.Path;
 
     const string Root = "11110000-0000-4000-8000-000000000001";
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_home, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     string BrainDir(string convId) => Path.Combine(_home, ".gemini", "antigravity", "brain", convId);

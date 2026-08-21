@@ -33,14 +33,23 @@ internal sealed record SessionStartMemoryEntry(
     [property: JsonPropertyName("slug")] string? Slug,
     [property: JsonPropertyName("audience")] string? Audience,
     [property: JsonPropertyName("description")] string? Description,
-    [property: JsonPropertyName("kind")] string? Kind);
+    [property: JsonPropertyName("kind")] string? Kind,
+    // The memory's home scope (org|project|repo) + the resolved project slug for a project-scoped row.
+    // Defaulted so an older server (no scope fields) parses as org, which renders unannotated.
+    [property: JsonPropertyName("scope_kind")] string? ScopeKind = null,
+    [property: JsonPropertyName("project_slug")] string? ProjectSlug = null);
 
 internal sealed record SessionStartMemoryContextRequest(
     string BaseUrl,
     string? Cwd,
     bool Disabled,
     TimeSpan Budget,
-    CancellationToken CancellationToken);
+    CancellationToken CancellationToken,
+    // the guidelines lane's opt-out (disable_session_guidelines), independent of the
+    // memory lane's Disabled (disable_memory_index). Additive with a default so the Claude
+    // memory-only construction — which never runs the guidelines lane — compiles untouched and
+    // stays guidelines-off. The eight non-Claude adapters set it explicitly from activeProfile.
+    bool GuidelinesDisabled = true);
 
 internal sealed record SessionStartMemoryContextResult(
     SessionStartMemoryDisposition Disposition,

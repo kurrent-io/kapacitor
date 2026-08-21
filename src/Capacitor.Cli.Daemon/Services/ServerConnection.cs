@@ -22,6 +22,17 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     readonly PendingPermissionRegistry _pendingPermissions  = new();
     readonly PendingAcpInteractionRegistry _pendingAcpInteractions = new();
 
+    // The change-generation counter behind the DaemonStatus push. Optional ctor param so the
+    // existing direct-construction sites (and DI, which resolves an optional parameter to a
+    // registered singleton when one exists) keep compiling unchanged; several test files
+    // subclass ServerConnection calling the 3-arg base, which the trailing default preserves.
+    readonly DaemonStatusNotifier _statusNotifier;
+
+    /// <summary>Test seam: exposes which notifier this connection actually pulses into, so a DI
+    /// wiring test can pin that the registered singleton — not a private fallback nobody
+    /// subscribes to — is the one every hub-state pulse reaches (see DaemonStatusWiringTests).</summary>
+    internal DaemonStatusNotifier StatusNotifierForTest => _statusNotifier;
+
     /// <summary>
     /// Every currently-active ACP session↔agent binding this daemon owns, keyed by agentId.
     /// Populated by <see cref="RegisterAcpBinding"/> (right after the initial
@@ -57,6 +68,12 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     public Func<FinalizeEvalCommand, Task<FinalizeResult>>? FinalizeEvalHandler { get; set; }
     public Func<CancelEvalCommand,   Task>?                 CancelEvalHandler   { get; set; }
 
+    /// <summary>Task 8: handler for the server's <c>ResolveReviewerModel</c> client-result
+    /// invocation — the side-effect-free reviewer-model preflight. Set by <see cref="AgentOrchestrator"/>
+    /// at startup; when null (early startup / an old daemon build), the registration below returns a
+    /// fail-closed <c>"unavailable"</c> reply so the server never applies an unresolved override.</summary>
+    public Func<ReviewerModelResolveRequestV1, Task<ReviewerModelResolveResponseV1>>? ResolveReviewerModelHandler { get; set; }
+
     /// <summary>
     /// Handler for the server's "do you have a checkout of this repo?" probe.
     /// Receives <c>(owner, repo, candidatePaths)</c> and returns confirmed git
@@ -73,7 +90,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     public Func<string, Task<BorrowProbeResult>>? ProbeBorrowSourceHandler { get; set; }
 
     /// <summary>
-    /// Callback invoked at <see cref="RegisterDaemon"/> time to snapshot the
+    /// Callback invoked at <see cref="RegisterDaemonAsync"/> time to snapshot the
     /// agent IDs currently hosted by this daemon. The server uses this to
     /// reconcile its registry against the daemon's view. Set by
     /// <see cref="AgentOrchestrator"/> at startup; when null, an empty array
@@ -161,18 +178,21 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
         catch (Exception ex) { _logger.LogDebug(ex, "CommandRejected send failed (old server or transient)"); }
     }
 
-    public ServerConnection(DaemonConfig config, ILoggerFactory loggerFactory, ILogger<ServerConnection> logger) {
-        _config = config;
-        _logger = logger;
+    public ServerConnection(
+            DaemonConfig config, ILoggerFactory loggerFactory, ILogger<ServerConnection> logger,
+            DaemonStatusNotifier? statusNotifier = null) {
+        _config          = config;
+        _logger          = logger;
+        _statusNotifier  = statusNotifier ?? new();
 
         _hub = new HubConnectionBuilder()
             .WithUrl(
                 $"{config.ServerUrl.TrimEnd('/')}/hubs/sessions",
                 options => {
                     options.AccessTokenProvider = async () => {
-                        var tokens = await TokenStore.GetValidTokensAsync();
+                        var resolution = await TokenStore.GetValidTokensForServerAsync(config.ServerUrl);
 
-                        return tokens?.AccessToken;
+                        return resolution.Tokens?.AccessToken;
                     };
                 }
             )
@@ -221,7 +241,10 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
         // mutation, so it invokes inline and returns a completed task.
         _hub.On<StopAgentV2>("StopAgentV2", cmd => SafeInvoke("StopAgentV2", () => OnStopAgentV2?.Invoke(cmd)));
         _hub.On<AckProcessedPrefix>("AckProcessedPrefix", ack => { OnAckProcessedPrefix?.Invoke(ack); return Task.CompletedTask; });
-        _hub.On("RequestStatusReport", () => SafeInvoke("RequestStatusReport", () => OnRequestStatusReport?.Invoke()));
+        // Offloaded via Task.Run, same as the delivery site's report in AgentOrchestrator.HandleSendInput:
+        // OnRequestStatusReport ends in the same gated SendDaemonStatusReportOnceAsync, and awaiting it
+        // inline here would park this receive loop behind another emission's whole hub send.
+        _hub.On("RequestStatusReport", () => { _ = Task.Run(() => SafeInvoke("RequestStatusReport", () => OnRequestStatusReport?.Invoke())); return Task.CompletedTask; });
 
         // Client-result invocations for per-phase eval dispatch.
         _hub.On<PrepareEvalCommand, PrepareResult>("PrepareEval",
@@ -238,6 +261,18 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
 
         _hub.On<CancelEvalCommand>("CancelEval",
             cmd => CancelEvalHandler?.Invoke(cmd) ?? Task.CompletedTask);
+
+        // Task 8: side-effect-free reviewer-model preflight (server→daemon client-result
+        // invocation). When the orchestrator hasn't wired the handler (early startup), fail closed with
+        // an "unavailable" reply that still echoes RequestId/Vendor so the server's correlation guard
+        // passes and it treats the model as simply unavailable. PolicyVersion is always THIS daemon's own
+        // RPC protocol version (never an echo of the request's expectation) — matching the invariant the
+        // real HandleResolveReviewerModel handler upholds, so a protocol drift is detected the same way
+        // whether or not the orchestrator has wired a handler yet.
+        _hub.On<ReviewerModelResolveRequestV1, ReviewerModelResolveResponseV1>("ResolveReviewerModel",
+            req => ResolveReviewerModelHandler?.Invoke(req)
+                ?? Task.FromResult(new ReviewerModelResolveResponseV1(
+                    req.RequestId, req.Vendor, ReviewerModelResolvers.RpcProtocolVersion, "unavailable")));
 
         // Server probe used by the "Review this PR" UI to discover which
         // checkouts on this daemon match the PR's owner/repo. Returns an empty
@@ -322,6 +357,32 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     volatile bool     _disposed;
     Task?             _eventProcessorTask;
 
+    /// <summary>
+    /// Guards <see cref="DisposeAsync"/> so its body runs exactly once — the DI container tracks
+    /// this singleton AND <c>DaemonRunner</c> disposes it explicitly, so DisposeAsync runs twice
+    /// by construction on every shutdown. Distinct from <see cref="_disposed"/>, which is a
+    /// live-path flag read by <see cref="OnClosed"/>.
+    /// </summary>
+    int _disposeOnce;
+
+    /// <summary>Counts entries into the <see cref="DisposeAsync"/> body (post-guard). Test seam:
+    /// proves durably that a second dispose did NOT re-enter the body, so removal of the run-once
+    /// guard fails a suite test permanently rather than only a one-off mutation check.</summary>
+    int _disposeBodyRuns;
+
+    internal int DisposeBodyRuns => Volatile.Read(ref _disposeBodyRuns);
+
+    /// <summary>Test seam: the terminal-sender CTS, so tests can assert it ends cancelled AND
+    /// disposed after the first dispose pass (removal of the Dispose call fails the suite).</summary>
+    internal CancellationTokenSource? TerminalSenderCtsForTests => _terminalSenderCts;
+
+    /// <summary>Test seam: lets a test swap in a faulting awaited task and assert the failure is
+    /// contained + logged while the mandatory resource release still runs.</summary>
+    internal Task? EventProcessorTaskForTests {
+        get => _eventProcessorTask;
+        set => _eventProcessorTask = value;
+    }
+
     readonly TerminalOutputSender    _terminalSender;
     Task?                            _terminalSenderTask;
     CancellationTokenSource?         _terminalSenderCts;
@@ -369,41 +430,109 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
         await ConnectWithRetryAsync(ct);
     }
 
-    async Task ConnectWithRetryAsync(CancellationToken ct) {
-        var delays  = new[] { 1, 2, 5, 10, 30 };
-        var attempt = 0;
+    /// <summary>
+    /// Serializes <see cref="ConnectWithRetryAsync"/> so the initial connect and every
+    /// <see cref="OnClosed"/>-triggered reconnect share ONE retry loop. Without this, each
+    /// close event spawned another concurrent loop against the same <see cref="HubConnection"/>;
+    /// the loser called <c>StartAsync</c> on a hub the winner had already started and got
+    /// "cannot be started if it is not in the Disconnected state" — forever, at Warning,
+    /// every 30s, against a perfectly healthy connection (issue #374).
+    /// </summary>
+    readonly SemaphoreSlim _connectLock = new(1, 1);
 
-        while (!ct.IsCancellationRequested) {
-            try {
-                LogConnecting(_config.ServerUrl);
-                await _hub.StartAsync(ct);
-                await RegisterDaemon();
-                _connectedTimestamp = Stopwatch.GetTimestamp();
-                LogConnected(_config.Name);
+    /// <summary>
+    /// Backoff schedule for <see cref="ConnectWithRetryAsync"/> (stays at the last entry once
+    /// exhausted). Settable so tests can drive the retry path without real multi-second waits.
+    /// </summary>
+    internal TimeSpan[] ConnectRetryDelays { get; set; } = [
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(10),
+        TimeSpan.FromSeconds(30)
+    ];
 
-                return;
-            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
-                throw;
-            } catch (Exception ex) when (IsNameInUse(ex)) {
-                // server explicitly rejected this daemon because
-                // another live daemon owns the (owner, name) slot. Don't
-                // retry — retrying would just thrash the incumbent.
-                // RegisterDaemon already fired OnNameInUse before re-throwing
-                // here; we just need to propagate so DaemonRunner exits
-                // with code 3 instead of looping forever.
-                throw;
-            } catch (Exception ex) {
-                var delay = delays[Math.Min(attempt, delays.Length - 1)];
-                LogConnectionAttemptFailed(ex, attempt + 1, delay);
-                await Task.Delay(TimeSpan.FromSeconds(delay), ct);
-                attempt++;
+    /// <summary>Raw hub state — a seam so the retry loop's state checks are unit-testable
+    /// without a live SignalR transport.</summary>
+    internal virtual HubConnectionState HubState => _hub.State;
+
+    /// <summary>Raw <see cref="HubConnection.StartAsync"/> — a seam for the same reason.</summary>
+    internal virtual Task StartHubAsync(CancellationToken ct) => _hub.StartAsync(ct);
+
+    /// <summary>Raw <see cref="HubConnection.StopAsync"/> — a seam so
+    /// <see cref="ForceReconnectAsync"/>'s wedged-transport cap is unit-testable.</summary>
+    internal virtual Task StopHubAsync(CancellationToken ct) => _hub.StopAsync(ct);
+
+    /// <summary>How long <see cref="ForceReconnectAsync"/> waits for the hub stop before
+    /// abandoning it. Settable so tests don't wait the real 5 s.</summary>
+    internal TimeSpan ForceStopCap { get; set; } = TimeSpan.FromSeconds(5);
+
+    internal async Task ConnectWithRetryAsync(CancellationToken ct) {
+        await _connectLock.WaitAsync(ct);
+
+        try {
+            var attempt = 0;
+
+            while (!ct.IsCancellationRequested) {
+                try {
+                    // Another path may have healed the connection while this call was queued on
+                    // the lock or sleeping in backoff — SignalR's automatic reconnect
+                    // (OnReconnected → RegisterDaemonAsync) or the heartbeat's ReRegisterAsync.
+                    // A live, registered connection needs nothing from this loop.
+                    if (IsReady) return;
+
+                    // Only start a hub that is actually Disconnected. Connected means the
+                    // transport is fine and registration is the missing half (e.g. the previous
+                    // iteration's RegisterDaemonAsync threw after StartAsync succeeded).
+                    // Connecting/Reconnecting means automatic reconnect owns the transport;
+                    // RegisterDaemonAsync below fails ("connection is not active"), we back off,
+                    // and re-check — auto-reconnect terminally either restores the connection or
+                    // exhausts to Disconnected (firing Closed), so this converges.
+                    if (HubState == HubConnectionState.Disconnected) {
+                        LogConnecting(_config.ServerUrl);
+                        await StartHubAsync(ct);
+                        // Hub is now Connected (pre-registration) — pulse so a subscriber that
+                        // snapshotted while still "connecting" converges without waiting for
+                        // RegisterDaemonAsync too.
+                        _statusNotifier.Pulse();
+                    }
+
+                    await RegisterDaemonAsync();
+                    _connectedTimestamp = Stopwatch.GetTimestamp();
+                    LogConnected(_config.Name);
+                    _statusNotifier.Pulse();
+
+                    return;
+                } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                    throw;
+                } catch (Exception ex) when (IsNameInUse(ex)) {
+                    // server explicitly rejected this daemon because
+                    // another live daemon owns the (owner, name) slot. Don't
+                    // retry — retrying would just thrash the incumbent.
+                    // RegisterDaemonAsync already fired OnNameInUse before re-throwing
+                    // here; we just need to propagate so DaemonRunner exits
+                    // with code 3 instead of looping forever.
+                    throw;
+                } catch (Exception ex) {
+                    var delay = ConnectRetryDelays[Math.Min(attempt, ConnectRetryDelays.Length - 1)];
+                    LogConnectionAttemptFailed(ex, attempt + 1, delay.TotalSeconds);
+                    // The failed attempt has returned the hub to Disconnected — pulse so a
+                    // subscriber converges to "disconnected" during the backoff instead of a
+                    // stale "connecting" (Codex P2: initial-start failures never fired a pulse).
+                    _statusNotifier.Pulse();
+                    await Task.Delay(delay, ct);
+                    attempt++;
+                }
             }
-        }
 
-        ct.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
+        } finally {
+            _connectLock.Release();
+        }
     }
 
     async Task OnClosed(Exception? ex) {
+        _statusNotifier.Pulse();
         _gate.MarkUnregistered();
 
         if (_disposed || _ct.IsCancellationRequested) {
@@ -439,17 +568,31 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// readiness on the heartbeat slot-displacement path (DaemonHeartbeatLoop.cs → ReRegisterAsync),
     /// where the transport stays up and no Reconnecting/Closed event fires.
     /// </summary>
-    Task RegisterDaemon() =>
+    internal virtual Task RegisterDaemonAsync() =>
         _gate.RunRegistrationAsync(
             daemonConnect: DaemonConnectAsync,
-            reRegisterAgents: ReRegisterAgentsAndAcpBindingsAsync
+            reRegisterAgents: ReRegisterAgentsAndAcpBindingsAsync,
+            // Runs AFTER MarkRegistered, i.e. with IsReady == true, so a re-delivery here actually reaches
+            // the server — inside reRegisterAgents it would be silently dropped by the CommandAckAsync
+            // IsReady gate. Contained so a failing re-delivery never un-registers the daemon.
+            postRegister: async () => {
+                try { await (OnRegisteredHook?.Invoke() ?? Task.CompletedTask); }
+                // Cancellation (shutdown) propagates — never contained as a hook failure.
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) {
+                    // The log itself is contained: a throwing ILogger provider is a supported input, so a
+                    // bare LogDebug here could re-throw and defeat this very containment.
+                    try { _logger.LogDebug(ex, "post-registration hook failed — ignoring"); }
+                    catch { /* logger provider threw — swallow so post-register containment holds */ }
+                }
+            }
         );
 
     /// <summary>
     /// Composes the existing per-agent re-registration hook with the ACP reconnect re-bind — AFTER
     /// agent re-registration, so per-session agent ownership is restored before an ACP binding tries
     /// to reference its agent. Both steps
-    /// run inside <see cref="RegisterDaemon"/>'s <see cref="RegistrationGate.RunRegistrationAsync"/>
+    /// run inside <see cref="RegisterDaemonAsync"/>'s <see cref="RegistrationGate.RunRegistrationAsync"/>
     /// bracket, i.e. strictly BEFORE <see cref="IsReady"/> can report true — <c>internal</c> (not
     /// <c>private</c>) so it can be driven directly in tests without a live hub connection.
     /// </summary>
@@ -458,7 +601,27 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
         await ReBindAcpSessionsAsync();
     }
 
+    /// <summary>Serialises DTO construction AND invocation. Two registrations can otherwise each
+    /// capture their own <c>_config</c> snapshot and land in either order: the heartbeat's
+    /// slot-displaced re-registration can capture the OLD capabilities, the certification self-heal
+    /// can then publish the NEW ones, and if the heartbeat's frame is processed last the server ends
+    /// up advertising the stale set while the daemon's local config says otherwise. That silently
+    /// undoes the self-heal — which this area now depends on to restore a missing advertisement, so
+    /// it is not a harmless duplicate registration.
+    /// <para>Held across the hub invoke, not just the construction: releasing early would let a
+    /// second DTO built from fresher config overtake an in-flight older one.</para></summary>
+    readonly SemaphoreSlim _registerLock = new(1, 1);
+
     async Task DaemonConnectAsync() {
+        await _registerLock.WaitAsync().ConfigureAwait(false);
+        try {
+            await DaemonConnectCoreAsync().ConfigureAwait(false);
+        } finally {
+            _registerLock.Release();
+        }
+    }
+
+    async Task DaemonConnectCoreAsync() {
         var platform  = $"{RuntimeInformation.OSDescription} {RuntimeInformation.OSArchitecture}";
         var repoPaths = await MergeRepoPathsAsync();
         var liveIds   = GetLiveAgentIds?.Invoke() ?? [];
@@ -500,7 +663,11 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                     // Phase B2-b (sequenced-settlement design §5.5): the resolved-candidates ledger's
                     // monotonic high-water alongside the re-advertised snapshot above.
                     HighestResolutionGeneration: GetHighestResolutionGeneration?.Invoke(),
-                    UnattendedVendorCapabilities: _config.UnattendedVendorCapabilities
+                    UnattendedVendorCapabilities: _config.UnattendedVendorCapabilities,
+                    // Launch-time ACP permission-preset advertisement: the supported vendors that route
+                    // permissions through the ACP bridge. Null on an unwired/early-startup config;
+                    // wire-compatible with old servers (ignored).
+                    AcpPresetVendors: _config.AcpPresetVendors
                 ),
                 cancellationToken: _ct
             );
@@ -521,11 +688,19 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// <summary>
     /// Set by <see cref="AgentOrchestrator"/>: re-registers this daemon's live agents with the
     /// server (AgentRegistered + AgentStatusChanged) so per-session ownership is restored after a
-    /// (re-)connect. Invoked inside <see cref="RegisterDaemon"/> BEFORE readiness is restored, so
+    /// (re-)connect. Invoked inside <see cref="RegisterDaemonAsync"/> BEFORE readiness is restored, so
     /// a permission invoke gated on <see cref="IsReady"/> can't beat session-ownership recovery.
     /// Null until wired (early startup / tests) — treated as a no-op.
     /// </summary>
     internal Func<Task>? ReRegisterAgentsHook { get; set; }
+
+    /// <summary>Invoked inside <see cref="RegisterDaemonAsync"/> AFTER readiness is restored
+    /// (post-<c>MarkRegistered</c>), unlike <see cref="ReRegisterAgentsHook"/>. For work that must reach
+    /// the server on the freshly ready transport — the settlement lost-ack re-delivery lives here because
+    /// <see cref="CommandAckAsync"/> silently drops sends while <see cref="IsReady"/> is still false inside
+    /// the registration bracket. Null until wired (early startup / tests) — a no-op; failures are contained
+    /// by the caller so they never un-register the daemon.</summary>
+    internal Func<Task>? OnRegisteredHook { get; set; }
 
     async Task<string[]> MergeRepoPathsAsync() {
         var persisted = await RepoPathStore.GetSortedPathsAsync();
@@ -548,10 +723,11 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// Auto-reconnect started: the transport is no longer Connected and the
     /// server-side registration for this connection is stale. Clear readiness so
     /// nothing invokes a daemon-scoped hub method until <see cref="OnReconnected"/>
-    /// re-runs <see cref="RegisterDaemon"/>.
+    /// re-runs <see cref="RegisterDaemonAsync"/>.
     /// </summary>
     Task OnReconnecting(Exception? error) {
         _gate.MarkUnregistered();
+        _statusNotifier.Pulse();
 
         return Task.CompletedTask;
     }
@@ -559,7 +735,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// <summary>
     /// True when the hub is Connected AND this connection has completed a full
     /// (re-)registration — <c>DaemonConnect</c> AND per-agent re-registration (see
-    /// <see cref="RegisterDaemon"/>). The permission-request retry loop waits on this rather than
+    /// <see cref="RegisterDaemonAsync"/>). The permission-request retry loop waits on this rather than
     /// raw <see cref="HubConnectionState.Connected"/> so a retry can't race re-registration.
     /// <c>virtual</c> so unit tests can control readiness directly without a live SignalR transport
     /// (see the ACP hub-method tests).
@@ -571,8 +747,9 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     internal virtual string? CurrentConnectionId => _hub.ConnectionId;
 
     async Task OnReconnected(string? connectionId) {
+        _statusNotifier.Pulse();
         LogReconnected();
-        await RegisterDaemon();
+        await RegisterDaemonAsync();
         _connectedTimestamp = Stopwatch.GetTimestamp();
     }
 
@@ -593,28 +770,36 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// the heartbeat loop when the server reports it doesn't recognise this
     /// connection as a daemon (slot displaced or never registered).
     /// </summary>
-    public Task ReRegisterAsync() => RegisterDaemon();
+    public Task ReRegisterAsync() => RegisterDaemonAsync();
 
     /// <summary>
     /// Stops the underlying hub. <see cref="OnClosed"/> fires and calls
     /// <see cref="ConnectWithRetryAsync"/>, which establishes a fresh
     /// transport and a new server-side conn id, then re-registers via
-    /// <see cref="RegisterDaemon"/>. Used when the heartbeat ping times out
+    /// <see cref="RegisterDaemonAsync"/>. Used when the heartbeat ping times out
     /// or throws — the WebSocket is hung and only a fresh connection
-    /// recovers it. StopAsync is capped at 5 s so a wedged transport
-    /// can't stall the heartbeat loop indefinitely (Qodo).
+    /// recovers it. The stop is capped at <see cref="ForceStopCap"/> so a wedged
+    /// transport can't stall the heartbeat loop indefinitely (Qodo). The cap is
+    /// enforced from OUTSIDE via <c>WaitAsync</c>: <c>HubConnection.StopAsync</c>'s
+    /// cancellation token is dead in the pinned client (its connection-lock wait and
+    /// transport stop run on <c>token: default</c>), so passing the token in would
+    /// never actually bound the await. Abandoning the wait is safe — StopAsync
+    /// signals its internal stop token synchronously before its first await, so the
+    /// teardown is already underway; when it eventually completes, Closed fires and
+    /// <see cref="OnClosed"/> reconnects, and until then each heartbeat tick stays
+    /// bounded and keeps retrying.
     /// </summary>
     public async Task ForceReconnectAsync() {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(_ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(5));
+        cts.CancelAfter(ForceStopCap);
 
         try {
-            await _hub.StopAsync(cts.Token);
+            await StopHubAsync(CancellationToken.None).WaitAsync(cts.Token);
         } catch (OperationCanceledException) when (!_ct.IsCancellationRequested) {
-            // StopAsync didn't return in 5 s — transport is wedged. OnClosed
+            // StopAsync didn't return within the cap — transport is wedged. OnClosed
             // may still fire eventually, but we don't want to block the
             // heartbeat loop on it. The next tick will retry.
-            _logger.LogWarning("ForceReconnectAsync: StopAsync exceeded 5 s — abandoning wait");
+            _logger.LogWarning("ForceReconnectAsync: StopAsync exceeded {CapSeconds:F0} s — abandoning wait", ForceStopCap.TotalSeconds);
         }
     }
 
@@ -628,8 +813,14 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     }
 
     // Outgoing messages to server
-    public virtual Task AgentRegisteredAsync(string agentId, string? prompt, string? model, string? effort, string? repoPath)
-        => _hub.InvokeAsync("AgentRegistered", new AgentRegistered(agentId, prompt, model, effort, repoPath), cancellationToken: _ct);
+    public virtual Task AgentRegisteredAsync(
+            string agentId, string? prompt, string? model, string? effort, string? repoPath,
+            string? sandboxPolicy = null, string? approvalPolicy = null, string? permissionPreset = null,
+            string? runtimeTransport = null)
+        => _hub.InvokeAsync(
+            "AgentRegistered",
+            new AgentRegistered(agentId, prompt, model, effort, repoPath, sandboxPolicy, approvalPolicy, permissionPreset, runtimeTransport),
+            cancellationToken: _ct);
 
     /// <summary>
     /// Reports the hosted agent's fixed PTY dimensions to the server, which stores
@@ -655,6 +846,40 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
             await _hub.SendAsync("ReportAgentResolvedModel", agentId, model, cancellationToken: _ct);
         } catch (Exception ex) {
             LogReportResolvedModelFailed(ex, agentId);
+        }
+    }
+
+    /// <summary>
+    /// Task 8: reports the CONCRETE resolved model an explicit-model reviewer actually launched
+    /// with (the post-launch counterpart of the preflight RPC), over the persistent connection to the
+    /// server's <c>ReportExplicitReviewerModelResolved</c> hub method — a single-record (arity 1)
+    /// payload so the wire shape can evolve additively. Distinct from
+    /// <see cref="ReportAgentResolvedModelAsync"/> (name/arity/behavior unchanged): the legacy report is
+    /// still used for every no-model / vendor-only launch. Fire-and-forget best-effort: swallowed when
+    /// the connected server is older and has no such hub method, so a mixed-version rollout never
+    /// surfaces this as a failure. Virtual so tests can capture the report without a live hub.
+    /// </summary>
+    public virtual async Task ReportExplicitReviewerModelResolvedAsync(ExplicitReviewerModelResolvedV1 report) {
+        try {
+            await _hub.SendAsync("ReportExplicitReviewerModelResolved", report, cancellationToken: _ct);
+        } catch (Exception ex) {
+            LogReportResolvedModelFailed(ex, report.AgentId);
+        }
+    }
+
+    /// <summary>
+    /// Best-effort: tell the server a launch-time permission preset auto-approved one ACP permission
+    /// request without a human, so it can persist an audit record. Fire-and-forget over the persistent
+    /// connection; swallowed when the connected server is older and has no <c>NotifyAcpAutoApproval</c>
+    /// hub method (missing-method / dispatch errors), so a mixed-version rollout never surfaces this as
+    /// a failure. Virtual so tests can capture the notice without a live hub. Never throws — the
+    /// caller's discarded task can be safely fire-and-forget.
+    /// </summary>
+    public virtual async Task NotifyAcpAutoApprovalAsync(AcpAutoApprovalNotice notice) {
+        try {
+            await _hub.SendAsync("NotifyAcpAutoApproval", notice, cancellationToken: _ct);
+        } catch (Exception ex) {
+            LogNotifyAcpAutoApprovalFailed(ex, notice.AgentId);
         }
     }
 
@@ -827,7 +1052,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// FALSE. Gating this call on <see cref="IsReady"/> (the way the public wrapper does) would
     /// therefore deadlock: <see cref="IsReady"/> can only become true once this very method returns.
     /// The transport itself is already <see cref="HubConnectionState.Connected"/> by the time
-    /// <see cref="RegisterDaemon"/> runs (that is what triggered it), so invoking the raw hub method
+    /// <see cref="RegisterDaemonAsync"/> runs (that is what triggered it), so invoking the raw hub method
     /// here is safe — exactly the same reasoning that lets <see cref="AgentRegisteredAsync"/>/
     /// <see cref="AgentStatusChangedAsync"/> be called ungated from
     /// <c>AgentOrchestrator.ReRegisterAgentsAsync</c>. Best-effort per binding: one binding's re-bind
@@ -844,13 +1069,37 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// <see cref="UnregisterAcpBinding"/> removes it so a LATER reconnect doesn't replay it either.
     /// </summary>
     internal async Task ReBindAcpSessionsAsync() {
+        // belt-and-braces: never replay a binding whose agent the daemon no longer hosts as
+        // live. _acpBindings is maintained independently of the live-agent set, so a stale entry to a
+        // gone agent is exactly the binding the server now rejects. GetLiveAgentIds is the same source
+        // the reconnect survivor set uses; when it isn't wired (tests) we skip the pre-filter.
+        var live = GetLiveAgentIds is { } getLive ? new HashSet<string>(getLive(), StringComparer.Ordinal) : null;
+
         foreach (var (agentId, bind) in _acpBindings) {
-            var rebound = false;
+            if (live is not null && !live.Contains(agentId)) {
+                LogAcpRebindSkippedNotLive(agentId, bind.AcpSessionId);
+                UnregisterAcpBinding(agentId);
+
+                continue;
+            }
+
+            var settled = false; // the invoke returned an OUTCOME (Bound or Rejected): stop, don't give up
 
             for (var attempt = 1; attempt <= AcpRebindMaxAttempts; attempt++) {
                 try {
-                    await InvokeAcpSessionStartedRawAsync(agentId, bind.Vendor, bind.AcpSessionId, bind.Cwd, bind.Model, bind.Metadata, _ct);
-                    rebound = true;
+                    var outcome = await InvokeAcpSessionStartedRawAsync(agentId, bind.Vendor, bind.AcpSessionId, bind.Cwd, bind.Model, bind.Metadata, _ct);
+
+                    // a Rejected outcome is a terminal stand-down, not a transient failure —
+                    // the server declined a stale/foreign/conflicting binding. Drop the binding (so a
+                    // later reconnect doesn't replay it) and move on WITHOUT retrying; the agent's
+                    // forwarder terminalizes independently on the matching AcpSessionEvents rejection
+                    // ack. An old server (void return) decodes as Bound, preserving today's behaviour.
+                    if (outcome == AcpBindOutcome.Rejected) {
+                        LogAcpRebindRejected(agentId, bind.AcpSessionId);
+                        UnregisterAcpBinding(agentId);
+                    }
+
+                    settled = true;
 
                     break;
                 } catch (Exception ex) {
@@ -866,7 +1115,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                 }
             }
 
-            if (!rebound) {
+            if (!settled) {
                 LogAcpRebindGivingUp(agentId, bind.AcpSessionId, AcpRebindMaxAttempts);
                 UnregisterAcpBinding(agentId);
             }
@@ -882,7 +1131,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// class's own <see cref="ReBindAcpSessionsAsync"/> reconnect path) may invoke the underlying hub
     /// method again freely — a redundant re-bind is harmless even if the two race.
     /// </summary>
-    public virtual Task AcpSessionStartedAsync(
+    public virtual async Task AcpSessionStartedAsync(
             string                               agentId,
             string                               vendor,
             string                               acpSessionId,
@@ -890,13 +1139,22 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
             string?                              model,
             IReadOnlyDictionary<string, string>? metadata,
             CancellationToken                    ct = default
-        ) => ConnectionRetry.InvokeWithConnectionRetryAsync(
+        ) {
+        var outcome = await ConnectionRetry.InvokeWithConnectionRetryAsync(
             () => InvokeAcpSessionStartedRawAsync(agentId, vendor, acpSessionId, cwd, model, metadata, ct),
             () => IsReady,
             AcpRetryPollInterval,
             attempt => LogAcpSessionStartedRetry(agentId, attempt),
             ct
-        );
+        ).ConfigureAwait(false);
+
+        // an INITIAL bind that the server declines (stale/foreign/conflict) must NOT register
+        // a binding or start a forwarder. Surface it as a local exception (never a HubException) so the
+        // launch path's existing "bind threw ⇒ don't register" catch handles it unchanged. Reason-
+        // agnostic: any Rejected origin maps here. An old server's void return decodes to Bound.
+        if (outcome == AcpBindOutcome.Rejected)
+            throw new AcpBindRejectedException(agentId, acpSessionId);
+    }
 
     /// <summary>
     /// Forwards a batch of ACP transcript envelopes to the server's <c>AcpSessionEvents</c> hub
@@ -926,7 +1184,11 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// <see cref="ReBindAcpSessionsAsync"/> (ungated, see its remarks) share one call site, and so
     /// unit tests can capture/verify the exact payload without a live hub connection.
     /// </summary>
-    internal virtual Task InvokeAcpSessionStartedRawAsync(
+    /// returns the server's <see cref="AcpBindOutcome"/>. An OLD server whose hub method is
+    /// still <c>void</c> completes with no result, which <c>InvokeAsync&lt;AcpBindOutcome&gt;</c> decodes
+    /// to <c>default</c> == <see cref="AcpBindOutcome.Bound"/> — legacy success, preserving today's
+    /// behaviour against an un-upgraded server.
+    internal virtual Task<AcpBindOutcome> InvokeAcpSessionStartedRawAsync(
             string                               agentId,
             string                               vendor,
             string                               acpSessionId,
@@ -934,7 +1196,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
             string?                              model,
             IReadOnlyDictionary<string, string>? metadata,
             CancellationToken                    ct
-        ) => _hub.InvokeAsync("AcpSessionStarted", agentId, vendor, acpSessionId, cwd, model, metadata, cancellationToken: ct);
+        ) => _hub.InvokeAsync<AcpBindOutcome>("AcpSessionStarted", agentId, vendor, acpSessionId, cwd, model, metadata, cancellationToken: ct);
 
     /// <summary>
     /// The actual <c>AcpSessionEvents</c> hub invocation, isolated into its own <c>virtual</c> method
@@ -947,6 +1209,60 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
             AcpEventEnvelope[] envelopes,
             CancellationToken  ct
         ) => _hub.InvokeAsync<AcpBatchAck>("AcpSessionEvents", agentId, acpSessionId, envelopes, cancellationToken: ct);
+
+    /// <summary>
+    /// The deferred-first-turn SOURCE CLAIM: durably records this hosted session's ownership (the
+    /// guard-2 substrate) BEFORE the orchestrator dispatches the first turn. Gated exactly like
+    /// <see cref="AcpSessionStartedAsync"/> — <see cref="ConnectionRetry"/> waits for
+    /// <see cref="IsReady"/> before every attempt. Returns the server's full outcome (bind result +
+    /// ownership token + canonical resume cursor); the caller acts on <see cref="AcpBindOutcome.Rejected"/>
+    /// (coded launch failure + teardown) and carries the token to <see cref="ConfirmSessionLaunchAsync"/>.
+    /// </summary>
+    public virtual Task<AcpSourceClaimOutcome> AcpSessionSourceClaimAsync(
+            string agentId, string acpSessionId, CancellationToken ct = default
+        ) => ConnectionRetry.InvokeWithConnectionRetryAsync(
+            () => InvokeAcpSessionSourceClaimRawAsync(agentId, acpSessionId, ct),
+            () => IsReady,
+            AcpRetryPollInterval,
+            attempt => LogAcpSourceClaimRetry(agentId, attempt),
+            ct
+        );
+
+    /// <summary>
+    /// The token-fenced CONFIRM: clears the ledger row's provisional flag once the first turn has been
+    /// dispatched. Gated on <see cref="IsReady"/>. Returns the token-fenced outcome; the caller's
+    /// confirm loop treats <see cref="AcpLaunchConfirmOutcome.Confirmed"/>/<see cref="AcpLaunchConfirmOutcome.AlreadyConfirmed"/>
+    /// as done, <see cref="AcpLaunchConfirmOutcome.Superseded"/>/<see cref="AcpLaunchConfirmOutcome.NotFound"/>
+    /// as terminal-stop, and a transient connection failure as a retry — a confirm failure never tears
+    /// down the running agent.
+    /// </summary>
+    public virtual Task<AcpLaunchConfirmOutcome> ConfirmSessionLaunchAsync(
+            string acpSessionId, long ownershipToken, CancellationToken ct = default
+        ) => ConnectionRetry.InvokeWithConnectionRetryAsync(
+            () => InvokeConfirmSessionLaunchRawAsync(acpSessionId, ownershipToken, ct),
+            () => IsReady,
+            AcpRetryPollInterval,
+            attempt => LogConfirmSessionLaunchRetry(acpSessionId, attempt),
+            ct
+        );
+
+    /// <summary>
+    /// The actual <c>AcpSessionSourceClaim</c> hub invocation, isolated into its own <c>virtual</c>
+    /// method so <see cref="AcpSessionSourceClaimAsync"/>'s gating can be tested without a live hub.
+    /// A pre-source-claim server has no such method, so <c>InvokeAsync</c> throws (method-not-found) —
+    /// which the launch path treats as a coded launch failure (the reverse-skew contract).
+    /// </summary>
+    internal virtual Task<AcpSourceClaimOutcome> InvokeAcpSessionSourceClaimRawAsync(
+            string agentId, string acpSessionId, CancellationToken ct
+        ) => _hub.InvokeAsync<AcpSourceClaimOutcome>("AcpSessionSourceClaim", agentId, acpSessionId, cancellationToken: ct);
+
+    /// <summary>
+    /// The actual <c>ConfirmSessionLaunch</c> hub invocation, isolated into its own <c>virtual</c>
+    /// method so <see cref="ConfirmSessionLaunchAsync"/>'s gating can be tested without a live hub.
+    /// </summary>
+    internal virtual Task<AcpLaunchConfirmOutcome> InvokeConfirmSessionLaunchRawAsync(
+            string acpSessionId, long ownershipToken, CancellationToken ct
+        ) => _hub.InvokeAsync<AcpLaunchConfirmOutcome>("ConfirmSessionLaunch", acpSessionId, ownershipToken, cancellationToken: ct);
 
     /// <summary>
     /// Queues a base64 PTY chunk for the hosted-agent terminal mirror:
@@ -1043,10 +1359,10 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                 while (!ct.IsCancellationRequested) {
                     try {
                         _httpClient ??= new();
-                        var tokens = await TokenStore.GetValidTokensAsync();
+                        var resolution = await TokenStore.GetValidTokensForServerAsync(_config.ServerUrl, ct);
 
-                        if (tokens?.AccessToken is not null) {
-                            _httpClient.DefaultRequestHeaders.Authorization = new("Bearer", tokens.AccessToken);
+                        if (resolution.Tokens?.AccessToken is not null) {
+                            _httpClient.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);
                         }
 
                         var response = await _httpClient.PostAsync(url, new StringContent(payload, Encoding.UTF8, "application/json"), ct);
@@ -1078,28 +1394,71 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     record PendingEvent(string AgentId, object Event);
 
     public async ValueTask DisposeAsync() {
-        _disposed = true;
-        _eventChannel.Writer.TryComplete();
-        _terminalSender.Complete();
+        if (Interlocked.Exchange(ref _disposeOnce, 1) != 0) return;
 
-        if (_eventProcessorTask is not null) {
-            await _eventProcessorTask;
+        Interlocked.Increment(ref _disposeBodyRuns);
+
+        _disposed = true; // live-path flag read by OnClosed — separate from the run-once guard
+
+        var cts = _terminalSenderCts;
+
+        try {
+            // Faultable awaits — each contained + logged individually so one faulted pipeline
+            // task can't skip its sibling or the mandatory resource release in the finally below.
+            // A disposal path must never throw into DI teardown (NativeAOT: unhandled → abort()).
+            try {
+                _eventChannel.Writer.TryComplete();
+                _terminalSender.Complete();
+
+                if (_eventProcessorTask is not null) {
+                    await _eventProcessorTask;
+                }
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "event-processor");
+            }
+
+            try {
+                // Cancel the sender's own token so a chunk being held through an outage
+                // can't block disposal regardless of the caller's token state.
+                if (cts is not null) {
+                    try {
+                        await cts.CancelAsync();
+                    } catch (ObjectDisposedException) {
+                        // Already torn down elsewhere — nothing left to cancel.
+                    }
+                }
+
+                if (_terminalSenderTask is not null) {
+                    await _terminalSenderTask;
+                }
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "terminal-sender");
+            }
+        } finally {
+            // Mandatory release — each step individually guarded so one failure can't skip the
+            // rest, and nothing here can throw into DI teardown.
+            try {
+                cts?.Dispose();
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "terminal-sender-cts");
+            }
+
+            try {
+                _httpClient?.Dispose();
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "http-client");
+            }
+
+            try {
+                await _hub.DisposeAsync();
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "hub");
+            }
         }
-
-        // Cancel the sender's own token so a chunk being held through an outage
-        // can't block disposal regardless of the caller's token state.
-        if (_terminalSenderCts is not null) {
-            await _terminalSenderCts.CancelAsync();
-        }
-
-        if (_terminalSenderTask is not null) {
-            await _terminalSenderTask;
-        }
-
-        _terminalSenderCts?.Dispose();
-        _httpClient?.Dispose();
-        await _hub.DisposeAsync();
     }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ServerConnection dispose step '{Step}' failed; continuing shutdown")]
+    partial void LogDisposeStepFailed(Exception ex, string step);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Daemon name '{Name}' is already in use by another live daemon on this account. Server rejected DaemonConnect: {Reason}")]
     partial void LogNameInUse(string name, string reason);
@@ -1111,7 +1470,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     partial void LogConnected(string name);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Connection attempt {Attempt} failed, retrying in {Delay}s")]
-    partial void LogConnectionAttemptFailed(Exception ex, int attempt, int delay);
+    partial void LogConnectionAttemptFailed(Exception ex, int attempt, double delay);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "SignalR connection closed after {UptimeSeconds:F1}s uptime, will reconnect")]
     partial void LogConnectionClosed(Exception? ex, double uptimeSeconds);
@@ -1131,11 +1490,23 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     [LoggerMessage(Level = LogLevel.Information, Message = "AcpSessionEvents for agent {AgentId} interrupted by a connection drop (retry {Attempt}); waiting for the daemon connection to recover before retrying")]
     partial void LogAcpEventsRetry(string agentId, int attempt);
 
+    [LoggerMessage(Level = LogLevel.Information, Message = "AcpSessionSourceClaim for agent {AgentId} interrupted by a connection drop (retry {Attempt}); waiting for the daemon connection to recover before retrying")]
+    partial void LogAcpSourceClaimRetry(string agentId, int attempt);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "ConfirmSessionLaunch for session {AcpSessionId} interrupted by a connection drop (retry {Attempt}); waiting for the daemon connection to recover before retrying")]
+    partial void LogConfirmSessionLaunchRetry(string acpSessionId, int attempt);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Reconnect re-bind of ACP session {AcpSessionId} for agent {AgentId} failed (attempt {Attempt}/{MaxAttempts})")]
     partial void LogAcpRebindFailed(Exception ex, string agentId, string acpSessionId, int attempt, int maxAttempts);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Reconnect re-bind of ACP session {AcpSessionId} for agent {AgentId} failed after {MaxAttempts} attempts — unregistering the binding so it isn't replayed forever")]
     partial void LogAcpRebindGivingUp(string agentId, string acpSessionId, int maxAttempts);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Reconnect re-bind of ACP session {AcpSessionId} for agent {AgentId} was rejected by the server (stale/foreign/conflicting binding) — standing down and unregistering the binding")]
+    partial void LogAcpRebindRejected(string agentId, string acpSessionId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Skipping reconnect re-bind of ACP session {AcpSessionId} for agent {AgentId} — the agent is no longer hosted as live; unregistering the stale binding")]
+    partial void LogAcpRebindSkippedNotLive(string agentId, string acpSessionId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to post agent run event, retrying in {Delay}s")]
     partial void LogEventPostFailed(Exception ex, double delay);
@@ -1148,6 +1519,9 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Failed to report resolved model for agent {AgentId} (server may not support it)")]
     partial void LogReportResolvedModelFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Failed to send ACP auto-approval audit for agent {AgentId} (server may not support it)")]
+    partial void LogNotifyAcpAutoApprovalFailed(Exception ex, string agentId);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Hub method '{Method}' handler threw — invocation dropped")]
     partial void LogHandlerThrew(Exception ex, string method);
@@ -1202,3 +1576,17 @@ internal sealed record AcpBindInfo(
     string?                              Model,
     IReadOnlyDictionary<string, string>? Metadata = null
 );
+
+/// <summary>
+/// thrown by <see cref="ServerConnection.AcpSessionStartedAsync"/> when the server declines
+/// an INITIAL bind (a stale/foreign/conflicting binding, surfaced as <see cref="AcpBindOutcome.Rejected"/>).
+/// A LOCAL exception, never a <c>HubException</c>, so the launch path's existing "bind threw ⇒ do not
+/// register a binding / do not start a forwarder" catch handles it unchanged. The reconnect path
+/// (<see cref="ServerConnection.ReBindAcpSessionsAsync"/>) reads the outcome directly and never throws
+/// this.
+/// </summary>
+internal sealed class AcpBindRejectedException(string agentId, string acpSessionId)
+    : Exception($"Server rejected the ACP bind for agent {agentId} (session {acpSessionId})") {
+    public string AgentId      { get; } = agentId;
+    public string AcpSessionId { get; } = acpSessionId;
+}

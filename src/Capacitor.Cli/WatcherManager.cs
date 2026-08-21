@@ -1,12 +1,14 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli;
 
-static class WatcherManager {
+static partial class WatcherManager {
     internal static string GetWatcherDir() {
         var overrideDir = Environment.GetEnvironmentVariable("KCAP_WATCHER_DIR");
 
@@ -46,6 +48,23 @@ static class WatcherManager {
     /// anything. Always null in production.
     /// </summary>
     internal static Func<string, Task>? SpawnOverrideForTesting;
+
+    /// <summary>
+    /// Test seam for the ACTUAL <c>Process.Start</c> call inside <see cref="SpawnWatcher"/> and
+    /// <see cref="SpawnCopilotFinalizeDrain"/>. Distinct from <see cref="SpawnOverrideForTesting"/>,
+    /// which only <c>SpawnForKeyAsync</c> consults and so cannot observe those methods at all.
+    ///
+    /// <para>Needed because both call static <c>Process.Start</c> inside a catch-all, and the finalize
+    /// drain writes no marker — so "no child was left behind" is unfalsifiable: delete the URL guard
+    /// and the start merely throws or returns null in a test environment, leaving every observable
+    /// effect identical. Asserting zero invocations here is the only proof the guard ran.</para>
+    ///
+    /// <para>Always null in production.</para>
+    /// </summary>
+    internal static Func<ProcessStartInfo, Process?>? ProcessStarterForTesting;
+
+    static Process? StartProcess(ProcessStartInfo psi) =>
+        ProcessStarterForTesting is { } fake ? fake(psi) : Process.Start(psi);
 
     internal static string BuildSpawnArgs(
             string  key,
@@ -92,6 +111,15 @@ static class WatcherManager {
             bool    skipTitle         = false,
             string  vendor            = "claude"
         ) {
+        // Defence in depth: ShouldSpawnAfter already refuses for an unusable URL, but a caller that
+        // bypassed it would otherwise write a PID file asserting capture that cannot happen — a
+        // watcher streams to SignalR and can never connect here.
+        if (!HookHttp.IsPostable(baseUrl)) {
+            await Console.Error.WriteLineAsync(
+                UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, $"watcher not started for {key}"));
+            return;
+        }
+
         try {
             var watcherDir = GetWatcherDir();
             Directory.CreateDirectory(watcherDir);
@@ -117,12 +145,13 @@ static class WatcherManager {
                 Environment            = { ["KCAP_URL"] = baseUrl }
             };
 
-            // Stop the watcher from inheriting the coding agent's std handles on Windows;
-            // otherwise it holds the agent's hook-stdout pipe open for its whole lifetime,
-            // hanging synchronous subagent hooks and orphaning the watcher.
-            ProcessHelpers.PreventInheritedStdHandles();
+            // Stop the watcher from inheriting the coding agent's pipe descriptors —
+            // std handles on Windows, any fd >= 3 on Unix; otherwise it holds the
+            // agent's hook-stdout pipe open for its whole lifetime, hanging synchronous
+            // subagent hooks and orphaning the watcher.
+            ProcessHelpers.PreventInheritedHandles();
 
-            var process = Process.Start(psi);
+            var process = StartProcess(psi);
 
             if (process is null) {
                 await Console.Error.WriteLineAsync($"Failed to spawn watcher for {key}");
@@ -134,7 +163,11 @@ static class WatcherManager {
             process.StandardOutput.Close();
             process.StandardError.Close();
 
-            await File.WriteAllTextAsync(GetPidFilePath(key), process.Id.ToString());
+            // Line 2 is this incarnation's start-identity token (daemon pid-file layout) so
+            // KillWatcher can tell the spawned watcher apart from a later recycle of its pid.
+            var token = ProcessStartToken.ForPid(process.Id);
+            await File.WriteAllTextAsync(
+                GetPidFilePath(key), token is null ? process.Id.ToString() : $"{process.Id}\n{token}");
 
             // Task 9: record this instance's start time so a later staleness probe
             // knows whether it's still within the startup grace window — written here (not
@@ -210,10 +243,24 @@ static class WatcherManager {
         }
 
         try {
-            var pidText = (await File.ReadAllTextAsync(pidFile)).Trim();
+            // Line 1 is the pid; line 2 (when present) is the incarnation's ProcessStartToken
+            // written by SpawnWatcher — the same layout as the daemon pid file.
+            var lines = await File.ReadAllLinesAsync(pidFile);
 
-            if (!int.TryParse(pidText, out var pid)) {
+            if (lines.Length == 0 || !int.TryParse(lines[0].Trim(), out var pid)) {
                 File.Delete(pidFile);
+
+                return false;
+            }
+
+            // "Ambiguity never kills" (ProcessStartToken): a conclusive token mismatch means the
+            // watcher died and the OS recycled its pid onto an unrelated process — sweep the
+            // stale file, never signal. A missing/uncomparable token (legacy file, process gone)
+            // falls through to the kill attempt, exactly as before tokens existed.
+            var token = lines.Length > 1 ? lines[1].Trim() : "";
+
+            if (token.Length > 0 && ProcessStartToken.Matches(pid, token) == false) {
+                await Console.Error.WriteLineAsync($"Watcher {key} (PID {pid}) was recycled by another process; sweeping stale pid file");
 
                 return false;
             }
@@ -221,8 +268,12 @@ static class WatcherManager {
             try {
                 var process = Process.GetProcessById(pid);
 
-                // Send SIGTERM
-                process.Kill(entireProcessTree: false);
+                // SIGTERM-first on Unix so the watcher runs its shutdown path (final drain +
+                // undelivered-tail spool) — Process.Kill is SIGKILL there. Windows has no
+                // SIGTERM; the stop is hard and recovery is left to the spool/import paths.
+                if (!TrySignalTerm(pid)) {
+                    process.Kill(entireProcessTree: false);
+                }
 
                 // Wait up to 5 seconds for graceful exit
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -256,6 +307,47 @@ static class WatcherManager {
         }
     }
 
+    /// <summary>
+    /// Stops every watcher in <paramref name="keys"/> concurrently (#550, a session watcher's
+    /// teardown of its spawned children). <see cref="KillWatcher"/>'s SIGTERM-first gives each
+    /// child its final drain; its 5s force-kill bound keeps a wedged child from stalling the caller.
+    /// </summary>
+    public static Task KillWatchers(IEnumerable<string> keys) => Task.WhenAll(keys.Select(KillWatcher));
+
+    /// <summary>
+    /// Retires this watcher's own pid file (+ heartbeat markers) on graceful exit, but only while
+    /// it still names this incarnation — a successor that already overwrote the file is left
+    /// alone. Keeps a later teardown/cleanup from ever acting on this watcher's recycled pid.
+    /// </summary>
+    public static void RemoveOwnPidFile(string key, int ownPid) {
+        try {
+            var lines = File.ReadAllLines(GetPidFilePath(key));
+
+            if (lines.Length == 0 || !int.TryParse(lines[0].Trim(), out var filePid) || filePid != ownPid) return;
+
+            File.Delete(GetPidFilePath(key));
+            DeleteHeartbeatFiles(key);
+        } catch {
+            /* best-effort — a missing/unreadable file means there is nothing to retire */
+        }
+    }
+
+    const int Sigterm = 15;
+
+    [LibraryImport("libc", EntryPoint = "kill", SetLastError = true)]
+    private static partial int sys_kill(int pid, int sig);
+
+    /// <summary>SIGTERM on Unix; false on Windows or when the signal can't be delivered.</summary>
+    static bool TrySignalTerm(int pid) {
+        if (OperatingSystem.IsWindows()) return false;
+
+        try {
+            return sys_kill(pid, Sigterm) == 0;
+        } catch {
+            return false;
+        }
+    }
+
     /// <summary>PID-only liveness: the process exists, irrespective of whether it's wedged.</summary>
     static bool PidAlive(string key) {
         var pidFile = GetPidFilePath(key);
@@ -265,9 +357,9 @@ static class WatcherManager {
         }
 
         try {
-            var pidText = File.ReadAllText(pidFile).Trim();
+            var lines = File.ReadAllLines(pidFile);
 
-            if (!int.TryParse(pidText, out var pid)) {
+            if (lines.Length == 0 || !int.TryParse(lines[0].Trim(), out var pid)) {
                 return false;
             }
 
@@ -411,11 +503,11 @@ static class WatcherManager {
                 psi.ArgumentList.Add("--codex");
             }
 
-            // Don't let this detached child inherit the agent's std handles on Windows
+            // Don't let this detached child inherit the agent's pipe descriptors —
             // same pipe-leak hazard as the watcher spawn above.
-            ProcessHelpers.PreventInheritedStdHandles();
+            ProcessHelpers.PreventInheritedHandles();
 
-            var process = Process.Start(psi);
+            var process = StartProcess(psi);
 
             if (process is null) {
                 Console.Error.WriteLine($"Failed to spawn what's-done generator for {sessionId}");
@@ -446,6 +538,14 @@ static class WatcherManager {
     /// <see cref="SpawnWhatsDoneGenerator"/>.
     /// </summary>
     public static void SpawnCopilotFinalizeDrain(string baseUrl, string sessionId, string transcriptPath) {
+        // A detached child that would poll for up to 45s and then exit 2 on an unusable URL, leaving
+        // no marker any assertion could observe. Refuse to launch it at all.
+        if (!HookHttp.IsPostable(baseUrl)) {
+            Console.Error.WriteLine(
+                UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, $"copilot finalize drain not started for {sessionId}"));
+            return;
+        }
+
         try {
             var kcapPath = Environment.ProcessPath ?? "kcap";
 
@@ -461,11 +561,11 @@ static class WatcherManager {
             psi.ArgumentList.Add(sessionId);
             psi.ArgumentList.Add(transcriptPath);
 
-            // Don't let this detached child inherit the agent's std handles on
-            // Windows — same pipe-leak hazard as the spawns above.
-            ProcessHelpers.PreventInheritedStdHandles();
+            // Don't let this detached child inherit the agent's pipe descriptors —
+            // same pipe-leak hazard as the spawns above.
+            ProcessHelpers.PreventInheritedHandles();
 
-            var process = Process.Start(psi);
+            var process = StartProcess(psi);
 
             if (process is null) {
                 Console.Error.WriteLine($"Failed to spawn copilot finalize drain for {sessionId}");
@@ -492,6 +592,14 @@ static class WatcherManager {
             string? agentId,
             string  vendor = "claude"
         ) {
+        // Runs on session-end BEFORE the lifecycle POST, and builds its client with no baseUrl — which
+        // re-resolves the same unusable value. The caller's preceding KillWatcher is unaffected.
+        if (!HookHttp.IsPostable(baseUrl)) {
+            await Console.Error.WriteLineAsync(
+                UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, $"inline drain skipped for {sessionId}"));
+            return;
+        }
+
         try {
             using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 

@@ -19,6 +19,10 @@ logs/
 deploy/Pulumi.*.yaml
 **/.idea/
 .idea/
+*.DotSettings.user
 TestResults/
 .capacitor/worktrees/
 .claude/
+# Probe harness bytecode
+__pycache__/
+*.pyc

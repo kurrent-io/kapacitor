@@ -1,4 +1,3 @@
-// src/Capacitor.Cli/Commands/McpProtocol.cs
 using System.Text.Json.Nodes;
 
 namespace Capacitor.Cli.Commands;

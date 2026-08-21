@@ -17,7 +17,7 @@ namespace Capacitor.Cli.Core.Dsh;
 /// plugin comment) because that format is dsh-profile-specific.</para>
 ///
 /// <para><see cref="ExtensionContent"/> is embedded as a const (no manifest-resource
-/// reflection) to stay NativeAOT-safe, mirroring <see cref="OpenCode.OpenCodeExtensionInstaller"/>.</para>
+/// reflection) to stay NativeAOT-safe, mirroring <see cref="Harness.OpenCode.OpenCodeExtensionInstaller"/>.</para>
 /// </summary>
 public static class DshExtensionInstaller {
     public const string MarkerFileName = ".kcap-extension-version";

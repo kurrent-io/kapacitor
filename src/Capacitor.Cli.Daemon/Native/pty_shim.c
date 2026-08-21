@@ -670,6 +670,15 @@ int pty_spawn(const pty_exec_plan *plan, char *const envp[], const char *cwd,
     }
 
     // ── PARENT ──
+    // forkpty returns the master with no CLOEXEC flag, so a child the daemon execs later would
+    // inherit a live descriptor onto THIS agent's terminal (an isolation boundary). Doing this
+    // as the first parent statement is the earliest possible — forkpty has no atomic O_CLOEXEC
+    // variant — so it fully closes later-exec inheritance but only NARROWS the race against a
+    // concurrent fork on another thread (fully closing that means serializing process creation,
+    // out of scope here). Best-effort, unlike the fail-closed error-pipe CLOEXEC above: a leaked
+    // master is an isolation/resource cost, never a wrong result, and F_SETFD on a just-returned
+    // valid fd cannot realistically fail — so failing the spawn over it would be worse.
+    fcntl(master_fd, F_SETFD, FD_CLOEXEC);
     close(errpipe[1]);
 
     // CAPTURE-BINDING RULE: identity is captured HERE, immediately after forkpty returns,

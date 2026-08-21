@@ -24,18 +24,19 @@ public static class KcapMcpServers {
             "Team memory — search, read, and save durable learnings."),
         new("kcap-workitems", ["mcp", "workitems"], NeedsProjectCwd: true,
             "Attach the current session to a work item (issue, PR, or a brand-new item), and list what a session is attached to."),
+        new("kcap-analytics", ["mcp", "analytics"], NeedsProjectCwd: true,
+            "Query the org's AI coding-agent analytics (sessions, tools, tokens, cost, commits, PRs, evals) with read-only SQL. Repo-aware: defaults to the current repo; pass scope 'global' for org-wide.", ReadOnly: true),
     ];
 
-    /// <summary>Codex receives flows so any driver can explicitly route a reserved review alias
-    /// to any certified reviewer vendor. Flows remains non-read-only and is never auto-approved.
-    /// Workitems remains Claude-plugin-only.</summary>
-    public static IReadOnlyList<KcapMcpServer> ForCodex =>
-        All.Where(s => s.Name != "kcap-workitems").ToArray();
+    /// <summary>Codex receives the full set. Kept as a named per-harness seam so a future
+    /// divergence has a home, but today it is the whole `All` list — `kcap-workitems` is now
+    /// registered everywhere (its session id resolves from an explicit arg / `KCAP_SESSION_ID` /
+    /// `CODEX_THREAD_ID`, and its breakdown/relation tools need no session id at all). Flows remains
+    /// non-read-only and is never auto-approved.</summary>
+    public static IReadOnlyList<KcapMcpServer> ForCodex => All;
 
     /// <summary>The shared set for every non-Claude JSON harness (Cursor, Copilot, OpenCode,
-    /// Kiro, Gemini, Antigravity) — omits `kcap-workitems` (Claude Code plugin only;
-    /// its session-id default rides the Claude hook env). Unlike Codex, these still get
-    /// `kcap-flows`.</summary>
-    public static IReadOnlyList<KcapMcpServer> ForCursor =>
-        All.Where(s => s.Name != "kcap-workitems").ToArray();
+    /// Kiro, Gemini, Antigravity). The full `All` list — `kcap-workitems` included.
+    /// Kept as a named seam (mirrors <see cref="ForCodex"/>) for a future per-harness divergence.</summary>
+    public static IReadOnlyList<KcapMcpServer> ForCursor => All;
 }

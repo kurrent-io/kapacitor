@@ -1,0 +1,58 @@
+kcap agent — Run and manage daemon-hosted coding agents
+
+Usage: kcap agent <subcommand>
+
+Subcommands:
+  start <vendor> [flags] [-- <agent args>]
+                          Start an agent the daemon hosts for you
+  ls                      List this daemon's agents (id, status, kind, repo)
+  attach <agent-id>       Attach your terminal to a running agent
+  stop <agent-id> [--force]
+                          Stop an agent (graceful /exit, then terminate)
+  stop --all [-y] [--force]
+                          Stop every agent this daemon hosts
+
+Running `kcap agent` with no subcommand lists agents.
+
+Options for start:
+  --worktree              Run in a throwaway git worktree instead of in place
+  --private               Keep the agent purely local: unregistered, not streamed
+                          to the server, not shown in the web UI, and permission
+                          prompts answered natively in your terminal
+  -d, --detach            Start without attaching; prints the agent id
+  --daemon <name>         Target a specific daemon (defaults to your profile's)
+  --                      Everything after this is passed to the vendor CLI verbatim
+
+Options for stop:
+  --all                   Stop every agent, including --private ones. Review and
+                          review-flow agents are skipped unless --force is given.
+  --force                 Stop a single review or review-flow agent that would
+                          otherwise be refused, or include them under --all.
+                          Stopping a flow participant mid-round leaves the flow
+                          without it.
+  --yes, -y               Skip the confirmation prompt for --all
+
+Options for ls, attach, stop:
+  --daemon <name>         Target a specific daemon (defaults to your profile's)
+
+Agent ids:
+  Any unique prefix works — `kcap agent attach ab12` is enough as long as it
+  matches exactly one agent. An ambiguous prefix lists the candidates.
+
+Review and flow agents:
+  Agents the daemon runs as part of a review flow (KIND `review-flow`) or a PR
+  review (`review`) are not yours to drive directly — they are addressed through
+  the flow tools. `attach` gives you a read-only view of one: you see its output,
+  your input is not delivered, and your terminal size is not applied to it.
+  `stop` refuses unless you pass --force.
+
+Notes:
+  The daemon owns the agent, not your terminal, so you can detach and the agent
+  keeps running. Detach with the prefix key Ctrl-Q then d, and reattach later
+  with `kcap agent attach`.
+
+  By default an agent is registered with the server: it appears in your own web
+  UI immediately (owner-only until you share it) and you can drive it from the
+  browser. `--private` opts out entirely.
+
+  `start` auto-starts a daemon if none is running. Unix only for now.

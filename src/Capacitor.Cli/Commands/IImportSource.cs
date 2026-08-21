@@ -25,13 +25,19 @@ internal sealed record DiscoveredSession(
 /// <summary>
 /// Dependencies passed to ClassifyAsync. ExcludedRepos / ExcludedPaths are
 /// the user's profile-level exclusions, applied identically across sources.
+/// Reimport carries the effective <c>--reimport</c> flag: when true, a source
+/// that skips already-loaded sessions via a local completeness ledger must
+/// bypass that ledger so the selected sessions re-classify as New/Partial and
+/// re-send (idempotent server-side). Only OpenCode keeps such a ledger today;
+/// every other source already re-classifies each run and ignores this field.
 /// </summary>
 internal sealed record ClassifyContext(
     HttpClient                  HttpClient,
     string                      BaseUrl,
     int                         MinLines,
     IReadOnlyList<string>?      ExcludedRepos,
-    IReadOnlyList<string>?      ExcludedPaths);
+    IReadOnlyList<string>?      ExcludedPaths,
+    bool                        Reimport = false);
 
 /// <summary>
 /// Dependencies passed to ImportSessionAsync. ForcePrivate carries the
@@ -89,12 +95,46 @@ internal interface IImportSource {
     bool IsAvailable { get; }
 
     /// <summary>
+    /// How old a discovered session is, by the rule THIS source's <c>--since</c> applies to it — so a
+    /// window's count predicts the import that window would produce.
+    /// </summary>
+    /// <remarks>
+    /// Most sources resolve a <c>FirstTimestamp</c> during discovery and filter on it, which is the
+    /// default. Claude and Codex do not and override: their <c>--since</c> reads a rollout's day
+    /// directory and a transcript's first timestamp respectively. Answering here rather than in a
+    /// switch keeps a new harness from having to edit shared code to be dated correctly.
+    /// </remarks>
+    DateTimeOffset? DiscoveryAge(DiscoveredSession session) => session.FirstTimestamp;
+
+    /// <summary>
     /// True if title-generation background tasks should be scheduled for
     /// sessions imported via this source. Claude and Codex return true;
     /// Cursor returns false because the composer header carries a name that
     /// the server maps to a SessionTitleCreatedEvent during ingest.
     /// </summary>
     bool SupportsTitleGeneration { get; }
+
+    /// <summary>
+    /// True if a routed <see cref="ImportSessionAsync"/> call for a
+    /// <see cref="ImportCommand.ClassificationStatus.AlreadyLoaded"/> classification can still POST
+    /// transcript lines — to a nested child/subagent stream, the root's own content being caught up
+    /// by definition. Such a call can add publicly-visible content to a session that already
+    /// exists, so <c>--private</c> privatizes these sources independently of the call's
+    /// <see cref="ImportOutcome"/> (see <c>privateScopeSessionIds</c> in
+    /// <see cref="ImportCommand"/>). The outcome can't be trusted to reveal the attach: a source
+    /// may report a hardcoded <see cref="ImportOutcome.Skipped"/>, and any lifecycle POST can fail
+    /// AFTER the child content persisted. The replayed session-start's <c>default_visibility</c>
+    /// is a create-time hint, so it does nothing here either.
+    ///
+    /// <para>
+    /// <c>false</c> says only that the <c>AlreadyLoaded</c> call posts no transcript content — not
+    /// that it posts nothing at all (Copilot/Kiro/Pi still replay session-start/session-end
+    /// lifecycle there; they simply have no child import) and not that the source never adds
+    /// content (New/Partial paths are out of scope for this flag). Per-source values are pinned by
+    /// <c>ReplayChildContentCapabilityTests</c>.
+    /// </para>
+    /// </summary>
+    bool AttachesChildContentOnReplay { get; }
 
     Task<IReadOnlyList<DiscoveredSession>> DiscoverAsync(
         DiscoveryFilters  filters,

@@ -39,7 +39,8 @@ Scope (one of, required for non-interactive use):
   --org <owner>           Import only sessions whose git-remote owner matches <owner>
   --org                   Bare: pick an org from discovered repos (interactive) and
                           remember it; reuses the remembered org on later runs
-  --repo <owner/name>     Import only sessions from a specific repo
+  --repo <owner/name>     Import only sessions from a specific repo. Repeatable:
+                          pass it once per repo to select several
   --repo .                Import only sessions from the current cwd's repo
 
 The org is the git-remote owner (GitHub org/user), independent of your profile
@@ -49,13 +50,29 @@ with no remembered org needs an interactive terminal (or pass `--org <owner>`).
 Without a scope flag on an interactive terminal, an interactive picker is shown.
 
 Options:
+  --discover              Report what is on disk and exit without importing:
+                          sessions and last activity per repository, how many
+                          couldn't be matched to one, and totals for each --since
+                          window. Needs no scope flag — it is what you run to
+                          decide which one to use
+  --json                  With --discover: emit the report as JSON
   --yes, -y               Skip the confirmation prompt
   --private               Mark every imported session as Only Visible to You
   --since YYYY-MM-DD      Only import sessions started on or after this date
   --cwd <path>            Filter by working directory (composes with scope)
   --session <id>          Import a specific session only (composes with scope)
   --min-lines <n>         Skip sessions shorter than n lines (default: 15)
+  --skip-title            Don't generate titles for imported Claude and Codex
+                          sessions. Titling shells out to your own `claude` /
+                          `codex`, once per session, on your subscription — the
+                          same opt-out `kcap watch` takes. Sessions are searchable
+                          without a title, and the other seven agents never title
+                          locally, so this changes nothing for them.
   --generate-summaries    Also generate per-session what's-done summaries
+  --reimport              Force OpenCode sessions to re-import even if a local
+                          ledger records them as complete (use after deleting a
+                          session server-side); scope it with the vendor/--repo/
+                          --cwd/--session filters. No effect on other vendors.
 
 Re-running the same command is idempotent — a server-side watermark dedupes
 already-imported lines so nothing is double-loaded.

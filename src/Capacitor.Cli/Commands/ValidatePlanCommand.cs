@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Commands;

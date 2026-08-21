@@ -3,9 +3,20 @@ using System.Text;
 using System.Text.Json.Nodes;
 using Capacitor.Cli;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Telemetry;
+using Capacitor.Cli.Harness.Antigravity;
+using Capacitor.Cli.Harness.Claude;
+using Capacitor.Cli.Harness.Codex;
+using Capacitor.Cli.Harness.Copilot;
+using Capacitor.Cli.Harness.Cursor;
+using Capacitor.Cli.Harness.Gemini;
+using Capacitor.Cli.Harness.Kiro;
+using Capacitor.Cli.Harness.OpenCode;
+using Capacitor.Cli.Harness.Pi;
 using ReviewCommand = Capacitor.Cli.Commands.ReviewCommand;
 using WatchCommand = Capacitor.Cli.Commands.WatchCommand;
 
@@ -16,6 +27,13 @@ if (args.Length < 1) {
 }
 
 var command = args[0];
+
+// Daemon-only borrowed-review context mode. This exact invocation is dispatched before server URL
+// resolution and update checks so the sidecar reader has no backend, auth, Git, or config authority.
+if (args is ["mcp", "review"] &&
+    Environment.GetEnvironmentVariable(McpReviewContextServer.ModeEnvVar) == "1")
+    return await McpReviewContextServer.RunAsync(
+        Environment.GetEnvironmentVariable(McpReviewContextServer.UrlEnvVar));
 
 // Interactive commands block on synchronous Spectre.Console prompts. Install a
 // signal + parent-liveness safety net so an abandoned prompt (closed terminal,
@@ -58,20 +76,77 @@ if (Environment.GetEnvironmentVariable("KCAP_SKIP") is "1"
 
 var hookProcessStart = System.Diagnostics.Stopwatch.GetTimestamp();
 var isHook = command == "hook";
+
+// Agent-spawned commands owe an output contract, or must leave no orphaned child, so an unusable
+// server URL must not kill them mid-contract — EnsureAbsolute throws for them instead of exiting.
+// Interactive commands keep exiting 2 with the actionable hint, which is the right UX with a user
+// present. This covers the agent-spawned population only; it is not a claim that every reachable
+// URL consumer has been enumerated, and the explicit guards own what actually happens.
+ProcessUrlPolicy.Current = CrashReporter.IsFailOpenCommand(command)
+    ? UrlFailurePolicy.Throw
+    : UrlFailurePolicy.FailFast;
+
 var baseUrl = await AppConfig.ResolveServerUrl(args, gitTimeoutMs: isHook ? 1000 : 5000);
 
-// Fire-and-forget update check (prints hint to stderr after command finishes).
-// Skipped for `uninstall` — the check writes ~/.config/kcap/update-check-{channel}.json
-// (e.g. update-check-latest.json), which would race with uninstall's `rm -rf`
-// of the config dir and recreate it after the command has reported success.
-// Skipped for `update` — nudging "run `kcap update`" from inside `kcap update`
-// is noise at best and lands mid-upgrade at worst.
-var   noUpdateCheck   = args.Contains("--no-update-check") || command is "uninstall" or "update";
-Task? updateCheckTask = null;
+// KCAP_DAEMONS_DIR is dead to the process from this line on.
+var daemonPaths = DaemonStore.FromEnvironment();
 
-if (!noUpdateCheck) {
-    updateCheckTask = Task.Run(UpdateCommand.PrintUpdateHintIfAvailable);
+// Telemetry: initialised once the server URL is known (it decides the `organization` group) and
+// torn down from ProcessExit, which observes the exit code returned by top-level Main. Every
+// call swallows, so nothing here can fail a command.
+//
+// Deliberately ahead of the update-notice try/finally below: this is process setup, and the
+// ProcessExit handler outlives that block anyway.
+var commandStart = System.Diagnostics.Stopwatch.GetTimestamp();
+
+// TokenStore.LoadAsync() is the LOCAL read (src/Capacitor.Cli.Core/Auth/TokenStore.cs:211) —
+// deliberately not GetValidTokensAsync(), which can refresh over the network. `logged_in` is a
+// cheap fact about disk, never a reason to make a request on the command path.
+//
+// Gated on IsReportable: denylisted commands (chiefly `hook`, thousands of invocations/day on
+// the agent's critical path) never send `logged_in` — CliTelemetry.Initialize below disables
+// itself for them regardless — so the disk read has no consumer and is worth skipping outright.
+var loggedIn = false;
+if (CommandEvents.IsReportable(command)) {
+    try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
 }
+
+// `kcap config set telemetry off` must never activate telemetry for the very invocation that
+// opts out: without this, Initialize below resolves Enabled from the not-yet-updated persisted
+// flag, mints a device id, shows the first-run notice, and queues cli_first_run — all before
+// ConfigCommand ever runs. Pre-apply the "off" to disk here so Initialize sees it already
+// persisted. Value recognition only (no throw on garbage — an invalid value is reported
+// normally once ConfigCommand actually dispatches); KCAP_TELEMETRY=1 still overrides a persisted
+// "off" exactly as it does everywhere else, since Resolve checks the env var first regardless of
+// what's on disk. ConfigCommand.TryApplyTelemetry re-applies the same (idempotent) change and
+// covers that override case with its own DiscardAndDisable.
+if (args.Length >= 4 && command == "config" && args[1] == "set" && args[2] == "telemetry"
+ && ConfigCommand.TryParseTelemetryToggle(args[3]) == false) {
+    TelemetryState.SetEnabled(false);
+}
+
+// spec decision 9: an app-spawned CLI child must not emit CLI-labeled telemetry nor consume
+// the one-time privacy notice on an invisible stderr. Consume-and-REMOVE before dispatch so
+// no grandchild (detached daemon, hosted agents) can observe the marker.
+var telemetrySuppressed = CliTelemetry.ConsumeSpawnMarker(
+    Environment.GetEnvironmentVariable,
+    k => Environment.SetEnvironmentVariable(k, null));
+
+CliTelemetry.Initialize(command, baseUrl, loggedIn, telemetrySuppressed);
+
+AppDomain.CurrentDomain.ProcessExit += (_, _) => {
+    CliTelemetry.RecordCommand(command, args, Environment.ExitCode, CommandTiming.ElapsedMs(commandStart));
+    CliTelemetry.FlushAndClose().GetAwaiter().GetResult();
+};
+
+// Everything from here to the end of command dispatch — including the --help,
+// per-command-help, and no-server-configured early exits below — runs inside this
+// try/finally so the deterministic exit-time update notice (UpdateNotice.FlushAsync)
+// fires on every path out of the command, not just the ones that fall through the
+// switch. UpdateNotice.IsHumanFacing is the suppression predicate (hooks, mcp, watch,
+// the foreground daemon, update/uninstall themselves, --no-update-check) — it decides
+// per-invocation whether FlushAsync does anything at all.
+try {
 
 if (command is "--help" or "-h" or "help") {
     await PrintUsage();
@@ -85,9 +160,17 @@ if (args.Skip(1).Any(a => a is "--help" or "-h")) {
 }
 
 // Commands that don't need a server URL
-string[] offlineCommands = ["--help", "-h", "help", "--version", "-v", "logout", "cleanup", "config", "daemon", "setup", "status", "update", "plugin", "profile", "use", "repos", "login", "ignore", "remap", "uninstall", "cursor-verify-appendonly"];
+// report-version: a no-server host must still hit ReportVersionCommand.HandleAsync's own
+// fail-open logic and return 0 silently, per its doc comment — never the generic
+// "No server configured" exit 1 this gate would otherwise produce.
+string[] offlineCommands = ["--help", "-h", "help", "--version", "-v", "logout", "cleanup", "config", "daemon", "setup", "status", "harness", "update", "plugin", "profile", "use", "repos", "login", "ignore", "remap", "uninstall", "cursor-verify-appendonly", "agent", "report-version"];
 
-if (baseUrl is null && !offlineCommands.Contains(command)) {
+// `import --discover` reads local transcripts and never calls the server, so it belongs with the
+// offline commands — and it is most useful before setup has run, which is exactly when there is no
+// server configured. Only that form: a real import obviously needs one.
+var offlineDiscover = command == "import" && args.Contains("--discover");
+
+if (baseUrl is null && !offlineCommands.Contains(command) && !offlineDiscover) {
     Console.Error.WriteLine("No server configured. Run `kcap setup` or set KCAP_URL.");
 
     return 1;
@@ -179,6 +262,8 @@ switch (command) {
 
         return await ValidatePlanCommand.Handle(baseUrl!, vpSessionId);
     }
+    case "feedback":
+        return await FeedbackCommand.HandleAsync(baseUrl!, args);
     case "eval": {
         // --list-questions is a standalone sub-action; short-circuit.
         if (args.Contains("--list-questions")) {
@@ -229,67 +314,34 @@ switch (command) {
 
         return await WhatsDoneCommand.HandleGenerateWhatsDone(baseUrl!, wdSessionId, wdVendor);
     }
-    case "login": {
-        var forceDevice = args.Contains("--device");
-
-        // No configured server (or explicit --discover) → run tenant discovery (pick provider,
-        // then your tenants). Otherwise log into the configured server.
-        if (OAuthLoginFlow.ShouldDiscoverLogin(baseUrl, args)) {
-            return await HandleDiscoverLoginAsync(forceDevice);
-        }
-
-        return await OAuthLoginFlow.LoginWithDiscoveryAsync(baseUrl!, forceDevice);
-    }
+    case "login":
+        return await LoginCommand.HandleAsync(args, baseUrl);
     case "logout": {
         await TokenStore.DeleteAsync();
         await Console.Out.WriteLineAsync("Logged out.");
 
         return 0;
     }
-    case "whoami": {
-        var provider = await HttpClientExtensions.DiscoverProviderAsync(baseUrl!);
-
-        if (provider == "None") {
-            await Console.Out.WriteLineAsync("Provider: None (no authentication)");
-            await Console.Out.WriteLineAsync($"Server:   {baseUrl!}");
-
-            return 0;
-        }
-
-        var tokens = await TokenStore.LoadAsync();
-
-        if (tokens is null) {
-            Console.Error.WriteLine("Not authenticated. Run `kcap login`.");
-
-            return 1;
-        }
-
-        await Console.Out.WriteLineAsync($"Username: {tokens.GitHubUsername}");
-        await Console.Out.WriteLineAsync($"Provider: {tokens.Provider}");
-        await Console.Out.WriteLineAsync($"Expires:  {tokens.ExpiresAt:u}");
-        await Console.Out.WriteLineAsync($"Server:   {baseUrl!}");
-        await Console.Out.WriteLineAsync($"Expired:  {(tokens.IsExpired ? "yes" : "no")}");
-
-        return 0;
-    }
+    case "whoami":
+        return await WhoamiCommand.HandleAsync(baseUrl!);
     case "daemon":
-        return await DaemonCommands.HandleAsync(args);
-    case "run-agent":
-        return await RunAgentCommand.RunAsync(args[1..]);
-    case "attach":
-        return await RunAgentCommand.AttachAsync(args[1..]);
-    case "ls":
-        return await RunAgentCommand.ListAsync(args[1..]);
+        return await new DaemonCommands(daemonPaths).HandleAsync(args);
+    case "agent":
+        return await new AgentCommand(daemonPaths).HandleAsync(args, baseUrl);
     case "setup":
         return await SetupCommand.HandleAsync(args);
     case "plugin":
         return await PluginCommand.HandleAsync(args);
     case "profile":
         return await ProfileCommand.HandleAsync(args);
+    case "machine":
+        return await MachineCommand.HandleAsync(baseUrl!, args);
     case "use":
         return await UseCommand.HandleAsync(args);
     case "status":
-        return await StatusCommand.HandleAsync(baseUrl);
+        return await StatusCommand.HandleAsync(daemonPaths, baseUrl, args);
+    case "harness":
+        return await HarnessCommand.HandleAsync(args);
     case "config":
         return await ConfigCommand.HandleAsync(args);
     case "ignore":
@@ -324,7 +376,7 @@ switch (command) {
     }
     case "mcp": {
         if (args.Length < 2) {
-            Console.Error.WriteLine("Usage: kcap mcp review|judge|sessions|flows|flow-result|memory|workitems …");
+            Console.Error.WriteLine("Usage: kcap mcp review|judge|sessions|flows|flow-result|memory|workitems|analytics …");
             Console.Error.WriteLine("  kcap mcp review [--owner <owner> --repo <repo> --pr <number>]");
             Console.Error.WriteLine("  kcap mcp judge --session <sessionId>");
             Console.Error.WriteLine("  kcap mcp sessions");
@@ -332,6 +384,7 @@ switch (command) {
             Console.Error.WriteLine("  kcap mcp flow-result   (launched by the daemon for hosted reviewers)");
             Console.Error.WriteLine("  kcap mcp memory");
             Console.Error.WriteLine("  kcap mcp workitems");
+            Console.Error.WriteLine("  kcap mcp analytics");
 
             return 1;
         }
@@ -371,6 +424,8 @@ switch (command) {
                 return await McpMemoryServer.RunAsync(baseUrl!);
             case "workitems":
                 return await McpWorkItemsServer.RunAsync(baseUrl!);
+            case "analytics":
+                return await McpAnalyticsServer.RunAsync(baseUrl!);
             default:
                 Console.Error.WriteLine($"Unknown mcp subcommand: {args[1]}");
 
@@ -397,7 +452,7 @@ switch (command) {
     case "cleanup":
         return await CleanupCommand.HandleCleanup();
     case "uninstall":
-        return await UninstallCommand.HandleAsync(args);
+        return await UninstallCommand.HandleAsync(daemonPaths, args);
     case "disable": {
         // The sessionId is consumed as a filesystem path component
         // (watcher PID files, disabled marker file). Validate strictly as a
@@ -541,6 +596,18 @@ switch (command) {
         }
 
         var generateSummaries = args.Contains("--generate-summaries");
+        var reimport          = args.Contains("--reimport");
+        var skipTitle         = args.Contains("--skip-title");
+        var discoverOnly      = args.Contains("--discover");
+        var discoverJson      = args.Contains("--json");
+
+        // Silently ignoring it would turn "report as JSON" into a real import, which is the one
+        // mistake this flag pair can make that costs something.
+        if (discoverJson && !discoverOnly) {
+            Console.Error.WriteLine("--json only applies to `kcap import --discover`.");
+
+            return 1;
+        }
 
         // Build sources
         var explicitVendorSelection = vsel.Vendors.Count > 0;
@@ -578,13 +645,16 @@ switch (command) {
             CurrentRepo:   currentRepo,
             StoredOrg:     storedOrg));
 
-        if (resolveResult.Error is not null) {
+        // `--discover` reports what a scope WOULD select, so requiring one first is backwards — it is
+        // the answer to "what should I pick", asked before anything is uploaded.
+        if (resolveResult.Error is not null && !discoverOnly) {
             Console.Error.WriteLine(resolveResult.Error);
             return 1;
         }
 
         return await ImportCommand.HandleImport(
-            baseUrl!,
+            // Discovery never calls the server, and reaches here with no configured one.
+            baseUrl ?? "",
             filterCwd,
             filterSession,
             minLines,
@@ -598,7 +668,11 @@ switch (command) {
             activeProfile:           activeProfile,
             currentRepo:             currentRepo,
             needOrgPick:             resolveResult.NeedOrgPick,
-            storedOrg:               storedOrg);
+            storedOrg:               storedOrg,
+            reimport:                reimport,
+            skipTitle:               skipTitle,
+            discoverOnly:            discoverOnly,
+            discoverJson:            discoverJson);
     }
     case "watch" when args.Length < 3:
         Console.Error.WriteLine("Usage: kcap watch <sessionId> <transcriptPath> [--agent-id <agentId>] [--cwd <cwd>] [--skip-title] [--parent-pid <pid>] [--vendor claude|codex|copilot|gemini|kiro|pi|opencode|antigravity|cursor|dsh]");
@@ -698,6 +772,13 @@ switch (command) {
 
         return 0;
     }
+    // Hidden, tooling-internal: spawned once by the npm wrapper's `runUpdate` right after
+    // `npm install` lands the new binary, so the server observes the new version immediately
+    // instead of waiting for whatever the user runs next. Not in PrintUsage — like
+    // generate-whats-done/set-title/copilot-finalize, nobody types this by hand. See
+    // ReportVersionCommand for why it never surfaces an error.
+    case "report-version":
+        return await ReportVersionCommand.HandleAsync(baseUrl);
     case "hook": {
         // Task 12: global, session-agnostic drain pass run early in EVERY non-Codex hook
         // invocation — centralizes the per-vendor AgentHookPoster.DrainSpoolsAsync calls Tasks 4-6
@@ -707,7 +788,10 @@ switch (command) {
         // own drain in the BACKGROUND, after satisfying its synchronous stdout contract.
         // Cross-process-throttled (~30s) and auth-gated inside DrainSpoolsAsync, so this adds no
         // per-invocation network cost beyond a disk stat on the vast majority of firings.
-        if (!args.Contains("--codex") && baseUrl is not null && HttpClientExtensions.IsAcceptableUrl(baseUrl)) {
+        // No acceptability conjunct here: DrainSpoolsAsync owns that decision, and it reaps both
+        // spools BEFORE returning. Gating the call would mean a config broken for weeks never reaps
+        // anything, and the per-session cap does not bound the number of stale files.
+        if (!args.Contains("--codex") && baseUrl is not null) {
             await AgentHookPoster.DrainSpoolsAsync(
                 baseUrl,
                 new HookSpool(PathHelpers.ConfigPath("spool")),
@@ -715,31 +799,34 @@ switch (command) {
                 sessionId: null); // current session unknown here — reading stdin now would consume it
         }
         if (args.Contains("--claude")) {
-            return await ClaudeHookCommand.Handle(baseUrl!, Console.In, updateCheckTask, hookProcessStart);
+            return await ClaudeHookCommand.Handle(baseUrl!, Console.In, processStart: hookProcessStart);
         }
         if (args.Contains("--codex")) {
-            return await CodexHookCommand.Handle(baseUrl!, Console.In);
+            return await CodexHookCommand.Handle(baseUrl!, Console.In, hookProcessStart);
         }
         if (args.Contains("--cursor")) {
             return await CursorHookCommand.Handle(baseUrl!, Console.In);
         }
         if (args.Contains("--copilot")) {
-            return await CopilotHookCommand.Handle(baseUrl!, Console.In, args);
+            return await CopilotHookCommand.Handle(baseUrl!, Console.In, args, hookProcessStart);
         }
         if (args.Contains("--gemini")) {
-            return await GeminiHookCommand.Handle(baseUrl!, Console.In);
+            return await GeminiHookCommand.Handle(baseUrl!, Console.In, hookProcessStart);
         }
         if (args.Contains("--kiro")) {
-            return await KiroHookCommand.Handle(baseUrl!, Console.In, args);
+            return await KiroHookCommand.Handle(baseUrl!, Console.In, args, hookProcessStart);
         }
         if (args.Contains("--pi")) {
-            return await PiHookCommand.Handle(baseUrl!, args);
+            // hookProcessStart, not a handler-local timestamp: HookBudget.Remaining is relative to
+            // it, and self-initializing inside Handle would inflate the memory-fetch budget by the
+            // pre-dispatch work (config load, spool drain), overshooting the true hook ceiling.
+            return await PiHookCommand.Handle(baseUrl!, args, Console.Out, hookProcessStart);
         }
         if (args.Contains("--opencode")) {
             return await OpenCodeHookCommand.Handle(baseUrl!, args);
         }
         if (args.Contains("--antigravity")) {
-            return await AntigravityHookCommand.Handle(baseUrl!, args);
+            return await AntigravityHookCommand.Handle(baseUrl!, args, hookProcessStart);
         }
         if (args.Contains("--dsh")) {
             return await DshHookCommand.Handle(baseUrl!, args);
@@ -768,6 +855,11 @@ return 1;
     return CrashReporter.ExitCode(command);
 }
 
+} finally {
+    await UpdateNotice.FlushAsync(command, args);
+    await HarnessSetupNotice.FlushAsync(command);
+}
+
 static string? GetArg(string[] arguments, string flag) {
     var idx = Array.IndexOf(arguments, flag);
 
@@ -776,70 +868,6 @@ static string? GetArg(string[] arguments, string flag) {
 
 string? ResolveSessionId(string[] args, int skipCount = 1, string[]? valueFlags = null) =>
     ArgParsing.ResolveSessionId(args, skipCount, valueFlags);
-
-async Task<int> HandleDiscoverLoginAsync(bool forceDevice) {
-    using var http  = new HttpClient();
-    var proxyClient = new AuthProxyClient(http);
-
-    var proxyConfig = await proxyClient.GetConfigAsync(AuthProxyEndpoint.Url);
-
-    if (proxyConfig is null) {
-        await Console.Error.WriteLineAsync("Cannot reach the Kurrent auth service.");
-
-        return 1;
-    }
-
-    var provider = OAuthLoginFlow.ChooseDiscoveryProvider(args, isInteractive: !HeadlessEnvironment.IsHeadless());
-
-    if (provider == AuthProvider.WorkOS) {
-        return await WorkOSDiscovery.RunWithLiveAuthAsync(
-            AuthProxyEndpoint.Url, proxyConfig, proxyClient, new SpectreTenantPicker());
-    }
-
-    if (string.IsNullOrEmpty(proxyConfig.GitHubClientId)) {
-        await Console.Error.WriteLineAsync("Cannot reach the Kurrent auth service.");
-
-        return 1;
-    }
-
-    var ghToken = await OAuthLoginFlow.AcquireGitHubTokenAsync(
-        proxyConfig.GitHubClientId, proxyConfig.GitHubCodeExchangeUrl, forceDevice);
-    if (ghToken is null) return 1;
-
-    var discovery = new TenantDiscovery(proxyClient, new SpectreTenantPicker());
-    var outcome   = await discovery.RunAsync(AuthProxyEndpoint.Url, ghToken);
-
-    if (outcome.ErrorMessage is not null) {
-        await Console.Error.WriteLineAsync(outcome.ErrorMessage);
-
-        return 1;
-    }
-
-    // Merge discovered tenants as profiles; the picked one becomes active
-    var cfg = await AppConfig.LoadProfileConfig();
-    cfg = TenantDiscovery.MergeProfiles(cfg, outcome.Tenants, outcome.Picked!);
-    await AppConfig.SaveProfileConfig(cfg);
-
-    // Discovery flows only via the shared GitHub App proxy, so every discovered tenant
-    // uses the GitHubApp provider. If DiscoveredTenant ever gains a Provider field, read it here.
-
-    // Exchange tokens for every discovered tenant so switching profiles works immediately.
-    // One HttpClient shared across all per-tenant exchanges to avoid socket/port exhaustion.
-    var exchanges = outcome.Tenants.Select(async tenant => {
-        var origin = AppConfig.NormalizeUrl(tenant.Origin);
-        var exit = await OAuthLoginFlow.ExchangeAndSaveAsync(
-            http, origin, ghToken, AuthProvider.GitHubApp, tenant.OrgLogin);
-        if (exit != 0) {
-            await Console.Error.WriteLineAsync(
-                $"Warning: token exchange failed for {tenant.OrgLogin}. Run 'kcap login' after switching to that profile.");
-        }
-    });
-    await Task.WhenAll(exchanges);
-
-    await Console.Out.WriteLineAsync($"Logged in. Active profile: {outcome.Picked!.OrgLogin}.");
-
-    return 0;
-}
 
 async Task PrintUsage() {
     var text = EmbeddedResources.Load("help-usage.txt");

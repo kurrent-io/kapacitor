@@ -4,12 +4,19 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Antigravity;
-using Capacitor.Cli.Core.Gemini;
-using Capacitor.Cli.Core.Kiro;
-using Capacitor.Cli.Core.OpenCode;
-using Capacitor.Cli.Core.Pi;
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.Harness.Gemini;
+using Capacitor.Cli.Core.Harness.Kiro;
+using Capacitor.Cli.Core.Harness.OpenCode;
+using Capacitor.Cli.Core.Harness.Pi;
+using Capacitor.Cli.Harness.Antigravity;
+using Capacitor.Cli.Harness.Codex;
+using Capacitor.Cli.Harness.Cursor;
+using Capacitor.Cli.Harness.Gemini;
+using Capacitor.Cli.Harness.OpenCode;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -116,11 +123,13 @@ static partial class WatchCommand {
     /// send-and-advance the newline-less final line. Never throws — a read failure just counts as
     /// "not yet complete" for that iteration; the delay between iterations is likewise best-effort so
     /// cancellation/short-lived environments can't turn this into a hang.
+    /// <para>Shares read+write: this polls while the vendor flushes its final records, so it must not
+    /// block that write (see <see cref="ReadAllTextSharedAsync"/>).</para>
     /// </summary>
     internal static async Task<bool> WaitForFinalLineCompletionAsync(string path, int attempts = 4, int delayMs = 500) {
         for (var i = 0; i < attempts; i++) {
             try {
-                if (IsFinalLineComplete(await File.ReadAllTextAsync(path))) return true;
+                if (IsFinalLineComplete(await ReadAllTextSharedAsync(path))) return true;
             } catch {
                 // Transient read failure (e.g. concurrent write) — try again on the next iteration.
             }
@@ -133,6 +142,25 @@ static partial class WatchCommand {
         }
 
         return false;
+    }
+
+    /// <summary>Reads a whole file without denying Write to anyone else. Use this for anything the
+    /// agent writes: <c>File.ReadAllText*</c> opens <see cref="FileShare.Read"/>, which locks the agent
+    /// out of its own transcript (mandatory on Windows only — see CLAUDE.md).</summary>
+    internal static async Task<string> ReadAllTextSharedAsync(string path) {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+
+        return await reader.ReadToEndAsync();
+    }
+
+    /// <summary>Synchronous <see cref="ReadAllTextSharedAsync"/>, for the sync sidecar-enrichment
+    /// paths. Same reason: the vendor owns that file and must never be locked out of it.</summary>
+    internal static string ReadAllTextShared(string path) {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+
+        return reader.ReadToEnd();
     }
 
     /// <summary>
@@ -182,6 +210,17 @@ static partial class WatchCommand {
             int?    parentPid = null,
             string  vendor    = "claude"
         ) {
+        // BEFORE the log redirection below: SignalR's WithUrl builds a Uri synchronously, so a
+        // relative value fails there — ahead of the connect/retry loop and independently of
+        // EnsureAbsolute — and `watch` is not fail-open, so the top-level catch turns that into an
+        // opaque exit 1. Validating here gives a hand-run watcher the actionable hint on the real
+        // stderr and the same exit 2 every interactive command gives; a few lines later Console.Error
+        // is a log file nobody is looking at.
+        if (!HookHttp.IsPostable(baseUrl)) {
+            Console.Error.WriteLine(HttpClientExtensions.SchemeMissingHint);
+            return 2;
+        }
+
         // Redirect all output to a log file so we don't hold parent's pipe FDs open
         var logDir = PathHelpers.ConfigPath("logs");
         Directory.CreateDirectory(logDir);
@@ -427,17 +466,15 @@ static partial class WatchCommand {
         // cases) or in the final-drain/end-synthesis gates (both explicitly agentId-is-null-gated
         // too), so setting it unconditionally here is a no-op for them either way.
         if (SkipsThresholdBuffering(vendor)) state.ThresholdReached = true;
-        // Antigravity is a GUI app like the Codex desktop: its shared process never
-        // exits per-conversation, so (like Codex) the idle timeout — not a parent-exit
-        // watchdog — is the per-conversation session-end path. Its own knob so tenants
-        // can tune the two GUIs independently.
-        var idleTimeout = vendor switch {
-            "antigravity" => ResolveCodexIdleTimeout(Environment.GetEnvironmentVariable("KCAP_ANTIGRAVITY_IDLE_MINUTES")),
-            // Task 11 (D1): Cursor's own idle-ceiling knob — see ResolveCursorIdleCeiling.
-            "cursor"      => ResolveCursorIdleCeiling(Environment.GetEnvironmentVariable("KCAP_CURSOR_IDLE_CEILING_MINUTES")),
-            _             => ResolveCodexIdleTimeout(Environment.GetEnvironmentVariable("KCAP_CODEX_IDLE_MINUTES")),
-        };
+        var idleTimeout = ResolveIdleWindow(vendor, isSessionWatcher: agentId is null, Environment.GetEnvironmentVariable);
         var idleExit = false;
+
+        // Idle grace between a Codex collab child's task_complete and its live
+        // subagent-stop POST (codex child watchers only — see the loop's stop check). The
+        // agent type is read lazily from the child rollout's own header, once.
+        var     codexSubagentStopGrace   = CodexSubagentTurnTracker.ResolveStopGrace(Environment.GetEnvironmentVariable("KCAP_CODEX_SUBAGENT_IDLE_MINUTES"));
+        string? codexChildAgentType      = null;
+        var     codexStopNextAttemptAt   = DateTimeOffset.MinValue;
 
         if (skipTitle) {
             state.TitleGenerated = true;
@@ -459,9 +496,9 @@ static partial class WatchCommand {
                 hubUrl,
                 options => {
                     options.AccessTokenProvider = async () => {
-                        var t = await TokenStore.GetValidTokensAsync();
+                        var resolution = await TokenStore.GetValidTokensForServerAsync(baseUrl);
 
-                        return t?.AccessToken;
+                        return resolution.Tokens?.AccessToken;
                     };
                 }
             )
@@ -607,10 +644,39 @@ static partial class WatchCommand {
             cts.Cancel();
         }
 
+        // Resumed past a tool that opened before the cursor: rebuild the in-flight set so idle-end
+        // doesn't mistake a running agent for an idle one. Only reachable on a resume — at line 0
+        // the drain delivers the whole file and folds it itself.
+        if (state.LinesProcessed > 0) {
+            if (TracksClaudeToolCalls(vendor, isSessionWatcher: agentId is null)) {
+                await BackfillClaudePendingToolCallsAsync(
+                    state.PendingClaudeToolCalls, transcriptPath, state.LinesProcessed, cts.Token);
+            }
+
+            if (TracksCodexToolCalls(vendor)) {
+                await BackfillCodexWatcherStateAsync(
+                    state, transcriptPath, isChildWatcher: agentId is not null, state.LinesProcessed, cts.Token);
+            }
+        }
+
         // Gemini fires no subagent hooks, so the parent watcher discovers nested subagent
         // transcripts itself and spawns a child watcher per subagent. Tracks the
         // files already registered + spawned so each is handled exactly once across ticks.
         var seenSubagents = new HashSet<string>(StringComparer.Ordinal);
+
+        // Codex-only sibling cache: rollouts in the shared sessions tree whose header proved
+        // they are NOT this session's subagents (top-level sessions, other parents' children).
+        // Keeps the per-tick scan to one header read per NEW file; a mid-write header is
+        // deliberately never cached so it is retried (see CodexSubagentDiscovery).
+        var codexRuledOutRollouts = new HashSet<string>(StringComparer.Ordinal);
+
+        // Codex-only: last mtime ChildRolloutAdvanced fired for, per child rollout — backs the
+        // re-ensure gate that respawns a reaped child watcher when its subagent re-engages.
+        var codexRolloutMtimes = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+
+        // Every child watcher key this session watcher spawned (#550) — the parent is the only
+        // process that knows they exist, so its teardown must stop them.
+        var spawnedChildWatcherKeys = new HashSet<string>(StringComparer.Ordinal);
 
         try {
             while (!cts.Token.IsCancellationRequested) {
@@ -656,16 +722,48 @@ static partial class WatchCommand {
                 // Live subagent discovery: only the parent (agentId == null) watcher scans;
                 // child subagent watchers (agentId != null) just stream their file. Gemini
                 // scans its native nested chat files; OpenCode scans the nested dir the
-                // kcap plugin writes child {info,parts} into; Antigravity
+                // kcap plugin writes child {info,parts} into; Codex scans the shared
+                // sessions tree for collab subagent rollouts whose session_meta names this
+                // session as parent_thread_id (Codex 0.146+ multi-agent v2); Antigravity
                 // links subagents from the parent transcript's INVOKE_SUBAGENT steps — the
                 // spawn-time signal — drained this tick (nesting only, subagents are
                 // captured standalone already).
                 if (agentId is null && vendor == "gemini") {
-                    await ScanGeminiSubagents(baseUrl, sessionId, transcriptPath, seenSubagents, cts.Token);
+                    await ScanGeminiSubagents(baseUrl, sessionId, transcriptPath, seenSubagents, spawnedChildWatcherKeys, cts.Token);
                 } else if (agentId is null && vendor == "opencode") {
-                    await ScanOpenCodeSubagents(baseUrl, sessionId, transcriptPath, seenSubagents, cts.Token);
+                    await ScanOpenCodeSubagents(baseUrl, sessionId, transcriptPath, seenSubagents, spawnedChildWatcherKeys, cts.Token);
+                } else if (agentId is null && vendor == "codex") {
+                    await ScanCodexSubagents(
+                        baseUrl, sessionId, transcriptPath, seenSubagents, codexRuledOutRollouts,
+                        codexRolloutMtimes, spawnedChildWatcherKeys, cts.Token);
                 } else if (agentId is null && vendor == "antigravity") {
                     await ScanAntigravitySubagentLinks(baseUrl, sessionId, drained, state.PostedSubagentLinks, cts.Token);
+                }
+
+                // A Codex collab CHILD posts its own subagent-stop once its rollout's
+                // last turn completed (task_complete, no tool call in flight) and the grace
+                // window elapsed — without this, the parent's session-end teardown is the only
+                // stop, so a finished child's chat card spins for the parent's whole lifetime.
+                // One-shot: the server dedupes lifecycle events per (session, agent), so the
+                // tracker latches after the first successful POST; a failed POST retries on the
+                // CodexSubagentStopRetryInterval cadence (never every 1s tick), and the
+                // parent-end teardown remains the backstop either way. The child keeps
+                // streaming after the stop — appends are not lifecycle-gated, so a re-engaged
+                // child's content still lands in its subsession.
+                if (agentId is not null && vendor == "codex"
+                 && DateTimeOffset.UtcNow >= codexStopNextAttemptAt
+                 && state.CodexSubagentTurn.ShouldPostStop(
+                        state.PendingCodexToolCalls.Count, state.LastActivityAt,
+                        DateTimeOffset.UtcNow, codexSubagentStopGrace)) {
+                    codexChildAgentType ??= ResolveCodexChildAgentType(transcriptPath);
+
+                    if (await PostCodexSubagentStopAsync(baseUrl, sessionId, agentId, codexChildAgentType, transcriptPath, cts.Token)) {
+                        state.CodexSubagentTurn.StopPosted = true;
+                        Log($"Codex subagent {agentId} ({codexChildAgentType}) turn complete + idle "
+                          + $"{codexSubagentStopGrace.TotalMinutes:F0}m; posted subagent-stop");
+                    } else {
+                        codexStopNextAttemptAt = DateTimeOffset.UtcNow + CodexSubagentStopRetryInterval;
+                    }
                 }
 
                 // the Cursor idle clock must be the LATER of transcript
@@ -686,10 +784,13 @@ static partial class WatchCommand {
                         DateTimeOffset.UtcNow,
                         idleTimeout,
                         // A tool awaiting its result suppresses idle-end: Codex tracks call_ids,
-                        // Antigravity counts PLANNER_RESPONSE calls vs result steps.
-                        toolInFlight: vendor == "antigravity"
-                            ? state.PendingAntigravityToolCalls > 0
-                            : state.PendingCodexToolCalls.Count > 0,
+                        // Antigravity counts PLANNER_RESPONSE calls vs result steps, Claude tracks
+                        // tool_use ids awaiting their tool_result.
+                        toolInFlight: vendor switch {
+                            "antigravity" => state.PendingAntigravityToolCalls > 0,
+                            "claude"      => state.PendingClaudeToolCalls.Count > 0,
+                            _             => state.PendingCodexToolCalls.Count > 0,
+                        },
                         disconnectedSinceActivity: state.AccumulatedDisconnected)) {
                     Log($"{vendor} transcript idle for >{idleTimeout.TotalMinutes:F0}m; ending session (idle_timeout)");
                     idleExit = true;
@@ -776,6 +877,14 @@ static partial class WatchCommand {
             Log($"Failed to signal drain complete: {ex.Message}");
         }
 
+        // #550: stop spawned child watchers on every parent exit path — SIGTERM-first, so each
+        // runs its final drain before the session-end POST below. A SIGKILLed parent skips this;
+        // that orphan case is what the codex-child reap ceiling backstops.
+        if (spawnedChildWatcherKeys.Count > 0) {
+            Log($"Stopping {spawnedChildWatcherKeys.Count} spawned child watcher(s)");
+            await WatcherManager.KillWatchers(spawnedChildWatcherKeys);
+        }
+
         Log($"Done. {state.LinesProcessed} total lines processed.");
 
         await hubConnection.DisposeAsync();
@@ -807,6 +916,11 @@ static partial class WatchCommand {
             await PostSessionEndOnParentExitAsync(baseUrl, sessionId, transcriptPath, cwd, vendor, state.Repository, endReason);
         }
 
+        // Graceful exit: retire this incarnation's pid file so no later teardown/cleanup can act
+        // on a recycled pid (KillWatcher's token guard is the crash-exit backstop).
+        WatcherManager.RemoveOwnPidFile(
+            agentId is null ? sessionId : $"{sessionId}-{agentId}", Environment.ProcessId);
+
         await logWriter.DisposeAsync();
 
         return 0;
@@ -821,11 +935,12 @@ static partial class WatchCommand {
     /// deterministic server-side lifecycle ids make re-registration safe.
     /// </summary>
     static async Task ScanGeminiSubagents(
-            string          baseUrl,
-            string          sessionId,
-            string          transcriptPath,
-            HashSet<string> seen,
-            CancellationToken ct
+            string              baseUrl,
+            string              sessionId,
+            string              transcriptPath,
+            HashSet<string>     seen,
+            ICollection<string> spawnedChildKeys,
+            CancellationToken   ct
         ) {
         IReadOnlyList<string> subFiles;
         try {
@@ -859,6 +974,7 @@ static partial class WatchCommand {
             await WatcherManager.EnsureWatcherRunning(
                 baseUrl, key: $"{sessionId}-{agentId}", transcriptPath: subFile,
                 agentId: agentId, sessionIdOverride: sessionId, vendor: "gemini");
+            spawnedChildKeys.Add($"{sessionId}-{agentId}");
 
             Log($"Gemini subagent {agentId} ({agentType}) registered + child watcher spawned");
         }
@@ -891,11 +1007,12 @@ static partial class WatchCommand {
     /// ids make re-registration safe.
     /// </summary>
     static async Task ScanOpenCodeSubagents(
-            string            baseUrl,
-            string            sessionId,
-            string            transcriptPath,
-            HashSet<string>   seen,
-            CancellationToken ct
+            string              baseUrl,
+            string              sessionId,
+            string              transcriptPath,
+            HashSet<string>     seen,
+            ICollection<string> spawnedChildKeys,
+            CancellationToken   ct
         ) {
         IReadOnlyList<string> subFiles;
         try {
@@ -924,6 +1041,7 @@ static partial class WatchCommand {
             await WatcherManager.EnsureWatcherRunning(
                 baseUrl, key: $"{sessionId}-{agentId}", transcriptPath: subFile,
                 agentId: agentId, sessionIdOverride: sessionId, vendor: "opencode");
+            spawnedChildKeys.Add($"{sessionId}-{agentId}");
 
             Log($"OpenCode subagent {agentId} ({agentType}) registered + child watcher spawned");
         }
@@ -941,6 +1059,191 @@ static partial class WatchCommand {
             return resp.IsSuccessStatusCode;
         } catch {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Codex fires no subagent hooks; its collab subagents (Codex 0.146+, multi-agent v2) each
+    /// fork into their OWN rollout in the shared <c>~/.codex/sessions</c> tree, linked back via
+    /// the child <c>session_meta</c>'s <c>parent_thread_id</c> / <c>thread_source: "subagent"</c>.
+    /// The parent watcher scans that tree (day dirs from the parent's date forward, one header
+    /// read per new file — see <see cref="CodexSubagentDiscovery.EnumerateSubagentRollouts"/>):
+    /// on first sight it registers the subagent (<c>subagent-start</c>, fail-closed) then spawns
+    /// a detached child watcher streaming the child rollout under the child's canonical agentId
+    /// (→ <c>AgentSubsession-*</c>). Idempotent across ticks via <c>seen</c>;
+    /// deterministic server-side lifecycle ids make re-registration safe. Disk enumeration (not
+    /// the parent's in-band <c>sub_agent_activity</c> events) so a restarted parent watcher
+    /// still recovers already-spawned children.
+    /// </summary>
+    /// <summary>
+    /// #550 companion to the codex-child reap ceiling: fires on first sight of a rollout and
+    /// thereafter only when its mtime advances, recording the mtime it fired for — so a reaped
+    /// child stays reaped while its rollout is quiet but is re-ensured the moment its subagent
+    /// re-engages (the fresh watcher resumes from the server frontier). Pure for testability.
+    /// </summary>
+    internal static bool ChildRolloutAdvanced(Dictionary<string, DateTime> lastMtimes, string filePath, DateTime currentMtime) {
+        if (lastMtimes.TryGetValue(filePath, out var prev) && prev == currentMtime) return false;
+
+        lastMtimes[filePath] = currentMtime;
+
+        return true;
+    }
+
+    static async Task ScanCodexSubagents(
+            string                       baseUrl,
+            string                       sessionId,
+            string                       transcriptPath,
+            HashSet<string>              seen,
+            HashSet<string>              ruledOut,
+            Dictionary<string, DateTime> rolloutMtimes,
+            ICollection<string>          spawnedChildKeys,
+            CancellationToken            ct
+        ) {
+        List<CodexSubagentDiscovery.SubagentRollout> subs;
+        try {
+            subs = CodexSubagentDiscovery.EnumerateSubagentRollouts(transcriptPath, sessionId, ruledOut);
+        } catch {
+            return; // discovery is best-effort — never break the main drain loop
+        }
+
+        foreach (var sub in subs) {
+            if (ct.IsCancellationRequested) return;
+
+            // Both gates evaluate before branching so first sight also records the mtime. An
+            // already-seen rollout that hasn't grown keeps its watcher state as-is — alive and
+            // streaming, or reaped-idle — rather than respawning a reaped child for a finished rollout.
+            var advanced = ChildRolloutAdvanced(rolloutMtimes, sub.FilePath, File.GetLastWriteTimeUtc(sub.FilePath));
+            var isNew    = seen.Add(sub.FilePath);
+
+            if (!isNew && !advanced) continue;
+
+            var childAgentId = sub.ChildDashlessId;
+            var agentType    = CodexSubagentDiscovery.AgentTypeFrom(sub.AgentPath, sub.AgentNickname);
+
+            // Fail-closed: register the subagent (→ SubagentStarted) before its child watcher
+            // streams content. On POST failure, drop from `seen` so the next tick retries.
+            if (isNew && !await PostCodexSubagentStartAsync(baseUrl, sessionId, childAgentId, agentType, sub.FilePath, ct)) {
+                seen.Remove(sub.FilePath);
+                continue;
+            }
+
+            await WatcherManager.EnsureWatcherRunning(
+                baseUrl, key: $"{sessionId}-{childAgentId}", transcriptPath: sub.FilePath,
+                agentId: childAgentId, sessionIdOverride: sessionId, vendor: "codex");
+            spawnedChildKeys.Add($"{sessionId}-{childAgentId}");
+
+            if (isNew) Log($"Codex subagent {childAgentId} ({agentType}) registered + child watcher spawned");
+        }
+    }
+
+    static async Task<bool> PostCodexSubagentStartAsync(
+        string baseUrl, string sessionId, string agentId, string agentType, string subFile, CancellationToken ct
+    ) {
+        try {
+            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, ct);
+            var       payload = CodexSubagentDiscovery.BuildStartPayload(sessionId, agentId, agentType, subFile);
+            using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+            using var resp    = await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-start", content, ct: ct);
+
+            return resp.IsSuccessStatusCode;
+        } catch {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Overall budget for one live child-stop POST attempt (auth client creation + the POST
+    /// itself). Must stay well inside <see cref="WatcherHeartbeat.Threshold"/> (20s): the
+    /// main loop touches the heartbeat once per iteration and awaits this call inline, so a
+    /// slow attempt on the default 30s retry budget could mark the watcher stale and churn
+    /// it exactly at turn completion. Retries ride later loop iterations instead, on the
+    /// <see cref="CodexSubagentStopRetryInterval"/> cadence.
+    /// </summary>
+    static readonly TimeSpan CodexSubagentStopPostBudget = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Minimum spacing between live child-stop POST attempts, so a persistent failure
+    /// (outage, auth trouble) never hammers <c>/hooks/subagent-stop</c> at the loop's 1s
+    /// cadence. Deliberately no terminal give-up: an auth refresh can heal a 401 and the
+    /// parent-end teardown dedupes whatever this never manages to post.
+    /// </summary>
+    static readonly TimeSpan CodexSubagentStopRetryInterval = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// The live per-child stop, posted by the CHILD watcher itself once its turn
+    /// completed and idled — the same wire shape <see cref="CodexSubagentTeardown"/> posts at
+    /// parent end (which stays the backstop; the server dedupes the duplicate stop via its
+    /// deterministic lifecycle event ids). Bounded by
+    /// <see cref="CodexSubagentStopPostBudget"/>; failures are logged and reported to the
+    /// caller, never thrown.
+    /// </summary>
+    static async Task<bool> PostCodexSubagentStopAsync(
+        string baseUrl, string sessionId, string agentId, string agentType, string subFile, CancellationToken ct
+    ) {
+        try {
+            using var budgetCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budgetCts.CancelAfter(CodexSubagentStopPostBudget);
+
+            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, budgetCts.Token);
+            var       payload = CodexSubagentDiscovery.BuildStopPayload(sessionId, agentId, agentType, subFile);
+            using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+            using var resp    = await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-stop", content, timeout: CodexSubagentStopPostBudget, ct: budgetCts.Token);
+
+            if (!resp.IsSuccessStatusCode) {
+                Log($"Codex subagent {agentId} stop POST returned {(int)resp.StatusCode}; "
+                  + $"retrying in {CodexSubagentStopRetryInterval.TotalSeconds:F0}s");
+            }
+
+            return resp.IsSuccessStatusCode;
+        } catch (Exception ex) {
+            Log($"Codex subagent {agentId} stop POST failed: {ex.Message}; "
+              + $"retrying in {CodexSubagentStopRetryInterval.TotalSeconds:F0}s");
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Agent type for a child watcher's own stop payload, read from the child rollout's
+    /// <c>session_meta</c> header — the child watcher isn't handed the type at spawn (only the
+    /// parent's scan derives it), and <see cref="CodexSubagentDiscovery.ReadHeader"/> never
+    /// throws, so a still-unreadable header just yields the generic fallback.
+    /// </summary>
+    static string ResolveCodexChildAgentType(string transcriptPath) {
+        var (_, meta) = CodexSubagentDiscovery.ReadHeader(transcriptPath);
+
+        return CodexSubagentDiscovery.AgentTypeFrom(meta.AgentPath, meta.AgentNickname);
+    }
+
+    /// <summary>
+    /// Codex's counterpart to <see cref="BackfillClaudePendingToolCallsAsync"/>, same window and
+    /// fail-soft properties. Both roles need the pending set — a <c>function_call</c> that opened
+    /// before the cursor writes nothing until its output lands, so a session watcher would read
+    /// <c>toolInFlight</c> false and idle-end a live session. Turn state is child-only: nothing
+    /// else re-delivers the acknowledged <c>task_complete</c> that arms the live stop.
+    /// </summary>
+    internal static async Task BackfillCodexWatcherStateAsync(
+            WatchState state, string transcriptPath, bool isChildWatcher, int upToLine, CancellationToken ct) {
+        if (ct.IsCancellationRequested) return;
+
+        var firstParsedLine = Math.Max(0, upToLine - ToolBackfillWindowLines);
+
+        try {
+            await using var stream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var       reader = new StreamReader(stream);
+
+            for (var lineNumber = 0; lineNumber < upToLine; lineNumber++) {
+                if (await reader.ReadLineAsync(ct) is not { } line) break;
+                if (lineNumber < firstParsedLine) continue;
+
+                UpdateCodexPendingToolCalls(state.PendingCodexToolCalls, line);
+
+                if (isChildWatcher) state.CodexSubagentTurn.Observe(line);
+            }
+        } catch (OperationCanceledException) {
+            // Shutdown racing startup — expected, and not worth a log line.
+        } catch (Exception ex) {
+            Log($"Codex watcher-state backfill skipped: {ex.Message}");
         }
     }
 
@@ -1001,23 +1304,76 @@ static partial class WatchCommand {
             : DefaultCursorIdleCeiling;
 
     /// <summary>
+    /// Reap ceiling for a Claude CHILD (subagent) watcher, whose only other exits are the
+    /// SubagentStop-driven StopWatcher signal and the parent-exit watchdog — so a missed
+    /// SubagentStop leaks it for the life of the parent session.
+    ///
+    /// Far longer than the 60-minute vendor ceilings because it is a leak backstop, not an
+    /// end-of-conversation detector: a child watcher posts no session-end, so reaping late costs
+    /// nothing while reaping a LIVE subagent drops the rest of its transcript.
+    /// </summary>
+    internal static readonly TimeSpan DefaultClaudeSubagentIdleCeiling = TimeSpan.FromHours(6);
+
+    /// <summary>
+    /// Resolves the Claude subagent idle ceiling from KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES, falling
+    /// back to <see cref="DefaultClaudeSubagentIdleCeiling"/> for unset/blank/non-numeric/
+    /// non-positive values. Pure so the parsing is unit-testable.
+    /// </summary>
+    internal static TimeSpan ResolveClaudeSubagentIdleCeiling(string? envValue) =>
+        int.TryParse(envValue, out var minutes) && minutes > 0
+            ? TimeSpan.FromMinutes(minutes)
+            : DefaultClaudeSubagentIdleCeiling;
+
+    /// <summary>
+    /// Reap ceiling for a Codex collab CHILD watcher (#550), the backstop for a child orphaned by
+    /// a hard-killed parent (no parent-pid watchdog, and StopWatcher only reaches the session
+    /// watcher). Same sizing rationale as <see cref="DefaultClaudeSubagentIdleCeiling"/>: a leak
+    /// backstop, not an end-of-conversation detector — reaping late costs nothing, reaping a LIVE
+    /// subagent drops the rest of its transcript.
+    /// </summary>
+    internal static readonly TimeSpan DefaultCodexSubagentReapCeiling = TimeSpan.FromHours(6);
+
+    /// <summary>
+    /// Resolves the Codex subagent reap ceiling from KCAP_CODEX_SUBAGENT_REAP_MINUTES — its own
+    /// knob because KCAP_CODEX_SUBAGENT_IDLE_MINUTES already tunes the subagent-stop grace.
+    /// Falls back to <see cref="DefaultCodexSubagentReapCeiling"/> for unset/blank/non-numeric/
+    /// non-positive values. Pure so the parsing is unit-testable.
+    /// </summary>
+    internal static TimeSpan ResolveCodexSubagentReapCeiling(string? envValue) =>
+        int.TryParse(envValue, out var minutes) && minutes > 0
+            ? TimeSpan.FromMinutes(minutes)
+            : DefaultCodexSubagentReapCeiling;
+
+    /// <summary>
+    /// The idle window <see cref="RunWatch"/> measures against, per vendor and watcher role — each
+    /// vendor on its OWN knob. <paramref name="env"/> is injected to keep the mapping testable.
+    /// The role argument exists for Claude, whose CHILD watchers get the subagent backstop rather
+    /// than a conversation-idle window.
+    /// </summary>
+    internal static TimeSpan ResolveIdleWindow(string vendor, bool isSessionWatcher, Func<string, string?> env) =>
+        vendor switch {
+            "antigravity"                     => ResolveCodexIdleTimeout(env("KCAP_ANTIGRAVITY_IDLE_MINUTES")),
+            "cursor"                          => ResolveCursorIdleCeiling(env("KCAP_CURSOR_IDLE_CEILING_MINUTES")),
+            "claude" when !isSessionWatcher   => ResolveClaudeSubagentIdleCeiling(env("KCAP_CLAUDE_SUBAGENT_IDLE_MINUTES")),
+            "codex" when !isSessionWatcher    => ResolveCodexSubagentReapCeiling(env("KCAP_CODEX_SUBAGENT_REAP_MINUTES")),
+            _                                 => ResolveCodexIdleTimeout(env("KCAP_CODEX_IDLE_MINUTES")),
+        };
+
+    /// <summary>
     /// Whether the watcher should self-terminate because the vendor's transcript file has gone
-    /// idle. Pure so the policy is unit-testable. Gated to: the vendors whose parent-exit
-    /// watchdog can't fire per-conversation — codex (the desktop app's shared app-server never
-    /// exits per session), antigravity (the IDE process outlives any one conversation), and
-    /// cursor (no shell hooks fire a reliable per-conversation parent-exit signal
-    /// either — its own idle ceiling is the fallback). Session watchers additionally require
-    /// threshold-reached (below-threshold short-lived sessions have no server session to end);
-    /// Cursor CHILD (subagent) watchers are eligible too WITHOUT the
-    /// threshold gate — they never buffer, so ThresholdReached never flips true for them; see
-    /// <see cref="RunWatch"/>'s call site for the same fix's heartbeat-aware idle clock. Uses
-    /// strictly-greater-than so the boundary tick is not yet considered idle. Also
-    /// suppressed when a tool call is in flight (<paramref name="toolInFlight"/> true): a
-    /// long-running shell command / custom tool legitimately produces no new rollout lines
-    /// between its function_call start and its _output completion — ending while it's running
-    /// would falsely terminate an active session. No hard ceiling on tool duration: if the
-    /// process dies, the parent-exit watchdog takes over; a hung-but-alive tool is a real
-    /// in-flight turn (YAGNI — no ceiling).
+    /// idle. Pure so the policy is unit-testable. Gated to the vendor/role combinations whose
+    /// parent-exit watchdog can't fire per-conversation — see the switch below for which, and
+    /// why each one qualifies. Session watchers additionally require threshold-reached
+    /// (below-threshold short-lived sessions have no server session to end); CHILD (subagent)
+    /// watchers are eligible WITHOUT the threshold gate — they never buffer, so ThresholdReached
+    /// never flips true for them; see <see cref="RunWatch"/>'s call site for the
+    /// heartbeat-aware idle clock. Uses strictly-greater-than so the boundary tick is not yet
+    /// considered idle. Also suppressed when a tool call is in flight
+    /// (<paramref name="toolInFlight"/> true): a long-running shell command / custom tool
+    /// legitimately produces no new transcript lines between its start and completion records —
+    /// ending while it's running would falsely terminate an active session. No hard ceiling on
+    /// tool duration for the vendors with a live parent-exit watchdog; for Claude subagents the
+    /// generous <see cref="DefaultClaudeSubagentIdleCeiling"/> is itself the second layer.
     ///
     /// For Cursor specifically the caller must NOT follow this up with a session-end POST —
     /// unlike Codex/Antigravity, end synthesis for Cursor has exactly one owner (the sessionEnd
@@ -1034,22 +1390,35 @@ static partial class WatchCommand {
             bool           toolInFlight              = false,
             TimeSpan       disconnectedSinceActivity = default
         ) {
-        if (vendor != "codex" && vendor != "antigravity" && vendor != "cursor") return false;
+        // Which vendors may idle-exit, and in which role:
+        //   codex             — both. Session: the idle window is the fallback session-end signal
+        //                       (no per-conversation parent-exit hook). CHILD: the reap ceiling
+        //                       is a leak backstop (#550) — no parent-pid watchdog, and the
+        //                       server's StopWatcher only reaches the session watcher, so a child
+        //                       that outlives the parent's teardown would otherwise never exit.
+        //                       Server-side finalization stays with the child's own live
+        //                       subagent-stop POST or the parent-end teardown, never this exit.
+        //   antigravity       — session only; it spawns no child watchers at all.
+        //   cursor            — both; no shell hook fires a reliable parent-exit signal either.
+        //   claude            — CHILD only: nothing else finalizes it (a missed SubagentStop
+        //                       leaks it for the life of the parent). Its SESSION watcher has a
+        //                       working watchdog AND a sessionEnd hook, so a ceiling there could
+        //                       end a live session out from under a thinking user.
+        var eligible = vendor switch {
+            "codex" or "cursor" => true,
+            "antigravity"       => isSessionWatcher,
+            "claude"            => !isSessionWatcher,
+            _                   => false,
+        };
 
-        // a Cursor CHILD (subagent) watcher never buffers and so never
-        // sets ThresholdReached (WatchState.ThresholdReached only ever flips true on the
-        // agentId==null buffering-flush branch in DrainNewLines) — requiring it here would make
-        // child watchers permanently ineligible for the idle ceiling. Session watchers keep the
-        // threshold gate (a below-threshold session was never flushed to the server, so there's
-        // nothing to end); the exemption is scoped to Cursor specifically — Codex/Antigravity
-        // never spawn agentId!=null watchers via WatcherManager, so a non-session-watcher of
-        // either vendor should never reach this predicate true in practice, and this makes that
-        // explicit rather than accidental.
-        if (isSessionWatcher) {
-            if (!thresholdReached) return false;
-        } else if (vendor != "cursor") {
-            return false;
-        }
+        if (!eligible) return false;
+
+        // A CHILD (subagent) watcher never buffers and so never sets ThresholdReached
+        // (WatchState.ThresholdReached only ever flips true on the agentId==null buffering-flush
+        // branch in DrainNewLines) — requiring it here would make every child watcher permanently
+        // ineligible. Session watchers keep the gate: a below-threshold session was never flushed
+        // to the server, so there's nothing to end.
+        if (isSessionWatcher && !thresholdReached) return false;
 
         return now - lastActivityAt - disconnectedSinceActivity > idleTimeout && !toolInFlight;
     }
@@ -1103,12 +1472,20 @@ static partial class WatchCommand {
             : lastActivityAt;
 
     /// <summary>
-    /// Updates <paramref name="pending"/> based on a single Codex rollout line.
+    /// Updates <c>pending</c> based on a single Codex rollout line.
     /// A <c>function_call</c> or <c>custom_tool_call</c> response_item adds its
     /// <c>call_id</c> to the set; the matching <c>_output</c> variant removes it.
     /// All other lines and malformed JSON are silently ignored so this is safe to
     /// call unconditionally for every line of any vendor transcript.
     /// </summary>
+    /// <summary>
+    /// Which watchers feed <see cref="UpdateCodexPendingToolCalls"/>. It reads RAW drain lines,
+    /// which are unbounded, so — unlike when it read the 64 KiB-bounded redacted list — running it
+    /// for every vendor would make an unrelated watcher parse a multi-megabyte line it can never
+    /// match. Not gated on watcher role: a collab child needs it for ShouldPostSubagentStop.
+    /// </summary>
+    internal static bool TracksCodexToolCalls(string vendor) => vendor == "codex";
+
     internal static void UpdateCodexPendingToolCalls(HashSet<string> pending, string line) {
         try {
             using var doc  = JsonDocument.Parse(line);
@@ -1134,6 +1511,90 @@ static partial class WatchCommand {
                   or "custom_tool_call_output":
                     pending.Remove(callId);
                     break;
+            }
+        } catch {
+            // Ignore malformed / non-JSON lines — never break the drain loop
+        }
+    }
+
+    /// <summary>
+    /// Claude's counterpart to <see cref="UpdateCodexPendingToolCalls"/>, guarding the subagent
+    /// idle ceiling: a <c>tool_use</c> block adds its <c>id</c>, the matching <c>tool_result</c>
+    /// removes it via <c>tool_use_id</c>. While the set is non-empty the subagent has a tool
+    /// running and transcript silence is expected, so the ceiling is suppressed.
+    ///
+    /// Keyed off the content blocks rather than the record's top-level <c>type</c>: the block
+    /// types are what actually carry the ids, so this stays correct regardless of how the
+    /// envelope is labelled.
+    /// </summary>
+    /// <summary>
+    /// Which watchers feed <see cref="UpdateClaudePendingToolCalls"/>. Must stay in step with the
+    /// watchers <see cref="ShouldEndOnIdle"/> gives a ceiling to: one that is reaped on idle but
+    /// never tracks its tool calls has no in-flight suppression and would end a live subagent
+    /// mid-build.
+    /// </summary>
+    internal static bool TracksClaudeToolCalls(string vendor, bool isSessionWatcher) =>
+        vendor == "claude" && !isSessionWatcher;
+
+    /// <summary>
+    /// How far back from the resume cursor the tool-call backfills parse. An unfinished tool sits
+    /// at the tail by construction — nothing is appended between the call and its result — so older
+    /// lines are settled and parsing them only costs startup latency. Bounding also stops a stale
+    /// unmatched call from an interrupted turn stranding an id and suppressing idle-end forever.
+    /// Shared by the Claude and Codex backfills: same rationale, and nothing about the number is
+    /// vendor-specific.
+    /// </summary>
+    internal const int ToolBackfillWindowLines = 512;
+
+    /// <summary>
+    /// Rebuilds the in-flight set from the transcript lines before a resume cursor. A watcher that
+    /// reconnects mid-tool starts draining at the server's line position and never sees the
+    /// <c>tool_use</c> that opened before it, so the set would come up empty and the ceiling would
+    /// treat a live subagent as idle. Parses only the last <see cref="ToolBackfillWindowLines"/>
+    /// lines before <paramref name="upToLine"/>; everything from the cursor on arrives through the
+    /// normal drain. Opened <c>FileShare.ReadWrite</c>: the agent is still writing this file.
+    /// Failure is a no-op, never fatal — losing the backstop beats failing a watcher's startup.
+    /// </summary>
+    internal static async Task BackfillClaudePendingToolCallsAsync(
+            HashSet<string> pending, string transcriptPath, int upToLine, CancellationToken ct) {
+        if (ct.IsCancellationRequested) return;
+
+        var firstParsedLine = Math.Max(0, upToLine - ToolBackfillWindowLines);
+
+        try {
+            await using var stream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var       reader = new StreamReader(stream);
+
+            for (var lineNumber = 0; lineNumber < upToLine; lineNumber++) {
+                if (await reader.ReadLineAsync(ct) is not { } line) break;
+
+                // Lines before the window are still read (there is no cheap seek to line N) but
+                // never parsed — the JSON parse is what actually costs.
+                if (lineNumber >= firstParsedLine) UpdateClaudePendingToolCalls(pending, line);
+            }
+        } catch (OperationCanceledException) {
+            // Shutdown racing startup — expected, and not worth a log line.
+        } catch (Exception ex) {
+            Log($"Claude tool-call backfill skipped: {ex.Message}");
+        }
+    }
+
+    internal static void UpdateClaudePendingToolCalls(HashSet<string> pending, string line) {
+        try {
+            using var doc = JsonDocument.Parse(line);
+
+            if (doc.RootElement.Obj("message")?.Arr("content") is not { } content) return;
+
+            foreach (var block in content.EnumerateArray()) {
+                switch (block.Str("type")) {
+                    case "tool_use" when block.Str("id") is { } id:
+                        pending.Add(id);
+                        break;
+
+                    case "tool_result" when block.Str("tool_use_id") is { } resultId:
+                        pending.Remove(resultId);
+                        break;
+                }
             }
         } catch {
             // Ignore malformed / non-JSON lines — never break the drain loop
@@ -1172,6 +1633,27 @@ static partial class WatchCommand {
                 }
             } catch (Exception ex) {
                 Log($"Parent-exit Gemini subagent teardown failed: {ex.Message}");
+            }
+        }
+
+        // Codex likewise fires no subagent-stop hook and its child watchers (spawned in
+        // ScanCodexSubagents) carry no parent-pid watchdog, so this session-end synthesis —
+        // which for Codex covers idle_timeout AND parent-exit, there being no session-end
+        // hook — is the only place that finalizes them. Same shape as the Gemini teardown;
+        // runs BEFORE the session-end POST so SubagentCompleted lands ahead of SessionEnded.
+        // No-op when none were spawned.
+        if (vendor == "codex") {
+            try {
+                var finalized = await TimeBudget.RunCappedAsync(
+                    () => CodexSubagentTeardown.DrainAsync(baseUrl, sessionId, transcriptPath),
+                    CodexSubagentTeardown.DrainCap);
+
+                if (!finalized) {
+                    Log("Parent-exit Codex subagent teardown cap elapsed; "
+                      + "unfinalized subagents recover via: kcap import --codex");
+                }
+            } catch (Exception ex) {
+                Log($"Parent-exit Codex subagent teardown failed: {ex.Message}");
             }
         }
 
@@ -1495,12 +1977,35 @@ static partial class WatchCommand {
                 state.AccumulatedDisconnected = TimeSpan.Zero;
             }
 
-            // Track Codex tool calls in flight across all new lines (Codex-only,
-            // but runs unconditionally so it is not gated on the title phase or
-            // threshold). Non-Codex lines have a different top-level shape (no
-            // response_item), so this is a cheap no-op for them.
-            foreach (var line in newLines) {
-                UpdateCodexPendingToolCalls(state.PendingCodexToolCalls, line);
+            // Codex tool calls in flight, from RAW drainRead.Lines: an oversized
+            // function_call_output redacts to a placeholder with no call_id, stranding it and
+            // pinning toolInFlight true forever (#528). Never gated on title phase or threshold.
+            if (TracksCodexToolCalls(vendor)) {
+                foreach (var line in drainRead.Lines) {
+                    UpdateCodexPendingToolCalls(state.PendingCodexToolCalls, line);
+                }
+            }
+
+            // Claude subagent idle-ceiling guard. Reads drainRead.Lines, NOT the redacted newLines:
+            // RedactLine swaps any line over 64 KiB for a placeholder with no tool ids, and an
+            // oversized tool_result (a big file read, a build log) would then never clear its id —
+            // pinning toolInFlight true forever and disabling the ceiling entirely. Only ids are
+            // read here; no raw content leaves the process.
+            if (TracksClaudeToolCalls(vendor, isSessionWatcher: agentId is null)) {
+                foreach (var line in drainRead.Lines) {
+                    UpdateClaudePendingToolCalls(state.PendingClaudeToolCalls, line);
+                }
+            }
+
+            // A Codex collab CHILD watcher additionally folds its own rollout's turn state
+            // (task_complete vs renewed activity) so the polling loop can post a live
+            // subagent-stop once the child is done + idle. Raw lines here too, in the other
+            // direction: a redacted response_item reads as no activity, so a re-engaged child
+            // would be reported stopped while working. Matches BackfillCodexWatcherStateAsync.
+            if (vendor == "codex" && agentId is not null) {
+                foreach (var line in drainRead.Lines) {
+                    state.CodexSubagentTurn.Observe(line);
+                }
             }
 
             // Capture first user text (needed for title generation)
@@ -2289,7 +2794,7 @@ static partial class WatchCommand {
             var metaPath = Path.ChangeExtension(transcriptPath, ".json");
             if (!File.Exists(metaPath)) return 0;
 
-            var anchors = KiroUsage.AnchorMap(File.ReadAllText(metaPath));
+            var anchors = KiroUsage.AnchorMap(ReadAllTextShared(metaPath)); // never lock Kiro out of its own sidecar
             var offset  = 0;
 
             foreach (var (anchor, usage) in anchors) {
@@ -2326,7 +2831,7 @@ static partial class WatchCommand {
             var siblingJson = Path.ChangeExtension(transcriptPath, ".json");
             if (!File.Exists(siblingJson)) return lines;
 
-            var anchors = KiroUsage.AnchorMap(File.ReadAllText(siblingJson));
+            var anchors = KiroUsage.AnchorMap(ReadAllTextShared(siblingJson)); // never lock Kiro out of its own sidecar
             if (anchors.Count == 0) return lines;
 
             return lines.Select(l => KiroUsage.EnrichLine(l, anchors)).ToList();

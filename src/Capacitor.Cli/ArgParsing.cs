@@ -34,12 +34,20 @@ static class ArgParsing {
     /// <c>KCAP_SESSION_ID</c> and falls back to <c>CODEX_THREAD_ID</c>.
     /// Dashes are stripped from the returned value so callers don't have to.
     /// </summary>
-    internal static string? ResolveSessionIdFromEnv() {
-        var kcapId = Environment.GetEnvironmentVariable("KCAP_SESSION_ID");
+    internal static string? ResolveSessionIdFromEnv() =>
+        ResolveSessionIdFromEnv(Environment.GetEnvironmentVariable);
+
+    /// <summary>
+    /// Env-injected overload of <see cref="ResolveSessionIdFromEnv()"/>, so callers that
+    /// resolve ambient session state can be unit-tested without mutating the process
+    /// environment (which forces whole-class serialization).
+    /// </summary>
+    internal static string? ResolveSessionIdFromEnv(Func<string, string?> getEnv) {
+        var kcapId = getEnv("KCAP_SESSION_ID");
         if (!string.IsNullOrWhiteSpace(kcapId))
             return kcapId.Replace("-", "");
 
-        var codex = Environment.GetEnvironmentVariable("CODEX_THREAD_ID");
+        var codex = getEnv("CODEX_THREAD_ID");
         return !string.IsNullOrWhiteSpace(codex) ? codex.Replace("-", "") : null;
     }
 

@@ -1,0 +1,1385 @@
+{
+  "t": "2026-08-07T14:39:53.496011+00:00",
+  "opencode_version": "1.18.9",
+  "arms": [
+    {
+      "arm": "baseline",
+      "argv": [
+        "opencode",
+        "acp"
+      ],
+      "env": {},
+      "cwd": "/Users/tony/dev/kcap-server/.claude/worktrees/ai-1755-diagnosis-fix-5437ed/src/cli/docs/probes/2026-08-07-opencode-acp",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentCapabilities": {
+            "loadSession": true,
+            "mcpCapabilities": {
+              "http": true,
+              "sse": true
+            },
+            "promptCapabilities": {
+              "embeddedContext": true,
+              "image": true
+            },
+            "sessionCapabilities": {
+              "close": {},
+              "fork": {},
+              "list": {},
+              "resume": {}
+            }
+          },
+          "authMethods": [
+            {
+              "description": "Run `opencode auth login` in the terminal",
+              "name": "Login with opencode",
+              "id": "opencode-login"
+            }
+          ],
+          "agentInfo": {
+            "name": "OpenCode",
+            "version": "1.18.9"
+          }
+        }
+      },
+      "session_new": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "ses_0235569b1ffeADv0dexzagZOdi",
+          "configOptions": [
+            {
+              "id": "model",
+              "name": "Model",
+              "category": "model",
+              "type": "select",
+              "currentValue": "opencode/big-pickle",
+              "options": [
+                {
+                  "value": "cohere/c4ai-aya-expanse-32b",
+                  "name": "Cohere/Aya Expanse 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-expanse-8b",
+                  "name": "Cohere/Aya Expanse 8B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-32b",
+                  "name": "Cohere/Aya Vision 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-8b",
+                  "name": "Cohere/Aya Vision 8B"
+                },
+                {
+                  "value": "cohere/command-a-03-2025",
+                  "name": "Cohere/Command A"
+                },
+                {
+                  "value": "cohere/command-a-plus-05-2026",
+                  "name": "Cohere/Command A Plus"
+                },
+                {
+                  "value": "cohere/command-a-reasoning-08-2025",
+                  "name": "Cohere/Command A Reasoning"
+                },
+                {
+                  "value": "cohere/command-a-translate-08-2025",
+                  "name": "Cohere/Command A Translate"
+                },
+                {
+                  "value": "cohere/command-a-vision-07-2025",
+                  "name": "Cohere/Command A Vision"
+                },
+                {
+                  "value": "cohere/command-r-08-2024",
+                  "name": "Cohere/Command R"
+                },
+                {
+                  "value": "cohere/command-r-plus-08-2024",
+                  "name": "Cohere/Command R+"
+                },
+                {
+                  "value": "cohere/command-r7b-12-2024",
+                  "name": "Cohere/Command R7B"
+                },
+                {
+                  "value": "cohere/command-r7b-arabic-02-2025",
+                  "name": "Cohere/Command R7B Arabic"
+                },
+                {
+                  "value": "cohere/north-mini-code-1-0",
+                  "name": "Cohere/North Mini Code"
+                },
+                {
+                  "value": "opencode/big-pickle",
+                  "name": "OpenCode Zen/Big Pickle"
+                },
+                {
+                  "value": "opencode/deepseek-v4-flash-free",
+                  "name": "OpenCode Zen/DeepSeek V4 Flash Free"
+                },
+                {
+                  "value": "opencode/laguna-s-2.1-free",
+                  "name": "OpenCode Zen/Laguna S 2.1 Free"
+                },
+                {
+                  "value": "opencode/ling-3.0-tiny-free",
+                  "name": "OpenCode Zen/Ling-3.0-tiny Free"
+                },
+                {
+                  "value": "opencode/longcat-2.0-free",
+                  "name": "OpenCode Zen/LongCat-2.0 Free"
+                },
+                {
+                  "value": "opencode/mimo-v2.5-free",
+                  "name": "OpenCode Zen/MiMo V2.5 Free"
+                },
+                {
+                  "value": "opencode/nemotron-3-ultra-free",
+                  "name": "OpenCode Zen/Nemotron 3 Ultra Free"
+                },
+                {
+                  "value": "opencode/north-mini-code-free",
+                  "name": "OpenCode Zen/North Mini Code Free"
+                }
+              ]
+            },
+            {
+              "id": "mode",
+              "name": "Session Mode",
+              "category": "mode",
+              "type": "select",
+              "currentValue": "build",
+              "options": [
+                {
+                  "value": "build",
+                  "name": "build",
+                  "description": "The default agent. Executes tools based on configured permissions."
+                },
+                {
+                  "value": "plan",
+                  "name": "plan",
+                  "description": "Plan mode. Disallows all edit tools."
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "model_current": "opencode/big-pickle",
+      "model_target": "opencode/deepseek-v4-flash-free",
+      "session/set_config_option": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "configOptions": [
+            {
+              "id": "model",
+              "name": "Model",
+              "category": "model",
+              "type": "select",
+              "currentValue": "opencode/deepseek-v4-flash-free",
+              "options": [
+                {
+                  "value": "cohere/c4ai-aya-expanse-32b",
+                  "name": "Cohere/Aya Expanse 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-expanse-8b",
+                  "name": "Cohere/Aya Expanse 8B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-32b",
+                  "name": "Cohere/Aya Vision 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-8b",
+                  "name": "Cohere/Aya Vision 8B"
+                },
+                {
+                  "value": "cohere/command-a-03-2025",
+                  "name": "Cohere/Command A"
+                },
+                {
+                  "value": "cohere/command-a-plus-05-2026",
+                  "name": "Cohere/Command A Plus"
+                },
+                {
+                  "value": "cohere/command-a-reasoning-08-2025",
+                  "name": "Cohere/Command A Reasoning"
+                },
+                {
+                  "value": "cohere/command-a-translate-08-2025",
+                  "name": "Cohere/Command A Translate"
+                },
+                {
+                  "value": "cohere/command-a-vision-07-2025",
+                  "name": "Cohere/Command A Vision"
+                },
+                {
+                  "value": "cohere/command-r-08-2024",
+                  "name": "Cohere/Command R"
+                },
+                {
+                  "value": "cohere/command-r-plus-08-2024",
+                  "name": "Cohere/Command R+"
+                },
+                {
+                  "value": "cohere/command-r7b-12-2024",
+                  "name": "Cohere/Command R7B"
+                },
+                {
+                  "value": "cohere/command-r7b-arabic-02-2025",
+                  "name": "Cohere/Command R7B Arabic"
+                },
+                {
+                  "value": "cohere/north-mini-code-1-0",
+                  "name": "Cohere/North Mini Code"
+                },
+                {
+                  "value": "opencode/big-pickle",
+                  "name": "OpenCode Zen/Big Pickle"
+                },
+                {
+                  "value": "opencode/deepseek-v4-flash-free",
+                  "name": "OpenCode Zen/DeepSeek V4 Flash Free"
+                },
+                {
+                  "value": "opencode/laguna-s-2.1-free",
+                  "name": "OpenCode Zen/Laguna S 2.1 Free"
+                },
+                {
+                  "value": "opencode/ling-3.0-tiny-free",
+                  "name": "OpenCode Zen/Ling-3.0-tiny Free"
+                },
+                {
+                  "value": "opencode/longcat-2.0-free",
+                  "name": "OpenCode Zen/LongCat-2.0 Free"
+                },
+                {
+                  "value": "opencode/mimo-v2.5-free",
+                  "name": "OpenCode Zen/MiMo V2.5 Free"
+                },
+                {
+                  "value": "opencode/nemotron-3-ultra-free",
+                  "name": "OpenCode Zen/Nemotron 3 Ultra Free"
+                },
+                {
+                  "value": "opencode/north-mini-code-free",
+                  "name": "OpenCode Zen/North Mini Code Free"
+                }
+              ]
+            },
+            {
+              "id": "effort",
+              "name": "Effort",
+              "description": "Available effort levels for this model",
+              "category": "thought_level",
+              "type": "select",
+              "currentValue": "low",
+              "options": [
+                {
+                  "value": "low",
+                  "name": "Low"
+                },
+                {
+                  "value": "high",
+                  "name": "High"
+                },
+                {
+                  "value": "max",
+                  "name": "Max"
+                }
+              ]
+            },
+            {
+              "id": "mode",
+              "name": "Session Mode",
+              "category": "mode",
+              "type": "select",
+              "currentValue": "build",
+              "options": [
+                {
+                  "value": "build",
+                  "name": "build",
+                  "description": "The default agent. Executes tools based on configured permissions."
+                },
+                {
+                  "value": "plan",
+                  "name": "plan",
+                  "description": "Plan mode. Disallows all edit tools."
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "session/set_model": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {}
+      }
+    },
+    {
+      "arm": "pure",
+      "argv": [
+        "opencode",
+        "acp"
+      ],
+      "env": {
+        "OPENCODE_PURE": "1"
+      },
+      "cwd": "/Users/tony/dev/kcap-server/.claude/worktrees/ai-1755-diagnosis-fix-5437ed/src/cli/docs/probes/2026-08-07-opencode-acp",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentCapabilities": {
+            "loadSession": true,
+            "mcpCapabilities": {
+              "http": true,
+              "sse": true
+            },
+            "promptCapabilities": {
+              "embeddedContext": true,
+              "image": true
+            },
+            "sessionCapabilities": {
+              "close": {},
+              "fork": {},
+              "list": {},
+              "resume": {}
+            }
+          },
+          "authMethods": [
+            {
+              "description": "Run `opencode auth login` in the terminal",
+              "name": "Login with opencode",
+              "id": "opencode-login"
+            }
+          ],
+          "agentInfo": {
+            "name": "OpenCode",
+            "version": "1.18.9"
+          }
+        }
+      },
+      "session_new": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "ses_0235565baffeMoNucJUNIl04Vc",
+          "configOptions": [
+            {
+              "id": "model",
+              "name": "Model",
+              "category": "model",
+              "type": "select",
+              "currentValue": "opencode/big-pickle",
+              "options": [
+                {
+                  "value": "cohere/c4ai-aya-expanse-32b",
+                  "name": "Cohere/Aya Expanse 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-expanse-8b",
+                  "name": "Cohere/Aya Expanse 8B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-32b",
+                  "name": "Cohere/Aya Vision 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-8b",
+                  "name": "Cohere/Aya Vision 8B"
+                },
+                {
+                  "value": "cohere/command-a-03-2025",
+                  "name": "Cohere/Command A"
+                },
+                {
+                  "value": "cohere/command-a-plus-05-2026",
+                  "name": "Cohere/Command A Plus"
+                },
+                {
+                  "value": "cohere/command-a-reasoning-08-2025",
+                  "name": "Cohere/Command A Reasoning"
+                },
+                {
+                  "value": "cohere/command-a-translate-08-2025",
+                  "name": "Cohere/Command A Translate"
+                },
+                {
+                  "value": "cohere/command-a-vision-07-2025",
+                  "name": "Cohere/Command A Vision"
+                },
+                {
+                  "value": "cohere/command-r-08-2024",
+                  "name": "Cohere/Command R"
+                },
+                {
+                  "value": "cohere/command-r-plus-08-2024",
+                  "name": "Cohere/Command R+"
+                },
+                {
+                  "value": "cohere/command-r7b-12-2024",
+                  "name": "Cohere/Command R7B"
+                },
+                {
+                  "value": "cohere/command-r7b-arabic-02-2025",
+                  "name": "Cohere/Command R7B Arabic"
+                },
+                {
+                  "value": "cohere/north-mini-code-1-0",
+                  "name": "Cohere/North Mini Code"
+                },
+                {
+                  "value": "opencode/big-pickle",
+                  "name": "OpenCode Zen/Big Pickle"
+                },
+                {
+                  "value": "opencode/deepseek-v4-flash-free",
+                  "name": "OpenCode Zen/DeepSeek V4 Flash Free"
+                },
+                {
+                  "value": "opencode/laguna-s-2.1-free",
+                  "name": "OpenCode Zen/Laguna S 2.1 Free"
+                },
+                {
+                  "value": "opencode/ling-3.0-tiny-free",
+                  "name": "OpenCode Zen/Ling-3.0-tiny Free"
+                },
+                {
+                  "value": "opencode/longcat-2.0-free",
+                  "name": "OpenCode Zen/LongCat-2.0 Free"
+                },
+                {
+                  "value": "opencode/mimo-v2.5-free",
+                  "name": "OpenCode Zen/MiMo V2.5 Free"
+                },
+                {
+                  "value": "opencode/nemotron-3-ultra-free",
+                  "name": "OpenCode Zen/Nemotron 3 Ultra Free"
+                },
+                {
+                  "value": "opencode/north-mini-code-free",
+                  "name": "OpenCode Zen/North Mini Code Free"
+                }
+              ]
+            },
+            {
+              "id": "mode",
+              "name": "Session Mode",
+              "category": "mode",
+              "type": "select",
+              "currentValue": "build",
+              "options": [
+                {
+                  "value": "build",
+                  "name": "build",
+                  "description": "The default agent. Executes tools based on configured permissions."
+                },
+                {
+                  "value": "plan",
+                  "name": "plan",
+                  "description": "Plan mode. Disallows all edit tools."
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "arm": "no_project_config",
+      "argv": [
+        "opencode",
+        "acp"
+      ],
+      "env": {
+        "OPENCODE_DISABLE_PROJECT_CONFIG": "1"
+      },
+      "cwd": "/Users/tony/dev/kcap-server/.claude/worktrees/ai-1755-diagnosis-fix-5437ed/src/cli/docs/probes/2026-08-07-opencode-acp",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentCapabilities": {
+            "loadSession": true,
+            "mcpCapabilities": {
+              "http": true,
+              "sse": true
+            },
+            "promptCapabilities": {
+              "embeddedContext": true,
+              "image": true
+            },
+            "sessionCapabilities": {
+              "close": {},
+              "fork": {},
+              "list": {},
+              "resume": {}
+            }
+          },
+          "authMethods": [
+            {
+              "description": "Run `opencode auth login` in the terminal",
+              "name": "Login with opencode",
+              "id": "opencode-login"
+            }
+          ],
+          "agentInfo": {
+            "name": "OpenCode",
+            "version": "1.18.9"
+          }
+        }
+      },
+      "session_new": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "ses_0235561d4ffegwx56eqrOu9mEJ",
+          "configOptions": [
+            {
+              "id": "model",
+              "name": "Model",
+              "category": "model",
+              "type": "select",
+              "currentValue": "opencode/big-pickle",
+              "options": [
+                {
+                  "value": "cohere/c4ai-aya-expanse-32b",
+                  "name": "Cohere/Aya Expanse 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-expanse-8b",
+                  "name": "Cohere/Aya Expanse 8B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-32b",
+                  "name": "Cohere/Aya Vision 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-8b",
+                  "name": "Cohere/Aya Vision 8B"
+                },
+                {
+                  "value": "cohere/command-a-03-2025",
+                  "name": "Cohere/Command A"
+                },
+                {
+                  "value": "cohere/command-a-plus-05-2026",
+                  "name": "Cohere/Command A Plus"
+                },
+                {
+                  "value": "cohere/command-a-reasoning-08-2025",
+                  "name": "Cohere/Command A Reasoning"
+                },
+                {
+                  "value": "cohere/command-a-translate-08-2025",
+                  "name": "Cohere/Command A Translate"
+                },
+                {
+                  "value": "cohere/command-a-vision-07-2025",
+                  "name": "Cohere/Command A Vision"
+                },
+                {
+                  "value": "cohere/command-r-08-2024",
+                  "name": "Cohere/Command R"
+                },
+                {
+                  "value": "cohere/command-r-plus-08-2024",
+                  "name": "Cohere/Command R+"
+                },
+                {
+                  "value": "cohere/command-r7b-12-2024",
+                  "name": "Cohere/Command R7B"
+                },
+                {
+                  "value": "cohere/command-r7b-arabic-02-2025",
+                  "name": "Cohere/Command R7B Arabic"
+                },
+                {
+                  "value": "cohere/north-mini-code-1-0",
+                  "name": "Cohere/North Mini Code"
+                },
+                {
+                  "value": "opencode/big-pickle",
+                  "name": "OpenCode Zen/Big Pickle"
+                },
+                {
+                  "value": "opencode/deepseek-v4-flash-free",
+                  "name": "OpenCode Zen/DeepSeek V4 Flash Free"
+                },
+                {
+                  "value": "opencode/laguna-s-2.1-free",
+                  "name": "OpenCode Zen/Laguna S 2.1 Free"
+                },
+                {
+                  "value": "opencode/ling-3.0-tiny-free",
+                  "name": "OpenCode Zen/Ling-3.0-tiny Free"
+                },
+                {
+                  "value": "opencode/longcat-2.0-free",
+                  "name": "OpenCode Zen/LongCat-2.0 Free"
+                },
+                {
+                  "value": "opencode/mimo-v2.5-free",
+                  "name": "OpenCode Zen/MiMo V2.5 Free"
+                },
+                {
+                  "value": "opencode/nemotron-3-ultra-free",
+                  "name": "OpenCode Zen/Nemotron 3 Ultra Free"
+                },
+                {
+                  "value": "opencode/north-mini-code-free",
+                  "name": "OpenCode Zen/North Mini Code Free"
+                }
+              ]
+            },
+            {
+              "id": "mode",
+              "name": "Session Mode",
+              "category": "mode",
+              "type": "select",
+              "currentValue": "build",
+              "options": [
+                {
+                  "value": "build",
+                  "name": "build",
+                  "description": "The default agent. Executes tools based on configured permissions."
+                },
+                {
+                  "value": "plan",
+                  "name": "plan",
+                  "description": "Plan mode. Disallows all edit tools."
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "arm": "isolated_config_dir",
+      "argv": [
+        "opencode",
+        "acp"
+      ],
+      "env": {
+        "OPENCODE_CONFIG_DIR": "/Users/tony/dev/kcap-server/.claude/worktrees/ai-1755-diagnosis-fix-5437ed/src/cli/docs/probes/2026-08-07-opencode-acp/out/isolated_config_dir/config",
+        "OPENCODE_PURE": "1",
+        "OPENCODE_DISABLE_PROJECT_CONFIG": "1"
+      },
+      "cwd": "/Users/tony/dev/kcap-server/.claude/worktrees/ai-1755-diagnosis-fix-5437ed/src/cli/docs/probes/2026-08-07-opencode-acp",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentCapabilities": {
+            "loadSession": true,
+            "mcpCapabilities": {
+              "http": true,
+              "sse": true
+            },
+            "promptCapabilities": {
+              "embeddedContext": true,
+              "image": true
+            },
+            "sessionCapabilities": {
+              "close": {},
+              "fork": {},
+              "list": {},
+              "resume": {}
+            }
+          },
+          "authMethods": [
+            {
+              "description": "Run `opencode auth login` in the terminal",
+              "name": "Login with opencode",
+              "id": "opencode-login"
+            }
+          ],
+          "agentInfo": {
+            "name": "OpenCode",
+            "version": "1.18.9"
+          }
+        }
+      },
+      "session_new": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "ses_023555d8dffefVKKy009m7vnPu",
+          "configOptions": [
+            {
+              "id": "model",
+              "name": "Model",
+              "category": "model",
+              "type": "select",
+              "currentValue": "opencode/big-pickle",
+              "options": [
+                {
+                  "value": "cohere/c4ai-aya-expanse-32b",
+                  "name": "Cohere/Aya Expanse 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-expanse-8b",
+                  "name": "Cohere/Aya Expanse 8B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-32b",
+                  "name": "Cohere/Aya Vision 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-8b",
+                  "name": "Cohere/Aya Vision 8B"
+                },
+                {
+                  "value": "cohere/command-a-03-2025",
+                  "name": "Cohere/Command A"
+                },
+                {
+                  "value": "cohere/command-a-plus-05-2026",
+                  "name": "Cohere/Command A Plus"
+                },
+                {
+                  "value": "cohere/command-a-reasoning-08-2025",
+                  "name": "Cohere/Command A Reasoning"
+                },
+                {
+                  "value": "cohere/command-a-translate-08-2025",
+                  "name": "Cohere/Command A Translate"
+                },
+                {
+                  "value": "cohere/command-a-vision-07-2025",
+                  "name": "Cohere/Command A Vision"
+                },
+                {
+                  "value": "cohere/command-r-08-2024",
+                  "name": "Cohere/Command R"
+                },
+                {
+                  "value": "cohere/command-r-plus-08-2024",
+                  "name": "Cohere/Command R+"
+                },
+                {
+                  "value": "cohere/command-r7b-12-2024",
+                  "name": "Cohere/Command R7B"
+                },
+                {
+                  "value": "cohere/command-r7b-arabic-02-2025",
+                  "name": "Cohere/Command R7B Arabic"
+                },
+                {
+                  "value": "cohere/north-mini-code-1-0",
+                  "name": "Cohere/North Mini Code"
+                },
+                {
+                  "value": "opencode/big-pickle",
+                  "name": "OpenCode Zen/Big Pickle"
+                },
+                {
+                  "value": "opencode/deepseek-v4-flash-free",
+                  "name": "OpenCode Zen/DeepSeek V4 Flash Free"
+                },
+                {
+                  "value": "opencode/laguna-s-2.1-free",
+                  "name": "OpenCode Zen/Laguna S 2.1 Free"
+                },
+                {
+                  "value": "opencode/ling-3.0-tiny-free",
+                  "name": "OpenCode Zen/Ling-3.0-tiny Free"
+                },
+                {
+                  "value": "opencode/longcat-2.0-free",
+                  "name": "OpenCode Zen/LongCat-2.0 Free"
+                },
+                {
+                  "value": "opencode/mimo-v2.5-free",
+                  "name": "OpenCode Zen/MiMo V2.5 Free"
+                },
+                {
+                  "value": "opencode/nemotron-3-ultra-free",
+                  "name": "OpenCode Zen/Nemotron 3 Ultra Free"
+                },
+                {
+                  "value": "opencode/north-mini-code-free",
+                  "name": "OpenCode Zen/North Mini Code Free"
+                }
+              ]
+            },
+            {
+              "id": "mode",
+              "name": "Session Mode",
+              "category": "mode",
+              "type": "select",
+              "currentValue": "build",
+              "options": [
+                {
+                  "value": "build",
+                  "name": "build",
+                  "description": "The default agent. Executes tools based on configured permissions."
+                },
+                {
+                  "value": "plan",
+                  "name": "plan",
+                  "description": "Plan mode. Disallows all edit tools."
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "arm": "mcp_admission",
+      "argv": [
+        "opencode",
+        "acp"
+      ],
+      "env": {},
+      "cwd": "/Users/tony/dev/kcap-server/.claude/worktrees/ai-1755-diagnosis-fix-5437ed/src/cli/docs/probes/2026-08-07-opencode-acp",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentCapabilities": {
+            "loadSession": true,
+            "mcpCapabilities": {
+              "http": true,
+              "sse": true
+            },
+            "promptCapabilities": {
+              "embeddedContext": true,
+              "image": true
+            },
+            "sessionCapabilities": {
+              "close": {},
+              "fork": {},
+              "list": {},
+              "resume": {}
+            }
+          },
+          "authMethods": [
+            {
+              "description": "Run `opencode auth login` in the terminal",
+              "name": "Login with opencode",
+              "id": "opencode-login"
+            }
+          ],
+          "agentInfo": {
+            "name": "OpenCode",
+            "version": "1.18.9"
+          }
+        }
+      },
+      "session_new": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "ses_0235559afffely3BG5T5KD1u5R",
+          "configOptions": [
+            {
+              "id": "model",
+              "name": "Model",
+              "category": "model",
+              "type": "select",
+              "currentValue": "opencode/big-pickle",
+              "options": [
+                {
+                  "value": "cohere/c4ai-aya-expanse-32b",
+                  "name": "Cohere/Aya Expanse 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-expanse-8b",
+                  "name": "Cohere/Aya Expanse 8B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-32b",
+                  "name": "Cohere/Aya Vision 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-8b",
+                  "name": "Cohere/Aya Vision 8B"
+                },
+                {
+                  "value": "cohere/command-a-03-2025",
+                  "name": "Cohere/Command A"
+                },
+                {
+                  "value": "cohere/command-a-plus-05-2026",
+                  "name": "Cohere/Command A Plus"
+                },
+                {
+                  "value": "cohere/command-a-reasoning-08-2025",
+                  "name": "Cohere/Command A Reasoning"
+                },
+                {
+                  "value": "cohere/command-a-translate-08-2025",
+                  "name": "Cohere/Command A Translate"
+                },
+                {
+                  "value": "cohere/command-a-vision-07-2025",
+                  "name": "Cohere/Command A Vision"
+                },
+                {
+                  "value": "cohere/command-r-08-2024",
+                  "name": "Cohere/Command R"
+                },
+                {
+                  "value": "cohere/command-r-plus-08-2024",
+                  "name": "Cohere/Command R+"
+                },
+                {
+                  "value": "cohere/command-r7b-12-2024",
+                  "name": "Cohere/Command R7B"
+                },
+                {
+                  "value": "cohere/command-r7b-arabic-02-2025",
+                  "name": "Cohere/Command R7B Arabic"
+                },
+                {
+                  "value": "cohere/north-mini-code-1-0",
+                  "name": "Cohere/North Mini Code"
+                },
+                {
+                  "value": "opencode/big-pickle",
+                  "name": "OpenCode Zen/Big Pickle"
+                },
+                {
+                  "value": "opencode/deepseek-v4-flash-free",
+                  "name": "OpenCode Zen/DeepSeek V4 Flash Free"
+                },
+                {
+                  "value": "opencode/laguna-s-2.1-free",
+                  "name": "OpenCode Zen/Laguna S 2.1 Free"
+                },
+                {
+                  "value": "opencode/ling-3.0-tiny-free",
+                  "name": "OpenCode Zen/Ling-3.0-tiny Free"
+                },
+                {
+                  "value": "opencode/longcat-2.0-free",
+                  "name": "OpenCode Zen/LongCat-2.0 Free"
+                },
+                {
+                  "value": "opencode/mimo-v2.5-free",
+                  "name": "OpenCode Zen/MiMo V2.5 Free"
+                },
+                {
+                  "value": "opencode/nemotron-3-ultra-free",
+                  "name": "OpenCode Zen/Nemotron 3 Ultra Free"
+                },
+                {
+                  "value": "opencode/north-mini-code-free",
+                  "name": "OpenCode Zen/North Mini Code Free"
+                }
+              ]
+            },
+            {
+              "id": "mode",
+              "name": "Session Mode",
+              "category": "mode",
+              "type": "select",
+              "currentValue": "build",
+              "options": [
+                {
+                  "value": "build",
+                  "name": "build",
+                  "description": "The default agent. Executes tools based on configured permissions."
+                },
+                {
+                  "value": "plan",
+                  "name": "plan",
+                  "description": "Plan mode. Disallows all edit tools."
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "mcp_nonce": "kcapadmf07045bb",
+      "mcp_server_spawned": true,
+      "mcp_server_log": [
+        "{\"t\":\"2026-08-07T14:37:55.856Z\",\"event\":\"spawned\",\"argv\":[\"/opt/homebrew/Cellar/node/23.11.0/bin/node\",\"/Users/tony/dev/kcap-server/.claude/worktrees/ai-1755-diagnosis-fix-5437ed/src/cli/docs/probes/2026-08-07-opencode-acp/out/probe-mcp-server.cjs\"],\"cwd\":\"/Users/tony/dev/kcap-server/.claude/worktrees/ai-1755-diagnosis-fix-5437ed/src/cli/docs/probes/2026-08-07-opencode-acp\"}",
+        "{\"t\":\"2026-08-07T14:37:55.871Z\",\"event\":\"in\",\"msg\":{\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"roots\":{}},\"clientInfo\":{\"name\":\"opencode\",\"version\":\"1.18.9\"}},\"jsonrpc\":\"2.0\",\"id\":0}}",
+        "{\"t\":\"2026-08-07T14:37:55.873Z\",\"event\":\"out\",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"kcap-probe-mcp\",\"version\":\"1.0.0\"}}}",
+        "{\"t\":\"2026-08-07T14:37:55.874Z\",\"event\":\"in\",\"msg\":{\"method\":\"notifications/initialized\",\"jsonrpc\":\"2.0\"}}",
+        "{\"t\":\"2026-08-07T14:37:55.874Z\",\"event\":\"in\",\"msg\":{\"method\":\"tools/list\",\"jsonrpc\":\"2.0\",\"id\":1}}",
+        "{\"t\":\"2026-08-07T14:37:55.874Z\",\"event\":\"out\",\"result\":{\"tools\":[{\"name\":\"probe_nonce\",\"description\":\"Returns the probe nonce. Call this when asked for the nonce.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}}",
+        "{\"t\":\"2026-08-07T14:39:59.089Z\",\"event\":\"spawned\",\"argv\":[\"/opt/homebrew/Cellar/node/23.11.0/bin/node\",\"/Users/tony/dev/kcap-server/.claude/worktrees/ai-1755-diagnosis-fix-5437ed/src/cli/docs/probes/2026-08-07-opencode-acp/out/probe-mcp-server.cjs\"],\"cwd\":\"/Users/tony/dev/kcap-server/.claude/worktrees/ai-1755-diagnosis-fix-5437ed/src/cli/docs/probes/2026-08-07-opencode-acp\"}",
+        "{\"t\":\"2026-08-07T14:39:59.097Z\",\"event\":\"in\",\"msg\":{\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"roots\":{}},\"clientInfo\":{\"name\":\"opencode\",\"version\":\"1.18.9\"}},\"jsonrpc\":\"2.0\",\"id\":0}}",
+        "{\"t\":\"2026-08-07T14:39:59.098Z\",\"event\":\"out\",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"kcap-probe-mcp\",\"version\":\"1.0.0\"}}}",
+        "{\"t\":\"2026-08-07T14:39:59.099Z\",\"event\":\"in\",\"msg\":{\"method\":\"notifications/initialized\",\"jsonrpc\":\"2.0\"}}",
+        "{\"t\":\"2026-08-07T14:39:59.099Z\",\"event\":\"in\",\"msg\":{\"method\":\"tools/list\",\"jsonrpc\":\"2.0\",\"id\":1}}",
+        "{\"t\":\"2026-08-07T14:39:59.099Z\",\"event\":\"out\",\"result\":{\"tools\":[{\"name\":\"probe_nonce\",\"description\":\"Returns the probe nonce. Call this when asked for the nonce.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}}"
+      ]
+    },
+    {
+      "arm": "plugin_default",
+      "argv": [
+        "opencode",
+        "acp"
+      ],
+      "env": {},
+      "cwd": "/Users/tony/dev/kcap-server/.claude/worktrees/ai-1755-diagnosis-fix-5437ed/src/cli/docs/probes/2026-08-07-opencode-acp",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentCapabilities": {
+            "loadSession": true,
+            "mcpCapabilities": {
+              "http": true,
+              "sse": true
+            },
+            "promptCapabilities": {
+              "embeddedContext": true,
+              "image": true
+            },
+            "sessionCapabilities": {
+              "close": {},
+              "fork": {},
+              "list": {},
+              "resume": {}
+            }
+          },
+          "authMethods": [
+            {
+              "description": "Run `opencode auth login` in the terminal",
+              "name": "Login with opencode",
+              "id": "opencode-login"
+            }
+          ],
+          "agentInfo": {
+            "name": "OpenCode",
+            "version": "1.18.9"
+          }
+        }
+      },
+      "session_new": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "ses_023553e09ffeerivCozPdqbMSS",
+          "configOptions": [
+            {
+              "id": "model",
+              "name": "Model",
+              "category": "model",
+              "type": "select",
+              "currentValue": "opencode/big-pickle",
+              "options": [
+                {
+                  "value": "cohere/c4ai-aya-expanse-32b",
+                  "name": "Cohere/Aya Expanse 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-expanse-8b",
+                  "name": "Cohere/Aya Expanse 8B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-32b",
+                  "name": "Cohere/Aya Vision 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-8b",
+                  "name": "Cohere/Aya Vision 8B"
+                },
+                {
+                  "value": "cohere/command-a-03-2025",
+                  "name": "Cohere/Command A"
+                },
+                {
+                  "value": "cohere/command-a-plus-05-2026",
+                  "name": "Cohere/Command A Plus"
+                },
+                {
+                  "value": "cohere/command-a-reasoning-08-2025",
+                  "name": "Cohere/Command A Reasoning"
+                },
+                {
+                  "value": "cohere/command-a-translate-08-2025",
+                  "name": "Cohere/Command A Translate"
+                },
+                {
+                  "value": "cohere/command-a-vision-07-2025",
+                  "name": "Cohere/Command A Vision"
+                },
+                {
+                  "value": "cohere/command-r-08-2024",
+                  "name": "Cohere/Command R"
+                },
+                {
+                  "value": "cohere/command-r-plus-08-2024",
+                  "name": "Cohere/Command R+"
+                },
+                {
+                  "value": "cohere/command-r7b-12-2024",
+                  "name": "Cohere/Command R7B"
+                },
+                {
+                  "value": "cohere/command-r7b-arabic-02-2025",
+                  "name": "Cohere/Command R7B Arabic"
+                },
+                {
+                  "value": "cohere/north-mini-code-1-0",
+                  "name": "Cohere/North Mini Code"
+                },
+                {
+                  "value": "opencode/big-pickle",
+                  "name": "OpenCode Zen/Big Pickle"
+                },
+                {
+                  "value": "opencode/deepseek-v4-flash-free",
+                  "name": "OpenCode Zen/DeepSeek V4 Flash Free"
+                },
+                {
+                  "value": "opencode/laguna-s-2.1-free",
+                  "name": "OpenCode Zen/Laguna S 2.1 Free"
+                },
+                {
+                  "value": "opencode/ling-3.0-tiny-free",
+                  "name": "OpenCode Zen/Ling-3.0-tiny Free"
+                },
+                {
+                  "value": "opencode/longcat-2.0-free",
+                  "name": "OpenCode Zen/LongCat-2.0 Free"
+                },
+                {
+                  "value": "opencode/mimo-v2.5-free",
+                  "name": "OpenCode Zen/MiMo V2.5 Free"
+                },
+                {
+                  "value": "opencode/nemotron-3-ultra-free",
+                  "name": "OpenCode Zen/Nemotron 3 Ultra Free"
+                },
+                {
+                  "value": "opencode/north-mini-code-free",
+                  "name": "OpenCode Zen/North Mini Code Free"
+                }
+              ]
+            },
+            {
+              "id": "mode",
+              "name": "Session Mode",
+              "category": "mode",
+              "type": "select",
+              "currentValue": "build",
+              "options": [
+                {
+                  "value": "build",
+                  "name": "build",
+                  "description": "The default agent. Executes tools based on configured permissions."
+                },
+                {
+                  "value": "plan",
+                  "name": "plan",
+                  "description": "Plan mode. Disallows all edit tools."
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "arm": "plugin_pure",
+      "argv": [
+        "opencode",
+        "acp"
+      ],
+      "env": {
+        "OPENCODE_PURE": "1"
+      },
+      "cwd": "/Users/tony/dev/kcap-server/.claude/worktrees/ai-1755-diagnosis-fix-5437ed/src/cli/docs/probes/2026-08-07-opencode-acp",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentCapabilities": {
+            "loadSession": true,
+            "mcpCapabilities": {
+              "http": true,
+              "sse": true
+            },
+            "promptCapabilities": {
+              "embeddedContext": true,
+              "image": true
+            },
+            "sessionCapabilities": {
+              "close": {},
+              "fork": {},
+              "list": {},
+              "resume": {}
+            }
+          },
+          "authMethods": [
+            {
+              "description": "Run `opencode auth login` in the terminal",
+              "name": "Login with opencode",
+              "id": "opencode-login"
+            }
+          ],
+          "agentInfo": {
+            "name": "OpenCode",
+            "version": "1.18.9"
+          }
+        }
+      },
+      "session_new": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "ses_0235512d8ffe6qh04dPoEcJKVC",
+          "configOptions": [
+            {
+              "id": "model",
+              "name": "Model",
+              "category": "model",
+              "type": "select",
+              "currentValue": "opencode/big-pickle",
+              "options": [
+                {
+                  "value": "cohere/c4ai-aya-expanse-32b",
+                  "name": "Cohere/Aya Expanse 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-expanse-8b",
+                  "name": "Cohere/Aya Expanse 8B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-32b",
+                  "name": "Cohere/Aya Vision 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-8b",
+                  "name": "Cohere/Aya Vision 8B"
+                },
+                {
+                  "value": "cohere/command-a-03-2025",
+                  "name": "Cohere/Command A"
+                },
+                {
+                  "value": "cohere/command-a-plus-05-2026",
+                  "name": "Cohere/Command A Plus"
+                },
+                {
+                  "value": "cohere/command-a-reasoning-08-2025",
+                  "name": "Cohere/Command A Reasoning"
+                },
+                {
+                  "value": "cohere/command-a-translate-08-2025",
+                  "name": "Cohere/Command A Translate"
+                },
+                {
+                  "value": "cohere/command-a-vision-07-2025",
+                  "name": "Cohere/Command A Vision"
+                },
+                {
+                  "value": "cohere/command-r-08-2024",
+                  "name": "Cohere/Command R"
+                },
+                {
+                  "value": "cohere/command-r-plus-08-2024",
+                  "name": "Cohere/Command R+"
+                },
+                {
+                  "value": "cohere/command-r7b-12-2024",
+                  "name": "Cohere/Command R7B"
+                },
+                {
+                  "value": "cohere/command-r7b-arabic-02-2025",
+                  "name": "Cohere/Command R7B Arabic"
+                },
+                {
+                  "value": "cohere/north-mini-code-1-0",
+                  "name": "Cohere/North Mini Code"
+                },
+                {
+                  "value": "opencode/big-pickle",
+                  "name": "OpenCode Zen/Big Pickle"
+                },
+                {
+                  "value": "opencode/deepseek-v4-flash-free",
+                  "name": "OpenCode Zen/DeepSeek V4 Flash Free"
+                },
+                {
+                  "value": "opencode/laguna-s-2.1-free",
+                  "name": "OpenCode Zen/Laguna S 2.1 Free"
+                },
+                {
+                  "value": "opencode/ling-3.0-tiny-free",
+                  "name": "OpenCode Zen/Ling-3.0-tiny Free"
+                },
+                {
+                  "value": "opencode/longcat-2.0-free",
+                  "name": "OpenCode Zen/LongCat-2.0 Free"
+                },
+                {
+                  "value": "opencode/mimo-v2.5-free",
+                  "name": "OpenCode Zen/MiMo V2.5 Free"
+                },
+                {
+                  "value": "opencode/nemotron-3-ultra-free",
+                  "name": "OpenCode Zen/Nemotron 3 Ultra Free"
+                },
+                {
+                  "value": "opencode/north-mini-code-free",
+                  "name": "OpenCode Zen/North Mini Code Free"
+                }
+              ]
+            },
+            {
+              "id": "mode",
+              "name": "Session Mode",
+              "category": "mode",
+              "type": "select",
+              "currentValue": "build",
+              "options": [
+                {
+                  "value": "build",
+                  "name": "build",
+                  "description": "The default agent. Executes tools based on configured permissions."
+                },
+                {
+                  "value": "plan",
+                  "name": "plan",
+                  "description": "Plan mode. Disallows all edit tools."
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "dual_capture_control": {
+    "arm": "dual_capture_control",
+    "dwell_seconds": 10,
+    "arms": {
+      "plugin_default": {
+        "sessionId": "ses_023553e09ffeerivCozPdqbMSS",
+        "capture_file": "/Users/tony/.cache/kcap/opencode/ses_023553e09ffeerivCozPdqbMSS.jsonl",
+        "capture_file_created": true
+      },
+      "plugin_pure": {
+        "sessionId": "ses_0235512d8ffe6qh04dPoEcJKVC",
+        "capture_file": "/Users/tony/.cache/kcap/opencode/ses_0235512d8ffe6qh04dPoEcJKVC.jsonl",
+        "capture_file_created": false
+      }
+    },
+    "plugin_installed": true
+  }
+}

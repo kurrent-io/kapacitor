@@ -35,10 +35,29 @@ internal interface IHostedAgentLauncher {
     /// </summary>
     bool SupportsUnattended { get; }
 
+    /// <summary>
+    /// Whether this launch turns off interactive approval/permission prompts (codex
+    /// <c>--ask-for-approval never</c>, claude <c>--permission-mode bypassPermissions</c>) — i.e.
+    /// there is no dialog an Enter keypress could accept. The PTY runtime uses this to pick its
+    /// submit strategy: the multi-CR spray (GitHub #349) is only safe when true; otherwise a single
+    /// CR is sent so a stray Enter can't answer a live prompt. Must mirror the approval/permission
+    /// flags this launcher's <see cref="BuildArgs"/> actually sets. Default false (assume prompts).
+    /// </summary>
+    bool DisablesApprovalPrompts(LauncherContext ctx) => false;
+
     /// <summary>Whether the launcher has a certified read-only borrowed-checkout review mode.</summary>
     bool SupportsBorrowedReviewFlow => false;
 
     string? BorrowedReviewContainment => null;
+
+    /// <summary>
+    /// This vendor's runtime-owned reviewer MODEL override policy, or <see langword="null"/> when the
+    /// launcher has no authoritative model resolver yet. When non-null the daemon advertises
+    /// <c>SupportsReviewerModelResolution</c> for this vendor and the server may drive a reviewer
+    /// model override through it. A null resolver leaves the vendor's existing vendor-only unattended
+    /// support intact; it simply is not an override-eligible target for a model override.
+    /// </summary>
+    IReviewerModelResolver? ReviewerModelResolver => null;
 
     /// <summary>
     /// Per-vendor preparation BEFORE the PTY is spawned. Implementations:
@@ -60,7 +79,7 @@ internal interface IHostedAgentLauncher {
     LaunchArgs BuildArgs(LauncherContext ctx);
 
     /// <summary>
-    /// Build argv for a local <c>run-agent</c> launch: emit only the mandatory daemon-level
+    /// Build argv for a local <c>agent start</c> launch: emit only the mandatory daemon-level
     /// flags this vendor must always set, then append the user's verbatim post-<c>--</c>
     /// args. Used by the local-attach path instead of <see cref="BuildArgs"/>.
     /// </summary>
@@ -75,7 +94,11 @@ internal sealed record LauncherContext(
         string                            SourceRepoPath,
         WorktreeInfo                      Worktree,
         string?                           Prompt,
-        string                            Model,
+        // Nullable for the same reason as RuntimeStartContext.Model, which feeds it: a launch whose
+        // runtime cannot apply a model carries none. Both PTY launchers already handle absence —
+        // ClaudeLauncher via string.IsNullOrEmpty, CodexLauncher via AddModelArg's own null guard — so
+        // this makes the type match what they were already written to expect.
+        string?                           Model,
         string?                           Effort,
         string[]?                         Tools,
         bool                              IsReview,
@@ -91,8 +114,14 @@ internal sealed record LauncherContext(
     /// <see cref="Capacitor.Cli.Core.LaunchAgentCommand.McpAllowlist"/>. Launchers resolve each
     /// name against the kcap-owned MCP registry and materialize matching servers into the vendor's
     /// MCP config, stripping any flow-starting server regardless of listing. Null/local-spawn
-    /// launches (e.g. <c>kcap run-agent</c>) never set this.</summary>
+    /// launches (e.g. <c>kcap agent start</c>) never set this.</summary>
     public string[]? McpAllowlist { get; init; }
+
+    /// <summary>Caller-selected Codex sandbox/approval posture. Non-null only for an interactive
+    /// daemon-owned-worktree launch whose block already passed the orchestrator's
+    /// <c>CodexPosturePolicy</c> guard; null for every other launch, which keeps the derived
+    /// containment values.</summary>
+    public CodexLaunchPosture? CodexPosture { get; init; }
 }
 
 internal readonly record struct LaunchArgs(string[] Args, string? McpConfigPath);

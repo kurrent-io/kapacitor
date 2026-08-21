@@ -1,7 +1,21 @@
 <Project>
     <PropertyGroup>
+        <Features>strict</Features>
+        <Deterministic>true</Deterministic>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <AnalysisLevel>latest-recommended</AnalysisLevel>
         <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-        <NoWarn>IDE0055;IDE1006</NoWarn>
+        <!-- Only on for IDE0005, which the compiler reports nowhere else. -->
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+        <!-- The exemption is for low/moderate: the NuGet audit's advisory database updates independently
+             of this repo, so a clean tree can start failing overnight on code nobody touched.
+              High (NU1903) and critical (NU1904) are worth that interruption. -->
+        <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1901;NU1902</WarningsNotAsErrors>
+
         <MinVerTagPrefix>v</MinVerTagPrefix>
     </PropertyGroup>
     <ItemGroup>

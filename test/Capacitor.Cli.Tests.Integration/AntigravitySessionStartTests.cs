@@ -1,5 +1,6 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
-using Capacitor.Cli.Commands;
+using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using WireMock.RequestBuilders;
@@ -43,7 +44,7 @@ public class AntigravitySessionStartTests : IDisposable {
         var dir = PathHelpers.ConfigPath("watchers");
         Directory.CreateDirectory(dir);
         var pidFile = Path.Combine(dir, $"{conversationId}.pid");
-        File.WriteAllText(pidFile, Environment.ProcessId.ToString());
+        File.WriteAllText(pidFile, Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
         _pidFiles.Add(pidFile);
     }
 
@@ -52,11 +53,11 @@ public class AntigravitySessionStartTests : IDisposable {
         // Antigravity conversation ids are dashed UUIDs; the CLI must canonicalize to the
         // dashless form for session_id + the watcher key + disable (matching `kcap watch`),
         // so everything resolves to ONE stream.
-        const string convId  = "ag-test-sess-0001";
-        const string dashless = "agtestsess0001";
+        const string convId  = "e80c33bf-c10f-4d2f-b626-b0043f488fc0";
+        const string dashless = "e80c33bfc10f4d2fb626b0043f488fc0";
         NeutralizeWatcherSpawn(dashless);
 
-        await AppConfig.SaveProfileConfig(new ProfileConfig {
+        await ConfigMutator.MutateAsync(_ => new ProfileConfig {
             ActiveProfile = "work",
             Profiles = new() {
                 ["work"] = new Profile { ServerUrl = _server.Url, DefaultVisibility = "private" }
@@ -78,7 +79,8 @@ public class AntigravitySessionStartTests : IDisposable {
             """;
 
         var exit = await AntigravityHookCommand.Handle(
-            _server.Url!, ["hook", "--antigravity", "PreInvocation"], new StringReader(payload));
+            _server.Url!, ["hook", "--antigravity", "PreInvocation"], new StringReader(payload),
+            new StringWriter());
 
         await Assert.That(exit).IsEqualTo(0);
 
@@ -100,7 +102,7 @@ public class AntigravitySessionStartTests : IDisposable {
         var excludedDir = Path.Combine(Path.GetTempPath(), "kcap-ag-excluded");
         NeutralizeWatcherSpawn(convId);
 
-        await AppConfig.SaveProfileConfig(new ProfileConfig {
+        await ConfigMutator.MutateAsync(_ => new ProfileConfig {
             ActiveProfile = "work",
             Profiles = new() {
                 ["work"] = new Profile { ServerUrl = _server.Url, ExcludedPaths = [excludedDir] }
@@ -123,7 +125,8 @@ public class AntigravitySessionStartTests : IDisposable {
             """;
 
         var exit = await AntigravityHookCommand.Handle(
-            _server.Url!, ["hook", "--antigravity", "PreInvocation"], new StringReader(payload));
+            _server.Url!, ["hook", "--antigravity", "PreInvocation"], new StringReader(payload),
+            new StringWriter());
         await Assert.That(exit).IsEqualTo(0);
 
         var requests = _server.FindLogEntries(

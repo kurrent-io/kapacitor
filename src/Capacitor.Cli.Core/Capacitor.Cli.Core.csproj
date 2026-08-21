@@ -1,8 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
-        <ImplicitUsings>enable</ImplicitUsings>
-        <Nullable>enable</Nullable>
         <IsAotCompatible>true</IsAotCompatible>
         <IsTrimmable>true</IsTrimmable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -14,7 +12,11 @@
         <InternalsVisibleTo Include="kcap" />
         <InternalsVisibleTo Include="kcap-daemon" />
         <InternalsVisibleTo Include="Capacitor.Cli.Tests.Unit" />
+        <InternalsVisibleTo Include="Capacitor.Cli.Core.Tests.Unit" />
+        <InternalsVisibleTo Include="Capacitor.Cli.Daemon.Tests.Unit" />
         <InternalsVisibleTo Include="Capacitor.Cli.Tests.Integration" />
+        <InternalsVisibleTo Include="Capacitor.App.Tests.Unit" />
+        <InternalsVisibleTo Include="Capacitor.Tests.Helpers" />
         <!-- Used when referenced as a submodule from the server repo -->
         <InternalsVisibleTo Include="Capacitor.Server.TestHelpers" />
         <InternalsVisibleTo Include="Capacitor.Server.Tests" />

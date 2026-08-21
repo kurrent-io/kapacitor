@@ -1,9 +1,12 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Commands;
 
@@ -12,7 +15,20 @@ static class McpJudgeServer {
     /// Run as a session-scoped MCP server. All tool calls must use <paramref name="expectedSessionId"/>.
     /// </summary>
     public static async Task<int> RunAsync(string baseUrl, string expectedSessionId) {
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+        // Validate the shape locally, then defer client construction to the first tools/call —
+        // the shape every sibling MCP server already uses. Judge was the only one building its
+        // client up front, so an unusable URL reached EnsureAbsolute and killed the process
+        // BEFORE the JSON-RPC handshake, leaving the judge run to fail opaquely.
+        var urlOk = HttpClientExtensions.IsAcceptableUrl(baseUrl);
+        HttpClient? client = null;
+
+        // MCP servers are long-lived and denylisted under the top-level "mcp" command
+        // (CommandEvents.Denylisted) — re-initialise under the reportable pseudo-command
+        // "mcp-server" so per-tool-call events actually leave. Best-effort: a stale token on
+        // disk must never block the server from starting.
+        var loggedIn = false;
+        try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
+        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn);
 
         var tools = BuildToolsList();
 
@@ -22,6 +38,7 @@ static class McpJudgeServer {
         await using var writer = new StreamWriter(stdout, new UTF8Encoding(false));
         writer.AutoFlush = true;
 
+        try {
         while (await reader.ReadLineAsync() is { } line) {
             if (string.IsNullOrWhiteSpace(line)) continue;
 
@@ -44,15 +61,44 @@ static class McpJudgeServer {
             var response = method switch {
                 "initialize" => BuildInitializeResponse(id, request),
                 "tools/list" => BuildToolsListResponse(id, tools),
-                "tools/call" => await HandleToolCallAsync(id, request, client, baseUrl, expectedSessionId),
+                "tools/call" => await TimedDispatchToolCallAsync(id, request),
                 _            => McpProtocol.TryHandleStandardMethod(method, id)
                                 ?? BuildErrorResponse(id, -32601, $"Method not found: {method}")
             };
 
             await writer.WriteLineAsync(response);
         }
+        } finally {
+            // Deferring construction must not also defer disposal: the loop ends when stdin closes.
+            client?.Dispose();
+        }
 
         return 0;
+
+        // Report an unusable server_url as a JSON-RPC tool error rather than dying: a server is
+        // expected to keep serving, and the caller can see the reason.
+        async Task<string> DispatchToolCallAsync(JsonNode callId, JsonObject callRequest) {
+            if (!urlOk) return BuildToolResult(callId, HttpClientExtensions.SchemeMissingHint, isError: true);
+
+            client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+            return await HandleToolCallAsync(callId, callRequest, client, baseUrl, expectedSessionId);
+        }
+
+        // Records which MCP tools agents actually reach for. Never touches the response path:
+        // the result (or the exception) is returned exactly as DispatchToolCallAsync produced it.
+        async Task<string> TimedDispatchToolCallAsync(JsonNode callId, JsonObject callRequest) {
+            var start = Stopwatch.GetTimestamp();
+            var tool  = McpTelemetry.SafeToolName(callRequest);
+            var ok    = false;
+
+            try {
+                var response = await DispatchToolCallAsync(callId, callRequest);
+                ok = McpTelemetry.ResponseOk(response);
+                return response;
+            } finally {
+                McpTelemetry.ToolCalled("kcap-judge", tool, ok, CommandTiming.ElapsedMs(start));
+            }
+        }
     }
 
     /// <summary>Test hook: execute a tool-call handler and return the JSON-RPC envelope.</summary>

@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -17,7 +16,7 @@ namespace Capacitor.Cli.Commands;
 /// There is no sibling metadata file: cwd / created-at are read from the plugin's
 /// <c>{$kcap:"header", ...}</c> line.
 /// Completeness is the server transcript watermark (no client ledger), mirroring
-/// <see cref="KiroImportSource"/> (NOT the SQLite-backed OpenCode source).
+/// <c>KiroImportSource</c> (NOT the SQLite-backed OpenCode source).
 /// </summary>
 internal sealed class DshImportSource : IImportSource {
     readonly string _sessionsDir;
@@ -42,6 +41,11 @@ internal sealed class DshImportSource : IImportSource {
     public string Vendor => "dsh";
 
     public bool IsAvailable => Directory.Exists(_sessionsDir);
+
+    /// <summary>False — an AlreadyLoaded replay re-posts only session-start/end lifecycle, no
+    /// transcript content. dsh subagents are separate sessions adopted via parentSession, not
+    /// nested child content re-sent here (mirrors Kiro).</summary>
+    public bool AttachesChildContentOnReplay => false;
 
     /// <summary>True — dsh's <c>session/title</c> line is structural (skipped by the
     /// normalizer) and not reliably extractable here, so we let the server's title

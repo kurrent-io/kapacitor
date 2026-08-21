@@ -5,6 +5,8 @@ using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Harness.Claude;
+using Capacitor.Cli.Harness.Cursor;
 using Spectre.Console;
 
 namespace Capacitor.Cli.Commands;
@@ -21,12 +23,22 @@ static class ImportCommand {
     internal readonly struct ImportDisplay {
         public bool Tty { get; init; }
 
+        /// <summary>
+        /// Suppresses every progress line. Set for <c>--discover --json</c>, whose whole stdout has to
+        /// parse — one "Found 24 sessions." ahead of the payload and it does not.
+        /// </summary>
+        public bool Quiet { get; init; }
+
         public void Line(string plain, string? markup = null) {
+            if (Quiet) return;
+
             if (Tty) AnsiConsole.MarkupLine(markup ?? Markup.Escape(plain));
             else Console.WriteLine(plain);
         }
 
         public void BeginPhase(string title) {
+            if (Quiet) return;
+
             if (Tty) {
                 AnsiConsole.Write(new Rule($"[yellow]{Markup.Escape(title)}[/]").LeftJustified());
             } else {
@@ -119,8 +131,17 @@ static class ImportCommand {
                 FinalCounts                               f,
                 IReadOnlyDictionary<string, FinalCounts>? bySource = null
             ) {
+            // Says nothing about the skipped: too-short and excluded were never sent, so "everything else
+            // is in" would claim they landed. Re-running is safe — classification asks the server first.
+            var failureNote = $"{f.Failed} didn't land. Re-run to retry them — anything already imported isn't sent again.";
+
             if (Tty) {
                 AnsiConsole.Write(new Rule("[green]Done[/]").LeftJustified());
+
+                // Three buckets, not one: import knows the difference and a single number would hide it.
+                AnsiConsole.MarkupLine(
+                    $"[green]{f.Imported}[/] imported · {f.Skipped} skipped · "
+                  + (f.Failed > 0 ? $"[red]{f.Failed}[/] failed" : "0 failed"));
 
                 if (bySource is { Count: > 1 }) {
                     AnsiConsole.Write(new Rule("[green]By source[/]").LeftJustified());
@@ -174,16 +195,23 @@ static class ImportCommand {
                 if (f.Errored    > 0) grid.AddRow("[bold]Errored[/]", $"[red]{f.Errored}[/]");
 
                 if (f.RanBackground) {
-                    grid.AddRow("[bold]Titles[/]", $"{f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
+                    // Gated on the count, not on RanBackground: with --skip-title --generate-summaries
+                    // there is background work but no titling, and a row of zeroes reads as titling that
+                    // found nothing rather than titling that never ran.
+                    if (f.RequestedTitles)
+                        grid.AddRow("[bold]Titles[/]", $"{f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
 
                     if (f.RequestedSummaries)
                         grid.AddRow("[bold]Summaries[/]", $"{f.SummariesGenerated} generated, {f.SummariesFailed} failed");
                 }
 
                 AnsiConsole.Write(grid);
+
+                if (f.Failed > 0) AnsiConsole.MarkupLine($"[dim]{failureNote}[/]");
             } else {
                 Console.WriteLine();
                 Console.WriteLine("== Done ==");
+                Console.WriteLine($"  {f.Imported} imported · {f.Skipped} skipped · {f.Failed} failed");
 
                 if (bySource is { Count: > 1 }) {
                     Console.WriteLine();
@@ -213,15 +241,19 @@ static class ImportCommand {
                 if (f.Errored    > 0) Console.WriteLine($"  Errored             {f.Errored}");
 
                 if (f.RanBackground) {
-                    Console.WriteLine($"  Titles              {f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
+                    if (f.RequestedTitles)
+                        Console.WriteLine($"  Titles              {f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
 
                     if (f.RequestedSummaries)
                         Console.WriteLine($"  Summaries           {f.SummariesGenerated} generated, {f.SummariesFailed} failed");
                 }
+
+                if (f.Failed > 0) Console.WriteLine($"  {failureNote}");
             }
         }
 
-        public static ImportDisplay Create() => new() { Tty = !Console.IsOutputRedirected };
+        public static ImportDisplay Create(bool quiet = false) =>
+            new() { Tty = !quiet && !Console.IsOutputRedirected, Quiet = quiet };
     }
 
     internal enum ClassificationStatus {
@@ -427,9 +459,13 @@ static class ImportCommand {
     /// The single aggregation boundary — what outcome should this routed call count as for
     /// the Done-grid's counters, per-vendor tracker, and printed line (
     /// <c>null</c> = suppressed, don't count at all). This is a COUNTING-ONLY boundary: it
-    /// deliberately does NOT drive <c>importedSessionIds</c> / <c>--private</c> membership, which
-    /// stays governed by the pre-existing suppression check and outcome switch, unchanged from
-    /// before this ticket — see the call sites below for the exact membership condition.
+    /// deliberately does NOT drive <c>importedSessionIds</c> membership, which stays governed by
+    /// the pre-existing suppression check and outcome switch — see the call sites below for the
+    /// exact membership condition. <c>--private</c> no longer rides on that membership alone
+    /// either: sources that can attach child content on a replay are captured outcome-independently
+    /// into <c>privateScopeSessionIds</c>, precisely because this resolver's inputs can't be
+    /// trusted to reveal an attach (a hardcoded Skipped, or a Failed lifecycle POST after the
+    /// content already persisted).
     /// <see cref="IsLifecycleOnlyRoutedReplay"/> requires <c>!sentChildContent</c> and
     /// <see cref="IsSkippedChildContentOverride"/> requires <c>sentChildContent</c>, so the two
     /// are mutually exclusive by construction — there's no ordering ambiguity between them.
@@ -465,6 +501,13 @@ static class ImportCommand {
             Excluded: classifications.Count(c => c.Status      == ClassificationStatus.Excluded),
             ProbeError: classifications.Count(c => c.Status    == ClassificationStatus.ProbeError)
         );
+
+    /// <summary>
+    /// True when the import scheduled background title/summary work the Done phase must await
+    /// (and whose results the Titles/Summaries rows report). A named seam so the await-guard
+    /// decision is unit-testable and can't silently re-invert.
+    /// </summary>
+    internal static bool HadBackgroundWork(ConcurrentBag<Task> backgroundTasks) => !backgroundTasks.IsEmpty;
 
     /// <summary>
     /// Compute the per-source Done-grid row for a single vendor.
@@ -540,8 +583,46 @@ static class ImportCommand {
             int  SummariesGenerated,
             int  SummariesFailed,
             bool RanBackground,
-            bool RequestedSummaries
-        );
+            bool RequestedSummaries,
+            bool RequestedTitles = false
+        ) {
+        /// <summary>Reached the server this run. A resume is an import that finished, not a third thing.</summary>
+        internal int Imported => Loaded + Resumed;
+
+        /// <summary>Deliberately not sent — already there, too short, or an excluded repo. Not failures.</summary>
+        internal int Skipped => AlreadyLoaded + TooShort + Excluded;
+
+        /// <summary>Should have landed and did not. Re-running retries exactly these.</summary>
+        internal int Failed => ProbeError + Errored;
+    }
+
+    /// <summary>
+    /// Every "found nothing" exit still reports. Zero sessions is an answer; no output at all is
+    /// indistinguishable from the process having died.
+    /// </summary>
+    static int WriteEmptyDiscoveryReport(bool asJson) {
+        WriteDiscoveryReport(
+            ImportDiscoverySummary.Build([], new Dictionary<string, (string, string)?>(), DiscoveryWindows()),
+            asJson);
+
+        return 0;
+    }
+
+    static void WriteDiscoveryReport(ImportDiscoverySummary summary, bool asJson) =>
+        Console.WriteLine(asJson
+            ? ImportDiscoveryRender.ToJson(summary)
+            : ImportDiscoveryRender.ToText(summary));
+
+    /// <summary>
+    /// The <c>--since</c> windows discovery reports totals for, newest first, ending in "everything".
+    /// Callers that offer a different set pass their own to
+    /// <see cref="ImportDiscoverySummary.Build"/> — these are the defaults the CLI itself offers.
+    /// </summary>
+    internal static IReadOnlyList<DateOnly?> DiscoveryWindows(DateTimeOffset? now = null) {
+        var today = DateOnly.FromDateTime((now ?? DateTimeOffset.UtcNow).UtcDateTime);
+
+        return [today.AddDays(-30), today.AddDays(-90), null];
+    }
 
     /// <summary>
     /// Builds the Spectre markup for the "✗ Skipping {sid} [reason]" line.
@@ -580,10 +661,18 @@ static class ImportCommand {
             bool                          needOrgPick             = false,
             string?                       storedOrg               = null,
             bool                          autoSkipExclusions      = false,
-            string?                       defaultVisibility       = null
+            string?                       defaultVisibility       = null,
+            bool                          reimport                = false,
+            bool                          skipTitle               = false,
+            bool                          discoverOnly            = false,
+            bool                          discoverJson            = false
         ) {
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
-        var       display    = ImportDisplay.Create();
+        // Discovery is a local scan and never touches this client, so building the authenticated one
+        // would probe the server and warn an unauthenticated user about a command that needs neither.
+        using var httpClient = discoverOnly
+            ? new HttpClient()
+            : await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+        var       display    = ImportDisplay.Create(quiet: discoverJson);
 
         // --- Sources ---
         // Back-compat: a null caller (legacy or test) means "Claude only". Once
@@ -606,6 +695,8 @@ static class ImportCommand {
                 return 1;
             }
 
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+
             display.Line("No coding-agent sessions found. Install Claude, Codex, or Cursor and try again.");
 
             return 0;
@@ -625,7 +716,10 @@ static class ImportCommand {
         var filters = new DiscoveryFilters(
             FilterCwd: filterCwd,
             FilterSession: filterSession,
-            Since: since,
+            // A report of what each window WOULD select cannot start from a set one window already
+            // pruned: 8 of the 9 sources filter on --since during discovery, which would collapse
+            // every row to the same total and make the "everything" row untrue.
+            Since: discoverOnly ? null : since,
             MinLines: minLines
         );
 
@@ -646,10 +740,14 @@ static class ImportCommand {
             // Keep the message aligned with the dead branch lower in this method
             // (cleanup follow-up) so downstream tooling sees consistent output.
             if (filterSession is not null) {
+                if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+
                 await Console.Error.WriteLineAsync($"Session not found: {NormalizeGuid(filterSession)}");
 
                 return 1;
             }
+
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
 
             display.Line("No transcript files found.");
 
@@ -762,6 +860,20 @@ static class ImportCommand {
         ReportWorktreeAttributions(worktreeAttributed.Count, display);
         ReportMissingCwds(sessionCwds, cwdRemap, display);
 
+        if (discoverOnly) {
+            WriteDiscoveryReport(
+                ImportDiscoverySummary.Build(
+                    // Each source dates its own sessions: the rule differs per vendor and only the
+                    // source knows which one its --since applies.
+                    sources.SelectMany((src, i) =>
+                        discoveriesPerSource[i].Select(d => (d.SessionId, src.DiscoveryAge(d)))),
+                    resolved,
+                    DiscoveryWindows()),
+                discoverJson);
+
+            return 0;
+        }
+
         // --- Scope picker ---
         var profile = await AppConfig.GetActiveProfileAsync();
 
@@ -823,12 +935,6 @@ static class ImportCommand {
 
         var totalAfterScope = filteredPerSource.Sum(d => d.Count);
 
-        if (totalAfterScope == 0) {
-            display.Line("No sessions match the selected scope.");
-
-            return 0;
-        }
-
         // --- Confirmation ---
         var sampleRepos = new List<string>();
 
@@ -842,6 +948,31 @@ static class ImportCommand {
                     if (seen.Add($"{x.Owner}/{x.Name}")) sampleRepos.Add($"{x.Owner}/{x.Name}");
                 }
             }
+        }
+
+        // A repo that is spelled plausibly but wrongly resolves fine and simply matches nothing, so the
+        // run imports the others and says nothing. Naming the misses is the only way that reads as a
+        // mistake rather than as a smaller history than expected.
+        if (scope is ImportScope.Repo requested) {
+            var matched = new HashSet<(string Owner, string Name)>(ImportScope.RepoComparer);
+
+            foreach (var repo in sampleRepos) {
+                var parts = repo.Split('/');
+                if (parts.Length == 2) matched.Add((parts[0], parts[1]));
+            }
+
+            var missed = requested.Repos.Where(r => !matched.Contains(r)).ToList();
+
+            if (missed.Count > 0) {
+                display.Line(
+                    $"No sessions found for {string.Join(", ", missed.Select(m => $"{m.Owner}/{m.Name}"))} — check the spelling, or `kcap remap` if the directory was renamed.");
+            }
+        }
+
+        if (totalAfterScope == 0) {
+            display.Line("No sessions match the selected scope.");
+
+            return 0;
         }
 
         var visibilityDesc = forcePrivate
@@ -869,7 +1000,8 @@ static class ImportCommand {
             BaseUrl: baseUrl,
             MinLines: minLines,
             ExcludedRepos: excludedRepos,
-            ExcludedPaths: excludedPaths
+            ExcludedPaths: excludedPaths,
+            Reimport: reimport
         );
 
         IReadOnlyList<SessionClassification>[] classificationsPerSource;
@@ -1101,6 +1233,9 @@ static class ImportCommand {
             OnTitleTaskReady = t => {
                 var (sid, fp, _, vnd) = t;
 
+                // Titling shells out to the user's own `claude` / `codex`, on their subscription.
+                if (skipTitle) return;
+
                 // Don't schedule a title task for a source that doesn't support it.
                 // Cursor sets SupportsTitleGeneration=false because the composer
                 // header carries a name that the server maps to a
@@ -1160,7 +1295,7 @@ static class ImportCommand {
         };
 
         ImportChainsResult importResult;
-        // Counts for routed-source imports (Cursor). These add on top of the
+        // Counts for routed-source imports. These add on top of the
         // chain-worker counts when both phases run.
         var routedLoaded   = 0;
         var routedErrored  = 0;
@@ -1171,25 +1306,30 @@ static class ImportCommand {
         // sub-grid attributes Skipped-at-import to Excluded (not Errored).
         var routedOutcomesByVendor = new ConcurrentDictionary<string, (int Loaded, int Skipped, int Failed)>(StringComparer.Ordinal);
 
-        // a SEPARATE tracker from `importedSessionIds`, used
-        // ONLY to decide what gets privatized under --private — never fed into the Done-grid
-        // counting (`importedSessionIds`/`doneBySource` stay exactly as they were; the
-        // cosmetic double-count concern is intentionally left alone). `importedSessionIds`
-        // only gains a Cursor session id when this run did "real new work" by the
-        // Loaded/Failed/AlreadyLoaded + SentChildContent accounting — but privacy must NOT
-        // depend on that classification: a lifecycle POST (subagent-stop/session-end) can fail
-        // AFTER a child transcript has already persisted new content (this run's own
-        // ImportSessionAsync then returns Failed), or a later retry can see the child read as
-        // already-complete (SentChildContent=false) even though a PRIOR run attached new
-        // content that was never privatized. Either way `importedSessionIds` would exclude the
-        // session and a public session would stay public. So every Cursor routed classification
-        // this run touches — regardless of its outcome — is unconditionally captured here when
-        // --private is requested, and privatized at the end independent of Loaded/Failed/
-        // AlreadyLoaded/SentChildContent. Scoped to Cursor (vendor == "cursor") because
-        // SentChildContent/this lifecycle-after-content-persisted shape is Cursor-specific;
-        // every other routed vendor's own default_visibility-on-session-start stamp already
-        // privatizes atomically and isn't exposed to this gap.
+        // A SEPARATE tracker from `importedSessionIds`, feeding ONLY the --private pass and never
+        // the Done-grid counting. Membership in `importedSessionIds` keys off the raw
+        // ImportOutcome, but privacy must not: a source can report a hardcoded Skipped for a repair
+        // that DID attach a child, a lifecycle POST can fail AFTER that child's content persisted,
+        // and a later retry can read the child as already-complete even though a PRIOR run
+        // attached content that was never privatized. Each case would exclude the session and
+        // leave a public session public, so every routed classification touched here is captured
+        // regardless of outcome.
+        //
+        // Scoped by AttachesChildContentOnReplay, not a vendor name: the source owning the
+        // child-import pass is what knows. Excluding a source claims only that its AlreadyLoaded
+        // call posts no transcript CONTENT — not that it posts nothing: Copilot/Kiro/Pi still
+        // replay session-start/session-end lifecycle there and simply have no child import, while
+        // OpenCode alone returns before any POST. Nor does it claim the source can never add
+        // content — all of them post on New and Partial, and a lifecycle POST failing after that
+        // content persisted leaves the same kind of gap for every routed vendor. That residual is
+        // deliberately a separate issue, not something this gate covers.
         var privateScopeSessionIds = new ConcurrentBag<string>();
+
+        // Read-only inside the parallel loops below; resolved from the sources actually in play.
+        var replayChildContentVendors = byVendor.Values
+            .Where(s => s.AttachesChildContentOnReplay)
+            .Select(s => s.Vendor)
+            .ToHashSet(StringComparer.Ordinal);
 
         static (int Loaded, int Skipped, int Failed) AddRoutedOutcome(
                 (int Loaded, int Skipped, int Failed) prev,
@@ -1337,7 +1477,7 @@ static class ImportCommand {
             importResult = new(0, 0, 0);
         }
 
-        // --- Routed-source import phase (Cursor) ---
+        // --- Routed-source import phase (every non-chain source) ---
         // Sessions without a FilePath are imported directly via the source's
         // ImportSessionAsync. They share the 4-worker concurrency budget with
         // the chain phase but run sequentially after it; the TTY renderer is
@@ -1365,6 +1505,65 @@ static class ImportCommand {
                 }
             }
 
+            // Every non-rendering effect of a routed call lives here — the privatize capture, the
+            // counting resolution, the per-vendor tracker, importedSessionIds membership and the
+            // aggregate totals — so the TTY and non-TTY branches below differ ONLY in how they
+            // draw. Duplicating any of it across both branches let them drift independently, and a
+            // regression in just one was invisible to tests that exercise a single display mode.
+            // Returns the resolved outcome for the caller's switch, plus the raw one (its
+            // `null when outcome is Skipped` arm needs it).
+            async Task<(ImportOutcome? Resolved, ImportOutcome Raw)> RecordRoutedResultAsync(SessionClassification c) {
+                var result  = await ImportOne(c);
+                var outcome = result.Outcome;
+
+                // Capture for privatization BEFORE any Loaded/Failed/AlreadyLoaded classification
+                // — see the declaration comment on privateScopeSessionIds. Deliberately
+                // unconditional: even a Failed outcome (lifecycle POST failed after content
+                // already persisted) must still get privatized.
+                if (forcePrivate && replayChildContentVendors.Contains(c.Vendor)) {
+                    privateScopeSessionIds.Add(c.SessionId);
+                }
+
+                // An AlreadyLoaded session's routed call is a lifecycle/repo-backfill replay (or,
+                // for a nested child, an inline-handled no-op), not a new import — it must not
+                // double-count on top of the classify-time AlreadyLoaded bucket. sentChildContent
+                // overrides this for an AlreadyLoaded parent that attached a brand-new nested
+                // child — that IS real new work.
+                //
+                // `resolved` — not the raw `outcome` — is the single aggregation boundary driving
+                // every counting/display consumer. This is what fixes a Skipped AlreadyLoaded call
+                // (e.g. Antigravity's) that attached genuinely-new child content: it resolves to
+                // Loaded for counting even though its own raw outcome stays Skipped.
+                //
+                // importedSessionIds membership is explicitly EXCLUDED from that — it keeps
+                // switching on the raw `outcome`, gated by the same suppression. Pinned by
+                // RoutedPrivatizeMembershipTests. See ResolveRoutedOutcomeForCounting's doc.
+                var resolved = ResolveRoutedOutcomeForCounting(c.Status, outcome, result.SentChildContent);
+
+                if (resolved is { } resolvedForVendor) {
+                    routedOutcomesByVendor.AddOrUpdate(
+                        c.Vendor,
+                        addValueFactory: _ => AddRoutedOutcome((0, 0, 0), resolvedForVendor),
+                        updateValueFactory: (_, prev) => AddRoutedOutcome(prev, resolvedForVendor)
+                    );
+                }
+
+                if (resolved is not null && outcome is ImportOutcome.Loaded or ImportOutcome.Resumed) {
+                    importedSessionIds.Add(c.SessionId);
+                }
+
+                // Aggregate Done-grid totals. Also a non-rendering effect, so it belongs here
+                // rather than once per renderer — the suppressed (`null`) cases contribute to no
+                // bucket, which is what keeps a replay off the totals.
+                switch (resolved) {
+                    case ImportOutcome.Loaded or ImportOutcome.Resumed: Interlocked.Increment(ref routedLoaded);   break;
+                    case ImportOutcome.Skipped:                         Interlocked.Increment(ref routedExcluded); break;
+                    case ImportOutcome.Failed:                          Interlocked.Increment(ref routedErrored);  break;
+                }
+
+                return (resolved, outcome);
+            }
+
             if (display.Tty) {
                 await AnsiConsole.Progress()
                     .AutoClear(false)
@@ -1377,74 +1576,23 @@ static class ImportCommand {
                                 routed,
                                 new ParallelOptions { MaxDegreeOfParallelism = ImportWorkerCount },
                                 async (c, _) => {
-                                    var result  = await ImportOne(c);
-                                    var outcome = result.Outcome;
-
-                                    // capture for privatization BEFORE
-                                    // any Loaded/Failed/AlreadyLoaded classification below — see the
-                                    // declaration comment on privateScopeSessionIds. Deliberately
-                                    // unconditional: even a Failed outcome (lifecycle POST failed
-                                    // after content already persisted) must still get privatized.
-                                    if (forcePrivate && c.Vendor == "cursor") {
-                                        privateScopeSessionIds.Add(c.SessionId);
-                                    }
-
-                                    // An AlreadyLoaded session's routed call is a
-                                    // lifecycle/repo-backfill replay (or, for a nested child, an
-                                    // inline-handled no-op), not a new import — it must not
-                                    // double-count on top of the classify-time AlreadyLoaded
-                                    // bucket. sentChildContent overrides this for an AlreadyLoaded
-                                    // parent that attached a brand-new nested child — that IS
-                                    // real new work.
-                                    //
-                                    // `resolved` — not the raw `outcome` — is the single
-                                    // aggregation boundary that drives every counting/display
-                                    // consumer below (routedLoaded/routedExcluded/routedErrored,
-                                    // routedOutcomesByVendor, and the printed line). This is what
-                                    // fixes a Skipped AlreadyLoaded call (e.g. Antigravity's) that
-                                    // attached genuinely-new child content: it resolves to Loaded
-                                    // for counting even though its own raw outcome stays Skipped.
-                                    //
-                                    // importedSessionIds membership is explicitly EXCLUDED from
-                                    // this — it keeps switching on the raw `outcome`, gated by the
-                                    // same suppression (resolved is not null), so this makes no
-                                    // change to --private visibility for any vendor. See
-                                    // ResolveRoutedOutcomeForCounting's doc comment.
-                                    var resolved = ResolveRoutedOutcomeForCounting(c.Status, outcome, result.SentChildContent);
-
-                                    if (resolved is { } resolvedForVendor) {
-                                        routedOutcomesByVendor.AddOrUpdate(
-                                            c.Vendor,
-                                            addValueFactory: _ => AddRoutedOutcome((0, 0, 0), resolvedForVendor),
-                                            updateValueFactory: (_, prev) => AddRoutedOutcome(prev, resolvedForVendor)
-                                        );
-                                    }
-
-                                    if (resolved is not null && outcome is ImportOutcome.Loaded or ImportOutcome.Resumed) {
-                                        importedSessionIds.Add(c.SessionId);
-                                    }
+                                    var (resolved, outcome) = await RecordRoutedResultAsync(c);
 
                                     switch (resolved) {
                                         case ImportOutcome.Loaded:
                                         case ImportOutcome.Resumed:
-                                            Interlocked.Increment(ref routedLoaded);
-
                                             AnsiConsole.MarkupLine(
                                                 $"[green]✓[/] Loading [cyan]{Markup.Escape(c.SessionId)}[/] ({Markup.Escape(c.Vendor)})"
                                             );
 
                                             break;
                                         case ImportOutcome.Skipped:
-                                            Interlocked.Increment(ref routedExcluded);
-
                                             AnsiConsole.MarkupLine(
                                                 $"[yellow]~[/] Skipping [cyan]{Markup.Escape(c.SessionId)}[/] (already current)"
                                             );
 
                                             break;
                                         case ImportOutcome.Failed:
-                                            Interlocked.Increment(ref routedErrored);
-
                                             AnsiConsole.MarkupLine(
                                                 $"[red]✗[/] Failed [cyan]{Markup.Escape(c.SessionId)}[/]"
                                             );
@@ -1478,49 +1626,19 @@ static class ImportCommand {
                     routed,
                     new ParallelOptions { MaxDegreeOfParallelism = ImportWorkerCount },
                     async (c, _) => {
-                        var result  = await ImportOne(c);
-                        var outcome = result.Outcome;
-
-                        // see the Tty branch above — unconditional
-                        // privatization capture, independent of the outcome classification below.
-                        if (forcePrivate && c.Vendor == "cursor") {
-                            privateScopeSessionIds.Add(c.SessionId);
-                        }
-
-                        // See the Tty branch above for why an AlreadyLoaded lifecycle-only
-                        // replay must not count as Loaded/Excluded, why sentChildContent
-                        // overrides that for a parent that attached brand-new nested-child
-                        // content, why `resolved` (not the raw `outcome`) drives every
-                        // counting/display consumer, and why importedSessionIds membership is
-                        // explicitly excluded from that and keeps switching on the raw `outcome`.
-                        var resolved = ResolveRoutedOutcomeForCounting(c.Status, outcome, result.SentChildContent);
-
-                        if (resolved is { } resolvedForVendor) {
-                            routedOutcomesByVendor.AddOrUpdate(
-                                c.Vendor,
-                                addValueFactory: _ => AddRoutedOutcome((0, 0, 0), resolvedForVendor),
-                                updateValueFactory: (_, prev) => AddRoutedOutcome(prev, resolvedForVendor)
-                            );
-                        }
-
-                        if (resolved is not null && outcome is ImportOutcome.Loaded or ImportOutcome.Resumed) {
-                            importedSessionIds.Add(c.SessionId);
-                        }
+                        var (resolved, outcome) = await RecordRoutedResultAsync(c);
 
                         switch (resolved) {
                             case ImportOutcome.Loaded:
                             case ImportOutcome.Resumed:
-                                Interlocked.Increment(ref routedLoaded);
                                 display.Line($"Loading {c.SessionId} ({c.Vendor})");
 
                                 break;
                             case ImportOutcome.Skipped:
-                                Interlocked.Increment(ref routedExcluded);
                                 display.Line($"Skipping {c.SessionId} (already current)");
 
                                 break;
                             case ImportOutcome.Failed:
-                                Interlocked.Increment(ref routedErrored);
                                 display.Line($"Failed {c.SessionId}");
 
                                 break;
@@ -1542,12 +1660,12 @@ static class ImportCommand {
         // --- --private: mark all imported sessions owner-only ---
         //
         // the privatize set is importedSessionIds (chain-phase +
-        // routed-phase "real new work") UNIONED with privateScopeSessionIds (every Cursor
-        // routed classification touched this run under --private, regardless of outcome — see
-        // its declaration above). The union — not a replacement — keeps chain-phase and
-        // non-Cursor routed privatization exactly as before; it only widens what Cursor
-        // contributes so privacy no longer depends on the Loaded/Failed/AlreadyLoaded/
-        // SentChildContent accounting used for import counts.
+        // routed-phase "real new work") UNIONED with privateScopeSessionIds (every routed
+        // classification touched this run under --private whose source can attach child content
+        // on a replay, regardless of outcome — see its declaration above). The union — not a
+        // replacement — keeps chain-phase and other routed privatization exactly as before; it
+        // only widens what those sources contribute so privacy no longer depends on the
+        // Loaded/Failed/AlreadyLoaded/SentChildContent accounting used for import counts.
         if (forcePrivate) {
             var toPrivatize = new HashSet<string>(importedSessionIds, StringComparer.Ordinal);
             toPrivatize.UnionWith(privateScopeSessionIds);
@@ -1559,9 +1677,9 @@ static class ImportCommand {
         }
 
         // --- Background phase (titles / summaries) ---
-        var ranBackground = backgroundTasks.IsEmpty;
+        var hasBackgroundWork = HadBackgroundWork(backgroundTasks);
 
-        if (ranBackground) {
+        if (hasBackgroundWork) {
             display.BeginPhase("Titles & summaries");
 
             if (display.Tty) {
@@ -1638,7 +1756,8 @@ static class ImportCommand {
             TitlesFailed: titlesFailed,
             SummariesGenerated: summariesGenerated,
             SummariesFailed: summariesFailed,
-            RanBackground: ranBackground,
+            RanBackground: hasBackgroundWork,
+            RequestedTitles: titleTaskCount > 0,
             RequestedSummaries: summaryTaskCount > 0
         );
 
@@ -2094,15 +2213,15 @@ static class ImportCommand {
         org = org.Trim();
 
         try {
-            var cfg     = await AppConfig.LoadProfileConfig();
-            var profile = cfg.Profiles.GetValueOrDefault(profileName) ?? new Core.Config.Profile();
-            var updated = cfg with {
-                Profiles = new Dictionary<string, Core.Config.Profile>(cfg.Profiles) {
-                    [profileName] = profile with { ImportOrg = org }
-                }
-            };
+            await ConfigMutator.MutateAsync(c => {
+                var profile = c.Profiles.GetValueOrDefault(profileName) ?? new Core.Config.Profile();
 
-            await AppConfig.SaveProfileConfig(updated);
+                return c with {
+                    Profiles = new Dictionary<string, Core.Config.Profile>(c.Profiles) {
+                        [profileName] = profile with { ImportOrg = org }
+                    }
+                };
+            });
         } catch {
             // Remembering the org is a convenience, not part of the import contract.
         }

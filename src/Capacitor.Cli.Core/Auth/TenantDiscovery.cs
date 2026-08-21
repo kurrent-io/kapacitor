@@ -3,19 +3,29 @@ using Config_Profile = Capacitor.Cli.Core.Config.Profile;
 
 namespace Capacitor.Cli.Core.Auth;
 
+/// <param name="NoTenantsFound">
+/// True only for the GENUINE "authenticated, zero tenants" case — never for a discovery-service
+/// failure (proxy unreachable, token rejected, upstream error), which also returns an empty
+/// <paramref name="Tenants"/> array and a non-null <paramref name="ErrorMessage"/>. Both shapes
+/// look identical from <see cref="Tenants"/>.Length alone, so a caller emitting
+/// telemetry off that length was inflating the funnel's key "reached signup" denominator with
+/// discovery outages that have nothing to do with signup.
+/// </param>
 public sealed record DiscoveryOutcome(
     DiscoveredTenant[] Tenants,
     DiscoveredTenant?  Picked,
-    string?            ErrorMessage
+    string?            ErrorMessage,
+    bool               NoTenantsFound = false
 );
 
 public interface ITenantPicker {
-    DiscoveredTenant? Pick(DiscoveredTenant[] tenants);
+    DiscoveredTenant?       Pick(DiscoveredTenant[] tenants);
+    Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, CancellationToken ct);
 }
 
 public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
-    public async Task<DiscoveryOutcome> RunAsync(string proxyUrl, string githubAccessToken) {
-        var result = await proxy.DiscoverTenantsAsync(proxyUrl, githubAccessToken);
+    public async Task<DiscoveryOutcome> RunAsync(string proxyUrl, string githubAccessToken, CancellationToken ct = default) {
+        var result = await proxy.DiscoverTenantsAsync(proxyUrl, githubAccessToken, ct);
 
         if (result.Error != DiscoveryError.None) {
             return new([], null, result.Error switch {
@@ -28,12 +38,13 @@ public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
 
         if (result.Tenants.Length == 0) {
             return new([], null,
-                "No Capacitor tenants are linked to your GitHub orgs. Ask your admin to install the Kurrent GitHub App on your org, or re-run with --server-url <url> for a self-hosted server.");
+                "No Capacitor tenants are linked to your GitHub orgs. Ask your admin to install the Kurrent GitHub App on your org, or re-run with --server-url <url> for a self-hosted server.",
+                NoTenantsFound: true);
         }
 
         var picked = result.Tenants.Length == 1
             ? result.Tenants[0]
-            : picker.Pick(result.Tenants);
+            : await picker.PickAsync(result.Tenants, ct);
 
         if (picked is null) {
             return new(result.Tenants, null, "No tenant selected.");

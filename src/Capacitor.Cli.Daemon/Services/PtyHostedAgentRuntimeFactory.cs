@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core.Commands;
+using Capacitor.Cli.Daemon.Harness.Codex;
 using Capacitor.Cli.Daemon.Pty;
 using Microsoft.Extensions.Logging;
 
@@ -30,6 +31,10 @@ internal sealed partial class PtyHostedAgentRuntimeFactory(
     public bool   SupportsBorrowedReviewFlow => launcher.SupportsBorrowedReviewFlow;
     public string? BorrowedReviewContainment => launcher.BorrowedReviewContainment;
 
+    /// <summary>PTY factories delegate reviewer-model resolution to their launcher-owned policy — the
+    /// launcher (Claude, Codex) owns its accepted aliases/ids and canonical/equivalence behavior.</summary>
+    public IReviewerModelResolver? ReviewerModelResolver => launcher.ReviewerModelResolver;
+
     public bool IsAvailable() => launcher.IsAvailable();
 
     /// <remarks>
@@ -60,7 +65,8 @@ internal sealed partial class PtyHostedAgentRuntimeFactory(
                 : null
         ) {
             McpAllowlist = ctx.McpAllowlist,
-            Work         = ctx.Work
+            Work         = ctx.Work,
+            CodexPosture = ctx.CodexPosture
         };
 
         try {
@@ -107,7 +113,9 @@ internal sealed partial class PtyHostedAgentRuntimeFactory(
         }
 
         var pty     = ptyFactory.Spawn(launcher.CliPath, args, ctx.Worktree.Path, env, ctx.Cols, ctx.Rows);
-        var runtime = new PtyHostedAgentRuntime(ctx.Vendor, pty);
+        // Gate the multi-CR submit spray on whether this launch turned off approval prompts — the
+        // launcher is the authority (it set the flags). See PtyHostedAgentRuntime.SubmitAsync.
+        var runtime = new PtyHostedAgentRuntime(ctx.Vendor, pty, launcher.DisablesApprovalPrompts(launcherCtx));
 
         return new HostedRuntimeStart(runtime, mcpConfigPath);
     }

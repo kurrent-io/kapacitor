@@ -1,4 +1,3 @@
-using Capacitor.Cli;
 using Capacitor.Cli.PrDetection;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -15,8 +14,8 @@ public class ImportProviderDetectionTests {
     // owner/repo/host resolve, and answers `gh pr view` with a PR so the live path can populate it.
     static CommandRunner Recording(List<string> log) => (cmd, args, _, _) => {
         log.Add($"{cmd} {args}");
-        if (cmd == "git" && args.StartsWith("remote get-url")) return Task.FromResult<string?>("https://github.com/foo/bar");
-        if (cmd == "git" && args.StartsWith("branch"))         return Task.FromResult<string?>("main");
+        if (cmd == "git" && args.StartsWith("remote get-url", StringComparison.Ordinal)) return Task.FromResult<string?>("https://github.com/foo/bar");
+        if (cmd == "git" && args.StartsWith("branch", StringComparison.Ordinal))         return Task.FromResult<string?>("main");
         if (cmd == "git")                                      return Task.FromResult<string?>("");
         if (cmd == "gh")  return Task.FromResult<string?>("""{"number":7,"title":"t","url":"https://github.com/foo/bar/pull/7","headRefName":"main"}""");
         return Task.FromResult<string?>(null);
@@ -34,8 +33,8 @@ public class ImportProviderDetectionTests {
         await Assert.That(repo.RepoName).IsEqualTo("bar");
         await Assert.That(repo.PrNumber).IsNull();
         // …but no `gh` / `glab` round-trip was made.
-        await Assert.That(log.Any(c => c.StartsWith("gh") || c.StartsWith("glab"))).IsFalse();
-        await Assert.That(log.Any(c => c.StartsWith("git"))).IsTrue();
+        await Assert.That(log.Any(c => c.StartsWith("gh", StringComparison.Ordinal) || c.StartsWith("glab", StringComparison.Ordinal))).IsFalse();
+        await Assert.That(log.Any(c => c.StartsWith("git", StringComparison.Ordinal))).IsTrue();
     }
 
     [Test]
@@ -45,7 +44,7 @@ public class ImportProviderDetectionTests {
         var repo = await RepositoryDetection.DetectRepositoryAsync(
             "/fake/live/do-pr", budget: null, detectPullRequest: true, run: Recording(log));
 
-        await Assert.That(log.Any(c => c.StartsWith("gh pr view"))).IsTrue(); // provider detection ran
+        await Assert.That(log.Any(c => c.StartsWith("gh pr view", StringComparison.Ordinal))).IsTrue(); // provider detection ran
         await Assert.That(repo!.PrNumber).IsEqualTo(7);
     }
 }

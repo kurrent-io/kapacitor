@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <IsPackable>false</IsPackable>
+    </PropertyGroup>
+    <ItemGroup>
+        <!-- Core only, for code. The guards pin Core-owned process globals (KCAP_CONFIG_DIR,
+             KCAP_DAEMONS_DIR, McpMarker, AuthProviderCache). -->
+        <ProjectReference Include="..\..\src\Capacitor.Cli.Core\Capacitor.Cli.Core.csproj" />
+        <!-- Build ordering and a path, not code: ReferenceOutputAssembly="false" builds the CLI for
+             KcapProcess to spawn while leaving it unreferenceable in C#. The binary is spawned from
+             its OWN output directory, the only place its whole dependency closure sits. -->
+        <ProjectReference Include="..\..\src\Capacitor.Cli\Capacitor.Cli.csproj"
+                          ReferenceOutputAssembly="false"
+                          OutputItemType="KcapCliBuildOutput" />
+    </ItemGroup>
+    <!-- MSBuild already resolved where the CLI builds; stamping it beats rediscovering it at
+         runtime from a [CallerFilePath] walk and a guess at the build configuration. -->
+    <Target Name="StampKcapBinaryDir" AfterTargets="ResolveProjectReferences" BeforeTargets="CoreCompile">
+        <ItemGroup>
+            <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+                <_Parameter1>KcapBinaryDir</_Parameter1>
+                <_Parameter2>@(KcapCliBuildOutput->'%(RootDir)%(Directory)')</_Parameter2>
+            </AssemblyAttribute>
+        </ItemGroup>
+    </Target>
+    <ItemGroup>
+        <!-- Guards/ holds process-global pins that every test assembly needs. They must use the
+             [BeforeEvery(Assembly)] / [AfterEvery(Assembly)] variants, NOT [Before(Assembly)]:
+             the non-Every form is scoped to the assembly that declares it, and this one holds no
+             tests, so those hooks would silently never run. Verified — with [Before(Assembly)],
+             DaemonPathsIsolationTests resolved the developer's real ~/.config/kcap/daemons. -->
+        <PackageReference Include="TUnit.Core" />
+        <!-- AuthFixtures substitutes the façade's tenant picker. -->
+        <PackageReference Include="NSubstitute" />
+    </ItemGroup>
+</Project>

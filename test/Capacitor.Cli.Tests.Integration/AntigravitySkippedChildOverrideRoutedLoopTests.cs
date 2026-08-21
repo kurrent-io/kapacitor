@@ -1,6 +1,8 @@
 using System.Net;
 using System.Text.RegularExpressions;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Harness.Antigravity;
+using Capacitor.Cli.Harness.Gemini;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -38,16 +40,33 @@ namespace Capacitor.Cli.Tests.Integration;
 /// actually has &gt;1 vendor key and renders at all).</item>
 /// <item>The printed per-session line is the "Loading …" line, not the "Already loaded … (no new
 /// content)" no-op line.</item>
-/// <item>The session does NOT join <c>importedSessionIds</c>: under <c>--private</c>, this
-/// manifests as ZERO <c>PUT .../visibility</c> calls for ANY session, because membership keys off
-/// the raw outcome (Skipped) independent of the Loaded resolution that drives 1–3, and Antigravity
-/// (unlike Cursor) has no separate outcome-independent privatize tracker.</item>
+/// <item>Under <c>--private</c> the root gets exactly one <c>PUT .../visibility</c> — it is
+/// captured outcome-independently because Antigravity declares
+/// <see cref="IImportSource.AttachesChildContentOnReplay"/>. The nested child is not a routed
+/// classification of its own and contributes no PUT of its own.</item>
 /// </list>
+///
+/// <para>
+/// Effect 4 is NOT a guard on <c>importedSessionIds</c> membership, and must not be read as one.
+/// The privatize set is <c>HashSet(importedSessionIds) ∪ privateScopeSessionIds</c> and this root
+/// is already in the private scope, so rewiring membership to the resolved <c>Loaded</c> outcome
+/// would union the same single id and still emit exactly one PUT — verified by mutation. The
+/// Done-grid assertions do not expose it either (<c>ComputePerSourceFinalCounts</c> takes the
+/// routed early return and ignores its <c>imported</c> argument). That rule is pinned instead by
+/// <see cref="RoutedPrivatizeMembershipTests"/>, which uses a source outside the private scope so
+/// the union cannot absorb the difference.
+/// </para>
 /// </summary>
 public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
     readonly WireMockServer _server         = WireMockServer.Start();
-    readonly string         _home           = Directory.CreateTempSubdirectory("kcap-ag-routed-loop-it").FullName;
-    readonly string         _geminiTmpDir   = Directory.CreateTempSubdirectory("kcap-ag-routed-loop-gemini-it").FullName;
+    readonly TempDir        _tmp            = new();
+    readonly string         _home;
+    readonly string         _geminiTmpDir;
+
+    public AntigravitySkippedChildOverrideRoutedLoopTests() {
+        _home         = _tmp.CreateDir("home");
+        _geminiTmpDir = _tmp.CreateDir("gemini");
+    }
 
     const string RootConvId    = "55550000-0000-4000-8000-000000000005";
     const string ChildConvId   = "66660000-0000-4000-8000-000000000006";
@@ -59,8 +78,7 @@ public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_home, recursive: true); } catch { /* best effort */ }
-        try { Directory.Delete(_geminiTmpDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     string BrainDir(string convId) => Path.Combine(_home, ".gemini", "antigravity", "brain", convId);
@@ -98,22 +116,16 @@ public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
     }
 
     static async Task<string> CaptureStdoutAsync(Func<Task> action) {
-        var original = Console.Out;
-        var sw       = new StringWriter();
-        Console.SetOut(sw);
-        try {
-            await action();
-        } finally {
-            Console.SetOut(original);
-        }
-        return sw.ToString();
+        using var capture = ConsoleOutput.StartCapture();
+        await action();
+        return capture.GetCapturedOutput();
     }
 
     static bool LineMatches(string text, string label, int value) =>
         Regex.IsMatch(text, $@"(?m)^\s*{Regex.Escape(label)}\s+{value}\s*$");
 
     [Test, NotInParallel]
-    public async Task already_loaded_root_with_new_child_content_counts_loaded_but_stays_out_of_private_set() {
+    public async Task already_loaded_root_with_new_child_content_counts_loaded_and_is_privatized_via_replay_scope() {
         WriteAntigravityTranscript(RootConvId, "build it");
         WriteAntigravityTranscript(ChildConvId, "sub task");
         WriteLinkage();
@@ -191,12 +203,18 @@ public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
         await Assert.That(LineMatches(vendorRow, "Already loaded", 1)).IsTrue();
         await Assert.That(vendorRow).DoesNotContain("Excluded");
 
-        // --- Effect 4: the counting-only override must NOT change --private membership. The
-        // RESOLVED outcome is Loaded (drives 1-3 above), but the RAW outcome is still Skipped, so
-        // the root never joins importedSessionIds — and (being a non-Cursor vendor) it has no
-        // separate outcome-independent privatize tracker either — so forcePrivate: true results
-        // in ZERO PUT /visibility calls for this run.
-        var putCalls = _server.LogEntries.Count(e => e.RequestMessage.Method == "PUT");
-        await Assert.That(putCalls).IsEqualTo(0);
+        // --- Effect 4: under --private the root is privatized exactly once, via the
+        // outcome-independent tracker (Antigravity's replay can attach child content). The nested
+        // child is not a routed classification and contributes no PUT; the Gemini fixture never
+        // reaches import (ProbeError) so it contributes none either.
+        //
+        // This does NOT pin importedSessionIds membership — see the class doc: the private scope
+        // already covers this root, so the union makes raw-vs-resolved membership unobservable
+        // here. RoutedPrivatizeMembershipTests pins that.
+        var putPaths = _server.LogEntries
+            .Where(e => e.RequestMessage.Method == "PUT")
+            .Select(e => e.RequestMessage.Path)
+            .ToArray();
+        await Assert.That(putPaths).IsEquivalentTo([$"/api/sessions/{Root}/visibility"]);
     }
 }

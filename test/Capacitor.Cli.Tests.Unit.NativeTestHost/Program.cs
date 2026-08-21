@@ -72,6 +72,27 @@ switch (mode) {
         }
         break;
     }
+    case "url-policy-failfast": {
+        // EnsureAbsolute's two branches cannot both be exercised in-process: one of them exits, which
+        // would take the test runner down with it. Default policy => hint on stderr, exit 2.
+        // Driven with an absolute wrong-scheme URL: an implementation checking only UriKind.Absolute
+        // would accept it, so this is the class that discriminates.
+        await Capacitor.Cli.Core.HttpClientExtensions.CreateClientWithAuthStatusAsync("ftp://host");
+        Console.Out.Write("NO-EXIT");
+        Console.Out.Flush();
+        break;
+    }
+    case "url-policy-throw": {
+        Capacitor.Cli.Core.ProcessUrlPolicy.Current = Capacitor.Cli.Core.UrlFailurePolicy.Throw;
+        try {
+            await Capacitor.Cli.Core.HttpClientExtensions.CreateClientWithAuthStatusAsync("ftp://host");
+            Console.Out.Write("NO-THROW");
+        } catch (Capacitor.Cli.Core.UnusableServerUrlException) {
+            Console.Out.Write("THREW");
+        }
+        Console.Out.Flush();
+        break;
+    }
     default:
         Console.Error.WriteLine($"unknown mode: {mode}");
         return 1;

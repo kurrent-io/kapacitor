@@ -13,6 +13,13 @@ internal interface IHostedAgentRuntime : IAsyncDisposable {
     /// <summary>Vendor token this runtime hosts ("claude", "codex", "cursor").</summary>
     string Vendor { get; }
 
+    /// <summary>The wire transport label reported to the server on registration so it can validate its
+    /// launch decision against the transport actually used (defense-in-depth). "pty" is the universal
+    /// default — the label every interactive-PTY and ACP runtime reports — matching the server's PTY
+    /// contract; only the Codex app-server runtime overrides it. A runtime owns its own transport, so
+    /// the orchestrator never type-switches to derive it.</summary>
+    string RuntimeTransport => "pty";
+
     /// <summary>OS process id of the hosted agent (for logging).</summary>
     int Pid { get; }
 
@@ -68,13 +75,30 @@ internal interface IHostedAgentRuntime : IAsyncDisposable {
     Task WaitForTurnIdleAsync(CancellationToken ct) => Task.CompletedTask;
 
     /// <summary>
+    /// True when this runtime returns from its start WITHOUT dispatching the first turn — it holds the
+    /// initial prompt and seals input — and the orchestrator MUST durably source-claim the session and
+    /// then call <see cref="BeginFirstTurnAsync"/>. Only the envelope-sourced hosted-Codex runtime does
+    /// this; every other runtime keeps the single-phase launch (default false), so the orchestrator
+    /// skips the extra handshake for them.
+    /// </summary>
+    bool RequiresSourceClaimBeforeFirstTurn => false;
+
+    /// <summary>
+    /// Dispatch the held initial prompt as the first turn and unseal any queued input, completing when
+    /// the first turn's transport response has landed. Called once by the orchestrator after the source
+    /// claim acks, only when <see cref="RequiresSourceClaimBeforeFirstTurn"/> is true. No-op default for
+    /// every single-phase runtime.
+    /// </summary>
+    Task BeginFirstTurnAsync(CancellationToken ct = default) => Task.CompletedTask;
+
+    /// <summary>
     /// Hosted-UI special key (server <c>SendSpecialKey</c>). PTY runtimes translate via
     /// <see cref="SpecialKeyMap"/> and write the bytes; the ACP runtime maps or ignores.
     /// </summary>
     Task SendSpecialKeyAsync(string key);
 
     /// <summary>
-    /// Raw byte input from a local-attached terminal (`kcap attach` Stdin frames). PTY runtimes
+    /// Raw byte input from a local-attached terminal (`kcap agent attach` Stdin frames). PTY runtimes
     /// write the bytes verbatim. Local attach is a PTY-only surface, so the ACP runtime throws
     /// <see cref="NotSupportedException"/>; the caller guards on <see cref="Vendor"/>.
     /// </summary>

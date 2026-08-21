@@ -1,0 +1,179 @@
+using System.Diagnostics;
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Services;
+
+namespace Capacitor.Cli.Tests.Integration;
+
+/// <summary>
+/// Real-process coverage for spec §7 "parent death &amp; stdio": guarantees fakes can't prove — the
+/// --verify transaction never hangs or crashes when its stdio pipes close, and the service flock is
+/// released when the process exits, even orphaned. Drives <c>kcap daemon service start --verify</c>
+/// against an isolated temp HOME/KCAP_DAEMONS_DIR with no daemon/plist present, so the transaction
+/// runs a real fail-fast path (lock → launchctl query → bootstrap attempt → forward-budget poll →
+/// rollback) without touching anything real. macOS-only: launchctl-classifying code paths.
+/// </summary>
+// Both tests drive a real launchctl forward-budget poll, and one of them bounds the child's
+// flock acquisition by wall clock — they cannot afford to race each other for a core.
+[NotInParallel(nameof(ServiceVerifyProcessTests))]
+public class ServiceVerifyProcessTests {
+    static (string Home, string Daemons, string Config) NewIsolatedEnv(TempDir tmp) {
+        // Daemons itself is deliberately absent — --verify must create it, as on a first run — so only
+        // its parent is made here.
+        tmp.CreateDir("daemons-root");
+
+        return (tmp.CreateDir("home"), tmp.PathTo("daemons-root", "daemons"), tmp.CreateDir("cfg"));
+    }
+
+    // The parent inspects the flock the child holds, so both must name the same directory.
+    static bool LockHeld(string daemonsDir, string serviceName) =>
+        ServiceTxnLock.IsHeld(new DaemonStore(daemonsDir), serviceName);
+
+    /// <summary>First direct child pid of <paramref name="parentPid"/>, via <c>pgrep -P</c> — used to
+    /// find the orphaned kcap grandchild for a best-effort cleanup kill, since Process.Start only
+    /// hands back a handle to the immediate /bin/sh child.</summary>
+    static int? FindChildPid(int parentPid) {
+        try {
+            var psi = new ProcessStartInfo("pgrep", $"-P {parentPid}") { RedirectStandardOutput = true, UseShellExecute = false };
+            using var p = Process.Start(psi);
+            if (p is null) return null;
+            var firstLine = p.StandardOutput.ReadLine();
+            p.WaitForExit(2000);
+            return firstLine is not null && int.TryParse(firstLine, out var pid) ? pid : null;
+        } catch { return null; }
+    }
+
+    [Test]
+    public async Task ClosedStdio_StillExitsWithCodedNonZero() {
+        Skip.When(!OperatingSystem.IsMacOS(), "exercises launchctl-classifying code paths");
+
+        using var tmp = new TempDir();
+        var (home, daemons, config) = NewIsolatedEnv(tmp);
+
+        var psi = KcapProcess.StartInfo(new DaemonStore(daemons), "daemon", "service", "start", "--name", "ptest", "--verify");
+        psi.WorkingDirectory = home;
+        psi.Environment["HOME"] = home;
+        psi.Environment["KCAP_CONFIG_DIR"] = config;
+
+        using var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap");
+
+        // Drop our ends of every stdio pipe immediately — nothing the child writes is ever read, on
+        // either side of this call (a race with early output wouldn't change that). On this platform
+        // Console writes into a reader-less pipe are silently dropped below the managed exception
+        // layer (verified empirically — .NET's Unix console PAL absorbs the broken-pipe signal), so
+        // this mainly guards against a hang or an uncaught crash from any write path that does NOT go
+        // through Console (i.e. bypasses Say()'s own IOException guard).
+        process.StandardInput.Close();
+        process.StandardOutput.Close();
+        process.StandardError.Close();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        try {
+            await process.WaitForExitAsync(cts.Token);
+        } catch (OperationCanceledException) {
+            try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+            throw new TimeoutException("kcap did not exit within 60s after its stdio pipes closed.");
+        }
+
+        // No daemon/plist exists in this isolated env, so start-verify always runs its full
+        // forward-budget poll then rolls back — ReadinessTimeout(24) is the deterministic outcome;
+        // RollbackBudget(26)/RestoreVerification(27) cover the rare Unknown-probe timing variant.
+        // Never Contended(20) (lock is uncontended) and never a signal-death code (128+).
+        await Assert.That(process.ExitCode).IsGreaterThanOrEqualTo(VerifyExit.ReadinessTimeout);
+        await Assert.That(process.ExitCode).IsLessThanOrEqualTo(VerifyExit.RestoreVerification);
+    }
+
+    [Test]
+    public async Task ParentDeath_OrphanedChildStillReleasesTheServiceLock() {
+        Skip.When(!OperatingSystem.IsMacOS(), "exercises launchctl-classifying code paths");
+
+        using var tmp = new TempDir();
+        var (home, daemons, config) = NewIsolatedEnv(tmp);
+        const string serviceName = "ptest2";
+
+        // kcap's own stderr is redirected to a file by the SHELL before it execs kcap, so the fd stays
+        // valid (and the writes land) independent of our C# Process handle for /bin/sh, and independent
+        // of /bin/sh itself dying — this is what lets the lock-release assertion below distinguish a
+        // real coded rollback exit from "the kernel dropped the flock because something crashed".
+        var errPath = Path.Combine(home, "verify.err");
+
+        // sh is the "parent" — it forks kcap as its own child (no exec) so killing sh orphans kcap
+        // rather than replacing it. The trailing `echo done` is what forces sh to stay a real
+        // intermediate process instead of tail-call-optimizing itself away.
+        var shellCommand =
+            $"'{KcapProcess.BinaryPath}' daemon service start --name {serviceName} --verify 2>'{errPath}'; echo done";
+        var psi = new ProcessStartInfo("/bin/sh", ["-c", shellCommand]) {
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true,
+            UseShellExecute        = false,
+            CreateNoWindow         = true,
+            WorkingDirectory       = home,
+            Environment = {
+                ["HOME"]             = home,
+                [DaemonStore.DaemonsDirEnvVar] = daemons,
+                ["KCAP_CONFIG_DIR"]  = config,
+            }
+        };
+
+        using var shell = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start /bin/sh");
+        int? orphanPid = null;
+
+        // Everything from here on can throw (an Assert failure included) without ever reaching the
+        // line that would otherwise have killed the shell or the orphaned kcap grandchild — wrap the
+        // whole post-spawn body so a failed assertion (slow machine, or a real regression) still
+        // can't leak a live process past this test.
+        try {
+            await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+            // Confirm the transaction actually took the lock before killing the parent — otherwise an
+            // unheld lock below would be vacuously true rather than evidence of a release.
+            var acquireDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (!LockHeld(daemons, serviceName) && DateTime.UtcNow < acquireDeadline)
+                await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+            // Located as soon as we reasonably can (kcap forks off the shell within milliseconds of
+            // spawn, long before lock acquisition), so the finally below can clean it up even if the
+            // very next assertion is what fails.
+            orphanPid = FindChildPid(shell.Id);
+
+            await Assert.That(LockHeld(daemons, serviceName)).IsTrue();
+
+            try { shell.Kill(); } catch { /* already gone */ }
+            try {
+                using var reapCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await shell.WaitForExitAsync(reapCts.Token);
+            } catch { /* best effort */ }
+
+            // Hard guarantee under test: the orphaned kcap grandchild finishes its transaction and
+            // releases the lock on its own — no parent left to reap it or notice it hung. Marker state
+            // is diagnostic only, not asserted: a fast-fail path may leave no marker at all, while a
+            // failure during rollback-restore may legitimately retain one — both are valid terminals.
+            var releaseDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(45);
+            var released = false;
+            while (DateTime.UtcNow < releaseDeadline) {
+                if (!LockHeld(daemons, serviceName)) { released = true; break; }
+                await Task.Delay(TimeSpan.FromMilliseconds(200));
+            }
+
+            await Assert.That(released).IsTrue();
+
+            // The kernel drops the flock on ANY process exit, crash included — reading kcap's own
+            // stderr (captured independently of the now-dead shell, see errPath above) is what tells
+            // "reached a coded rollback exit" apart from "the orphan crashed and released it that way".
+            var stderr = File.Exists(errPath) ? await File.ReadAllTextAsync(errPath) : "";
+            var reachedCodedExit = stderr.Contains(VerifyExit.ReadinessTimeoutToken)
+                || stderr.Contains(VerifyExit.RollbackBudgetToken)
+                || stderr.Contains(VerifyExit.RestoreVerificationToken);
+            await Assert.That(reachedCodedExit).IsTrue();
+        } finally {
+            // Best-effort regardless of which assertion (if any) failed above — the shell may still be
+            // alive (e.g. the lock-acquire wait itself never saw it held), and so may kcap.
+            try { if (!shell.HasExited) shell.Kill(); } catch { /* best effort */ }
+            if (orphanPid is { } pid) {
+                try {
+                    using var orphan = Process.GetProcessById(pid);
+                    if (!orphan.HasExited) orphan.Kill(entireProcessTree: true);
+                } catch { /* already gone, or pid recycled — best effort */ }
+            }
+        }
+    }
+}

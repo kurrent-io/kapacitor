@@ -14,14 +14,17 @@ namespace Capacitor.Cli.Tests.Integration;
 /// integration harness.
 /// </summary>
 public class McpMemoryServerTests : IDisposable {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     readonly WireMockServer _server           = WireMockServer.Start();
-    readonly string         _cfgDir           = Path.Combine(Path.GetTempPath(), $"kcap-mcp-mem-cfg-{Guid.NewGuid():N}");
-    readonly string         _cwdDir           = Path.Combine(Path.GetTempPath(), $"kcap-mcp-mem-cwd-{Guid.NewGuid():N}");
+    readonly TempDir        _tmp              = new();
+    readonly string         _cfgDir;
+    readonly string         _cwdDir;
     readonly List<Process>  _spawnedProcesses = [];
 
     public McpMemoryServerTests() {
-        Directory.CreateDirectory(_cfgDir);
-        Directory.CreateDirectory(_cwdDir);
+        _cfgDir = _tmp.CreateDir("cfg");
+        _cwdDir = _tmp.CreateDir("cwd");
     }
 
     public void Dispose() {
@@ -35,48 +38,17 @@ public class McpMemoryServerTests : IDisposable {
         }
 
         _server.Stop();
-        try { Directory.Delete(_cfgDir, recursive: true); } catch { /* best effort */ }
-        try { Directory.Delete(_cwdDir, recursive: true); } catch { /* best effort */ }
-    }
-
-    static string GetCliBinaryPath() {
-        var asmDir      = Path.GetDirectoryName(typeof(McpMemoryServerTests).Assembly.Location)!;
-        var binDir      = Path.GetDirectoryName(asmDir)!;
-        var config      = Path.GetFileName(binDir);
-        var testBin     = Path.GetDirectoryName(binDir)!;
-        var testProjDir = Path.GetDirectoryName(testBin)!;
-        var testRoot    = Path.GetDirectoryName(testProjDir)!;
-        var repoRoot    = Path.GetDirectoryName(testRoot)!;
-        var binaryName  = OperatingSystem.IsWindows() ? "kcap.exe" : "kcap";
-
-        return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
+        _tmp.Dispose();
     }
 
     Process SpawnMcpServer(string provider = "None") {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var binary = GetCliBinaryPath();
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: " +
-                "dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary
-            );
-        }
-
-        var psi = new ProcessStartInfo(binary, "mcp memory") {
-            RedirectStandardInput  = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-            WorkingDirectory       = _cwdDir,
-            Environment = {
-                ["KCAP_URL"]        = _server.Url!,
-                ["KCAP_CONFIG_DIR"] = _cfgDir
-            }
-        };
+        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "memory");
+        psi.WorkingDirectory = _cwdDir;
+        psi.Environment["KCAP_URL"] = _server.Url!;
+        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap process");
         _spawnedProcesses.Add(process);

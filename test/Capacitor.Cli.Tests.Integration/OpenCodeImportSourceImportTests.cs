@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Harness.OpenCode;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -548,24 +549,18 @@ public class OpenCodeImportSourceImportTests : IDisposable {
         _fix.AddSession("ses_n9", "ses_n8", "/work/a", "N9", 200);
         _fix.AddMessageWithTextAndAgent("ses_n9", "msg_9", "n9 work", 200, agent: "general");
 
-        var originalErr = Console.Error;
-        var captured    = new StringWriter();
-        try {
-            Console.SetError(captured);
+        using var capture = ConsoleOutput.StartErrorCapture();
 
-            var s2 = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
-            var c2 = await s2.ClassifyAsync(
-                await s2.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None), ctx, CancellationToken.None);
+        var s2 = new OpenCodeImportSource(_fix.DbPath, _fix.LedgerPath);
+        var c2 = await s2.ClassifyAsync(
+            await s2.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None), ctx, CancellationToken.None);
 
-            // NOT AlreadyLoaded — the omitted-subtree signature changed even though the in-cap
-            // descendant set (depths 1..8) did not.
-            await Assert.That(c2[0].Status).IsNotEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
+        // NOT AlreadyLoaded — the omitted-subtree signature changed even though the in-cap
+        // descendant set (depths 1..8) did not.
+        await Assert.That(c2[0].Status).IsNotEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
 
-            await Assert.That(await s2.ImportSessionAsync(c2[0], importCtx, CancellationToken.None)).IsEqualTo(ImportOutcome.Loaded);
-        } finally {
-            Console.SetError(originalErr);
-        }
+        await Assert.That(await s2.ImportSessionAsync(c2[0], importCtx, CancellationToken.None)).IsEqualTo(ImportOutcome.Loaded);
 
-        await Assert.That(captured.ToString()).Contains("descendants_omitted=1");
+        await Assert.That(capture.GetCapturedError()).Contains("descendants_omitted=1");
     }
 }

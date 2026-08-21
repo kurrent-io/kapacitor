@@ -18,7 +18,7 @@ namespace Capacitor.Cli.Daemon;
 ///
 /// <para>The acquisition guards against the scenario: two daemons
 /// under the same name on the same machine (regardless of
-/// <c>KCAP_CONFIG_DIR</c> — <see cref="DaemonLockPaths"/> uses a fixed
+/// <c>KCAP_CONFIG_DIR</c> — <see cref="DaemonStore"/> uses a fixed
 /// directory). Two daemons with <i>different</i> names are allowed to
 /// coexist; the lock file is per-name.</para>
 /// </summary>
@@ -89,12 +89,12 @@ internal sealed class DaemonLock : IDisposable {
     /// freely-readable <c>&lt;name&gt;.version</c> marker so <c>kcap daemon
     /// status</c> can report the running daemon's version.</para>
     /// </summary>
-    public static DaemonLock? TryAcquire(string daemonName, string? version = null) {
-        DaemonLockPaths.EnsureDirectory();
+    public static DaemonLock? TryAcquire(DaemonStore store, string daemonName, string? version = null) {
+        store.EnsureDirectory();
 
-        var lockPath    = DaemonLockPaths.LockPath(daemonName);
-        var pidPath     = DaemonLockPaths.PidPath(daemonName);
-        var versionPath = DaemonLockPaths.VersionPath(daemonName);
+        var lockPath    = store.LockPath(daemonName);
+        var pidPath     = store.PidPath(daemonName);
+        var versionPath = store.VersionPath(daemonName);
 
         FileStream stream;
 
@@ -165,7 +165,7 @@ internal sealed class DaemonLock : IDisposable {
         // marker is observability-only (`kcap daemon status`), so an IO failure
         // writing it must never abort acquisition the way a lock/pid failure does.
         if (version is not null) {
-            try { DaemonVersionMarker.Write(daemonName, version); } catch { /* best-effort */ }
+            try { DaemonVersionMarker.Write(store, daemonName, version); } catch { /* best-effort */ }
         }
 
         return new DaemonLock(stream, lockPath, pidPath, versionPath, instanceId, priorUnclean, priorPid, priorInstanceId, priorLockIndeterminate);
@@ -207,15 +207,15 @@ internal sealed class DaemonLock : IDisposable {
     }
 
     /// <summary>
-    /// Like <see cref="TryAcquire(string, string?)"/> but retries until <paramref name="awaitTimeout"/>
+    /// Like <see cref="TryAcquire(DaemonStore, string, string?)"/> but retries until <paramref name="awaitTimeout"/>
     /// elapses — used by a self-respawned successor (<c>--await-lock</c>) to wait out the
     /// outgoing daemon's flock instead of exiting with code 2 on the first contended attempt.
     /// </summary>
-    public static DaemonLock? TryAcquire(string daemonName, TimeSpan awaitTimeout, string? version = null) {
+    public static DaemonLock? TryAcquire(DaemonStore store, string daemonName, TimeSpan awaitTimeout, string? version = null) {
         var deadline = DateTime.UtcNow + awaitTimeout;
 
         while (true) {
-            if (TryAcquire(daemonName, version) is { } locked) return locked;
+            if (TryAcquire(store, daemonName, version) is { } locked) return locked;
             if (DateTime.UtcNow >= deadline) return null;
             Thread.Sleep(100);
         }

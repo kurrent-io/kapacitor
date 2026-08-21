@@ -1,18 +1,25 @@
-using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Antigravity;
 using Capacitor.Cli.Core.Auth;
-using Capacitor.Cli.Core.Copilot;
-using Capacitor.Cli.Core.Cursor;
-using Capacitor.Cli.Core.Gemini;
-using Capacitor.Cli.Core.Kiro;
-using Capacitor.Cli.Core.OpenCode;
-using Capacitor.Cli.Core.Pi;
+using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness.Copilot;
+using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.Harness.Gemini;
+using Capacitor.Cli.Core.Harness.Kiro;
+using Capacitor.Cli.Core.Harness.OpenCode;
+using Capacitor.Cli.Core.Harness.Pi;
 
 namespace Capacitor.Cli.Commands;
 
 public static class StatusCommand {
-    public static async Task<int> HandleAsync(string? baseUrl) {
+    public static async Task<int> HandleAsync(DaemonStore store, string? baseUrl, string[] args) {
+        // Version line reuses UpdateNotice's shared check and marks-reported so the exit footer
+        // doesn't double-print; respects the same opt-outs.
+        await WriteVersionLineAsync(args);
+
         // Server
         Console.Write("  Server:  ");
 
@@ -33,24 +40,37 @@ public static class StatusCommand {
         }
 
         // Auth
-        Console.Write("  Auth:    ");
-        var tokens = await TokenStore.GetValidTokensAsync();
+        // A machine-credential diversion REPLACES the token-store line rather than appending to it:
+        // with KCAP_CLIENT_ID/KCAP_CLIENT_SECRET in the environment, MachineAuth.Intended bypasses
+        // the token store entirely, so its state is not what this CLI authenticates with — printing
+        // both would show a headless runner as "records as the machine" AND "not authenticated (run:
+        // kcap login)", contradictory and with irrelevant remediation.
+        var machineLine = MachineAuth.DescribeDiversion(
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(MachineAuth.ClientIdVar)),
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(MachineAuth.ClientSecretVar)));
 
-        if (tokens is not null) {
-            var remaining = tokens.ExpiresAt - DateTimeOffset.UtcNow;
-
-            var expiryText = remaining.TotalHours > 1
-                ? $"expires in {remaining.TotalHours:F0}h"
-                : $"expires in {remaining.TotalMinutes:F0}m";
-            await Console.Out.WriteLineAsync($"{tokens.GitHubUsername} ({tokens.Provider}) ✓ token valid ({expiryText})");
+        if (machineLine is not null) {
+            Console.WriteLine($"  Auth:    {machineLine}");
         } else {
-            var rawTokens = await TokenStore.LoadAsync();
+            Console.Write("  Auth:    ");
+            var tokens = await TokenStore.GetValidTokensAsync();
 
-            await Console.Out.WriteLineAsync(
-                rawTokens is not null
-                    ? $"{rawTokens.GitHubUsername} ({rawTokens.Provider}) ✗ token expired (run: kcap login)"
-                    : "not authenticated (run: kcap login)"
-            );
+            if (tokens is not null) {
+                var remaining = tokens.ExpiresAt - DateTimeOffset.UtcNow;
+
+                var expiryText = remaining.TotalHours > 1
+                    ? $"expires in {remaining.TotalHours:F0}h"
+                    : $"expires in {remaining.TotalMinutes:F0}m";
+                await Console.Out.WriteLineAsync($"{tokens.GitHubUsername} ({tokens.Provider}) ✓ token valid ({expiryText})");
+            } else {
+                var rawTokens = await TokenStore.LoadAsync();
+
+                await Console.Out.WriteLineAsync(
+                    rawTokens is not null
+                        ? $"{rawTokens.GitHubUsername} ({rawTokens.Provider}) ✗ token expired (run: kcap login)"
+                        : "not authenticated (run: kcap login)"
+                );
+            }
         }
 
         // Hooks
@@ -69,6 +89,18 @@ public static class StatusCommand {
 
         await Console.Out.WriteLineAsync(line);
 
+        // Newly-installed-but-unconfigured harnesses. Ledger-independent (a dismissed vendor is
+        // still surfaced here) — status always tells the truth, unlike the nudge which respects
+        // dismissals. Shares the wired-check with the Hooks line above, so the two never disagree.
+        var detectionInputs = AgentDetection.FromEnvironment();
+        var detectedAgents  = AgentDetection.Detect(detectionInputs);
+        foreach (var h in HarnessCatalog.All) {
+            if (!h.Select(detectedAgents).Detected) continue;
+            if (HarnessIntegrationProbe.IsWired(h.VendorId, detectionInputs)) continue;
+            var install = h.InstallFlag is null ? "kcap plugin install" : $"kcap plugin install {h.InstallFlag}";
+            await Console.Out.WriteLineAsync($"           {h.Label} installed but kcap not configured — run `{install}`");
+        }
+
         // Daemon: read per-name PID files under
         // ~/.config/kcap/daemons/ instead of the legacy singleton
         // at ~/.config/kcap/agent.pid. The top-level `kcap status`
@@ -77,19 +109,70 @@ public static class StatusCommand {
         // a healthy daemon because new daemons no longer write the legacy
         // singleton.
         Console.Write("  Daemon:  ");
-        await WriteAgentStatusAsync();
+        await WriteAgentStatusAsync(store);
 
         return 0;
     }
 
-    static async Task WriteAgentStatusAsync() {
-        if (!Directory.Exists(DaemonLockPaths.Directory)) {
+    static async Task WriteVersionLineAsync(string[] args) {
+        Console.Write("  Version: ");
+
+        var current = CapacitorVersion.CurrentDisplay();
+
+        // Opt-out: an explicit --no-update-check flag or a disabled profile setting means no
+        // check is performed at all (never force one the user turned off) — the line still
+        // prints the bare version.
+        if (args.Contains("--no-update-check")) {
+            await Console.Out.WriteLineAsync(FormatVersionLine(current, default));
+
+            return;
+        }
+
+        var profile = await AppConfig.GetActiveProfileAsync();
+
+        if (profile?.UpdateCheck == false) {
+            await Console.Out.WriteLineAsync(FormatVersionLine(current, default));
+
+            return;
+        }
+
+        var channel  = UpdateCommand.ResolveChannel(args, profile?.UpdateChannel);
+        var result   = await UpdateNotice.GetSharedCheckAsync(channel);
+
+        // Cap the recommendation at the connected server's version (min(npm latest, server)).
+        var advisory = UpdateAdvisoryResolver.Resolve(result, channel);
+
+        await Console.Out.WriteLineAsync(FormatVersionLine(current, advisory));
+
+        if (advisory.Newer) {
+            // Surfaced inline already — the exit-time footer (UpdateNotice.FlushAsync) must not
+            // print the same information a second time.
+            UpdateNotice.MarkReported();
+        }
+    }
+
+    /// <summary>
+    /// Pure formatting for the Version line: <c>kcap {current}</c>, with an inline
+    /// <c>(update available: {target})</c> annotation appended only when <paramref name="advisory"/>
+    /// reports a newer version — and, when the target was capped at the server's version, a
+    /// <c>, server version</c> marker. Split out from <see cref="WriteVersionLineAsync"/> so the exact
+    /// text is unit-testable without any I/O.
+    /// </summary>
+    internal static string FormatVersionLine(string current, UpdateAdvisory advisory) =>
+        advisory is { Newer: true, Target: { } target }
+            ? advisory.ServerCapped
+                ? $"kcap {current} (update available: {target}, server version)"
+                : $"kcap {current} (update available: {target})"
+            : $"kcap {current}";
+
+    static async Task WriteAgentStatusAsync(DaemonStore store) {
+        if (!Directory.Exists(store.Directory)) {
             await Console.Out.WriteLineAsync("not running");
 
             return;
         }
 
-        var pidFiles = Directory.EnumerateFiles(DaemonLockPaths.Directory, "*.pid")
+        var pidFiles = Directory.EnumerateFiles(store.Directory, "*.pid")
             .OrderBy(f => f)
             .ToList();
 
@@ -170,41 +253,17 @@ public static class StatusCommand {
 
     /// <summary>
     /// True iff <paramref name="settingsPath"/> exists and has
-    /// <c>enabledPlugins["kcap@kcap"] == true</c>.
+    /// <c>enabledPlugins["kcap@kcap"] == true</c>. Delegates to the Core source of truth
+    /// (<see cref="HarnessIntegrationProbe"/>) so the status line and the new-harness nudge share
+    /// one wired-check definition.
     /// </summary>
-    public static bool IsClaudePluginInstalled(string settingsPath) {
-        try {
-            if (!File.Exists(settingsPath)) return false;
-            if (JsonNode.Parse(File.ReadAllText(settingsPath)) is not JsonObject root) return false;
-            if (root["enabledPlugins"] is not JsonObject enabled) return false;
-
-            return enabled["kcap@kcap"]?.GetValue<bool>() == true;
-        } catch {
-            return false;
-        }
-    }
+    public static bool IsClaudePluginInstalled(string settingsPath) =>
+        ClaudePluginInstaller.IsPluginEnabled(settingsPath);
 
     /// <summary>
     /// True iff <paramref name="hooksPath"/> exists and any hook entry under any
-    /// event references the <c>kcap codex-hook</c> command.
+    /// event references the <c>kcap codex-hook</c> command. Delegates to the Core source of truth.
     /// </summary>
-    public static bool IsCodexHooksInstalled(string hooksPath) {
-        try {
-            if (!File.Exists(hooksPath)) return false;
-            if (JsonNode.Parse(File.ReadAllText(hooksPath)) is not JsonObject root) return false;
-            if (root["hooks"] is not JsonObject hooks) return false;
-
-            foreach (var (_, value) in hooks) {
-                if (value is not JsonArray entries) continue;
-
-                if (entries.Any(CodexHooksParser.EntryReferencesCapacitorCodexHook)) {
-                    return true;
-                }
-            }
-
-            return false;
-        } catch {
-            return false;
-        }
-    }
+    public static bool IsCodexHooksInstalled(string hooksPath) =>
+        CodexHooksInstaller.ReferencesKcapHook(hooksPath);
 }

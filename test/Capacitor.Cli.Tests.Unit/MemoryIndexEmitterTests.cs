@@ -1,5 +1,5 @@
 using System.Text.Json.Nodes;
-using Capacitor.Cli.Commands;
+using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -66,6 +66,28 @@ public class MemoryIndexEmitterTests {
         await Assert.That(fragment!).Contains("- team-rule: team fact");
         await Assert.That(fragment!).Contains("### Yours");
         await Assert.That(fragment!).Contains("- my-rule: my fact");
+    }
+
+    [Test]
+    public async Task Annotates_project_and_repo_scope_but_leaves_org_untagged() {
+        var index = new JsonArray(
+            new JsonObject { ["memory_id"] = "i1", ["slug"] = "org-rule",  ["audience"] = "org", ["description"] = "d", ["kind"] = "feedback", ["scope_kind"] = "org" },
+            new JsonObject { ["memory_id"] = "i2", ["slug"] = "repo-rule", ["audience"] = "org", ["description"] = "d", ["kind"] = "feedback", ["scope_kind"] = "repo" },
+            new JsonObject { ["memory_id"] = "i3", ["slug"] = "proj-rule", ["audience"] = "org", ["description"] = "d", ["kind"] = "feedback", ["scope_kind"] = "project", ["project_slug"] = "capacitor" }
+        );
+
+        var fragment = MemoryIndexEmitter.BuildFragment(index, disabled: false)!;
+
+        await Assert.That(fragment).Contains("- org-rule: d");                        // org home ⇒ untagged
+        await Assert.That(fragment).Contains("- repo-rule [repo]: d");
+        await Assert.That(fragment).Contains("- proj-rule [project: capacitor]: d");  // resolved slug, not the id
+    }
+
+    [Test]
+    public async Task Missing_scope_renders_untagged_for_an_older_server() {
+        // A server that predates scope on the index sends no scope_kind — the line renders exactly as before.
+        var fragment = MemoryIndexEmitter.BuildFragment(Index(("legacy", "org", "d")), disabled: false)!;
+        await Assert.That(fragment).Contains("- legacy: d");
     }
 
     [Test]

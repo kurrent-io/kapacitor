@@ -30,7 +30,7 @@ public static class CuratedBlock {
         var bullets = new List<string>();
         for (var i = s + 1; i < e; i++) {
             var t = lines[i];
-            if (t.StartsWith("- ")) bullets.Add(t[2..]);
+            if (t.StartsWith("- ", StringComparison.Ordinal)) bullets.Add(t[2..]);
         }
         return bullets;
     }

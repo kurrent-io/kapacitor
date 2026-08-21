@@ -1,0 +1,143 @@
+{
+  "started": "2026-08-05T02:17:33.213489+00:00",
+  "argv": [
+    "kiro-cli",
+    "acp"
+  ],
+  "turn_requested": true,
+  "notes": [
+    "initialize ok",
+    "session/new ok; sessionId=c2336f9b-d2ca-4bca-8edd-ffb2f8956950 currentModelId=minimax-m2.5 availableModels=['auto', 'claude-sonnet-4.5', 'claude-sonnet-4', 'claude-haiku-4.5', 'deepseek-3.2', 'minimax-m2.5', 'minimax-m2.1', 'glm-5', 'qwen3-coder-next']",
+    "target model: deepseek-3.2",
+    "session/set_config_option -> {\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32601, \"message\": \"Method not found\", \"data\": \"session/set_config_option\"}, \"id\": 3}",
+    "session/set_model -> {\"jsonrpc\": \"2.0\", \"result\": {}, \"id\": 4}",
+    "sidecar after set: {\"conversation_id\": \"c2336f9b-d2ca-4bca-8edd-ffb2f8956950\", \"model_info\": null, \"context_usage_percentage\": null}",
+    "turn stopReason=end_turn",
+    "agent reply: 'deepseek-3.2'",
+    "sidecar after turn: {\"conversation_id\": \"c2336f9b-d2ca-4bca-8edd-ffb2f8956950\", \"model_info\": {\"model_name\": \"deepseek-3.2\", \"description\": \"Experimental preview of DeepSeek V3.2\", \"model_id\": \"deepseek-3.2\", \"context_window_tokens\": 164000, \"rate_multiplier\": 0.25, \"rate_unit\": \"Credit\"}, \"context_usage_percentage\": 1"
+  ],
+  "agent_capabilities": {
+    "loadSession": true,
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": false
+    },
+    "mcpCapabilities": {
+      "http": true,
+      "sse": false
+    },
+    "sessionCapabilities": {},
+    "auth": {}
+  },
+  "session_id": "c2336f9b-d2ca-4bca-8edd-ffb2f8956950",
+  "session_new_models": {
+    "currentModelId": "minimax-m2.5",
+    "availableModels": [
+      {
+        "modelId": "auto",
+        "name": "auto",
+        "description": "Models chosen by task for optimal usage and consistent quality"
+      },
+      {
+        "modelId": "claude-sonnet-4.5",
+        "name": "claude-sonnet-4.5",
+        "description": "Claude Sonnet 4.5 model"
+      },
+      {
+        "modelId": "claude-sonnet-4",
+        "name": "claude-sonnet-4",
+        "description": "Hybrid reasoning and coding for regular use"
+      },
+      {
+        "modelId": "claude-haiku-4.5",
+        "name": "claude-haiku-4.5",
+        "description": "The latest Claude Haiku model"
+      },
+      {
+        "modelId": "deepseek-3.2",
+        "name": "deepseek-3.2",
+        "description": "Experimental preview of DeepSeek V3.2"
+      },
+      {
+        "modelId": "minimax-m2.5",
+        "name": "minimax-m2.5",
+        "description": "MiniMax M2.5 model"
+      },
+      {
+        "modelId": "minimax-m2.1",
+        "name": "minimax-m2.1",
+        "description": "Experimental preview of MiniMax M2.1"
+      },
+      {
+        "modelId": "glm-5",
+        "name": "glm-5",
+        "description": "GLM-5 model"
+      },
+      {
+        "modelId": "qwen3-coder-next",
+        "name": "qwen3-coder-next",
+        "description": "Experimental preview of Qwen3 Coder Next"
+      }
+    ]
+  },
+  "session_new_config_options": null,
+  "target_model": "deepseek-3.2",
+  "set_config_option_response": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32601,
+      "message": "Method not found",
+      "data": "session/set_config_option"
+    },
+    "id": 3
+  },
+  "set_model_response": {
+    "jsonrpc": "2.0",
+    "result": {},
+    "id": 4
+  },
+  "applied_via": "set_model",
+  "sidecar_after_set": {
+    "path": "~/.kiro/sessions/cli/c2336f9b-d2ca-4bca-8edd-ffb2f8956950.json",
+    "rts_model_state": {
+      "conversation_id": "c2336f9b-d2ca-4bca-8edd-ffb2f8956950",
+      "model_info": null,
+      "context_usage_percentage": null
+    }
+  },
+  "turn_response": {
+    "jsonrpc": "2.0",
+    "result": {
+      "stopReason": "end_turn"
+    },
+    "id": 5
+  },
+  "turn_stop": "end_turn",
+  "agent_reply_text": "deepseek-3.2",
+  "sidecar_after_turn": {
+    "path": "~/.kiro/sessions/cli/c2336f9b-d2ca-4bca-8edd-ffb2f8956950.json",
+    "rts_model_state": {
+      "conversation_id": "c2336f9b-d2ca-4bca-8edd-ffb2f8956950",
+      "model_info": {
+        "model_name": "deepseek-3.2",
+        "description": "Experimental preview of DeepSeek V3.2",
+        "model_id": "deepseek-3.2",
+        "context_window_tokens": 164000,
+        "rate_multiplier": 0.25,
+        "rate_unit": "Credit"
+      },
+      "context_usage_percentage": 11.4896345
+    }
+  },
+  "ended": "2026-08-05T02:18:09.127474+00:00",
+  "_redaction": {
+    "by": "probe.py --redact",
+    "dropped_fields": [
+      "session_log_model_lines",
+      "kiro_home_log_model_lines",
+      "turn_log_model_lines"
+    ],
+    "home_dir_rewritten_to": "~"
+  }
+}

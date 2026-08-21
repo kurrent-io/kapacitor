@@ -24,6 +24,13 @@ public enum AuthStatus {
 
     /// <summary>No token is stored at all — login required.</summary>
     NotAuthenticated,
+
+    /// <summary>
+    /// A token is stored, but it was minted by a different server than the one being targeted.
+    /// No refresh can heal this (the server validates the token's own signature) — only a login
+    /// against the target server, or switching to the profile that owns it.
+    /// </summary>
+    WrongServer,
 }
 
 public static class HttpClientExtensions {
@@ -36,29 +43,162 @@ public static class HttpClientExtensions {
     /// </summary>
     public static async Task<(HttpClient Client, AuthStatus Status)> CreateClientWithAuthStatusAsync(
         string? baseUrl = null, CancellationToken ct = default, bool allowAutoRedirect = true,
-        bool forceRefresh = false) {
-        var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = allowAutoRedirect });
+        string? rejectedAccessToken = null) {
+        var (client, status, _, _) = await CreateClientCoreAsync(baseUrl, ct, allowAutoRedirect,
+            rejectedAccessToken, autoRetryUnauthorized: false);
 
+        return (client, status);
+    }
+
+    /// <summary>
+    /// Shared client construction. Returns the resolution alongside the client so callers that
+    /// report a mismatch quote the issuing server from the same snapshot the decision used.
+    ///
+    /// <para>Every client this produces — regardless of which branch below built it — leaves here
+    /// carrying the observation headers the server's update-notification pipeline reads (see
+    /// <see cref="AttachObservationHeadersAsync"/>): this is the ONE choke point every authenticated
+    /// CLI request flows through, so it is the one place that can promise every request the server
+    /// sees is tagged. <c>WhoamiCommand.ProbeAsync</c> deliberately bypasses this method (it
+    /// must not mutate auth state) and attaches the same headers explicitly.</para>
+    /// </summary>
+    static async Task<(HttpClient Client, AuthStatus Status, TokenResolution? Resolution, string? MachineProblem)> CreateClientCoreAsync(
+        string? baseUrl, CancellationToken ct, bool allowAutoRedirect,
+        string? rejectedAccessToken, bool autoRetryUnauthorized) {
+        var result = await CreateClientCoreImplAsync(baseUrl, ct, allowAutoRedirect, rejectedAccessToken, autoRetryUnauthorized);
+        await AttachObservationHeadersAsync(result.Client, ct);
+
+        return result;
+    }
+
+    static async Task<(HttpClient Client, AuthStatus Status, TokenResolution? Resolution, string? MachineProblem)> CreateClientCoreImplAsync(
+        string? baseUrl, CancellationToken ct, bool allowAutoRedirect,
+        string? rejectedAccessToken, bool autoRetryUnauthorized) {
         baseUrl ??= AppConfig.ResolvedServerUrl ?? Environment.GetEnvironmentVariable("KCAP_URL") ?? "http://localhost:5108";
+
+        HttpClient NewClient(DelegatingHandler? retry = null) {
+            var primary = new HttpClientHandler { AllowAutoRedirect = allowAutoRedirect };
+
+            HttpMessageHandler inner = primary;
+
+            if (retry is not null) {
+                retry.InnerHandler = primary;
+                inner = retry;
+            }
+
+            // Capture the server's own version (X-Kcap-Server-Version) from every response — outermost,
+            // so it observes the FINAL response after any 401-retry. No extra requests; best-effort.
+            var capture = new ServerVersionCaptureHandler(baseUrl) { InnerHandler = inner };
+
+            return new(capture);
+        }
+
         var provider = await DiscoverProviderAsync(baseUrl, ct);
 
         if (provider == "None") {
-            return (client, AuthStatus.NoAuthRequired); // No auth needed
+            return (NewClient(), AuthStatus.NoAuthRequired, null, null); // No auth needed
         }
 
-        var tokens = forceRefresh
-            ? await TokenStore.ForceRefreshAsync(ct)
-            : await TokenStore.GetValidTokensAsync();
+        // Machine credentials. A headless runner (CI, an ephemeral agent sandbox) has no
+        // profile and no token store: it carries KCAP_CLIENT_ID/KCAP_CLIENT_SECRET and mints its own
+        // short-lived bearer. This is the single place every authenticated CLI call resolves a token, so
+        // it is the only place that needs to know.
+        //
+        // Placed AFTER the None check — a server needing no auth needs no credential either — and BEFORE
+        // the token-store paths, because on a runner those would find nothing and advise `kcap login`,
+        // which a runner cannot do.
+        //
+        // Gated on `Intended` (either variable present) rather than on both, so a half-configured runner
+        // is told which variable is missing instead of silently falling through to that same wrong advice.
+        //
+        // No UnauthorizedRetryHandler: it refreshes through TokenStore, and client_credentials has no
+        // refresh token. A 401 comes back here as `rejectedAccessToken`, and re-minting is the repair.
+        if (MachineAuth.Intended) {
+            var credential = MachineAuth.TryRead(out var problem);
 
-        if (tokens is not null) {
-            client.DefaultRequestHeaders.Authorization = new("Bearer", tokens.AccessToken);
+            if (credential is null) return (NewClient(), AuthStatus.NotAuthenticated, null, problem);
 
-            return (client, AuthStatus.Ok);
+            var minted = await MachineTokenProvider.GetTokenAsync(credential, rejectedAccessToken, ct);
+
+            if (minted.Token is null) return (NewClient(), AuthStatus.NotAuthenticated, null, minted.Problem);
+
+            // Install the machine 401-retry handler on the same terms the token-store path installs its
+            // own (Qodo): honour autoRetryUnauthorized so a caller running its own 401 loop — the MCP
+            // servers — is not double-retried, but give every ordinary caller automatic re-mint. Without
+            // it a mid-life revocation would 401 repeatedly until the cache expired.
+            var machineClient = NewClient(
+                autoRetryUnauthorized ? new MachineUnauthorizedRetryHandler(credential, minted.Token) : null);
+            machineClient.DefaultRequestHeaders.Authorization = new("Bearer", minted.Token);
+
+            return (machineClient, AuthStatus.Ok, null, null);
         }
 
-        var stored = await TokenStore.LoadAsync();
+        // Recovery from a server rejection is self-contained: it already attempted a rotation and
+        // applied the binding check. Falling through to the resolving accessor afterwards would let
+        // an expired token be refreshed a SECOND time — re-spending a single-use WorkOS refresh
+        // token — so this path returns directly.
+        if (rejectedAccessToken is not null) {
+            var recovered = await TokenStore.RecoverForServerAsync(baseUrl, rejectedAccessToken, ct);
 
-        return (client, stored is not null ? AuthStatus.Expired : AuthStatus.NotAuthenticated);
+            if (recovered is null) return (NewClient(), AuthStatus.Expired, null, null);
+
+            var recoveredClient = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(recovered, baseUrl) : null);
+            recoveredClient.DefaultRequestHeaders.Authorization = new("Bearer", recovered.AccessToken);
+
+            return (recoveredClient, AuthStatus.Ok, null, null);
+        }
+
+        var resolution = await TokenStore.GetValidTokensForServerAsync(baseUrl, ct);
+
+        if (resolution is { Status: AuthStatus.Ok, Tokens: not null }) {
+            var client = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(resolution.Tokens, baseUrl) : null);
+            client.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);
+
+            return (client, AuthStatus.Ok, resolution, null);
+        }
+
+        return (NewClient(), resolution.Status, resolution, null);
+    }
+
+    /// <summary>Wire header naming the installed CLI's display version (see <see cref="CapacitorVersion.CurrentDisplay"/>).</summary>
+    public const string CliVersionHeader = "X-Kcap-Cli-Version";
+
+    /// <summary>Response header carrying the connected server's own version, captured by
+    /// <see cref="ServerVersionCaptureHandler"/> so the passive update notice can cap its
+    /// recommendation at <c>min(npm latest, server version)</c>.</summary>
+    public const string ServerVersionHeader = "X-Kcap-Server-Version";
+
+    /// <summary>
+    /// Wire header sent ONLY to declare the active profile's update-check preference is off. Its
+    /// ABSENCE on a version-carrying request means the preference is on (the default) — never send
+    /// an "on" value, only omit the header.
+    /// </summary>
+    public const string UpdateCheckHeader = "X-Kcap-Update-Check";
+
+    /// <summary>Value <see cref="UpdateCheckHeader"/> carries when sent.</summary>
+    public const string UpdateCheckOffValue = "off";
+
+    /// <summary>
+    /// Attaches the two observation headers the server's CLI-update-notification pipeline reads to
+    /// <paramref name="client"/>. Always attaches <see cref="CliVersionHeader"/> — unless
+    /// <see cref="CapacitorVersion.CurrentDisplay"/> can't resolve a real version, in which case
+    /// sending "unknown" would be worse than omitting it. Attaches <see cref="UpdateCheckHeader"/>
+    /// only when the active profile has explicitly opted out, per the absence-means-on contract
+    /// above. Reads the profile via <see cref="AppConfig.GetActiveProfileAsync"/> — the same
+    /// accessor <c>UpdateNotice</c> uses — which is a cache hit (no disk I/O) whenever the process
+    /// already resolved a profile, so this stays cheap on the per-request hot path.
+    /// </summary>
+    internal static async Task AttachObservationHeadersAsync(HttpClient client, CancellationToken ct = default) {
+        var version = CapacitorVersion.CurrentDisplay();
+
+        if (!string.IsNullOrWhiteSpace(version) && !version.Equals("unknown", StringComparison.OrdinalIgnoreCase)) {
+            client.DefaultRequestHeaders.Add(CliVersionHeader, version);
+        }
+
+        var profile = await AppConfig.GetActiveProfileAsync(ct);
+
+        if (profile?.UpdateCheck == false) {
+            client.DefaultRequestHeaders.Add(UpdateCheckHeader, UpdateCheckOffValue);
+        }
     }
 
     /// <summary>
@@ -67,8 +207,15 @@ public static class HttpClientExtensions {
     /// server uses "None" provider, skips auth entirely. Interactive CLI commands use this; hook
     /// callers should prefer <see cref="CreateClientWithAuthStatusAsync"/> so they control messaging.
     /// </summary>
-    public static async Task<HttpClient> CreateAuthenticatedClientAsync(string? baseUrl = null, CancellationToken ct = default) {
-        var (client, status) = await CreateClientWithAuthStatusAsync(baseUrl, ct);
+    /// <param name="autoRetryUnauthorized">
+    /// Installs <see cref="UnauthorizedRetryHandler"/> so a 401 is transparently retried once after
+    /// a refresh. Pass <c>false</c> from callers that run their own 401-retry loop over the returned
+    /// client — the MCP servers do — so a single rejection isn't retried (and refreshed) twice.
+    /// </param>
+    public static async Task<HttpClient> CreateAuthenticatedClientAsync(string? baseUrl = null, CancellationToken ct = default,
+            bool autoRetryUnauthorized = true) {
+        var (client, status, resolution, machineProblem) = await CreateClientCoreAsync(baseUrl, ct, allowAutoRedirect: true,
+            rejectedAccessToken: null, autoRetryUnauthorized);
 
         switch (status) {
             case AuthStatus.Expired:
@@ -76,7 +223,18 @@ public static class HttpClientExtensions {
 
                 break;
             case AuthStatus.NotAuthenticated:
-                await Console.Error.WriteLineAsync("Not authenticated. Run 'kcap login' to authenticate.");
+                // A machine cannot run `kcap login`, so telling it to is worse than saying nothing.
+                await Console.Error.WriteLineAsync(
+                    machineProblem is { } reason
+                        ? $"Machine authentication failed: {reason}"
+                        : "Not authenticated. Run 'kcap login' to authenticate.");
+
+                break;
+            case AuthStatus.WrongServer:
+                var target = baseUrl ?? AppConfig.ResolvedServerUrl ?? "the configured server";
+                await Console.Error.WriteLineAsync(
+                    $"Stored token was issued by {resolution?.IssuedServerUrl} but this command targets {target}. " +
+                    $"Run 'kcap login' (or switch profiles with 'kcap use') to authenticate against {target}.");
 
                 break;
         }
@@ -175,10 +333,16 @@ public static class HttpClientExtensions {
     /// an absolute http/https URL. Called by every <c>*WithRetryAsync</c>
     /// extension so a legacy scheme-less config produces a clean exit instead
     /// of an unhandled <see cref="InvalidOperationException"/> from
-    /// <see cref="HttpClient.PrepareRequestMessage"/>.
+    /// <c>HttpClient.PrepareRequestMessage</c>.
     /// </summary>
     static void EnsureAbsolute(string url) {
         if (IsAcceptableUrl(url)) return;
+
+        // Agent-spawned commands set Throw at entry: they owe an output contract (or must leave no
+        // orphaned child), and Environment.Exit here is uncatchable — it bypasses every vendor's
+        // fail-open catch, so the harness sees no output and rejects the session. See ProcessUrlPolicy.
+        if (ProcessUrlPolicy.Current is UrlFailurePolicy.Throw) throw new UnusableServerUrlException(SchemeMissingHint);
+
         Console.Error.WriteLine(SchemeMissingHint);
         Environment.Exit(2);
     }
@@ -247,11 +411,37 @@ public static class HttpClientExtensions {
     }
 
     /// <summary>
-    /// Writes a structured JSON error to stderr for when the API is unreachable after all retries.
+    /// Renders the one stderr line written when the API is unreachable after every retry.
+    ///
+    /// <para>The URL goes through <see cref="UnusableUrlDiagnostic.Sanitize"/> — the same helper, in the
+    /// same assembly, that the unusable-URL guard has always used. A <c>server_url</c> may carry userinfo
+    /// credentials, and this line is reachable from the HOOK path (<c>AgentHookPoster</c> calls it on any
+    /// transport fault), so echoing it raw printed them on every lifecycle POST for every vendor. The host
+    /// survives sanitization, which is the part that makes the line actionable.</para>
+    ///
+    /// <para>Control characters are stripped from EVERY variable component, not just the URL: this line
+    /// goes to a stream harnesses parse — Gemini reads hook stderr as the hook's own result when stdout
+    /// is empty — so either half of the interpolation could otherwise fabricate a line. The fixed hint's
+    /// own <c>\r</c> is left alone; it is not attacker-reachable, and changing it would alter output
+    /// every existing call site produces.</para>
+    /// </summary>
+    public static string RenderUnreachableError(string? baseUrl, string? exceptionMessage) =>
+        $"{UnreachableHint} {UnusableUrlDiagnostic.Sanitize(baseUrl)} {StripControlCharacters(exceptionMessage)}";
+
+    internal static string StripControlCharacters(string? value) =>
+        string.IsNullOrEmpty(value) ? "" : new string(value.Where(c => !char.IsControl(c)).ToArray());
+
+    /// <summary>
+    /// Writes the unreachable-API diagnostic to stderr. See <see cref="RenderUnreachableError"/> for why
+    /// nothing here may be interpolated raw.
     /// </summary>
     public static void WriteUnreachableError(string baseUrl, HttpRequestException ex) {
-        Console.Error.WriteLine($"{UnreachableHint} {baseUrl} {ex.Message}");
+        Console.Error.WriteLine(RenderUnreachableError(baseUrl, ex.Message));
     }
+
+    /// <summary>String-returning twin of <see cref="WriteUnreachableError"/>, for callers that route output through a progress sink instead of Console.</summary>
+    public static string UnreachableErrorText(string baseUrl, HttpRequestException ex) =>
+        RenderUnreachableError(baseUrl, ex.Message);
 
     /// <summary>
     /// Checks if the response is a 401 and prints the server's error message.
@@ -349,5 +539,28 @@ public static class HttpClientExtensions {
                 $"(per-attempt timeout {perAttemptTimeout.TotalSeconds:F0}s).",
                 inner
             );
+    }
+}
+
+/// <summary>
+/// Passively records the connected server's version from each response's
+/// <see cref="HttpClientExtensions.ServerVersionHeader"/> into <see cref="ServerVersionStore"/>, so
+/// the passive update notice and <c>kcap status</c> can cap their recommendation at the server's
+/// version. Installed as the OUTERMOST handler on every authenticated client (see the choke point's
+/// <c>NewClient</c>), so it observes the final response after any retry. Best-effort: it never alters
+/// the request/response and never lets a capture failure surface.
+/// </summary>
+internal sealed class ServerVersionCaptureHandler(string serverUrl) : DelegatingHandler {
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
+        var response = await base.SendAsync(request, ct);
+
+        try {
+            if (response.Headers.TryGetValues(HttpClientExtensions.ServerVersionHeader, out var values))
+                ServerVersionStore.Set(serverUrl, values.FirstOrDefault());
+        } catch {
+            // Header capture must never affect the response the caller gets back.
+        }
+
+        return response;
     }
 }

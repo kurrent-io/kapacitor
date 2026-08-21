@@ -17,6 +17,10 @@ Use the `kcap mcp flows` MCP tools (`start_review_flow`, `submit_review_round`, 
 
 These four tools are aliases of the generic flow tools (`start_flow`, `send_to_participant`, `get_flow_status`, `close_flow`) — see the `agent-flows` skill for non-review flows.
 
+## Long rounds are normal
+
+`round_timeout` is an **inactivity** bound, not a wall-clock cap: a round only fails for taking too long if the reviewer goes genuinely quiet for that whole stretch — an actively-working reviewer can legitimately run a round for a long time. If a status check (or a `submit_review_round`/`start_review_flow` call) returns the benign "Flow still running" text, that is an expected outcome on a long round, not a problem — re-enter the wait with `get_review_flow_status(flow_run_id, wait: true)`, which blocks (via bounded, internally-retried checks — never a raw long-poll) until the round finishes or roughly 8 minutes pass, then call it again if it's still running. A round result of **`unclear` now genuinely means the reviewer went dead or silent** (no activity for the whole inactivity bound, or it crashed/was stopped) — it is no longer a symptom of a merely slow reviewer, so treat it as a liveness problem (see the `participant_unreachable` and `participant_died`/`participant_stopped` entries below), not as "the review is taking a while."
+
 ## Role-surface safety gate
 
 Classify the session before any flow action:
@@ -47,14 +51,74 @@ Treat the driver harness and reviewer as independent. A request such as "ask Cla
 selects `vendor: "claude"` even when the current driver is Codex; mentions of the driver do not
 select a reviewer. Anchor vendor language to the reviewer role ("Claude reviewer", "review with
 Cursor", "ask Codex for review"), including negation ("not Claude"). If exactly one reviewer
-vendor is named, pass it. If none is named, omit `vendor` and let the server's configured default
-apply. If multiple reviewer candidates remain after negation, ask the user to choose; never guess.
+vendor is named, pass it. If none is named, omit `vendor`: the flow definition's authored vendor
+applies when it declares one; otherwise your saved `flows.reviewer_vendor` preference is applied
+automatically (the response says so), and with no preference the server returns
+`reviewer_vendor_required` — ask the user which reviewer vendor to use, pass it explicitly, and
+offer to save it with `kcap config set flows.reviewer_vendor <vendor>`. If multiple reviewer
+candidates remain after negation, ask the user to choose; never guess.
 
 Canonical reviewer aliases: Claude / Claude Code → `claude`; Codex / OpenAI Codex → `codex`;
 Cursor / cursor-agent → `cursor`; GitHub Copilot / Copilot CLI → `copilot`; Gemini / Gemini CLI →
-`gemini`; Kiro / Kiro CLI → `kiro`; Pi → `pi`; OpenCode → `opencode`; Antigravity / agy → `agy`.
+`gemini`; Kiro / Kiro CLI → `kiro`; Pi → `pi`; OpenCode → `opencode`; Antigravity / agy → `antigravity`.
 Normalize only the reviewer-role mention. Positive contrast (for example, “from Codex, ask Claude”)
 selects Claude; negated names are removed; two remaining reviewer candidates are ambiguous.
+
+### If `start_review_flow` has no `vendor` parameter
+
+Your harness caches the kcap MCP tool schema at the moment it connects to the server. If kcap was
+upgraded while this session was already running, you may still be looking at an older schema in
+which `start_review_flow` has no `vendor` property — and a parameter you cannot see is one you
+cannot send. kcap cannot refresh a schema the harness has already cached.
+
+When that happens and the user has named a reviewer:
+
+- **Do not start the flow and then report that the named reviewer ran.** Without `vendor` you get
+  whatever the flow definition's authored vendor resolves to, or — for a vendor-less definition —
+  an automatic retry against your saved `flows.reviewer_vendor` preference, or a
+  `reviewer_vendor_required` response if none is saved; none of these is guaranteed to be the
+  vendor the user named. Claiming the named reviewer ran when you could not send the parameter is
+  the single failure this contract exists to prevent.
+- Tell the user their harness is holding a stale kcap MCP schema, and that the fix is to
+  restart the harness session (or reconnect the `kcap-flows` MCP server) and start a fresh task.
+- Start without `vendor` only if the user, having been told, explicitly asks you to proceed with
+  whatever vendor the definition or saved preference resolves to.
+
+**Nothing server-side catches this for you.** An omitted `vendor` is indistinguishable from a caller
+who deliberately wants that resolved vendor — the request carries no trace of the name the user
+asked for, so there is nothing for the server to reject. The `client_upgrade_required`,
+`flow_client_protocol_required`, and `flow_client_protocol_unsupported` errors below are separate
+protections, against *protocol* skew; they do **not** fire on a cached schema that simply omits the
+parameter. In this window you are the only guard.
+
+## Choosing a reviewer model
+
+If the user names a specific model for the reviewer (e.g. "review with Claude opus", "use gpt-5-codex
+as the reviewer"), pass it as `model` — but ONLY alongside an explicit `vendor`; `model` without
+`vendor` is rejected before anything is sent (there is no vendor→model table to infer one from).
+Never pass `model` without the user having named one explicitly — omit it to use the vendor's
+default reviewer model. Pass the model id/alias exactly as the user said it, case-sensitive — do not
+translate, normalize, or guess a vendor's naming convention. Not every vendor supports a model
+override: a vendor's daemon must be installed, unattended-certified, AND carry a runtime model
+resolver (Claude and Codex today) — an unsupported vendor's daemon simply doesn't advertise the
+capability, and the server rejects the override rather than silently ignoring it.
+
+## Reviewer-model errors to act on
+
+- **`reviewer_model_protocol_required`** — the server (or the daemon's advertised vendor capability)
+  doesn't support a reviewer model override yet. Tell the user their server/daemon needs updating, or
+  drop `model` and retry without it.
+- **`reviewer_model_unavailable`** — no resolver for the selected vendor recognizes the requested
+  model. Tell the user the model isn't available for that vendor; ask for a different model or drop
+  the override.
+- **`model_vendor_mismatch`** — the requested model belongs to a different vendor than the one
+  selected (e.g. a Claude model name with `vendor: "codex"`). Tell the user the mismatch; ask which
+  vendor they actually meant.
+- **`reviewer_model_safe_settlement_required`** — the server can't safely reapply this exact model on
+  a heal/relaunch and refuses rather than risk silently drifting to a different one. Close the flow
+  and start a new one if the reviewer needs to be relaunched.
+- **`reviewer_model_unpriceable`** — the requested model has no resolvable pricing, so the server
+  can't budget-check it. Ask the user for a differently-named/priced model.
 
 ## If the flows MCP tools are not loaded
 
@@ -72,18 +136,19 @@ After applying the role-surface safety gate, if `start_review_flow` / `submit_re
 4. **Only call `close_review_flow` after a `clean` result.** Then report completion to the user.
 5. **If reviewer output is unclear or requires user input**, pause and ask the user before proceeding.
 6. **For code review, do NOT ask the reviewer to run tests.** CI covers test execution; reviewer feedback is on correctness, design, and adherence to conventions.
-7. **State where your changes live.** The reviewer's worktree is mirrored from the working tree you LAUNCHED from (your cwd's git root) — nothing else. If any part of the changeset lives elsewhere (another git worktree, another repository, a different machine) or is not in that tree, say so explicitly in `context` and inline the relevant diffs or file contents — or pass `mode: "context-only"` so the reviewer treats your context as the sole source of truth. The reviewer is instructed to flag referenced changes it cannot find in its worktree; incomplete context wastes a full round.
+7. **State where your changes live.** The reviewer's worktree is mirrored from **this session's project directory**, not from the directory you are working in, and no tool parameter can redirect it. So if you changed directory, are a subagent in another checkout, or the changeset lives in another worktree/repo/machine, the reviewer will NOT see it: say so in `context`, give it an explicit commit range (never `git diff origin/main...HEAD`), and inline the diffs — or pass `mode: "context-only"` to make your context the sole source of truth. The reviewer flags referenced changes it cannot find; incomplete context wastes a full round.
 
 ## Server errors to act on
 
-- **`400` starting `no_daemon_available:`** — no connected daemon has the repo checked out. Tell the user to run `kcap agent` on a machine with the repo cloned (or pass an explicit `daemon_name` + `repo_path`).
-- **`400` starting `daemon_outdated:`** — the daemon's kcap is too old to host flow participants. Tell the user to update (`npm i -g @kurrent/kcap`) and restart `kcap agent`.
-- **`reviewer_vendor_required`** — no explicit vendor and no server default; ask the user to name a reviewer or have an admin configure `Flows:Review:DefaultVendor`.
+- **`400` starting `no_daemon_available:`** — no connected daemon has the repo checked out. Relay the server's remediation verbatim, then act on the part you can: run `kcap daemon start -d` on a machine with the repo cloned (add `--name <new-name>` if the account already runs a daemon elsewhere), or get the repo cloned on a machine that already runs one. **You cannot redirect the flow at another daemon or checkout** — these tools expose no daemon or repo-path parameter. If the server's text suggests passing `daemon_name` / `repo_path`, ignore that part: do not invent those arguments, and do not retry unchanged.
+- **`400` starting `daemon_outdated:`** — the daemon's kcap is too old to host flow participants. Relay the server error's remediation verbatim — it names the outdated daemon; the fix: update kcap (`npm i -g @kurrent/kcap`), then `kcap daemon restart --name <its-name>` (works for detached and service-managed daemons alike — a raw `daemon stop` deliberately refuses a service-managed one; `kcap daemon status` lists names, and `--when-idle` defers the restart if the daemon is busy).
+- **`reviewer_vendor_required`** — ask the user to name a reviewer vendor, pass it explicitly, and offer to save it (`kcap config set flows.reviewer_vendor <vendor>`); this appears only when the definition declares no vendor and no preference is saved.
 - **`reviewer_vendor_unavailable`** — the selected vendor is not installed/certified unattended on an eligible daemon; do not silently fall back to another vendor.
+- **`reviewer_vendor_unresolvable`** — returned from `submit_review_round` on a legacy in-flight run whose pinned definition lost its vendor and has no recorded assignment; close the flow and start a new one.
 - **`client_upgrade_required`, `flow_client_protocol_required`, or `flow_client_protocol_unsupported`** — update kcap; reserved review aliases fail closed on stale clients.
 - **`reserved_review_alias_shape`** — an admin changed a reserved alias to an invalid participant shape; restore exactly one participant named `reviewer`.
-- **`400` starting `participant_unavailable:`** — the reviewer agent died and automatic relaunch is not available yet. Close this flow and start a new one, carrying your context forward; re-submitting will keep failing.
-- **A round result of `unclear` whose text is exactly `participant_died` or `participant_stopped`** — the reviewer agent crashed or was stopped mid-round. The run stays open but has no live reviewer: close the flow and start a new one.
+- **`409` containing `participant_unreachable`** — the reviewer's liveness is ambiguous right now: either its daemon disconnected/is restarting, or the server positively spotted a possibly-live prior agent and is refusing to relaunch until its absence is proven (never launching a duplicate reviewer beside a possibly-live one). This is retryable — **do not close the flow.** Submit the round again shortly with `submit_review_round`; the server relaunches the reviewer automatically once absence is proven (via the daemon reconnecting/reporting, or the agent's death being confirmed). If it keeps failing across many retries, that points at the daemon itself needing attention, not at the flow needing to be restarted — ask the user to check daemon status, or stop the reviewer (dashboard/API) to force a fresh relaunch.
+- **A round result of `unclear` whose text is exactly `participant_died`, `participant_stopped`, or `participant_parked`** — the reviewer crashed, was stopped, or was parked for resume mid-round. In every case the run stays open and you **submit another round** with `submit_review_round` to continue — no need to close and restart the flow. The difference is what the next round gets: for `participant_died`/`participant_stopped` a **fresh** reviewer relaunches with **no memory of prior rounds**, so restate any context it needs; for `participant_parked` the same reviewer **resumes with its prior context intact** (a resumable park frees the slot between rounds). Earlier spend still counts against the run budget. (An older server that predates the park signal reports a park as `participant_stopped` — still a resubmit trigger, so this works across the rollout.)
 
 ## Workflow
 
@@ -108,16 +173,16 @@ if findings:
 
 | Tool | Required args | Optional args | When to call |
 |---|---|---|---|
-| `start_review_flow` | `kind` (`spec-review`\|`code-review`), `target_kind` (what is being reviewed: `spec`, `code`, `pr`, `branch`, `file`, etc.), `target_ref` (a path, branch name, or PR URL/number that identifies the target), `target_title` (short human-readable title, e.g. spec name or PR title), `context` (background context: what to focus on, constraints, definition of done) | `vendor` (explicit reviewer vendor; omit for server default), `instructions`, `mode` (`context-only` — optional) | Once, at the start of a review task. |
+| `start_review_flow` | `kind` (`spec-review`\|`code-review`), `target_kind` (what is being reviewed: `spec`, `code`, `pr`, `branch`, `file`, etc.), `target_ref` (a path, branch name, or PR URL/number that identifies the target), `target_title` (short human-readable title, e.g. spec name or PR title), `context` (background context: what to focus on, constraints, definition of done) | `vendor` (explicit reviewer vendor; omit to use the definition's authored vendor, or your saved `flows.reviewer_vendor` preference if it declares none), `model` (explicit reviewer model override — REQUIRES `vendor`; only pass it when the user named a model), `instructions`, `mode` (`context-only` — optional) | Once, at the start of a review task. |
 | `submit_review_round` | `flow_run_id`, `context` | `instructions` | After addressing findings. Pass the same `flow_run_id` and the updated context. |
-| `get_review_flow_status` | `flow_run_id` | — | Poll or check the current status of a flow (running, waiting, completed, failed). |
+| `get_review_flow_status` | `flow_run_id` | `wait` (`true`/`false`, defaults to `false`) — when `true`, blocks until the round is terminal or roughly 8 minutes pass, instead of returning the current snapshot immediately | Poll or check the current status of a flow (running, waiting, completed, failed). Use `wait: true` to ride out a long round instead of polling repeatedly yourself. |
 | `close_review_flow` | `flow_run_id` | — | Only after the reviewer returns `clean`. |
 
 ## Example (code review)
 
 ```
-# Step 1 — start (all five required args must be provided; on the same machine the reviewer sees
-# your working tree, uncommitted changes included — pass mode="context-only" to opt out)
+# Step 1 — start (all five required args required; the reviewer sees a mirror of THIS SESSION's
+# project directory, not of the directory you are working in — pass mode="context-only" to opt out)
 start_review_flow(
   kind="code-review",
   target_kind="branch",

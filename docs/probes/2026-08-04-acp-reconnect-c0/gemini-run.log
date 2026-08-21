@@ -1,0 +1,7 @@
+== probing gemini ==
+  [gemini] initialize ok; loadSession=True
+  [gemini] session/new ok; sessionId=f3956cf8-12a5-4ba6-87fb-22ea3d61f8df
+  [gemini] turns A/B/C stopReasons: end_turn/end_turn/end_turn
+  [gemini] SIGKILL fired after 3 live chunks of turn D
+  [gemini] NOTE: turn D response arrived before/despite kill: {"jsonrpc": "2.0", "id": 6, "result": {"stopReason": "end_turn", "_meta": {"quota": {"token_count": {"input_tokens": 17690, "output_tokens": 151}, "model_usage": [{"model": "gemini-2.5-flash", "token_
+  [gemini] session/load ok=False err={"code": -32603, "message": "Internal error", "data": {"details": "No previous sessions found for this project."}}

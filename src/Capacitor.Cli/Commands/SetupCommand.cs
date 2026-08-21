@@ -1,22 +1,59 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Capacitor.Cli;
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Antigravity;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.Core.Copilot;
+using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness.Copilot;
+using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.Harness.Gemini;
+using Capacitor.Cli.Core.Harness.Kiro;
+using Capacitor.Cli.Core.Harness.OpenCode;
+using Capacitor.Cli.Core.Harness.Pi;
 using Capacitor.Cli.Core.Instructions;
-using Capacitor.Cli.Core.Cursor;
-using Capacitor.Cli.Core.Gemini;
-using Capacitor.Cli.Core.Kiro;
 using Capacitor.Cli.Core.Mcp;
-using Capacitor.Cli.Core.OpenCode;
-using Capacitor.Cli.Core.Pi;
+using Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core.Telemetry;
+using Capacitor.Cli.Harness.Antigravity;
+using Capacitor.Cli.Harness.Claude;
+using Capacitor.Cli.Harness.Codex;
+using Capacitor.Cli.Harness.Copilot;
+using Capacitor.Cli.Harness.Cursor;
+using Capacitor.Cli.Harness.Gemini;
+using Capacitor.Cli.Harness.Kiro;
+using Capacitor.Cli.Harness.OpenCode;
+using Capacitor.Cli.Harness.Pi;
 using Spectre.Console;
+using Spectre.Console.Rendering;
 using Profile = Capacitor.Cli.Core.Config.Profile;
 
 namespace Capacitor.Cli.Commands;
+
+/// <summary>Setup's step-scoped rendering of façade output: every non-flush line is two-space indented, and setup still owns the guidance tail.</summary>
+sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
+    internal const string UnreachableGuidance = "  Retry later, or pass --server-url <url>.";
+
+    public void Notice(string message) => inner.Notice(Indent(message));
+
+    public void Error(string message) => inner.Error(Indent(message));
+
+    public void BrowserOpening(string url) => inner.BrowserOpening(url);
+
+    public void DeviceCode(string code, string verificationUri, string? provider, bool prefilled) => inner.DeviceCode(code, verificationUri, provider, prefilled);
+
+    public void PollTick() => inner.PollTick();
+
+    /// <summary>Mapped off <see cref="AuthFailureReason"/>, never off the rendered text.</summary>
+    public void ReportFailure(AuthResult result) {
+        if (result is AuthResult.Failed { Reason: AuthFailureReason.Unreachable }) inner.Error(UnreachableGuidance);
+    }
+
+    // Blank separators and already-indented copy (the device-flow numbered list) pass through as-is.
+    internal static string Indent(string message) =>
+        string.IsNullOrWhiteSpace(message) || message.StartsWith(' ') ? message : $"  {message}";
+}
 
 public static class SetupCommand {
     public static async Task<int> HandleAsync(string[] args) {
@@ -25,9 +62,12 @@ public static class SetupCommand {
         // `kcap setup <tenant>`: a leading positional arg (bare slug or full URL) is treated as the
         // server, equivalent to --server-url. A bare single label expands to {slug}.kcap.ai.
         if (serverUrlArg is null && args.Length > 1 && !args[1].StartsWith('-'))
-            serverUrlArg = ResolveTenantArg(args[1]);
+            serverUrlArg = ServerInput.ResolveTenantArg(args[1]);
         var noPrompt         = args.Contains("--no-prompt");
-        var forceDevice      = args.Contains("--device");
+        // Also when there is no keyboard: a redirected stdin cannot press the escape-hatch key, so a
+        // loopback wait there can only end in the listener timeout. Not a headless guess - an
+        // interactive SSH session has a keyboard and keeps the browser.
+        var forceDevice      = OAuthLoginFlow.DeviceRouteRequired(args.Contains("--device"), ConsoleKeyWatcher.Instance.CanWatch);
         var skipClaudeFlag   = args.Contains("--skip-claude-hooks");
         var skipCodexFlag    = args.Contains("--skip-codex-hooks");
         var skipCodexNetworkFlag = args.Contains("--skip-codex-network-access");
@@ -57,6 +97,11 @@ public static class SetupCommand {
         var skipClaude       = skipClaudeFlag || legacyPluginScope == "skip";
         var legacyProjectScope = legacyPluginScope == "project";
 
+        SetupFunnel.Started(
+            hasExistingProfile: AppConfig.HasConfiguredProfile(await AppConfig.LoadProfileConfig()),
+            serverUrlProvided:  serverUrlArg is not null,
+            noPrompt:           noPrompt);
+
         // Resolve repo root once and reuse for both the project-scope install path and the
         // non-repo tip at the end. --plugin-scope project writes hooks at <repo>/.claude/...,
         // so it requires a working tree; without one the hooks would land in a directory
@@ -79,7 +124,7 @@ public static class SetupCommand {
         var existingProfile = await AppConfig.LoadProfileConfig();
         var activeProfile   = string.IsNullOrWhiteSpace(existingProfile.ActiveProfile) ? "default" : existingProfile.ActiveProfile;
         var existing        = existingProfile.Profiles.GetValueOrDefault(activeProfile);
-        var existingTokens  = await TokenStore.LoadAsync();
+        var existingTokens  = await TokenStore.LoadAsync(activeProfile);
 
         if (existing?.ServerUrl is not null && existingTokens is not null && !noPrompt) {
             var rerun = AnsiConsole.Prompt(
@@ -96,42 +141,29 @@ public static class SetupCommand {
         // Step 1: Server
         AnsiConsole.Write(new Rule("[yellow]Step 1/6 — Server[/]").LeftJustified());
         string serverUrl;
-        string? preAuthToken = null;
         string  provider;
-        bool    loginComplete = false; // WorkOS discovery authenticates inline; skip the Step-2 login.
+        bool    loginComplete = false; // Discovery authenticates inline; skip the Step-2 login.
 
         if (serverUrlArg is not null) {
-            var normalized = await AnsiConsole.Status().Spinner(Spinner.Known.Dots).StartAsync("Checking server…",
-                async _ => await ServerUrlNormalizer.NormalizeAsync(
-                    serverUrlArg, skipProbe: false, CancellationToken.None));
+            var resolved = await ResolveServerAndProviderAsync(serverUrlArg);
+            if (resolved is null) return 1;
 
-            if (!normalized.Reachable) {
-                AnsiConsole.MarkupLine($"  [red]✗[/] Cannot reach server: {Markup.Escape(normalized.Warning ?? serverUrlArg)}");
-                AnsiConsole.MarkupLine("  [dim]Check the URL is correct and the server is running.[/]");
-                return 1;
-            }
-
-            serverUrl = normalized.Url;
-            await Console.Out.WriteLineAsync($"  Server URL: {serverUrl}");
-
-            // Reachable, but with an informational warning (e.g. https→http downgrade).
-            if (normalized.Warning is not null)
-                AnsiConsole.MarkupLine($"  [yellow]![/] {Markup.Escape(normalized.Warning)}");
-
-            try {
-                provider = await HttpClientExtensions.DiscoverProviderAsync(serverUrl);
-                AnsiConsole.MarkupLine($"  [green]✓[/] Reachable · auth provider: [cyan]{Markup.Escape(provider)}[/]");
-            } catch (Exception ex) {
-                AnsiConsole.MarkupLine($"  [red]✗[/] Cannot reach server: {Markup.Escape(ex.Message)}");
-                return 1;
-            }
+            (serverUrl, provider) = resolved.Value;
         } else if (noPrompt) {
             await Console.Error.WriteLineAsync("  --server-url is required with --no-prompt");
             return 1;
         } else {
             var discovered = await RunDiscoveryAsync(args, forceDevice);
             if (discovered is null) return 1;
-            (serverUrl, preAuthToken, provider, loginComplete) = discovered.Value;
+            (serverUrl, provider, loginComplete) = discovered.Value;
+
+            // Discovery activates the tenant you picked, so the profile captured before it ran is
+            // now stale. Step 2 must save the token under the profile setup will actually
+            // configure, or the token lands on the old profile and the new one has none.
+            var afterDiscovery = await AppConfig.LoadProfileConfig();
+            activeProfile = string.IsNullOrWhiteSpace(afterDiscovery.ActiveProfile)
+                ? "default"
+                : afterDiscovery.ActiveProfile;
         }
 
         await Console.Out.WriteLineAsync();
@@ -139,34 +171,8 @@ public static class SetupCommand {
         // Step 2: Login
         AnsiConsole.Write(new Rule("[yellow]Step 2/6 — Login[/]").LeftJustified());
 
-        if (loginComplete) {
-            // WorkOS discovery already authenticated + saved the active (picked) profile.
-            var cfgAfter = await AppConfig.LoadProfileConfig();
-            var tokens   = await TokenStore.LoadAsync(cfgAfter.ActiveProfile);
-            AnsiConsole.MarkupLine($"  [green]✓[/] Logged in as [cyan]{Markup.Escape(tokens?.GitHubUsername ?? "?")}[/]");
-        } else if (provider == AuthProvider.None) {
-            await Console.Out.WriteLineAsync("  Auth provider is None — no login required.");
-        } else if (preAuthToken is not null) {
-            var exchangeResult = await OAuthLoginFlow.ExchangeAndSaveAsync(serverUrl, preAuthToken, provider);
-            if (exchangeResult != 0) {
-                await Console.Error.WriteLineAsync("  Token exchange failed.");
-                return 1;
-            }
-            // Keep formatting consistent with the non-discovery branch
-            var tokens = await TokenStore.LoadAsync();
-            AnsiConsole.MarkupLine($"  [green]✓[/] Logged in as [cyan]{Markup.Escape(tokens?.GitHubUsername ?? "?")}[/]");
-        } else {
-            var loginResult = await OAuthLoginFlow.LoginWithDiscoveryAsync(serverUrl, forceDevice);
-
-            if (loginResult != 0) {
-                await Console.Error.WriteLineAsync("  Login failed.");
-
-                return 1;
-            }
-
-            var tokens = await TokenStore.LoadAsync();
-            await Console.Out.WriteLineAsync($"  ✓ Logged in as {tokens?.GitHubUsername}");
-        }
+        var loginStepResult = await RunLoginStepAsync(loginComplete, provider, serverUrl, forceDevice, activeProfile);
+        if (loginStepResult != 0) return loginStepResult;
 
         await Console.Out.WriteLineAsync();
 
@@ -186,17 +192,21 @@ public static class SetupCommand {
 
             await Console.Out.WriteLineAsync($"  Default visibility: {defaultVisibility}");
         } else {
-            defaultVisibility = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("Which of your sessions should be readable by other users in the same Kurrent Capacitor account by default?")
-                    .AddChoices(AppConfig.ValidVisibilities)
-                    .UseConverter(v => v switch {
-                        "private"    => "All private — only you can see your sessions",
-                        "project"    => "Project repos public to fellow project members, others private",
-                        "org_public" => "Org repos public, others private (default)",
-                        "public"     => "All public — others can see all your sessions",
-                        _            => v
-                    }));
+            var visibilityPrompt = new SelectionPrompt<string>()
+                .Title("Which of your sessions should be readable by other users in the same Kurrent Capacitor account by default?")
+                .AddChoices(AppConfig.ValidVisibilities)
+                .UseConverter(v => v switch {
+                    "private"    => "All private — only you can see your sessions",
+                    "project"    => "Project repos public to fellow project members, others private",
+                    "org_public" => "Org repos public, others private (default)",
+                    "public"     => "All public — others can see all your sessions",
+                    _            => v
+                });
+
+            // Start the cursor on the option we label "(default)" rather than the first choice.
+            visibilityPrompt.DefaultValue = "org_public";
+
+            defaultVisibility = AnsiConsole.Prompt(visibilityPrompt);
 
             await Console.Out.WriteLineAsync($"  Default visibility: {defaultVisibility}");
         }
@@ -209,30 +219,20 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         var pluginPath = ResolvePluginPath();
+        // Composed once in Core so the probe set is testable without touching the real
+        // environment — see Capacitor.Cli.Core.Setup.AgentDetection for the per-vendor
+        // rationale (dual PATH + install-marker signals, Cursor's marker-only exception, etc).
+        var r          = AgentDetection.Detect(AgentDetection.FromEnvironment());
         var detected   = new CodingAgentsStep.DetectedAgents(
-            Claude:  AgentDetector.IsInstalled("claude"),
-            Codex:   AgentDetector.IsInstalled("codex"),
-            Cursor:  CursorPaths.IsInstalled(),
-            // Dir presence covers users who launch Copilot through an IDE
-            // wrapper; the PATH probe covers fresh installs that haven't run
-            // yet (no ~/.copilot until first launch).
-            Copilot: CopilotPaths.IsInstalled() || AgentDetector.IsInstalled("copilot"),
-            // Dir presence covers IDE-launched Gemini; the PATH probe covers a
-            // fresh install that hasn't created ~/.gemini yet.
-            Gemini:  GeminiPaths.IsInstalled()  || AgentDetector.IsInstalled("gemini"),
-            // Same dual signal for Kiro: the ~/.kiro tree or the conversation DB
-            // covers IDE-launched users; the PATH probe (kiro / kiro-cli) covers
-            // fresh CLI installs.
-            Kiro:    KiroPaths.IsInstalled() || AgentDetector.IsInstalled("kiro") || AgentDetector.IsInstalled("kiro-cli"),
-            // Pi keeps state under ~/.pi/agent; the PATH probe covers fresh
-            // installs that haven't created it yet.
-            Pi:      PiPaths.IsInstalled() || AgentDetector.IsInstalled("pi"),
-            // OpenCode keeps config under ~/.config/opencode + data under
-            // ~/.local/share/opencode; the PATH probe covers fresh installs.
-            OpenCode: OpenCodePaths.IsInstalled() || AgentDetector.IsInstalled("opencode"),
-            // Antigravity (GUI IDE) keeps state under ~/.gemini/antigravity; the PATH
-            // probe covers a CLI/fresh install that hasn't created it yet.
-            Antigravity: AntigravityPaths.IsInstalled() || AgentDetector.IsInstalled("antigravity"));
+            Claude:      r.Claude.Detected,
+            Codex:       r.Codex.Detected,
+            Cursor:      r.Cursor.Detected,
+            Copilot:     r.Copilot.Detected,
+            Gemini:      r.Gemini.Detected,
+            Kiro:        r.Kiro.Detected,
+            Pi:          r.Pi.Detected,
+            OpenCode:    r.OpenCode.Detected,
+            Antigravity: r.Antigravity.Detected);
 
         bool PromptYesNo(string text) =>
             AnsiConsole.Prompt(new ConfirmationPrompt(text) { DefaultValue = true });
@@ -325,7 +325,7 @@ public static class SetupCommand {
             InstallCursorHooks:     PluginCommand.InstallCursorHooks,
             InstallCopilotHooks:    PluginCommand.InstallCopilotHooks,
             InstallGeminiHooks:     PluginCommand.InstallGeminiHooks,
-            CapacitorOnPath:        () => AgentDetector.IsInstalled("kcap"),
+            CapacitorOnPath:        () => AgentDetection.BinaryOnPath("kcap"),
             InstallAgentSkills:     AgentsSkillsInstaller.Install,
             CleanLegacyCodexSkills: legacyDir => AgentsSkillsInstaller.CleanLegacyCodexSkills(legacyDir).RemovedAny,
             InstallKiroHooks:       PluginCommand.InstallKiroHooks,
@@ -334,12 +334,10 @@ public static class SetupCommand {
             InstallAntigravityHooks:  PluginCommand.InstallAntigravityHooks,
             EnableCodexNetworkAccess: () => CodexConfigToml.EnableNetworkAccess(codexAllowDomains),
             RegisterCodexMcp:         () => CodexConfigToml.RegisterKcapMcpServers(),
-            // every non-Claude JSON harness registers the ForCursor subset — kcap-workitems
-            // is a Claude Code plugin-only tool (its session-id default rides the Claude hook env).
-            RegisterCursorMcp:        () => JsonMcpConfigWriter.Register(
-                CursorPaths.UserMcpJson(), KcapMcpServers.ForCursor, McpConfigShape.Standard, cwd: null, new McpMarker("cursor")),
-            RegisterCopilotMcp:       () => JsonMcpConfigWriter.Register(
-                CopilotPaths.McpConfigJson(), KcapMcpServers.ForCursor, McpConfigShape.Copilot, cwd: null, new McpMarker("copilot")),
+            // every non-Claude JSON harness registers the ForCursor subset — the full set,
+            // kcap-workitems included (see KcapMcpServers.ForCursor).
+            RegisterCursorMcp:        () => HarnessMcpProjections.Cursor.Register(CursorPaths.UserMcpJson()),
+            RegisterCopilotMcp:       () => HarnessMcpProjections.Copilot.Register(CopilotPaths.McpConfigJson()),
             InstallCopilotInstructions: () => AgentInstructionsWriter.Write(
                 CopilotPaths.InstructionsMd(), KcapAgentInstructions.Body),
             // Skills are already current when the on-disk marker matches this build AND
@@ -347,18 +345,14 @@ public static class SetupCommand {
             // (mirrors PluginCommand's postinstall fast path). A missing/stale marker — or a
             // deleted skill folder — reads as "not current" → prompt + install (self-heals).
             AgentSkillsCurrent:       AgentsSkillsInstaller.IsCurrent,
-            RegisterOpenCodeMcp:      () => JsonMcpConfigWriter.Register(
-                OpenCodePaths.McpConfigJson(), KcapMcpServers.ForCursor, McpConfigShape.OpenCode, cwd: null, new McpMarker("opencode")),
+            RegisterOpenCodeMcp:      () => HarnessMcpProjections.OpenCode.Register(OpenCodePaths.McpConfigJson()),
             InstallOpenCodeInstructions: () => AgentInstructionsWriter.Write(
                 OpenCodePaths.AgentsMd(), KcapAgentInstructions.Body),
-            RegisterKiroMcp:          () => JsonMcpConfigWriter.Register(
-                KiroPaths.SettingsMcpJson(), KcapMcpServers.ForCursor, McpConfigShape.Standard, cwd: null, new McpMarker("kiro")),
-            RegisterGeminiMcp:        () => JsonMcpConfigWriter.Register(
-                GeminiPaths.SettingsJson(), KcapMcpServers.ForCursor, McpConfigShape.Gemini, cwd: null, new McpMarker("gemini")),
+            RegisterKiroMcp:          () => HarnessMcpProjections.Kiro.Register(KiroPaths.SettingsMcpJson()),
+            RegisterGeminiMcp:        () => HarnessMcpProjections.Gemini.Register(GeminiPaths.SettingsJson()),
             InstallGeminiInstructions: () => AgentInstructionsWriter.Write(
                 GeminiPaths.GeminiMd(), KcapAgentInstructions.Body),
-            RegisterAntigravityMcp:   () => JsonMcpConfigWriter.Register(
-                AntigravityPaths.McpConfigJson(), KcapMcpServers.ForCursor, McpConfigShape.Standard, cwd: null, new McpMarker("antigravity")),
+            RegisterAntigravityMcp:   () => HarnessMcpProjections.Antigravity.Register(AntigravityPaths.McpConfigJson()),
             InstallAntigravityInstructions: () => AgentInstructionsWriter.Write(
                 AntigravityPaths.InstructionsMd(), KcapAgentInstructions.Body),
             // Pi has no JSON MCP config — the "MCP" is a second extension file (kcap-mcp.ts).
@@ -370,6 +364,23 @@ public static class SetupCommand {
 
         var installResult = await CodingAgentsStep.RunAsync(
             stepOptions, detected, stepPaths, stepInstallers, PromptYesNo, WriteLine);
+
+        // Record that setup offered these detected agents, so the new-harness nudge doesn't later
+        // re-offer a vendor the user just saw at the Step 4 prompt (whether they said yes or no).
+        // A vendor skipped by its own --skip-<vendor> flag was not meaningfully offered, so it is
+        // left unstamped and can still nudge later. Never writes/overwrites a dismissal.
+        var offeredNow = new List<string>();
+        void OfferedIf(bool wasDetected, bool skipped, string id) { if (wasDetected && !skipped) offeredNow.Add(id); }
+        OfferedIf(detected.Claude,      skipClaude,          "claude");
+        OfferedIf(detected.Codex,       skipCodexFlag,       "codex");
+        OfferedIf(detected.Cursor,      skipCursorFlag,      "cursor");
+        OfferedIf(detected.Copilot,     skipCopilotFlag,     "copilot");
+        OfferedIf(detected.Gemini,      skipGeminiFlag,      "gemini");
+        OfferedIf(detected.Kiro,        skipKiroFlag,        "kiro");
+        OfferedIf(detected.Pi,          skipPiFlag,          "pi");
+        OfferedIf(detected.OpenCode,    skipOpenCodeFlag,    "opencode");
+        OfferedIf(detected.Antigravity, skipAntigravityFlag, "antigravity");
+        HarnessOfferStore.Default().StampOffered(offeredNow, DateTimeOffset.UtcNow);
 
         // Provider API key handling. kcap scrubs ANTHROPIC_API_KEY / OPENAI_API_KEY
         // from headless agent CLI spawns by default so subscription auth
@@ -435,22 +446,24 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         // Save config
-        var profileConfig  = await AppConfig.LoadProfileConfig();
-        var activeName     = profileConfig.ActiveProfile;
-        var defaultProfile = profileConfig.Profiles.GetValueOrDefault(activeName) ?? new Profile();
+        var activeName     = "default";
+        var defaultProfile = new Profile();
 
-        defaultProfile = defaultProfile with {
-            ServerUrl          = serverUrl,
-            DefaultVisibility  = defaultVisibility,
-            UseProviderApiKey  = useProviderApiKey,
-            Daemon             = (defaultProfile.Daemon ?? new DaemonSettings()) with { Name = daemonName }
-        };
+        await ConfigMutator.MutateAsync(c => {
+            activeName     = string.IsNullOrWhiteSpace(c.ActiveProfile) ? "default" : c.ActiveProfile;
+            defaultProfile = c.Profiles.GetValueOrDefault(activeName) ?? new Profile();
 
-        var profiles = new Dictionary<string, Profile>(profileConfig.Profiles) {
-            [activeName] = defaultProfile
-        };
-        profileConfig = profileConfig with { Profiles = profiles };
-        await AppConfig.SaveProfileConfig(profileConfig);
+            defaultProfile = defaultProfile with {
+                ServerUrl          = serverUrl,
+                DefaultVisibility  = defaultVisibility,
+                UseProviderApiKey  = useProviderApiKey,
+                Daemon             = (defaultProfile.Daemon ?? new DaemonSettings()) with { Name = daemonName }
+            };
+
+            return c with {
+                Profiles = new Dictionary<string, Profile>(c.Profiles) { [activeName] = defaultProfile }
+            };
+        });
 
         // Refresh the in-process resolved state to the exact values just
         // saved, so any same-process work after this point (e.g. the import
@@ -458,12 +471,12 @@ public static class SetupCommand {
         // CLI/env/repo precedence and possibly landing on something else.
         AppConfig.SetResolvedState(serverUrl, activeName, defaultProfile);
 
-        var finalTokens = await TokenStore.LoadAsync();
+        var finalTokens = await TokenStore.LoadAsync(activeName);
 
         // tell the server this user has finished CLI setup, so the dashboard
         // can flip the new-tenant welcome modal from "Waiting for CLI to register"
         // to "Registered". Best-effort — never block setup completion on this.
-        await PingCliSetupAsync(serverUrl);
+        await PingCliSetupAsync(serverUrl, activeName, provider);
 
         await Console.Out.WriteLineAsync();
 
@@ -486,8 +499,10 @@ public static class SetupCommand {
         // degrades to an ineligible (best-effort) skip rather than throwing out of setup — the
         // import path's own errors are caught inside RunImportStepAsync, and this eligibility
         // probe (awaited outside that boundary) must be equally non-fatal.
+        // Server-scoped: the import step is only actually authorized if the token both refreshes
+        // and belongs to the server we just configured.
         var authSatisfied = await IsAuthSatisfiedAsync(
-            provider, static async () => await TokenStore.GetValidTokensAsync() is not null);
+            provider, async () => (await TokenStore.GetValidTokensForServerAsync(serverUrl)).Tokens is not null);
 
         await RunImportStepAsync(
             currentRepo, authSatisfied, skipImport, noPrompt,
@@ -537,8 +552,123 @@ public static class SetupCommand {
         AnsiConsole.MarkupLine("\n[dim]Optional:[/] start the daemon with [cyan]kcap daemon start -d[/]");
         AnsiConsole.MarkupLine("[dim]Optional:[/] import past sessions with [cyan]kcap import --org[/]");
 
+        WriteNextSteps(ShouldOfferGuidedTour(detectedSummary is not null, claudeSettingsPath, stepPaths));
+
+        // Same fields as Result.AnyHooksInstalled, counted instead of OR'd: CodingAgentsStep
+        // doesn't surface a count directly, so this sums the per-vendor hook-install outcomes
+        // already tracked locally in installResult — vendor names themselves are never sent
+        // (see SetupFunnel.Succeeded).
+        var agentsConfigured = new[] {
+            installResult.ClaudeInstalled, installResult.CodexHooksInstalled, installResult.CursorHooksInstalled,
+            installResult.CopilotHooksInstalled, installResult.GeminiHooksInstalled, installResult.KiroHooksInstalled,
+            installResult.PiExtensionInstalled, installResult.OpenCodeExtensionInstalled, installResult.AntigravityHooksInstalled,
+        }.Count(installed => installed);
+
+        SetupFunnel.Succeeded(agentsConfigured);
+
         return 0;
     }
+
+    /// <summary>The closing "Next steps" box: a question per item, its answer indented beneath.</summary>
+    static void WriteNextSteps(bool offerGuidedTour) {
+        var rows = new List<IRenderable>();
+
+        // Padder, not a "  " prefix: these lines wrap, and a prefix indents only the first of them.
+        foreach (var (question, answer) in NextStepItems(offerGuidedTour)) {
+            if (rows.Count > 0) rows.Add(Text.Empty);
+
+            rows.Add(new Markup($"[bold]{Markup.Escape(question)}[/]"));
+            rows.Add(Text.Empty);
+            rows.Add(new Padder(new Markup(answer), new Padding(2, 0, 0, 0)));
+        }
+
+        AnsiConsole.Write(
+            new Panel(new Rows(rows))
+                .Header("[bold green] Next steps [/]")
+                .BorderColor(Color.Green)
+                .Padding(1, 0));
+    }
+
+    /// <summary>The box's (question, answer-markup) pairs, split from the write so copy is testable.</summary>
+    internal static List<(string Question, string Answer)> NextStepItems(bool offerGuidedTour) {
+        var items = new List<(string, string)> {
+            (ServerSetupQuestion,
+             $"{Markup.Escape(ServerSetupAction)}\n[cyan]{Markup.Escape(ServerSetupDocsUrl)}[/]"),
+        };
+
+        if (offerGuidedTour) {
+            // Markup-safe: the quoted prompt has no [ or ], so escaping leaves it a plain substring.
+            items.Add((GuidedTourQuestion,
+                       Markup.Escape(GuidedTourAction)
+                             .Replace(GuidedTourPromptQuoted,
+                                      $"[cyan]{GuidedTourPromptQuoted}[/]", StringComparison.Ordinal)));
+        }
+
+        return items;
+    }
+
+    /// <summary>
+    /// Whether to point the user at the guided tour. Both halves are required: an agent to type
+    /// the prompt into, and the skill actually on disk for one of them. Skill presence is read
+    /// from the filesystem rather than the install result, because the installers report false
+    /// when work was skipped as already-current — a wired-up machine re-running setup, which
+    /// must still get the CTA.
+    /// </summary>
+    internal static bool ShouldOfferGuidedTour(
+            bool anyAgentDetected, string claudeSettingsPath, CodingAgentsStep.Paths paths) =>
+        anyAgentDetected
+     && (ClaudeCarriesGuidedTour(claudeSettingsPath, paths.PluginDir)
+      || AgentsSkillsInstaller.HasSkill(paths.AgentsSkillsDir,      GuidedTourSkillName)
+      || AgentsSkillsInstaller.HasSkill(paths.KiroSkillsDir,        GuidedTourSkillName)
+      || AgentsSkillsInstaller.HasSkill(paths.AntigravitySkillsDir, GuidedTourSkillName));
+
+    /// <summary>
+    /// The plugin is registered AND the directory Claude loads it from ships the skill. The
+    /// registered marketplace path in settings is the artifact that matters — <paramref
+    /// name="pluginDir"/> is only where THIS build would install from, and after an upgrade the
+    /// two can differ. Falls back to it when nothing is registered; false when neither resolves,
+    /// because an unverifiable skill must not be advertised.
+    /// </summary>
+    static bool ClaudeCarriesGuidedTour(string claudeSettingsPath, string? pluginDir) {
+        if (!ClaudePluginInstaller.IsInstalled(claudeSettingsPath)) return false;
+
+        var dir = ClaudePluginInstaller.RegisteredMarketplacePath(claudeSettingsPath) ?? pluginDir;
+
+        return dir is not null
+            && File.Exists(Path.Combine(dir, "skills", GuidedTourSkillName, "SKILL.md"));
+    }
+
+    /// <summary>Source folder name under <c>kcap/skills/</c>; <c>kcap-</c>-prefixed once installed.</summary>
+    internal const string GuidedTourSkillName = "guided-tour";
+
+    internal const string GuidedTourQuestion = "New to Capacitor?";
+
+    /// <summary>
+    /// A prompt, not <c>/kcap:guided-tour</c>: this box prints for every vendor and only Claude Code
+    /// has slash commands. Must stay a verbatim trigger in the skill's frontmatter description
+    /// (pinned by <c>SetupCommandTests</c>) or it fires nothing.
+    /// </summary>
+    internal const string GuidedTourPrompt = "Start kcap guided tour";
+
+    /// <summary>Quoted as well as coloured — colour is lost to <c>NO_COLOR</c> and redirected stdout.</summary>
+    internal const string GuidedTourPromptQuoted = $"\"{GuidedTourPrompt}\"";
+
+    internal const string GuidedTourAction =
+        $"Prompt {GuidedTourPromptQuoted} in your coding agent to see what Capacitor can do for you";
+
+    internal const string GuidedTourCallToAction = $"{GuidedTourQuestion} {GuidedTourAction}";
+
+    /// <summary>
+    /// Server setup lives in the dashboard, so this can only be pointed at. Always printed: who owns
+    /// the server is not knowable here, so the reader self-selects on the question. Says "server",
+    /// never "workspace" — that word means the local tree everywhere else in this CLI.
+    /// </summary>
+    internal const string ServerSetupQuestion = "Did you create this Capacitor server?";
+
+    internal const string ServerSetupAction = "Complete server setup with instructions here:";
+
+    internal const string ServerSetupDocsUrl =
+        "https://capacitor.kurrent.io/docs/getting-started/setup-server/";
 
     /// <summary>
     /// Whether Step 6's import eligibility auth requirement is met: provider <c>None</c> needs no
@@ -663,67 +793,168 @@ public static class SetupCommand {
         new DshImportSource(),
     };
 
-    static async Task<(string ServerUrl, string? PreAuthToken, string Provider, bool LoginComplete)?> RunDiscoveryAsync(
+    /// <summary>
+    /// Normalizes a user-supplied server (a full URL, or a bare slug already expanded by
+    /// <see cref="ServerInput.ResolveTenantArg"/>), probes it, and reads the auth provider from the server's
+    /// own <c>/auth/config</c>. Returns null after printing the reason. Shared by
+    /// `kcap setup &lt;tenant&gt;` / --server-url and by the zero-tenant "I already have a
+    /// workspace" path, so provider selection has exactly one implementation.
+    /// </summary>
+    static async Task<(string ServerUrl, string Provider)?> ResolveServerAndProviderAsync(string serverArg) {
+        var normalized = await AnsiConsole.Status().Spinner(Spinner.Known.Dots).StartAsync("Checking server…",
+            async _ => await ServerUrlNormalizer.NormalizeAsync(
+                serverArg, skipProbe: false, CancellationToken.None));
+
+        if (!normalized.Reachable) {
+            AnsiConsole.MarkupLine($"  [red]✗[/] Cannot reach server: {Markup.Escape(normalized.Warning ?? serverArg)}");
+            AnsiConsole.MarkupLine("  [dim]Check the URL is correct and the server is running.[/]");
+            return null;
+        }
+
+        var serverUrl = normalized.Url;
+        await Console.Out.WriteLineAsync($"  Server URL: {serverUrl}");
+
+        // Reachable, but with an informational warning (e.g. https→http downgrade).
+        if (normalized.Warning is not null)
+            AnsiConsole.MarkupLine($"  [yellow]![/] {Markup.Escape(normalized.Warning)}");
+
+        try {
+            var provider = await HttpClientExtensions.DiscoverProviderAsync(serverUrl);
+            AnsiConsole.MarkupLine($"  [green]✓[/] Reachable · auth provider: [cyan]{Markup.Escape(provider)}[/]");
+
+            return (serverUrl, provider);
+        } catch (Exception ex) {
+            AnsiConsole.MarkupLine($"  [red]✗[/] Cannot reach server: {Markup.Escape(ex.Message)}");
+            return null;
+        }
+    }
+
+    /// <summary>Test seam: overrides façade construction for Step 1/2. Reset to null in a finally block.</summary>
+    internal static Func<ITenantProvisioner?, OnboardingFacade>? FacadeOverride;
+
+    internal static readonly SetupAuthProgress StepProgress = new(ConsoleAuthProgress.Instance);
+
+    static OnboardingFacade NewFacade(ITenantProvisioner? provisioner) =>
+        FacadeOverride?.Invoke(provisioner)
+            ?? new OnboardingFacade(StepProgress, new SpectreTenantPicker(), provisioner, beforeCommit: null) {
+                KeyWatcher = ConsoleKeyWatcher.Instance
+            };
+
+    /// <summary>
+    /// Step 2 (Login) as a standalone step: a discovery-completed sign-in just reports what
+    /// discovery already published; everything else — including a <c>None</c> provider, which needs
+    /// no interactive login but still needs its auth_provider stamp written inside the façade's
+    /// commit boundary — goes through the façade, adopting the server onto the active profile,
+    /// since setup's whole job is configuring that profile for the chosen server.
+    /// </summary>
+    internal static async Task<int> RunLoginStepAsync(
+            bool loginComplete, string provider, string serverUrl, bool forceDevice, string activeProfile) {
+        if (loginComplete) {
+            var cfgAfter = await AppConfig.LoadProfileConfig();
+            var tokens   = await TokenStore.LoadAsync(cfgAfter.ActiveProfile);
+            AnsiConsole.MarkupLine($"  [green]✓[/] Logged in as [cyan]{Markup.Escape(tokens?.GitHubUsername ?? "?")}[/]");
+
+            return 0;
+        }
+
+        var result = await NewFacade(provisioner: null)
+            .LoginAsync(serverUrl, forceDevice, activeProfile, CancellationToken.None, adoptServer: true);
+
+        if (result is not AuthResult.Committed) {
+            await Console.Error.WriteLineAsync("  Login failed.");
+
+            return 1;
+        }
+
+        if (provider == AuthProvider.None) {
+            // The façade's ConsoleAuthProgress already printed the "no authentication configured" notice.
+            return 0;
+        }
+
+        var loggedInTokens = await TokenStore.LoadAsync(activeProfile);
+        await Console.Out.WriteLineAsync($"  ✓ Logged in as {loggedInTokens?.GitHubUsername}");
+
+        return 0;
+    }
+
+    internal static async Task<(string ServerUrl, string Provider, bool LoginComplete)?> RunDiscoveryAsync(
             string[] args, bool forceDevice) {
+        var chosen   = OAuthLoginFlow.ChooseDiscoveryProvider(args);
+        var headless = HeadlessEnvironment.IsHeadless();
+
         AnsiConsole.MarkupLine($"  Proxy: [dim]{Markup.Escape(AuthProxyEndpoint.Url)}[/]");
 
-        using var http  = new HttpClient();
-        var proxyClient = new AuthProxyClient(http);
+        // WorkOS no longer follows headlessness: its ladder opens the browser either way, and only an
+        // explicit --device takes the device grant. GitHub's exchange URL is not known until the proxy
+        // answers inside DiscoverAsync, so its label stays the environment guess it has always been.
+        var signinMode = chosen == AuthProvider.WorkOS
+            ? OAuthLoginFlow.ChooseWorkOSFlow(forceDevice) == WorkOSFlow.Device ? "device" : "browser"
+            : forceDevice || headless ? "device" : "browser";
+        SetupFunnel.SigninOpened(signinMode, chosen);
 
-        var proxyConfig = await AnsiConsole.Status().Spinner(Spinner.Known.Dots).StartAsync("Contacting auth service…",
-            async _ => await proxyClient.GetConfigAsync(AuthProxyEndpoint.Url));
-        if (proxyConfig is null) {
-            AnsiConsole.MarkupLine("  [red]✗[/] Cannot reach the Kurrent auth service. Retry later, or pass --server-url <url>.");
-            return null;
-        }
+        // Armed for every WorkOS session, headless included: that path has a device grant now, so
+        // a zero-workspace headless user now completes a sign-in and would otherwise hold a live
+        // credential with nowhere to spend it. GitHub never provisions.
+        var provisioner = chosen == AuthProvider.WorkOS
+            ? new SpectreTenantProvisioner(new TenantProvisioningClient(new HttpClient()), ProvisioningEndpoint.Url)
+            : null;
 
-        var provider = OAuthLoginFlow.ChooseDiscoveryProvider(args, isInteractive: !HeadlessEnvironment.IsHeadless());
+        var result = await NewFacade(provisioner).DiscoverAsync(chosen, forceDevice, CancellationToken.None);
 
-        if (provider == AuthProvider.WorkOS) {
-            // Offer inline tenant creation only in an interactive session; headless
-            // setup keeps the legacy "ask your admin" dead-end (provisioner is null).
-            ITenantProvisioner? provisioner = HeadlessEnvironment.IsHeadless()
-                ? null
-                : new SpectreTenantProvisioner(new TenantProvisioningClient(new HttpClient()), ProvisioningEndpoint.Url);
+        // WorkOS's own signin_completed/tenant_none fire from inside Core — only GitHub is derived here.
+        if (chosen == AuthProvider.GitHubApp) {
+            switch (result) {
+                case AuthResult.Failed { Reason: AuthFailureReason.SigninDenied }:
+                    SetupFunnel.SigninFailed("github_token_denied");
 
-            var exit = await WorkOSDiscovery.RunWithLiveAuthAsync(
-                AuthProxyEndpoint.Url, proxyConfig, proxyClient, new SpectreTenantPicker(), provisioner);
-            if (exit != 0) return null;
+                    break;
+                // Other and NoTenantsFound only occur once AcquireGitHubTokenAsync already succeeded.
+                case AuthResult.Committed:
+                case AuthResult.Failed { Reason: AuthFailureReason.Other }:
+                    SetupFunnel.SigninCompleted(AuthProvider.GitHubApp);
 
-            // WorkOSDiscovery saved + activated the picked profile; continue setup against it.
-            var cfg    = await AppConfig.LoadProfileConfig();
-            var active = cfg.Profiles.GetValueOrDefault(cfg.ActiveProfile);
-            if (active?.ServerUrl is null) {
-                AnsiConsole.MarkupLine("  [red]✗[/] WorkOS sign-in did not set an active profile.");
-                return null;
+                    break;
+                case AuthResult.Failed { Reason: AuthFailureReason.NoTenantsFound }:
+                    SetupFunnel.SigninCompleted(AuthProvider.GitHubApp);
+                    SetupFunnel.TenantNone(AuthProvider.GitHubApp);
+
+                    break;
             }
-            return (active.ServerUrl, null, AuthProvider.WorkOS, true);
         }
 
-        if (string.IsNullOrEmpty(proxyConfig.GitHubClientId)) {
-            AnsiConsole.MarkupLine("  [red]✗[/] Cannot reach the Kurrent auth service. Retry later, or pass --server-url <url>.");
-            return null;
+        switch (result) {
+            case AuthResult.Committed committed: {
+                var cfg    = await AppConfig.LoadProfileConfig();
+                var active = cfg.Profiles.GetValueOrDefault(cfg.ActiveProfile);
+
+                if (active?.ServerUrl is null) {
+                    AnsiConsole.MarkupLine("  [red]✗[/] Sign-in did not set an active profile.");
+
+                    return null;
+                }
+
+                // WorkOS already reported "Logged in as … → …" via the façade; GitHub gets its own line.
+                if (committed.Provider != AuthProvider.WorkOS) {
+                    AnsiConsole.MarkupLine(
+                        $"  [green]✓[/] Discovered {committed.Published.Count} tenant(s). Active: [cyan]{Markup.Escape(committed.ActiveProfile)}[/]");
+                }
+
+                return (active.ServerUrl, committed.Provider, true);
+            }
+            case AuthResult.Retarget retarget: {
+                // Origin first, then slug expansion: a pasted "acme.kcap.ai/sessions" must lose its
+                // path before ResolveTenantArg decides it already looks like a host.
+                var retargeted = await ResolveServerAndProviderAsync(
+                    ServerInput.ResolveTenantArg(ServerInput.ToServerOrigin(retarget.ServerInput)));
+
+                return retargeted is null ? null : (retargeted.Value.ServerUrl, retargeted.Value.Provider, false);
+            }
+            default:
+                // Failed/Cancelled — already rendered through the façade's progress sink, bar the tail setup owns.
+                StepProgress.ReportFailure(result);
+
+                return null;
         }
-
-        var ghToken = await OAuthLoginFlow.AcquireGitHubTokenAsync(
-            proxyConfig.GitHubClientId, proxyConfig.GitHubCodeExchangeUrl, forceDevice);
-        if (ghToken is null) return null;
-
-        var discovery = new TenantDiscovery(proxyClient, new SpectreTenantPicker());
-        var outcome   = await discovery.RunAsync(AuthProxyEndpoint.Url, ghToken);
-
-        if (outcome.ErrorMessage is not null) {
-            AnsiConsole.MarkupLine($"  [red]✗[/] {Markup.Escape(outcome.ErrorMessage)}");
-            return null;
-        }
-
-        var profileCfg = await AppConfig.LoadProfileConfig();
-        profileCfg     = TenantDiscovery.MergeProfiles(profileCfg, outcome.Tenants, outcome.Picked!);
-        await AppConfig.SaveProfileConfig(profileCfg);
-
-        AnsiConsole.MarkupLine($"  [green]✓[/] Discovered {outcome.Tenants.Length} tenant(s). Active: [cyan]{Markup.Escape(outcome.Picked!.OrgLogin)}[/]");
-
-        return (AppConfig.NormalizeUrl(outcome.Picked.Origin), ghToken, AuthProvider.GitHubApp, false);
     }
 
     internal static string? ResolvePluginPath(string? overrideDir = null) {
@@ -781,7 +1012,7 @@ public static class SetupCommand {
     //     wall-clock bound is enforced independently of what HttpClient does
     //     internally. If the delay wins, HttpClient disposal on method-exit
     //     cancels the in-flight POST.
-    static async Task PingCliSetupAsync(string serverUrl) {
+    static async Task PingCliSetupAsync(string serverUrl, string profile, string provider) {
         // The ping is intentionally silent (see method-doc), which also hides why the
         // dashboard welcome modal never flips when it fails — e.g. a token the server
         // rejects or maps to a different identity. Set KCAP_DEBUG to surface the
@@ -791,10 +1022,28 @@ public static class SetupCommand {
             if (debug) Console.Error.WriteLine($"[kcap] cli-setup ping: {message}");
         }
 
+        // A None-provider server neither needs nor should receive a bearer. Setup performs no login
+        // on that path, so any token still in the profile belongs to whatever server it pointed at
+        // before — sending it here would disclose it to an unrelated host.
+        if (provider == AuthProvider.None) {
+            Debug("skipped — server requires no authentication");
+
+            return;
+        }
+
         try {
-            var tokens = await TokenStore.LoadAsync();
+            var tokens = await TokenStore.LoadAsync(profile);
             if (tokens is null || tokens.IsExpired) {
                 Debug(tokens is null ? "skipped — no stored token" : "skipped — token expired");
+
+                return;
+            }
+
+            // Re-running setup to point an authenticated profile at a different server would
+            // otherwise send the previous server's bearer to the new one. Checked inline rather
+            // than through the resolving accessor to keep this path refresh-free and time-bound.
+            if (tokens.ServerUrl is not null && !ServerIdentity.SameServer(tokens.ServerUrl, serverUrl)) {
+                Debug($"skipped — stored token belongs to {tokens.ServerUrl}");
 
                 return;
             }
@@ -867,18 +1116,6 @@ public static class SetupCommand {
 
         return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : null;
     }
-
-    /// <summary>
-    /// Resolves a `kcap setup &lt;tenant&gt;` positional: a bare single label (no scheme/dot/port)
-    /// expands to <c>https://{slug}.kcap.ai</c>; anything that already looks like a URL, FQDN, or
-    /// host:port is returned unchanged for the normal --server-url path. Self-hosted servers should
-    /// pass a full URL.
-    /// </summary>
-    internal static string ResolveTenantArg(string arg) =>
-        arg.Contains("://") || arg.Contains('.') || arg.Contains(':')
-        || arg.Equals("localhost", StringComparison.OrdinalIgnoreCase) // bare loopback host, not a kcap.ai slug
-            ? arg
-            : $"https://{arg}.kcap.ai";
 
     static readonly JsonSerializerOptions WriteOpts = new() { WriteIndented = true };
 

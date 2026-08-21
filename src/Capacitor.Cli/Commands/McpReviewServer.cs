@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
@@ -5,7 +6,9 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Commands;
+using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Commands;
 
@@ -31,6 +34,14 @@ static class McpReviewServer {
         var sessionDefault = startupDefault ?? await DetectPrFromGitAsync();
 
         var tools = BuildToolsList();
+
+        // MCP servers are long-lived and denylisted under the top-level "mcp" command
+        // (CommandEvents.Denylisted) — re-initialise under the reportable pseudo-command
+        // "mcp-server" so per-tool-call events actually leave. Best-effort: a stale token on
+        // disk must never block the server from starting.
+        var loggedIn = false;
+        try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
+        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn);
 
         // Validate the server_url shape once, locally (pure string check — no network, token,
         // or stderr). Used to fail gracefully instead of hard-exiting mid-request (below).
@@ -65,6 +76,22 @@ static class McpReviewServer {
             }
         }
 
+        // Records which MCP tools agents actually reach for. Never touches the response path:
+        // the result (or the exception) is returned exactly as DispatchToolCallAsync produced it.
+        async Task<string> TimedDispatchToolCallAsync(JsonNode callId, JsonObject callRequest) {
+            var start = Stopwatch.GetTimestamp();
+            var tool  = McpTelemetry.SafeToolName(callRequest);
+            var ok    = false;
+
+            try {
+                var response = await DispatchToolCallAsync(callId, callRequest);
+                ok = McpTelemetry.ResponseOk(response);
+                return response;
+            } finally {
+                McpTelemetry.ToolCalled("kcap-review", tool, ok, CommandTiming.ElapsedMs(start));
+            }
+        }
+
         await using var stdin  = Console.OpenStandardInput();
         await using var stdout = Console.OpenStandardOutput();
         using var       reader = new StreamReader(stdin, Encoding.UTF8);
@@ -94,7 +121,7 @@ static class McpReviewServer {
                 var response = method switch {
                     "initialize" => BuildInitializeResponse(id, request),
                     "tools/list" => BuildToolsListResponse(id, tools),
-                    "tools/call" => await DispatchToolCallAsync(id, request),
+                    "tools/call" => await TimedDispatchToolCallAsync(id, request),
                     _            => McpProtocol.TryHandleStandardMethod(method, id)
                                     ?? BuildErrorResponse(id, -32601, $"Method not found: {method}")
                 };
@@ -395,7 +422,12 @@ record McpTool(string Name, string Description, McpInputSchema InputSchema);
 
 record McpInputSchema(string Type, Dictionary<string, McpSchemaProperty> Properties, string[] Required);
 
-record McpSchemaProperty(string Type, string Description);
+// Items was added when the work-items server declared the first `array`-typed properties in any of
+// these MCP servers, and an array with no `items` is incomplete JSON Schema — a strict client can
+// reject it, and a model has to guess the element type. Optional and trailing, so every existing
+// `new("string", "…")` call is unchanged, and omitted from the wire entirely when null
+// (DefaultIgnoreCondition = WhenWritingNull below).
+record McpSchemaProperty(string Type, string Description, McpSchemaProperty? Items = null);
 
 record McpToolCallResult(McpContentItem[] Content, bool? IsError = null);
 
@@ -417,6 +449,9 @@ record SessionSearchQuery(string Query, int? Limit = null);
 [JsonSerializable(typeof(McpError))]
 [JsonSerializable(typeof(SearchQuery))]
 [JsonSerializable(typeof(SessionSearchQuery))]
+// StartReviewFlowDto now also carries the optional reviewer-model override
+// (`model` + `client_flow_protocol_version: 3`); the added member rides this existing registration,
+// so the flows MCP v3 transport stays fully source-generated (AOT-safe, no reflection fallback).
 [JsonSerializable(typeof(StartReviewFlowDto))]
 [JsonSerializable(typeof(SubmitReviewRoundDto))]
 [JsonSerializable(typeof(SubmitReviewerResultDto))]

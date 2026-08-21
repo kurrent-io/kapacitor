@@ -1,6 +1,4 @@
-using System.Text.Json;
 using Capacitor.Cli.Core.Config;
-using ProfileConfigJsonContextIndented = Capacitor.Cli.Core.Config.ProfileConfigJsonContextIndented;
 
 namespace Capacitor.Cli.Commands;
 
@@ -66,15 +64,14 @@ public static class ProfileCommand {
         if (normalized.Warning is not null)
             await Console.Error.WriteLineAsync($"Warning: {normalized.Warning}");
 
-        var profiles = new Dictionary<string, Profile>(config.Profiles) {
-            [name] = new() {
-                ServerUrl = normalized.Url,
-                Remotes   = remotes
+        await ConfigMutator.MutateAsync(c => c with {
+            Profiles = new Dictionary<string, Profile>(c.Profiles) {
+                [name] = new() {
+                    ServerUrl = normalized.Url,
+                    Remotes   = remotes
+                }
             }
-        };
-
-        config = config with { Profiles = profiles };
-        await SaveConfig(configPath, config);
+        });
 
         await Console.Out.WriteLineAsync($"Profile '{name}' added.");
 
@@ -113,20 +110,21 @@ public static class ProfileCommand {
             return 1;
         }
 
-        var profiles = new Dictionary<string, Profile>(config.Profiles);
-        profiles.Remove(name);
+        await ConfigMutator.MutateAsync(c => {
+            var profiles = new Dictionary<string, Profile>(c.Profiles);
+            profiles.Remove(name);
 
-        var bindings  = new Dictionary<string, string>(config.ProfileBindings);
-        var staleKeys = bindings.Where(kv => kv.Value == name).Select(kv => kv.Key).ToList();
-        foreach (var key in staleKeys) bindings.Remove(key);
+            var bindings  = new Dictionary<string, string>(c.ProfileBindings);
+            var staleKeys = bindings.Where(kv => kv.Value == name).Select(kv => kv.Key).ToList();
+            foreach (var key in staleKeys) bindings.Remove(key);
 
-        config = config with {
-            Profiles = profiles,
-            ProfileBindings = bindings,
-            ActiveProfile = config.ActiveProfile == name ? "default" : config.ActiveProfile
-        };
+            return c with {
+                Profiles = profiles,
+                ProfileBindings = bindings,
+                ActiveProfile = c.ActiveProfile == name ? "default" : c.ActiveProfile
+            };
+        });
 
-        await SaveConfig(configPath, config);
         await Console.Out.WriteLineAsync($"Profile '{name}' removed.");
 
         return 0;
@@ -177,18 +175,6 @@ public static class ProfileCommand {
         var json = await File.ReadAllTextAsync(configPath);
 
         return ConfigMigration.MigrateIfNeeded(json).Config;
-    }
-
-    static async Task SaveConfig(string configPath, ProfileConfig config) {
-        var dir = Path.GetDirectoryName(configPath)!;
-        Directory.CreateDirectory(dir);
-        var tempPath = $"{configPath}.tmp";
-
-        await File.WriteAllBytesAsync(
-            tempPath,
-            JsonSerializer.SerializeToUtf8Bytes(config, ProfileConfigJsonContextIndented.Default.ProfileConfig)
-        );
-        File.Move(tempPath, configPath, overwrite: true);
     }
 
     static async Task<int> PrintUsage() {

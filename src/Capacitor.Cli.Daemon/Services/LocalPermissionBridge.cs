@@ -30,6 +30,16 @@ internal sealed partial class LocalPermissionBridge(
     const int    MaxBindAttempts = 15;
     const string PathSuffix      = "/permission-request";
 
+    // Revoked reviewer prefixes are intentionally retained (see RevokeReviewerToken), so the
+    // listener's prefix set only grows over a daemon's lifetime, bounded by the reviewer-launch
+    // count. Warn once each time the count crosses a multiple of this step so runaway growth in a
+    // very long-lived daemon is diagnosable rather than silent.
+    const int    ReviewerPrefixHighWaterStep = 1024;
+
+    /// <summary>Cap on a reviewer submission body. The poster is a sandboxed vendor child, so an
+    /// unbounded read is a memory-exhaustion lever.</summary>
+    internal const int MaxSubmitBodyBytes = 1024 * 1024;
+
     static readonly object       PortClaimsLock = new();
     static readonly HashSet<int>  ClaimedPorts   = [];
 
@@ -40,11 +50,26 @@ internal sealed partial class LocalPermissionBridge(
     int                      _port;
     int                      _listenerClosed;
 
+    // Guards DisposeAsync so its body runs exactly once.
+    //
+    // DaemonRunner registers this type through TWO singleton descriptors —
+    // AddSingleton<LocalPermissionBridge>() so the orchestrator can read the bound URL, and an
+    // AddHostedService factory resolving that same instance so the listener starts before any
+    // agent spawns. Microsoft DI tracks disposables per DESCRIPTOR and does not de-duplicate by
+    // reference, so ServiceProviderEngineScope.DisposeAsync walks this one instance twice,
+    // sequentially. No thread race is required.
+    //
+    // Without this guard the second pass reached StopAsync's _cts.CancelAsync() on an
+    // already-disposed CTS, and the ObjectDisposedException surfaced inside
+    // ServiceProviderEngineScope.DisposeAsync where nothing catches it — terminating the daemon
+    // rather than shutting it down.
+    int _disposed;
+
     // Live per-reviewer tokens → each token's bound (read-only) kcap allowlist servers. A request on
     // a reviewer token auto-approves that reviewer's kcap tools; the shared token keeps the
     // interactive prompt path. The token is a secret only the reviewer process holds, so an
     // interactive agent (which has only the shared token) can't reach the unattended path.
-    readonly ConcurrentDictionary<string, string[]> _reviewerTokens = new(StringComparer.Ordinal);
+    readonly ConcurrentDictionary<string, ReviewerGrant> _reviewerTokens = new(StringComparer.Ordinal);
     readonly object                                 _prefixLock     = new();
 
     /// <summary>
@@ -131,7 +156,17 @@ internal sealed partial class LocalPermissionBridge(
     }
 
     public async Task StopAsync(CancellationToken cancellationToken) {
-        if (_cts is not null) await _cts.CancelAsync();
+        // Read the field ONCE. DisposeAsync exchanges it to null BEFORE disposing, so a plain read
+        // is enough: reference reads are atomic, and the only bad outcome — capturing a non-null
+        // reference that is disposed a moment later — is handled by the catch below. (An
+        // interlocked read would add nothing here.) Cancelling an already-disposed CTS throws, and
+        // this runs on the host's dispose path where a throw is fatal, so treat it as an
+        // already-stopped bridge rather than an error.
+        var cts = _cts;
+        if (cts is not null) {
+            try { await cts.CancelAsync(); }
+            catch (ObjectDisposedException) { /* already stopped and disposed — nothing to cancel */ }
+        }
 
         // Close exactly once, before awaiting the accept loop. Stop() alone releases the port but
         // leaves HttpListener's prefix registered until a later Close(); another bridge can claim
@@ -150,13 +185,30 @@ internal sealed partial class LocalPermissionBridge(
         }
     }
 
+    /// <summary>
+    /// Idempotent and non-throwing. Runs its body exactly once even under a concurrent second
+    /// call, and swallows anything StopAsync raises: this executes inside the DI/host teardown
+    /// (ServiceProviderEngineScope.DisposeAsync), where an escaping exception is unhandled and
+    /// terminates the daemon instead of shutting it down.
+    /// </summary>
     public async ValueTask DisposeAsync() {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
         try {
             await StopAsync(CancellationToken.None);
+        } catch (Exception ex) {
+            // Deliberately broad. This is a teardown boundary: DI stops walking its remaining
+            // disposables the moment an exception escapes, so letting anything through here would
+            // strand other services' cleanup as well as killing the process. Logged rather than
+            // swallowed silently, so a real teardown failure is still diagnosable.
+            LogDisposeFailed(logger, ex);
         } finally {
             ReleasePortClaim(_port);
             _port = 0;
-            _cts?.Dispose();
+            // Null it out before disposing so a racing StopAsync sees "already stopped" rather
+            // than a live-looking reference to a CTS that is about to be (or already is) disposed.
+            var cts = Interlocked.Exchange(ref _cts, null);
+            cts?.Dispose();
         }
     }
 
@@ -167,7 +219,16 @@ internal sealed partial class LocalPermissionBridge(
     /// and gets its own listener prefix so only that reviewer's hook can reach the unattended path.
     /// Revoke with <see cref="RevokeReviewerToken"/> once the reviewer exits.
     /// </summary>
-    public string RegisterReviewerToken(IReadOnlyList<string> allowlistServers) {
+    public string RegisterReviewerToken(
+            IReadOnlyList<string> allowlistServers,
+            BorrowedReviewContextGeneration? reviewContext = null,
+            // The launch's activity clock, so a tool-call hit on this token advances it. Optional and
+            // trailing so pre-existing call sites keep compiling; production always supplies one.
+            AgentActivityClock? activityClock = null,
+            // Relays a borrowed reviewer's submission under the DAEMON's credential; null for every
+            // other reviewer, which authenticates for itself. On the GRANT so it is revoked with the
+            // token — a submit path outliving its reviewer could report into an already-reaped flow.
+            Func<string, string, CancellationToken, Task<(int Status, string Body)>>? submitForwarder = null) {
         if (_listener is null || _sharedToken is null)
             throw new InvalidOperationException("LocalPermissionBridge not started");
 
@@ -177,7 +238,14 @@ internal sealed partial class LocalPermissionBridge(
                 token = NewToken();   // CSPRNG collisions are negligible; never silently reuse one
 
             _listener.Prefixes.Add($"http://127.0.0.1:{_port}/{token}/");
-            _reviewerTokens[token] = [.. allowlistServers];
+            _reviewerTokens[token] = new ReviewerGrant(
+                [.. allowlistServers], reviewContext, activityClock, submitForwarder);
+
+            // Prefixes are never removed on revoke, so this count only rises — surface a warning at
+            // each high-water step so a leak is diagnosable (the count grows by one per launch).
+            var prefixCount = _listener.Prefixes.Count;
+            if (prefixCount % ReviewerPrefixHighWaterStep == 0)
+                LogReviewerPrefixHighWater(logger, prefixCount);
 
             return $"http://127.0.0.1:{_port}/{token}";
         }
@@ -189,10 +257,31 @@ internal sealed partial class LocalPermissionBridge(
         var token = ExtractToken(reviewerBridgeUrlOrToken);
         if (token is null) return;
 
-        lock (_prefixLock) {
-            if (_reviewerTokens.TryRemove(token, out _))
-                _listener?.Prefixes.Remove($"http://127.0.0.1:{_port}/{token}/");
+        // Removing the token from the dictionary is the ONE authoritative revocation: HandleAsync
+        // re-validates every request against _reviewerTokens (a stray prefix "can't quietly admit
+        // anything"), so a dict miss is a deterministic 404. We deliberately do NOT remove the
+        // HttpListener prefix. On the managed (Linux/macOS) HttpListener, a request on a keep-alive
+        // connection to a just-removed prefix no longer routes to our handler and instead yields a
+        // transport-level artifact — a spurious empty-body 200 or a connection reset — rather than
+        // the clean 404 our code would return. Keeping the prefix registered means the request still
+        // reaches HandleAsync, where the dict miss produces the intended 404. The prefixes are freed
+        // when the listener closes; their count is bounded by the daemon's reviewer-launch count.
+        _reviewerTokens.TryRemove(token, out _);
+    }
+
+    /// <summary>Atomically publishes a completed immutable sidecar generation for a live reviewer.
+    /// Returns the retired generation so its on-disk storage can be removed after the swap.</summary>
+    public BorrowedReviewContextGeneration? PublishReviewerContext(
+            string reviewerBridgeUrlOrToken,
+            BorrowedReviewContextGeneration generation) {
+        var token = ExtractToken(reviewerBridgeUrlOrToken)
+            ?? throw new InvalidOperationException("reviewer_context_token_invalid");
+        while (_reviewerTokens.TryGetValue(token, out var current)) {
+            var replacement = current with { ReviewContext = generation };
+            if (_reviewerTokens.TryUpdate(token, replacement, current))
+                return current.ReviewContext;
         }
+        throw new InvalidOperationException("reviewer_context_token_revoked");
     }
 
     /// <summary>Test seam: number of live reviewer tokens (verifies mint/revoke without a real
@@ -247,6 +336,82 @@ internal sealed partial class LocalPermissionBridge(
 
     async Task HandleAsync(HttpListenerContext context, CancellationToken ct) {
         try {
+            // This capability is deliberately routed before the permission-request parser. It has
+            // one exact method/path, accepts no query or caller-selected path, and exists only on a
+            // live reviewer grant. The shared interactive token is absent from this dictionary.
+            var rawUrl = context.Request.RawUrl;
+            if (context.Request.HttpMethod == "GET" && rawUrl is not null) {
+                var trimmedRaw = rawUrl.TrimStart('/');
+                var slash = trimmedRaw.IndexOf('/');
+                if (slash > 0) {
+                    var contextToken = trimmedRaw[..slash];
+                    var expected = $"/{contextToken}/review-context/workspace-mcp-configs";
+                    if (rawUrl.Equals(expected, StringComparison.Ordinal) &&
+                        _reviewerTokens.TryGetValue(contextToken, out var contextGrant) &&
+                        contextGrant.ReviewContext is { } generation) {
+                        context.Response.ContentType = "application/json";
+                        context.Response.StatusCode = 200;
+                        context.Response.ContentLength64 = generation.JsonUtf8.LongLength;
+                        await context.Response.OutputStream.WriteAsync(generation.JsonUtf8, ct);
+                        context.Response.Close();
+                        return;
+                    }
+                }
+                context.Response.StatusCode = 404;
+                context.Response.Close();
+                return;
+            }
+
+            // Borrowed-reviewer result delivery. Routed like review-context above: exact method/path,
+            // live grant only. A grant minted without a forwarder 404s rather than exposing an
+            // endpoint that could only fail.
+            if (context.Request.HttpMethod == "POST" && rawUrl is not null) {
+                var trimmedRaw = rawUrl.TrimStart('/');
+                var slash      = trimmedRaw.IndexOf('/');
+                if (slash > 0) {
+                    var submitToken = trimmedRaw[..slash];
+                    // Upstream path chosen from a fixed table, never echoed from the request: the
+                    // caller is sandboxed, and echoing would make this an open authenticated relay.
+                    var apiPath = rawUrl switch {
+                        _ when rawUrl.Equals($"/{submitToken}/flow-result", StringComparison.Ordinal)
+                            => "/api/flows/reviewer/result",
+                        _ when rawUrl.Equals($"/{submitToken}/flow-message", StringComparison.Ordinal)
+                            => "/api/flows/participant/message",
+                        _   => null
+                    };
+                    if (apiPath is not null) {
+                        if (!_reviewerTokens.TryGetValue(submitToken, out var submitGrant) ||
+                            submitGrant.SubmitForwarder is not { } forward) {
+                            context.Response.StatusCode = 404;
+                            context.Response.Close();
+
+                            return;
+                        }
+
+                        // A reviewer mid-delivery is alive; reaping it here would discard the result.
+                        submitGrant.ActivityClock?.Advance();
+
+                        var submitBody = await ReadCappedBodyAsync(context.Request.InputStream, ct);
+                        if (submitBody is null) {
+                            context.Response.StatusCode = 413;
+                            context.Response.Close();
+
+                            return;
+                        }
+
+                        var (status, responseBody) = await forward(apiPath, submitBody, ct);
+                        var payload = Encoding.UTF8.GetBytes(responseBody);
+                        context.Response.ContentType     = "application/json";
+                        context.Response.StatusCode      = status;
+                        context.Response.ContentLength64 = payload.LongLength;
+                        await context.Response.OutputStream.WriteAsync(payload, ct);
+                        context.Response.Close();
+
+                        return;
+                    }
+                }
+            }
+
             // Require token + vendor + endpoint match. The HttpListener prefix already routed us
             // here, but we re-validate explicitly so a stray prefix can't quietly admit anything.
             // Path shape: /{token}/{vendor}/permission-request.
@@ -276,7 +441,7 @@ internal sealed partial class LocalPermissionBridge(
 
             var token      = trimmed[..firstSlash];
             var isShared   = string.Equals(token, _sharedToken, StringComparison.Ordinal);
-            var isReviewer = _reviewerTokens.TryGetValue(token, out var reviewerAllowlist);
+            var isReviewer = _reviewerTokens.TryGetValue(token, out var reviewerGrant);
 
             if (!isShared && !isReviewer) {
                 context.Response.StatusCode = 404;
@@ -345,17 +510,12 @@ internal sealed partial class LocalPermissionBridge(
             // would give us per-request cancellation; out of scope for this PR.
             PermissionDecision decision;
 
-            if (IsFlowResultSubmission(toolName)) {
-                // The reviewer's own result-submission tool (kcap-flow-result → submit_review_result)
-                // is unique to a server only injected for review-flow reviewers, so it's always safe.
-                // Auto-approve on ANY live token without a server round-trip — an unattended reviewer
-                // can't get a user decision otherwise.
-                LogFlowResultAutoApproved(logger, sessionId, vendor);
-                decision = new PermissionDecision("allow", null, null);
-            } else if (isReviewer) {
-                // Unattended reviewer: auto-approve its bound kcap tools; DENY an out-of-allowlist
-                // (or non-config-locked-vendor bare) call outright rather than defer to a prompt no
-                // human can answer. A well-formed tool name is required to classify.
+            if (isReviewer) {
+                // Advance BEFORE the tool-name check and any allow/deny decision below: a malformed
+                // request from a live reviewer is still evidence the process is alive.
+                reviewerGrant!.ActivityClock?.Advance();
+
+                // Unattended participant: a well-formed tool name is required to classify.
                 if (string.IsNullOrWhiteSpace(toolName)) {
                     context.Response.StatusCode = 400;
                     context.Response.Close();
@@ -363,14 +523,30 @@ internal sealed partial class LocalPermissionBridge(
                     return;
                 }
 
-                if (IsReviewerToolAllowed(vendor, toolName, reviewerAllowlist!)) {
+                if (IsReservedChannelTool(toolName)) {
+                    // The reserved result channel (kcap-flow-result) is injected only for flow
+                    // participants, and every tool it advertises is in the contract-tested
+                    // unattended-safe set — each only POSTs to the participant's own flow run,
+                    // authorized server-side against the caller's active agent assignment.
+                    // Auto-approve without a server round-trip: an unattended participant can't
+                    // get a user decision otherwise.
+                    LogReservedChannelToolAutoApproved(logger, toolName, sessionId, vendor);
+                    decision = new PermissionDecision("allow", null, null);
+                } else if (IsReviewerToolAllowed(
+                               vendor, toolName, reviewerGrant!.AllowlistServers)) {
+                    // Auto-approve its bound kcap tools; DENY an out-of-allowlist (or
+                    // non-config-locked-vendor bare) call outright rather than defer to a prompt
+                    // no human can answer.
                     decision = new PermissionDecision("allow", null, null);
                 } else {
                     LogReviewerToolDenied(logger, sessionId, toolName);
                     decision = new PermissionDecision("deny", null, null);
                 }
             } else {
-                // Shared (interactive) token → the server permission path, unchanged.
+                // Shared (interactive) token → the server permission path, unchanged. This
+                // deliberately includes the reserved channel's own tool names: an interactive
+                // session never legitimately carries that server, so an identically-named tool
+                // here is untrusted and takes the normal prompt.
                 try {
                     decision = await server.RequestPermissionAsync(sessionId, toolName, toolInput, suggestions, ct);
                 } catch (Exception ex) {
@@ -413,29 +589,39 @@ internal sealed partial class LocalPermissionBridge(
     }
 
     /// <summary>
-    /// True when the permission request is for the review-flow reviewer's result-submission tool
-    /// (the <c>kcap-flow-result</c> server's <c>submit_review_result</c>). This auto-approve bypasses
-    /// the server permission boundary, so the match is deliberately precise rather than a loose
-    /// substring: it accepts either the bare tool name (a vendor that passes the raw MCP tool name,
-    /// e.g. Codex) OR a vendor-prefixed id that both names the <c>kcap-flow-result</c> server AND ends
-    /// in the exact tool — e.g. Claude's <c>mcp__kcap_flow_result__submit_review_result</c> (Claude
-    /// sanitizes the hyphens to underscores). Requiring the server token means a coincidental
-    /// "…submit_review_result" exposed by some other MCP server on an interactive hosted agent can't
-    /// slip past the prompt.
+    /// True when the permission request names one of the reserved result channel's unattended-safe
+    /// tools. The match parses the canonical <c>mcp__&lt;server&gt;__&lt;tool&gt;</c> shape and
+    /// compares whole segments (hyphens normalized to underscores) — substring matching here is
+    /// spoofable, e.g. <c>mcp__evil_kcap_flow_result__send_flow_message</c>. Bare names are exact
+    /// set membership. Callers gate this on the reviewer token, so an interactive session's
+    /// identically-named tool still takes the normal prompt path.
     /// </summary>
-    static bool IsFlowResultSubmission(string? toolName) {
+    static bool IsReservedChannelTool(string? toolName) {
         if (string.IsNullOrEmpty(toolName)) return false;
 
-        // Bare tool name, no server prefix.
-        if (string.Equals(toolName, "submit_review_result", StringComparison.Ordinal)) return true;
+        const string prefix = "mcp__";
 
-        // Vendor-prefixed MCP id: require the flow-result server identity AND the exact tool suffix.
-        var namesFlowResultServer =
-            toolName.Contains("kcap_flow_result", StringComparison.Ordinal) ||
-            toolName.Contains("kcap-flow-result", StringComparison.Ordinal);
+        // Bare tool name, no server prefix: exact safe-set membership only.
+        if (!toolName.StartsWith(prefix, StringComparison.Ordinal))
+            return KcapMcpRegistry.ReservedResultChannelUnattendedSafeTools.Contains(toolName);
 
-        return namesFlowResultServer && toolName.EndsWith("submit_review_result", StringComparison.Ordinal);
+        var afterPrefix = toolName[prefix.Length..];
+        var sep         = afterPrefix.IndexOf("__", StringComparison.Ordinal);
+
+        if (sep <= 0) return false;   // malformed qualified name → not the reserved channel (fail-safe)
+
+        var server = afterPrefix[..sep].Replace('-', '_');
+        var tool   = afterPrefix[(sep + 2)..];
+
+        return string.Equals(server, ReservedChannelServerSegment, StringComparison.Ordinal)
+            && KcapMcpRegistry.ReservedResultChannelUnattendedSafeTools.Contains(tool);
     }
+
+    /// <summary>The reserved channel id in its underscore normalization (<c>kcap_flow_result</c>) —
+    /// the form a hyphenated or Claude-sanitized server segment reduces to for the exact-equality
+    /// comparison above.</summary>
+    static readonly string ReservedChannelServerSegment =
+        KcapMcpRegistry.ReservedResultChannelId.Replace('-', '_');
 
     /// <summary>
     /// Whether a tool call arriving on a reviewer token is within the reviewer's bound (read-only)
@@ -467,6 +653,33 @@ internal sealed partial class LocalPermissionBridge(
 
         return false;
     }
+
+    /// <summary>Reads at most <see cref="MaxSubmitBodyBytes"/>, returning null when the body exceeds
+    /// it. Bounded on BYTES ACTUALLY READ rather than Content-Length, which a chunked or hostile
+    /// client need not send truthfully — checking the header alone would be a guard the attacker
+    /// controls. One byte past the cap is enough to reject, so an oversized body is never fully
+    /// buffered.</summary>
+    static async Task<string?> ReadCappedBodyAsync(Stream input, CancellationToken ct) {
+        var buffer = new byte[8192];
+        using var accumulated = new MemoryStream();
+
+        while (true) {
+            var read = await input.ReadAsync(buffer, ct);
+            if (read == 0) break;
+
+            if (accumulated.Length + read > MaxSubmitBodyBytes) return null;
+
+            accumulated.Write(buffer, 0, read);
+        }
+
+        return Encoding.UTF8.GetString(accumulated.GetBuffer(), 0, (int)accumulated.Length);
+    }
+
+    sealed record ReviewerGrant(
+        string[] AllowlistServers,
+        BorrowedReviewContextGeneration? ReviewContext,
+        AgentActivityClock? ActivityClock = null,
+        Func<string, string, CancellationToken, Task<(int Status, string Body)>>? SubmitForwarder = null);
 
     static string BuildHookResponseJson(PermissionDecision decision, string vendor) =>
         vendor switch {
@@ -516,12 +729,18 @@ internal sealed partial class LocalPermissionBridge(
     [LoggerMessage(Level = LogLevel.Warning, Message = "RequestPermission via SignalR failed for session {SessionId}; falling back to deny")]
     static partial void LogRequestPermissionFailed(ILogger logger, Exception exception, string sessionId);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Auto-approved review-flow result submission for session {SessionId} (vendor={Vendor}) without surfacing a prompt")]
-    static partial void LogFlowResultAutoApproved(ILogger logger, string sessionId, string vendor);
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Auto-approved reserved flow-channel tool {ToolName} for unattended participant session {SessionId} (vendor={Vendor}) without surfacing a prompt")]
+    static partial void LogReservedChannelToolAutoApproved(ILogger logger, string toolName, string sessionId, string vendor);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Denied out-of-allowlist tool {ToolName} for unattended reviewer session {SessionId}")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Denied out-of-allowlist tool {ToolName} for unattended participant session {SessionId}")]
     static partial void LogReviewerToolDenied(ILogger logger, string sessionId, string toolName);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Permission bridge handler error")]
     static partial void LogBridgeHandlerError(ILogger logger, Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Permission bridge shutdown failed; continuing teardown")]
+    static partial void LogDisposeFailed(ILogger logger, Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Local permission bridge has {PrefixCount} listener prefixes; revoked reviewer prefixes are retained until the daemon stops")]
+    static partial void LogReviewerPrefixHighWater(ILogger logger, int prefixCount);
 }

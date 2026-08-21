@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.Mcp;
 using Capacitor.Cli.Core.Instructions;
 using Spectre.Console;
@@ -145,7 +146,7 @@ internal static class CodingAgentsStep {
         }
 
         if (!options.InstallAgents) {
-            writeLine("  [dim]· Skipping kcap agent setup[/]");
+            writeLine("  [dim]· Skipping coding-agent setup[/]");
 
             return Task.FromResult(new Result(false, false, false, false, false));
         }
@@ -837,7 +838,9 @@ internal static class CodingAgentsStep {
         }
 
         writeLine($"  [green]✓[/] Agent skills installed (user: {Markup.Escape(paths.AgentsSkillsDir)})");
-        writeLine("    [dim]kcap-recap, kcap-errors, kcap-hide, kcap-disable, kcap-validate-plan, review-flows[/]");
+        // Derived from the installer's own list — a hand-maintained copy here had already
+        // drifted (missing review-flows' prefix) by the time guided-tour was added.
+        writeLine($"    [dim]{string.Join(", ", AgentsSkillsInstaller.SourceNames.Select(n => "kcap-" + n))}[/]");
 
         SweepLegacyCodexSkills(detected, paths, installers);
 
@@ -944,7 +947,7 @@ internal static class CodingAgentsStep {
     }
 
     /// <summary>
-    /// Registers the kcap MCP servers, including non-auto-approved kcap-flows, in
+    /// Registers the kcap MCP servers (<see cref="KcapMcpServers.ForCodex"/>) in
     /// <c>~/.codex/config.toml</c> via <see cref="Installers.RegisterCodexMcp"/> so Codex
     /// CLI picks them up with no manual TOML edit. Gated on Codex hooks installing — the
     /// same "full Codex integration" trigger as skills. No prompt: registration is
@@ -963,7 +966,7 @@ internal static class CodingAgentsStep {
 
         switch (installers.RegisterCodexMcp()) {
             case CodexConfigToml.Change.Updated:
-                writeLine($"  [green]✓[/] Codex MCP servers registered: kcap-review, kcap-sessions, kcap-flows, kcap-memory ([dim]{configPath}[/])");
+                writeLine($"  [green]✓[/] Codex MCP servers registered: {string.Join(", ", KcapMcpServers.ForCodex.Select(s => s.Name))} ([dim]{configPath}[/])");
 
                 return true;
             case CodexConfigToml.Change.Unchanged:

@@ -17,6 +17,21 @@ internal sealed partial class DetachedRespawnStrategy(
     public static string[] BuildChildArgs(IReadOnlyList<string> originalArgs) =>
         originalArgs.Contains("--await-lock") ? [.. originalArgs] : [.. originalArgs, "--await-lock"];
 
+    /// <summary>
+    /// Pure: the boot-carrier env to re-apply on a self-respawned successor's <see cref="ProcessStartInfo"/>.
+    /// Re-injects <see cref="DaemonRunner.BootCarriers.Seed"/>/<see cref="DaemonRunner.BootCarriers.Expect"/>
+    /// (the successor needs the same consent-seed directive and expected server URL its predecessor was
+    /// booted with) but deliberately NOT <see cref="DaemonRunner.BootCarriers.Attempt"/> — an attempt id
+    /// is per launch-ACTION, and a self-respawn-after-update is not the app's own action.
+    /// </summary>
+    internal static Dictionary<string, string> SuccessorEnvOverlay(DaemonConfig config) {
+        var env = new Dictionary<string, string>();
+        if (!string.IsNullOrEmpty(config.ConsentSeedDirective)) env[DaemonRunner.BootCarriers.Seed] = config.ConsentSeedDirective;
+        if (!string.IsNullOrEmpty(config.ExpectedServerUrl))    env[DaemonRunner.BootCarriers.Expect] = config.ExpectedServerUrl;
+
+        return env;
+    }
+
     public RestartOutcome Restart() {
         var exe = Environment.ProcessPath;
         if (exe is null) { LogNoProcessPath(logger); return RestartOutcome.Retry; }
@@ -30,6 +45,7 @@ internal sealed partial class DetachedRespawnStrategy(
             CreateNoWindow         = true,
         };
         foreach (var a in BuildChildArgs(config.OriginalArgs)) psi.ArgumentList.Add(a);
+        foreach (var (k, v) in SuccessorEnvOverlay(config)) psi.Environment[k] = v;
 
         try {
             var child = Process.Start(psi)!;

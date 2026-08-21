@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Daemon/Acp/AcpConnection.cs
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
@@ -60,6 +59,42 @@ internal sealed partial class AcpConnection : IAsyncDisposable {
 
     long     _nextId;
     int      _disposed;
+    volatile bool _transportEnded;
+
+    /// <summary>
+    /// Monotonic per-connection latch: true once this connection's transport is known unusable —
+    /// set as the FIRST act of every trigger path (read loop ending, or a failure of the stream
+    /// write/flush itself), strictly before <see cref="BeforeFaultingPending"/> is invoked. The
+    /// reconnect commit reads this (not the read-loop task's completion state) as the authoritative
+    /// death fact for a candidate whose only hook invocation fired while it was still uninstalled
+    /// and was therefore rightly discarded: an uninstalled callback stays globally inert, but the
+    /// connection itself remembers the terminal fact locally, forever.
+    /// </summary>
+    public bool TransportEnded => _transportEnded;
+
+    /// <summary>
+    /// Optional pre-fault hook invoked when this connection's transport ends — BEFORE the read
+    /// loop's <c>finally</c> faults pending requests, and from a failed stream write. The runtime
+    /// wires it (stamped with this connection's incarnation id via closure) so `Reconnecting` is
+    /// set before any prompt-fault continuation can run. Contract: the callee must be synchronous
+    /// and non-blocking (it may take only fast-state locks); this connection invokes it at most
+    /// per trigger path, guarded by the <see cref="TransportEnded"/> latch so the write-failure
+    /// path and the read loop's own end produce one latch flip and at most two invocations that
+    /// the callee's own idempotence collapses.
+    /// </summary>
+    public Action? BeforeFaultingPending { get; set; }
+
+    void MarkTransportEnded() {
+        _transportEnded = true;
+
+        try {
+            BeforeFaultingPending?.Invoke();
+        } catch (Exception ex) {
+            // The hook is runtime code and must not take down the read loop or a writer; a throwing
+            // hook is a bug, but the connection's own teardown must still proceed.
+            _logger.LogDebug(ex, "ACP: BeforeFaultingPending hook threw; continuing teardown.");
+        }
+    }
 
     /// <param name="debugFrames">
     /// <c>KCAP_ACP_DEBUG_FRAMES</c> (<see cref="DaemonConfig.DebugFrames"/>) — off by default. When
@@ -89,7 +124,7 @@ internal sealed partial class AcpConnection : IAsyncDisposable {
     /// never a null-result success, which would falsely claim we performed an operation (e.g. an
     /// <c>fs/*</c>/<c>terminal/*</c> request) we never actually served. A handler that intends a
     /// successful EMPTY result must return an explicit <see cref="JsonElement"/> (e.g. an empty
-    /// object via <see cref="JsonSerializer.SerializeToElement"/>), never <see langword="null"/>.
+    /// object via <see cref="JsonSerializer.SerializeToElement{T}(T, System.Text.Json.Serialization.Metadata.JsonTypeInfo{T})"/>), never <see langword="null"/>.
     ///
     /// Typed <see cref="JsonElement"/>? rather than <c>object?</c> (PR #244 review, Fix #3): the
     /// old <c>object?</c> contract let a handler return an un-serialized CLR object that
@@ -98,7 +133,7 @@ internal sealed partial class AcpConnection : IAsyncDisposable {
     /// propagated up through <see cref="DispatchLineAsync"/>'s broad catch (log-and-skip) and the
     /// agent's request was left with NO response at all, wedging its wait on this id forever. A
     /// handler must now build its own <see cref="JsonElement"/> (typically via
-    /// <see cref="JsonSerializer.SerializeToElement"/> against a registered
+    /// <see cref="JsonSerializer.SerializeToElement{T}(T, System.Text.Json.Serialization.Metadata.JsonTypeInfo{T})"/> against a registered
     /// <see cref="CapacitorJsonContext"/> type) so the shape is AOT-safe and can't fail to
     /// serialize at the write site.
     /// </summary>
@@ -171,6 +206,10 @@ internal sealed partial class AcpConnection : IAsyncDisposable {
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             // normal shutdown
         } finally {
+            // Latch + pre-fault hook run BEFORE pending requests fault: the runtime must observe
+            // "reconnecting" before the faulted prompt's continuation (and its finally-flush) can
+            // run, or the two race (design-of-record C6.2; reconnect spec §5.2).
+            MarkTransportEnded();
             FaultAllPending(new ObjectDisposedException(nameof(AcpConnection), "ACP connection read loop ended with requests still pending."));
         }
     }
@@ -431,8 +470,21 @@ internal sealed partial class AcpConnection : IAsyncDisposable {
 
         await _writeGate.WaitAsync(ct).ConfigureAwait(false);
         try {
-            await _writeStream.WriteAsync(bytes, ct).ConfigureAwait(false);
-            await _writeStream.FlushAsync(ct).ConfigureAwait(false);
+            try {
+                await _writeStream.WriteAsync(bytes, ct).ConfigureAwait(false);
+                await _writeStream.FlushAsync(ct).ConfigureAwait(false);
+            } catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) {
+                // A failure of the stream write/flush ITSELF is transport evidence (broken pipe /
+                // torn-down stream) and triggers the reconnect pre-fault path. Deliberately narrow
+                // on the exclusion side too: only a cancellation the CALLER actually requested is a
+                // local (non-transport) outcome — a stream throwing OperationCanceledException while
+                // ct is un-cancelled is a dying transport wearing the wrong exception type
+                // (code-review r1) and must latch like any other write failure. Gate-acquisition
+                // cancellation and anything before this inner try (serialization happens in the
+                // caller) never reach here.
+                MarkTransportEnded();
+                throw;
+            }
 
             // Log the outbound frame only after it is actually on the wire — and still under the gate,
             // so the debug log order matches wire order. A cancelled/failed write skips this, never

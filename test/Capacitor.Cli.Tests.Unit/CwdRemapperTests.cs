@@ -1,4 +1,3 @@
-using Capacitor.Cli;
 using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Tests.Unit;

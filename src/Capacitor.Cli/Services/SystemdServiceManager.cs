@@ -1,6 +1,8 @@
 namespace Capacitor.Cli.Services;
 
-sealed class SystemdServiceManager : IServiceManager {
+sealed class SystemdServiceManager(UnitFileWriter? writeUnit = null) : IServiceManager {
+    readonly UnitFileWriter _writeUnit = writeUnit ?? ((path, content, encoding) => ServiceFiles.WriteOwnerOnly(path, content, encoding));
+
     public string Describe() => "systemd --user unit";
 
     public IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec) =>
@@ -23,21 +25,52 @@ sealed class SystemdServiceManager : IServiceManager {
         return new ServiceStatus(SystemdUnit.StatusFrom(active, enabledExit), bin);
     }
 
-    public void Install(ServiceSpec spec, bool startNow) {
+    public ServiceQuery Query(string serviceId) {
+        var path = SystemdUnit.UnitPath(serviceId);
+        var unitPresent = File.Exists(path);
+        var (_, active, _)      = ServiceProcess.Run("systemctl", SystemdUnit.IsActiveArgs(serviceId));
+        var (enabledExit, _, _) = ServiceProcess.Run("systemctl", SystemdUnit.IsEnabledArgs(serviceId));
+        var bin = unitPresent ? SystemdUnit.BinaryFromUnit(File.ReadAllText(path)) : null;
+        var state = SystemdUnit.StatusFrom(active, enabledExit);
+        var probe = state != ServiceState.NotInstalled ? LabelProbe.Loaded : LabelProbe.Absent;
+        return new ServiceQuery(probe, unitPresent, state, bin, null);
+    }
+
+    /// <summary>The unit-writing half of <see cref="Install"/>, split out so it is testable without
+    /// invoking systemctl.</summary>
+    internal void WriteUnitFiles(ServiceSpec spec) {
         Directory.CreateDirectory(SystemdUnit.UserUnitDir());
-        File.WriteAllText(SystemdUnit.UnitPath(spec.ServiceId), SystemdUnit.Unit(spec));
+        _writeUnit(SystemdUnit.UnitPath(spec.ServiceId), SystemdUnit.Unit(spec), null);
+    }
+
+    public void Install(ServiceSpec spec, bool startNow) {
+        WriteUnitFiles(spec);
         ServiceProcess.Check("systemctl", SystemdUnit.DaemonReloadArgs());
         ServiceProcess.Check("systemctl", SystemdUnit.EnableArgs(spec.ServiceId));
         if (startNow) ServiceProcess.Check("systemctl", SystemdUnit.RestartArgs(spec.ServiceId));
     }
 
-    public void Uninstall(string serviceId) {
+    /// <summary>No distinct verify path for systemd yet — delegate mechanically to <see cref="Install"/>.</summary>
+    public void WriteAndBootstrap(ServiceSpec spec) => Install(spec, startNow: true);
+
+    public bool Uninstall(string serviceId, out string? error) {
         ServiceProcess.Run("systemctl", SystemdUnit.DisableNowArgs(serviceId));
         var path = SystemdUnit.UnitPath(serviceId);
         if (File.Exists(path)) File.Delete(path);
         ServiceProcess.Run("systemctl", SystemdUnit.DaemonReloadArgs());
+        error = null;
+        return true;
     }
 
-    public void Start(string serviceId) => ServiceProcess.Check("systemctl", SystemdUnit.StartArgs(serviceId));
-    public void Stop(string serviceId)  => ServiceProcess.Check("systemctl", SystemdUnit.StopArgs(serviceId));
+    public bool Start(string serviceId, out string? error) {
+        ServiceProcess.Check("systemctl", SystemdUnit.StartArgs(serviceId));
+        error = null;
+        return true;
+    }
+
+    public bool Stop(string serviceId, out string? error) {
+        ServiceProcess.Check("systemctl", SystemdUnit.StopArgs(serviceId));
+        error = null;
+        return true;
+    }
 }

@@ -41,17 +41,40 @@ mcp sessions:
   cd into your project before spawning. Requires `kcap login`.
 
 mcp flows:
-  Exposes four tools — start_review_flow, submit_review_round,
-  get_review_flow_status, close_review_flow — for agents to start and
-  interact with review flows. Requester context (session ID, cwd, repo
+  Exposes the review-flow and generic-flow tools for agents to start and
+  interact with hosted flows. Requester context (session ID, cwd, repo
   root, owner/name) is resolved automatically at startup. Requires
   `kcap login`.
 
-    Tools:
-      start_review_flow      Start a new AI-powered review flow.
-      submit_review_round    Submit a follow-up round with updated context.
+    Review-flow tools (reserved spec-review / code-review aliases):
+      start_review_flow      Start a review flow. Optional `vendor` picks the
+                             reviewer harness (lowercase token: claude, codex,
+                             cursor, copilot, gemini, kiro, opencode, antigravity, pi) —
+                             independent of the driver; omit to use the definition's
+                             authored vendor or your saved preference. Optional
+                             `model` pins the reviewer's model (REQUIRES `vendor`).
+                             Optional `mode: context-only` reviews without a workspace.
+      submit_review_round    Submit a follow-up round (reuses the pinned vendor/model).
       get_review_flow_status Get the status and last result of a flow.
       close_review_flow      Close a completed review flow.
+
+    Generic-flow tools (catalog + dynamic definitions):
+      start_flow             Start a catalog flow by `definition_id`, or an inline
+                             `definition_yaml` dynamic flow. `vendor`/`model` apply to
+                             single-participant catalog definitions only (rejected for
+                             multi-participant and definition_yaml).
+      send_to_participant    Address a message to a named participant role.
+      get_flow_status        Get status, rounds, and pending messages.
+      close_flow             Close a flow run.
+
+  The reviewer vendor is chosen independently of the driver harness. Pass the
+  lowercase canonical token; naming a reviewer is never inferred from the driver.
+  The tokens above are the protocol vocabulary — availability is per daemon: the
+  server rejects a vendor no connected daemon advertises as an unattended reviewer
+  with `reviewer_vendor_unavailable`, rather than silently substituting another.
+  A `model` override requires a server on the v3 flow-start protocol and a daemon
+  advertising a runtime model resolver for that vendor; otherwise the reviewer runs
+  on the vendor's default model. `default`/`auto` are rejected as model values.
 
   Claude Code auto-registers `kcap-flows` via the plugin's `.mcp.json`.
   `kcap setup` / `kcap plugin install --codex` register it conservatively
@@ -79,9 +102,11 @@ mcp memory:
       # needs an absolute path (e.g. /opt/homebrew/bin/kcap)
 
 mcp workitems:
-  Exposes two tools — declare_work_item, get_session_work_items — for agents
-  to attach the current session (and its continuation chain) to a work item,
-  or list what it's already attached to. Requires `kcap login`.
+  Exposes seven tools for agents to attach the current session (and its
+  continuation chain) to an SDLC work item and to DECLARE that work item's
+  structure — its breakdown (parent -> parts) and dependencies (blocks /
+  blocked-by). Breakdown and relations are declared, never inferred, so an item
+  whose structure nobody declares has an empty topology. Requires `kcap login`.
 
     Tools:
       declare_work_item        Attach the current session to a work item by
@@ -89,13 +114,48 @@ mcp workitems:
                                 title (exactly one of the four).
       get_session_work_items   List the work items the current session is
                                 attached to.
+      declare_work_breakdown   Declare that a work item is broken into parts
+                                (parent_id + part_ids); idempotent, one parent
+                                per part, all items in the same repository.
+      retract_work_breakdown   Detach the named parts from the parent.
+      declare_work_relation    Declare a dependency between two items (from_id,
+                                to_id, relation_kind 'blocks' or 'blocked_by');
+                                same repository, no self-relation.
+      retract_work_relation    Retract a previously declared dependency.
+      get_work_item_topology   Read a work item's parent, parts, and
+                                dependencies (scoped to what the caller sees).
 
   Claude Code auto-registers `kcap-workitems` via the plugin's `.mcp.json`
   (installed by `kcap setup`); it is not offered for Cursor or Codex.
 
+mcp analytics:
+  Exposes two read-only tools — get_analytics_schema, query_analytics — for
+  agents to run governed SQL over the org's coding-agent analytics (sessions,
+  tool/skill/token usage, cost, commits, PRs, evals). The agent fetches the
+  schema once, writes Postgres SELECTs itself, and self-repairs from the
+  server's rejection reasons. Queries default to the current repo; pass
+  scope 'global' for org-wide. Requires `kcap login` and a kcap-server with
+  the /api/analytics endpoints.
+
+  `kcap setup` auto-registers `kcap-analytics` for every supported harness
+  (Claude Code, Codex, Cursor, Copilot, Gemini, OpenCode, Antigravity, Kiro),
+  same as `kcap-sessions` — it resolves its repo scope from cwd, not a
+  harness-passed arg. To add it by hand instead:
+
+    Claude Code:
+      claude mcp add kcap-analytics -- kcap mcp analytics
+
+    Codex (CLI or desktop app) — add to ~/.codex/config.toml:
+      [mcp_servers.kcap-analytics]
+      command = "kcap"
+      args    = ["mcp", "analytics"]
+      # desktop app launches with no shell PATH, so command
+      # needs an absolute path (e.g. /opt/homebrew/bin/kcap)
+
 INSTALL
 
-  `kcap setup` registers `kcap-sessions`, `kcap-review`, `kcap-memory`, and `kcap-flows`
+  `kcap setup` registers `kcap-sessions`, `kcap-review`, `kcap-memory`,
+  `kcap-flows`, and `kcap-analytics`
   for both Claude Code (via the plugin's `.mcp.json`) and Codex CLI (`kcap setup`
   / `kcap plugin install --codex` write them into `~/.codex/config.toml`),
   so no manual `claude mcp add` or TOML edit is needed. Enabling the kcap

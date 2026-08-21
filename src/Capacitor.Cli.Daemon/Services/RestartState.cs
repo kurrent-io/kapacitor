@@ -6,5 +6,8 @@ namespace Capacitor.Cli.Daemon.Services;
 /// host shuts down. Registered as a singleton.
 /// </summary>
 public sealed class RestartState {
-    public volatile bool SupervisedRestart;
+    public bool SupervisedRestart {
+        get => Volatile.Read(ref field);
+        set => Volatile.Write(ref field, value);
+    }
 }

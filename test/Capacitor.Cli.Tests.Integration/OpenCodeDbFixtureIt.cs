@@ -5,7 +5,8 @@ namespace Capacitor.Cli.Tests.Integration;
 
 /// <summary>OpenCode-shaped throwaway SQLite db for routed-import wire-contract tests.</summary>
 internal sealed class OpenCodeDbFixtureIt : IDisposable {
-    public string Dir        { get; } = Directory.CreateTempSubdirectory("kcap-ocfix-it").FullName;
+    readonly TempDir _tmp = new();
+    public string Dir        => _tmp.Path;
     public string DbPath     => Path.Combine(Dir, "opencode.db");
     public string LedgerPath => Path.Combine(Dir, "ledger.json");
 
@@ -78,5 +79,5 @@ internal sealed class OpenCodeDbFixtureIt : IDisposable {
         }
     }
 
-    public void Dispose() { try { Directory.Delete(Dir, true); } catch { } }
+    public void Dispose() => _tmp.Dispose();
 }

@@ -1,0 +1,206 @@
+{
+  "t": "2026-08-07T15:08:45.073327+00:00",
+  "arms": [
+    {
+      "arm": "reviewer_mcp_unlisted",
+      "argv": [
+        "opencode",
+        "acp"
+      ],
+      "env": {
+        "OPENCODE_PERMISSION": "{\"*\": \"deny\", \"read\": \"allow\", \"grep\": \"allow\", \"glob\": \"allow\", \"list\": \"allow\", \"bash\": \"deny\"}"
+      },
+      "cwd": "/var/folders/d_/28hknwjx0vj_97mffp9h6mcc0000gn/T/kcap-oc-reviewer_mcp_unlisted-53_hlerd",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentCapabilities": {
+            "loadSession": true,
+            "mcpCapabilities": {
+              "http": true,
+              "sse": true
+            },
+            "promptCapabilities": {
+              "embeddedContext": true,
+              "image": true
+            },
+            "sessionCapabilities": {
+              "close": {},
+              "fork": {},
+              "list": {},
+              "resume": {}
+            }
+          },
+          "authMethods": [
+            {
+              "description": "Run `opencode auth login` in the terminal",
+              "name": "Login with opencode",
+              "id": "opencode-login"
+            }
+          ],
+          "agentInfo": {
+            "name": "OpenCode",
+            "version": "1.18.9"
+          }
+        }
+      },
+      "session_new": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "ses_0233ae1b4ffePJJL9AcFZKh4Zg",
+          "configOptions": [
+            {
+              "id": "model",
+              "name": "Model",
+              "category": "model",
+              "type": "select",
+              "currentValue": "opencode/big-pickle",
+              "options": [
+                {
+                  "value": "cohere/c4ai-aya-expanse-32b",
+                  "name": "Cohere/Aya Expanse 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-expanse-8b",
+                  "name": "Cohere/Aya Expanse 8B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-32b",
+                  "name": "Cohere/Aya Vision 32B"
+                },
+                {
+                  "value": "cohere/c4ai-aya-vision-8b",
+                  "name": "Cohere/Aya Vision 8B"
+                },
+                {
+                  "value": "cohere/command-a-03-2025",
+                  "name": "Cohere/Command A"
+                },
+                {
+                  "value": "cohere/command-a-plus-05-2026",
+                  "name": "Cohere/Command A Plus"
+                },
+                {
+                  "value": "cohere/command-a-reasoning-08-2025",
+                  "name": "Cohere/Command A Reasoning"
+                },
+                {
+                  "value": "cohere/command-a-translate-08-2025",
+                  "name": "Cohere/Command A Translate"
+                },
+                {
+                  "value": "cohere/command-a-vision-07-2025",
+                  "name": "Cohere/Command A Vision"
+                },
+                {
+                  "value": "cohere/command-r-08-2024",
+                  "name": "Cohere/Command R"
+                },
+                {
+                  "value": "cohere/command-r-plus-08-2024",
+                  "name": "Cohere/Command R+"
+                },
+                {
+                  "value": "cohere/command-r7b-12-2024",
+                  "name": "Cohere/Command R7B"
+                },
+                {
+                  "value": "cohere/command-r7b-arabic-02-2025",
+                  "name": "Cohere/Command R7B Arabic"
+                },
+                {
+                  "value": "cohere/north-mini-code-1-0",
+                  "name": "Cohere/North Mini Code"
+                },
+                {
+                  "value": "opencode/big-pickle",
+                  "name": "OpenCode Zen/Big Pickle"
+                },
+                {
+                  "value": "opencode/deepseek-v4-flash-free",
+                  "name": "OpenCode Zen/DeepSeek V4 Flash Free"
+                },
+                {
+                  "value": "opencode/laguna-s-2.1-free",
+                  "name": "OpenCode Zen/Laguna S 2.1 Free"
+                },
+                {
+                  "value": "opencode/ling-3.0-tiny-free",
+                  "name": "OpenCode Zen/Ling-3.0-tiny Free"
+                },
+                {
+                  "value": "opencode/longcat-2.0-free",
+                  "name": "OpenCode Zen/LongCat-2.0 Free"
+                },
+                {
+                  "value": "opencode/mimo-v2.5-free",
+                  "name": "OpenCode Zen/MiMo V2.5 Free"
+                },
+                {
+                  "value": "opencode/nemotron-3-ultra-free",
+                  "name": "OpenCode Zen/Nemotron 3 Ultra Free"
+                },
+                {
+                  "value": "opencode/north-mini-code-free",
+                  "name": "OpenCode Zen/North Mini Code Free"
+                }
+              ]
+            },
+            {
+              "id": "mode",
+              "name": "Session Mode",
+              "category": "mode",
+              "type": "select",
+              "currentValue": "build",
+              "options": [
+                {
+                  "value": "build",
+                  "name": "build",
+                  "description": "The default agent. Executes tools based on configured permissions."
+                },
+                {
+                  "value": "plan",
+                  "name": "plan",
+                  "description": "Plan mode. Disallows all edit tools."
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "permission": {
+        "*": "deny",
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "list": "allow",
+        "bash": "deny"
+      },
+      "mcp_nonce": "kcaprev897258e8ca",
+      "prompt": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "stopReason": "end_turn",
+          "usage": {
+            "inputTokens": 203,
+            "outputTokens": 86,
+            "totalTokens": 4446,
+            "thoughtTokens": 61,
+            "cachedReadTokens": 4096
+          },
+          "_meta": {}
+        }
+      },
+      "answer_text": "1. **README**: secret word is **PLATYPUS**.\n2. **probe_nonce**: failed \u2014 no such tool. I only have `glob`, `grep`, and `read`; there is no `probe_nonce` in my toolset.\n3. **`echo ok > shell-ran.txt`**: failed \u2014 I have no bash/shell tool available to run commands.",
+      "read_worked": true,
+      "mcp_called": false,
+      "shell_ran": false,
+      "permission_frame_count": 0,
+      "workdir": "/var/folders/d_/28hknwjx0vj_97mffp9h6mcc0000gn/T/kcap-oc-reviewer_mcp_unlisted-53_hlerd"
+    }
+  ]
+}

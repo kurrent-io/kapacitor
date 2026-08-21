@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 using System.Text;
 using Duende.IdentityModel.OidcClient.Browser;
@@ -10,10 +9,17 @@ namespace Capacitor.Cli.Core.Auth;
 /// Opens the system browser to the authorize URL, waits for the redirect callback,
 /// and returns its raw query string. WorkOS documents the loopback exception as
 /// 127.0.0.1 (not localhost). The bind exception is intentionally NOT caught so the
-/// GitHub flow can fall back to device flow on a bind failure.
+/// GitHub flow can fall back to device flow on a bind failure. A caller cancel throws
+/// <see cref="OperationCanceledException"/>; only the independent timeout returns Timeout.
 /// </summary>
-public sealed class LoopbackBrowser(Action<string>? openBrowser = null) : IBrowser {
-    readonly Action<string> _openBrowser = openBrowser ?? OpenSystemBrowser;
+/// <param name="hint">
+/// An escape hatch offered while the wait runs, printed under the "visit:" line rather than before it:
+/// above, it reads as an alternative to signing in at all instead of an alternative to that URL.
+/// </param>
+public sealed class LoopbackBrowser(
+        Func<string, bool>? openBrowser = null, IAuthProgress? progress = null, string? hint = null) : IBrowser {
+    readonly Func<string, bool> _openBrowser = openBrowser ?? SystemBrowser.TryOpen;
+    readonly IAuthProgress  _progress    = progress ?? ConsoleAuthProgress.Instance;
 
     public async Task<BrowserResult> InvokeAsync(BrowserOptions options, CancellationToken ct = default) {
         var port = new Uri(options.EndUrl).Port;
@@ -22,9 +28,18 @@ public sealed class LoopbackBrowser(Action<string>? openBrowser = null) : IBrows
         listener.Prefixes.Add($"http://127.0.0.1:{port}/");
         listener.Start(); // bind failure propagates (HttpListenerException / PlatformNotSupportedException)
 
-        await Console.Out.WriteLineAsync("Opening browser for authentication...");
-        await Console.Out.WriteLineAsync($"  If the browser doesn't open, visit: {options.StartUrl}");
-        _openBrowser(options.StartUrl);
+        // Bind, launch, THEN announce: nothing is said until there is something true to say, or a
+        // failed launch has already printed the browser narrative and a 300-character authorize URL
+        // for a route the reader cannot take. (The listener still binds first, so a fast browser
+        // cannot beat it.)
+        //
+        // Thrown rather than waited out: with no browser here, the callback can only be reached from a
+        // browser on this machine, and there isn't one. Five minutes of listening ends in the same
+        // place, having offered a URL that leads to a connection refused.
+        if (!_openBrowser(options.StartUrl)) throw new BrowserLaunchException();
+
+        _progress.BrowserOpening(options.StartUrl);
+        if (hint is not null) _progress.Notice(hint);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(options.Timeout);
@@ -40,6 +55,9 @@ public sealed class LoopbackBrowser(Action<string>? openBrowser = null) : IBrows
                 listener.Stop();
                 _ = getContext.ContinueWith(t => _ = t.Exception, CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+                // The caller's own cancel is not a timeout — it propagates so the flow answers Cancelled.
+                ct.ThrowIfCancellationRequested();
 
                 return new BrowserResult { ResultType = BrowserResultType.Timeout };
             }
@@ -58,14 +76,6 @@ public sealed class LoopbackBrowser(Action<string>? openBrowser = null) : IBrows
         return new BrowserResult { ResultType = BrowserResultType.Success, Response = query };
     }
 
-    static void OpenSystemBrowser(string url) {
-        try {
-            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-        } catch {
-            // Best-effort — headless environments (devcontainers, SSH) have no browser.
-        }
-    }
-
     static async Task WriteClosingPageAsync(HttpListenerContext ctx, bool success) {
         var (title, message) = success
             ? ("Authentication successful!", "You can close this window and return to the terminal.")
@@ -80,4 +90,13 @@ public sealed class LoopbackBrowser(Action<string>? openBrowser = null) : IBrows
         await ctx.Response.OutputStream.WriteAsync(buffer);
         ctx.Response.Close();
     }
+}
+
+/// <summary>No browser could be launched on this machine. Callers with a device-code rung take it.</summary>
+public sealed class BrowserLaunchException : Exception {
+    public BrowserLaunchException() : base("Could not launch a browser on this machine.") { }
+
+    public BrowserLaunchException(string message) : base(message) { }
+
+    public BrowserLaunchException(string message, Exception innerException) : base(message, innerException) { }
 }

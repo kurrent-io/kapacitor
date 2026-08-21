@@ -18,14 +18,15 @@ namespace Capacitor.Cli.Tests.Integration;
 /// <c>ImportChainsTests</c> (Tests.Unit) drives for the New branch.
 /// </summary>
 public class ImportEndReassertTests : IDisposable {
-    readonly WireMockServer _server  = WireMockServer.Start();
-    readonly string         _tempDir = Directory.CreateTempSubdirectory("kcap-end-reassert-test").FullName;
+    readonly WireMockServer _server = WireMockServer.Start();
+    readonly TempDir        _tmp    = new();
+    readonly string         _tempDir;
+
+    public ImportEndReassertTests() => _tempDir = _tmp.Path;
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_tempDir, recursive: true); } catch {
-            /* best effort */
-        }
+        _tmp.Dispose();
     }
 
     // 3-line Claude-shape transcript. Root-level "timestamp" matches what both
@@ -105,8 +106,8 @@ public class ImportEndReassertTests : IDisposable {
             .Select(e => e.RequestMessage.Path!)
             .ToArray();
 
-        await Assert.That(posts.Count(p => p.StartsWith("/hooks/session-start"))).IsEqualTo(0);
-        await Assert.That(posts.Count(p => p.StartsWith("/hooks/session-end"))).IsEqualTo(1);
+        await Assert.That(posts.Count(p => p.StartsWith("/hooks/session-start", StringComparison.Ordinal))).IsEqualTo(0);
+        await Assert.That(posts.Count(p => p.StartsWith("/hooks/session-end", StringComparison.Ordinal))).IsEqualTo(1);
         await Assert.That(posts.Last()).StartsWith("/hooks/session-end");
     }
 
@@ -130,7 +131,7 @@ public class ImportEndReassertTests : IDisposable {
         await Assert.That(result.Errored).IsEqualTo(1);
         await Assert.That(result.Resumed).IsEqualTo(0);
 
-        var endPosts = _server.LogEntries.Count(e => e.RequestMessage.Path!.StartsWith("/hooks/session-end"));
+        var endPosts = _server.LogEntries.Count(e => e.RequestMessage.Path!.StartsWith("/hooks/session-end", StringComparison.Ordinal));
         await Assert.That(endPosts).IsEqualTo(0); // never finalize on a gap
     }
 }

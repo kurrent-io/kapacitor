@@ -1,4 +1,3 @@
-using Capacitor.Cli;
 using Capacitor.Cli.PrDetection;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -26,14 +25,13 @@ public class RepositoryDetectionPrSkipTests {
             return Task.FromResult(reply);
         };
 
-    static string FreshCwd() => Path.Combine(Path.GetTempPath(), "kcap-prskip-" + Guid.NewGuid().ToString("N"));
-
     [Test]
     public async Task DetectPullRequest_false_never_spawns_gh_or_glab() {
+        using var cwd = new TempDir();
         var commands = new List<string>();
 
         var repo = await RepositoryDetection.DetectRepositoryAsync(
-            FreshCwd(), budget: TimeSpan.FromSeconds(5), detectPullRequest: false, run: RecordingRunner(commands));
+            cwd.Path, budget: TimeSpan.FromSeconds(5), detectPullRequest: false, run: RecordingRunner(commands));
 
         await Assert.That(repo).IsNotNull();
         await Assert.That(repo!.Owner).IsEqualTo("acme");
@@ -48,10 +46,11 @@ public class RepositoryDetectionPrSkipTests {
 
     [Test]
     public async Task DetectPullRequest_true_does_probe_the_provider() {
+        using var cwd = new TempDir();
         var commands = new List<string>();
 
         await RepositoryDetection.DetectRepositoryAsync(
-            FreshCwd(), budget: TimeSpan.FromSeconds(5), detectPullRequest: true, run: RecordingRunner(commands));
+            cwd.Path, budget: TimeSpan.FromSeconds(5), detectPullRequest: true, run: RecordingRunner(commands));
 
         // Proves the flag actually gates the round-trip: with detection ON, the
         // GitHub provider probe (gh) is attempted.
@@ -60,8 +59,9 @@ public class RepositoryDetectionPrSkipTests {
 
     [Test]
     public async Task EnrichWithRepositoryInfo_false_never_spawns_gh_or_glab() {
+        using var cwd = new TempDir();
         var commands = new List<string>();
-        var payload  = $$"""{"cwd":"{{FreshCwd().Replace("\\", "/")}}","hook_event_name":"session-start"}""";
+        var payload  = $$"""{"cwd":"{{cwd.Path.Replace("\\", "/")}}","hook_event_name":"session-start"}""";
 
         var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(
             payload, budget: TimeSpan.FromSeconds(5), detectPullRequest: false, run: RecordingRunner(commands));

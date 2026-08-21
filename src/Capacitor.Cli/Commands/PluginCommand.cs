@@ -2,17 +2,20 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Antigravity;
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.Core.Copilot;
-using Capacitor.Cli.Core.Cursor;
 using Capacitor.Cli.Core.Dsh;
-using Capacitor.Cli.Core.Gemini;
-using Capacitor.Cli.Core.Kiro;
+using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness.Copilot;
+using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.Harness.Gemini;
+using Capacitor.Cli.Core.Harness.Kiro;
+using Capacitor.Cli.Core.Harness.OpenCode;
+using Capacitor.Cli.Core.Harness.Pi;
 using Capacitor.Cli.Core.Instructions;
 using Capacitor.Cli.Core.Mcp;
-using Capacitor.Cli.Core.OpenCode;
-using Capacitor.Cli.Core.Pi;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Commands;
 
@@ -528,14 +531,14 @@ public static class PluginCommand {
     }
 
     /// <summary>
-    /// Registers the kcap MCP servers, including non-auto-approved kcap-flows, in
+    /// Registers the kcap MCP servers (<see cref="KcapMcpServers.ForCodex"/>) in
     /// <c>~/.codex/config.toml</c> so Codex CLI loads them without a manual TOML edit.
     /// Never fails the install: a write error is a warning, not an error code.
     /// </summary>
     static async Task RegisterCodexMcpServersAsync(PluginEnvironment env) {
-        switch (CodexConfigToml.RegisterKcapMcpServers(env.CodexConfigTomlPath)) {
+        switch (CodexConfigToml.RegisterKcapMcpServers(env.CodexConfigTomlPath, env.ResolveMcpBinaryPath)) {
             case CodexConfigToml.Change.Updated:
-                await env.Stdout.WriteLineAsync($"Codex MCP servers registered: kcap-review, kcap-sessions, kcap-flows, kcap-memory ({env.CodexConfigTomlPath}).");
+                await env.Stdout.WriteLineAsync($"Codex MCP servers registered: {string.Join(", ", KcapMcpServers.ForCodex.Select(s => s.Name))} ({env.CodexConfigTomlPath}).");
                 break;
             case CodexConfigToml.Change.Unchanged:
                 await env.Stdout.WriteLineAsync("Codex MCP servers already registered — no change needed.");
@@ -741,7 +744,7 @@ public static class PluginCommand {
             // find it. Skip the precheck on the postinstall (--if-installed) path so
             // an in-flight npm install doesn't fail just because the new symlink
             // isn't on the child process's PATH yet.
-            case false when !AgentDetector.IsInstalled("kcap"):
+            case false when !AgentDetection.BinaryOnPath("kcap"):
                 await env.Stderr.WriteLineAsync(
                     "Cannot install Cursor hooks: 'kcap' is not on PATH. "
                   + "Re-install kcap via npm: npm install -g @kurrent/kcap"
@@ -770,6 +773,9 @@ public static class PluginCommand {
         if (!args.Contains("--skip-cursor-mcp"))
             await RegisterCursorMcpServersAsync(env);
 
+        if (!args.Contains("--skip-cursor-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
+
         return 0;
     }
 
@@ -779,8 +785,7 @@ public static class PluginCommand {
     /// not an error code.
     /// </summary>
     static async Task RegisterCursorMcpServersAsync(PluginEnvironment env) {
-        var change = JsonMcpConfigWriter.Register(
-            env.CursorMcpJson, KcapMcpServers.ForCursor, McpConfigShape.Standard, cwd: null, new McpMarker("cursor"));
+        var change = HarnessMcpProjections.Cursor.Register(env.CursorMcpJson, resolveBinaryPath: env.ResolveMcpBinaryPath);
 
         switch (change) {
             case JsonMcpConfigWriter.Change.Updated:
@@ -819,7 +824,7 @@ public static class PluginCommand {
         // Cursor is user-scope only (no --project split like Codex), so the kcap MCP
         // entries are always unregistered here, independent of whether hooks.json
         // existed — the two files are unrelated on disk.
-        var mcpChange = JsonMcpConfigWriter.Unregister(env.CursorMcpJson, McpConfigShape.Standard, new McpMarker("cursor"));
+        var mcpChange = HarnessMcpProjections.Cursor.Unregister(env.CursorMcpJson);
         var mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
 
         if (mcpChange == JsonMcpConfigWriter.Change.Updated) {
@@ -904,10 +909,15 @@ public static class PluginCommand {
         // Gemini refresh heals MCP + instructions even when a prior version had hooks only.
         if (refreshOnly && !PiExtensionInstaller.IsInstalled(extensionPath)) return 0;
 
+        // No stale-session report for Pi: it runs through a node shim, and node's process.title setter
+        // rewrites the argv region — so the process is named `pi` with a command line of just "pi", or
+        // named `node` with the package path intact, never both. A name this generic needs
+        // corroboration, and the only corroborating signal disappears exactly when the name appears.
+
         // Fresh install needs kcap on PATH: both extensions shell out to the bare
         // `kcap` command (ingest → `kcap hook --pi`; bridge → `kcap mcp <name>`), so
         // pi must find kcap on PATH. Skipped on the postinstall (--if-installed) path.
-        if (!refreshOnly && !AgentDetector.IsInstalled("kcap")) {
+        if (!refreshOnly && !AgentDetection.BinaryOnPath("kcap")) {
             await env.Stderr.WriteLineAsync(
                 "Cannot install the Pi extension: 'kcap' is not on PATH. "
               + "Re-install kcap via npm: npm install -g @kurrent/kcap"
@@ -949,6 +959,9 @@ public static class PluginCommand {
         //    toward the kcap tools. Non-destructive (only our block) + idempotent. Never fails.
         if (!skipInstructions)
             await InstallPiInstructionsAsync(env);
+
+        if (!args.Contains("--skip-pi-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
 
         // Non-zero only when a FRESH ingest install failed (the integration is incomplete) —
         // the independent MCP bridge + AGENTS.md steering above were still installed.
@@ -1054,7 +1067,7 @@ public static class PluginCommand {
 
         // Fresh install needs kcap on PATH: the plugin shells out to the bare `kcap hook --opencode`
         // command, so OpenCode must find kcap on PATH. Skipped on the --if-installed (postinstall) path.
-        if (!refreshOnly && !AgentDetector.IsInstalled("kcap")) {
+        if (!refreshOnly && !AgentDetection.BinaryOnPath("kcap")) {
             await env.Stderr.WriteLineAsync(
                 "Cannot install the OpenCode plugin: 'kcap' is not on PATH. "
               + "Re-install kcap via npm: npm install -g @kurrent/kcap"
@@ -1102,6 +1115,9 @@ public static class PluginCommand {
         if (!args.Contains("--skip-opencode-instructions"))
             await InstallOpenCodeInstructionsAsync(env);
 
+        if (!args.Contains("--skip-opencode-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
+
         return 0;
     }
 
@@ -1111,8 +1127,7 @@ public static class PluginCommand {
     /// loads them without a manual JSON edit. Never fails the install: a write error is a warning.
     /// </summary>
     static async Task RegisterOpenCodeMcpServersAsync(PluginEnvironment env) {
-        var change = JsonMcpConfigWriter.Register(
-            env.OpenCodeMcpConfigJson, KcapMcpServers.ForCursor, McpConfigShape.OpenCode, cwd: null, new McpMarker("opencode"));
+        var change = HarnessMcpProjections.OpenCode.Register(env.OpenCodeMcpConfigJson, resolveBinaryPath: env.ResolveMcpBinaryPath);
 
         switch (change) {
             case JsonMcpConfigWriter.Change.Updated:
@@ -1165,7 +1180,7 @@ public static class PluginCommand {
 
         // MCP servers live in a separate file (~/.config/opencode/opencode.json) — unregister
         // regardless (Unregister owns the ownership-marker cleanup and no-ops when the file is absent).
-        var mcpChange = JsonMcpConfigWriter.Unregister(env.OpenCodeMcpConfigJson, McpConfigShape.OpenCode, new McpMarker("opencode"));
+        var mcpChange = HarnessMcpProjections.OpenCode.Unregister(env.OpenCodeMcpConfigJson);
         var mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
 
         if (mcpChange == JsonMcpConfigWriter.Change.Updated) {
@@ -1198,7 +1213,7 @@ public static class PluginCommand {
 
         // Fresh install needs kcap on PATH: hooks.json runs the bare `kcap hook --antigravity`
         // command. Skipped on the --if-installed (postinstall) refresh path.
-        if (!refreshOnly && !AgentDetector.IsInstalled("kcap")) {
+        if (!refreshOnly && !AgentDetection.BinaryOnPath("kcap")) {
             await env.Stderr.WriteLineAsync(
                 "Cannot install Antigravity hooks: 'kcap' is not on PATH. "
               + "Re-install kcap via npm: npm install -g @kurrent/kcap"
@@ -1250,8 +1265,7 @@ public static class PluginCommand {
     /// <summary>Registers the kcap MCP servers in Antigravity's own <c>~/.gemini/config/mcp_config.json</c>
     /// (Standard shape). Never fails the install: a write error is a warning.</summary>
     static async Task RegisterAntigravityMcpServersAsync(PluginEnvironment env) {
-        var change = JsonMcpConfigWriter.Register(
-            env.AntigravityMcpConfigJson, KcapMcpServers.ForCursor, McpConfigShape.Standard, cwd: null, new McpMarker("antigravity"));
+        var change = HarnessMcpProjections.Antigravity.Register(env.AntigravityMcpConfigJson, resolveBinaryPath: env.ResolveMcpBinaryPath);
 
         switch (change) {
             case JsonMcpConfigWriter.Change.Updated:
@@ -1280,24 +1294,60 @@ public static class PluginCommand {
         }
     }
 
-    /// <summary>Copies the kcap skills into <c>~/.gemini/skills</c> (where Antigravity reads them, unlike
-    /// the agent-agnostic <c>~/.agents/skills</c>). Idempotent (version marker); never fails the install.</summary>
-    static async Task InstallAntigravitySkillsAsync(PluginEnvironment env, bool refreshOnly) {
-        // Fast path: on-disk skills already match this build (marker + all folders present).
-        if (AgentsSkillsInstaller.IsCurrent(env.AntigravitySkillsDir)) return;
+    /// <summary>
+    /// Copies the kcap skills into <paramref name="targetDir"/> for a vendor that reads a skills tree.
+    /// Which tree differs by vendor — the agent-agnostic <c>~/.agents/skills</c> for most, their own
+    /// for Kiro and Antigravity — so the caller names it.
+    /// </summary>
+    /// <remarks>
+    /// A refresh tops up a tree the user already has; it never creates one. `plugin remove --skills`
+    /// deletes the marker precisely so an upgrade cannot silently undo it, and the npm postinstall
+    /// runs the `--if-installed` form of every vendor on each `npm install -g` — without this gate a
+    /// deliberate removal would come back on a command the user never ran.
+    /// Never fails the install: hooks and MCP registration are what make capture work, so a skills
+    /// copy that fails is a warning and the vendor is still wired up.
+    /// </remarks>
+    static async Task InstallVendorSkillsAsync(
+            PluginEnvironment env, string targetDir, string label, bool refreshOnly) {
+        if (refreshOnly && !AgentsSkillsInstaller.IsInstalled(targetDir)) return;
+
+        // The sweep runs even when the tree is already current: a Cursor-first install stamps the
+        // marker, so gating it on the copy would mean the stale dir outlives every later install.
+        if (targetDir == env.AgentsSkillsDir)
+            AgentsSkillsInstaller.CleanLegacyCodexSkills(env.LegacyCodexSkills);
+
+        if (AgentsSkillsInstaller.IsCurrent(targetDir)) return;
 
         var pluginPath = env.ResolvePluginPath();
         var src        = pluginPath is null ? null : Path.Combine(pluginPath, "skills");
         if (src is null || !Directory.Exists(src)) {
             if (!refreshOnly)
-                await env.Stderr.WriteLineAsync("Warning: could not install Antigravity skills — kcap plugin 'skills' folder not found.");
+                await env.Stderr.WriteLineAsync($"Warning: could not install {label} skills — kcap plugin 'skills' folder not found.");
             return;
         }
 
-        if (AgentsSkillsInstaller.Install(src, env.AntigravitySkillsDir))
-            await env.Stdout.WriteLineAsync($"Antigravity skills installed ({env.AntigravitySkillsDir}).");
+        if (AgentsSkillsInstaller.Install(src, targetDir))
+            await env.Stdout.WriteLineAsync($"{label} skills installed ({targetDir}).");
         else
-            await env.Stderr.WriteLineAsync($"Warning: could not install Antigravity skills to {env.AntigravitySkillsDir}.");
+            await env.Stderr.WriteLineAsync($"Warning: could not install {label} skills to {targetDir}.");
+    }
+
+    /// <summary>Antigravity reads <c>~/.gemini/skills</c>, not the agent-agnostic tree.</summary>
+    static Task InstallAntigravitySkillsAsync(PluginEnvironment env, bool refreshOnly) =>
+        InstallVendorSkillsAsync(env, env.AntigravitySkillsDir, "Antigravity", refreshOnly);
+
+    /// <summary>
+    /// Reports the sessions sampled before the install, once that install has actually landed. Saying
+    /// "anything from now on is captured" after a failed one would be untrue in the direction that
+    /// matters.
+    /// </summary>
+    static async Task ReportStaleAgentsAsync(
+            PluginEnvironment env, IReadOnlyList<StaleAgentProcess> runningBefore, bool installed) {
+        if (!installed) return;
+
+        foreach (var line in StaleAgentDetector.Describe(runningBefore)) {
+            await env.Stdout.WriteLineAsync(line);
+        }
     }
 
     static async Task<int> RemoveAntigravity(string[] args, PluginEnvironment env) {
@@ -1320,7 +1370,7 @@ public static class PluginCommand {
 
         // MCP servers live in a separate mcp_config.json — unregister regardless (Unregister owns the
         // ownership-marker cleanup and no-ops when the file is absent).
-        var mcpChange = JsonMcpConfigWriter.Unregister(env.AntigravityMcpConfigJson, McpConfigShape.Standard, new McpMarker("antigravity"));
+        var mcpChange = HarnessMcpProjections.Antigravity.Unregister(env.AntigravityMcpConfigJson);
         var mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
 
         if (mcpChange == JsonMcpConfigWriter.Change.Updated) {
@@ -1387,7 +1437,7 @@ public static class PluginCommand {
 
         // Fresh install needs kcap on PATH: kcap.json writes the bare `kcap hook --copilot` command,
         // so Copilot must find kcap on PATH. Skipped on the --if-installed (postinstall) path.
-        if (!refreshOnly && !AgentDetector.IsInstalled("kcap")) {
+        if (!refreshOnly && !AgentDetection.BinaryOnPath("kcap")) {
             await env.Stderr.WriteLineAsync(
                 "Cannot install Copilot hooks: 'kcap' is not on PATH. "
               + "Re-install kcap via npm: npm install -g @kurrent/kcap"
@@ -1431,6 +1481,9 @@ public static class PluginCommand {
         if (!args.Contains("--skip-copilot-instructions"))
             await InstallCopilotInstructionsAsync(env);
 
+        if (!args.Contains("--skip-copilot-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
+
         return 0;
     }
 
@@ -1440,8 +1493,7 @@ public static class PluginCommand {
     /// not an error code.
     /// </summary>
     static async Task RegisterCopilotMcpServersAsync(PluginEnvironment env) {
-        var change = JsonMcpConfigWriter.Register(
-            env.CopilotMcpConfigJson, KcapMcpServers.ForCursor, McpConfigShape.Copilot, cwd: null, new McpMarker("copilot"));
+        var change = HarnessMcpProjections.Copilot.Register(env.CopilotMcpConfigJson, resolveBinaryPath: env.ResolveMcpBinaryPath);
 
         switch (change) {
             case JsonMcpConfigWriter.Change.Updated:
@@ -1497,7 +1549,7 @@ public static class PluginCommand {
         // unregister them independently of whether the hooks file existed. Unregister owns
         // the ownership-marker cleanup: it clears the marker on any non-Failed outcome and
         // retains it on Failed so a retry can still identify the kcap-owned entries.
-        var mcpChange = JsonMcpConfigWriter.Unregister(env.CopilotMcpConfigJson, McpConfigShape.Copilot, new McpMarker("copilot"));
+        var mcpChange = HarnessMcpProjections.Copilot.Unregister(env.CopilotMcpConfigJson);
         var mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
 
         if (mcpChange == JsonMcpConfigWriter.Change.Updated) {
@@ -1584,7 +1636,9 @@ public static class PluginCommand {
         // Kiro's MCP lives in a SEPARATE file (~/.kiro/settings/mcp.json), independent of the agent
         // clone — so a prior `--skip-kiro-hooks` (or a clone that failed because kiro-cli was missing)
         // can leave an MCP-only install with no agent marker.
-        var mcpInstalled = new McpMarker("kiro").Owned(mcpPath).Any();
+        var mcpInstalled = HarnessMcpProjections.Kiro.OwnsAnything(mcpPath);
+
+        var kiroAlreadyInstalled = KiroHooksInstaller.IsInstalled(agentPath);
 
         if (refreshOnly) {
             // Never touch a machine that never opted in (neither hooks nor MCP).
@@ -1604,7 +1658,7 @@ public static class PluginCommand {
         }
 
         // Fresh install needs kcap on PATH: the agent + the MCP servers run the bare `kcap` command.
-        if (!refreshOnly && !AgentDetector.IsInstalled("kcap")) {
+        if (!refreshOnly && !AgentDetection.BinaryOnPath("kcap")) {
             await env.Stderr.WriteLineAsync(
                 "Cannot install Kiro hooks: 'kcap' is not on PATH. "
               + "Re-install kcap via npm: npm install -g @kurrent/kcap"
@@ -1612,6 +1666,13 @@ public static class PluginCommand {
 
             return 1;
         }
+
+        // Sampled after the early returns above and before anything is written: a refresh that bails
+        // should not sweep the process table, and a session started DURING the install loaded the
+        // integration, so it must not be reported as predating it.
+        var kiroRunningBefore = kiroAlreadyInstalled
+            ? []
+            : env.FindStaleAgents([new StaleAgentTarget("kiro", KiroPaths.ProcessName)]);
 
         // Clone/refresh the agent unless a refresh finds it on disk AND current (File.Exists so a
         // deleted kcap.json is recreated). MCP is registered below regardless of the clone outcome.
@@ -1650,6 +1711,8 @@ public static class PluginCommand {
         if (!args.Contains("--skip-kiro-skills"))
             await InstallKiroSkillsAsync(env, refreshOnly);
 
+        await ReportStaleAgentsAsync(env, kiroRunningBefore, installed: !hooksFailed);
+
         // A fresh agent-clone failure is still an error exit (capture won't work without it), but the
         // independent MCP file + skills were still written above.
         return hooksFailed && !refreshOnly ? 1 : 0;
@@ -1661,22 +1724,8 @@ public static class PluginCommand {
     /// toward the kcap MCP tools. Fast-path skips when already at the current version. Never fails the
     /// install: a copy error is a warning.
     /// </summary>
-    static async Task InstallKiroSkillsAsync(PluginEnvironment env, bool refreshOnly) {
-        if (AgentsSkillsInstaller.IsCurrent(env.KiroSkillsDir)) return;
-
-        var pluginPath = env.ResolvePluginPath();
-        var src        = pluginPath is null ? null : Path.Combine(pluginPath, "skills");
-        if (src is null || !Directory.Exists(src)) {
-            if (!refreshOnly)
-                await env.Stderr.WriteLineAsync("Warning: could not install Kiro skills — kcap plugin 'skills' folder not found.");
-            return;
-        }
-
-        if (AgentsSkillsInstaller.Install(src, env.KiroSkillsDir))
-            await env.Stdout.WriteLineAsync($"Kiro skills installed ({env.KiroSkillsDir}).");
-        else
-            await env.Stderr.WriteLineAsync($"Warning: could not install Kiro skills to {env.KiroSkillsDir}.");
-    }
+    static Task InstallKiroSkillsAsync(PluginEnvironment env, bool refreshOnly) =>
+        InstallVendorSkillsAsync(env, env.KiroSkillsDir, "Kiro", refreshOnly);
 
     /// <summary>
     /// Registers the kcap MCP servers in Kiro's <c>~/.kiro/settings/mcp.json</c> (<c>mcpServers</c>
@@ -1684,8 +1733,7 @@ public static class PluginCommand {
     /// fields (kcap leaves autoApprove unset). Never fails the install: a write error is a warning.
     /// </summary>
     static async Task RegisterKiroMcpServersAsync(PluginEnvironment env, string mcpPath) {
-        var change = JsonMcpConfigWriter.Register(
-            mcpPath, KcapMcpServers.ForCursor, McpConfigShape.Standard, cwd: null, new McpMarker("kiro"));
+        var change = HarnessMcpProjections.Kiro.Register(mcpPath, resolveBinaryPath: env.ResolveMcpBinaryPath);
 
         switch (change) {
             case JsonMcpConfigWriter.Change.Updated:
@@ -1706,7 +1754,7 @@ public static class PluginCommand {
 
         // MCP servers live in a separate settings/mcp.json — unregister independently of the agent
         // restore/removal (Unregister owns the ownership-marker cleanup and no-ops when absent).
-        var mcpChange = JsonMcpConfigWriter.Unregister(mcpPath, McpConfigShape.Standard, new McpMarker("kiro"));
+        var mcpChange = HarnessMcpProjections.Kiro.Unregister(mcpPath);
         var mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
 
         if (mcpChange == JsonMcpConfigWriter.Change.Updated) {
@@ -1780,10 +1828,10 @@ public static class PluginCommand {
                 ? KiroHooksInstaller.ReadPreviousDefault(agentJsonPath) ?? "kiro_default"
                 : currentDefault;
 
-            // Clone the current default into the kcap agent (kiro-cli writes it to
+            // Clone the current default into kcap's Kiro agent (kiro-cli writes it to
             // the global agents dir, preserving tools/prompt). Skipped if kcap exists.
             if (!File.Exists(agentJsonPath)) {
-                if (!AgentDetector.IsInstalled(KiroBinary)) return false;
+                if (!AgentDetection.BinaryOnPath(KiroBinary)) return false;
                 if (RunKiroCli("agent", "create", KiroAgentName, "--from", recordedDefault) != 0 || !File.Exists(agentJsonPath))
                     return false;
             }
@@ -1962,7 +2010,7 @@ public static class PluginCommand {
 
         // Fresh install needs kcap on PATH: settings.json writes the bare `kcap hook --gemini`
         // command, so Gemini must find kcap on PATH. Skipped on the --if-installed (postinstall) path.
-        if (!refreshOnly && !AgentDetector.IsInstalled("kcap")) {
+        if (!refreshOnly && !AgentDetection.BinaryOnPath("kcap")) {
             await env.Stderr.WriteLineAsync(
                 "Cannot install Gemini hooks: 'kcap' is not on PATH. "
               + "Re-install kcap via npm: npm install -g @kurrent/kcap"
@@ -2019,6 +2067,9 @@ public static class PluginCommand {
         if (!args.Contains("--skip-gemini-instructions"))
             await InstallGeminiInstructionsAsync(env);
 
+        if (!args.Contains("--skip-gemini-skills"))
+            await InstallVendorSkillsAsync(env, env.AgentsSkillsDir, "Agent", refreshOnly);
+
         // Non-zero only when a FRESH hook install failed (the integration is incomplete) — the
         // independent GEMINI.md steering above was still installed.
         return freshHookFailure ? 1 : 0;
@@ -2031,8 +2082,7 @@ public static class PluginCommand {
     /// Never fails the install: a write error is a warning, not an error code.
     /// </summary>
     static async Task RegisterGeminiMcpServersAsync(PluginEnvironment env, string settingsPath) {
-        var change = JsonMcpConfigWriter.Register(
-            settingsPath, KcapMcpServers.ForCursor, McpConfigShape.Gemini, cwd: null, new McpMarker("gemini"));
+        var change = HarnessMcpProjections.Gemini.Register(settingsPath, resolveBinaryPath: env.ResolveMcpBinaryPath);
 
         switch (change) {
             case JsonMcpConfigWriter.Change.Updated:
@@ -2070,7 +2120,6 @@ public static class PluginCommand {
         var settingsPath = GetArg(args, "--gemini-settings-path") ?? env.GeminiSettingsJson;
 
         var hooksFailed = false;
-        var mcpFailed = false;
 
         // Hooks live in the shared settings.json — only removable if the file exists.
         if (File.Exists(settingsPath)) {
@@ -2096,8 +2145,8 @@ public static class PluginCommand {
         // leave a STALE marker that could later misclassify a user-authored mcpServers.kcap-* entry as
         // kcap-owned. On an absent file it's a no-op (Unchanged) that still clears the marker and
         // never creates a config file.
-        var mcpChange = JsonMcpConfigWriter.Unregister(settingsPath, McpConfigShape.Gemini, new McpMarker("gemini"));
-        mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
+        var mcpChange = HarnessMcpProjections.Gemini.Unregister(settingsPath);
+        var mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
 
         if (mcpChange == JsonMcpConfigWriter.Change.Updated) {
             await env.Stdout.WriteLineAsync($"Gemini MCP servers removed ({settingsPath}).");

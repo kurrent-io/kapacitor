@@ -7,14 +7,16 @@ namespace Capacitor.Cli;
 /// <summary>
 /// builds the SessionStart "team memory" index
 /// fragment from the <c>GET /api/memories/index</c> response body: a JSON array of
-/// <c>{memory_id, slug, audience, description, kind}</c>, already capped and
-/// most-recently-updated first by the server.
+/// <c>{memory_id, slug, audience, description, kind, scope_kind, project_slug}</c>,
+/// already capped and most-recently-updated first by the server.
 /// <para>
 /// Entries are grouped by <c>audience</c> (org → team → user), preserving the
-/// server's order within each group, and rendered as <c>slug: description</c> — one
-/// line per memory — under a lead-in that tells the agent to call
-/// <c>get_memory</c> / <c>search_memories</c> for full content. Bodies are NEVER
-/// injected: this mirrors a local <c>MEMORY.md</c> index so the injected token cost
+/// server's order within each group, and rendered as <c>slug [scope]: description</c>
+/// — one line per memory — under a lead-in that tells the agent to call
+/// <c>get_memory</c> / <c>search_memories</c> for full content. The <c>[scope]</c> tag
+/// annotates the memory's home scope (a project-scoped memory shows <c>[project: {slug}]</c>,
+/// a repo one <c>[repo]</c>, org-scoped and older servers render untagged). Bodies are
+/// NEVER injected: this mirrors a local <c>MEMORY.md</c> index so the injected token cost
 /// stays roughly flat as the pool grows.
 /// </para>
 /// <para>
@@ -24,6 +26,18 @@ namespace Capacitor.Cli;
 /// </para>
 /// </summary>
 static class MemoryIndexEmitter {
+    /// <summary>
+    /// The stable leading marker on every fragment this emitter produces. Named because a CONSUMER
+    /// needs to recognise an already-injected fragment: OpenCode's plugin appends into a system-prompt
+    /// array it does not own, so "have I already put mine in here?" has to be answerable from the text
+    /// itself. An invisible HTML comment, so it costs nothing a reader would notice.
+    ///
+    /// <para>Versioned (<c>:v1</c>) deliberately: a future fragment shape can change the marker and a
+    /// consumer keyed on the old one simply stops recognising it, which fails toward a duplicate rather
+    /// than toward silently matching a different format.</para>
+    /// </summary>
+    internal const string FragmentMarker = "<!-- kcap-memory-index:v1 -->";
+
     static readonly HashSet<string> Kinds = new(StringComparer.Ordinal) { "preference", "feedback", "project", "reference" };
 
     public static string? BuildFragment(IEnumerable<SessionStartMemoryEntry> entries) {
@@ -38,7 +52,7 @@ static class MemoryIndexEmitter {
             var slug = Normalize(entry.Slug, 128);
             var description = Normalize(entry.Description, 512);
             if (slug.Length == 0 || description.Length == 0) continue;
-            var line = $"- {slug}: {description}";
+            var line = $"- {slug}{ScopeTag(entry)}: {description}";
             switch (entry.Audience) {
                 case "org": org.Add(line); break;
                 case "team": team.Add(line); break;
@@ -47,7 +61,7 @@ static class MemoryIndexEmitter {
         }
         if (org.Count == 0 && team.Count == 0 && user.Count == 0) return null;
 
-        var prefix = "<!-- kcap-memory-index:v1 -->\n## Team memory\n" +
+        var prefix = FragmentMarker + "\n## Team memory\n" +
             "Durable memories for this repo/context. Call `get_memory <slug>` for the full content of any entry, or `search_memories` to find more.";
         var sb = new StringBuilder(prefix);
         var currentBytes = Encoding.UTF8.GetByteCount(prefix);
@@ -71,7 +85,9 @@ static class MemoryIndexEmitter {
                     o["slug"]?.GetValue<string>(),
                     o["audience"]?.GetValue<string>(),
                     o["description"]?.GetValue<string>(),
-                    o["kind"]?.GetValue<string>() ?? "feedback"));
+                    o["kind"]?.GetValue<string>() ?? "feedback",
+                    o["scope_kind"]?.GetValue<string>(),
+                    o["project_slug"]?.GetValue<string>()));
             } catch {
                 continue; // skip a malformed entry rather than dropping the whole block
             }
@@ -93,6 +109,15 @@ static class MemoryIndexEmitter {
         }
         return true;
     }
+
+    // Annotates the memory's home scope after the slug. A project-scoped memory applies across the
+    // project's repos, so it carries the resolved slug; a repo memory is tagged plainly; org (the
+    // broadest home, and the fallback for an older server that sends no scope) renders untagged.
+    static string ScopeTag(SessionStartMemoryEntry entry) => entry.ScopeKind switch {
+        "project" when Normalize(entry.ProjectSlug, 128) is { Length: > 0 } s => $" [project: {s}]",
+        "repo" => " [repo]",
+        _      => "",
+    };
 
     static string Normalize(string? value, int maxScalars) {
         if (string.IsNullOrEmpty(value)) return "";

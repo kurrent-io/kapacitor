@@ -1,12 +1,16 @@
 namespace Capacitor.Cli.Core;
 
 /// <summary>
-/// Copies kcap skills from a source tree to the user's
-/// <c>~/.agents/skills/</c> directory, prefixing each folder name with
-/// <c>kcap-</c> and rewriting the <c>name:</c> field in SKILL.md to
-/// match. Also handles cleanup of legacy <c>~/.codex/skills/kcap-*</c>
-/// folders left by prior installer versions.
+/// Copies kcap skills from a source tree to a target directory, prefixing each folder name with
+/// <c>kcap-</c> and rewriting the <c>name:</c> field in SKILL.md to match. Also handles cleanup of
+/// legacy <c>~/.codex/skills/kcap-*</c> folders left by prior installer versions.
 /// </summary>
+/// <remarks>
+/// The target is a parameter because there are three: the agent-agnostic <c>~/.agents/skills/</c>,
+/// plus <c>~/.kiro/skills/</c> and <c>~/.gemini/skills/</c> for the two vendors that read their own
+/// tree instead. So <see cref="SourceNames"/> decides what all three receive — a skill added here
+/// reaches Kiro and Antigravity as well.
+/// </remarks>
 public static class AgentsSkillsInstaller {
     /// <summary>
     /// File name written into the target directory after a successful install.
@@ -16,9 +20,10 @@ public static class AgentsSkillsInstaller {
     public const string MarkerFileName = ".kcap-version";
 
     /// <summary>
-    /// Source folder names under <c>capacitor/skills/</c>. On install each
+    /// Source folder names under <c>kcap/skills/</c>. On install each
     /// becomes <c>kcap-&lt;name&gt;</c> under the target directory.
-    /// Add a new skill here when adding it to <c>capacitor/skills/</c>.
+    /// Add a new skill here when adding it to <c>kcap/skills/</c>, and to
+    /// <c>Resources/help-plugin.txt</c>; both are pinned by tests.
     /// </summary>
     public static readonly string[] SourceNames = [
         "recap",
@@ -26,7 +31,10 @@ public static class AgentsSkillsInstaller {
         "hide",
         "disable",
         "validate-plan",
-        "review-flows"
+        "review-flows",
+        "agent-flows",
+        "work-items",
+        "guided-tour"
     ];
 
     /// <summary>
@@ -102,6 +110,15 @@ public static class AgentsSkillsInstaller {
     }
 
     /// <summary>
+    /// True when one specific owned skill is usable under <paramref name="targetDir"/> — narrower
+    /// than <see cref="IsInstalled"/>. Checks the SKILL.md file, not the folder: a failed copy
+    /// can leave an empty folder behind.
+    /// </summary>
+    public static bool HasSkill(string targetDir, string sourceName) =>
+        !string.IsNullOrEmpty(targetDir)
+     && File.Exists(Path.Combine(targetDir, "kcap-" + sourceName, "SKILL.md"));
+
+    /// <summary>
     /// Returns the version string from the marker file, or null when the
     /// marker is absent or unreadable.
     /// </summary>
@@ -135,7 +152,9 @@ public static class AgentsSkillsInstaller {
     /// <summary>
     /// True when the on-disk skills already match this build: the version
     /// marker equals <see cref="CurrentVersion"/> AND every owned
-    /// <c>kcap-&lt;name&gt;</c> folder is present. A matching marker whose skill
+    /// <c>kcap-&lt;name&gt;</c> folder holds a SKILL.md. Checked via
+    /// <see cref="HasSkill"/> rather than folder presence, because a failed copy
+    /// leaves an empty folder behind and that must not read as current. A matching marker whose skill
     /// folders were deleted or corrupted reads as NOT current, so callers
     /// reinstall and self-heal — the marker alone can't be trusted to mean the
     /// skills are actually on disk (mirrors the hooks "marker present but host
@@ -144,7 +163,7 @@ public static class AgentsSkillsInstaller {
     /// </summary>
     public static bool IsCurrent(string targetDir) =>
         ReadMarker(targetDir) == CurrentVersion()
-        && SourceNames.All(name => Directory.Exists(Path.Combine(targetDir, "kcap-" + name)));
+        && SourceNames.All(name => HasSkill(targetDir, name));
 
     /// <summary>
     /// Deletes every <c>kcap-&lt;name&gt;</c> folder this installer owns

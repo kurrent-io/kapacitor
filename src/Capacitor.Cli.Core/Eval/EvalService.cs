@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core.Harness.Claude;
 
 namespace Capacitor.Cli.Core.Eval;
 
@@ -25,7 +26,7 @@ public static class EvalService {
     // per-question prompt already instructs the judge to emit explicit
     // nulls, so this matches existing expectations.
     const string VerdictJsonSchema = """
-        {"type":"object","properties":{"category":{"type":"string"},"question_id":{"type":"string"},"score":{"type":"integer","minimum":1,"maximum":5},"verdict":{"type":"string","enum":["pass","warn","fail"]},"finding":{"type":"string"},"evidence":{"type":["string","null"]},"recommendation":{"type":["string","null"]},"retain_fact":{"type":["string","null"]}},"required":["category","question_id","score","verdict","finding","evidence","recommendation","retain_fact"],"additionalProperties":false}
+        {"type":"object","properties":{"category":{"type":"string"},"question_id":{"type":"string"},"score":{"type":"integer","minimum":1,"maximum":5},"verdict":{"type":"string","enum":["pass","warn","fail"]},"finding":{"type":"string"},"evidence":{"type":["string","null"]},"recommendation":{"type":["string","null"]},"retain_fact":{"type":["string","object","null"],"properties":{"fact":{"type":"string"},"applies_to_vendors":{"type":"array","items":{"type":"string"},"maxItems":16},"applies_to_session_kinds":{"type":"array","items":{"type":"string"},"maxItems":16}},"required":["fact"],"additionalProperties":false}},"required":["category","question_id","score","verdict","finding","evidence","recommendation","retain_fact"],"additionalProperties":false}
         """;
 
     // maxItems mirrors the prompt's documented caps: at most three
@@ -566,8 +567,9 @@ public static class EvalService {
         // If the judge emitted a retain_fact, persist it for future evals.
         if (ExtractRetainFact(result.Result) is { } retainedFact) {
             if (await PostJudgeFactAsync(httpClient, baseUrl, ctx.EncodedSessionId, question.Category,
-                    retainedFact, ctx.EvalRunId, observer, ct)) {
-                observer.OnFactRetained(question.Category, retainedFact);
+                    retainedFact.Fact, ctx.EvalRunId, retainedFact.AppliesToVendors, retainedFact.AppliesToSessionKinds,
+                    observer, ct)) {
+                observer.OnFactRetained(question.Category, retainedFact.Fact);
             }
         }
 
@@ -817,11 +819,13 @@ public static class EvalService {
         }
 
         var sb = new StringBuilder();
+
         foreach (var f in facts) {
-            sb.AppendLine($"- {f.Fact}");
+            if (sb.Length > 0) sb.AppendLine();
+            sb.Append("- ").Append(f.Fact);
         }
 
-        return sb.ToString().TrimEnd();
+        return sb.ToString();
     }
 
     // ── Verdict parsing ────────────────────────────────────────────────────
@@ -1005,46 +1009,82 @@ public static class EvalService {
         return list;
     }
 
+    /// <summary>A retained fact plus the judge's optional applicability declaration. Both axes are
+    /// null when undeclared (= applies everywhere).</summary>
+    public readonly record struct RetainedFact(string Fact, string[]? AppliesToVendors, string[]? AppliesToSessionKinds);
+
     /// <summary>
-    /// Extracts the optional <c>retain_fact</c> string from a raw judge
-    /// response. Returns null when absent, explicitly null, empty, or when
-    /// the response isn't parseable JSON. Independent of
-    /// <see cref="ParseVerdict"/> so the retained-fact plumbing doesn't
-    /// depend on verdict parsing succeeding.
+    /// Extracts the optional <c>retain_fact</c> from a raw judge response. Accepts BOTH shapes:
+    /// the plain string (back-compat) and the object
+    /// <c>{"fact": "...", "applies_to_vendors": [...], "applies_to_session_kinds": [...]}</c>.
+    /// Returns null when absent, explicitly null, empty-fact, or not parseable JSON. A malformed
+    /// object (missing/empty fact) yields null (no fact) rather than throwing; a malformed axis
+    /// (not an array of strings) is dropped to null for that axis, keeping the fact. Independent of
+    /// <see cref="ParseVerdict"/> so the retained-fact plumbing doesn't depend on verdict parsing.
     /// </summary>
-    public static string? ExtractRetainFact(string rawResponse) {
+    public static RetainedFact? ExtractRetainFact(string rawResponse) {
         var json = StripCodeFences(rawResponse.Trim());
 
         try {
             using var doc = JsonDocument.Parse(json);
+            // Guard before TryGetProperty: it throws InvalidOperationException on a non-object root
+            // (a bare string/array/number/bool is valid JSON but not an object), which the
+            // JsonException catch below would NOT swallow — the contract is malformed → null, never throw.
+            if (!doc.RootElement.IsObject) {
+                return null;
+            }
             if (!doc.RootElement.TryGetProperty("retain_fact", out var prop)) {
                 return null;
             }
 
-            if (prop.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) {
-                return null;
+            if (prop.IsString) {
+                var text = prop.GetString()?.Trim();
+                return string.IsNullOrEmpty(text) ? null : new RetainedFact(text, null, null);
             }
+            if (prop.IsObject) {
+                var fact = prop.Str("fact")?.Trim();
+                if (string.IsNullOrEmpty(fact)) return null; // object without a usable fact — skip.
 
-            if (prop.ValueKind != JsonValueKind.String) {
-                return null;
+                return new RetainedFact(
+                    fact,
+                    ReadStringArrayOrNull(prop, "applies_to_vendors"),
+                    ReadStringArrayOrNull(prop, "applies_to_session_kinds"));
             }
-
-            var text = prop.GetString()?.Trim();
-            return string.IsNullOrEmpty(text) ? null : text;
+            return null; // null / number / bool / array — no fact.
         } catch (JsonException) {
             return null;
         }
     }
 
+    // Mirrors the schema's maxItems — a defensive cap so a hallucinating judge can't bloat the
+    // outgoing payload with an unbounded applicability list.
+    const int MaxApplicabilityItems = 16;
+
+    /// <summary>Reads a JSON array of non-empty strings from <paramref name="prop"/>, or null when
+    /// the field is absent, not an array, or empty. A non-string element drops the WHOLE axis to
+    /// null (fail-open: the server also whole-axis-discards a malformed declaration).</summary>
+    static string[]? ReadStringArrayOrNull(JsonElement prop, string name) {
+        if (prop.Arr(name) is not { } arr) return null;
+
+        var list = new List<string>();
+        foreach (var item in arr.EnumerateArray()) {
+            if (!item.IsString) return null;          // malformed axis → drop it entirely.
+            var v = item.GetString()?.Trim();         // trim so "codex " matches the server's exact filter
+            if (!string.IsNullOrEmpty(v) && list.Count < MaxApplicabilityItems) list.Add(v);
+        }
+
+        return list.Count == 0 ? null : list.ToArray();
+    }
+
     static string StripCodeFences(string text) {
-        if (!text.StartsWith("```")) return text;
+        if (!text.StartsWith("```", StringComparison.Ordinal)) return text;
 
         var firstNewline = text.IndexOf('\n');
         if (firstNewline >= 0) {
             text = text[(firstNewline + 1)..];
         }
 
-        if (text.EndsWith("```")) {
+        if (text.EndsWith("```", StringComparison.Ordinal)) {
             text = text[..^3].TrimEnd();
         }
 
@@ -1274,13 +1314,17 @@ public static class EvalService {
             string            category,
             string            fact,
             string            evalRunId,
+            string[]?         appliesToVendors,
+            string[]?         appliesToSessionKinds,
             IEvalObserver     observer,
             CancellationToken ct
         ) {
         var payload = new JudgeFactPayload {
-            Category        = category,
-            Fact            = fact,
-            SourceEvalRunId = evalRunId
+            Category              = category,
+            Fact                  = fact,
+            SourceEvalRunId       = evalRunId,
+            AppliesToVendors      = appliesToVendors,
+            AppliesToSessionKinds = appliesToSessionKinds
         };
 
         var       payloadJson = JsonSerializer.Serialize(payload, CapacitorJsonContext.Default.JudgeFactPayload);

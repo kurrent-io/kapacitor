@@ -31,6 +31,72 @@ static partial class ProcessHelpers {
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial int setsid_native();
 
+    // ioctl(fd, FIOCLEX) marks a single descriptor close-on-exec — the SAME effect as
+    // fcntl(fd, F_SETFD, FD_CLOEXEC), deliberately reached through a different syscall.
+    // fcntl's signature is `int fcntl(int fd, int cmd, ...)` — genuinely variadic in C —
+    // and Apple's arm64 ABI requires variadic arguments to be passed on the stack, never
+    // in a register, unlike the fixed leading parameters. A P/Invoke declared with a
+    // plain fixed 3-int signature (fd, cmd, arg) doesn't know any of that: it places
+    // `arg` in a register like an ordinary third parameter, so the real (variadic)
+    // fcntl reads its vararg off the stack and gets whatever garbage was sitting there
+    // instead of FD_CLOEXEC. Measured directly: fcntl(fd, F_SETFD, 1) returned 0
+    // ("success") on Apple Silicon, yet a follow-up fcntl(fd, F_GETFD, 0) showed the
+    // close-on-exec bit was NEVER SET — the call is a silent no-op, not a visible
+    // failure, which is what makes it dangerous. `ioctl` has no such problem here
+    // because FIOCLEX carries no variadic payload at all — the call is genuinely
+    // `ioctl(fd, request)`, two fixed arguments, no vararg slot for any ABI to get
+    // wrong. Values: FIOCLEX is `0x20006601` on macOS (BSD's _IO('f',1) encoding,
+    // verified against a real Apple libc header) and the fixed `0x5451` on Linux
+    // (part of the legacy tty ioctl number space, stable across architectures).
+    [LibraryImport("libc", EntryPoint = "ioctl", SetLastError = true)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial int ioctl_native(int fd, nuint request);
+
+    const nuint FioclexMacOS = 0x20006601;
+    const nuint FioclexLinux = 0x5451;
+
+    // Bound for the fallback sweep when /dev/fd or /proc/self/fd can't be enumerated
+    // (e.g. a restricted sandbox). A few thousand ioctl calls on fds nobody opened is
+    // cheap; EBADF on an unused fd is expected and ignored.
+    const int UnixFdSweepFallbackLimit = 4096;
+
+    // fstat(fd, &buf) on macOS, used ONLY to read st_mode and check S_ISFIFO before
+    // touching a descriptor's CLOEXEC bit — see the type-gate remark on
+    // PreventInheritedFileDescriptorsUnix for why this check exists at all. The layout
+    // below is Apple's stable 64-bit-inode `struct stat` (<sys/stat.h>, unchanged since
+    // macOS 10.6, identical on arm64 and x86_64) — verified empirically against a real
+    // pipe and a real regular file before shipping (a hand-rolled stat layout that's
+    // even one field off silently misreads st_mode and defeats the whole gate).
+    [LibraryImport("libc", EntryPoint = "fstat", SetLastError = true)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial int fstat_mac_native(int fd, out MacStat buf);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct MacStat {
+        public int    st_dev;
+        public ushort st_mode;
+        public ushort st_nlink;
+        public ulong  st_ino;
+        public uint   st_uid;
+        public uint   st_gid;
+        public int    st_rdev;
+        public long   st_atime;      public long st_atime_nsec;
+        public long   st_mtime;      public long st_mtime_nsec;
+        public long   st_ctime;      public long st_ctime_nsec;
+        public long   st_birthtime;  public long st_birthtime_nsec;
+        public long   st_size;
+        public long   st_blocks;
+        public int    st_blksize;
+        public uint   st_flags;
+        public uint   st_gen;
+        public int    st_lspare;
+        public long   st_qspare1;
+        public long   st_qspare2;
+    }
+
+    const ushort S_IFMT  = 0xF000;
+    const ushort S_IFIFO = 0x1000;
+
     // macOS: proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) fills a
     // proc_bsdinfo struct. We read pbi_ppid (offset 16) for the parent PID and only
     // FALL BACK to pbi_name (offset 64, 32 bytes) for the process name — the primary
@@ -119,6 +185,72 @@ static partial class ProcessHelpers {
     const uint HANDLE_FLAG_INHERIT = 0x00000001;
 
     /// <summary>
+    /// Returns another same-user process's current working directory, or <c>null</c> when it cannot
+    /// be read (process gone, access denied, or Windows — where there is no cheap same-user API and
+    /// every caller of this method is fail-open by contract).
+    ///
+    /// <para>Exists for hook payloads that omit the workspace: the hook's OWN cwd is wherever the
+    /// vendor chdir'd it (Antigravity: the plugin directory), so the only truthful workspace source
+    /// left is the agent process itself — resolve the agent's pid via
+    /// <see cref="ResolveCodingAgentPid"/>, then read its cwd here.</para>
+    /// </summary>
+    public static string? GetProcessCwd(int pid) {
+        if (pid <= 0) {
+            return null;
+        }
+
+        try {
+            if (OperatingSystem.IsMacOS()) {
+                return GetProcessCwdMac(pid);
+            }
+
+            return OperatingSystem.IsLinux() ? GetProcessCwdLinux(pid) : null;
+        } catch {
+            return null;
+        }
+    }
+
+    // proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, ...) fills a proc_vnodepathinfo:
+    // { vnode_info_path pvi_cdir; vnode_info_path pvi_rdir; }, where vnode_info_path is
+    // { vnode_info (152 bytes); char vip_path[MAXPATHLEN=1024]; }. The cwd string therefore
+    // sits at offset 152. Offsets are pinned by the round-trip test on our own pid, which
+    // fails loudly if a macOS release ever reshapes the struct.
+    const int ProcPidVnodePathInfo = 9;
+    const int VnodePathInfoSize    = 2352;
+    const int VnodePathCdirOffset  = 152;
+    const int VnodePathMax         = 1024;
+
+    static unsafe string? GetProcessCwdMac(int pid) {
+        var buffer = stackalloc byte[VnodePathInfoSize];
+        var filled = proc_pidinfo(pid, ProcPidVnodePathInfo, 0, buffer, VnodePathInfoSize);
+
+        // pvi_cdir must be complete; a short fill means the struct we assume is not the
+        // struct we got, and a guessed path is worse than none.
+        if (filled < VnodePathCdirOffset + VnodePathMax) {
+            return null;
+        }
+
+        return DecodeNulTerminated(new ReadOnlySpan<byte>(buffer + VnodePathCdirOffset, VnodePathMax));
+    }
+
+    /// <summary>
+    /// Decodes a NUL-terminated UTF-8 string from a FIXED-LENGTH region, or null when the region is
+    /// empty-at-zero or carries no terminator at all. Bounded deliberately: an unbounded
+    /// <c>Marshal.PtrToStringUTF8</c> here would scan past the path region — and past the stack
+    /// buffer — the day the kernel fills the field without a NUL or the struct layout shifts in a
+    /// way the length check cannot see. A full, unterminated region is malformed data, and a
+    /// truncated guess at a PATH is worse than none.
+    /// </summary>
+    internal static string? DecodeNulTerminated(ReadOnlySpan<byte> region) {
+        var nul = region.IndexOf((byte)0);
+
+        return nul <= 0 ? null : Encoding.UTF8.GetString(region[..nul]);
+    }
+
+    static string? GetProcessCwdLinux(int pid) =>
+        Directory.ResolveLinkTarget($"/proc/{pid}/cwd", returnFinalTarget: true)?.FullName;
+
+    /// <summary>
     /// Returns the parent process id of the current process, or <c>null</c> on failure.
     /// </summary>
     public static int? GetParentPid() {
@@ -138,10 +270,11 @@ static partial class ProcessHelpers {
     }
 
     /// <summary>
-    /// Clears <c>HANDLE_FLAG_INHERIT</c> on this process's standard input/output/error
-    /// handles (Windows only) so that child processes started afterwards do NOT inherit
-    /// them. Call this immediately before spawning a long-lived detached process such as
-    /// the transcript watcher.
+    /// Stops a process spawned immediately after this call from inheriting descriptors
+    /// it has no business holding: on Windows, this process's own standard
+    /// input/output/error handles; on Unix, every one of this process's own descriptors
+    /// numbered 3 and above. Call this immediately before spawning a long-lived detached
+    /// process such as the transcript watcher.
     /// </summary>
     /// <remarks>
     /// Background: hooks are invoked by the coding agent (Claude/Codex) with their
@@ -156,22 +289,141 @@ static partial class ProcessHelpers {
     /// from the Agent/Task tool, and the watcher is then orphaned because the disrupted flow
     /// never fires the matching <c>SubagentStop</c> that would reap it.
     ///
-    /// Unix is unaffected: <c>fork</c>+<c>exec</c> <c>dup2</c>s the redirect pipes over fds
-    /// 0/1/2 in the child and the agent's original pipe fds are not retained, so there is no
-    /// inherited copy to leak. Hence this is a no-op off Windows.
+    /// On Windows, fds 0/1/2 (the std handles .NET redirects) are the whole story: a plain
+    /// <c>fork</c>+<c>exec</c> equivalent doesn't exist there, so <c>CreateProcess</c>'s
+    /// blanket handle inheritance is the only leak path, and clearing
+    /// <c>HANDLE_FLAG_INHERIT</c> on those three handles closes it.
+    ///
+    /// Unix is different in a way that makes the std-handle-only mitigation insufficient:
+    /// <c>fork</c>+<c>exec</c> <c>dup2</c>s the redirect pipes over fds 0/1/2 in the child,
+    /// so those three are never a problem — but every OTHER open descriptor in the parent
+    /// (a hook process) survives <c>exec</c> unless it is separately marked
+    /// <c>FD_CLOEXEC</c>, and a coding agent's hook executor routinely holds descriptors
+    /// above fd 2 (extra pipe ends, sockets) that have nothing to do with the watcher's own
+    /// stdio. Measured live on a hung session: the watcher process held fds 0,1,2 (its own
+    /// redirected stdio) and 4,5 (its own pair) as expected, but ALSO fds 6,8,10,11,13 —
+    /// inherited pipe descriptors it never opened, one of which was the coding agent's
+    /// stdout write-end, kept open long after the agent itself had exited. So the Unix
+    /// sweep targets fds &gt;= 3, never the std handles Windows targets — the two platforms
+    /// leak through different mechanisms and the fix for each is the descriptor set that
+    /// mechanism actually exposes.
+    ///
+    /// The Unix sweep runs in THIS (the hook) process, before the child is spawned, and
+    /// only sets <c>FD_CLOEXEC</c> — it never closes anything. That ordering matters: the
+    /// redirect pipes <see cref="System.Diagnostics.Process"/> creates for the child are
+    /// created AFTER this call returns, so they're unaffected, and <c>FD_CLOEXEC</c> only
+    /// takes effect on the next <c>exec</c> — nothing in this process is disrupted, and the
+    /// hook is about to exit anyway. This must never run inside the watcher itself: by the
+    /// time the watcher is up, the .NET runtime already holds its own descriptors (kqueue/
+    /// epoll, sockets) that a blind sweep there could break.
     ///
     /// Clearing the flag does not close the handles or stop the hook from writing its own
     /// output to the agent — it only prevents subsequently-spawned children from inheriting
     /// them.
     /// </remarks>
-    public static void PreventInheritedStdHandles() {
-        if (!OperatingSystem.IsWindows()) {
+    public static void PreventInheritedHandles() {
+        if (OperatingSystem.IsWindows()) {
+            ClearStdHandleInherit(STD_INPUT_HANDLE,  "stdin");
+            ClearStdHandleInherit(STD_OUTPUT_HANDLE, "stdout");
+            ClearStdHandleInherit(STD_ERROR_HANDLE,  "stderr");
+
             return;
         }
 
-        ClearStdHandleInherit(STD_INPUT_HANDLE,  "stdin");
-        ClearStdHandleInherit(STD_OUTPUT_HANDLE, "stdout");
-        ClearStdHandleInherit(STD_ERROR_HANDLE,  "stderr");
+        PreventInheritedFileDescriptorsUnix();
+    }
+
+    /// <summary>
+    /// Marks every PIPE descriptor &gt;= 3 open in the CURRENT process <c>FD_CLOEXEC</c>, so
+    /// a process spawned immediately afterwards does not inherit it. See
+    /// <see cref="PreventInheritedHandles"/> for why fd 3+ (and not fds 0/1/2, which Unix
+    /// <c>exec</c> already replaces via redirect-pipe <c>dup2</c>) is the right target
+    /// range here. Enumerates live descriptors via <c>/dev/fd</c> (macOS) or
+    /// <c>/proc/self/fd</c> (Linux) rather than blindly sweeping a huge fd range; falls
+    /// back to a bounded sweep if that enumeration is unavailable.
+    /// </summary>
+    /// <remarks>
+    /// Only touches descriptors positively identified as pipes — <see cref="IsPipeFd"/>
+    /// gates every <see cref="MarkCloExec"/> call — rather than sweeping every open fd
+    /// regardless of type, which an earlier revision of this fix did. That blind version
+    /// crashed a real .NET process outright: on macOS, marking a KERNEL-GUARDED descriptor
+    /// close-on-exec (Apple's <c>guarded_fd</c> mechanism, used internally by some system
+    /// frameworks to protect specific fds from exactly this kind of blind manipulation)
+    /// delivers <c>EXC_GUARD</c> — an immediate, unrecoverable kill that bypasses errno
+    /// entirely and cannot be caught by any try/catch, signal handler, or "ignore EBADF"
+    /// logic, because it isn't a syscall failure at all. Measured directly against a real
+    /// Microsoft Testing Platform host process: guard violation <c>"NOCLOEXEC on file
+    /// descriptor 138 (guarded with 0xb3a0ea2f8257e982)"</c>, and the process was gone
+    /// before a single line of the calling test method had run. The exact descriptors a
+    /// hook process happens to hold vary by coding-agent runtime, so this isn't a corner
+    /// case reserved for test hosts — any Unix process complex enough to hold a guarded fd
+    /// is at risk from a blind sweep (and this guard applies regardless of which syscall
+    /// requests the change — <c>ioctl</c> shares the same kernel-level check as
+    /// <c>fcntl</c>). Restricting to pipes is not just safer, it's a closer match to the
+    /// diagnosed leak itself: the measured hang was specifically inherited PIPE
+    /// descriptors (fds 6,8,10,11,13, all <c>PIPE</c> in the per-fd dump) — never a
+    /// guarded system descriptor — so this scoping loses no coverage against the bug the
+    /// fix exists for.
+    ///
+    /// Best-effort throughout: a per-fd failure to identify or mark a descriptor (a raced
+    /// close, <c>EBADF</c>, an unreadable <c>/proc</c> symlink) is silently skipped, and
+    /// this never throws.
+    /// </remarks>
+    internal static void PreventInheritedFileDescriptorsUnix() {
+        try {
+            var fdDir = OperatingSystem.IsMacOS() ? "/dev/fd" : "/proc/self/fd";
+
+            if (Directory.Exists(fdDir)) {
+                foreach (var entry in Directory.EnumerateFileSystemEntries(fdDir)) {
+                    if (int.TryParse(Path.GetFileName(entry), out var fd) && fd > 2 && IsPipeFd(fd)) {
+                        MarkCloExec(fd);
+                    }
+                }
+
+                return;
+            }
+        } catch {
+            // Enumeration failed — fall through to the bounded fallback sweep below.
+        }
+
+        for (var fd = 3; fd < UnixFdSweepFallbackLimit; fd++) {
+            if (IsPipeFd(fd)) {
+                MarkCloExec(fd);
+            }
+        }
+    }
+
+    static void MarkCloExec(int fd) => ioctl_native(fd, OperatingSystem.IsMacOS() ? FioclexMacOS : FioclexLinux);
+
+    /// <summary>
+    /// True when <paramref name="fd"/> is positively identified as a pipe (a FIFO,
+    /// including an anonymous <c>pipe()</c> end) in the current process. False for
+    /// anything else — a closed/invalid fd, a socket, a regular file, a kqueue/epoll fd,
+    /// or anything this check fails to classify for any reason. This is a strict
+    /// allow-list, not a deny-list: the caller (<see cref="PreventInheritedFileDescriptorsUnix"/>)
+    /// only acts on a definite "yes", because a wrong "yes" on a kernel-guarded descriptor
+    /// is fatal (see that method's remarks) while a wrong "no" on a genuine leaked pipe
+    /// just leaves this one specific descriptor unfixed — never crashes anything.
+    ///
+    /// macOS: reads <c>st_mode</c> via <c>fstat</c> and checks <c>S_ISFIFO</c>. Linux:
+    /// <c>/proc/self/fd/{fd}</c> is a real symlink whose target text is kernel-supplied
+    /// (e.g. <c>pipe:[12345]</c> for a pipe, <c>socket:[12345]</c> for a socket, a real
+    /// path for a file) — reading it via the BCL's own <see cref="File.ResolveLinkTarget"/>
+    /// needs no additional P/Invoke and so carries none of the manual-<c>stat</c>-layout
+    /// risk the macOS path does.
+    /// </summary>
+    internal static bool IsPipeFd(int fd) {
+        try {
+            if (OperatingSystem.IsMacOS()) {
+                return fstat_mac_native(fd, out var st) == 0 && (st.st_mode & S_IFMT) == S_IFIFO;
+            }
+
+            var target = File.ResolveLinkTarget($"/proc/self/fd/{fd}", returnFinalTarget: false)?.Name;
+
+            return target is not null && target.StartsWith("pipe:", StringComparison.Ordinal);
+        } catch {
+            return false;
+        }
     }
 
     static bool stdHandleInheritWarned;
@@ -208,7 +460,7 @@ static partial class ProcessHelpers {
     /// Clears <c>HANDLE_FLAG_INHERIT</c> on a single Windows handle so processes spawned
     /// afterwards won't inherit it. Returns <c>true</c> on success, and (off Windows) as a
     /// defined no-op. This seam exists so the inherit-clearing behaviour used by
-    /// <see cref="PreventInheritedStdHandles"/> can be tested against an arbitrary handle
+    /// <see cref="PreventInheritedHandles"/> can be tested against an arbitrary handle
     /// without mutating the test host's own standard handles.
     /// </summary>
     internal static bool TryClearInheritFlag(nint handle) {

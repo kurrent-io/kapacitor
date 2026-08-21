@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Daemon/Acp/AcpEventTranslator.cs
 using Capacitor.Cli.Core;
 using Microsoft.Extensions.Logging;
 
@@ -12,7 +11,7 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// envelope (see <c>docs/ai688-option-b-canonical-surfacing-design.md</c>). Deliberately does
 /// NOT aggregate chunk streams, correlate multi-update tool-call state, assign real sequence
 /// numbers, or forward anything — those are handled elsewhere (aggregation/seq assignment is
-/// runtime-owned; <paramref name="seq"/>/<paramref name="timestampIso"/> below are caller-supplied
+/// runtime-owned; <c>seq</c>/<c>timestampIso</c> below are caller-supplied
 /// inputs, not derived here). <see cref="Translate"/> never throws: an unmappable/dropped kind
 /// returns <see langword="null"/> rather than fabricating an empty envelope.
 /// </summary>
@@ -67,7 +66,8 @@ internal static partial class AcpEventTranslator {
             string           timestampIso,
             string?          aggregatedText = null,
             ILogger?         logger         = null,
-            bool             debugFrames    = false) {
+            bool             debugFrames    = false,
+            string?          resolvedModel  = null) {
         switch (update.Kind) {
             case AcpUpdateKind.AgentMessageChunk:
                 return new AcpEventEnvelope(
@@ -102,6 +102,20 @@ internal static partial class AcpEventTranslator {
                     ToolCallId: update.ToolCallId,
                     ToolResult: update.ToolResultText,
                     ToolIsError: update.ToolIsError,
+                    TimestampIso: timestampIso);
+
+            case AcpUpdateKind.UsageUpdate:
+                // Reduce() already validated both fields, so a UsageUpdate here is always emittable.
+                // The resolved model is stamped on EVERY usage envelope: the server's mapper is a
+                // pure per-envelope function with no session-fold access, so attribution has to
+                // travel on the wire rather than be looked up server-side. A null model is
+                // harmless - the chip's denominator is the reading's own window.
+                return new AcpEventEnvelope(
+                    Seq: seq,
+                    Kind: AcpEventKind.Usage,
+                    Model: resolvedModel,
+                    ContextUsedTokens: update.ContextUsedTokens,
+                    ContextWindowTokens: update.ContextWindowTokens,
                     TimestampIso: timestampIso);
 
             case AcpUpdateKind.SessionInfo:

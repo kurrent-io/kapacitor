@@ -1,11 +1,10 @@
-// src/Capacitor.Cli.Core/Acp/AcpMessages.cs
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Capacitor.Cli.Core.Acp;
 
 /// <summary>
-/// Typed <c>params</c> payloads for the ACP methods <see cref="Daemon.Acp.AcpConnection"/> callers
+/// Typed <c>params</c> payloads for the ACP methods <c>Daemon.Acp.AcpConnection</c> callers
 /// (<c>AcpHostedAgentRuntime</c>, Task 9) send. These exist only so request construction can
 /// go through source-gen (<see cref="JsonSerializer.SerializeToElement{T}(T, System.Text.Json.Serialization.Metadata.JsonTypeInfo{T})"/>
 /// against <see cref="CapacitorJsonContext"/>) instead of the reflection-based overloads, which are
@@ -18,7 +17,9 @@ namespace Capacitor.Cli.Core.Acp;
 /// <summary>
 /// <c>initialize</c> params. Deliberately advertises MINIMAL client capabilities (no <c>fs</c>, no
 /// <c>terminal</c>) — those get decided later based on ACP probe findings; this type implements
-/// neither capability.
+/// neither capability. Since the multi-select end-to-end shipped (form-mode elicitation lane in
+/// this daemon + the server/UI half in kcap-server), <see cref="ClientCapabilities.Elicitation"/>
+/// advertises FORM-mode elicitation support.
 /// </summary>
 public sealed record InitializeParams(
     [property: JsonPropertyName("protocolVersion")]  int                     ProtocolVersion,
@@ -27,8 +28,27 @@ public sealed record InitializeParams(
 
 public sealed record ClientCapabilities(
     [property: JsonPropertyName("fs")]       FsCapabilities Fs,
-    [property: JsonPropertyName("terminal")] bool           Terminal
+    [property: JsonPropertyName("terminal")] bool           Terminal,
+    // Trailing + WhenWritingNull so every pre-existing 2-arg construction (and its wire shape)
+    // stays byte-for-byte unchanged; the runtime's initialize call sites opt in explicitly.
+    [property: JsonPropertyName("elicitation"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                             ElicitationCapabilities? Elicitation = null
 );
+
+/// <summary>
+/// Client elicitation capability advertisement (marked UNSTABLE in the SDK schema — pinned by
+/// the fixture generator's drift contract, see <c>test-fixtures/acp-elicitation/generate.mjs</c>).
+/// FORM mode only: supplying <c>{}</c> for <see cref="Form"/> means "form-based elicitation
+/// supported" per the schema. <c>url</c> is DELIBERATELY not modeled — omission is the spec's
+/// "unsupported" signal, and this daemon cancels url-mode frames
+/// (<c>AcpInteractionBridge</c>'s mode gate) rather than opening arbitrary URLs on the host.
+/// </summary>
+public sealed record ElicitationCapabilities(
+    [property: JsonPropertyName("form")] ElicitationFormCapabilities Form
+);
+
+/// <summary>Serializes as the bare <c>{}</c> the schema requires for "supported".</summary>
+public sealed record ElicitationFormCapabilities;
 
 /// <summary>
 /// <c>initialize</c> result — <c>AcpHostedAgentRuntime.StartAsync</c> deserializes the agent's
@@ -92,6 +112,19 @@ public sealed record SessionNewParams(
     [property: JsonPropertyName("mcpServers")] AcpMcpServerSpec[] McpServers
 );
 
+/// <summary><c>session/load</c> params — protocol-native resume of a prior session on a freshly
+/// spawned agent process (same <c>sessionId</c>, same absolute <c>cwd</c>, and the SAME
+/// <c>mcpServers</c> list the original launch carried). The agent replays the session's history as
+/// <c>session/update</c> notifications and, per the ACP spec's MUST, responds only after all
+/// conversation entries have streamed — the response is the reconnect path's closed-world
+/// end-of-replay barrier (probe-verified for Cursor and Copilot,
+/// <c>docs/probes/2026-08-04-acp-reconnect-c0/</c>).</summary>
+public sealed record SessionLoadParams(
+    [property: JsonPropertyName("sessionId")]  string             SessionId,
+    [property: JsonPropertyName("cwd")]        string             Cwd,
+    [property: JsonPropertyName("mcpServers")] AcpMcpServerSpec[] McpServers
+);
+
 /// <summary><c>session/prompt</c> params — a content-block array, per the probe (not a bare string).</summary>
 public sealed record SessionPromptParams(
     [property: JsonPropertyName("sessionId")] string             SessionId,
@@ -128,6 +161,22 @@ public sealed record SetConfigOptionParams(
 );
 
 /// <summary>
+/// <c>session/set_model</c> params — the stabilized ACP model-selection method, used by vendors
+/// that do not implement <c>session/set_config_option</c>. Sent at the same point in the handshake
+/// as <see cref="SetConfigOptionParams"/> (after <c>session/new</c>, before the first
+/// <c>session/prompt</c>, response awaited). Wire shape probe-confirmed against real
+/// <c>kiro-cli</c> 2.16.0 (<c>docs/probes/2026-08-05-kiro-model-override/</c>):
+/// <see cref="ModelId"/> is an exact id from <see cref="SessionModelsInfo.AvailableModels"/>
+/// (Kiro's are bare, e.g. <c>deepseek-3.2</c> — resolved by
+/// <c>Capacitor.Cli.Core.Acp.AcpModelResolver</c> like Cursor's), and the success response is an
+/// empty object.
+/// </summary>
+public sealed record SetModelParams(
+    [property: JsonPropertyName("sessionId")] string SessionId,
+    [property: JsonPropertyName("modelId")]   string ModelId
+);
+
+/// <summary>
 /// Typed shape for <c>session/new</c>'s <c>result.models</c> object — the daemon
 /// otherwise treats the <c>session/new</c> result as an opaque <see cref="JsonElement"/> (only
 /// <c>sessionId</c> is read out of it today); this record exists purely so
@@ -152,12 +201,41 @@ public sealed record AvailableModelDto(
 );
 
 /// <summary>
+/// One entry in <c>session/new</c>'s <c>result.configOptions</c> — the SECOND shape an ACP agent may
+/// publish its selectable-model list in, alongside <see cref="SessionModelsInfo"/>. Probe-confirmed
+/// against real <c>opencode acp</c> 1.18.9 (<c>docs/probes/2026-08-07-opencode-acp/</c>), which
+/// returns no <c>models</c> object at all:
+/// <c>{"id":"model","currentValue":"opencode/big-pickle","options":[{"value":"…","name":"…"}]}</c>
+/// (plus sibling entries such as <c>mode</c> and, model-dependently, <c>effort</c>).
+///
+/// <para><see cref="Id"/> is matched against the same literal <c>"model"</c>
+/// <see cref="SetConfigOptionParams.ConfigId"/> uses, so the list read and the value written cannot
+/// address two different options.</para>
+/// </summary>
+public sealed record SessionConfigOptionDto(
+    [property: JsonPropertyName("id")]           string?                  Id,
+    [property: JsonPropertyName("currentValue")] string?                  CurrentValue,
+    [property: JsonPropertyName("options")]      ConfigOptionChoiceDto[]? Options
+);
+
+/// <summary>
+/// One selectable value in <see cref="SessionConfigOptionDto.Options"/>. <see cref="Value"/> is the
+/// exact wire value <c>session/set_config_option</c> requires (OpenCode's are
+/// <c>provider/model</c>, e.g. <c>opencode/deepseek-v4-flash-free</c>); <see cref="Name"/> is the
+/// display label (e.g. <c>OpenCode Zen/DeepSeek V4 Flash Free</c>).
+/// </summary>
+public sealed record ConfigOptionChoiceDto(
+    [property: JsonPropertyName("value")] string  Value,
+    [property: JsonPropertyName("name")]   string? Name
+);
+
+/// <summary>
 /// <c>session/request_permission</c> params sent BY THE AGENT (server-initiated request, handled
-/// via <see cref="Daemon.Acp.AcpConnection.OnServerRequest"/>). Spec-derived, NOT
+/// via <c>Daemon.Acp.AcpConnection.OnServerRequest</c>). Spec-derived, NOT
 /// probe-confirmed: the probe never observed a real <c>session/request_permission</c> frame
 /// (the probe account's turn ended before any tool call — see
 /// <c>docs/acp-probe-findings.md</c> §"Permission / elicitation requests"). Mirrors the shape
-/// <see cref="Capacitor.Cli.Tests.Unit.Acp.FakeAcpAgent.BuildRequestPermissionFrame"/> already
+/// <c>Capacitor.Cli.Tests.Unit.Acp.FakeAcpAgent.BuildRequestPermissionFrame</c> already
 /// builds for tests. <see cref="ToolCall"/> stays an opaque <see cref="JsonElement"/> — its exact
 /// schema is unconfirmed and it is never re-serialized, only forwarded to the server as
 /// <see cref="AcpInteractionRequest.ToolInput"/> best-effort (see <c>AcpInteractionBridge</c>).
@@ -177,8 +255,8 @@ public sealed record PermissionOptionDto(
 
 /// <summary>
 /// Client's JSON-RPC <c>result</c> for a <c>session/request_permission</c> request — spec-derived,
-/// NOT probe-confirmed. Mirrors <see cref="Capacitor.Cli.Tests.Unit.Acp.FakeAcpAgent.PermissionOutcomeSelected"/>/
-/// <see cref="Capacitor.Cli.Tests.Unit.Acp.FakeAcpAgent.PermissionOutcomeCancelled"/>.
+/// NOT probe-confirmed. Mirrors <c>Capacitor.Cli.Tests.Unit.Acp.FakeAcpAgent.PermissionOutcomeSelected</c>/
+/// <c>Capacitor.Cli.Tests.Unit.Acp.FakeAcpAgent.PermissionOutcomeCancelled</c>.
 /// </summary>
 public sealed record PermissionOutcomeResult(
     [property: JsonPropertyName("outcome")] PermissionOutcomeDto Outcome
@@ -196,36 +274,51 @@ public sealed record PermissionOutcomeDto(
 );
 
 /// <summary>
-/// Capability-gated, NOT part of the core ACP spec — modeled defensively on the same
-/// request/response shape as <see cref="SessionRequestPermissionParams"/> since no confirmed
-/// elicitation schema exists for Cursor (R3's open question: "Does Cursor use the ACP
-/// elicitation RFD shape or a vendor extension?" is unanswered). The daemon never advertises
-/// support for this method in <c>initialize</c> (see <c>AcpHostedAgentRuntime.StartAsync</c>'s
-/// existing minimal-capabilities <c>ClientCapabilities</c>, unchanged by this plan) — if a real
-/// agent sends it anyway, <c>AcpInteractionBridge</c> still answers deterministically (see Task
-/// B2) rather than crashing or hanging, but this is explicitly a defensive best-effort path, not a
-/// negotiated capability.
-///
-/// <b>Spec-review Finding 1:</b> <see cref="RequestedSchema"/> is the JSON-Schema half of the
-/// roadmap spec's "options OR JSON Schema" elicitation shape — spec-derived field name
-/// (<c>requestedSchema</c> on the wire), following the MCP elicitation convention this
-/// ACP-capability-gated method is modeled after (there is no ACP-native precedent for it at all).
-/// <see cref="Options"/> and <see cref="RequestedSchema"/> are independent optional fields, not a
-/// discriminated union — a real agent could in principle send either, both, or neither;
-/// <see cref="Capacitor.Cli.Daemon.Acp.AcpInteractionBridge"/> (Task B3) forwards
-/// <see cref="RequestedSchema"/> to the server verbatim (capped server-side, Task A1/A3) and never
-/// attempts to render or validate it itself.
+/// Agent→client <c>elicitation/create</c> request params — the STABILIZED ACP shape
+/// (agent-client-protocol #1779, 2026-07-24; <c>schema/v1/schema.json</c>
+/// <c>CreateElicitationRequest</c>), replacing the pre-stabilization draft this daemon was
+/// originally modeled on (whose <c>options</c> array never existed on any stabilized wire).
+/// Mode variants: <c>"form"</c> carries <see cref="RequestedSchema"/>; <c>"url"</c> carries
+/// <see cref="ElicitationId"/> + <see cref="Url"/> (unsupported by this client — cancelled).
+/// Scope variants: session-scoped (<see cref="SessionId"/>) or request-scoped
+/// (<see cref="RequestId"/>, unsupported — cancelled). Every member is nullable at the DTO
+/// layer: <c>Capacitor.Cli.Daemon.Acp.AcpInteractionBridge</c> owns ALL semantic validation
+/// (a non-nullable C# string would not guarantee the wire supplied one). The daemon now
+/// advertises the <c>elicitation</c> client capability (form mode only — see
+/// <see cref="ElicitationCapabilities"/> and <c>AcpHostedAgentRuntime</c>'s initialize call
+/// sites), the end-to-end multi-select work having shipped; this lane also still answers
+/// UNSOLICITED frames spec-correctly instead of with the old malformed <c>{outcome}</c> result.
+/// <see cref="RequestedSchema"/> is forwarded to the server verbatim for audit (capped
+/// server-side); the daemon's own <c>ElicitationSchemaClassifier</c> parses it separately.
 /// </summary>
 public sealed record ElicitationCreateParams(
-    [property: JsonPropertyName("sessionId")] string SessionId,
-    [property: JsonPropertyName("message")]   string Message,
-    [property: JsonPropertyName("options"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-                                               PermissionOptionDto[]? Options = null,
+    [property: JsonPropertyName("sessionId"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                string?      SessionId = null,
+    [property: JsonPropertyName("requestId"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                JsonElement? RequestId = null,
+    [property: JsonPropertyName("message"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                string?      Message = null,
+    [property: JsonPropertyName("mode"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                string?      Mode = null,
     [property: JsonPropertyName("requestedSchema"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-                                               JsonElement? RequestedSchema = null
+                                                JsonElement? RequestedSchema = null,
+    [property: JsonPropertyName("elicitationId"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                string?      ElicitationId = null,
+    [property: JsonPropertyName("url"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                string?      Url = null
 );
 
-/// <summary>Client's JSON-RPC <c>result</c> for a (capability-gated) <c>elicitation/create</c> request.</summary>
-public sealed record ElicitationCreateResult(
-    [property: JsonPropertyName("outcome")] PermissionOutcomeDto Outcome
+/// <summary>
+/// Client's JSON-RPC <c>result</c> for <c>elicitation/create</c> — the STABILIZED
+/// <c>CreateElicitationResponse</c> shape: <see cref="ActionName"/> is <c>"accept"</c> (with
+/// <see cref="Content"/> keyed by the requested schema's property name; a value is a JSON string
+/// or an array of JSON strings), <c>"decline"</c>, or <c>"cancel"</c> (both content-free — the
+/// member is OMITTED, not null). Deliberately a separate type from the permission path's
+/// <c>PermissionOutcomeResult</c>: the two are different protocol objects, and sharing the
+/// builder is exactly how the obsolete <c>{outcome}</c> elicitation result shape leaked in.
+/// </summary>
+public sealed record ElicitationResponse(
+    [property: JsonPropertyName("action")]  string ActionName,
+    [property: JsonPropertyName("content"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                            Dictionary<string, JsonElement>? Content = null
 );

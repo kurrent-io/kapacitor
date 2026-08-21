@@ -3,7 +3,7 @@ namespace Capacitor.Cli.Daemon.Services;
 /// <summary>
 /// Copies files from a source dir into a destination, creating directories
 /// as needed but never overwriting existing files. Used by both
-/// <see cref="ClaudeLauncher"/> and <see cref="CodexLauncher"/> to merge
+/// <see cref="Harness.Claude.ClaudeLauncher"/> and <see cref="Harness.Codex.CodexLauncher"/> to merge
 /// vendor-specific dotfiles from the source repo into the worktree without
 /// clobbering tracked content.
 /// </summary>
@@ -19,6 +19,10 @@ internal static class FileSystemOverlay {
         }
 
         foreach (var dir in Directory.GetDirectories(source, "*", skipReparsePoints)) {
+            // Skip nested repos/worktrees: a dotfile overlay copies config, not checked-out repos —
+            // and a repo root with worktrees under .claude/worktrees/ would be copied wholesale. A
+            // ".git" entry (dir for a repo, file for a linked worktree) marks one.
+            if (Path.Exists(Path.Combine(dir, ".git"))) continue;
             OverlayDirectory(dir, Path.Combine(dest, Path.GetFileName(dir)));
         }
     }

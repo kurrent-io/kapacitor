@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -6,16 +7,25 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Commands;
 
 static class McpMemoryServer {
-    internal const string NotLoggedInMessage = "Not logged in. Run 'kcap login' on the host shell.";
+    internal const string NotLoggedInMessage = AuthRejectionNotice.NotLoggedIn;
 
     public static async Task<int> RunAsync(string baseUrl) {
         var cwdRepoHash = await ResolveCwdRepoHashAsync();
         var machineId   = await ResolveMachineIdAsync();
         var tools       = BuildToolsList();
+
+        // MCP servers are long-lived and denylisted under the top-level "mcp" command
+        // (CommandEvents.Denylisted) — re-initialise under the reportable pseudo-command
+        // "mcp-server" so per-tool-call events actually leave. Best-effort: a stale token on
+        // disk must never block the server from starting.
+        var loggedIn = false;
+        try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
+        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn);
 
         // Validate the server_url shape once, locally (pure string check — no network, token,
         // or stderr). Used to fail gracefully instead of hard-exiting mid-request (below).
@@ -40,13 +50,29 @@ static class McpMemoryServer {
                 return BuildToolResult(callId, HttpClientExtensions.SchemeMissingHint, isError: true);
 
             try {
-                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, autoRetryUnauthorized: false);
                 return await HandleToolCallAsync(callId, callRequest, client, baseUrl, cwdRepoHash, machineId);
             } catch (Exception ex) {
                 // Unexpected: log the detail to stderr (not to the client, which could leak local
                 // paths from IO errors) and return a generic tool error, keeping the loop alive.
                 await Console.Error.WriteLineAsync($"kcap mcp memory: unexpected error handling tools/call: {ex}");
                 return BuildToolResult(callId, "Error: internal error handling the request.", isError: true);
+            }
+        }
+
+        // Records which MCP tools agents actually reach for. Never touches the response path:
+        // the result (or the exception) is returned exactly as DispatchToolCallAsync produced it.
+        async Task<string> TimedDispatchToolCallAsync(JsonNode callId, JsonObject callRequest) {
+            var start = Stopwatch.GetTimestamp();
+            var tool  = McpTelemetry.SafeToolName(callRequest);
+            var ok    = false;
+
+            try {
+                var response = await DispatchToolCallAsync(callId, callRequest);
+                ok = McpTelemetry.ResponseOk(response);
+                return response;
+            } finally {
+                McpTelemetry.ToolCalled("kcap-memory", tool, ok, CommandTiming.ElapsedMs(start));
             }
         }
 
@@ -79,7 +105,7 @@ static class McpMemoryServer {
                 var response = method switch {
                     "initialize" => BuildInitializeResponse(id, request),
                     "tools/list" => BuildToolsListResponse(id, tools),
-                    "tools/call" => await DispatchToolCallAsync(id, request),
+                    "tools/call" => await TimedDispatchToolCallAsync(id, request),
                     _            => McpProtocol.TryHandleStandardMethod(method, id)
                                     ?? BuildErrorResponse(id, -32601, $"Method not found: {method}")
                 };
@@ -149,19 +175,19 @@ static class McpMemoryServer {
 
         try {
             using var httpResponse = toolName switch {
-                "search_memories" => await SendWithRefreshRetryAsync(client, c => c.GetAsync(BuildSearchUrl(baseUrl, arguments, cwdRepoHash, machineId))),
-                "get_memory"      => await SendWithRefreshRetryAsync(client, c => c.GetAsync(BuildGetUrl(baseUrl, arguments, cwdRepoHash, machineId))),
-                "save_memory"     => await SendWithRefreshRetryAsync(client, c => c.PostAsync($"{baseUrl}/api/memories", ToJsonContent(BuildSaveBody(arguments, cwdRepoHash, machineId)))),
-                "update_memory"   => await SendWithRefreshRetryAsync(client, c => c.PutAsync($"{baseUrl}/api/memories/{Uri.EscapeDataString(Id(arguments))}", ToJsonContent(BuildUpdateBody(arguments)))),
-                "rescope_memory"  => await SendWithRefreshRetryAsync(client, c => c.PostAsync($"{baseUrl}/api/memories/{Uri.EscapeDataString(Id(arguments))}/rescope", ToJsonContent(BuildRescopeBody(arguments)))),
-                "archive_memory"  => await SendWithRefreshRetryAsync(client, c => c.DeleteAsync($"{baseUrl}/api/memories/{Uri.EscapeDataString(Id(arguments))}")),
+                "search_memories" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSearchUrl(baseUrl, arguments, cwdRepoHash, machineId))),
+                "get_memory"      => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildGetUrl(baseUrl, arguments, cwdRepoHash, machineId))),
+                "save_memory"     => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync($"{baseUrl}/api/memories", ToJsonContent(BuildSaveBody(arguments, cwdRepoHash, machineId)))),
+                "update_memory"   => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PutAsync($"{baseUrl}/api/memories/{Uri.EscapeDataString(Id(arguments))}", ToJsonContent(BuildUpdateBody(arguments)))),
+                "rescope_memory"  => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync($"{baseUrl}/api/memories/{Uri.EscapeDataString(Id(arguments))}/rescope", ToJsonContent(BuildRescopeBody(arguments)))),
+                "archive_memory"  => await SendWithRefreshRetryAsync(client, baseUrl, c => c.DeleteAsync($"{baseUrl}/api/memories/{Uri.EscapeDataString(Id(arguments))}")),
                 _                 => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
             var body = await httpResponse.Content.ReadAsStringAsync();
 
             if (httpResponse.StatusCode == HttpStatusCode.Unauthorized) {
-                return BuildToolResult(id, NotLoggedInMessage, isError: true);
+                return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(baseUrl), isError: true);
             }
 
             if (!httpResponse.IsSuccessStatusCode) {
@@ -184,14 +210,27 @@ static class McpMemoryServer {
     /// the refresh flow for WorkOS / GitHubApp), update the client's <c>Authorization</c>
     /// header, and retry the same request once. If refresh fails (genuinely not logged in
     /// or refresh-token expired), the original 401 is returned and the caller surfaces the
-    /// friendly "Not logged in" message.
+    /// store-aware <see cref="AuthRejectionNotice"/> line (which keeps the legacy
+    /// "Not logged in" wording only for a genuinely missing login).
     /// </summary>
-    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, Func<HttpClient, Task<HttpResponseMessage>> send) {
+    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, string baseUrl, Func<HttpClient, Task<HttpResponseMessage>> send) {
         var response = await send(client);
 
         if (response.StatusCode != HttpStatusCode.Unauthorized) return response;
 
-        var refreshed = await TokenStore.GetValidTokensAsync();
+        // Force a refresh against the token this client actually sent: the 401 proves the server
+        // rejected it even though it may still look unexpired locally, which a plain load would
+        // not heal. Passing the rejected token also means a peer process that already refreshed is
+        // adopted rather than rotated a second time. With no token attached at all — this MCP
+        // process outlives a `kcap login` that finished after the client was built — there is
+        // nothing to refresh, so just pick up whatever is stored now.
+        var rejected = client.DefaultRequestHeaders.Authorization?.Parameter;
+
+        // A failed rotation must not be worse than no rotation: fall back to whatever is stored so
+        // the pre-existing "re-read and resend once" recovery still happens.
+        var refreshed = rejected is null
+            ? (await TokenStore.GetValidTokensForServerAsync(baseUrl)).Tokens
+            : await TokenStore.RecoverForServerAsync(baseUrl, rejected);
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 
@@ -257,6 +296,8 @@ static class McpMemoryServer {
             ["content"]           = Req("content"),
             ["kind"]              = Req("kind"),
             ["team"]              = args?["team"]?.GetValue<string>(),
+            // audience 'project' target — the people axis, distinct from rescope's place-axis project.
+            ["audience_project"]  = args?["audience_project"]?.GetValue<string>(),
             ["repo_hash"]         = global ? null : cwdRepoHash,
             ["machine_tag"]       = machineSpecific ? machineId : null,
             ["machine_context"]   = machineId,
@@ -271,10 +312,23 @@ static class McpMemoryServer {
         ["kind"]        = args?["kind"]?.GetValue<string>()
     };
 
-    internal static JsonObject BuildRescopeBody(JsonObject? args) => new() {
-        ["audience"] = args?["audience"]?.GetValue<string>() is { Length: > 0 } a ? a : throw new ArgumentException("audience is required"),
-        ["team"]     = args?["team"]?.GetValue<string>()
-    };
+    internal static JsonObject BuildRescopeBody(JsonObject? args) {
+        var audience = args?["audience"]?.GetValue<string>();
+        var project  = args?["project"]?.GetValue<string>();
+        // Mirror the server: a project context move takes precedence and is audience-independent, so
+        // audience is required ONLY when project is absent. Whitespace-only counts as absent — a blank
+        // slug would never resolve server-side, so reject it locally instead of sending an invalid move.
+        if (string.IsNullOrWhiteSpace(audience) && string.IsNullOrWhiteSpace(project))
+            throw new ArgumentException("audience or project is required");
+        return new() {
+            ["audience"] = string.IsNullOrWhiteSpace(audience) ? null : audience,
+            ["team"]     = args?["team"]?.GetValue<string>(),
+            ["project"]  = string.IsNullOrWhiteSpace(project) ? null : project,
+            // audience 'project' target (people axis) — distinct from the place-axis 'project' above; raw
+            // like team, not whitespace-nulled, since unlike project it has no precedence branch to guard.
+            ["audience_project"] = args?["audience_project"]?.GetValue<string>(),
+        };
+    }
 
     /// <summary>
     /// Reads a numeric field as int, tolerant of JsonValue holding any underlying numeric type
@@ -359,14 +413,15 @@ static class McpMemoryServer {
                 ["id_or_slug"] = new("string", "Memory id (32 hex) or slug.")
             }, ["id_or_slug"])),
         new("save_memory",
-            "Save a durable learning to the server. audience: 'user' (private), 'team', or 'org' (everyone). Saves are repo-scoped by default (to the cwd's git checkout); if the current repo can't be resolved, pass global: true for a repo-independent memory, or the save fails. Prefer update_memory when the result reports a nearDuplicate.",
+            "Save a durable learning to the server. audience: 'user' (private), 'team', 'org' (everyone), or 'project' (that project's members can see + edit — pass audience_project). Saves are repo-scoped by default (to the cwd's git checkout); if the current repo can't be resolved, pass global: true for a repo-independent memory, or the save fails. Prefer update_memory when the result reports a nearDuplicate.",
             new("object", new() {
-                ["audience"]         = new("string", "user | team | org"),
+                ["audience"]         = new("string", "user | team | org | project"),
                 ["slug"]             = new("string", "kebab-case identifier, unique within the audience+repo pool"),
                 ["description"]      = new("string", "One-line summary (max 300 chars)"),
                 ["content"]          = new("string", "Full memory body (max 64 KiB)"),
                 ["kind"]             = new("string", "preference | feedback | project | reference"),
                 ["team"]             = new("string", "Team name or id — required for audience 'team' if you are in several teams"),
+                ["audience_project"] = new("string", "Project slug — required for audience 'project'; that project's members become editors (you must be a member)"),
                 ["global"]           = new("boolean", "true = not tied to the current repo (required if not run from a git checkout; default: scoped to cwd repo)"),
                 ["machine_specific"] = new("boolean", "true = only relevant on this machine (user audience only)")
             }, ["audience", "slug", "description", "content", "kind"])),
@@ -379,12 +434,14 @@ static class McpMemoryServer {
                 ["kind"]        = new("string", "preference | feedback | project | reference")
             }, ["id"])),
         new("rescope_memory",
-            "Change a memory's audience (e.g. promote your user memory to team or org).",
+            "Change a memory's audience — who can see + edit it (promote your user memory to team, org, or a project's members) — or move its home context to a project (where it surfaces). Two orthogonal axes: audience_project sets the PEOPLE (audience 'project'); project sets the PLACE (context move — takes precedence and is independent of audience).",
             new("object", new() {
-                ["id"]       = new("string", "Memory id"),
-                ["audience"] = new("string", "user | team | org"),
-                ["team"]     = new("string", "Target team when audience is 'team'")
-            }, ["id", "audience"])),
+                ["id"]               = new("string", "Memory id"),
+                ["audience"]         = new("string", "user | team | org | project"),
+                ["team"]             = new("string", "Target team when audience is 'team'"),
+                ["audience_project"] = new("string", "Target project slug when audience is 'project' — the PEOPLE axis (its members become editors; you must be a member). Distinct from 'project' below"),
+                ["project"]          = new("string", "Target project slug — the PLACE axis: moves the memory's home context to that project (takes precedence over audience)")
+            }, ["id"])),
         new("archive_memory",
             "Archive (soft-delete) a memory.",
             new("object", new() { ["id"] = new("string", "Memory id") }, ["id"]))

@@ -1,6 +1,8 @@
 using System.Text;
 using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Codex;
 
 namespace Capacitor.Cli.Commands;
 

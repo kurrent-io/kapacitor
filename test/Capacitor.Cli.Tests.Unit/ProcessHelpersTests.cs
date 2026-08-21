@@ -138,6 +138,60 @@ public class ProcessHelpersTests {
     }
 
     [Test]
+    public async Task GetProcessCwd_round_trips_the_current_process() {
+        // This IS the validation of the macOS proc_vnodepathinfo struct offsets — a wrong offset
+        // returns garbage or null, never our own cwd, so a macOS release reshaping the struct
+        // fails HERE rather than silently starving the Antigravity workspace fallback.
+        // Windows deliberately returns null (no cheap same-user API; all callers fail open).
+        if (OperatingSystem.IsWindows()) {
+            await Assert.That(ProcessHelpers.GetProcessCwd(Environment.ProcessId)).IsNull();
+            return;
+        }
+
+        var reported = ProcessHelpers.GetProcessCwd(Environment.ProcessId);
+
+        await Assert.That(reported).IsNotNull();
+
+        // Compare canonically and EXACTLY: the runner's cwd may be reached through a symlink
+        // (/tmp vs /private/tmp on macOS) and the kernel reports the resolved path, so both
+        // sides are pushed through realpath semantics before the equality. Anything looser
+        // (EndsWith, an || chain) would let a wrong struct offset pass on garbage.
+        static string Canonical(string p) {
+            var info = new DirectoryInfo(p);
+            return (info.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? info.FullName)
+                .TrimEnd(Path.DirectorySeparatorChar);
+        }
+
+        await Assert.That(Canonical(reported!)).IsEqualTo(Canonical(Directory.GetCurrentDirectory()));
+    }
+
+    [Test]
+    public async Task DecodeNulTerminated_is_bounded_and_rejects_malformed_regions() {
+        // The exact scenario the bounded decode exists for: a full region with NO terminator must
+        // read as null, never as a truncated path and never as a scan past the region.
+        var unterminated = new byte[16];
+        Array.Fill(unterminated, (byte)'a');
+        await Assert.That(ProcessHelpers.DecodeNulTerminated(unterminated)).IsNull();
+
+        // Empty-at-zero is "no cwd", not "".
+        await Assert.That(ProcessHelpers.DecodeNulTerminated(new byte[8])).IsNull();
+
+        // A properly terminated path decodes to exactly the bytes before the NUL — including
+        // non-ASCII, since APFS paths are UTF-8.
+        var ok = "/tmp/wörk\0garbage-after-nul"u8.ToArray();
+        await Assert.That(ProcessHelpers.DecodeNulTerminated(ok)).IsEqualTo("/tmp/wörk");
+    }
+
+    [Test]
+    public async Task GetProcessCwd_returns_null_for_invalid_pids() {
+        await Assert.That(ProcessHelpers.GetProcessCwd(0)).IsNull();
+        await Assert.That(ProcessHelpers.GetProcessCwd(-5)).IsNull();
+        // PID far above any live process on a healthy system; a dead pid must read as null,
+        // never throw — the fallback path runs inside a fail-open hook.
+        await Assert.That(ProcessHelpers.GetProcessCwd(99_999_999)).IsNull();
+    }
+
+    [Test]
     public async Task GetProcessInfo_reports_parent_chain_reaching_a_live_ancestor() {
         // Walking ppid from this process must reach our real parent and report it alive.
         if (OperatingSystem.IsWindows()) {

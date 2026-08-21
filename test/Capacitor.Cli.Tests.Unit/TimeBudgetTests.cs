@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using Capacitor.Cli;
 
 namespace Capacitor.Cli.Tests.Unit;
 

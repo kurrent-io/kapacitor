@@ -4,7 +4,7 @@ This plugin integrates [Kurrent Capacitor](../README.md) with Claude Code and Co
 
 ## What it does
 
-**MCP servers** — Two stdio servers, both auto-registered on plugin install (no manual `claude mcp add` or `~/.codex/config.toml` edit):
+**MCP servers** — stdio servers auto-registered on plugin install (no manual `claude mcp add` or `~/.codex/config.toml` edit):
 
 ### `kcap-sessions`
 
@@ -46,6 +46,17 @@ Search, save, and update durable team memories — preferences, feedback, projec
 
 Repo- and machine-aware: it resolves the cwd to a repo hash and the local persisted machine id at startup to scope saves and bias search results.
 
+### `kcap-analytics`
+
+Governed read-only SQL over the org's curated coding-agent analytics views (sessions, tool/skill/token usage, cost, commits, PRs, evals). Auto-registered for every supported harness — it resolves its repo scope from the working directory, so it rides the same registration path as `kcap-sessions`.
+
+| Tool | Description |
+|------|-------------|
+| `get_analytics_schema` | The governed schema document: queryable views/columns, glossary, SQL rules, worked examples. Called once before writing SQL |
+| `query_analytics` | Run one governed Postgres SELECT (`sql`, optional `scope` `"repo"`/`"global"`, optional `max_rows`); a rejected query returns the validator's reason to fix and retry |
+
+Repo-aware: defaults to the cwd's repo; pass `scope: "global"` for org-wide questions. Requires `kcap login` and a kcap-server new enough to expose the `/api/analytics` endpoints.
+
 `kcap mcp judge` is intentionally not auto-registered. Add it with `claude mcp add kcap-judge -- kcap mcp judge` if you want it.
 
 **Hooks** — Automatically captures session activity and forwards it to the Kurrent Capacitor server:
@@ -68,8 +79,12 @@ Each hook pipes its JSON payload through the `kcap` CLI, which enriches it with 
 - `validate-plan` / `kcap-validate-plan` — Verify that all planned items were completed
 - `disable` / `kcap-disable` — Stop recording and delete all server data for the current session
 - `hide` / `kcap-hide` — Hide the current session (owner-only visibility)
+- `review-flows` / `kcap-review-flows` — Run structured, iterative spec/code review loops; the reviewer vendor is chosen independently of the driver (pass a lowercase token like `claude`/`codex`/`cursor`)
+- `agent-flows` / `kcap-agent-flows` — Run structured multi-participant agent flows (catalog `definition_id` or an inline `definition_yaml`), each participant declaring its own vendor/model
+- `work-items` / `kcap-work-items` — Declare a work item's breakdown (parent and parts) and its blocks / blocked-by dependencies, so Home renders its topology
+- `guided-tour` / `kcap-guided-tour` — Onboarding tour: what Capacitor has recorded for your team, then per-use-case tutorials (evals, session recall, PR review, analytics)
 
-In Claude they're invoked as `/kcap:recap`, `/kcap:errors`, etc.
+In Claude they're invoked as `/kcap:recap`, `/kcap:errors`, `/kcap:guided-tour`, etc.
 
 ## Prerequisites
 
@@ -151,6 +166,14 @@ kcap/
       SKILL.md
     hide/
       SKILL.md
+    review-flows/
+      SKILL.md
+    agent-flows/
+      SKILL.md
+    work-items/
+      SKILL.md
+    guided-tour/
+      SKILL.md           — /kcap:guided-tour onboarding tour
 ```
 
 The two MCP files exist because Claude requires top-level `mcpServers` (camelCase) while Codex accepts only `mcp_servers` (snake_case) or a bare server map — the schemas don't overlap. Keep them in sync when adding or removing servers.

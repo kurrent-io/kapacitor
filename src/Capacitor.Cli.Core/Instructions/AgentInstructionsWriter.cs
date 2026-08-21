@@ -64,7 +64,7 @@ public static class AgentInstructionsWriter {
 
     static string AppendBlock(string content, string block) {
         if (content.Length == 0) return block + "\n";        // fresh file
-        var sep = content.EndsWith("\n") ? "\n" : "\n\n";    // one blank line before ours
+        var sep = content.EndsWith('\n') ? "\n" : "\n\n";    // one blank line before ours
         return content + sep + block + "\n";
     }
 

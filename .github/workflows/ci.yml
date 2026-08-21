@@ -2,17 +2,20 @@ name: CI
 
 on:
   pull_request:
-    paths-ignore:
-      - '**.md'
+    # Skip markdown-only PRs, EXCEPT under kcap/ — every file in the shipped plugin is a SKILL.md, so
+    # adding a skill is a markdown-only change. Ignoring those let two skills ship unlisted in
+    # AgentsSkillsInstaller.SourceNames without a red build; the guard that now catches it only helps
+    # if it runs on the PR that causes it. Order matters: later patterns re-include.
+    paths:
+      - '**'
+      - '!**.md'
+      - 'kcap/**'
   push:
     branches: [main]
     paths-ignore:
       - '**.md'
     tags:
       - 'v*'
-
-env:
-  DOTNET_VERSION: '10.0.x'
 
 jobs:
   build-and-test:
@@ -21,46 +24,60 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # linux-x64 + windows-x64. macOS is NOT in this matrix: the unit suite has
+        # a known cluster of macOS-local temp-path/parallel-load flakes that would
+        # make a macOS leg permanently red. macOS arm64 is covered by maintainer
+        # runs; macOS x64 is intentionally untested. Platform-sensitive daemon
+        # behavior that must hold everywhere (e.g. the borrowed-review capability
+        # advertisement, which no longer carries any OS/arch precondition) is
+        # additionally pinned by host-independent source guards in the unit suite —
+        # see DaemonRunnerCursorAvailabilityTests' platform coverage matrix.
         os: [ubuntu-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
+          cache: true
+          # No lock file to key on; CPM makes this the one file that pins every version.
+          cache-dependency-path: Directory.Packages.props
+
+      # Whole solution in every cached job: one OS-keyed immutable entry, so a job that
+      # restored a subset would win the race and freeze the cache on it.
+      - name: Restore solution
+        run: dotnet restore Capacitor.slnx
 
       - name: Build solution
-        run: dotnet build Capacitor.slnx
+        run: dotnet build Capacitor.slnx --no-restore
 
-      - name: Run unit tests
-        # --maximum-parallel-tests 1 serializes the entire unit suite.
-        # The codebase has many tests that mutate process-global state
-        # (Environment.SetEnvironmentVariable on HOME/PATH/KCAP_*,
-        # Console.SetOut/SetError) and rely on [NotInParallel(group)] to
-        # serialize among themselves. Cross-group parallel execution still
-        # races the shared process state intermittently on the slower
-        # Linux CI runner, producing a different flake every run. Until
-        # the affected tests are refactored to inject paths/streams
-        # rather than mutate Environment/Console, run serially. Local dev
-        # runs stay parallel (the flag lives only in CI).
-        run: dotnet run --project test/Capacitor.Cli.Tests.Unit/Capacitor.Cli.Tests.Unit.csproj -- --maximum-parallel-tests 1
+      - name: Run npm wrapper tests
+        # Plain-Node assertion scripts for the npm launcher/refresh/resolve
+        # modules (no test framework, no npm install). `shell: bash` gives
+        # fail-fast -e semantics on both matrix legs.
+        shell: bash
+        run: |
+          node npm/kcap/bin/kcap.test.js
+          node npm/kcap/bin/resolve.test.js
+          node npm/kcap/bin/refresh.test.js
 
-      - name: Run integration tests
-        # Linux only: the integration suite does real loopback HTTP (WireMock).
-        # On the Windows runner an https probe against the plain-HTTP test server
-        # (localhost/::1 resolution + TLS-to-HTTP) is environment-flaky. The
-        # cross-platform correctness that matters on Windows (path handling, the
-        # AI-820 watcher handle test) lives in the unit suite above. See AI-820.
-        if: runner.os == 'Linux'
-        run: dotnet run --project test/Capacitor.Cli.Tests.Integration/Capacitor.Cli.Tests.Integration.csproj
+      - name: Run tests
+        # --max-parallel-test-modules 1 runs one assembly at a time. TEMPORARY: the suites
+        # share process-global state through the filesystem (KCAP_CONFIG_DIR, temp roots),
+        # which no in-assembly [NotInParallel] key can serialise across assemblies. Re-enable
+        # module parallelism once those sharing points are gone.
+        # --maximum-parallel-tests 1 caps only TUnit's unkeyed bucket — keyed
+        # [NotInParallel] tests still run concurrently with disjoint-key classes, so
+        # anything touching process-global state must hold the SAME key as every other
+        # toucher. Local dev runs stay parallel; both flags live only in CI.
+        run: dotnet test --solution Capacitor.slnx --no-build --max-parallel-test-modules 1 -- --maximum-parallel-tests 1
 
   lint-linear-ids:
     name: No Linear issue IDs in C# source
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Check for Linear issue ID tokens in src/**/*.cs and test/**/*.cs
         run: bash scripts/check-linear-ids.sh
 
@@ -75,22 +92,28 @@ jobs:
           - src/Capacitor.Cli.Daemon/Capacitor.Cli.Daemon.csproj
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
+          cache: true
+          # No lock file to key on; CPM makes this the one file that pins every version.
+          cache-dependency-path: Directory.Packages.props
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
+      # Whole solution, and the RID pulls ILCompiler — a superset of build-and-test's set.
+      - name: Restore solution
+        run: dotnet restore Capacitor.slnx -r linux-x64
+
       - name: Publish AOT (linux-x64)
-        run: dotnet publish ${{ matrix.project }} -c Release -r linux-x64
+        run: dotnet publish ${{ matrix.project }} -c Release -r linux-x64 --no-restore
 
       - name: Check for trimming warnings
         run: |
-          OUTPUT=$(dotnet publish ${{ matrix.project }} -c Release -r linux-x64 2>&1)
+          OUTPUT=$(dotnet publish ${{ matrix.project }} -c Release -r linux-x64 --no-restore 2>&1)
           if echo "$OUTPUT" | grep -E 'IL[23][01][0-9]{2}'; then
             echo "::error::AOT/trimming warnings detected"
             echo "$OUTPUT" | grep -E 'IL[23][01][0-9]{2}'

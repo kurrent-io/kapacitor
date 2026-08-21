@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <OutputType>Exe</OutputType>
+        <IsPackable>false</IsPackable>
+        <!-- MemoryIndexLiveCertHarness declares native LibraryImports. -->
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\Capacitor.Tests.Helpers\Capacitor.Tests.Helpers.csproj" />
+        <ProjectReference Include="..\..\src\Capacitor.Cli.Core\Capacitor.Cli.Core.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="TUnit" />
+        <PackageReference Include="Tomlyn" />
+        <PackageReference Include="WireMock.Net" />
+        <PackageReference Include="NSubstitute" />
+        <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+    </ItemGroup>
+    <ItemGroup>
+        <Using Include="Capacitor.Tests.Helpers" />
+    </ItemGroup>
+</Project>

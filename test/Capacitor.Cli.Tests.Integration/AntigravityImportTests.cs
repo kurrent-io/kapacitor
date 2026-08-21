@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Harness.Antigravity;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -16,7 +17,10 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class AntigravityImportTests : IDisposable {
     readonly WireMockServer _server = WireMockServer.Start();
-    readonly string         _home   = Directory.CreateTempSubdirectory("kcap-ag-import-it").FullName;
+    readonly TempDir        _tmp    = new();
+    readonly string         _home;
+
+    public AntigravityImportTests() => _home = _tmp.Path;
 
     const string Root  = "11110000-0000-4000-8000-000000000001";
     const string Child = "22220000-0000-4000-8000-000000000002";
@@ -28,13 +32,16 @@ public class AntigravityImportTests : IDisposable {
 
     public void Dispose() {
         _server.Stop();
-        try { Directory.Delete(_home, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
-    string BrainDir(string convId) => Path.Combine(_home, ".gemini", "antigravity", "brain", convId);
+    string BrainDir(string productSub, string convId) =>
+        Path.Combine(_home, ".gemini", productSub, "brain", convId);
 
-    void WriteTranscript(string convId, string firstUserText) {
-        var dir = Path.Combine(BrainDir(convId), ".system_generated", "logs");
+    void WriteTranscript(string convId, string firstUserText) => WriteTranscript("antigravity", convId, firstUserText);
+
+    void WriteTranscript(string productSub, string convId, string firstUserText) {
+        var dir = Path.Combine(BrainDir(productSub, convId), ".system_generated", "logs");
         Directory.CreateDirectory(dir);
         File.WriteAllLines(Path.Combine(dir, "transcript_full.jsonl"), new[] {
             $$"""{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-07-02T19:00:00Z","content":"<USER_REQUEST>{{firstUserText}}</USER_REQUEST>"}""",
@@ -46,8 +53,10 @@ public class AntigravityImportTests : IDisposable {
     // conversation — the spawn-time linkage BuildParentMap reads (messages/*.json is
     // no longer consulted). Root's transcript must already exist (WriteTranscript(Root, ...)
     // is called before this at every call site).
-    void WriteLinkage() {
-        var dir = Path.Combine(BrainDir(Root), ".system_generated", "logs");
+    void WriteLinkage() => WriteLinkage("antigravity");
+
+    void WriteLinkage(string productSub) {
+        var dir = Path.Combine(BrainDir(productSub, Root), ".system_generated", "logs");
         Directory.CreateDirectory(dir);
         File.AppendAllLines(Path.Combine(dir, "transcript_full.jsonl"), new[] {
             $$"""{"type":"INVOKE_SUBAGENT","content":"{\"conversationId\":\"{{Child}}\"}"}"""
@@ -115,6 +124,60 @@ public class AntigravityImportTests : IDisposable {
         // Matched via "agent_id":"<Dashless(Child)>" rather than a bare Contains(Dashless(Child)),
         // because the root's own transcript batch also contains the Child id embedded in its
         // INVOKE_SUBAGENT step.
+        var subTranscript = _server.LogEntries
+            .Where(e => e.RequestMessage.Path == "/hooks/transcript")
+            .Select(e => e.RequestMessage.Body!)
+            .Single(b => b.Contains($"\"agent_id\":\"{Dashless(Child)}\""));
+        await Assert.That(subTranscript).Contains("\"vendor\":\"antigravity\"");
+    }
+
+    // G1 end-to-end: the SAME nested-subagent import driven over the agy CLI root
+    // (~/.gemini/antigravity-cli/brain). Exercises the one path the unit tests can't drive to the
+    // server — ImportChildrenAsync resolving the child transcript under the session's product root
+    // rather than defaulting to the GUI's. Before dual-root discovery this imported nothing.
+    [Test]
+    public async Task ImportSession_over_the_agy_CLI_root_imports_root_with_nested_subagent() {
+        WriteTranscript("antigravity-cli", Root, "build it");
+        WriteTranscript("antigravity-cli", Child, "sub task");
+        WriteLinkage("antigravity-cli");
+
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
+        foreach (var route in new[] {
+            "/hooks/session-start/antigravity", "/hooks/transcript",
+            "/hooks/subagent-start", "/hooks/subagent-stop", "/hooks/session-end/antigravity"
+        }) {
+            _server.Given(Request.Create().WithPath(route).UsingPost())
+                .RespondWith(Response.Create().WithStatusCode(200));
+        }
+
+        using var client = new HttpClient();
+        var source = new AntigravityImportSource(home: _home, geminiCliHome: "");
+
+        var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
+        await Assert.That(discovered.Count).IsEqualTo(1);
+        await Assert.That(discovered[0].SessionId).IsEqualTo(Dashless(Root));
+
+        var classified = await source.ClassifyAsync(
+            discovered,
+            new ClassifyContext(client, _server.Url!, MinLines: 0, ExcludedRepos: null, ExcludedPaths: null),
+            CancellationToken.None);
+        await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.New);
+
+        var outcome = await source.ImportSessionAsync(
+            classified[0], new ImportContext(client, _server.Url!, ForcePrivate: false), CancellationToken.None);
+        await Assert.That(outcome).IsEqualTo(ImportOutcome.Loaded);
+
+        var posts = _server.LogEntries
+            .Where(e => e.RequestMessage.Method == "POST")
+            .Select(e => e.RequestMessage.Path)
+            .ToList();
+
+        // The full nested lifecycle fired — proving the child transcript resolved under the CLI root.
+        await Assert.That(posts).IsEquivalentTo(new[] {
+            "/hooks/session-start/antigravity", "/hooks/transcript", "/hooks/subagent-start",
+            "/hooks/transcript", "/hooks/subagent-stop", "/hooks/session-end/antigravity"
+        });
         var subTranscript = _server.LogEntries
             .Where(e => e.RequestMessage.Path == "/hooks/transcript")
             .Select(e => e.RequestMessage.Body!)

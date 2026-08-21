@@ -1,6 +1,9 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Core;
 
@@ -166,6 +169,19 @@ class WatchState {
     // forever but the Codex process is still alive, the parent-exit watchdog will
     // eventually fire and end the session — adding a ceiling here would be YAGNI.
     public HashSet<string> PendingCodexToolCalls { get; } = new(StringComparer.Ordinal);
+
+    // Same guard for a Claude SUBAGENT watcher's idle ceiling: a tool_use content block adds its
+    // id, the matching tool_result removes it. A subagent running a long build or test suite
+    // writes nothing between the two, so without this the ceiling would reap a live subagent.
+    // Only populated for claude child watchers — nothing else reads it.
+    public HashSet<string> PendingClaudeToolCalls { get; } = new(StringComparer.Ordinal);
+
+    // Codex collab CHILD watcher only (vendor == "codex" && agentId != null): folds the child
+    // rollout's own task_complete/turn-activity lines so the polling loop can post a LIVE
+    // subagent-stop once the turn is done and a grace window elapsed — before this,
+    // the parent's session-end teardown was the only stop, so a finished child's chat card
+    // spun for the parent's whole lifetime. Never observed on any other watcher.
+    public CodexSubagentTurnTracker CodexSubagentTurn { get; } = new();
 
     // Highwater mark of the last Antigravity gen_metadata row already streamed as a
     // synthetic USAGE line, so the watcher only sends newly-appended cost rows on each
@@ -493,6 +509,16 @@ record JudgeFactPayload {
 
     [JsonPropertyName("source_eval_run_id")]
     public required string SourceEvalRunId { get; init; }
+
+    // Optional judge-declared applicability (where the fact is specific to). Omitted from the wire
+    // when null so older servers ignore them; a non-empty array restricts, absent = applies everywhere.
+    [JsonPropertyName("applies_to_vendors")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string[]? AppliesToVendors { get; init; }
+
+    [JsonPropertyName("applies_to_session_kinds")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string[]? AppliesToSessionKinds { get; init; }
 }
 
 public record JudgeFact {
@@ -923,9 +949,10 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Auth.AuthDiscoveryResponse))]
 [JsonSerializable(typeof(Auth.TokenExchangeRequest))]
 [JsonSerializable(typeof(Auth.TokenExchangeResponse))]
+[JsonSerializable(typeof(Auth.MachineTokenResponse))]
 [JsonSerializable(typeof(Auth.AuthErrorResponse))]
 [JsonSerializable(typeof(Auth.RefreshTokenRequest))]
-[JsonSerializable(typeof(Auth.GitHubDeviceCodeResponse))]
+[JsonSerializable(typeof(Auth.DeviceCodeResponse))]
 [JsonSerializable(typeof(Auth.GitHubTokenResponse))]
 [JsonSerializable(typeof(Auth.GitHubCodeExchangeRequest))]
 [JsonSerializable(typeof(Auth.WorkOSAuthResponse))]
@@ -933,6 +960,12 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Auth.ProxyConfigResponse))]
 [JsonSerializable(typeof(Auth.DiscoveredTenant[]))]
 [JsonSerializable(typeof(LaunchAgentCommand))]
+// Task 8: reviewer-model launch block + preflight RPC + resolved report wire DTOs.
+[JsonSerializable(typeof(ExplicitReviewerModelLaunch))]
+[JsonSerializable(typeof(ReviewerModelResolveRequestV1))]
+[JsonSerializable(typeof(ReviewerModelResolveResponseV1))]
+[JsonSerializable(typeof(ExplicitReviewerModelResolvedV1))]
+[JsonSerializable(typeof(AcpAutoApprovalNotice))]
 [JsonSerializable(typeof(ReviewLaunchInfo))]
 [JsonSerializable(typeof(LaunchKind))]
 [JsonSerializable(typeof(FindRepoForRemoteRequest))]
@@ -961,6 +994,10 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(LiveAgentInfo))]
 [JsonSerializable(typeof(QuarantinedAgentInfo))]
 [JsonSerializable(typeof(DaemonStatusReport))]
+// Surface 3 (new-harness detection): per-machine coding-agent inventory carried on the status report.
+[JsonSerializable(typeof(Capacitor.Cli.Core.Setup.HarnessInventory))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Setup.HarnessInventoryEntry))]
+[JsonSerializable(typeof(Dictionary<string, Capacitor.Cli.Core.Setup.HarnessInventoryEntry>))]
 // Phase B2-b (sequenced-settlement design): report / connect side wire DTOs.
 [JsonSerializable(typeof(ResolvedStartupCandidate))]
 [JsonSerializable(typeof(ResolvedStartupCandidate[]))]
@@ -1016,6 +1053,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Acp.InitializeResult))]
 [JsonSerializable(typeof(Acp.AgentCapabilities))]
 [JsonSerializable(typeof(Acp.SessionNewParams))]
+[JsonSerializable(typeof(Acp.SessionLoadParams))]
 [JsonSerializable(typeof(Acp.AcpMcpServerSpec))]
 [JsonSerializable(typeof(Acp.AcpMcpServerEnvVar))]
 [JsonSerializable(typeof(Acp.AcpMcpServerSpec[]))]
@@ -1023,14 +1061,17 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Acp.PromptContentBlock))]
 [JsonSerializable(typeof(Acp.SessionCancelParams))]
 [JsonSerializable(typeof(Acp.SetConfigOptionParams))]
+[JsonSerializable(typeof(Acp.SetModelParams))]
 [JsonSerializable(typeof(Acp.SessionModelsInfo))]
 [JsonSerializable(typeof(Acp.AvailableModelDto))]
+[JsonSerializable(typeof(Acp.SessionConfigOptionDto))]
+[JsonSerializable(typeof(Acp.ConfigOptionChoiceDto))]
 [JsonSerializable(typeof(Acp.SessionRequestPermissionParams))]
 [JsonSerializable(typeof(Acp.PermissionOptionDto))]
 [JsonSerializable(typeof(Acp.PermissionOutcomeResult))]
 [JsonSerializable(typeof(Acp.PermissionOutcomeDto))]
 [JsonSerializable(typeof(Acp.ElicitationCreateParams))]
-[JsonSerializable(typeof(Acp.ElicitationCreateResult))]
+[JsonSerializable(typeof(Acp.ElicitationResponse))]
 [JsonSerializable(typeof(AcpInteractionRequest))]
 [JsonSerializable(typeof(AcpInteractionOption))]
 [JsonSerializable(typeof(AcpInteractionDecision))]
@@ -1038,16 +1079,31 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(AcpEventEnvelope))]
 [JsonSerializable(typeof(AcpEventEnvelope[]))]
 [JsonSerializable(typeof(AcpBatchAck))]
+[JsonSerializable(typeof(AcpBindOutcome))]
+[JsonSerializable(typeof(AcpSourceClaimOutcome))]
+[JsonSerializable(typeof(AcpLaunchConfirmOutcome))]
 [JsonSerializable(typeof(TranscriptBatchAck))]
 // The AcpSessionStarted hub method's optional metadata argument. Registered as its own root type
 // (not just nested inside another JsonSerializable graph) because SignalR's JsonHubProtocol
 // serializes each hub-invocation argument independently by its declared type.
 [JsonSerializable(typeof(IReadOnlyDictionary<string, string>))]
+[JsonSerializable(typeof(TelemetryStateFile))]
+[JsonSerializable(typeof(TelemetryDeviceIdFile))]
 // UseStringEnumConverter=true matches the server's SignalR JSON protocol, which
 // serialises enums (e.g. LaunchKind) as camelCase strings. Without it the
 // source-gen LaunchKind JsonTypeInfo defaults to numeric and silently drops the
 // invocation — the daemon receives "kind": "review" / "default" and the
 // LaunchAgent handler never fires (DEV-1665).
+// Machine credentials. Registered here because the AOT CLI has no reflection fallback:
+// an unregistered type throws at runtime, not at build.
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.CreateMachineApplicationRequest))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.CreateMachineApplicationResponse))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.RegisterMachineRequest))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.RegisterMachineResponse))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.MachineSummary[]))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.FeedbackSubmitRequest))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.FeedbackSubmitContext))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.FeedbackSubmitResponse))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
     UseStringEnumConverter = true
@@ -1111,7 +1167,12 @@ public readonly record struct AcpInteractionRequest(
         string?                Prompt,
         AcpInteractionOption[]? Options,
         bool                   IsMultiSelect,
-        JsonElement?           RequestedSchema = null
+        JsonElement?           RequestedSchema = null,
+        // Multi-select selection-count bounds (stabilized ACP elicitation `minItems`/`maxItems`,
+        // clamped daemon-side) — trailing additive nullables so every pre-existing construction
+        // site and JSON payload stays valid; null means "no bound advertised".
+        int?                   MinSelections = null,
+        int?                   MaxSelections = null
     );
 
 /// <summary>
@@ -1133,7 +1194,13 @@ public readonly record struct AcpInteractionDecision(
         string?      SelectedOptionLabel,
         int?         SelectedIndex,
         string?      FreeText,
-        JsonElement? UpdatedToolInput
+        JsonElement? UpdatedToolInput,
+        // Multi-select answers (stabilized ACP elicitation) — trailing additive nullables; the
+        // scalar SelectedOptionId/SelectedOptionLabel stay authoritative for single-select and
+        // mirror the FIRST selection when the lists are set, so an old daemon deserializing this
+        // record keeps working unchanged.
+        string[]?    SelectedOptionIds = null,
+        string[]?    SelectedOptionLabels = null
     );
 
 /// <summary>
@@ -1161,6 +1228,31 @@ public static class AcpEventKind {
     public const string ToolResult         = "tool_result";
     public const string SessionTitle       = "session_title";
     public const string SessionEnded       = "session_ended";
+    public const string Usage              = "usage";
+
+    /// <summary>Daemon-synthesized informational note rendered as system-attributed text (never as
+    /// user or assistant speech) — today emitted only by the ACP reconnect path after a successful
+    /// resume. Additive: a server that predates this kind skips it while still advancing its ack
+    /// cursor (verified against <c>CapacitorHub.AcpSessionEvents</c>'s unrecognised-Kind branch), so
+    /// a newer daemon degrades to log-only rather than wedging the forwarder.</summary>
+    public const string SystemNote         = "system_note";
+
+    /// <summary>A full plan snapshot (codex app-server <c>turn/plan/updated</c>, which always sends
+    /// complete revisions). Canonical, latest-snapshot-wins; the server maps it to
+    /// <c>PlanContentUpdatedEvent</c>, landing envelope-sourced sessions on the same native-plan path
+    /// <c>PlanArtifactExtractor</c> already consumes. Additive for other ACP vendors (their translator
+    /// may keep dropping plan updates until wired). An older server treats it as an unrecognised Kind
+    /// (dropped, cursor still advances).</summary>
+    public const string Plan               = "plan";
+
+    /// <summary>A per-event additive token-usage DELTA (codex app-server <c>thread/tokenUsage/updated</c>,
+    /// daemon-converted from cumulative to delta and attributed to the model resolved at that instant).
+    /// Distinct from <see cref="Usage"/>, which is context-window OCCUPANCY (the ACP context-usage
+    /// reading), not additive
+    /// billing buckets. The server stamps these buckets into Eventuous <c>$usage</c> metadata so the
+    /// existing additive folds (session totals, per-model attribution, cost) count them unchanged. An
+    /// older server treats it as an unrecognised Kind (dropped, cursor still advances).</summary>
+    public const string TokenUsage         = "token_usage";
 }
 
 /// <summary>
@@ -1177,6 +1269,10 @@ public static class AcpEventKind {
 /// <c>AcpEventEnvelopeWireCompatTests</c> for the locked-in per-field wire-compat guard. Exactly one
 /// per-kind field group is populated for a given <see cref="Kind"/> (see
 /// <c>AcpEventTranslator.Translate</c>, which never sets a field outside its kind's group).
+/// <c>Model</c> is the one exception: it is SHARED attribution metadata rather than a member of a
+/// single kind's group — <c>session_started</c> carries it, and so does <c>usage</c>, because the
+/// server's mapper is a pure per-envelope function with no session-fold access, so the resolved
+/// model has to ride the wire on every reading that needs attribution.
 /// </summary>
 public readonly record struct AcpEventEnvelope(
         int     ContractVersion   = 1,
@@ -1205,8 +1301,40 @@ public readonly record struct AcpEventEnvelope(
         // session_ended
         string? EndReason         = null,
 
+        // usage — context occupancy from the ACP Session Usage RFD. Additive and nullable, so
+        // ContractVersion stays 1: an older server ignores them. The resolved model rides the
+        // Model field above, stamped on every usage envelope.
+        long?   ContextUsedTokens   = null,
+        long?   ContextWindowTokens = null,
+
         // transcript-authoritative time (ISO-8601); server falls back to now if absent
-        string? TimestampIso      = null
+        string? TimestampIso      = null,
+
+        // Ephemeral live lane (codex app-server envelope transcript). Additive/default-false, so
+        // ContractVersion stays 1: an older server ignores both and its canonical-only path is
+        // unchanged. Ephemeral=true marks a transient live chunk (accumulated content-so-far for its
+        // item) that is relayed but NEVER persisted and carries NO seq — it consumes no canonical
+        // sequence number and is excluded from the dup/gap logic (the server relays it in batch order).
+        // The pure-replacement viewer rule (state[ItemId] = latest ephemeral payload; the item's
+        // canonical completed envelope replaces and finalizes it) makes a dropped/duplicated ephemeral
+        // harmless. ItemId is the app-server item id — the stable key a viewer uses to know which
+        // transient state a completed item supersedes; it rides BOTH the ephemeral envelopes and their
+        // item's canonical completed envelope, and the server stamps it into the canonical event's
+        // METADATA (the event records are not ours to change).
+        bool    Ephemeral         = false,
+        string? ItemId            = null,
+
+        // token_usage — a per-event additive token DELTA (codex app-server). Additive/nullable, so
+        // ContractVersion stays 1: an older server ignores them. The model rides the Model field
+        // above (attributed to the model resolved at the delta's instant — correct across a reroute).
+        // input is GROSS (server converts to net = input − cached before stamping $usage, matching
+        // UsageMetadataHelper's cross-vendor contract). cache-write is the cache-CREATION tier, billed
+        // separately from cached reads. total is derived server-side and not carried.
+        long?   UsageInputTokens       = null,
+        long?   UsageCachedInputTokens = null,
+        long?   UsageCacheWriteInputTokens = null,
+        long?   UsageOutputTokens      = null,
+        long?   UsageReasoningTokens   = null
     );
 
 /// <summary>
@@ -1216,8 +1344,47 @@ public readonly record struct AcpEventEnvelope(
 /// (resend from <see cref="ExpectedNextSeq"/> on a gap; a terminal-drop ack
 /// has <see cref="AcceptedSeq"/> below the daemon's max-sent seq AND a null
 /// <see cref="ExpectedNextSeq"/>).
+/// <para>
+/// <see cref="Rejected"/> is set on a stale-binding rejection (missing agent, foreign
+/// connection, or unbound/terminal session). The server returns the canonical rejection ack
+/// <c>(-1, -1, null, true)</c> instead of throwing; the forwarder terminalizes on it. An old daemon
+/// (no <see cref="Rejected"/> field) still stops because <see cref="AcceptedSeq"/> == -1 is below any
+/// real max-sent seq, which trips the terminal-drop path above.
+/// </para>
 /// </summary>
-public readonly record struct AcpBatchAck(long AcceptedSeq, long PersistedSeq, long? ExpectedNextSeq = null);
+public readonly record struct AcpBatchAck(long AcceptedSeq, long PersistedSeq, long? ExpectedNextSeq = null, bool Rejected = false);
+
+/// <summary>
+/// outcome of the server's <c>AcpSessionStarted</c> hub method — a field-for-field mirror of
+/// the server-side <c>Capacitor.Server.Core.Acp.AcpBindOutcome</c>. <see cref="Bound"/> is <c>0</c> so
+/// an OLD server's void return decodes to it (legacy success). <see cref="Rejected"/> means the server
+/// declined a stale/foreign/conflicting binding; the daemon stands down without a retry storm.
+/// </summary>
+public enum AcpBindOutcome { Bound = 0, Rejected = 1 }
+
+/// <summary>
+/// Ack of the server's <c>AcpSessionSourceClaim</c> hub method — the durable, deferred-first-turn
+/// source claim that binds the canonical session AND writes the hosted-session ownership ledger row
+/// before the orchestrator dispatches the first turn. A field-for-field mirror of the server-side
+/// <c>Capacitor.Server.Core.Acp.AcpSourceClaimOutcome</c>. <see cref="Outcome"/> mirrors
+/// <see cref="AcpBindOutcome"/> (a stale/foreign bind is <c>Rejected</c> and the daemon stands down);
+/// on <see cref="AcpBindOutcome.Bound"/> the <see cref="OwnershipToken"/> is the ledger's claim/rebind
+/// revision to pass back to <c>ConfirmSessionLaunch</c> after the first <c>turn/start</c> succeeds, and
+/// <see cref="AcceptedSeq"/> is the canonical cursor the forwarder resumes from (<c>-1</c> for a
+/// brand-new session). Both numeric fields are meaningless on a <c>Rejected</c> outcome.
+/// </summary>
+public readonly record struct AcpSourceClaimOutcome(AcpBindOutcome Outcome, long OwnershipToken, long AcceptedSeq);
+
+/// <summary>
+/// Token-fenced outcome of the server's <c>ConfirmSessionLaunch</c> hub method — clearing the ledger
+/// row's provisional flag once the first turn is dispatched. A mirror of the server-side
+/// <c>Capacitor.Server.Core.Acp.AcpLaunchConfirmOutcome</c>. <see cref="Confirmed"/> is <c>0</c> so an
+/// OLD server's void return decodes to it (legacy success). Idempotent under the token
+/// (<see cref="AlreadyConfirmed"/> on a retry after the clear landed); <see cref="Superseded"/> is
+/// permanent (a rebind advanced the token past the caller's — stop retrying); <see cref="NotFound"/>
+/// means no ledger row (the claim never committed, or the session closed).
+/// </summary>
+public enum AcpLaunchConfirmOutcome { Confirmed = 0, AlreadyConfirmed = 1, Superseded = 2, NotFound = 3 }
 
 /// <summary>
 /// Ack returned from the server's <c>SendTranscriptBatchAcked</c> hub method (D3).
@@ -1274,8 +1441,53 @@ public readonly record struct LaunchAgentCommand(
         string?            CommandId = null,
         // The server's vendor-specific unattended-review certification expectation.
         // Kept additive and optional so older servers and non-review launches remain compatible.
-        ReviewerCertificationRequirement? ReviewerCertification = null
+        ReviewerCertificationRequirement? ReviewerCertification = null,
+        // Task 8: optional, versioned explicit reviewer-MODEL launch block. Non-null ONLY for a
+        // protocol-v3 explicit-model reviewer launch the server drove through the daemon preflight;
+        // null for every legacy/interactive launch (which keeps the ReportAgentResolvedModel path
+        // unchanged). Appended last as an optional field so the SignalR positional/name binding stays
+        // wire-compatible with older daemons (ignore it) and older servers (never set it). The daemon
+        // launches with the exact LaunchModel VERBATIM and, post-launch, reports the concrete resolved
+        // model back keyed on LaunchAttemptId (see ExplicitReviewerModelResolvedV1).
+        ExplicitReviewerModelLaunch? ExplicitReviewerModel = null,
+        // Interactive Codex launches only; any other launch shape is rejected by CodexPosturePolicy.
+        // Appended last so the wire stays compatible with older daemons and servers.
+        CodexLaunchPosture? CodexPosture = null,
+        // Consent: who asked for this launch. Appended last, same wire-compat rule as the
+        // fields above — old daemons ignore them, old servers never set them (null ⇒ unknown ⇒
+        // the consent engine falls through rules to the configured default).
+        string?           RequesterUserId       = null,
+        bool?             RequesterIsOwner      = null,
+        // The review-flow inactivity bound in seconds (liveness-supervision spec §3). Received and
+        // stored ONLY so the daemon's wire contract matches the server's; the SERVER owns enforcement,
+        // per round, via its own participant activity monitor.
+        //
+        // The daemon must NEVER use this as a reap threshold. It is round-scoped, while the daemon's
+        // AgentOrchestrator.FindReviewersToReap is round-agnostic, so applying it there reaps healthy
+        // reviewers BETWEEN rounds. The daemon's actual rule is the coarse legacy backstop in that
+        // method (TTL / turn-wedge / idle), which never reads this field.
+        //
+        // Null for every non-review-flow launch and for a launch predating this field; an old daemon
+        // ignores it.
+        int?              InactivityBoundSeconds = null,
+        // The server-stamped human-readable name for RequesterUserId (issue #481). Display-only —
+        // NEVER used for consent matching, which stays on RequesterUserId. Appended last, same
+        // wire-compat rule as the fields above — old daemons ignore it, old servers never set it.
+        string?           RequesterDisplay = null,
+        // Caller-selected ACP permission preset ("explore"/"edit") for an interactive ACP-hosted
+        // launch. The AcpInteractionBridge auto-approves permission requests whose ACP tool kind the
+        // preset covers; everything else keeps prompting. Null for every non-preset launch; the
+        // orchestrator's pre-flight AcpPermissionPresetPolicy fails closed on a preset supplied for a
+        // review-flow / borrowed / non-ACP-routed launch. Appended last so the SignalR positional
+        // binding stays wire-compatible — old daemons ignore it, old servers never set it.
+        string?           AcpPermissionPreset = null
     );
+
+/// <summary>Caller-selected Codex launch posture. Valid ONLY for interactive, daemon-owned-worktree
+/// launches (<see cref="LaunchKind.Default"/> and not borrowed); the daemon fails closed on any other
+/// launch shape. Both fields are required — a partial block is malformed. Values are the Codex CLI's
+/// own lowercase tokens, compared ordinally (see the daemon's CodexPosturePolicy).</summary>
+public sealed record CodexLaunchPosture(string Sandbox, string Approval);
 
 public sealed record ReviewerCertificationRequirement(
     string Vendor,
@@ -1284,6 +1496,85 @@ public sealed record ReviewerCertificationRequirement(
     string Revision,
     string ExpectedDaemonConnectionId,
     string ExpectedCliVersion);
+
+/// <summary>Task 8: the server-pinned explicit reviewer-model launch parameters carried on
+/// <see cref="LaunchAgentCommand.ExplicitReviewerModel"/>. <see cref="LaunchModel"/> is the EXACT model
+/// the daemon must launch the reviewer with (threaded through verbatim — never recanonicalized);
+/// <see cref="LaunchAttemptId"/> is the durable launch-attempt id the daemon must echo in its post-launch
+/// <see cref="ExplicitReviewerModelResolvedV1"/> report so the server's one-shot waiter (keyed by
+/// <c>(agentId, launchAttemptId)</c>) can rendezvous; <see cref="PolicyVersion"/> and
+/// <see cref="EquivalenceKey"/> are the values the daemon's preflight already accepted, pinned so the
+/// server can validate the report by equality. <see cref="ReportProtocolVersion"/> versions the report
+/// contract (v1) additively.</summary>
+public sealed record ExplicitReviewerModelLaunch(
+    string LaunchAttemptId,
+    string LaunchModel,
+    string PolicyVersion,
+    string EquivalenceKey,
+    int    ReportProtocolVersion = 1);
+
+// ── Task 8: reviewer-model preflight RPC + resolved report wire DTOs ──────────────────────
+// These MATCH the server's DaemonCommands.cs shapes EXACTLY (field name/type/nullability) — the
+// System.Text.Json snake_case binding is name-based, so a rename on either side silently breaks the
+// wire. See kcap-server PR #1187 (Capacitor.Agents.ReviewerModelResolveRequestV1 / …ResponseV1 /
+// ExplicitReviewerModelResolvedV1).
+
+/// <summary>Server → daemon: "would <see cref="RequestedModel"/> launch under <see cref="Vendor"/>'s
+/// current reviewer-model policy?" — a SIDE-EFFECT-FREE preflight (the daemon resolves, never spawns).
+/// <see cref="RequestId"/> is the caller's launch-attempt id, echoed back verbatim so a stale/misrouted
+/// reply is rejected; <see cref="ExpectedPolicyVersion"/> is the RPC PROTOCOL version
+/// (<c>reviewer_model_resolve_v1</c>), echoed back so a protocol upgrade mid-flight is detected — it is
+/// NOT the per-vendor resolver policy version (that is carried separately on the resolved report).</summary>
+public sealed record ReviewerModelResolveRequestV1(
+    string RequestId,
+    string Vendor,
+    string RequestedModel,
+    string ExpectedPolicyVersion);
+
+/// <summary>Daemon → server reply to <see cref="ReviewerModelResolveRequestV1"/>.
+/// <see cref="Disposition"/> is exactly one of <c>"accepted"</c> / <c>"unavailable"</c> /
+/// <c>"invalid"</c> (any other value the server treats as malformed → unavailable). On
+/// <c>"accepted"</c>, <see cref="CanonicalRequestedModel"/> + <see cref="LaunchModel"/> are populated
+/// and <see cref="EquivalenceKey"/> is the stable anchor. On <c>"unavailable"</c>,
+/// <see cref="RecognizedVendor"/> optionally names a DIFFERENT advertised unattended vendor on this
+/// same daemon that recognized the model (→ the server reports a vendor mismatch). On <c>"invalid"</c>,
+/// <see cref="DiagnosticCode"/> optionally carries a bounded reason token.</summary>
+public sealed record ReviewerModelResolveResponseV1(
+    string  RequestId,
+    string  Vendor,
+    string  PolicyVersion,
+    string  Disposition,
+    string? CanonicalRequestedModel = null,
+    string? LaunchModel             = null,
+    string? EquivalenceKey          = null,
+    string? RecognizedVendor        = null,
+    string? DiagnosticCode          = null);
+
+/// <summary>Daemon → server (hub method <c>ReportExplicitReviewerModelResolved</c>): the CONCRETE model
+/// an explicit-model reviewer actually launched with, keyed by the preallocated <see cref="AgentId"/> +
+/// the durable <see cref="LaunchAttemptId"/>. <see cref="Vendor"/>/<see cref="PolicyVersion"/>/
+/// <see cref="EquivalenceKey"/> echo the values the preflight accepted so the server validates by
+/// equality; <see cref="ResolvedModel"/> is the exact concrete model id the server re-prices before
+/// recording the assignment.</summary>
+public sealed record ExplicitReviewerModelResolvedV1(
+    string AgentId,
+    string LaunchAttemptId,
+    string Vendor,
+    string ResolvedModel,
+    string PolicyVersion,
+    string EquivalenceKey);
+
+/// <summary>Daemon → server (<c>NotifyAcpAutoApproval</c>): a fire-and-forget audit notice that a
+/// launch-time permission preset auto-approved one ACP <c>session/request_permission</c> without a
+/// human. Wire shape must match the server's record EXACTLY — the snake_case name binding means a
+/// rename on either side silently breaks it.</summary>
+public sealed record AcpAutoApprovalNotice(
+    string  AgentId,
+    string  AcpSessionId,
+    string? ToolName,
+    string  ToolKind,
+    string  Preset,
+    string? ToolCallId);
 
 /// <summary>
 /// Discriminator for daemon launch commands. <see cref="Default"/> preserves
@@ -1305,13 +1596,28 @@ public enum LaunchKind {
 /// is the <see cref="LaunchKind"/> name; <see cref="FlowRunId"/>/<see cref="FlowRole"/> are set only
 /// for a ReviewFlow launch. Carried additively on <see cref="DaemonConnect.LiveAgents"/> and in
 /// <see cref="DaemonStatusReport"/> so the server can associate a surviving unassigned reviewer with
-/// its role instead of a blind grace period. All-optional trailing fields keep it wire-compatible.</summary>
+/// its role instead of a blind grace period. All-optional trailing fields keep it wire-compatible.
+///
+/// <para>Liveness-supervision spec §0/§2: <see cref="ActivitySeq"/>/<see cref="IdleForMs"/>/
+/// <see cref="TurnInFlight"/>/<see cref="LaunchStage"/> are this agent's daemon-local activity
+/// attestation, read from its <c>AgentActivityClock</c> (see <c>AgentOrchestrator.BuildLiveAgents</c>).
+/// Presence of ALL THREE steady-state fields (<see cref="ActivitySeq"/> + <see cref="IdleForMs"/> +
+/// <see cref="TurnInFlight"/>) is the server's capability signal for the WHOLE entry, latched as a
+/// group — any one missing (an old daemon) makes the server treat the entry as legacy, never
+/// half-interpreted. <see cref="LaunchStage"/> is deliberately NOT part of that group: it is set only
+/// while the agent is <c>Starting</c> and its absence once <c>Running</c> must never look like a lost
+/// capability. All four are trailing/nullable/default-null, so an old server ignores them and a
+/// pre-liveness daemon never sets them.</para></summary>
 public readonly record struct LiveAgentInfo(
         string         Id,
         string         Kind,
         DateTimeOffset CreatedAt,
-        string?        FlowRunId = null,
-        string?        FlowRole  = null
+        string?        FlowRunId    = null,
+        string?        FlowRole     = null,
+        ulong?         ActivitySeq  = null,
+        ulong?         IdleForMs    = null,
+        bool?          TurnInFlight = null,
+        string?        LaunchStage  = null
     );
 
 /// <summary>Phase B (D4 §6.4(2a)): an agent whose death could NOT be confirmed (record-write
@@ -1348,7 +1654,10 @@ public readonly record struct DaemonStatusReport(
         // Phase B2-b (sequenced-settlement design §5.5): the daemon-lifetime monotonic high-water of the
         // resolved-candidates ledger, advertised alongside ResolvedStartupCandidates so that once sparse
         // acks prune entries the server still knows the generation frontier. Additive/optional.
-        long?                         HighestResolutionGeneration   = null
+        long?                         HighestResolutionGeneration   = null,
+        // Surface 3 (new-harness detection): this machine's coding-agent inventory. Additive/optional
+        // — recomputed by the daemon on its own 6h in-memory cadence, attached to every report.
+        Capacitor.Cli.Core.Setup.HarnessInventory? HarnessInventory = null
     );
 
 // ── Phase B2-b (sequenced-settlement design): startup-completeness / heal-barrier report DTOs ──
@@ -1641,7 +1950,12 @@ public readonly record struct DaemonConnect(
         long?                         HighestResolutionGeneration   = null,
         // Structured per-vendor unattended-review certification facts. The legacy string
         // list above remains the compatibility surface; this trailing field adds versioned proof.
-        IReadOnlyList<UnattendedVendorCapability>? UnattendedVendorCapabilities = null
+        IReadOnlyList<UnattendedVendorCapability>? UnattendedVendorCapabilities = null,
+        // Vendor tokens this daemon accepts a launch-time ACP permission preset for — the installed
+        // hostable vendors that route permissions through the ACP bridge, computed INDEPENDENTLY of
+        // unattended certification (a preset is an interactive-launch feature, not a reviewer one).
+        // Null from a daemon predating this field. Trailing so the wire stays compatible.
+        string[]?                                  AcpPresetVendors = null
     );
 
 public sealed record UnattendedVendorCapability(
@@ -1649,7 +1963,19 @@ public sealed record UnattendedVendorCapability(
     string? CliVersion,
     string LauncherPolicyVersion,
     bool BorrowedReviewSupported,
-    string? BorrowedReviewContainment = null
+    string? BorrowedReviewContainment = null,
+    // True only when this vendor is installed, unattended-certified, and has a runtime resolver; the
+    // server refuses a v3 model override unless true. Defaults false — a legacy/mid-rollout daemon is
+    // never widened to "supported" by any fallback.
+    bool SupportsReviewerModelResolution = false,
+    // This vendor's reviewer-model policy version (distinct from LauncherPolicyVersion); the server
+    // echoes it to detect a mid-flight policy change. Null when no resolver is advertised.
+    string? ReviewerModelPolicyVersion = null,
+    // Whether this daemon accepts a caller-selected launch posture for this vendor
+    // (CodexLaunchPosture on LaunchAgentCommand). Defaults false — a legacy or mid-rollout daemon is
+    // never widened to "supported" by any fallback, so the server refuses posture selection rather
+    // than sending a block that would be silently ignored.
+    bool SupportsLaunchPosture = false
 );
 
 public readonly record struct AgentRegistered(
@@ -1657,7 +1983,23 @@ public readonly record struct AgentRegistered(
         string? Prompt,
         string? Model,
         string? Effort,
-        string? RepoPath
+        string? RepoPath,
+        // Applied Codex posture echo: the pair actually passed to --sandbox / --ask-for-approval,
+        // non-null ONLY for a hosted interactive Codex launch (Kind == Default, owned worktree),
+        // whether that pair was caller-selected or derived. Review-flow / PR-review / local-attach
+        // agents and non-codex vendors always report null, so a consumer can render it without any
+        // launch-kind discriminator. Trailing name-bound fields on a single JSON DTO — an older
+        // server ignores them, an older daemon never sets them.
+        string? SandboxPolicy  = null,
+        string? ApprovalPolicy = null,
+        // Applied ACP permission preset echo: the preset actually in effect for a hosted interactive
+        // ACP launch, non-null only for such a launch. Trailing name-bound field — an older server
+        // ignores it, an older daemon never sets it.
+        string? PermissionPreset = null,
+        // The runtime transport this agent launched on — "pty" | "app-server". The server validates
+        // it against its own launch decision and refuses a mismatch. Trailing name-bound field — an
+        // older server ignores it, an older daemon never sets it (null there).
+        string? RuntimeTransport = null
     );
 
 public readonly record struct AgentStatusChanged(

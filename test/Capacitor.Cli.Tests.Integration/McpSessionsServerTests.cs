@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
+using WireMock.Matchers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -16,14 +18,17 @@ namespace Capacitor.Cli.Tests.Integration;
 /// the server emits plus the HTTP calls WireMock observed.
 /// </summary>
 public class McpSessionsServerTests : IDisposable {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     readonly WireMockServer _server            = WireMockServer.Start();
-    readonly string         _cfgDir            = Path.Combine(Path.GetTempPath(), $"kcap-mcp-cfg-{Guid.NewGuid():N}");
-    readonly string         _cwdDir            = Path.Combine(Path.GetTempPath(), $"kcap-mcp-cwd-{Guid.NewGuid():N}");
+    readonly TempDir        _tmp               = new();
+    readonly string         _cfgDir;
+    readonly string         _cwdDir;
     readonly List<Process>  _spawnedProcesses  = [];
 
     public McpSessionsServerTests() {
-        Directory.CreateDirectory(_cfgDir);
-        Directory.CreateDirectory(_cwdDir);
+        _cfgDir = _tmp.CreateDir("cfg");
+        _cwdDir = _tmp.CreateDir("cwd");
     }
 
     public void Dispose() {
@@ -39,28 +44,7 @@ public class McpSessionsServerTests : IDisposable {
         }
 
         _server.Stop();
-        try { Directory.Delete(_cfgDir, recursive: true); } catch { /* best effort */ }
-        try { Directory.Delete(_cwdDir, recursive: true); } catch { /* best effort */ }
-    }
-
-    /// <summary>
-    /// Resolves the path of the built `kcap` CLI binary in the source tree.
-    /// The integration tests are built into
-    /// <c>test/Capacitor.Cli.Tests.Integration/bin/&lt;config&gt;/net10.0/</c>, so we
-    /// walk up to the repo root and descend into <c>src/Capacitor.Cli/bin/&lt;config&gt;/net10.0/kcap</c>.
-    /// </summary>
-    static string GetCliBinaryPath() {
-        var asmDir = Path.GetDirectoryName(typeof(McpSessionsServerTests).Assembly.Location)!;
-        // asmDir → .../test/Capacitor.Cli.Tests.Integration/bin/<config>/net10.0
-        var binDir       = Path.GetDirectoryName(asmDir)!;           // .../bin/<config>
-        var config       = Path.GetFileName(binDir);                 // Debug / Release
-        var testBin      = Path.GetDirectoryName(binDir)!;           // .../bin
-        var testProjDir  = Path.GetDirectoryName(testBin)!;          // .../Capacitor.Cli.Tests.Integration
-        var testRoot     = Path.GetDirectoryName(testProjDir)!;      // .../test
-        var repoRoot     = Path.GetDirectoryName(testRoot)!;         // repo root
-        var binaryName   = OperatingSystem.IsWindows() ? "kcap.exe" : "kcap";
-
-        return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
+        _tmp.Dispose();
     }
 
     /// <summary>
@@ -74,33 +58,48 @@ public class McpSessionsServerTests : IDisposable {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var binary = GetCliBinaryPath();
-
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: " +
-                "dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary
-            );
-        }
-
-        var psi = new ProcessStartInfo(binary, "mcp sessions") {
-            RedirectStandardInput  = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-            WorkingDirectory       = _cwdDir,
-            Environment = {
-                ["KCAP_URL"]        = urlOverride ?? _server.Url!,
-                ["KCAP_CONFIG_DIR"] = _cfgDir
-            }
-        };
+        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "sessions");
+        psi.WorkingDirectory = _cwdDir;
+        psi.Environment["KCAP_URL"] = urlOverride ?? _server.Url!;
+        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap process");
         _spawnedProcesses.Add(process);
 
         return process;
+    }
+
+    /// <summary>
+    /// Initializes <paramref name="dir"/> as a git repo with an <c>origin</c> remote pointing at
+    /// <c>https://github.com/{owner}/{repoName}.git</c>, so the MCP server's implicit cwd-repo pin
+    /// resolves — unlike the bare temp dirs every other test in this file uses. No commit is
+    /// needed: <c>git branch --show-current</c> reads the symbolic HEAD ref and works at zero commits.
+    /// </summary>
+    static void InitCwdAsGitRepo(string dir, string owner, string repoName) {
+        RunGit(dir, "init -q -b main");
+        RunGit(dir, $"remote add origin https://github.com/{owner}/{repoName}.git");
+    }
+
+    static void RunGit(string dir, string arguments) {
+        // Stdout isn't read anywhere below, so it's left inherited rather than redirected —
+        // redirecting without reading risks a full-pipe deadlock if git ever writes enough to
+        // stdout to fill the OS pipe buffer before this process reads stderr and waits.
+        var psi = new ProcessStartInfo("git", arguments) {
+            WorkingDirectory       = dir,
+            RedirectStandardOutput = false,
+            RedirectStandardError  = true,
+            UseShellExecute        = false,
+            CreateNoWindow         = true
+        };
+
+        using var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start git");
+
+        var stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit(5000);
+
+        if (process.ExitCode != 0) {
+            throw new InvalidOperationException($"'git {arguments}' failed with exit code {process.ExitCode}: {stderr}");
+        }
     }
 
     /// <summary>
@@ -440,6 +439,126 @@ public class McpSessionsServerTests : IDisposable {
 
             var content = result?["content"]?[0]?["text"]?.GetValue<string>();
             await Assert.That(content).IsEqualTo(McpSessionsServer.NotLoggedInMessage);
+        } finally {
+            await ShutdownAsync(proc);
+        }
+    }
+
+    /// <summary>
+    /// Auto-widen, happy path: an implicit cwd pin (no explicit `repo` arg, a real
+    /// git repo under the spawned process's cwd) that comes back thinner than the default
+    /// limit (10) triggers a second widen request, and the two bodies merge cwd-first with
+    /// `session_id` dedup, capped at the limit, and `widened_to_all_repos: true`.
+    ///
+    /// The widened request carries NO `repo` query param at all — `BuildSearchUrl` treats the
+    /// `"all"` sentinel as "omit the repo filter entirely" (see
+    /// <see cref="Search_sessions_calls_server_and_passes_through_response"/>'s own
+    /// `rawUrl.Contains("repo=")` assertion), so the widen stub below matches on the PARAM'S
+    /// ABSENCE via <see cref="MatchBehaviour.RejectOnMatch"/>, not a literal `repo=all` value.
+    /// </summary>
+    [Test]
+    public async Task Search_sessions_thin_result_auto_widens_to_all_repos() {
+        const string owner    = "acme";
+        const string repoName = "widget";
+        var          repoHash = RepoHashHelper.ComputeRepoHash(owner, repoName);
+
+        InitCwdAsGitRepo(_cwdDir, owner, repoName);
+
+        const string firstBody   = """{"hits":[{"session_id":"s1","title":"A"},{"session_id":"s2","title":"B"}]}""";
+        const string widenedBody = """{"hits":[{"session_id":"s1","title":"A"},{"session_id":"s3","title":"C"}]}""";
+
+        _server.Given(Request.Create().WithPath("/api/sessions/search").WithParam("repo", repoHash).UsingGet())
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody(firstBody)
+            );
+
+        _server.Given(Request.Create().WithPath("/api/sessions/search").WithParam("repo", MatchBehaviour.RejectOnMatch).UsingGet())
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody(widenedBody)
+            );
+
+        using var proc = SpawnMcpServer();
+        try {
+            var args     = new JsonObject { ["query"] = "batch" }; // no `repo` — implicit cwd pin
+            var response = await SendRequest(proc, ToolsCallRequest(10, "search_sessions", args), TimeSpan.FromSeconds(30));
+
+            var result = response["result"]?.AsObject();
+            await Assert.That(result).IsNotNull();
+            await Assert.That(result!["isError"]?.GetValue<bool>()).IsNotEqualTo(true);
+
+            var text = result["content"]?[0]?["text"]?.GetValue<string>();
+            await Assert.That(text).IsNotNull();
+
+            var merged = JsonNode.Parse(text!)?.AsObject();
+            await Assert.That(merged).IsNotNull();
+            await Assert.That(merged!["widened_to_all_repos"]?.GetValue<bool>()).IsTrue();
+
+            var hits = merged["hits"]?.AsArray();
+            await Assert.That(hits).IsNotNull();
+            await Assert.That(hits!.Count).IsEqualTo(3);
+            await Assert.That(hits[0]?["session_id"]?.GetValue<string>()).IsEqualTo("s1");
+            await Assert.That(hits[1]?["session_id"]?.GetValue<string>()).IsEqualTo("s2");
+            await Assert.That(hits[2]?["session_id"]?.GetValue<string>()).IsEqualTo("s3");
+
+            var pinnedHits  = _server.FindLogEntries(Request.Create().WithPath("/api/sessions/search").WithParam("repo", repoHash).UsingGet());
+            var widenedHits = _server.FindLogEntries(Request.Create().WithPath("/api/sessions/search").WithParam("repo", MatchBehaviour.RejectOnMatch).UsingGet());
+            await Assert.That(pinnedHits.Count).IsEqualTo(1);
+            await Assert.That(widenedHits.Count).IsEqualTo(1);
+        } finally {
+            await ShutdownAsync(proc);
+        }
+    }
+
+    /// <summary>
+    /// Regression guard: a failed widen must never cost the caller the successful first result.
+    /// Coverage limitation: this WireMock-based harness cannot force HttpClient to THROW on the
+    /// widen call (WireMock.Net 1.7.0 fault injection still completes a 200), so this test
+    /// exercises the HTTP-500 shape of the same contract; the thrown-exception shape is covered
+    /// by the catch-all by inspection.
+    /// </summary>
+    [Test]
+    public async Task Search_sessions_widen_failure_returns_first_body_untouched() {
+        const string owner    = "acme";
+        const string repoName = "widget-fail";
+        var          repoHash = RepoHashHelper.ComputeRepoHash(owner, repoName);
+
+        InitCwdAsGitRepo(_cwdDir, owner, repoName);
+
+        const string firstBody = """{"hits":[{"session_id":"s1","title":"A"}]}""";
+
+        _server.Given(Request.Create().WithPath("/api/sessions/search").WithParam("repo", repoHash).UsingGet())
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody(firstBody)
+            );
+
+        // Widened request carries no `repo` param at all (see the happy-path test above).
+        _server.Given(Request.Create().WithPath("/api/sessions/search").WithParam("repo", MatchBehaviour.RejectOnMatch).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(500).WithBody("boom"));
+
+        using var proc = SpawnMcpServer();
+        try {
+            var args     = new JsonObject { ["query"] = "batch" }; // no `repo` — implicit cwd pin
+            var response = await SendRequest(proc, ToolsCallRequest(11, "search_sessions", args), TimeSpan.FromSeconds(30));
+
+            var result = response["result"]?.AsObject();
+            await Assert.That(result).IsNotNull();
+            // Must NOT be an error — the widen failure is swallowed, first body wins.
+            await Assert.That(result!["isError"]?.GetValue<bool>()).IsNotEqualTo(true);
+
+            var text = result["content"]?[0]?["text"]?.GetValue<string>();
+            await Assert.That(text).IsEqualTo(firstBody);
+
+            var widenedHits = _server.FindLogEntries(Request.Create().WithPath("/api/sessions/search").WithParam("repo", MatchBehaviour.RejectOnMatch).UsingGet());
+            await Assert.That(widenedHits.Count).IsEqualTo(1); // the widen call did happen and did fail
         } finally {
             await ShutdownAsync(proc);
         }

@@ -1,8 +1,13 @@
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Cursor;
-using Capacitor.Cli.Core.Gemini;
-using Capacitor.Cli.Core.Kiro;
-using Capacitor.Cli.Core.OpenCode;
+using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness.Copilot;
+using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.Harness.Gemini;
+using Capacitor.Cli.Core.Harness.Kiro;
+using Capacitor.Cli.Core.Harness.OpenCode;
+using Capacitor.Cli.Core.Harness.Pi;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Commands;
@@ -23,7 +28,7 @@ namespace Capacitor.Cli.Commands;
 /// covers all known agents.
 /// </summary>
 public static class UninstallCommand {
-    public static async Task<int> HandleAsync(string[] args) {
+    public static async Task<int> HandleAsync(DaemonStore store, string[] args) {
         var skipPrompt     = args.Contains("--yes") || args.Contains("-y");
         var keepConfig     = args.Contains("--keep-config");
         var includeProject = args.Contains("--project");
@@ -50,12 +55,12 @@ public static class UninstallCommand {
         await Console.Out.WriteLineAsync($"  • Remove kcap entries from {ClaudePaths.UserSettings}");
         await Console.Out.WriteLineAsync($"  • Remove kcap entries from {CodexPaths.UserHooksJson}");
         await Console.Out.WriteLineAsync($"  • Remove kcap entries from {CursorPaths.UserHooksJson()}");
-        await Console.Out.WriteLineAsync($"  • Remove {Capacitor.Cli.Core.Copilot.CopilotPaths.KcapHooksJson()}");
+        await Console.Out.WriteLineAsync($"  • Remove {CopilotPaths.KcapHooksJson()}");
         await Console.Out.WriteLineAsync($"  • Remove kcap entries from {GeminiPaths.SettingsJson()}");
         await Console.Out.WriteLineAsync($"  • Remove {KiroPaths.KcapAgentJson()} and restore the previous default Kiro agent");
-        await Console.Out.WriteLineAsync($"  • Remove {Capacitor.Cli.Core.Pi.PiPaths.KcapExtension()}");
+        await Console.Out.WriteLineAsync($"  • Remove {PiPaths.KcapExtension()}");
         await Console.Out.WriteLineAsync($"  • Remove {OpenCodePaths.KcapPlugin()}");
-        await Console.Out.WriteLineAsync($"  • Remove the kcap plugin from {Capacitor.Cli.Core.Antigravity.AntigravityPaths.PluginDir()}");
+        await Console.Out.WriteLineAsync($"  • Remove the kcap plugin from {AntigravityPaths.PluginDir()}");
         await Console.Out.WriteLineAsync($"  • Remove agent skills under {AgentsPaths.UserSkillsDir}");
 
         if (projectRoot is not null) {
@@ -97,8 +102,12 @@ public static class UninstallCommand {
         try {
             var services = ServiceManagerFactory.ForCurrentOs();
             foreach (var id in services.ListInstalled()) {
-                services.Uninstall(id);
-                await Console.Out.WriteLineAsync($"  • Removed daemon service '{id}' ({services.Describe()})");
+                if (services.Uninstall(id, out var error)) {
+                    await Console.Out.WriteLineAsync($"  • Removed daemon service '{id}' ({services.Describe()})");
+                } else {
+                    await Console.Error.WriteLineAsync($"  • Could not remove daemon service '{id}': {error}");
+                    hadFailures = true;
+                }
             }
         } catch (PlatformNotSupportedException) {
             // No service backend on this OS — nothing to deregister.
@@ -108,7 +117,7 @@ public static class UninstallCommand {
         // about to delete. --yes silences the multi-daemon confirmation so this
         // works non-interactively. A non-zero exit code means at least one
         // daemon couldn't be stopped; we leave the config dir alone in that case.
-        if (await DaemonCommands.HandleAsync(["daemon", "stop", "--yes"]) != 0) hadFailures = true;
+        if (await new DaemonCommands(store).HandleAsync(["daemon", "stop", "--yes"]) != 0) hadFailures = true;
 
         // Kill any orphaned watcher PIDs that the daemon stop didn't catch.
         if (await CleanupCommand.HandleCleanup() != 0) hadFailures = true;

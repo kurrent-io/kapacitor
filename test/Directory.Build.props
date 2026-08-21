@@ -1,0 +1,17 @@
+<Project>
+    <!-- Resolution stops at the first Directory.Build.props found walking up, so the repo-root one
+         has to be imported by hand or none of its settings reach the test projects. -->
+    <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+    <PropertyGroup>
+        <!-- High/critical advisories are errors under src/. Here they are not: a test-only package
+             ships to nobody, so a fresh advisory is a bump to schedule, not a build to stop. -->
+        <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1903;NU1904</WarningsNotAsErrors>
+    </PropertyGroup>
+    <!-- One source, compiled into each test assembly rather than referenced from Helpers:
+         TUnit finds hooks only in assemblies it has loaded.  -->
+    <ItemGroup Condition="'$(MSBuildProjectName)' != 'Capacitor.Tests.Helpers'
+                      and '$(MSBuildProjectName)' != 'Capacitor.Cli.Tests.Unit.NativeTestHost'">
+        <Compile Include="$(MSBuildThisFileDirectory)Capacitor.Tests.Helpers/Guards/GuardsBootstrap.cs"
+                 Link="Guards/GuardsBootstrap.cs" />
+    </ItemGroup>
+</Project>

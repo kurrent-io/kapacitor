@@ -4,8 +4,6 @@
         <TargetFramework>net10.0</TargetFramework>
         <AssemblyName>kcap-daemon</AssemblyName>
 
-        <ImplicitUsings>enable</ImplicitUsings>
-        <Nullable>enable</Nullable>
         <PublishAot>true</PublishAot>
         <PublishTrimmed>true</PublishTrimmed>
         <InvariantGlobalization>true</InvariantGlobalization>
@@ -18,6 +16,7 @@
     </ItemGroup>
     <ItemGroup>
         <InternalsVisibleTo Include="Capacitor.Cli.Tests.Unit" />
+        <InternalsVisibleTo Include="Capacitor.Cli.Daemon.Tests.Unit" />
         <InternalsVisibleTo Include="Capacitor.Cli.Tests.Integration" />
         <InternalsVisibleTo Include="Capacitor.Cli.Tests.Unit.NativeTestHost" />
         <!-- Used when referenced as a submodule from the server repo -->
@@ -55,8 +54,11 @@
     <PropertyGroup Condition="!$(RuntimeIdentifier.StartsWith('win')) And !$([MSBuild]::IsOSPlatform('Windows'))">
         <PtyShimExt Condition="$([MSBuild]::IsOSPlatform('OSX'))">dylib</PtyShimExt>
         <PtyShimExt Condition="!$([MSBuild]::IsOSPlatform('OSX'))">so</PtyShimExt>
-        <!-- musl targets need the musl C library/toolchain, not glibc's cc -->
-        <PtyShimCc Condition="$(RuntimeIdentifier.Contains('musl'))">musl-gcc</PtyShimCc>
+        <!-- musl targets need the musl C library/toolchain, not glibc's cc. On a glibc host
+             that's the musl-gcc cross wrapper (musl-tools); on a musl-native host (Alpine,
+             detected via /etc/alpine-release) plain cc already targets musl and no musl-gcc
+             wrapper exists. -->
+        <PtyShimCc Condition="$(RuntimeIdentifier.Contains('musl')) And !Exists('/etc/alpine-release')">musl-gcc</PtyShimCc>
         <PtyShimCc Condition="'$(PtyShimCc)' == ''">cc</PtyShimCc>
     </PropertyGroup>
 

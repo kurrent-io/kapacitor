@@ -28,11 +28,17 @@ public static class IgnoreCommand {
             return 1;
         }
 
-        var (config, profileName, profile) = await LoadActive();
+        var (_, profileName, profile) = await LoadActive();
         var before = Current(profile).Length;
 
         profile = ApplyAdd(profile, normalized);
-        await SaveActive(config, profileName, profile);
+
+        await ConfigMutator.MutateAsync(c => {
+            var name = ResolveTargetProfile(c, AppConfig.ResolvedProfile?.ProfileName);
+            var p    = ApplyAdd(c.Profiles.GetValueOrDefault(name) ?? new Profile(), normalized);
+
+            return c with { Profiles = new Dictionary<string, Profile>(c.Profiles) { [name] = p } };
+        });
 
         if (Current(profile).Length == before) {
             await Console.Out.WriteLineAsync($"Already ignored: {normalized} (profile: {profileName})");
@@ -50,11 +56,17 @@ public static class IgnoreCommand {
             return 1;
         }
 
-        var (config, profileName, profile) = await LoadActive();
+        var (_, profileName, profile) = await LoadActive();
         var before = Current(profile).Length;
 
         profile = ApplyRemove(profile, normalized);
-        await SaveActive(config, profileName, profile);
+
+        await ConfigMutator.MutateAsync(c => {
+            var name = ResolveTargetProfile(c, AppConfig.ResolvedProfile?.ProfileName);
+            var p    = ApplyRemove(c.Profiles.GetValueOrDefault(name) ?? new Profile(), normalized);
+
+            return c with { Profiles = new Dictionary<string, Profile>(c.Profiles) { [name] = p } };
+        });
 
         if (Current(profile).Length == before) {
             await Console.Out.WriteLineAsync($"Not in ignore list: {normalized} (profile: {profileName})");
@@ -169,11 +181,6 @@ public static class IgnoreCommand {
     /// </summary>
     public static string ResolveTargetProfile(ProfileConfig config, string? resolvedProfileName) =>
         resolvedProfileName ?? config.ActiveProfile;
-
-    static async Task SaveActive(ProfileConfig config, string profileName, Profile profile) {
-        var profiles = new Dictionary<string, Profile>(config.Profiles) { [profileName] = profile };
-        await AppConfig.SaveProfileConfig(config with { Profiles = profiles });
-    }
 
     static int Usage() {
         Console.Error.WriteLine("Usage: kcap ignore <path>");

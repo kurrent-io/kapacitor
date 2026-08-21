@@ -7,6 +7,18 @@ namespace Capacitor.Cli.Core;
 /// Ids are canonical lower-case; Resolve is case-insensitive so casing can't dodge the strip.</summary>
 public sealed record KcapMcpServerDescriptor(string Id, string[] Args, bool StartsFlows);
 
+/// <summary>One tool served by the reserved result channel
+/// (<see cref="KcapMcpRegistry.ReservedResultChannelId"/>). <paramref name="UnattendedSafe"/> marks
+/// it auto-approvable for ANY unattended flow participant: today's two tools only POST to the
+/// participant's own flow run on the server — they read nothing and mutate nothing else. The POST
+/// rides the daemon user's normally-authenticated HTTP client; the <c>agent_id</c> in the body is
+/// request correlation, NOT authentication — the server authorizes the authenticated principal
+/// against the exact active agent assignment and derives flow/source identity from it, rejecting
+/// closed or mismatched assignments. Participant→driver notes are an intentional
+/// prompt-injection-shaped channel across the driver↔participant trust boundary; the driver-side
+/// tooling treats them as untrusted text.</summary>
+public sealed record ReservedResultChannelTool(string Name, bool UnattendedSafe);
+
 public static class KcapMcpRegistry {
     static readonly Dictionary<string, KcapMcpServerDescriptor> Entries = new(StringComparer.OrdinalIgnoreCase) {
         ["kcap-review"]    = new("kcap-review",    ["mcp", "review"],    false),
@@ -14,7 +26,13 @@ public static class KcapMcpRegistry {
         ["kcap-memory"]    = new("kcap-memory",    ["mcp", "memory"],    false),
         ["kcap-flows"]     = new("kcap-flows",     ["mcp", "flows"],     true),
         ["kcap-workitems"] = new("kcap-workitems", ["mcp", "workitems"], false),
+        ["kcap-analytics"] = new("kcap-analytics", ["mcp", "analytics"], false),
     };
+
+    /// <summary>Every registered id. Exposed so a conformance test can compare this list against the
+    /// canonical registration list in BOTH directions — a registry-only entry is allowlistable but
+    /// never registered with any harness, and checking only the other direction misses it.</summary>
+    public static IEnumerable<string> AllIds => Entries.Values.Select(d => d.Id);
 
     /// <summary>Resolves an allowlist entry to its descriptor. Case-insensitive, trims
     /// surrounding whitespace. A null or blank name — e.g. a wire-deserialized allowlist
@@ -47,6 +65,25 @@ public static class KcapMcpRegistry {
     /// (never a rejection, never re-emitted) — the server's dynamic-flow policy legitimately lists
     /// it, and every reviewer runtime must agree on that.</summary>
     public const string ReservedResultChannelId = "kcap-flow-result";
+
+    /// <summary>The ordered catalog of every tool the reserved result channel serves — the single
+    /// source of truth. <c>McpFlowResultServer</c>'s <c>tools/list</c>, Copilot's ACP
+    /// <c>--available-tools</c> argv, and <c>LocalPermissionBridge</c>'s unattended auto-approve are
+    /// all contract-tested against it, so the next tool addition can't silently regress one of the
+    /// three. Order is the advertised order (<c>submit_review_result</c> first) and is load-bearing:
+    /// the ACP argv assertions are byte-exact.</summary>
+    public static readonly IReadOnlyList<ReservedResultChannelTool> ReservedResultChannelTools = [
+        new("submit_review_result", UnattendedSafe: true),
+        new("send_flow_message",    UnattendedSafe: true),
+    ];
+
+    /// <summary>Membership view of <see cref="ReservedResultChannelTools"/>' unattended-safe names.
+    /// Ordinal (case-sensitive): this set feeds a permission auto-approve, so a case variant of a
+    /// safe name is NOT the safe name.</summary>
+    public static readonly IReadOnlySet<string> ReservedResultChannelUnattendedSafeTools =
+        ReservedResultChannelTools.Where(t => t.UnattendedSafe)
+                                  .Select(t => t.Name)
+                                  .ToHashSet(StringComparer.Ordinal);
 
     /// <summary>Explicit, reviewed classification: each auto-approvable server → the exact tool
     /// names it exposes that are unattended-safe (read / result-submit). The single source of

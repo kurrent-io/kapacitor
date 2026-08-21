@@ -1,0 +1,255 @@
+using System.Diagnostics;
+using System.Text.Json.Nodes;
+
+namespace Capacitor.Cli.Tests.Integration;
+
+/// <summary>
+/// The acceptance criterion, end to end: a hook invoked with an unusable server URL still emits its
+/// required stdout contract and exits 0.
+///
+/// <para>Each case runs the REAL binary in an isolated child process with its own
+/// <c>KCAP_CONFIG_DIR</c>, because the in-process alternative cannot distinguish "the guard worked"
+/// from "the runner survived". Parameterized over every class <c>IsAcceptableUrl</c> rejects —
+/// including absolute wrong-scheme, which an implementation validating only <c>UriKind.Absolute</c>
+/// would wrongly accept.</para>
+///
+/// <para><b>Why the assertions look the way they do.</b> Asserting only stdout+exit is not enough:
+/// <c>Program.cs</c>'s top-level catch maps <c>hook</c> to exit 0, and Codex's own fail-open catch
+/// emits the identical <c>{"continue":true}</c>, so a surface-only assertion passes with every guard
+/// deleted. Each case therefore also asserts the positive, guard-specific diagnostic — a string only
+/// the guard emits — and rejects the fail-open fallback marker.</para>
+/// </summary>
+public class UnusableUrlHookMatrixTests : IDisposable {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
+    // Every class IsAcceptableUrl rejects. Deliberately NOT the empty string: ProfileResolver ignores
+    // an exactly-empty KCAP_URL and falls back to the active profile, so it would test the wrong thing.
+    public static IEnumerable<string> UnusableUrls() => [
+        "   ",                  // whitespace
+        "localhost:5108",       // scheme-less
+        "/hooks/stop",          // relative
+        "ftp://host",           // absolute, wrong scheme
+        "file:///etc/passwd",   // absolute, wrong scheme
+    ];
+
+    const string Sid = "0123456789abcdef0123456789abcdef";
+
+    readonly TempDir       _tmp = new();
+    readonly string        _cfgDir;
+    readonly List<Process> _spawned = [];
+
+    public UnusableUrlHookMatrixTests() => _cfgDir = _tmp.Path;
+
+    public void Dispose() {
+        foreach (var p in _spawned) { try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { } p.Dispose(); }
+        _tmp.Dispose();
+    }
+
+    [Test]
+    [MethodDataSource(nameof(UnusableUrls))]
+    public async Task Codex_SessionStart_emits_the_handshake_and_exits_zero(string url) {
+        var payload = new JsonObject {
+            ["hook_event_name"] = "SessionStart",
+            ["session_id"]      = Guid.NewGuid().ToString(),
+            ["cwd"]             = _cfgDir,
+        }.ToJsonString();
+
+        var r = await RunAsync(["hook", "--codex"], url, payload);
+
+        // Codex's parser rejects empty output; this is the contract the bug was breaking.
+        await Assert.That(r.Stdout).Contains("\"continue\":true");
+        await Assert.That(r.ExitCode).IsEqualTo(0);
+        // Positive proof the guard ran, not the top-level catch.
+        await Assert.That(r.Stderr).Contains("is not an absolute http(s) URL");
+        await Assert.That(r.Stderr).DoesNotContain("hook failed");
+    }
+
+    [Test]
+    [MethodDataSource(nameof(UnusableUrls))]
+    public async Task Codex_Stop_emits_the_handshake_and_exits_zero(string url) {
+        // Regression guard: this path was already fixed, and must stay fixed.
+        var payload = new JsonObject {
+            ["hook_event_name"] = "Stop",
+            ["session_id"]      = Guid.NewGuid().ToString(),
+        }.ToJsonString();
+
+        var r = await RunAsync(["hook", "--codex"], url, payload);
+
+        await Assert.That(r.Stdout).Contains("\"continue\":true");
+        await Assert.That(r.ExitCode).IsEqualTo(0);
+    }
+
+    [Test]
+    [MethodDataSource(nameof(UnusableUrls))]
+    public async Task Claude_SessionStart_exits_zero_without_a_hook_error(string url) {
+        // Claude tolerates empty stdout on SessionStart but treats a non-zero exit as a hook error,
+        // so exit 0 IS the contract here — the envelope is not required on the degraded path.
+        var payload = new JsonObject {
+            ["hook_event_name"] = "SessionStart",
+            ["session_id"]      = Guid.NewGuid().ToString(),
+            ["cwd"]             = _cfgDir,
+        }.ToJsonString();
+
+        var r = await RunAsync(["hook", "--claude"], url, payload);
+
+        await Assert.That(r.ExitCode).IsEqualTo(0);
+        await Assert.That(r.Stderr).Contains("is not an absolute http(s) URL");
+    }
+
+    [Test]
+    [MethodDataSource(nameof(UnusableUrls))]
+    public async Task Cursor_sessionStart_exits_zero(string url) {
+        var payload = new JsonObject {
+            ["hook_event_name"] = "sessionStart",
+            ["session_id"]      = Guid.NewGuid().ToString(),
+        }.ToJsonString();
+
+        var r = await RunAsync(["hook", "--cursor"], url, payload);
+
+        await Assert.That(r.ExitCode).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The policy binding covers four agent-spawned commands, but a matrix that exercised only
+    /// `hook` would pass against an implementation hard-coded to `hook`.
+    /// </summary>
+    [Test]
+    [Arguments("generate-whats-done")]
+    [Arguments("set-title")]
+    public async Task Agent_spawned_commands_do_not_hard_exit(string command) {
+        var r = await RunAsync([command, Guid.NewGuid().ToString("N")], "ftp://host", stdin: "");
+
+        // FailFast would be exit 2 with the bare validator hint and no guard diagnostic.
+        await Assert.That(r.ExitCode).IsNotEqualTo(2);
+    }
+
+    /// <summary>
+    /// Negative control: interactive commands must keep failing fast.
+    ///
+    /// <para>The session id is passed EXPLICITLY. Without it, <c>recap</c> resolves one from ambient
+    /// state — so this passed locally (inside a coding-agent session) while exiting 1 on the usage
+    /// message in CI, never reaching the URL validation it exists to check. <c>RunAsync</c> also
+    /// clears the ambient variable so the result cannot depend on where the suite runs.</para>
+    /// </summary>
+    [Test]
+    public async Task Interactive_command_still_exits_2_with_the_hint() {
+        var r = await RunAsync(["recap", "0123456789abcdef0123456789abcdef"], "ftp://host", stdin: "");
+
+        await Assert.That(r.ExitCode).IsEqualTo(2);
+        await Assert.That(r.Stderr).Contains("server_url is missing a scheme");
+    }
+
+    /// <summary><c>kcap watch</c> run by hand: the actionable hint, not an opaque exit 1.</summary>
+    [Test]
+    public async Task Hand_run_watch_exits_2_with_the_hint() {
+        var transcript = Path.Combine(_cfgDir, "t.jsonl");
+        Directory.CreateDirectory(_cfgDir);
+        await File.WriteAllTextAsync(transcript, "");
+
+        var r = await RunAsync(["watch", Guid.NewGuid().ToString("N"), transcript], "localhost:5108", stdin: "");
+
+        await Assert.That(r.ExitCode).IsEqualTo(2);
+        await Assert.That(r.Stderr).Contains("server_url is missing a scheme");
+    }
+
+    async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(string[] args, string url, string stdin) {
+        Directory.CreateDirectory(_cfgDir);
+
+        var psi = KcapProcess.StartInfo(Daemons.Store, args);
+        psi.WorkingDirectory = _cfgDir;
+        psi.Environment["KCAP_URL"] = url;
+        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
+        psi.Environment["KCAP_NO_UPDATE_CHECK"] = "1";
+        psi.Environment["KCAP_SESSION_ID"] = ""; // ambient session state must not decide these cases
+
+        var process = Process.Start(psi) ?? throw new InvalidOperationException("failed to start kcap");
+        _spawned.Add(process);
+
+        // A guarded hook legitimately returns before reading stdin — Cursor's guard fires before the
+        // payload is even parsed — so the child may have exited by the time we write. That closes the
+        // pipe, and the write throws. It is not a product failure and must not be reported as one.
+        try {
+            await process.StandardInput.WriteAsync(stdin);
+        } catch (IOException) {
+            // Child exited first; nothing to deliver.
+        } finally {
+            try { process.StandardInput.Close(); } catch (IOException) { }
+        }
+
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        var stderr = await process.StandardError.ReadToEndAsync();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await process.WaitForExitAsync(cts.Token);
+
+        return (process.ExitCode, stdout, stderr);
+    }
+
+    /// <summary>
+    /// Judge alone built its client before opening stdio, so an unusable URL killed it ahead of the
+    /// handshake. Needs a child process: the failure mode is the process dying.
+    /// </summary>
+    [Test]
+    [MethodDataSource(nameof(UnusableUrls))]
+    public async Task Mcp_judge_completes_the_handshake_and_returns_a_tool_error(string url) {
+        Directory.CreateDirectory(_cfgDir);
+
+        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "judge", "--session", Sid);
+        psi.WorkingDirectory = _cfgDir;
+        psi.Environment["KCAP_URL"] = url;
+        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
+        psi.Environment["KCAP_NO_UPDATE_CHECK"] = "1";
+        psi.Environment["KCAP_SESSION_ID"] = "";
+
+        using var proc = Process.Start(psi) ?? throw new InvalidOperationException("failed to start kcap");
+        _spawned.Add(proc);
+
+        var initialize = await SendRequestAsync(proc, Rpc(1, "initialize", new JsonObject()));
+        await Assert.That(initialize).Contains("\"id\":1");
+
+        var toolCall = await SendRequestAsync(proc, Rpc(2, "tools/call", new JsonObject {
+            ["name"]      = "get_session_recap",
+            ["arguments"] = new JsonObject { ["session_id"] = Sid },
+        }));
+
+        // The fault is reported IN the protocol, not by dying.
+        await Assert.That(toolCall).Contains("server_url is missing a scheme");
+
+        // And it is still serving afterwards.
+        var afterwards = await SendRequestAsync(proc, Rpc(3, "tools/list", new JsonObject()));
+        await Assert.That(afterwards).Contains("\"id\":3");
+
+        proc.StandardInput.Close();
+        using var exitCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await proc.WaitForExitAsync(exitCts.Token);
+        await Assert.That(proc.ExitCode).IsNotEqualTo(2);
+    }
+
+    static string Rpc(int id, string method, JsonObject parameters) =>
+        new JsonObject {
+            ["jsonrpc"] = "2.0",
+            ["id"]      = id,
+            ["method"]  = method,
+            ["params"]  = parameters,
+        }.ToJsonString();
+
+    /// <summary>
+    /// Mirrors <c>McpSessionsServerTests.SendRequest</c>. The cancellation token matters: a
+    /// <c>Task.WhenAny</c> timeout leaves the losing read pending, and it can then consume the next
+    /// response and desynchronise later assertions.
+    /// </summary>
+    static async Task<string> SendRequestAsync(Process proc, string request) {
+        await proc.StandardInput.WriteLineAsync(request);
+        await proc.StandardInput.FlushAsync();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var line = await proc.StandardOutput.ReadLineAsync(cts.Token);
+
+        if (line is null) {
+            var stderr = await proc.StandardError.ReadToEndAsync();
+            throw new InvalidOperationException($"MCP server closed stdout without responding. Stderr: {stderr}");
+        }
+
+        return line;
+    }
+}

@@ -2,16 +2,18 @@
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
         <OutputType>Exe</OutputType>
-        <ImplicitUsings>enable</ImplicitUsings>
-        <Nullable>enable</Nullable>
         <IsPackable>false</IsPackable>
     </PropertyGroup>
     <ItemGroup>
+        <ProjectReference Include="..\Capacitor.Tests.Helpers\Capacitor.Tests.Helpers.csproj" />
         <ProjectReference Include="..\..\src\Capacitor.Cli\Capacitor.Cli.csproj" />
         <ProjectReference Include="..\..\src\Capacitor.Cli.Daemon\Capacitor.Cli.Daemon.csproj" />
     </ItemGroup>
     <ItemGroup>
         <PackageReference Include="TUnit" />
         <PackageReference Include="WireMock.Net" />
+    </ItemGroup>
+    <ItemGroup>
+        <Using Include="Capacitor.Tests.Helpers" />
     </ItemGroup>
 </Project>

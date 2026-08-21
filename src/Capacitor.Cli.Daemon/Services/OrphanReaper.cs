@@ -293,7 +293,7 @@ internal sealed class OrphanReaper(
 
     /// <summary>Ledger-append BEFORE source-deletion (crash reconciled next boot; idempotent). Trust
     /// boundary: a fully RECORDLESS survivor's env is untrusted, so it maps to NO role
-    /// (<paramref name="onMarkerResolved"/>, null flow). But a Linux identity_unavailable RECORD resolved
+    /// (<c>onMarkerResolved</c>, null flow). But a Linux identity_unavailable RECORD resolved
     /// via the marker scan carries TRUSTED flow identity — written from the daemon's own AgentInstance
     /// into the durable record at spawn — so pull FlowRunId/FlowRole (and the trusted DaemonEpoch) FROM
     /// THAT RECORD via the record-resolved sink, so its role can be individually healed. Never trust flow

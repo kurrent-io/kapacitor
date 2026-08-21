@@ -1,4 +1,3 @@
-// src/Capacitor.Cli.Daemon/Services/AcpTranscriptForwarder.cs
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
 using Microsoft.Extensions.Logging;
@@ -51,7 +50,7 @@ namespace Capacitor.Cli.Daemon.Services;
 /// resilience beyond this remains.
 ///
 /// Out of scope here: building/emitting the <c>SessionStarted</c> envelope (it is passed
-/// in pre-built as <paramref name="initialEnvelope"/>) or calling <c>AcpSessionStarted</c> — the bind
+/// in pre-built as <c>initialEnvelope</c>) or calling <c>AcpSessionStarted</c> — the bind
 /// always precedes starting this forwarder. This forwarder also never emits a <c>session_ended</c>
 /// envelope; the server's <c>EndAgentSession</c> is the sole <c>SessionEnded</c> owner.
 /// </summary>
@@ -178,6 +177,19 @@ internal sealed class AcpTranscriptForwarder {
 
                 var ack = await SendWithRetryAsync(batch, ct).ConfigureAwait(false);
 
+                // the server explicitly rejected this binding (stale/foreign/unbound). Stop
+                // BEFORE interpreting the gap/cursor fields — the rejection ack deliberately carries a
+                // -1 AcceptedSeq that would otherwise read as a terminal-drop anyway, but checking the
+                // flag first keeps the intent explicit. An old server never sets this; that path still
+                // stops via the AcceptedSeq < _highestSent terminal-drop below.
+                if (ack.Rejected) {
+                    LogRejectedBinding();
+                    _unacked.Clear();
+                    IsTerminal = true;
+
+                    return;
+                }
+
                 if (ack.ExpectedNextSeq is { } expectedNextSeq) {
                     // A legitimate gap resolves on the first resend (the server wanted an earlier seq,
                     // then catches up — a NEW ExpectedNextSeq each round = progress). But the server's
@@ -279,6 +291,10 @@ internal sealed class AcpTranscriptForwarder {
         _logger.LogWarning(
             "ACP transcript forwarder: terminal-drop ack (AcceptedSeq={AcceptedSeq} < highest-sent={HighestSent}) — the server-side binding is terminal; stopping.",
             acceptedSeq, highestSent);
+
+    void LogRejectedBinding() =>
+        _logger.LogInformation(
+            "ACP transcript forwarder: server returned a rejection ack (stale/foreign/unbound binding) — stopping.");
 
     void LogSendFailed(Exception ex, long firstSeq, long lastSeq, TimeSpan delay) =>
         _logger.LogDebug(

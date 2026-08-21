@@ -15,14 +15,17 @@ namespace Capacitor.Cli.Tests.Integration;
 /// the server emits plus the HTTP calls WireMock observed.
 /// </summary>
 public class McpFlowsServerTests : IDisposable {
+    [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+
     readonly WireMockServer _server           = WireMockServer.Start();
-    readonly string         _cfgDir           = Path.Combine(Path.GetTempPath(), $"kcap-flows-cfg-{Guid.NewGuid():N}");
-    readonly string         _cwdDir           = Path.Combine(Path.GetTempPath(), $"kcap-flows-cwd-{Guid.NewGuid():N}");
+    readonly TempDir        _tmp              = new();
+    readonly string         _cfgDir;
+    readonly string         _cwdDir;
     readonly List<Process>  _spawnedProcesses = [];
 
     public McpFlowsServerTests() {
-        Directory.CreateDirectory(_cfgDir);
-        Directory.CreateDirectory(_cwdDir);
+        _cfgDir = _tmp.CreateDir("cfg");
+        _cwdDir = _tmp.CreateDir("cwd");
 
         // Initialize a git repo in _cwdDir so GitRepository.FindRoot returns a path,
         // and create a subdirectory to verify requesting_cwd vs requesting_repo_root.
@@ -40,8 +43,7 @@ public class McpFlowsServerTests : IDisposable {
         }
 
         _server.Stop();
-        try { Directory.Delete(_cfgDir, recursive: true); } catch { /* best effort */ }
-        try { Directory.Delete(_cwdDir, recursive: true); } catch { /* best effort */ }
+        _tmp.Dispose();
     }
 
     /// <summary>
@@ -65,22 +67,6 @@ public class McpFlowsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// Resolves the path of the built `kcap` CLI binary in the source tree.
-    /// Mirrors the approach in <see cref="McpSessionsServerTests"/>.
-    /// </summary>
-    static string GetCliBinaryPath() {
-        var asmDir      = Path.GetDirectoryName(typeof(McpFlowsServerTests).Assembly.Location)!;
-        var binDir      = Path.GetDirectoryName(asmDir)!;
-        var config      = Path.GetFileName(binDir);
-        var testBin     = Path.GetDirectoryName(binDir)!;
-        var testProjDir = Path.GetDirectoryName(testBin)!;
-        var testRoot    = Path.GetDirectoryName(testProjDir)!;
-        var repoRoot    = Path.GetDirectoryName(testRoot)!;
-        var binaryName  = OperatingSystem.IsWindows() ? "kcap.exe" : "kcap";
-        return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
-    }
-
-    /// <summary>
     /// Spawns <c>kcap mcp flows</c> as a child process with WireMock as the backend.
     /// <paramref name="urlOverride"/> replaces the WireMock URL (used to exercise the
     /// invalid-server_url path).
@@ -89,28 +75,12 @@ public class McpFlowsServerTests : IDisposable {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var binary = GetCliBinaryPath();
+        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "flows");
+        psi.WorkingDirectory = workingDirectory ?? _cwdDir;
+        psi.Environment["KCAP_URL"] = urlOverride ?? _server.Url!;
+        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
 
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: " +
-                "dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary
-            );
-        }
-
-        var psi = new ProcessStartInfo(binary, "mcp flows") {
-            RedirectStandardInput  = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-            WorkingDirectory       = workingDirectory ?? _cwdDir,
-            Environment = {
-                ["KCAP_URL"]        = urlOverride ?? _server.Url!,
-                ["KCAP_CONFIG_DIR"] = _cfgDir
-            }
-        };
+        ApplyHarnessSignals(psi, harnessSessionId: null, harnessProjectDir: null);
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap process");
         _spawnedProcesses.Add(process);
@@ -119,38 +89,53 @@ public class McpFlowsServerTests : IDisposable {
 
     /// <summary>
     /// Spawns the server with KCAP_SESSION_ID set so requester context includes a session ID.
+    /// <paramref name="harnessSessionId"/>/<paramref name="harnessProjectDir"/> simulate the running
+    /// harness's own per-process signals, which must take precedence over the ambient
+    /// KCAP_SESSION_ID / process cwd (see HarnessRequesterContext).
     /// </summary>
-    Process SpawnMcpServerWithSession(string sessionId, string provider = "None", string? workingDirectory = null) {
+    Process SpawnMcpServerWithSession(
+            string  sessionId,
+            string  provider          = "None",
+            string? workingDirectory  = null,
+            string? harnessSessionId  = null,
+            string? harnessProjectDir = null) {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var binary = GetCliBinaryPath();
+        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "flows");
+        psi.WorkingDirectory = workingDirectory ?? _cwdDir;
+        psi.Environment["KCAP_URL"] = _server.Url!;
+        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
+        psi.Environment["KCAP_SESSION_ID"] = sessionId;
 
-        if (!File.Exists(binary)) {
-            throw new FileNotFoundException(
-                $"kcap binary not found at {binary}. Build it first: " +
-                "dotnet build src/Capacitor.Cli/Capacitor.Cli.csproj",
-                binary
-            );
-        }
-
-        var psi = new ProcessStartInfo(binary, "mcp flows") {
-            RedirectStandardInput  = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-            WorkingDirectory       = workingDirectory ?? _cwdDir,
-            Environment = {
-                ["KCAP_URL"]          = _server.Url!,
-                ["KCAP_CONFIG_DIR"]   = _cfgDir,
-                ["KCAP_SESSION_ID"]   = sessionId
-            }
-        };
+        ApplyHarnessSignals(psi, harnessSessionId, harnessProjectDir);
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap process");
         _spawnedProcesses.Add(process);
         return process;
+    }
+
+    /// <summary>
+    /// Sets (or REMOVES) the running-harness environment signals on a spawn. ProcessStartInfo starts
+    /// from this process's own environment, so a suite executed inside a real harness session would
+    /// otherwise leak that session's CLAUDE_CODE_SESSION_ID / CLAUDE_PROJECT_DIR into every spawned
+    /// server and make requester-context assertions depend on who ran the tests. Every spawn helper
+    /// goes through here so the child's harness identity is exactly what the test asked for.
+    ///
+    /// <para>CODEX_THREAD_ID is removed unconditionally: the resolver reads a co-present value as
+    /// "another harness is nested around us, so the Claude signals are unprovable" and deliberately
+    /// falls back to the ambient resolution. Leaving an inherited one in place would silently route
+    /// every requester-context test down the fallback branch whenever the suite is run from a Codex
+    /// session — a real hermeticity hole, not a theoretical one.</para>
+    /// </summary>
+    static void ApplyHarnessSignals(ProcessStartInfo psi, string? harnessSessionId, string? harnessProjectDir) {
+        if (harnessSessionId is null) psi.Environment.Remove("CLAUDE_CODE_SESSION_ID");
+        else psi.Environment["CLAUDE_CODE_SESSION_ID"] = harnessSessionId;
+
+        if (harnessProjectDir is null) psi.Environment.Remove("CLAUDE_PROJECT_DIR");
+        else psi.Environment["CLAUDE_PROJECT_DIR"] = harnessProjectDir;
+
+        psi.Environment.Remove("CODEX_THREAD_ID");
     }
 
     static async Task<JsonObject> SendRequest(Process proc, JsonObject request, TimeSpan? timeout = null) {
@@ -323,7 +308,10 @@ public class McpFlowsServerTests : IDisposable {
     /// <summary>
     /// Pins the four review-tool schemas byte-stably: definition_id/participant/message must
     /// NEVER leak into these schemas — old clients (and old skills) depend on the exact
-    /// property/required sets that shipped before the generic tools were added (D-b).
+    /// property/required sets that shipped before the generic tools were added (D-b). The one
+    /// deliberate exception is `get_review_flow_status`'s additive, optional `wait` (the
+    /// liveness-supervision status-wait argument) — pinned explicitly below rather than silently
+    /// allowed, so a future accidental property change still fails loudly.
     /// </summary>
     [Test]
     public async Task Review_tool_schemas_are_unchanged() {
@@ -337,7 +325,7 @@ public class McpFlowsServerTests : IDisposable {
 
             await AssertSchema(
                 byName["start_review_flow"],
-                properties: ["kind", "target_kind", "target_ref", "target_title", "context", "instructions", "mode", "vendor"],
+                properties: ["kind", "target_kind", "target_ref", "target_title", "context", "instructions", "mode", "vendor", "model"],
                 required:   ["kind", "target_kind", "target_ref", "target_title", "context"]
             );
 
@@ -349,7 +337,11 @@ public class McpFlowsServerTests : IDisposable {
 
             await AssertSchema(
                 byName["get_review_flow_status"],
-                properties: ["flow_run_id"],
+                // Liveness-supervision status wait: additive optional `wait` — blocks until the
+                // round is terminal instead of a single snapshot GET. Backwards-compatible by
+                // construction (optional, not in `required`), so pinning it here is deliberate, not a
+                // relaxation of the byte-stable contract this test otherwise enforces.
+                properties: ["flow_run_id", "wait"],
                 required:   ["flow_run_id"]
             );
 
@@ -891,6 +883,80 @@ public class McpFlowsServerTests : IDisposable {
             await Assert.That(bodyNode["kind"]?.GetValue<string>()).IsEqualTo("spec-review");
             await Assert.That(bodyNode["target_kind"]?.GetValue<string>()).IsEqualTo("spec");
             await Assert.That(bodyNode["context"]?.GetValue<string>()).IsEqualTo("Please review this spec for completeness.");
+        } finally {
+            await ShutdownAsync(proc);
+        }
+    }
+
+    /// <summary>
+    /// The requester-context defect, end to end through the real spawned process: a driver session
+    /// launched from another session's shell inherits the LAUNCHER's KCAP_SESSION_ID and (with no cwd
+    /// pinned on the MCP registration) the launcher's working directory. Both must lose to the running
+    /// harness's own per-process signals, or every flow the driver starts is attributed to the parent
+    /// session and reviewed in the parent's checkout — which silently hands the reviewer the wrong
+    /// diff.
+    ///
+    /// The environment here is deliberately WRONG in both dimensions and the assertions demand the
+    /// right answers, so a regression to reading the ambient values cannot pass.
+    /// </summary>
+    [Test]
+    public async Task Start_review_flow_prefers_the_running_harness_over_the_inherited_environment() {
+        const string inheritedParentSession = "aaaaaaaabbbbbbbbccccccccdddddddd";
+        const string runningDriverSession   = "11111111-2222-3333-4444-555555555555";
+
+        _server.Given(Request.Create().WithPath("/api/flows/review/start/v2").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json")
+                .WithBody("""
+                    {"flow_run_id":"flow-1","round_id":"r1","round_number":1,"status":"completed",
+                     "result_kind":"CLEAN","result_text":"looks good"}
+                    """));
+
+        // Two separate git checkouts: the one the process is launched in (the parent's, inherited)
+        // and the one the running harness reports as its project (the driver's own worktree).
+        using var driverTmp = new TempDir();
+        var driverRepo = driverTmp.CreateDir("driver");
+        InitGitRepo(driverRepo);
+
+        using var proc = SpawnMcpServerWithSession(
+            inheritedParentSession,
+            workingDirectory:  _cwdDir,      // the launching (parent) checkout — inherited, wrong
+            harnessSessionId:  runningDriverSession,
+            harnessProjectDir: driverRepo);  // the driver's own checkout — correct
+
+        try {
+            var args = new JsonObject {
+                ["kind"]         = "code-review",
+                ["target_kind"]  = "pr",
+                ["target_ref"]   = "42",
+                ["target_title"] = "Some PR",
+                ["context"]      = "Review this."
+            };
+
+            var response = await SendRequest(proc, ToolsCallRequest(3, "start_review_flow", args));
+            await Assert.That(response["result"]?["isError"]?.GetValue<bool>()).IsNotEqualTo(true);
+
+            var hits = _server.FindLogEntries(
+                Request.Create().WithPath("/api/flows/review/start/v2").UsingPost());
+            await Assert.That(hits.Count).IsEqualTo(1);
+
+            var body = JsonNode.Parse(hits[0].RequestMessage.Body ?? "")!.AsObject();
+
+            // The running driver's session, dash-stripped — NOT the inherited one.
+            await Assert.That(body["requesting_session_id"]?.GetValue<string>())
+                .IsEqualTo("11111111222233334444555555555555");
+            await Assert.That(body["requesting_session_id"]?.GetValue<string>())
+                .IsNotEqualTo(inheritedParentSession);
+
+            // The driver's checkout, not the directory the process was launched in. Compared by
+            // the unique directory name because macOS resolves the temp path through a symlink.
+            var driverRepoName = Path.GetFileName(driverRepo);
+            var parentRepoName = Path.GetFileName(_cwdDir);
+            foreach (var field in (string[])["requesting_cwd", "requesting_repo_root", "repo_path"]) {
+                var value = body[field]?.GetValue<string>();
+                await Assert.That(value).IsNotNull();
+                await Assert.That(value!.Contains(driverRepoName, StringComparison.OrdinalIgnoreCase)).IsTrue();
+                await Assert.That(value.Contains(parentRepoName, StringComparison.OrdinalIgnoreCase)).IsFalse();
+            }
         } finally {
             await ShutdownAsync(proc);
         }
@@ -1720,7 +1786,7 @@ public class McpFlowsServerTests : IDisposable {
 
             await AssertSchema(
                 startFlow,
-                properties: ["definition_id", "definition_yaml", "target_kind", "target_ref", "target_title", "context", "instructions", "mode", "vendor"],
+                properties: ["definition_id", "definition_yaml", "target_kind", "target_ref", "target_title", "context", "instructions", "mode", "vendor", "model"],
                 required:   ["target_kind", "target_ref", "target_title", "context"]
             );
 

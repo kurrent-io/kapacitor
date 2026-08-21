@@ -1,11 +1,13 @@
 using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Antigravity;
-using Capacitor.Cli.Core.Copilot;
-using Capacitor.Cli.Core.Cursor;
-using Capacitor.Cli.Core.Gemini;
-using Capacitor.Cli.Core.Kiro;
-using Capacitor.Cli.Core.OpenCode;
-using Capacitor.Cli.Core.Pi;
+using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Core.Harness.Copilot;
+using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.Harness.Gemini;
+using Capacitor.Cli.Core.Harness.Kiro;
+using Capacitor.Cli.Core.Harness.OpenCode;
+using Capacitor.Cli.Core.Harness.Pi;
 
 namespace Capacitor.Cli.Commands;
 
@@ -26,6 +28,22 @@ public sealed record PluginEnvironment(
     TextWriter     Stdout,
     TextWriter     Stderr
 ) {
+    /// <summary>
+    /// Resolves the native binary path written as the <c>command</c> of generated MCP
+    /// registrations. Null → the production default (<see cref="Environment.ProcessPath"/>, see
+    /// <c>KcapBinaryCommand</c>). Tests inject a deterministic path so assertions never bless
+    /// whatever executable happens to be running the test.
+    /// </summary>
+    public Func<string?>? ResolveMcpBinaryPath { get; init; }
+
+    /// <summary>
+    /// Finds agent sessions already running at first install. A seam for the same reason the rest of
+    /// this type is one: the default reads the machine's real process table, which a test must not.
+    /// </summary>
+    public Func<IEnumerable<StaleAgentTarget>, IReadOnlyList<StaleAgentProcess>> FindStaleAgents {
+        get; init;
+    } = StaleAgentProbe.Find;
+
     public string ClaudeHome          => ClaudePaths.Home(HomeDirectory);
     public string ClaudeUserSettings  => Path.Combine(ClaudeHome, "settings.json");
     public string CodexHome           => CodexPaths.Home(HomeDirectory);

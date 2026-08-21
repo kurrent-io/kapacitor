@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [{ "command": "python3 /private/tmp/kcap-cursor-subagent-probe-1505/probe_hook.py" }],
+    "sessionEnd": [{ "command": "python3 /private/tmp/kcap-cursor-subagent-probe-1505/probe_hook.py" }],
+    "beforeSubmitPrompt": [{ "command": "python3 /private/tmp/kcap-cursor-subagent-probe-1505/probe_hook.py" }],
+    "afterAgentResponse": [{ "command": "python3 /private/tmp/kcap-cursor-subagent-probe-1505/probe_hook.py" }],
+    "afterAgentThought": [{ "command": "python3 /private/tmp/kcap-cursor-subagent-probe-1505/probe_hook.py" }],
+    "preToolUse": [{ "command": "python3 /private/tmp/kcap-cursor-subagent-probe-1505/probe_hook.py" }],
+    "postToolUse": [{ "command": "python3 /private/tmp/kcap-cursor-subagent-probe-1505/probe_hook.py" }],
+    "postToolUseFailure": [{ "command": "python3 /private/tmp/kcap-cursor-subagent-probe-1505/probe_hook.py" }],
+    "subagentStart": [{ "command": "python3 /private/tmp/kcap-cursor-subagent-probe-1505/probe_hook.py" }],
+    "subagentStop": [{ "command": "python3 /private/tmp/kcap-cursor-subagent-probe-1505/probe_hook.py" }],
+    "stop": [{ "command": "python3 /private/tmp/kcap-cursor-subagent-probe-1505/probe_hook.py" }],
+    "beforeShellExecution": [{ "command": "python3 /private/tmp/kcap-cursor-subagent-probe-1505/probe_hook.py" }],
+    "beforeReadFile": [{ "command": "python3 /private/tmp/kcap-cursor-subagent-probe-1505/probe_hook.py" }]
+  }
+}

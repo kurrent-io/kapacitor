@@ -2,6 +2,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness.Codex;
+using Capacitor.Cli.Harness.Cursor;
 
 namespace Capacitor.Cli.Commands;
 
@@ -19,8 +21,10 @@ static class SessionImporter {
     /// "claude" (default) or "codex". Stamped on every <see cref="TranscriptBatch"/>
     /// so the server's <c>INormalizerSelector</c> picks the matching normalizer.
     /// Codex rollouts have no <c>subagents/</c> sibling directory and no
-    /// agent-progress markers, so the agent walk is short-circuited when
-    /// <paramref name="vendor"/> is <c>"codex"</c>.
+    /// agent-progress markers, so the Claude agent walk is short-circuited when
+    /// <paramref name="vendor"/> is <c>"codex"</c>; Codex collab subagents (0.146+)
+    /// are instead discovered from the shared sessions tree by parent_thread_id and
+    /// appended after the parent transcript (see the isCodex descendant walk below).
     /// </param>
     internal static async Task<ImportResult> ImportSessionAsync(
             HttpClient                 httpClient,
@@ -38,8 +42,9 @@ static class SessionImporter {
         var cwd = metadata.Cwd ?? (encodedCwd is not null ? DecodeCwdFromDirName(encodedCwd) : null) ?? "";
 
         // Codex rollouts don't ship a subagents/ sibling directory and don't carry
-        // agent-progress markers in-band, so the entire agent walk is skipped — we
-        // stream the rollout straight through the batch loop with vendor="codex".
+        // agent-progress markers in-band, so the Claude-shaped agent walk is skipped — we
+        // stream the rollout straight through the batch loop with vendor="codex", and pick
+        // up collab subagent rollouts (parent_thread_id-linked) after the main transcript.
         var isCodex = vendor == "codex";
 
         var agentTranscripts = isCodex
@@ -142,7 +147,61 @@ static class SessionImporter {
             }
         }
 
+        // Codex collab subagents (0.146+, multi-agent v2) fork into their own rollouts in the
+        // shared sessions tree, linked back via session_meta parent_thread_id — there is no
+        // subagents/ sibling dir to walk. Import every TRANSITIVE descendant as a DIRECT
+        // subagent of this root (the server's AgentSubsession model is flat, mirroring the
+        // Gemini import), AFTER the parent transcript so the interleave-position machinery —
+        // which Codex rollouts have no markers for — is simply not needed. Fail-closed like
+        // the Gemini/OpenCode descendant imports: no content without an ACKNOWLEDGED
+        // subagent-start (a subagent stream must never exist without the SubagentStarted that
+        // lets chat/trace nest it), strict transcript delivery, and no subagent-stop after a
+        // failed tail — a re-import retries (deterministic event ids make that idempotent).
+        if (isCodex) {
+            foreach (var sub in CodexSubagentDiscovery.EnumerateDescendantRollouts(transcriptPath, sessionId)) {
+                var subType    = CodexSubagentDiscovery.AgentTypeFrom(sub.AgentPath, sub.AgentNickname);
+                var subAgentId = sub.ChildDashlessId;
+
+                if (!await PostSubagentHookAsync(httpClient, baseUrl, "subagent-start",
+                        CodexSubagentDiscovery.BuildStartPayload(sessionId, subAgentId, subType, sub.FilePath))) {
+                    continue;
+                }
+
+                progress?.Report(new SubagentStarted(subAgentId));
+
+                int subLines;
+
+                try {
+                    subLines = await SendTranscriptBatches(
+                        httpClient, baseUrl, sessionId, sub.FilePath, subAgentId,
+                        startLine: 0, progress: progress, vendor: "codex", failOnError: true);
+                } catch (HttpRequestException) {
+                    continue; // leave subagent-stop unsent; a re-import retries (idempotent)
+                }
+
+                progress?.Report(new SubagentFinished(subAgentId, subLines));
+
+                await PostSubagentHookAsync(httpClient, baseUrl, "subagent-stop",
+                    CodexSubagentDiscovery.BuildStopPayload(sessionId, subAgentId, subType, sub.FilePath));
+
+                agentIds.Add(subAgentId);
+            }
+        }
+
         return new ImportResult(sessionId, agentIds, totalSent);
+    }
+
+    /// <summary>POSTs one subagent lifecycle hook; false on any failure so the caller can
+    /// fail closed (skip content for an unregistered subagent) instead of streaming anyway.</summary>
+    static async Task<bool> PostSubagentHookAsync(HttpClient httpClient, string baseUrl, string route, JsonObject payload) {
+        try {
+            using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+            using var resp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/{route}", content);
+
+            return resp.IsSuccessStatusCode;
+        } catch {
+            return false;
+        }
     }
 
     /// <summary>

@@ -1,0 +1,49 @@
+{
+  "started": "2026-08-05T18:11:33.969952+00:00",
+  "model": "deepseek-3.2",
+  "A_defect_present": {
+    "stop_reason": "skipped",
+    "permission_frames": 0,
+    "permission_details": [],
+    "submitted": null
+  },
+  "B_defect_removed": {
+    "stop_reason": "end_turn",
+    "permission_frames": 1,
+    "permission_details": [
+      {
+        "sessionId": "215281b0-19f1-4594-90a1-73f16e9f215b",
+        "toolCall": {
+          "toolCallId": "tooluse_VxMpu7wNzHIULDYdKvFoCx",
+          "title": "Running: @kcap-flow-result/submit_review_result"
+        },
+        "options": [
+          {
+            "optionId": "allow_once",
+            "name": "Yes",
+            "kind": "allow_once"
+          },
+          {
+            "optionId": "allow_always",
+            "name": "Always",
+            "kind": "allow_always"
+          },
+          {
+            "optionId": "reject_once",
+            "name": "No",
+            "kind": "reject_once"
+          }
+        ]
+      }
+    ],
+    "submitted": {
+      "kind": "clean"
+    }
+  },
+  "A_reported_findings": false,
+  "A_named_the_defect": false,
+  "B_reported_clean": true,
+  "zero_permission_frames": false,
+  "PASS": false,
+  "_redaction": "home dir -> ~, temp paths -> <tmp>"
+}

@@ -9,13 +9,35 @@ public enum FrameType : byte {
     Stdin   = 3,
     Resize  = 4,
     Detach  = 5,
-    List    = 6,   // request the daemon's agent list (for `kcap ls`)
+    List    = 6,   // request the daemon's agent list (for `kcap agent ls`)
     Restart = 7,   // request restart-after-update (Text = "when-idle"|"now"|"force")
+    Stop    = 8,   // stop an agent (Text = agent id; empty = every agent this daemon hosts)
+    StopV2  = 10,  // stop with a force flag (see FrameCodec.StopV2); supersedes Stop
+    Hello   = 15,  // optional one-shot: client info (Text = ClientHelloDto JSON; empty valid)
+    StatusSubscribe = 16, // long-lived: push DaemonStatus snapshots (immediate + on change)
+    // v2 consent frames (append-only). A v1 daemon's codec throws on these bytes
+    // before routing — that codec-level rejection IS the down-level fail-closed contract.
+    ConsentSubscribeV2 = 17, // long-lived: v2 subscribe (same reply stream as ConsentSubscribe)
+    ConsentResolveV2   = 18, // one-shot: resolve requiring the prompt_id identity echo
+    ConsentRulesPutV2  = 19, // one-shot: replace the policy, gated on an ExpectedName/ExpectedServerUrl echo (ack is ConsentAck)
+    // Consent control frames — values append-only
+    ConsentSubscribe = 11, // long-lived: replay pending + push new ConsentPending frames
+    ConsentResolve   = 12, // one-shot: resolve a pending request (Text = ConsentResolveDto JSON)
+    ConsentRulesGet  = 13, // request the current ConsentPolicyDto
+    ConsentRulesPut  = 14, // replace the policy (Text = ConsentPolicyDto JSON)
     // daemon → client
     Attached  = 64,
     Stdout    = 65,
     Exited    = 66,
     Error     = 67,
-    AgentList = 68, // UTF-8 table payload: one `id\tstatus\tcwd` line per agent
+    AgentList = 68, // UTF-8 table payload: one `id\tstatus\trepo\tkind\tflowRunId\tflowRole` line per agent
     RestartAck = 69, // acknowledgement for Restart (Text = short status)
+    StopAck    = 70, // acknowledgement for Stop (Text = one `id\tstatus` line per agent; status is "stopped", "skipped", or "failed")
+    AttachedReadOnly = 71, // Attached for a protected agent: id + reason + snapshot, no input accepted
+    HelloReply = 75, // Text = HelloReplyDto JSON: protocol/daemon version, name, capabilities
+    DaemonStatus = 76, // Text = DaemonStatusDto JSON: daemon block + full agent list snapshot
+    // Consent control frames — values append-only
+    ConsentPending = 72, // Text = ConsentPendingDto JSON, pushed on ConsentSubscribe
+    ConsentRules   = 73, // Text = ConsentPolicyDto JSON, reply to ConsentRulesGet
+    ConsentAck     = 74, // Text = ConsentAckDto JSON, reply to ConsentResolve/ConsentRulesPut
 }

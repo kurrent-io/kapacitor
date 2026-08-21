@@ -62,6 +62,33 @@ public record Profile {
     public bool? DisableMemoryIndex { get; init; }
 
     /// <summary>
+    /// when true, kcap skips injecting the SessionStart work-items nudge (the standing
+    /// guidance that tells the agent to register the session with a work item and declare
+    /// blockers/dependencies as it works). Independent of the memory-index and guidelines
+    /// opt-outs so each SessionStart injection can be toggled separately.
+    /// </summary>
+    [JsonPropertyName("disable_workitems_nudge")]
+    public bool? DisableWorkItemsNudge { get; init; }
+
+    /// <summary>
+    /// when true, kcap does not advertise the coordination-notices capability at SessionStart, so the
+    /// server injects no coordination notices (heads-up about others' in-flight work that may overlap
+    /// yours) — they still reach the notification centre and Slack. Independent of the other SessionStart
+    /// opt-outs. Mirrors <see cref="DisableMemoryIndex"/>.
+    /// </summary>
+    [JsonPropertyName("disable_coordination_notices")]
+    public bool? DisableCoordinationNotices { get; init; }
+
+    /// <summary>
+    /// when true, kcap emits no new-harness setup nudges — neither the SessionStart nudge nor the
+    /// interactive CLI stderr notice — for harnesses that are installed but not yet wired into kcap.
+    /// The total "never ask about any harness" switch, distinct from a per-vendor
+    /// <c>kcap harness dismiss</c>. Independent of the other SessionStart opt-outs.
+    /// </summary>
+    [JsonPropertyName("disable_harness_nudge")]
+    public bool? DisableHarnessNudge { get; init; }
+
+    /// <summary>
     /// When true, kcap keeps <c>ANTHROPIC_API_KEY</c> / <c>OPENAI_API_KEY</c>
     /// in the spawn environment for headless agent CLIs (title generation,
     /// summaries, judges). Default <c>false</c> scrubs them so subscription
@@ -95,6 +122,34 @@ public record Profile {
     /// </summary>
     [JsonPropertyName("import_org")]
     public string? ImportOrg { get; init; }
+
+    [JsonPropertyName("flows")]
+    public FlowsSettings? Flows { get; init; }
+
+    /// <summary>
+    /// Provider + canonical server identity learned at the last successful sign-in (Plan C's
+    /// commit boundary). Additive and READ-only in Plan B — nothing writes it yet; only
+    /// <c>OnboardingGate</c> reads it, and only when the stamped server still matches.
+    /// </summary>
+    [JsonPropertyName("auth_provider")]
+    public AuthProviderStamp? AuthProvider { get; init; }
+
+    /// <summary>The saved reviewer-vendor preference, with null/blank/whitespace defensively
+    /// read as "no preference" — a blank treated as set would consume the single preference
+    /// retry with an effectively vendor-less request and re-fail identically.</summary>
+    public string? EffectiveReviewerVendorPreference() =>
+        string.IsNullOrWhiteSpace(Flows?.ReviewerVendor) ? null : Flows!.ReviewerVendor!.Trim();
+}
+
+/// <summary>Provider + the canonical server identity it was learned for — a stamp for a
+/// DIFFERENT server (after a <c>server_url</c> change) must never be trusted as current.</summary>
+public sealed record AuthProviderStamp(
+    [property: JsonPropertyName("provider")]   string Provider,
+    [property: JsonPropertyName("server_url")] string ServerUrl);
+
+public record FlowsSettings {
+    [JsonPropertyName("reviewer_vendor")]
+    public string? ReviewerVendor { get; init; }
 }
 
 /// <summary>Repo-level .kcap.json committed to VCS.</summary>

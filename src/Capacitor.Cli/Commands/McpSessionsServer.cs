@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -6,15 +7,24 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Commands;
 
 static class McpSessionsServer {
-    internal const string NotLoggedInMessage = "Not logged in. Run 'kcap login' on the host shell.";
+    internal const string NotLoggedInMessage = AuthRejectionNotice.NotLoggedIn;
 
     public static async Task<int> RunAsync(string baseUrl) {
         var cwdRepoHash = await ResolveCwdRepoHashAsync();
         var tools       = BuildToolsList();
+
+        // MCP servers are long-lived and denylisted under the top-level "mcp" command
+        // (CommandEvents.Denylisted) — re-initialise under the reportable pseudo-command
+        // "mcp-server" so per-tool-call events actually leave. Best-effort: a stale token on
+        // disk must never block the server from starting.
+        var loggedIn = false;
+        try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
+        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn);
 
         // Validate the server_url shape once, locally (pure string check — no network, token,
         // or stderr). Used to fail gracefully instead of hard-exiting mid-request (below).
@@ -39,13 +49,29 @@ static class McpSessionsServer {
                 return BuildToolResult(callId, HttpClientExtensions.SchemeMissingHint, isError: true);
 
             try {
-                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, autoRetryUnauthorized: false);
                 return await HandleToolCallAsync(callId, callRequest, client, baseUrl, cwdRepoHash);
             } catch (Exception ex) {
                 // Unexpected: log the detail to stderr (not to the client, which could leak local
                 // paths from IO errors) and return a generic tool error, keeping the loop alive.
                 await Console.Error.WriteLineAsync($"kcap mcp sessions: unexpected error handling tools/call: {ex}");
                 return BuildToolResult(callId, "Error: internal error handling the request.", isError: true);
+            }
+        }
+
+        // Records which MCP tools agents actually reach for. Never touches the response path:
+        // the result (or the exception) is returned exactly as DispatchToolCallAsync produced it.
+        async Task<string> TimedDispatchToolCallAsync(JsonNode callId, JsonObject callRequest) {
+            var start = Stopwatch.GetTimestamp();
+            var tool  = McpTelemetry.SafeToolName(callRequest);
+            var ok    = false;
+
+            try {
+                var response = await DispatchToolCallAsync(callId, callRequest);
+                ok = McpTelemetry.ResponseOk(response);
+                return response;
+            } finally {
+                McpTelemetry.ToolCalled("kcap-sessions", tool, ok, CommandTiming.ElapsedMs(start));
             }
         }
 
@@ -78,7 +104,7 @@ static class McpSessionsServer {
                 var response = method switch {
                     "initialize" => BuildInitializeResponse(id, request),
                     "tools/list" => BuildToolsListResponse(id, tools),
-                    "tools/call" => await DispatchToolCallAsync(id, request),
+                    "tools/call" => await TimedDispatchToolCallAsync(id, request),
                     _            => McpProtocol.TryHandleStandardMethod(method, id)
                                     ?? BuildErrorResponse(id, -32601, $"Method not found: {method}")
                 };
@@ -141,20 +167,23 @@ static class McpSessionsServer {
             return BuildErrorResponse(id, -32602, "Missing params.name");
         }
 
+        if (toolName == "search_sessions") {
+            return await HandleSearchSessionsAsync(id, arguments, client, baseUrl, cwdRepoHash);
+        }
+
         try {
             using var httpResponse = toolName switch {
-                "search_sessions"        => await SendWithRefreshRetryAsync(client, c => c.GetAsync(BuildSearchUrl(baseUrl, arguments, cwdRepoHash))),
-                "get_session_summary"    => await SendWithRefreshRetryAsync(client, c => c.GetAsync(BuildSummaryUrl(baseUrl, arguments))),
-                "get_session_transcript" => await SendWithRefreshRetryAsync(client, c => c.GetAsync(BuildTranscriptUrl(baseUrl, arguments))),
-                "get_turn"               => await SendWithRefreshRetryAsync(client, c => c.GetAsync(BuildTurnDetailUrl(baseUrl, arguments))),
-                "list_turns"             => await SendWithRefreshRetryAsync(client, c => c.GetAsync(BuildTurnsUrl(baseUrl, arguments))),
+                "get_session_summary"    => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSummaryUrl(baseUrl, arguments))),
+                "get_session_transcript" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildTranscriptUrl(baseUrl, arguments))),
+                "get_turn"               => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildTurnDetailUrl(baseUrl, arguments))),
+                "list_turns"             => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildTurnsUrl(baseUrl, arguments))),
                 _                        => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
             var body = await httpResponse.Content.ReadAsStringAsync();
 
             if (httpResponse.StatusCode == HttpStatusCode.Unauthorized) {
-                return BuildToolResult(id, NotLoggedInMessage, isError: true);
+                return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(baseUrl), isError: true);
             }
 
             if (!httpResponse.IsSuccessStatusCode) {
@@ -173,6 +202,66 @@ static class McpSessionsServer {
     }
 
     /// <summary>
+    /// Search with auto-widen. The cwd-pinned search runs first; when it
+    /// comes back thin (see ShouldWiden) a second repo:"all" request runs and the
+    /// bodies merge cwd-first. The widened call is best-effort — its failure
+    /// returns the first (successful) body untouched.
+    /// </summary>
+    static async Task<string> HandleSearchSessionsAsync(
+            JsonNode    id,
+            JsonObject? arguments,
+            HttpClient  client,
+            string      baseUrl,
+            string?     cwdRepoHash
+        ) {
+        try {
+            using var first = await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSearchUrl(baseUrl, arguments, cwdRepoHash)));
+            var       body  = await first.Content.ReadAsStringAsync();
+
+            if (first.StatusCode == HttpStatusCode.Unauthorized) {
+                return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(baseUrl), isError: true);
+            }
+
+            if (!first.IsSuccessStatusCode) {
+                return BuildToolResult(id, $"Error: HTTP {(int)first.StatusCode} — {body}", isError: true);
+            }
+
+            if (ShouldWiden(arguments, cwdRepoHash, body, out var limit)) {
+                // Widening is best-effort and must NEVER turn a working search into a failure —
+                // a thrown failure on this path (including a slower all-repos query tripping the
+                // HttpClient timeout as TaskCanceledException, which would otherwise escape to the
+                // outer dispatcher catch-all as "internal error") must not cost the caller the
+                // already-successful first result. Swallow everything here, not just HTTP errors.
+                try {
+                    var widenedArgs = arguments?.DeepClone().AsObject() ?? new JsonObject();
+                    widenedArgs["repo"] = "all";
+
+                    // The stdio loop is serial — a stalled widen would withhold the already-ready
+                    // first body and block every subsequent MCP request, so bound it well below the
+                    // shared HttpClient's default 100s timeout.
+                    using var widenCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    var       url      = BuildSearchUrl(baseUrl, widenedArgs, cwdRepoHash);
+                    using var second   = await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(url, widenCts.Token));
+
+                    if (second.IsSuccessStatusCode) {
+                        var widenedBody = await second.Content.ReadAsStringAsync(widenCts.Token);
+                        body = MergeWidenedBody(body, widenedBody, limit);
+                    }
+                } catch (Exception ex) {
+                    await Console.Error.WriteLineAsync($"kcap mcp sessions: auto-widen failed ({ex.GetType().Name}: {ex.Message}); returning the pinned-repo result.");
+                    // fall through — return the first (successful) body untouched.
+                }
+            }
+
+            return BuildToolResult(id, body);
+        } catch (ArgumentException ex) {
+            return BuildToolResult(id, $"Error: {ex.Message}", isError: true);
+        } catch (HttpRequestException ex) {
+            return BuildToolResult(id, $"Error: {ex.Message}", isError: true);
+        }
+    }
+
+    /// <summary>
     /// Sends an HTTP request with one-shot retry on 401. The MCP server reuses a single
     /// <see cref="HttpClient"/> for the lifetime of the agent session, so a cached token
     /// that was valid at startup may have expired by the time a tool call is made. On 401
@@ -180,14 +269,27 @@ static class McpSessionsServer {
     /// the refresh flow for WorkOS / GitHubApp), update the client's <c>Authorization</c>
     /// header, and retry the same request once. If refresh fails (genuinely not logged in
     /// or refresh-token expired), the original 401 is returned and the caller surfaces the
-    /// friendly "Not logged in" message.
+    /// store-aware <see cref="AuthRejectionNotice"/> line (which keeps the legacy
+    /// "Not logged in" wording only for a genuinely missing login).
     /// </summary>
-    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, Func<HttpClient, Task<HttpResponseMessage>> send) {
+    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, string baseUrl, Func<HttpClient, Task<HttpResponseMessage>> send) {
         var response = await send(client);
 
         if (response.StatusCode != HttpStatusCode.Unauthorized) return response;
 
-        var refreshed = await TokenStore.GetValidTokensAsync();
+        // Force a refresh against the token this client actually sent: the 401 proves the server
+        // rejected it even though it may still look unexpired locally, which a plain load would
+        // not heal. Passing the rejected token also means a peer process that already refreshed is
+        // adopted rather than rotated a second time. With no token attached at all — this MCP
+        // process outlives a `kcap login` that finished after the client was built — there is
+        // nothing to refresh, so just pick up whatever is stored now.
+        var rejected = client.DefaultRequestHeaders.Authorization?.Parameter;
+
+        // A failed rotation must not be worse than no rotation: fall back to whatever is stored so
+        // the pre-existing "re-read and resend once" recovery still happens.
+        var refreshed = rejected is null
+            ? (await TokenStore.GetValidTokensForServerAsync(baseUrl)).Tokens
+            : await TokenStore.RecoverForServerAsync(baseUrl, rejected);
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 
@@ -248,6 +350,87 @@ static class McpSessionsServer {
         }
 
         return qs.Count == 0 ? url : url + "?" + string.Join("&", qs);
+    }
+
+    /// <summary>
+    /// Auto-widen, decision half: the implicit cwd-repo pin is the #1 cause
+    /// of "agent can't find it, human can". Widen ONLY when the pin was implicit
+    /// (no explicit repo arg), a cwd repo actually resolved, the caller isn't
+    /// paginating, the response isn't an author short-circuit (disambiguation /
+    /// no-match — widening can't fix those), and the pinned search came back thin.
+    /// </summary>
+    internal static bool ShouldWiden(JsonObject? args, string? cwdRepoHash, string firstBody, out int limit) {
+        limit = 10;
+        if (TryReadInt(args, "limit", out var requested)) limit = requested;
+
+        // Three-way repo check: absent (null) → proceed; string (blank or not) → if non-blank return false; else proceed; anything else → return false
+        if (args?["repo"] is not null) {
+            if (args["repo"] is JsonValue repoValue && repoValue.TryGetValue(out string? repoStr)) {
+                // It's a JsonValue holding a string
+                if (!string.IsNullOrWhiteSpace(repoStr)) {
+                    // Explicit, non-blank repo → don't widen
+                    return false;
+                }
+                // else: blank/whitespace repo → treat as absent, proceed
+            } else {
+                // Present but not a string JsonValue (object, array, or non-string) → attempted explicit repo but invalid → don't widen
+                return false;
+            }
+        }
+
+        if (cwdRepoHash is null) return false;
+        if (TryReadInt(args, "offset", out var offset) && offset > 0) return false;
+
+        try {
+            if (JsonNode.Parse(firstBody) is not JsonObject root) return false;
+            if (root["disambiguation"] is JsonArray { Count: > 0 }) return false;
+            if (root["no_author_match"]?.GetValue<bool>() is true) return false;
+            if (root["too_many_author_matches"]?.GetValue<bool>() is true) return false;
+
+            var hits = root["hits"] as JsonArray;
+
+            return (hits?.Count ?? 0) < limit;
+        } catch {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Auto-widen, merge half: cwd-repo hits first, widened hits appended
+    /// (deduped by session_id), capped at the requested limit, with a top-level
+    /// widened_to_all_repos marker so the agent knows the scope grew. Falls back to
+    /// the first body untouched on any parse failure — widening is best-effort and
+    /// must never cost the caller a successful result.
+    /// </summary>
+    internal static string MergeWidenedBody(string firstBody, string widenedBody, int limit) {
+        try {
+            if (JsonNode.Parse(firstBody) is not JsonObject first) return firstBody;
+            if (JsonNode.Parse(widenedBody) is not JsonObject widened) return firstBody;
+
+            var firstHits   = first["hits"] as JsonArray ?? new JsonArray();
+            var widenedHits = widened["hits"] as JsonArray ?? new JsonArray();
+            var seen        = new HashSet<string>(StringComparer.Ordinal);
+            var merged      = new JsonArray();
+
+            foreach (var hit in firstHits) {
+                if (merged.Count >= limit) break;
+                if (hit?["session_id"]?.GetValue<string>() is not { } sid || !seen.Add(sid)) continue;
+                merged.Add(hit.DeepClone());
+            }
+
+            foreach (var hit in widenedHits) {
+                if (merged.Count >= limit) break;
+                if (hit?["session_id"]?.GetValue<string>() is not { } sid || !seen.Add(sid)) continue;
+                merged.Add(hit.DeepClone());
+            }
+
+            first["hits"]                 = merged;
+            first["widened_to_all_repos"] = true;
+
+            return first.ToJsonString();
+        } catch {
+            return firstBody;
+        }
     }
 
     static string BuildSummaryUrl(string baseUrl, JsonObject? args) {
@@ -497,14 +680,14 @@ static class McpSessionsServer {
     static McpTool[] BuildToolsList() => [
         new(
             "search_sessions",
-            "Search past Kurrent Capacitor sessions in the current repo (or across all visible repos with repo: \"all\") by free-text question and/or author name. Returns ranked hits with session_id, title, owner, snippet, and (for transcript hits) hit_event_index + agent_id for drilling into the exact moment with get_session_transcript. For 'have we done this before / why did we / who decided X / when did we work on Y' questions, search here before grepping the code or git log — it searches the reasoning across past sessions, not just the code.",
+            "Search past Kurrent Capacitor sessions by free-text question and/or author name. Searches the current repo first and AUTOMATICALLY widens to all visible repos when results are thin (response then carries widened_to_all_repos: true); every hit includes its repo, so check it before assuming a hit is from this repo. Pass repo: \"all\" to search everywhere explicitly, or repo: \"<owner>/<name>\" to pin another repo (explicit repo never widens). Returns ranked hits with session_id, title, owner, snippet, and (for transcript hits) hit_event_index + agent_id for drilling into the exact moment with get_session_transcript. For 'have we done this before / why did we / who decided X / when did we work on Y' questions, search here before grepping the code or git log — it searches the reasoning across past sessions, not just the code.",
             new(
                 "object",
                 new() {
                     ["query"] = new("string", "Free-text FTS query. Empty allowed when author is set."),
                     ["author"] = new("string", "Optional: GitHub username or display name. Fuzzy match."),
                     ["author_github_id"] = new("integer", "Optional: explicit GitHub numeric id. Takes precedence over `author`."),
-                    ["repo"] = new("string", "Optional: \"all\" for cross-repo, \"<owner>/<name>\", or a 16-hex repo hash. Defaults to the current repo (resolved from cwd at server startup)."),
+                    ["repo"] = new("string", "Optional: \"all\" for cross-repo, \"<owner>/<name>\", or a 16-hex repo hash. Defaults to the current repo (resolved from cwd at server startup) with automatic widening to all repos when results are thin."),
                     ["limit"] = new("integer", "Default 10, max 50."),
                     ["offset"] = new("integer", "Default 0, max 500.")
                 },

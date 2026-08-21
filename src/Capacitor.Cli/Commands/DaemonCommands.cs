@@ -2,15 +2,17 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Commands;
 
-public static class DaemonCommands {
+public sealed class DaemonCommands(DaemonStore store) {
     static readonly string LogPath = PathHelpers.ConfigPath("daemon.log");
 
-    public static async Task<int> HandleAsync(string[] args) {
+    public async Task<int> HandleAsync(string[] args) {
         if (args.Length < 2) {
             PrintUsage();
 
@@ -27,15 +29,17 @@ public static class DaemonCommands {
             "status"  => await Status(remaining),
             "logs"    => await Logs(),
             "doctor"  => await DoctorAsync(remaining),
-            "service" => await ServiceAsync(remaining),
+            "service" => await DaemonServiceCommands.DispatchAsync(store, remaining),
+            "consent" => await DaemonConsentCommand.HandleAsync(store, remaining),
+            "reviewer" => await DaemonReviewerCommand.HandleAsync(store, remaining),
             _         => PrintUsage()
         };
     }
 
-    static string ResolveName(string[] args) =>
+    internal static string ResolveName(string[] args) =>
         DaemonNameResolver.Resolve(args, AppConfig.ResolvedProfile?.Profile?.Daemon?.Name);
 
-    static async Task<int> StartAsync(string[] args) {
+    async Task<int> StartAsync(string[] args) {
         var detached = args.Contains("-d") || args.Contains("--detach");
 
         return detached ? StartDetached(args) : await StartForegroundAsync(args);
@@ -45,16 +49,16 @@ public static class DaemonCommands {
     /// Open the per-name <c>&lt;name&gt;.start</c> lock with
     /// <c>FileShare.None</c> for the CLI-side critical section that wraps
     /// the PID-file stale-check + daemon spawn. The daemon itself takes a
-    /// separate <c>&lt;name&gt;.lock</c> via <see cref="DaemonLock"/>; this
+    /// separate <c>&lt;name&gt;.lock</c> via <c>DaemonLock</c>; this
     /// lock just keeps two concurrent <c>kcap daemon start --name X</c>
     /// invocations from both observing a stale PID file and both spawning.
     /// </summary>
-    static FileStream? TryAcquireStartLock(string daemonName) {
+    FileStream? TryAcquireStartLock(string daemonName) {
         try {
-            DaemonLockPaths.EnsureDirectory();
+            store.EnsureDirectory();
 
             return new(
-                DaemonLockPaths.StartLockPath(daemonName),
+                store.StartLockPath(daemonName),
                 FileMode.OpenOrCreate,
                 FileAccess.Write,
                 FileShare.None
@@ -64,7 +68,7 @@ public static class DaemonCommands {
         }
     }
 
-    static async Task<int> StartForegroundAsync(string[] args) {
+    async Task<int> StartForegroundAsync(string[] args) {
         var name = ResolveName(args);
 
         var startLock = TryAcquireStartLock(name);
@@ -79,7 +83,7 @@ public static class DaemonCommands {
         }
 
         try {
-            if (ReadPidFile(name) is { } existing && IsOurDaemon(existing.Pid, existing.StartToken)) {
+            if (DaemonPidProbe.ReadPidFile(store, name) is { } existing && DaemonPidProbe.IsOurDaemon(existing.Pid, existing.StartToken)) {
                 await Console.Error.WriteLineAsync(
                     $"Daemon '{name}' already running (PID {existing.Pid}). "
                   + $"Use `kcap daemon stop --name {name}` first."
@@ -94,8 +98,8 @@ public static class DaemonCommands {
         }
     }
 
-    static async Task<int> SpawnForegroundAsync(string name, string[] args) {
-        var daemonPath = ResolveDaemonBinary();
+    async Task<int> SpawnForegroundAsync(string name, string[] args) {
+        var daemonPath = UnitIdentity.ResolveDaemonBinary();
 
         if (daemonPath is null) {
             await Console.Error.WriteLineAsync(DaemonNotFoundMessage());
@@ -108,6 +112,13 @@ public static class DaemonCommands {
             UseShellExecute = false,
             CreateNoWindow  = true
         };
+
+        // Pin only what the child could not work out for itself: an env-sourced store already
+        // travels by inheritance, and the default resolves the same on both sides. Writing it
+        // unconditionally would plant the variable in every descendant — agents, vendor CLIs — that
+        // has no business seeing it.
+        if (DaemonStore.FromEnvironment().Directory != store.Directory)
+            psi.Environment[DaemonStore.DaemonsDirEnvVar] = store.Directory;
 
         foreach (var arg in args) {
             psi.ArgumentList.Add(arg);
@@ -139,7 +150,7 @@ public static class DaemonCommands {
         return process.ExitCode;
     }
 
-    static int StartDetached(string[] args) {
+    int StartDetached(string[] args) {
         var name = ResolveName(args);
 
         var startLock = TryAcquireStartLock(name);
@@ -155,7 +166,7 @@ public static class DaemonCommands {
 
         using var _ = startLock;
 
-        if (ReadPidFile(name) is { } existing && IsOurDaemon(existing.Pid, existing.StartToken)) {
+        if (DaemonPidProbe.ReadPidFile(store, name) is { } existing && DaemonPidProbe.IsOurDaemon(existing.Pid, existing.StartToken)) {
             Console.Error.WriteLine(
                 $"Daemon '{name}' already running (PID {existing.Pid}). "
               + $"Use `kcap daemon stop --name {name}` first."
@@ -164,13 +175,15 @@ public static class DaemonCommands {
             return 1;
         }
 
-        var daemonPath = ResolveDaemonBinary();
+        var daemonPath = UnitIdentity.ResolveDaemonBinary();
 
         if (daemonPath is null) {
             Console.Error.WriteLine(DaemonNotFoundMessage());
 
             return 1;
         }
+
+        if (DetachedDigestGate(daemonPath, Environment.GetEnvironmentVariable) is int gateExit) return gateExit;
 
         // Redirect ALL three standard streams so the detached daemon does not
         // inherit our stdout/stderr. Left un-redirected, the daemon
@@ -191,6 +204,13 @@ public static class DaemonCommands {
         psi.ArgumentList.Add("--log-file");
         psi.ArgumentList.Add(LogPath);
 
+        // Pin only what the child could not work out for itself: an env-sourced store already
+        // travels by inheritance, and the default resolves the same on both sides. Writing it
+        // unconditionally would plant the variable in every descendant — agents, vendor CLIs — that
+        // has no business seeing it.
+        if (DaemonStore.FromEnvironment().Directory != store.Directory)
+            psi.Environment[DaemonStore.DaemonsDirEnvVar] = store.Directory;
+
         // we close the daemon's std pipes just below (anti-hang), which
         // means a runtime/native fatal message written straight to fd 2 would be
         // lost — the reason hard daemon deaths currently leave no trace. Point the
@@ -203,9 +223,9 @@ public static class DaemonCommands {
             psi.ArgumentList.Add(arg);
         }
 
-        // Windows: clear HANDLE_FLAG_INHERIT on our own std handles so the child
-        // doesn't inherit a capturing parent's pipe handles. No-op on Unix.
-        ProcessHelpers.PreventInheritedStdHandles();
+        // Stop the child from inheriting a capturing parent's pipe handles — std
+        // handles on Windows, any fd >= 3 on Unix.
+        ProcessHelpers.PreventInheritedHandles();
 
         var process = new Process { StartInfo = psi };
         process.Start();
@@ -252,9 +272,38 @@ public static class DaemonCommands {
         return 0;
     }
 
+    /// <summary><c>DaemonRunner.BootCarriers.Seed</c>'s twin: the daemon project defines the
+    /// canonical constant, but the CLI project does not reference the daemon project, so the
+    /// literal is duplicated here (same pattern as <c>ServiceVerify</c>'s duplicated verify codes).</summary>
+    const string SeedVar = "KCAP_CONSENT_SEED_DEFAULT";
+
+    /// <summary>
+    /// Gates a detached spawn on the embedded daemon digest, but ONLY when
+    /// <see cref="SeedVar"/> is PRESENT (<c>is not null</c> — the exact-value contract: an empty
+    /// value still activates, it is a deliberate refusal, not absence) in the process env — that
+    /// directive is set exclusively by an app-managed start (the desktop supervisor / a
+    /// self-respawn), never by a bare `kcap daemon start -d` typed at a terminal, so a manual start
+    /// is never gated. This gate's only job is the digest; an empty/invalid directive value is not
+    /// separately checked here — the daemon child refuses it itself (<c>consent_seed_invalid</c>,
+    /// exit 0) once it actually boots. When gated, <see cref="DaemonDigest.Matches"/> false
+    /// (including the fail-closed dev/test placeholder) means the sibling daemon binary doesn't
+    /// match what this CLI build shipped with — refuse before spawning anything, on
+    /// stdout/stderr/exit-code contract the app-side caller parses. <paramref name="env"/> is
+    /// injected so this is testable without touching real process env.
+    /// </summary>
+    internal static int? DetachedDigestGate(string daemonPath, Func<string, string?> env) {
+        if (env(SeedVar) is null) return null; // manual start: no gate
+
+        if (DaemonDigest.Matches(daemonPath)) return null;
+
+        Console.Error.WriteLine("daemon_start_reason=package_inconsistent");
+
+        return 43;
+    }
+
     // ── stop ────────────────────────────────────────────────────────────────
 
-    static async Task<int> StopAsync(string[] args) {
+    async Task<int> StopAsync(string[] args) {
         string? name;
 
         try {
@@ -307,9 +356,9 @@ public static class DaemonCommands {
         return failed == 0 ? 0 : 1;
     }
 
-    static int StopByName(string name) {
+    int StopByName(string name) {
         var manager = TryServiceManager();
-        if (manager is not null && manager.Status(ServiceText.ServiceId(name)).State != ServiceState.NotInstalled) {
+        if (manager is not null && manager.Status(DaemonStore.Sanitize(name)).State != ServiceState.NotInstalled) {
             Console.Out.WriteLine(
                 $"Daemon '{name}' is managed by {manager.Describe()}; a raw stop would be auto-restarted.");
             Console.Out.WriteLine($"Use: kcap daemon service stop --name {name}  (or uninstall to remove it)");
@@ -317,11 +366,11 @@ public static class DaemonCommands {
             return 0;
         }
 
-        if (ReadPidFile(name) is not { } entry) {
+        if (DaemonPidProbe.ReadPidFile(store, name) is not { } entry) {
             // ReadPidFile returns null for BOTH an absent file and a present-but-
             // unparseable one (empty/partial — e.g. a mid-write SIGKILL; it no
             // longer unlinks the latter).
-            if (!File.Exists(DaemonLockPaths.PidPath(name))) {
+            if (!File.Exists(store.PidPath(name))) {
                 Console.Error.WriteLine($"No daemon '{name}' running (no PID file found).");
 
                 return 1;
@@ -345,7 +394,12 @@ public static class DaemonCommands {
         }
 
         try {
-            if (!IsOurDaemon(entry.Pid, entry.StartToken)) {
+            // entry is bound ONCE above and reused for both the ownership classification and (on
+            // the live branch) the actual kill target. Re-reading the PID file here — e.g. via a
+            // second DaemonPidProbe.ValidatedPid(store, name) call — would let a concurrent `daemon start`
+            // that wins the race between the two reads hand us a freshly-written, genuinely-live PID
+            // to kill that this call never validated from the same snapshot.
+            if (!DaemonPidProbe.IsOurDaemon(entry.Pid, entry.StartToken)) {
                 // A dead/foreign PID. Clean up under the flock so we don't unlink a
                 // PID a concurrent start wrote after our read (TOCTOU).
                 if (TryCleanupMarkersUnderLock(name))
@@ -356,12 +410,60 @@ public static class DaemonCommands {
                 return 0;
             }
 
+            // Refuse to kill ourselves. IsOurDaemon has already said this PID is a live process
+            // whose start token matches, so every identity check upstream has PASSED — the PID is
+            // simply not a daemon. A real daemon is never the process running `daemon stop`, so
+            // reaching here means the PID file is describing something it should not, and killing
+            // its tree would take down this process and everything above it.
+            //
+            // Without this, Process.Kill(entireProcessTree: true) throws
+            // "Cannot be used to terminate a process tree containing the calling process" — an
+            // opaque InvalidOperationException that says nothing about WHICH pid file caused it.
+            // That is exactly how this surfaced: a random, always-different CI test failing
+            // with an identical stack, because the pid file named the test runner itself.
+            if (entry.Pid == Environment.ProcessId) {
+                Console.Error.WriteLine(
+                    $"Daemon '{name}' resolves to the current process (PID {entry.Pid}); refusing to stop it. "
+                  + $"Its PID file at {store.PidPath(name)} does not describe a daemon.");
+
+                return 1;
+            }
+
             var process = Process.GetProcessById(entry.Pid);
-            process.Kill(entireProcessTree: true);
-            // Wait for it to actually exit so the kernel releases its flock before
-            // we try to reclaim it for cleanup below.
-            try { process.WaitForExit(5000); } catch { /* best-effort */ }
-            Console.Out.WriteLine($"Daemon '{name}' stopped (PID {entry.Pid}).");
+            var killed  = false;
+
+            try {
+                process.Kill(entireProcessTree: true);
+                killed = true;
+            } catch (InvalidOperationException) when (process.HasExited) {
+                // A BENIGN race, not corruption: the daemon exited on its own between
+                // GetProcessById and Kill. .NET reports that as InvalidOperationException too, so
+                // without this arm an ordinary well-timed stop would be accused of having a
+                // malformed PID file. The outcome the caller asked for has happened — the daemon is
+                // gone — so report it like the ArgumentException path below and fall through to the
+                // marker cleanup.
+                //
+                // No test: reproducing it needs the process to exit inside that window, which cannot
+                // be scheduled deterministically. Distinguished by HasExited rather than by message.
+                Console.Out.WriteLine($"Daemon '{name}' was not running.");
+            } catch (InvalidOperationException ex) {
+                // What remains is the safety rejection: .NET refuses to kill a process tree that
+                // contains the caller. The self-PID guard above handles the case we can name in
+                // advance; this covers the ANCESTOR case, which cannot be detected portably. Report
+                // which daemon and which PID rather than letting an unattributed exception escape.
+                Console.Error.WriteLine(
+                    $"Daemon '{name}' (PID {entry.Pid}) could not be stopped: {ex.Message} "
+                  + $"Its PID file at {store.PidPath(name)} appears not to describe a daemon.");
+
+                return 1;
+            }
+
+            if (killed) {
+                // Wait for it to actually exit so the kernel releases its flock before
+                // we try to reclaim it for cleanup below.
+                try { process.WaitForExit(5000); } catch { /* best-effort */ }
+                Console.Out.WriteLine($"Daemon '{name}' stopped (PID {entry.Pid}).");
+            }
         } catch (ArgumentException) {
             Console.Out.WriteLine($"Daemon '{name}' was not running.");
         }
@@ -389,20 +491,20 @@ public static class DaemonCommands {
     /// <c>doctor --clean</c> owns that. Returns false if a live daemon
     /// holds the flock (caller should treat the name as running).
     /// </summary>
-    static bool TryCleanupMarkersUnderLock(string name) {
+    bool TryCleanupMarkersUnderLock(string name) {
         FileStream held;
 
         try {
             held = new FileStream(
-                DaemonLockPaths.LockPath(name), FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
+                store.LockPath(name), FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
         } catch (IOException) {
             return false; // a live daemon owns the name
         }
 
         using (held) {
-            try { File.Delete(DaemonLockPaths.PidPath(name)); } catch { /* best-effort */ }
-            try { File.Delete(DaemonLockPaths.RestartPendingPath(name)); } catch { /* best-effort */ }
-            DaemonVersionMarker.Delete(name);
+            try { File.Delete(store.PidPath(name)); } catch { /* best-effort */ }
+            try { File.Delete(store.RestartPendingPath(name)); } catch { /* best-effort */ }
+            DaemonVersionMarker.Delete(store, name);
         }
 
         return true;
@@ -418,7 +520,7 @@ public static class DaemonCommands {
         return "now";
     }
 
-    static async Task<int> RestartAsync(string[] args) {
+    async Task<int> RestartAsync(string[] args) {
         string? name;
 
         try {
@@ -448,8 +550,8 @@ public static class DaemonCommands {
         return failed == 0 ? 0 : 1;
     }
 
-    static async Task<int> RestartOne(string name, string mode) {
-        var socketPath = LocalSocketPaths.Socket(name);
+    async Task<int> RestartOne(string name, string mode) {
+        var socketPath = store.SocketPath(name);
 
         using var sock = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
 
@@ -483,7 +585,7 @@ public static class DaemonCommands {
 
     // ── status ──────────────────────────────────────────────────────────────
 
-    static async Task<int> Status(string[] args) {
+    async Task<int> Status(string[] args) {
         string? explicitName;
 
         try {
@@ -508,17 +610,17 @@ public static class DaemonCommands {
         }
 
         foreach (var name in names) {
-            if (ReadPidFile(name) is not { } entry) {
+            if (DaemonPidProbe.ReadPidFile(store, name) is not { } entry) {
                 await Console.Out.WriteLineAsync($"Daemon '{name}': not running");
-            } else if (IsOurDaemon(entry.Pid, entry.StartToken)) {
+            } else if (DaemonPidProbe.IsOurDaemon(entry.Pid, entry.StartToken)) {
                 await Console.Out.WriteLineAsync($"Daemon '{name}': running (PID {entry.Pid})");
 
                 // Version of the *running* daemon (from the marker it wrote at
                 // startup), so the user can confirm a self-update took effect.
-                if (DaemonVersionMarker.TryRead(name) is { } version)
+                if (DaemonVersionMarker.TryRead(store, name) is { } version)
                     await Console.Out.WriteLineAsync($"  version: {CapacitorVersion.Display(version)}");
 
-                if (DaemonRestartMarker.TryRead(name) is { } marker)
+                if (DaemonRestartMarker.TryRead(store, name) is { } marker)
                     await Console.Out.WriteLineAsync($"  {marker.Describe()}");
             } else {
                 // report the stale PID file but do NOT delete it. Its
@@ -532,7 +634,7 @@ public static class DaemonCommands {
             }
 
             if (manager is not null) {
-                var st = manager.Status(ServiceText.ServiceId(name)).State;
+                var st = manager.Status(DaemonStore.Sanitize(name)).State;
                 if (st != ServiceState.NotInstalled)
                     await Console.Out.WriteLineAsync($"  service: {st} ({manager.Describe()})");
             }
@@ -551,27 +653,38 @@ public static class DaemonCommands {
     /// orphan PID with no corresponding lock). With <c>--clean</c> removes
     /// the stale entries (held ones are never touched).
     /// </summary>
-    static async Task<int> DoctorAsync(string[] args) {
+    async Task<int> DoctorAsync(string[] args) {
         var clean = args.Contains("--clean");
 
-        DaemonLockPaths.EnsureDirectory();
+        // MCP-registrations audit runs BEFORE the daemon-file early return below — a machine
+        // with no daemon state still has registrations worth checking (duplicate Claude-scope
+        // entries cost one extra server process per session; a stale absolute binary path
+        // breaks the servers outright after an npm re-layout).
+        await McpDoctorSection.RunAsync(Console.Out, clean,
+            ClaudePaths.UserConfigJson(), ClaudePaths.UserSettings,
+            McpDoctorSection.DefaultJsonRegistrations(),
+            Path.Combine(CodexPaths.Home(), "config.toml"),
+            Environment.ProcessPath);
+        await Console.Out.WriteLineAsync();
 
-        var names = DaemonLockPaths.EnumerateNames();
+        store.EnsureDirectory();
+
+        var names = store.EnumerateNames();
 
         if (names.Count == 0) {
-            await Console.Out.WriteLineAsync($"No daemon files found under {DaemonLockPaths.Directory}.");
+            await Console.Out.WriteLineAsync($"No daemon files found under {store.Directory}.");
             await ReportInstalledServices();
 
             return 0;
         }
 
-        await Console.Out.WriteLineAsync($"Inspecting {DaemonLockPaths.Directory}\n");
+        await Console.Out.WriteLineAsync($"Inspecting {store.Directory}\n");
         var staleCount = 0;
         var heldCount  = 0;
 
         foreach (var name in names) {
-            var lockPath = DaemonLockPaths.LockPath(name);
-            var pidPath  = DaemonLockPaths.PidPath(name);
+            var lockPath = store.LockPath(name);
+            var pidPath  = store.PidPath(name);
 
             var hasLock = File.Exists(lockPath);
 
@@ -605,8 +718,8 @@ public static class DaemonCommands {
             switch (probe) {
                 case null when hasLock: {
                     heldCount++;
-                    var pidEntry = ReadPidFile(name);
-                    var alive    = pidEntry is { } e && IsOurDaemon(e.Pid, e.StartToken);
+                    var pidEntry = DaemonPidProbe.ReadPidFile(store, name);
+                    var alive    = pidEntry is { } e && DaemonPidProbe.IsOurDaemon(e.Pid, e.StartToken);
                     var pidStr   = pidEntry is { } e2 ? e2.Pid.ToString() : "?";
 
                     var aliveStr = alive
@@ -655,11 +768,11 @@ public static class DaemonCommands {
                             /* best-effort */
                         }
 
-                        try { File.Delete(DaemonLockPaths.RestartPendingPath(name)); } catch {
+                        try { File.Delete(store.RestartPendingPath(name)); } catch {
                             /* best-effort */
                         }
 
-                        DaemonVersionMarker.Delete(name);
+                        DaemonVersionMarker.Delete(store, name);
                     }
 
                     await probe.DisposeAsync();
@@ -681,79 +794,19 @@ public static class DaemonCommands {
     }
 
     // ── shared helpers ──────────────────────────────────────────────────────
-
-    record struct PidEntry(int Pid, string? StartToken);
-
-    static PidEntry? ReadPidFile(string daemonName) {
-        var pidPath = DaemonLockPaths.PidPath(daemonName);
-
-        if (!File.Exists(pidPath)) return null;
-
-        var lines = File.ReadAllText(pidPath)
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        if (lines.Length == 0 || !int.TryParse(lines[0], out var pid)) {
-            // report "no usable PID" but do NOT delete the file. The
-            // daemon writes it with File.WriteAllText (truncate+write) under the
-            // flock, so a SIGKILL/native abort mid-write can leave a present but
-            // empty/partial/unparseable file — which is itself a hard-death
-            // breadcrumb that DaemonLock.InspectPriorHolder reports as
-            // (unclean, null). Since callers here (status, the pre-spawn guards)
-            // read this before the successor daemon runs, unlinking a corrupt
-            // file would erase that breadcrumb. Cleanup of corrupt/stale files is
-            // left to the explicit paths (`daemon stop`, `daemon doctor --clean`).
-            return null;
-        }
-
-        var startToken = lines.Length > 1 ? lines[1] : null;
-
-        return new PidEntry(pid, startToken);
-    }
-
-    /// <summary>
-    /// Verify that a PID belongs to our daemon. The strong check is start-token
-    /// equality — PIDs get recycled, but a recycled process won't share the
-    /// same kernel start instant (<see cref="ProcessStartToken"/>). A
-    /// same-scheme token mismatch is conclusive (a different incarnation), so we
-    /// return false rather than fall back to the weaker name check, which can't
-    /// tell two of our own daemons apart.
-    ///
-    /// The name fallback applies only when the token can't be compared at all:
-    /// no token recorded, the live token is unreadable, or the recorded token is
-    /// a legacy/foreign scheme — notably a PID file that stored bare
-    /// <c>Process.StartTime</c> ticks. Falling back there keeps a still-running
-    /// old daemon manageable across an upgrade instead of stranding it.
-    /// </summary>
-    static bool IsOurDaemon(int pid, string? expectedStartToken) {
-        try {
-            using var process = Process.GetProcessById(pid);
-
-            if (expectedStartToken is not null && ProcessStartToken.Matches(pid, expectedStartToken) is { } matched)
-                return matched;
-
-            // No token, unreadable, or a legacy/foreign scheme we can't compare:
-            // best-effort match by process image name.
-            var daemonPath = ResolveDaemonBinary();
-
-            var ourName = daemonPath is not null
-                ? Path.GetFileNameWithoutExtension(daemonPath)
-                : "kcap-daemon";
-
-            return string.Equals(process.ProcessName, ourName, StringComparison.OrdinalIgnoreCase);
-        } catch (ArgumentException) {
-            return false; // process doesn't exist
-        }
-    }
+    //
+    // PID-file parsing and identity validation (formerly ReadPidFile/IsOurDaemon here)
+    // now live in DaemonPidProbe — see its ValidatedPid for the combined check.
 
     /// <summary>
     /// Returns the daemon names that currently have a PID file on disk
     /// (per-name layout under <c>~/.config/kcap/daemons/</c>). Used by
     /// <c>daemon stop</c> / <c>daemon status</c> without <c>--name</c>.
     /// </summary>
-    static List<string> EnumerateRunningNames() {
-        DaemonLockPaths.EnsureDirectory();
+    List<string> EnumerateRunningNames() {
+        store.EnsureDirectory();
 
-        var dir = DaemonLockPaths.Directory;
+        var dir = store.Directory;
 
         if (!Directory.Exists(dir)) return [];
 
@@ -779,7 +832,7 @@ public static class DaemonCommands {
     /// every daemon the user owns. Surfacing the bad invocation forces the
     /// user to fix their command line before anything destructive happens.</para>
     /// </summary>
-    static string? ExtractFlagValue(string[] args, string flag) {
+    internal static string? ExtractFlagValue(string[] args, string flag) {
         for (var i = 0; i < args.Length; i++) {
             if (args[i] != flag) continue;
 
@@ -817,77 +870,7 @@ public static class DaemonCommands {
         return 0;
     }
 
-    // ── service (OS supervisor: launchd / systemd / scheduled task) ───────────
-
-    static async Task<int> ServiceAsync(string[] args) {
-        if (args.Length == 0) return ServiceUsage();
-
-        var action  = args[0];
-        var rest    = args[1..];
-        var noStart = rest.Contains("--no-start");
-
-        IServiceManager manager;
-        try {
-            manager = ServiceManagerFactory.ForCurrentOs();
-        } catch (PlatformNotSupportedException ex) {
-            await Console.Error.WriteLineAsync(ex.Message);
-            return 1;
-        }
-
-        var id = ServiceText.ServiceId(ResolveName(rest));
-
-        switch (action) {
-            case "install":   return await ServiceInstall(manager, rest, id, startNow: !noStart);
-            case "uninstall": manager.Uninstall(id); await Console.Out.WriteLineAsync($"Service '{id}' uninstalled ({manager.Describe()})."); return 0;
-            case "start":     manager.Start(id);     await Console.Out.WriteLineAsync($"Service '{id}' started.");   return 0;
-            case "stop":      manager.Stop(id);      await Console.Out.WriteLineAsync($"Service '{id}' stopped (still installed)."); return 0;
-            case "status":    return await ServiceStatus(manager, id);
-            default:          return ServiceUsage();
-        }
-    }
-
-    static async Task<int> ServiceInstall(IServiceManager manager, string[] args, string id, bool startNow) {
-        var daemonPath = ResolveDaemonBinary();
-        if (daemonPath is null) { await Console.Error.WriteLineAsync(DaemonNotFoundMessage()); return 1; }
-
-        var profileName = ExtractFlagValue(args, "--profile") ?? AppConfig.ResolvedProfile?.ProfileName;
-        var env = new Dictionary<string, string>(ServiceEnvironment.Capture(profileName)) {
-            ["KCAP_DAEMON_SUPERVISED"] = id,   // name-specific; daemon honors it only when == its sanitized --name
-        };
-
-        var extra = new List<string>();
-        if (ExtractFlagValue(args, "--max-agents") is { } mx) { extra.Add("--max-agents"); extra.Add(mx); }
-
-        var logPath = PathHelpers.ConfigPath($"daemon-{id}.log");
-        var spec    = new ServiceSpec(id, daemonPath, logPath, env, extra);
-
-        manager.Install(spec, startNow);
-
-        await Console.Out.WriteLineAsync($"Service '{id}' installed ({manager.Describe()}).");
-        await Console.Out.WriteLineAsync("  Auto-restarts on crash/SIGKILL; starts at login.");
-        await Console.Out.WriteLineAsync($"  Log:       {logPath}");
-        await Console.Out.WriteLineAsync($"  Stop:      kcap daemon service stop --name {id}");
-        await Console.Out.WriteLineAsync($"  Remove:    kcap daemon service uninstall --name {id}");
-        return 0;
-    }
-
-    static async Task<int> ServiceStatus(IServiceManager manager, string id) {
-        var status = manager.Status(id);
-        await Console.Out.WriteLineAsync($"Service '{id}': {status.State} ({manager.Describe()})");
-        if (status.BinaryPath is { } bin) await Console.Out.WriteLineAsync($"  binary: {bin}");
-        return 0;
-    }
-
-    static int ServiceUsage() {
-        Console.Error.WriteLine("Usage: kcap daemon service <install|uninstall|start|stop|status> [--name N]");
-        Console.Error.WriteLine();
-        Console.Error.WriteLine("  install [--name N] [--profile P] [--max-agents N] [--no-start]");
-        Console.Error.WriteLine("  uninstall [--name N]   Stop and remove the service unit");
-        Console.Error.WriteLine("  start [--name N]       Start the installed service now");
-        Console.Error.WriteLine("  stop [--name N]        Stop the running service (stays installed)");
-        Console.Error.WriteLine("  status [--name N]      Show installed/running state");
-        return 1;
-    }
+    // ── service evidence for status/doctor (the verbs live in DaemonServiceCommands) ──
 
     /// <summary>Service manager for this OS, or null if the OS is unsupported.</summary>
     static IServiceManager? TryServiceManager() {
@@ -917,22 +900,11 @@ public static class DaemonCommands {
         }
     }
 
-    /// <summary>
-    /// Resolve the kcap-daemon executable shipped alongside this binary.
-    /// </summary>
-    static string? ResolveDaemonBinary() {
-        var dir     = AppContext.BaseDirectory;
-        var ext     = OperatingSystem.IsWindows() ? ".exe" : "";
-        var sibling = Path.Combine(dir, $"kcap-daemon{ext}");
-
-        return File.Exists(sibling) ? sibling : null;
-    }
-
-    static string DaemonNotFoundMessage() =>
+    internal static string DaemonNotFoundMessage() =>
         $"kcap-daemon binary not found next to {AppContext.BaseDirectory}. Reinstall the kcap package.";
 
     static int PrintUsage() {
-        Console.Error.WriteLine("Usage: kcap daemon <start|stop|restart|status|logs|doctor|service>");
+        Console.Error.WriteLine("Usage: kcap daemon <start|stop|restart|status|logs|doctor|service|consent>");
         Console.Error.WriteLine();
         Console.Error.WriteLine("  start [-d] [--name <n>]    Start the daemon (foreground, or -d for background)");
         Console.Error.WriteLine("  stop [--name <n>] [--yes]  Stop a running daemon (prompts on multi unless --yes)");
@@ -941,6 +913,7 @@ public static class DaemonCommands {
         Console.Error.WriteLine("  logs                       Show recent daemon log output");
         Console.Error.WriteLine("  doctor [--clean]           Diagnose lock-file state, optionally clean stale entries");
         Console.Error.WriteLine("  service <action>           Manage the OS service (launchd/systemd/Scheduled Task)");
+        Console.Error.WriteLine("  consent <verb>             Manage the launch-consent policy (run `kcap daemon consent` for verbs)");
         Console.Error.WriteLine();
         Console.Error.WriteLine("Options for start:");
         Console.Error.WriteLine("  --name <name>         Daemon name (defaults to OS username)");
@@ -950,5 +923,26 @@ public static class DaemonCommands {
         Console.Error.WriteLine("  -d, --detach          Run in background (logs to file automatically)");
 
         return 1;
+    }
+}
+
+/// <summary>Pre-mutation viability for <c>service install --verify</c>: does the unit's pinned profile
+/// resolve to a valid server URL? Mirrors the daemon's own resolution — <see cref="ProfileResolver"/>
+/// over the captured <c>KCAP_URL</c>/<c>KCAP_PROFILE</c> — and the daemon's validity check (absolute
+/// http/https), so the CLI rejects before the transaction destroys anything what the daemon would only
+/// reject at startup.</summary>
+static class ServiceInstallViability {
+    public static async Task<bool> PinnedProfileServerUrlValidAsync(IReadOnlyDictionary<string, string> env) {
+        var envUrl     = env.GetValueOrDefault("KCAP_URL");
+        var envProfile = env.GetValueOrDefault("KCAP_PROFILE");
+
+        var config   = await AppConfig.LoadProfileConfig();
+        var resolver = new ProfileResolver(config, cliServerUrl: null, envUrl, envProfile,
+            repoConfig: null, repoRemoteUrls: [], repoPath: null);
+        var url = resolver.Resolve().ServerUrl;
+
+        return url is not null
+            && Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && uri.Scheme is "http" or "https";
     }
 }

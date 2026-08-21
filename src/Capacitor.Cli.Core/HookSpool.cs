@@ -28,24 +28,74 @@ public enum DrainOutcome {
 public sealed partial class HookSpool(string spoolDir, int capBytes = HookSpool.DefaultCapBytes) {
     public const int DefaultCapBytes = 1_048_576; // 1 MB per session file
 
-    static readonly Regex SafeSessionId = SafeSessionIdRegex();
+    static readonly Regex SafeSessionId  = SafeSessionIdRegex();
+    static readonly Regex LegacyGuidKey = LegacyGuidKeyRegex();
     static          int   seqCounter;
 
     /// <summary>The directory where spool files are stored.</summary>
     internal string Dir => spoolDir;
 
     string? LivePathFor(string sessionId) =>
-        SafeSessionId.IsMatch(sessionId) ? Path.Combine(spoolDir, $"{sessionId}.jsonl") : null;
+        SafeSessionId.IsMatch(sessionId) ? Path.Combine(spoolDir, $"{EncodeKey(sessionId)}.jsonl") : null;
 
-    public void Append(string sessionId, string route, string rawPayloadJson) {
+    /// <summary>
+    /// Appends one payload for a later drain pass. Returns whether it was actually persisted, so a
+    /// caller cannot report "spooled" after a rejected key or a disk/permission fault.
+    /// </summary>
+    public bool Append(string sessionId, string route, string rawPayloadJson) {
         var path = LivePathFor(sessionId);
-        if (path is null) return;
+        if (path is null) return false;
         try {
             Directory.CreateDirectory(spoolDir);
             var line = new JsonObject { ["route"] = route, ["body"] = rawPayloadJson }.ToJsonString();
             EnsureUnderCap(path, Encoding.UTF8.GetByteCount(line) + 1);
             File.AppendAllText(path, $"{line}\n");
-        } catch { /* best effort */ }
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+
+    // ---- filename key encoding -------------------------------------------------------------
+    //
+    // Session ids are case-SENSITIVE and are preserved byte-for-byte (OpenCode's are base62 --
+    // "ses_619a78374ffe7o0x1iTK74jFRg"), but macOS and Windows filesystems are case-INSENSITIVE, so
+    // using the raw id as the filename would let two distinct sessions address one file: their
+    // lifecycle entries would interleave and one session's ended marker would discard the other's
+    // remainder.
+    //
+    // So the id is escaped into a single-case filename key and decoded back on the way out. '~' is
+    // the escape and cannot occur in an admitted id, which keeps the mapping unambiguous and
+    // reversible -- the drain posts the DECODED id as session_id, so a lossy or one-way transform
+    // (a hash, or lowercasing) would put a fabricated id on the wire.
+    static string EncodeKey(string sessionId) {
+        // A dashless GUID is left EXACTLY as-is. Two hex spellings differing only by case are the
+        // SAME id, so they neither need disambiguating nor may be renamed: this is the entire
+        // population the pre-upgrade grammar admitted, so every spool file already on disk keeps its
+        // historical name and stays readable. Escaping applies only to the ids that are new here.
+        if (LegacyGuidKey.IsMatch(sessionId)) return sessionId;
+
+        var sb = new StringBuilder(sessionId.Length + 8);
+
+        foreach (var c in sessionId) {
+            if (char.IsAsciiLetterUpper(c)) sb.Append('~').Append(char.ToLowerInvariant(c));
+            else sb.Append(c);
+        }
+
+        return sb.ToString();
+    }
+
+    static string? DecodeKey(string key) {
+        var sb = new StringBuilder(key.Length);
+
+        for (var i = 0; i < key.Length; i++) {
+            if (key[i] != '~') { sb.Append(key[i]); continue; }
+            if (++i >= key.Length || !char.IsAsciiLetterLower(key[i])) return null; // malformed
+            sb.Append(char.ToUpperInvariant(key[i]));
+        }
+
+        return sb.ToString();
     }
 
     void EnsureUnderCap(string path, int incomingBytes) {
@@ -90,15 +140,15 @@ public sealed partial class HookSpool(string spoolDir, int capBytes = HookSpool.
     }
 
     bool HasAny(string sid) =>
-        File.Exists(Path.Combine(spoolDir, $"{sid}.jsonl"))
-     || Directory.EnumerateFiles(spoolDir, $"{sid}.*.draining").Any();
+        File.Exists(Path.Combine(spoolDir, $"{EncodeKey(sid)}.jsonl"))
+     || Directory.EnumerateFiles(spoolDir, $"{EncodeKey(sid)}.*.draining").Any();
 
     static string? SessionIdOf(string filePath) {
         var name = Path.GetFileName(filePath);
         var dot  = name.IndexOf('.');
         if (dot <= 0) return null;
-        var sid = name[..dot];
-        return SafeSessionId.IsMatch(sid) ? sid : null;
+        var decoded = DecodeKey(name[..dot]);
+        return decoded is not null && SafeSessionId.IsMatch(decoded) ? decoded : null;
     }
 
     // Recovered temps (oldest first) then the rotated live file. Returns true => stop the whole pass.
@@ -111,15 +161,15 @@ public sealed partial class HookSpool(string spoolDir, int capBytes = HookSpool.
     // the two drains from ever cross-consuming each other's in-flight files.
     async Task<bool> DrainSessionAsync(
             string sid, Func<string, string, Task<DrainOutcome>> poster, Func<bool> expired, CancellationToken ct) {
-        foreach (var temp in Directory.EnumerateFiles(spoolDir, $"{sid}.*.draining").OrderBy(File.GetCreationTimeUtc)) {
+        foreach (var temp in Directory.EnumerateFiles(spoolDir, $"{EncodeKey(sid)}.*.draining").OrderBy(File.GetCreationTimeUtc)) {
             if (expired() || ct.IsCancellationRequested) return false;
             if (await DrainFileAsync(temp, poster, expired, ct)) return true;
         }
 
-        var live = Path.Combine(spoolDir, $"{sid}.jsonl");
+        var live = Path.Combine(spoolDir, $"{EncodeKey(sid)}.jsonl");
         if (!File.Exists(live) || expired() || ct.IsCancellationRequested) return false;
 
-        var rotated = Path.Combine(spoolDir, $"{sid}.{Environment.ProcessId}-{Interlocked.Increment(ref seqCounter)}.draining");
+        var rotated = Path.Combine(spoolDir, $"{EncodeKey(sid)}.{Environment.ProcessId}-{Interlocked.Increment(ref seqCounter)}.draining");
         try { File.Move(live, rotated); }
         catch { return false; } // lost the atomic-rename race (or vanished) — the winner handles it
         return await DrainFileAsync(rotated, poster, expired, ct);
@@ -167,9 +217,9 @@ public sealed partial class HookSpool(string spoolDir, int capBytes = HookSpool.
     /// must be visible here even though only the ordered drain ever creates/consumes the latter.</summary>
     public bool HasBacklog(string sessionId) =>
         SafeSessionId.IsMatch(sessionId) && Directory.Exists(spoolDir)
-        && (File.Exists(Path.Combine(spoolDir, $"{sessionId}.jsonl"))
-            || Directory.EnumerateFiles(spoolDir, $"{sessionId}.*.draining").Any()
-            || Directory.EnumerateFiles(spoolDir, $"{sessionId}.ordered-*").Any());
+        && (File.Exists(Path.Combine(spoolDir, $"{EncodeKey(sessionId)}.jsonl"))
+            || Directory.EnumerateFiles(spoolDir, $"{EncodeKey(sessionId)}.*.draining").Any()
+            || Directory.EnumerateFiles(spoolDir, $"{EncodeKey(sessionId)}.ordered-*").Any());
 
     /// <summary>Every distinct session id with a live .jsonl or recovered .draining/.ordered-* temp,
     /// in no particular order (callers that need current-session-first ordering add it themselves).</summary>
@@ -210,17 +260,17 @@ public sealed partial class HookSpool(string spoolDir, int capBytes = HookSpool.
 
         var consumed = 0;
 
-        foreach (var temp in Directory.EnumerateFiles(spoolDir, $"{sid}.ordered-*").OrderBy(File.GetCreationTimeUtc)) {
+        foreach (var temp in Directory.EnumerateFiles(spoolDir, $"{EncodeKey(sid)}.ordered-*").OrderBy(File.GetCreationTimeUtc)) {
             if (expired() || ct.IsCancellationRequested) return consumed;
             var (stopped, n) = await DrainFileRoutesAsync(temp, isTerminal, poster, expired, ct);
             consumed += n;
             if (stopped) return consumed; // stopped — remainder kept
         }
 
-        var live = Path.Combine(spoolDir, $"{sid}.jsonl");
+        var live = Path.Combine(spoolDir, $"{EncodeKey(sid)}.jsonl");
         if (!File.Exists(live) || expired() || ct.IsCancellationRequested) return consumed;
 
-        var rotated = Path.Combine(spoolDir, $"{sid}.ordered-{Environment.ProcessId}-{Interlocked.Increment(ref seqCounter)}");
+        var rotated = Path.Combine(spoolDir, $"{EncodeKey(sid)}.ordered-{Environment.ProcessId}-{Interlocked.Increment(ref seqCounter)}");
         try { File.Move(live, rotated); }
         catch { return consumed; } // lost the atomic-rename race (or vanished) — the winner handles it
         var (_, more) = await DrainFileRoutesAsync(rotated, isTerminal, poster, expired, ct);
@@ -309,17 +359,17 @@ public sealed partial class HookSpool(string spoolDir, int capBytes = HookSpool.
         try {
             if (!Directory.Exists(spoolDir)) return;
 
-            var live = Path.Combine(spoolDir, $"{sessionId}.jsonl");
+            var live = Path.Combine(spoolDir, $"{EncodeKey(sessionId)}.jsonl");
             if (File.Exists(live)) File.Delete(live);
 
-            foreach (var temp in Directory.EnumerateFiles(spoolDir, $"{sessionId}.*.draining"))
+            foreach (var temp in Directory.EnumerateFiles(spoolDir, $"{EncodeKey(sessionId)}.*.draining"))
                 try { File.Delete(temp); } catch { }
-            foreach (var temp in Directory.EnumerateFiles(spoolDir, $"{sessionId}.ordered-*"))
+            foreach (var temp in Directory.EnumerateFiles(spoolDir, $"{EncodeKey(sessionId)}.ordered-*"))
                 try { File.Delete(temp); } catch { }
         } catch { }
     }
 
-    string EndedMarkerPath(string sessionId) => Path.Combine(spoolDir, $".ended-{sessionId}");
+    string EndedMarkerPath(string sessionId) => Path.Combine(spoolDir, $".ended-{EncodeKey(sessionId)}");
 
     public void ReapOlderThan(TimeSpan age) {
         try {
@@ -331,6 +381,15 @@ public sealed partial class HookSpool(string spoolDir, int capBytes = HookSpool.
         } catch { }
     }
 
+    // Filename-safe superset of the old dashless-GUID form. The filename IS the session id --
+    // LifecycleSpoolDrain posts it verbatim as session_id for session-needs-import -- so the key may
+    // be widened but never transformed (hashing would fabricate an id on the wire). Excludes '.', '/'
+    // and '\\', preserving both the path-traversal property and the parse-before-first-dot split.
+    // Vendors such as OpenCode use ids like "ses_7f3a9c21b8", which the old form silently dropped.
+    /// <summary>The pre-upgrade key space: a dashless GUID, case-insensitively one id.</summary>
     [GeneratedRegex("^[0-9a-fA-F]{32}$", RegexOptions.Compiled)]
+    private static partial Regex LegacyGuidKeyRegex();
+
+    [GeneratedRegex("^[A-Za-z0-9_-]{1,64}$", RegexOptions.Compiled)]
     private static partial Regex SafeSessionIdRegex();
 }

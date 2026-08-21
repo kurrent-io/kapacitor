@@ -13,7 +13,7 @@ static class PermissionRequestCommand {
     // selfHealWatcher is false when the caller determined the session is excluded
     // (excluded_repos/excluded_paths): we still handle the permission decision, but must NOT
     // spawn a transcript-uploading watcher for a project the user opted out of recording.
-    public static async Task<int> Handle(string baseUrl, string? body, bool selfHealWatcher = true) {
+    public static async Task<int> Handle(string baseUrl, string? body, bool selfHealWatcher = true, TextWriter? stdout = null) {
         body ??= await Console.In.ReadToEndAsync();
 
         JsonNode? node;
@@ -49,14 +49,14 @@ static class PermissionRequestCommand {
         var isRenderedAgent = Environment.GetEnvironmentVariable("KCAP_RENDERED_AGENT") is "1";
 
         if (isRenderedAgent) {
-            return await HandleRenderedAgent(baseUrl, node, sessionId);
+            return await HandleRenderedAgent(baseUrl, node, sessionId, stdout);
         }
 
         // Non-rendered agent: record the permission event and return immediately
         return await HandleRecordOnly(baseUrl, node, sessionId);
     }
 
-    static async Task<int> HandleRenderedAgent(string baseUrl, JsonNode node, string sessionId) {
+    static async Task<int> HandleRenderedAgent(string baseUrl, JsonNode node, string sessionId, TextWriter? stdout = null) {
         var toolName    = node["tool_name"]?.GetValue<string>() ?? "Unknown";
         var toolInput   = node["tool_input"];
         var suggestions = node["permission_suggestions"];
@@ -78,10 +78,10 @@ static class PermissionRequestCommand {
         // auth, so an accidentally / maliciously set non-loopback value would leak the
         // hook payload (tool name, raw tool input) to an arbitrary endpoint.
         if (TryGetLoopbackDaemonUrl(out var daemonUrl)) {
-            return await PostAsync(daemonUrl + "/claude/permission-request", payload, authenticated: false);
+            return await PostAsync(daemonUrl + "/claude/permission-request", payload, authenticated: false, stdout);
         }
 
-        return await PostAsync(baseUrl + "/hooks/permission-request", payload, authenticated: true);
+        return await PostAsync(baseUrl + "/hooks/permission-request", payload, authenticated: true, stdout);
     }
 
     /// <summary>
@@ -131,7 +131,7 @@ static class PermissionRequestCommand {
         return false;
     }
 
-    static async Task<int> PostAsync(string url, JsonObject payload, bool authenticated) {
+    static async Task<int> PostAsync(string url, JsonObject payload, bool authenticated, TextWriter? stdout = null) {
         using var client = authenticated
             ? await HttpClientExtensions.CreateAuthenticatedClientAsync()
             : new HttpClient();
@@ -153,7 +153,7 @@ static class PermissionRequestCommand {
             }
 
             var responseBody = await response.Content.ReadAsStringAsync();
-            Console.Write(responseBody);
+            (stdout ?? Console.Out).Write(responseBody);
 
             return 0;
         } catch (TaskCanceledException) {

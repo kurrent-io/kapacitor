@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -8,6 +9,7 @@ using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Commands;
 
@@ -20,6 +22,16 @@ namespace Capacitor.Cli.Commands;
 /// </summary>
 static class McpFlowResultServer {
     internal const string AgentIdEnvVar = "KCAP_FLOW_AGENT_ID";
+
+    /// <summary>Daemon-minted loopback capability a BORROWED reviewer delivers through: its sandbox
+    /// redirects HOME, so this process has no token store to authenticate with. Mutually exclusive
+    /// with KCAP_URL.</summary>
+    internal const string CapabilityUrlEnvVar = "KCAP_FLOW_CAPABILITY_URL";
+
+    /// <summary>Leaves appended to the capability BASE. Both tools ride one grant, so the daemon
+    /// publishes the base rather than a leaf whose sibling would need string surgery to derive.</summary>
+    const string CapabilitySubmitLeaf  = "/flow-result";
+    const string CapabilityMessageLeaf = "/flow-message";
 
     const int MaxAttempts = 5;
     static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(3);
@@ -40,9 +52,21 @@ static class McpFlowResultServer {
 
         var tools = BuildToolsList();
 
+        // MCP servers are long-lived and denylisted under the top-level "mcp" command
+        // (CommandEvents.Denylisted) — re-initialise under the reportable pseudo-command
+        // "mcp-server" so per-tool-call events actually leave. Best-effort: a stale token on
+        // disk must never block the server from starting.
+        var loggedIn = false;
+        try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
+        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn);
+
         // Validate the server_url shape once, locally (pure string check — no network, token,
         // or stderr). Used to fail gracefully instead of hard-exiting mid-request (below).
-        var urlOk = HttpClientExtensions.IsAcceptableUrl(baseUrl);
+        // A borrowed reviewer delivers through the daemon capability and never authenticates; every
+        // other launch keeps the token-store path. Mutually exclusive, decided once here.
+        var capabilityBase = Environment.GetEnvironmentVariable(CapabilityUrlEnvVar)?.TrimEnd('/');
+        var borrowed       = !string.IsNullOrWhiteSpace(capabilityBase);
+        var urlOk = HttpClientExtensions.IsAcceptableUrl(borrowed ? capabilityBase! : baseUrl);
 
         // The authenticated client is created on the first tools/call, not at startup — mirrors
         // McpFlowsServer/McpReviewServer: keeps startup local-only (no GET /auth/config, token
@@ -85,14 +109,30 @@ static class McpFlowResultServer {
                 if (toolName is null)
                     return BuildErrorResponse(callId, -32602, "Missing params.name");
 
+                // Deliberately EXHAUSTIVE explicit cases (no catalog-driven dispatch): a future tool
+                // added to KcapMcpRegistry.ReservedResultChannelTools without a case here hits the
+                // unknown-tool default rather than being routed to some existing handler. The
+                // contract test against the catalog keeps tools/list honest; this gate keeps
+                // dispatch honest. Checked BEFORE creating the authenticated client so an unknown
+                // name never triggers auth setup.
                 if (toolName is not ("submit_review_result" or "send_flow_message"))
                     return BuildToolResult(callId, $"Error: Unknown tool: {toolName}", isError: true);
 
-                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+                // The borrowed path deliberately does NOT create an authenticated client: the token
+                // store lives under a HOME this process cannot reach, so attempting it is what
+                // produced the original silent failure.
+                client ??= borrowed
+                    ? new HttpClient()
+                    : await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, autoRetryUnauthorized: false);
 
                 var (text, isError) = toolName switch {
-                    "submit_review_result" => await SubmitCoreAsync(client, apiRoot, agentId, arguments, delay: Task.Delay),
-                    _                       => await SendMessageCoreAsync(client, apiRoot, agentId, arguments, delay: Task.Delay)
+                    "submit_review_result" => await SubmitCoreAsync(
+                        client, apiRoot, agentId, arguments, delay: Task.Delay,
+                        submitUrlOverride: borrowed ? capabilityBase + CapabilitySubmitLeaf : null),
+                    "send_flow_message"    => await SendMessageCoreAsync(
+                        client, apiRoot, agentId, arguments, delay: Task.Delay,
+                        messageUrlOverride: borrowed ? capabilityBase + CapabilityMessageLeaf : null),
+                    _                      => ($"Error: Unknown tool: {toolName}", true)
                 };
 
                 return BuildToolResult(callId, text, isError);
@@ -101,6 +141,22 @@ static class McpFlowResultServer {
                 // paths from IO errors) and return a generic tool error, keeping the loop alive.
                 await Console.Error.WriteLineAsync($"kcap mcp flow-result: unexpected error handling tools/call: {ex}");
                 return BuildToolResult(callId, "Error: internal error handling the request.", isError: true);
+            }
+        }
+
+        // Records which MCP tools agents actually reach for. Never touches the response path:
+        // the result (or the exception) is returned exactly as DispatchToolCallAsync produced it.
+        async Task<string> TimedDispatchToolCallAsync(JsonNode callId, JsonObject callRequest) {
+            var start = Stopwatch.GetTimestamp();
+            var tool  = McpTelemetry.SafeToolName(callRequest);
+            var ok    = false;
+
+            try {
+                var response = await DispatchToolCallAsync(callId, callRequest);
+                ok = McpTelemetry.ResponseOk(response);
+                return response;
+            } finally {
+                McpTelemetry.ToolCalled("kcap-flow-result", tool, ok, CommandTiming.ElapsedMs(start));
             }
         }
 
@@ -133,7 +189,7 @@ static class McpFlowResultServer {
                 var response = method switch {
                     "initialize" => BuildInitializeResponse(id, request),
                     "tools/list" => BuildToolsListResponse(id, tools),
-                    "tools/call" => await DispatchToolCallAsync(id, request),
+                    "tools/call" => await TimedDispatchToolCallAsync(id, request),
                     _            => McpProtocol.TryHandleStandardMethod(method, id)
                                     ?? BuildErrorResponse(id, -32601, $"Method not found: {method}")
                 };
@@ -158,7 +214,10 @@ static class McpFlowResultServer {
             string               apiRoot,
             string               agentId,
             JsonObject?          arguments,
-            Func<TimeSpan, Task> delay
+            Func<TimeSpan, Task> delay,
+            // Absolute delivery URL for a borrowed reviewer; REPLACES the apiRoot-composed path,
+            // since the capability is a daemon loopback endpoint and not a kcap API root.
+            string?              submitUrlOverride = null
         ) {
         var roundToken = arguments?["round_token"]?.GetValue<string>();
         var kind       = arguments?["kind"]?.GetValue<string>();
@@ -172,12 +231,14 @@ static class McpFlowResultServer {
             return ("Error: findings text is required when kind is \"findings\".", true);
 
         var body = new SubmitReviewerResultDto(agentId, roundToken, kind, kind == "findings" ? findings : null);
-        var url  = $"{apiRoot.TrimEnd('/')}/api/flows/reviewer/result";
+        var url  = submitUrlOverride ?? $"{apiRoot.TrimEnd('/')}/api/flows/reviewer/result";
 
         for (var attempt = 1; attempt <= MaxAttempts; attempt++) {
             using var response = await SendWithRefreshRetryAsync(
                 client,
-                c => c.PostAsync(url, JsonContent.Create(body, McpJsonContext.Default.SubmitReviewerResultDto))
+                apiRoot,
+                c => c.PostAsync(url, JsonContent.Create(body, McpJsonContext.Default.SubmitReviewerResultDto)),
+                allowRefresh: submitUrlOverride is null
             );
             var responseBody = await response.Content.ReadAsStringAsync();
 
@@ -185,7 +246,7 @@ static class McpFlowResultServer {
                 return ("Result recorded. You may end your reply now.", false);
 
             if (response.StatusCode == HttpStatusCode.Unauthorized)
-                return ("Not logged in. Run 'kcap login' on the host shell.", true);
+                return (await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), true);
 
             var errorNode = TryParse(responseBody);
             var code      = errorNode?["error"]?.GetValue<string>();
@@ -234,7 +295,9 @@ static class McpFlowResultServer {
             string               agentId,
             JsonObject?          arguments,
             Func<TimeSpan, Task> delay,
-            string?              messageId = null
+            string?              messageId = null,
+            // Same contract as SubmitCoreAsync's submitUrlOverride.
+            string?              messageUrlOverride = null
         ) {
         // Type-safe extraction: a non-string `text` (number/object/array) must yield this clean
         // validation error, not throw into the dispatch guard's generic "internal error"
@@ -245,19 +308,21 @@ static class McpFlowResultServer {
             return ("Error: text must be a non-empty string.", true);
 
         var body = new SendFlowMessageDto(agentId, messageId ?? Guid.NewGuid().ToString("N"), text);
-        var url  = $"{apiRoot.TrimEnd('/')}/api/flows/participant/message";
+        var url  = messageUrlOverride ?? $"{apiRoot.TrimEnd('/')}/api/flows/participant/message";
 
         for (var attempt = 1; attempt <= MaxAttempts; attempt++) {
             using var response = await SendWithRefreshRetryAsync(
                 client,
-                c => c.PostAsync(url, JsonContent.Create(body, McpJsonContext.Default.SendFlowMessageDto))
+                apiRoot,
+                c => c.PostAsync(url, JsonContent.Create(body, McpJsonContext.Default.SendFlowMessageDto)),
+                allowRefresh: messageUrlOverride is null
             );
 
             if (response.IsSuccessStatusCode)
                 return ("Message sent to the flow driver. It will be delivered with the driver's next flow call — you may continue.", false);
 
             if (response.StatusCode == HttpStatusCode.Unauthorized)
-                return ("Not logged in. Run 'kcap login' on the host shell.", true);
+                return (await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), true);
 
             var responseBody = await response.Content.ReadAsStringAsync();
             var errorNode    = TryParse(responseBody);
@@ -301,12 +366,31 @@ static class McpFlowResultServer {
     /// <see cref="TokenStore.GetValidTokensAsync"/> for a fresh token, update the client's
     /// <c>Authorization</c> header, and retry the same request once.
     /// </summary>
-    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, Func<HttpClient, Task<HttpResponseMessage>> send) {
+    /// <param name="allowRefresh">False on the borrowed-reviewer capability path. That process has
+    /// no token store — its HOME is a per-launch state dir — so a 401 must be surfaced as-is rather
+    /// than sent into TokenStore, which is the very read this delivery path exists to avoid. A 401
+    /// there means the DAEMON's credential was rejected upstream, and this process could not heal
+    /// that even if it could read a token: it is not the authenticating party.</param>
+    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(
+            HttpClient client, string baseUrl, Func<HttpClient, Task<HttpResponseMessage>> send,
+            bool allowRefresh = true) {
         var response = await send(client);
 
-        if (response.StatusCode != HttpStatusCode.Unauthorized) return response;
+        if (!allowRefresh || response.StatusCode != HttpStatusCode.Unauthorized) return response;
 
-        var refreshed = await TokenStore.GetValidTokensAsync();
+        // Force a refresh against the token this client actually sent: the 401 proves the server
+        // rejected it even though it may still look unexpired locally, which a plain load would
+        // not heal. Passing the rejected token also means a peer process that already refreshed is
+        // adopted rather than rotated a second time. With no token attached at all — this MCP
+        // process outlives a `kcap login` that finished after the client was built — there is
+        // nothing to refresh, so just pick up whatever is stored now.
+        var rejected = client.DefaultRequestHeaders.Authorization?.Parameter;
+
+        // A failed rotation must not be worse than no rotation: fall back to whatever is stored so
+        // the pre-existing "re-read and resend once" recovery still happens.
+        var refreshed = rejected is null
+            ? (await TokenStore.GetValidTokensForServerAsync(baseUrl)).Tokens
+            : await TokenStore.RecoverForServerAsync(baseUrl, rejected);
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 
@@ -347,7 +431,10 @@ static class McpFlowResultServer {
         return envelope.ToJsonString();
     }
 
-    static McpTool[] BuildToolsList() => [
+    /// <summary>The advertised tool list. Contract-tested to match
+    /// <c>KcapMcpRegistry.ReservedResultChannelTools</c> name-for-name, in order — internal (not
+    /// private) solely so that test can compare it directly against the catalog.</summary>
+    internal static McpTool[] BuildToolsList() => [
         new(
             Name: "submit_review_result",
             Description: "Submit your review result for the current round. Call once. kind=\"findings\" with your findings text, or kind=\"clean\" when there are no actionable findings. round_token comes from the \"round token\" line in your prompt.",

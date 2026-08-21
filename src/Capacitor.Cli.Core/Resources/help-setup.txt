@@ -10,8 +10,12 @@ Options:
   --github                    Sign in with GitHub instead of org SSO during
                               the login step (default is org SSO when a
                               browser is available)
-  --device                    Force GitHub Device Flow during the login step
-                              (use in SSH / headless envs)
+  --device                    Skip the browser during the login step and use a
+                              device code instead — you open a URL and type a
+                              short code, on any machine. Works with org SSO and
+                              with GitHub. Without it the browser is opened and
+                              you can still press "d" to switch — unless input is
+                              redirected, which uses a device code outright.
   --skip-claude-hooks         Don't install the Claude Code plugin even if
                               the claude CLI is detected on PATH.
   --skip-codex-hooks          Don't install Codex CLI hooks/skills even if
@@ -94,8 +98,13 @@ skills, instructions, MCP) for all of them, instead of one prompt per agent.
 Hooks are installed user-wide (Pi, OpenCode, and Antigravity install a
 plugin/hooks-block rather than a shell-hooks file).
 
-When you sign in with Kurrent's hosted auth and have no tenant yet, setup can
-create one for you (organization name + workspace slug) and wait for it to go live.
+When you sign in with Kurrent's hosted auth and discovery finds no tenant, setup
+asks how to continue: create one for you (organization name + workspace slug) and
+wait for it to go live, point at a workspace you already belong to (enter its slug
+or URL — same as `kcap setup <tenant>`), or cancel. SSO discovery only lists
+workspaces that use org SSO, so a workspace whose members sign in with the GitHub
+App appears here as "no tenant": choose "I already have a workspace", or re-run
+with --github.
 
 As a final step, setup offers to import this repository's past sessions across
 every detected agent (equivalent to `kcap import --repo .`). It's only offered

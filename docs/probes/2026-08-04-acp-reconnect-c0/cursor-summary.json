@@ -1,0 +1,476 @@
+{
+  "vendor": "cursor",
+  "argv": [
+    "cursor-agent",
+    "acp"
+  ],
+  "started": "2026-08-04T18:31:41.253136+00:00",
+  "notes": [
+    "initialize ok; loadSession=True",
+    "session/new ok; sessionId=34678f28-7b18-4ff4-9f24-b93fab7c2dbb",
+    "model selected: claude-sonnet-4-5[thinking=true,context=200k]",
+    "turns A/B/C stopReasons: end_turn/end_turn/end_turn",
+    "SIGKILL fired after 3 live chunks of turn D",
+    "session/load ok=True err=None",
+    "post-load prompt ok=True"
+  ],
+  "load_session_advertised": true,
+  "agent_capabilities": {
+    "loadSession": true,
+    "mcpCapabilities": {
+      "http": true,
+      "sse": true
+    },
+    "promptCapabilities": {
+      "audio": false,
+      "embeddedContext": false,
+      "image": true
+    },
+    "sessionCapabilities": {
+      "list": {}
+    }
+  },
+  "session_id": "34678f28-7b18-4ff4-9f24-b93fab7c2dbb",
+  "model_selected": "claude-sonnet-4-5[thinking=true,context=200k]",
+  "turn_a_stop": "end_turn",
+  "turn_b_stop": "end_turn",
+  "turn_c_stop": "end_turn",
+  "kill_fired_after_chunks": 3,
+  "turn_d_response_after_kill": false,
+  "load_response": {
+    "modes": {
+      "currentModeId": "agent",
+      "availableModes": [
+        {
+          "id": "agent",
+          "name": "Agent",
+          "description": "Full agent capabilities with tool access"
+        },
+        {
+          "id": "plan",
+          "name": "Plan",
+          "description": "Read-only mode for planning and designing before implementation"
+        },
+        {
+          "id": "ask",
+          "name": "Ask",
+          "description": "Q&A mode - no edits or command execution"
+        }
+      ]
+    },
+    "models": {
+      "currentModelId": "claude-sonnet-4-5[thinking=true,context=200k]",
+      "availableModels": [
+        {
+          "modelId": "default[]",
+          "name": "Auto"
+        },
+        {
+          "modelId": "grok-4.5[effort=high,fast=true]",
+          "name": "grok-4.5"
+        },
+        {
+          "modelId": "composer-2.5[fast=true]",
+          "name": "composer-2.5"
+        },
+        {
+          "modelId": "claude-opus-5[thinking=true,context=300k,effort=high,fast=false]",
+          "name": "claude-opus-5"
+        },
+        {
+          "modelId": "claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]",
+          "name": "claude-opus-4-8"
+        },
+        {
+          "modelId": "gpt-5.6-sol[context=272k,reasoning=medium,fast=false]",
+          "name": "gpt-5.6-sol"
+        },
+        {
+          "modelId": "gpt-5.5[context=272k,reasoning=medium,fast=false]",
+          "name": "gpt-5.5"
+        },
+        {
+          "modelId": "claude-fable-5[thinking=true,context=300k,effort=high]",
+          "name": "claude-fable-5"
+        },
+        {
+          "modelId": "claude-sonnet-5[thinking=true,context=300k,effort=high]",
+          "name": "claude-sonnet-5"
+        },
+        {
+          "modelId": "gpt-5.6-terra[context=272k,reasoning=medium,fast=false]",
+          "name": "gpt-5.6-terra"
+        },
+        {
+          "modelId": "claude-sonnet-4-6[thinking=true,context=200k,effort=medium]",
+          "name": "claude-sonnet-4-6"
+        },
+        {
+          "modelId": "gpt-5.3-codex[reasoning=medium,fast=false]",
+          "name": "gpt-5.3-codex"
+        },
+        {
+          "modelId": "claude-opus-4-7[thinking=true,context=300k,effort=xhigh,fast=false]",
+          "name": "claude-opus-4-7"
+        },
+        {
+          "modelId": "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+          "name": "gpt-5.4"
+        },
+        {
+          "modelId": "claude-opus-4-6[thinking=true,context=200k,effort=high]",
+          "name": "claude-opus-4-6"
+        },
+        {
+          "modelId": "claude-opus-4-5[thinking=true]",
+          "name": "claude-opus-4-5"
+        },
+        {
+          "modelId": "gpt-5.2[reasoning=medium,fast=false]",
+          "name": "gpt-5.2"
+        },
+        {
+          "modelId": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+          "name": "gpt-5.6-luna"
+        },
+        {
+          "modelId": "gemini-3.6-flash[effort=high]",
+          "name": "gemini-3.6-flash"
+        },
+        {
+          "modelId": "gemini-3.1-pro[]",
+          "name": "gemini-3.1-pro"
+        },
+        {
+          "modelId": "gpt-5.4-mini[reasoning=medium]",
+          "name": "gpt-5.4-mini"
+        },
+        {
+          "modelId": "gpt-5.4-nano[reasoning=medium]",
+          "name": "gpt-5.4-nano"
+        },
+        {
+          "modelId": "claude-haiku-4-5[thinking=true]",
+          "name": "claude-haiku-4-5"
+        },
+        {
+          "modelId": "claude-sonnet-4-5[thinking=true,context=200k]",
+          "name": "claude-sonnet-4-5"
+        },
+        {
+          "modelId": "gpt-5.1[reasoning=medium]",
+          "name": "gpt-5.1"
+        },
+        {
+          "modelId": "gemini-3-flash[]",
+          "name": "gemini-3-flash"
+        },
+        {
+          "modelId": "gemini-3.5-flash[]",
+          "name": "gemini-3.5-flash"
+        },
+        {
+          "modelId": "claude-sonnet-4[thinking=false,context=200k]",
+          "name": "claude-sonnet-4"
+        },
+        {
+          "modelId": "gpt-5-mini[]",
+          "name": "gpt-5-mini"
+        },
+        {
+          "modelId": "gemini-2.5-flash[]",
+          "name": "gemini-2.5-flash"
+        },
+        {
+          "modelId": "kimi-k3[reasoning=max]",
+          "name": "kimi-k3"
+        },
+        {
+          "modelId": "kimi-k2.7-code[]",
+          "name": "kimi-k2.7-code"
+        },
+        {
+          "modelId": "glm-5.2[reasoning=high]",
+          "name": "glm-5.2"
+        }
+      ]
+    },
+    "configOptions": [
+      {
+        "id": "mode",
+        "name": "Mode",
+        "description": "Controls how the agent executes tasks",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "agent",
+        "options": [
+          {
+            "value": "agent",
+            "name": "Agent",
+            "description": "Full agent capabilities with tool access"
+          },
+          {
+            "value": "plan",
+            "name": "Plan",
+            "description": "Read-only mode for planning and designing before implementation"
+          },
+          {
+            "value": "ask",
+            "name": "Ask",
+            "description": "Q&A mode - no edits or command execution"
+          }
+        ]
+      },
+      {
+        "id": "model",
+        "name": "Model",
+        "description": "Controls which model variant is used for responses",
+        "category": "model",
+        "type": "select",
+        "currentValue": "claude-sonnet-4-5[thinking=true,context=200k]",
+        "options": [
+          {
+            "value": "default[]",
+            "name": "Auto"
+          },
+          {
+            "value": "grok-4.5[effort=high,fast=true]",
+            "name": "grok-4.5"
+          },
+          {
+            "value": "composer-2.5[fast=true]",
+            "name": "composer-2.5"
+          },
+          {
+            "value": "claude-opus-5[thinking=true,context=300k,effort=high,fast=false]",
+            "name": "claude-opus-5"
+          },
+          {
+            "value": "claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]",
+            "name": "claude-opus-4-8"
+          },
+          {
+            "value": "gpt-5.6-sol[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.6-sol"
+          },
+          {
+            "value": "gpt-5.5[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.5"
+          },
+          {
+            "value": "claude-fable-5[thinking=true,context=300k,effort=high]",
+            "name": "claude-fable-5"
+          },
+          {
+            "value": "claude-sonnet-5[thinking=true,context=300k,effort=high]",
+            "name": "claude-sonnet-5"
+          },
+          {
+            "value": "gpt-5.6-terra[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.6-terra"
+          },
+          {
+            "value": "claude-sonnet-4-6[thinking=true,context=200k,effort=medium]",
+            "name": "claude-sonnet-4-6"
+          },
+          {
+            "value": "gpt-5.3-codex[reasoning=medium,fast=false]",
+            "name": "gpt-5.3-codex"
+          },
+          {
+            "value": "claude-opus-4-7[thinking=true,context=300k,effort=xhigh,fast=false]",
+            "name": "claude-opus-4-7"
+          },
+          {
+            "value": "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.4"
+          },
+          {
+            "value": "claude-opus-4-6[thinking=true,context=200k,effort=high]",
+            "name": "claude-opus-4-6"
+          },
+          {
+            "value": "claude-opus-4-5[thinking=true]",
+            "name": "claude-opus-4-5"
+          },
+          {
+            "value": "gpt-5.2[reasoning=medium,fast=false]",
+            "name": "gpt-5.2"
+          },
+          {
+            "value": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+            "name": "gpt-5.6-luna"
+          },
+          {
+            "value": "gemini-3.6-flash[effort=high]",
+            "name": "gemini-3.6-flash"
+          },
+          {
+            "value": "gemini-3.1-pro[]",
+            "name": "gemini-3.1-pro"
+          },
+          {
+            "value": "gpt-5.4-mini[reasoning=medium]",
+            "name": "gpt-5.4-mini"
+          },
+          {
+            "value": "gpt-5.4-nano[reasoning=medium]",
+            "name": "gpt-5.4-nano"
+          },
+          {
+            "value": "claude-haiku-4-5[thinking=true]",
+            "name": "claude-haiku-4-5"
+          },
+          {
+            "value": "claude-sonnet-4-5[thinking=true,context=200k]",
+            "name": "claude-sonnet-4-5"
+          },
+          {
+            "value": "gpt-5.1[reasoning=medium]",
+            "name": "gpt-5.1"
+          },
+          {
+            "value": "gemini-3-flash[]",
+            "name": "gemini-3-flash"
+          },
+          {
+            "value": "gemini-3.5-flash[]",
+            "name": "gemini-3.5-flash"
+          },
+          {
+            "value": "claude-sonnet-4[thinking=false,context=200k]",
+            "name": "claude-sonnet-4"
+          },
+          {
+            "value": "gpt-5-mini[]",
+            "name": "gpt-5-mini"
+          },
+          {
+            "value": "gemini-2.5-flash[]",
+            "name": "gemini-2.5-flash"
+          },
+          {
+            "value": "kimi-k3[reasoning=max]",
+            "name": "kimi-k3"
+          },
+          {
+            "value": "kimi-k2.7-code[]",
+            "name": "kimi-k2.7-code"
+          },
+          {
+            "value": "glm-5.2[reasoning=high]",
+            "name": "glm-5.2"
+          }
+        ]
+      }
+    ]
+  },
+  "post_load_prompt_ok": true,
+  "replay_load_ok": true,
+  "replay_load_error": null,
+  "ended": "2026-08-04T18:32:18.985022+00:00",
+  "interrupted_turn_replay_shape": "absent",
+  "live_analysis": {
+    "kinds": {
+      "available_commands_update": 1,
+      "session_info_update": 1,
+      "agent_thought_chunk": 70,
+      "agent_message_chunk": 7,
+      "tool_call": 1,
+      "tool_call_update": 2
+    },
+    "keys_by_kind": {
+      "available_commands_update": [
+        "availableCommands",
+        "sessionUpdate"
+      ],
+      "session_info_update": [
+        "sessionUpdate",
+        "title"
+      ],
+      "agent_thought_chunk": [
+        "content",
+        "sessionUpdate"
+      ],
+      "agent_message_chunk": [
+        "content",
+        "sessionUpdate"
+      ],
+      "tool_call": [
+        "kind",
+        "rawInput",
+        "sessionUpdate",
+        "status",
+        "title",
+        "toolCallId"
+      ],
+      "tool_call_update": [
+        "rawOutput",
+        "sessionUpdate",
+        "status",
+        "toolCallId"
+      ]
+    },
+    "msgid_values": {},
+    "tool_call_ids": [
+      "toolu_bdrk_01ShdECqUPKRAa1ewZVB3U8W"
+    ]
+  },
+  "replay_analysis": {
+    "kinds": {
+      "user_message_chunk": 3,
+      "agent_thought_chunk": 4,
+      "agent_message_chunk": 3,
+      "tool_call": 1,
+      "tool_call_update": 1,
+      "available_commands_update": 1
+    },
+    "keys_by_kind": {
+      "user_message_chunk": [
+        "content",
+        "sessionUpdate"
+      ],
+      "agent_thought_chunk": [
+        "content",
+        "sessionUpdate"
+      ],
+      "agent_message_chunk": [
+        "content",
+        "sessionUpdate"
+      ],
+      "tool_call": [
+        "kind",
+        "rawInput",
+        "sessionUpdate",
+        "status",
+        "title",
+        "toolCallId"
+      ],
+      "tool_call_update": [
+        "rawOutput",
+        "sessionUpdate",
+        "status",
+        "toolCallId"
+      ],
+      "available_commands_update": [
+        "availableCommands",
+        "sessionUpdate"
+      ]
+    },
+    "msgid_values": {},
+    "tool_call_ids": [
+      "replay-2-1"
+    ],
+    "user_chunks": [
+      "Reply with exactly: alpha",
+      "Reply with exactly: alpha",
+      "Run the shell command `echo kcap-probe-c0` and then reply with exactly: tool-don"
+    ],
+    "after_response_conversation": 0,
+    "trailer_kinds_after_response": [
+      "available_commands_update"
+    ]
+  },
+  "live_vs_replay_msgid_overlap": {},
+  "tool_call_id_overlap": 0
+}

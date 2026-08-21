@@ -95,7 +95,7 @@ public class SessionGuidelinesEmitterTests {
 
         await Assert.That(fragment).IsNotNull();
         await Assert.That(fragment!).Contains("- good");
-        await Assert.That(fragment!.Split('\n').Count(l => l.StartsWith("- "))).IsEqualTo(1);
+        await Assert.That(fragment!.Split('\n').Count(l => l.StartsWith("- ", StringComparison.Ordinal))).IsEqualTo(1);
     }
 
     [Test]
@@ -124,7 +124,7 @@ public class SessionGuidelinesEmitterTests {
         var fragment = SessionGuidelinesEmitter.BuildFragment(body, disabled: false);
         await Assert.That(fragment).IsNotNull();
         await Assert.That(fragment!).Contains("- real lesson");
-        var bullets = fragment.Split('\n').Count(l => l.StartsWith("- "));
+        var bullets = fragment.Split('\n').Count(l => l.StartsWith("- ", StringComparison.Ordinal));
         await Assert.That(bullets).IsEqualTo(1);
     }
 
@@ -135,7 +135,7 @@ public class SessionGuidelinesEmitterTests {
         };
         var fragment = SessionGuidelinesEmitter.BuildFragment(body, disabled: false);
         await Assert.That(fragment).IsNotNull();
-        await Assert.That(fragment!.TrimStart().StartsWith("{")).IsFalse();
+        await Assert.That(fragment!.TrimStart().StartsWith('{')).IsFalse();
         await Assert.That(fragment).DoesNotContain("hookSpecificOutput");
         await Assert.That(fragment).DoesNotContain("hookEventName");
     }

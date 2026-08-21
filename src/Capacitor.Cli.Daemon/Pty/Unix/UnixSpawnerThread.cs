@@ -10,7 +10,7 @@ namespace Capacitor.Cli.Daemon.Pty.Unix;
 /// finishes and is reused/retired would (on the semantics PDEATHSIG advertises) SIGKILL every
 /// healthy agent it ever spawned, since the OS ties the signal to the thread's lifetime via the
 /// process's thread-group in a way this design deliberately never risks by using a pool thread
-/// at all. Unexpected termination of THIS thread therefore <see cref="Environment.FailFast"/>s
+/// at all. Unexpected termination of THIS thread therefore <see cref="Environment.FailFast(string?, Exception?)"/>s
 /// the whole daemon process — children then die WITH the daemon, which is exactly the
 /// semantic PDEATHSIG advertises, rather than leaving a half-broken daemon that silently
 /// stopped protecting agents it already spawned. macOS also routes through this same thread
@@ -29,6 +29,13 @@ public sealed class UnixSpawnerThread : IDisposable {
     readonly Thread                           _thread;
     volatile bool                             _stopping;
     volatile bool                             _testCrashRequested;
+
+    /// <summary>Guards <see cref="Dispose"/> so its body runs exactly once: the daemon's explicit
+    /// spawner-retire teardown step disposes this instance BEFORE the host-dispose DI walk visits
+    /// the same singleton again, and the second pass would otherwise call
+    /// <see cref="BlockingCollection{T}.CompleteAdding"/> on the already-disposed queue
+    /// (ObjectDisposedException).</summary>
+    int _disposeOnce;
 
     public UnixSpawnerThread() {
         _thread = new Thread(RunLoop) { IsBackground = false, Name = "kcap-unix-spawner" };
@@ -101,6 +108,8 @@ public sealed class UnixSpawnerThread : IDisposable {
     /// deliberately do NOT dispose <c>_queue</c> (leaving it to process exit) rather than free it
     /// under a thread that may still touch it.</summary>
     public void Dispose() {
+        if (Interlocked.Exchange(ref _disposeOnce, 1) != 0) return;
+
         _stopping = true;
         _queue.CompleteAdding();
         // Bound comfortably above the native worst case (~30s handshake + kill/reap). Only
@@ -115,9 +124,9 @@ public sealed class UnixSpawnerThread : IDisposable {
 
     /// <summary>Test-only seam (the "unexpected spawner-thread termination fail-fasts" case):
     /// forces the loop to throw from a genuinely unexpected place — outside the per-request
-    /// try/catch — so the <see cref="Environment.FailFast"/> path fires exactly like a real
+    /// try/catch — so the <see cref="Environment.FailFast(string?, Exception?)"/> path fires exactly like a real
     /// native-call bug would. Pushes one dummy request to wake the (blocked)
-    /// <see cref="BlockingCollection{T}.GetConsumingEnumerable"/> loop; the next iteration
+    /// <see cref="BlockingCollection{T}.GetConsumingEnumerable()"/> loop; the next iteration
     /// observes <see cref="_testCrashRequested"/> and throws before entering the normal
     /// per-request handling.</summary>
     internal void CrashForTest() {

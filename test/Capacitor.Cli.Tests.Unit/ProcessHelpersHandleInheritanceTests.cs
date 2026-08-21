@@ -3,15 +3,17 @@ using System.Runtime.InteropServices;
 namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
-/// Covers the fix: <see cref="ProcessHelpers.PreventInheritedStdHandles"/> /
+/// Covers the Windows half of the fix: <see cref="ProcessHelpers.PreventInheritedHandles"/> /
 /// <see cref="ProcessHelpers.TryClearInheritFlag"/> stop a hook-spawned watcher from
 /// inheriting the coding agent's std handles on Windows (which otherwise holds the
 /// agent's hook-stdout pipe open, hanging synchronous subagent hooks and orphaning
-/// the watcher).
+/// the watcher). The Unix analogue — fd >= 3 CLOEXEC, a different mechanism for a
+/// different leak shape — is covered separately by
+/// <c>ProcessHelpersUnixFdCloexecTests</c>.
 ///
-/// The meaningful assertion is Windows-only — handle inheritance is a Windows
-/// mechanism and Unix never leaks this way — so this exercises real behaviour only
-/// on Windows CI. Off Windows the calls are verified to be safe no-ops.
+/// The meaningful assertion here is Windows-only — handle inheritance is a Windows
+/// mechanism — so this exercises real behaviour only on Windows CI. Off Windows the
+/// calls are verified to be safe no-ops.
 /// </summary>
 public class ProcessHelpersHandleInheritanceTests {
     const uint HANDLE_FLAG_INHERIT = 0x00000001;
@@ -19,7 +21,7 @@ public class ProcessHelpersHandleInheritanceTests {
     [Test]
     public async Task TryClearInheritFlag_is_a_safe_noop_on_invalid_handles() {
         // Must never throw and must reject NULL/INVALID handles rather than act on them.
-        // We deliberately do NOT call PreventInheritedStdHandles() here: it clears the
+        // We deliberately do NOT call PreventInheritedHandles() here: it clears the
         // inherit flag on the test host's *real* std handles and never restores them,
         // which would leave process-global state mutated for the rest of the run. The
         // actual clearing behaviour is covered in isolation by the pipe-handle test below.

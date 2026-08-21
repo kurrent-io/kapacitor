@@ -1,3 +1,5 @@
+using Capacitor.Cli.Core.Harness.Cursor;
+
 namespace Capacitor.Cli.Core;
 
 /// <summary>

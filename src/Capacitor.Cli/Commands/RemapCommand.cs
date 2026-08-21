@@ -60,9 +60,13 @@ public static class RemapCommand {
             return 1;
         }
 
-        var config = await AppConfig.LoadProfileConfig();
-        var (next, replaced) = ApplyAdd(config.CwdRemap, nFrom, nTo);
-        await AppConfig.SaveProfileConfig(config with { CwdRemap = next });
+        var replaced = false;
+
+        await ConfigMutator.MutateAsync(c => {
+            (var next, replaced) = ApplyAdd(c.CwdRemap, nFrom, nTo);
+
+            return c with { CwdRemap = next };
+        });
 
         await Console.Out.WriteLineAsync(replaced
             ? $"Updated remap: {nFrom} → {nTo}"
@@ -87,7 +91,7 @@ public static class RemapCommand {
             return 0;
         }
 
-        await AppConfig.SaveProfileConfig(config with { CwdRemap = next });
+        await ConfigMutator.MutateAsync(c => c with { CwdRemap = ApplyRemove(c.CwdRemap, nFrom) });
         await Console.Out.WriteLineAsync($"Removed remap: {nFrom}");
 
         return 0;

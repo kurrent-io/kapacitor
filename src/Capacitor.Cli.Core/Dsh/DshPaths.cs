@@ -54,4 +54,17 @@ public static class DshPaths {
     /// <summary>Detection: the dsh home exists (callers also OR
     /// <c>AgentDetector.IsInstalled("dsh")</c> for binary-name coverage).</summary>
     public static bool IsInstalled(string? home = null) => Directory.Exists(DshHome(home));
+
+    // ── Pure (no ambient env) variants for the HarnessCatalog/AgentDetection snapshot ──
+    // A null dshHome means genuinely unset (→ ~/.dsh under the injected home), never a re-read
+    // of the real $DSH_HOME. Mirror the other vendors' *Pure helpers.
+
+    public static string DshHomePure(string? home, string? dshHome) =>
+        !string.IsNullOrEmpty(dshHome) ? dshHome : Path.Combine(home ?? PathHelpers.HomeDirectory, ".dsh");
+
+    public static string KcapPluginPure(string? home, string? dshHome) =>
+        Path.Combine(DshHomePure(home, dshHome), "kcap-dsh.plugin.mjs");
+
+    public static bool IsInstalledPure(string? home, string? dshHome) =>
+        Directory.Exists(DshHomePure(home, dshHome));
 }

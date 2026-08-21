@@ -29,7 +29,8 @@ namespace Capacitor.Cli.Daemon.Services;
 /// which kills descendants with the leader at the OS level.</para>
 /// </summary>
 internal static class ProcessReaper {
-    static readonly TimeSpan GraceBeforeKill = TimeSpan.FromSeconds(5);
+    static readonly TimeSpan GraceBeforeKill  = TimeSpan.FromSeconds(5);
+    static readonly TimeSpan ConfirmAfterKill = TimeSpan.FromSeconds(5);
 
     enum LeaderState { Dead, Ours, Recycled, Ambiguous }
 
@@ -113,17 +114,12 @@ internal static class ProcessReaper {
 
             SignalGroup(pid, hard: false); // SIGTERM the group (leader is proven ours → group is our lineage)
 
-            for (var waited = TimeSpan.Zero; waited < GraceBeforeKill; waited += TimeSpan.FromMilliseconds(250)) {
-                switch (Classify(pid, expectedIdentity)) {
-                    case LeaderState.Dead:      return true; // leader (and the group it anchored) gone
-                    case LeaderState.Recycled:  return true;
-                    case LeaderState.Ambiguous: return false;
-                }
-                await Task.Delay(250, ct);
-            }
+            // Poll for a definitive verdict; a transient Ambiguous (a proven-ours leader momentarily
+            // unreadable mid-death-transition) keeps polling instead of sparing — see PollForConfirmedDeathAsync.
+            if (await PollForConfirmedDeathAsync(pid, expectedIdentity, GraceBeforeKill, ct)) return true;
 
-            // Grace elapsed. Re-classify immediately before the hard kill — the pid may have been recycled
-            // during the last wait, and SIGKILL to a recycled group would hit unrelated processes.
+            // Re-gate before the hard kill: never SIGKILL a recycled/unprovable pid — ambiguity still
+            // spares before we escalate, so the safety invariant is unchanged.
             switch (Classify(pid, expectedIdentity)) {
                 case LeaderState.Dead:      return true;
                 case LeaderState.Recycled:  return true;
@@ -131,21 +127,41 @@ internal static class ProcessReaper {
             }
 
             SignalGroup(pid, hard: true); // SIGKILL the group while the leader is still proven ours
-            await Task.Delay(250, ct);
 
-            switch (Classify(pid, expectedIdentity)) {
-                case LeaderState.Dead:      return true;
-                case LeaderState.Recycled:  return true;
-                case LeaderState.Ambiguous: return false; // became uncomparable → unconfirmed, retain
-                default:
-                    logger.LogWarning("ProcessReaper: pid {Pid} (agent {AgentId}) still alive after SIGKILL — retained for next sweep", pid, agentId);
-                    return false;
-            }
+            // Poll for the guaranteed kill to be reflected (zombie reaped / pid gone), which under load can
+            // exceed one tick. On Windows the hard signal is a no-op — the soft signal above already
+            // tree-killed and the grace poll gave it the full window — so don't add a second long wait there.
+            var postKillWindow = OperatingSystem.IsWindows() ? TimeSpan.FromMilliseconds(250) : ConfirmAfterKill;
+            if (await PollForConfirmedDeathAsync(pid, expectedIdentity, postKillWindow, ct)) return true;
+
+            logger.LogWarning(
+                "ProcessReaper: pid {Pid} (agent {AgentId}) not confirmed gone within {Grace}s+{Kill}s — retained for next sweep",
+                pid, agentId, GraceBeforeKill.TotalSeconds, postKillWindow.TotalSeconds);
+            return false;
         } catch (OperationCanceledException) {
             return false;
         } catch (Exception ex) {
             logger.LogWarning(ex, "ProcessReaper: kill of pid {Pid} (agent {AgentId}) failed", pid, agentId);
             return false;
+        }
+    }
+
+    /// <summary>Poll <see cref="Classify"/> every 250ms up to <paramref name="window"/> for a definitive
+    /// gone verdict (Dead or a proven pid-recycle). Called only after ownership is proven and the kill
+    /// signal sent, so a transient Ambiguous keeps polling (never spares here); returns false at window
+    /// expiry so the caller retains the record for the next sweep.</summary>
+    static async Task<bool> PollForConfirmedDeathAsync(int pid, string expectedIdentity, TimeSpan window, CancellationToken ct) {
+        // Classify, then delay-and-reclassify until the window elapses — the final classify happens
+        // AFTER the last delay (when waited >= window), so a death reflected during that last interval
+        // is still confirmed rather than dropped.
+        for (var waited = TimeSpan.Zero; ; waited += TimeSpan.FromMilliseconds(250)) {
+            switch (Classify(pid, expectedIdentity)) {
+                case LeaderState.Dead:     return true;
+                case LeaderState.Recycled: return true;
+            }
+
+            if (waited >= window) return false;
+            await Task.Delay(250, ct);
         }
     }
 

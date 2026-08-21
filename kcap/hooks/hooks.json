@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "kcap hook --claude",
+            "command": "kcap hook --claude --no-update-check",
             "timeout": 5
           }
         ]
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "kcap hook --claude",
+            "command": "kcap hook --claude --no-update-check",
             "timeout": 15
           }
         ]
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "kcap hook --claude",
+            "command": "kcap hook --claude --no-update-check",
             "timeout": 5,
             "async": true
           }
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "kcap hook --claude",
+            "command": "kcap hook --claude --no-update-check",
             "timeout": 5,
             "async": true
           }
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "kcap hook --claude",
+            "command": "kcap hook --claude --no-update-check",
             "timeout": 5
           }
         ]
@@ -72,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "kcap hook --claude",
+            "command": "kcap hook --claude --no-update-check",
             "timeout": 5
           }
         ]
@@ -83,7 +83,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "kcap hook --claude",
+            "command": "kcap hook --claude --no-update-check",
             "timeout": 36000
           }
         ]

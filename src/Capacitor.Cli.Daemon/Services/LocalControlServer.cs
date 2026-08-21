@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using System.Text.Json;
 using Capacitor.Cli.Core.LocalIpc;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -10,11 +11,12 @@ namespace Capacitor.Cli.Daemon.Services;
 /// — anything that can open it can spawn processes and stream a terminal, so it sits at
 /// the same trust boundary as the daemon PID/lock files.
 internal sealed partial class LocalControlServer(
-        DaemonConfig config, AgentOrchestrator orchestrator, RestartCoordinator restart,
+        DaemonConfig config, AgentOrchestrator orchestrator,
+        RestartCoordinator restart, LaunchConsentIpc consentIpc, DaemonStatusIpc statusIpc,
         ILogger<LocalControlServer> logger
     ) : BackgroundService {
     protected override async Task ExecuteAsync(CancellationToken ct) {
-        var path = LocalSocketPaths.Socket(config.Name);
+        var path = config.Store.SocketPath(config.Name);
         try { if (File.Exists(path)) File.Delete(path); } catch { /* stale; bind fails loudly below */ }
 
         using var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
@@ -43,8 +45,24 @@ internal sealed partial class LocalControlServer(
                 case FrameType.Spawn:  await orchestrator.HandleLocalSpawnAsync(first, stream, ct); break;
                 case FrameType.Attach: await orchestrator.HandleLocalAttachAsync(first.Text, stream, ct); break;
                 case FrameType.List:   await orchestrator.HandleLocalListAsync(stream, ct); break;
+                case FrameType.Stop:   await orchestrator.HandleLocalStopAsync(first.Text, stream, ct); break;
+                case FrameType.StopV2: {
+                    var (force, id) = FrameCodec.StopV2(first);
+                    await orchestrator.HandleLocalStopV2Async(force, id, stream, ct);
+
+                    break;
+                }
                 case FrameType.Restart: await HandleRestartAsync(first.Text, stream, ct); break;
-                default: await FrameCodec.WriteAsync(stream, LocalFrame.Error($"expected Spawn/Attach/List/Restart, got {first.Type}"), ct); break;
+                case FrameType.ConsentSubscribe: await consentIpc.HandleSubscribeAsync(stream, ct); break;
+                case FrameType.ConsentResolve:   await consentIpc.HandleResolveAsync(first.Text, stream, ct); break;
+                case FrameType.ConsentRulesGet:  await consentIpc.HandleRulesGetAsync(stream, ct); break;
+                case FrameType.ConsentRulesPut:  await consentIpc.HandleRulesPutAsync(first.Text, stream, ct); break;
+                case FrameType.ConsentSubscribeV2: await consentIpc.HandleSubscribeAsync(stream, ct); break;
+                case FrameType.ConsentResolveV2:   await consentIpc.HandleResolveAsync(first.Text, stream, ct, requireEcho: true); break;
+                case FrameType.ConsentRulesPutV2:  await consentIpc.HandleRulesPutV2Async(first.Text, stream, ct); break;
+                case FrameType.Hello: await HandleHelloAsync(first.Text, stream, ct); break;
+                case FrameType.StatusSubscribe: await statusIpc.HandleSubscribeAsync(stream, ct); break;
+                default: await FrameCodec.WriteAsync(stream, LocalFrame.Error($"expected Spawn/Attach/List/Stop/StopV2/Restart/ConsentSubscribe/ConsentResolve/ConsentRulesGet/ConsentRulesPut/ConsentSubscribeV2/ConsentResolveV2/ConsentRulesPutV2/Hello/StatusSubscribe, got {first.Type}"), ct); break;
             }
         } catch (Exception ex) when (ex is not OperationCanceledException) {
             LogConnectionError(ex);
@@ -74,8 +92,27 @@ internal sealed partial class LocalControlServer(
         await FrameCodec.WriteAsync(stream, reply, ct);
     }
 
+    /// Answers an optional Hello with the daemon's protocol version, binary version,
+    /// configured name, and capability list. The payload (a <see cref="ClientHelloDto"/>) is
+    /// diagnostics-only — logged when present, never validated or gated on: an empty or
+    /// malformed payload gets exactly the same reply as a well-formed one.
+    async Task HandleHelloAsync(string payload, Stream stream, CancellationToken ct) {
+        try {
+            var hello = JsonSerializer.Deserialize(payload, HelloIpcJsonContext.Default.ClientHelloDto);
+            if (hello is { ClientName.Length: > 0 }) LogClientHello(hello.ClientName, hello.ClientVersion ?? "");
+        } catch (JsonException) { /* diagnostics-only payload; reply identically regardless */ }
+
+        var reply = new HelloReplyDto(
+            HelloProtocol.CurrentVersion, DaemonRunner.ResolveDaemonVersion(), config.Name, [.. LocalControlCapabilities.Current],
+            Environment.ProcessId, config.InstanceId);
+        var json = JsonSerializer.Serialize(reply, HelloIpcJsonContext.Default.HelloReplyDto);
+        await FrameCodec.WriteAsync(stream, LocalFrame.HelloJson(FrameType.HelloReply, json), ct);
+    }
+
     [LoggerMessage(Level = LogLevel.Information, Message = "Local control socket listening at {Path}")]
     partial void LogListening(string path);
     [LoggerMessage(Level = LogLevel.Warning, Message = "Local control connection faulted")]
     partial void LogConnectionError(Exception ex);
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Client hello: {ClientName} {ClientVersion}")]
+    partial void LogClientHello(string clientName, string clientVersion);
 }

@@ -226,10 +226,11 @@ public static class AppConfig {
 
     /// <summary>The full set of accepted <c>default_visibility</c> values, server-agnostic
     /// (a server that gates Projects off simply treats <c>project</c> as owner-only).
-    /// Internal (not private) so other CLI-side surfaces that validate or offer this
-    /// value — e.g. <c>SetupCommand</c>'s <c>--default-visibility</c> flag and interactive
-    /// wizard choice list — can't drift out of sync with what config actually accepts.</summary>
-    internal static readonly string[] ValidVisibilities = ["private", "project", "org_public", "public"];
+    /// Public (not internal) so other surfaces that validate or offer this value — CLI-side
+    /// (e.g. <c>SetupCommand</c>'s <c>--default-visibility</c> flag and interactive wizard
+    /// choice list) and the desktop app, which has no <c>InternalsVisibleTo</c> grant into
+    /// this assembly — can't drift out of sync with what config actually accepts.</summary>
+    public static readonly string[] ValidVisibilities = ["private", "project", "org_public", "public"];
 
     /// <summary>
     /// Directly assigns <see cref="ResolvedServerUrl"/> and <see cref="ResolvedProfile"/>
@@ -246,8 +247,38 @@ public static class AppConfig {
     /// </summary>
     public static void SetResolvedState(string serverUrl, string profileName, Profile profile) {
         ResolvedServerUrl = serverUrl;
-        ResolvedProfile   = new ResolvedProfile(serverUrl, profileName, profile, null);
+        // Profile, not a parameter: the only caller is `kcap setup`, immediately after persisting the
+        // profile whose server_url this is. The profile owns the value, so that is what remediation
+        // must name.
+        ResolvedProfile   = new ResolvedProfile(serverUrl, profileName, profile, null, UrlSource.Profile);
     }
+
+    /// <summary>
+    /// Where the resolved server URL came from, for the diagnostic a guard writes when it declines to
+    /// use it. Falls back to <see cref="UrlSource.Profile"/> before resolution has run, which is the
+    /// safe default: its remediation points at config rather than at an override the user never set.
+    /// </summary>
+    public static UrlSource ResolvedUrlSource => ResolvedProfile?.Source ?? UrlSource.Profile;
+
+    /// <summary>
+    /// Test seam: clears the process-global resolved state. Token lookup consults
+    /// <see cref="ResolvedProfile"/>, so a value left behind by an earlier test would silently
+    /// redirect a later test's token reads to another profile.
+    /// </summary>
+    internal static void ResetResolvedStateForTesting() {
+        ResolvedServerUrl = null;
+        ResolvedProfile   = null;
+    }
+
+    /// <summary>
+    /// Whether any profile has actually been configured — NOT whether <see cref="LoadProfileConfig"/>
+    /// returned one. That method synthesizes a `default` entry whenever config.json is missing or
+    /// unreadable, so `Profiles.Count > 0` is true on a machine that has never run kcap and cannot
+    /// distinguish a first-time setup from a re-run. A server URL is what setup actually persists,
+    /// so it is what "configured" means here.
+    /// </summary>
+    public static bool HasConfiguredProfile(ProfileConfig config) =>
+        config.Profiles.Values.Any(p => !string.IsNullOrWhiteSpace(p.ServerUrl));
 
     public static async Task<ProfileConfig> LoadProfileConfig(CancellationToken ct = default) {
         if (!File.Exists(ConfigPath))
@@ -296,8 +327,19 @@ public static class AppConfig {
             }
 
             try {
-                await SaveProfileConfig(result.Config, ct);
-            } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+                // Identity mutation: MutateAsync re-reads the file fresh under the lock and
+                // re-applies ConfigMigration itself, so it publishes the same migrated form
+                // `result.Config` holds here — the mutate callback need not (and must not,
+                // to avoid clobbering a concurrent writer) reuse this already-read snapshot.
+                await ConfigMutator.MutateAsync(c => c, ct);
+            } catch (Exception ex) when (ex is not OperationCanceledException) {
+                // Broad on purpose: unlike the pre-ConfigMutator write, this path now also goes
+                // through ConfigFileLock, which can throw TimeoutException (10s lock wait) or a
+                // mutex-open failure that isn't UnauthorizedAccessException — every kcap command
+                // hits this at startup, and the comment above still holds: the in-memory migrated
+                // config must never be dropped just because the best-effort persist couldn't run.
+                // OperationCanceledException is excluded so a caller's own cancellation still
+                // propagates instead of being swallowed as a warning.
                 await Console.Error.WriteLineAsync($"Warning: could not persist migrated config at {ConfigPath}: {ex.Message}");
             }
         }
@@ -332,20 +374,6 @@ public static class AppConfig {
         return rebuilt is null ? config : config with { Profiles = rebuilt };
     }
 
-    public static async Task SaveProfileConfig(ProfileConfig config, CancellationToken ct = default) {
-        var dir = Path.GetDirectoryName(ConfigPath)!;
-        Directory.CreateDirectory(dir);
-        var tempPath = $"{ConfigPath}.tmp";
-
-        await File.WriteAllBytesAsync(
-            tempPath,
-            JsonSerializer.SerializeToUtf8Bytes(config, ProfileConfigJsonContextIndented.Default.ProfileConfig),
-            ct
-        );
-        ct.ThrowIfCancellationRequested();
-        File.Move(tempPath, ConfigPath, overwrite: true);
-    }
-
     public static string GetConfigPath() => ConfigPath;
 
     /// <summary>
@@ -365,9 +393,11 @@ public static class AppConfig {
     /// the resolved profile from <see cref="ResolvedProfile"/> and loads the
     /// fallback config from disk when needed.
     /// </summary>
-    public static async Task<Profile?> GetActiveProfileAsync() {
+    public static async Task<Profile?> GetActiveProfileAsync(CancellationToken ct = default) {
         if (ResolvedProfile?.Profile is { } profile) return profile;
 
-        return PickActiveProfile(null, await LoadProfileConfig());
+        // Thread ct so a caller under a hard deadline (e.g. the Cursor hook's 2s dispatcher race)
+        // lets the disk read observe cancellation instead of lingering after its work is abandoned.
+        return PickActiveProfile(null, await LoadProfileConfig(ct));
     }
 }
