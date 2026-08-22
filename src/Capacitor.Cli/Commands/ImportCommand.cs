@@ -2210,9 +2210,10 @@ static class ImportCommand {
 
     /// <summary>
     /// Path-based overload: reads the transcript INSIDE this method's own try, so an
-    /// invalid/empty path (<c>File.ReadLines</c> validates its argument eagerly, before the
-    /// actual — lazy — file read) degrades to "no evidence" here too, instead of throwing as a
-    /// bare call argument at the caller, outside any try/catch.
+    /// invalid/empty path degrades to "no evidence" here too, instead of throwing as a bare call
+    /// argument at the caller, outside any try/catch. Uses <see cref="WatchCommand.ReadLinesShared"/>
+    /// (FileShare.ReadWrite), not <c>File.ReadLines</c> (FileShare.Read — Windows-mandatory,
+    /// denies the write handle a still-flushing agent owns on its own transcript).
     /// </summary>
     internal static async Task<JsonObject?> TryBuildEvidenceRepositoryNodeAsync(
             string                                 vendor,
@@ -2221,7 +2222,7 @@ static class ImportCommand {
             Func<string, Task<RepositoryPayload?>> detect
         ) {
         try {
-            return await TryBuildEvidenceRepositoryNodeAsync(vendor, File.ReadLines(transcriptPath), findRoot, detect);
+            return await TryBuildEvidenceRepositoryNodeAsync(vendor, WatchCommand.ReadLinesShared(transcriptPath), findRoot, detect);
         } catch {
             return null; // fail-open: an unreadable/invalid path must never break import
         }

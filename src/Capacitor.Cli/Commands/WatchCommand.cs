@@ -164,6 +164,18 @@ static partial class WatchCommand {
         return reader.ReadToEnd();
     }
 
+    /// <summary>Line-yielding sibling of <see cref="ReadAllTextShared"/> — same FileShare.ReadWrite
+    /// reasoning, but streamed (like <c>File.ReadLines</c>) rather than materialized, for a
+    /// best-effort evidence scan that wants to stop reading as soon as it finds what it needs.
+    /// <c>File.ReadLines</c> opens FileShare.Read, which is mandatory-exclusive on Windows and can
+    /// block the very agent whose transcript is being scanned mid-flush.</summary>
+    internal static IEnumerable<string> ReadLinesShared(string path) {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+
+        while (reader.ReadLine() is { } line) yield return line;
+    }
+
     /// <summary>
     /// Maximum single wait between heartbeat touches. Comfortably below the
     /// <c>WatcherHeartbeat.Threshold</c> so no chunked wait can ever look stale, and matches the
@@ -497,7 +509,7 @@ static partial class WatchCommand {
                 p => p.Owner is not null && p.RepoName is not null);
 
             try {
-                foreach (var line in File.ReadLines(transcriptPath)) {
+                foreach (var line in ReadLinesShared(transcriptPath)) {
                     if (await state.EvidenceScanner.OnLineAsync(vendor, line) is { } repo) {
                         ApplyEvidenceRepo(state, repo);
 
