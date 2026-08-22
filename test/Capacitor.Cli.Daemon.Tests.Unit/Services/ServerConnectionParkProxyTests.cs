@@ -86,20 +86,23 @@ public class ServerConnectionParkProxyTests {
     }
 
     /// <summary>
-    /// A pre-B1 server has no <c>ReportParticipantParked</c> hub method at all: SignalR's server-side
-    /// message binder can't resolve the target, so the invoke throws a <c>HubException</c> reporting
-    /// the method doesn't exist — the same literal text (see <c>AgentOrchestratorSourceClaimTests
-    /// .Method_not_found_claim_is_a_coded_launch_failure_with_teardown</c>) this codebase already uses
-    /// to model the equivalent old-server case for <c>AcpSessionSourceClaim</c>. Unlike the generic
-    /// transient HubException in <see cref="A_thrown_HubException_maps_to_ParkAck_Ambiguous_never_throws"/>,
-    /// this is a DEFINITE, permanent degrade: mapping it to Ambiguous would have
-    /// <c>AgentOrchestrator.ParkReviewerAsync</c> retry the park forever against a server that will
-    /// never grow the method. Rejected makes it fall back to the normal reap instead.
+    /// A pre-B1 server has no <c>ReportParticipantParked</c> hub method at all: the server's
+    /// <c>DefaultHubDispatcher</c> can't resolve the target and completes the invocation with the error
+    /// <c>Unknown hub method '&lt;target&gt;'</c> (sent regardless of <c>EnableDetailedErrors</c>;
+    /// verified against aspnetcore v10.0.11), surfaced on the client as a <c>HubException</c> carrying
+    /// that message. Unlike the generic transient HubException in
+    /// <see cref="A_thrown_HubException_maps_to_ParkAck_Ambiguous_never_throws"/>, this is a DEFINITE,
+    /// permanent degrade: mapping it to Ambiguous would have <c>AgentOrchestrator.ParkReviewerAsync</c>
+    /// retry the park forever against a server that will never grow the method — and because arm-A park
+    /// precedes arm-B reap in the sweep, the reviewer would never be cleanly reaped and would leak
+    /// capacity indefinitely. Rejected makes it fall back to the normal reap instead. The message string
+    /// this test asserts on is the exact text SignalR produces; matching a fabricated
+    /// "does not exist" phrase (which SignalR never emits) would let this degrade path never fire.
     /// </summary>
     [Test]
     public async Task Park_against_a_server_without_the_hub_method_falls_back_to_reap() {
         var conn = new TestServerConnection {
-            ThrowOnInvoke = new Microsoft.AspNetCore.SignalR.HubException("Method does not exist.")
+            ThrowOnInvoke = new Microsoft.AspNetCore.SignalR.HubException("Unknown hub method 'ReportParticipantParked'")
         };
 
         var ack = await conn.ReportParticipantParkedAsync("agent1", "canon-1", "reviewer_parked_resumable")

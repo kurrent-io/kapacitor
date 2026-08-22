@@ -195,6 +195,55 @@ public class AgentOrchestratorReviewerParkTests {
         await Assert.That(server.AgentUnregisteredCalls).Contains("parked");
     }
 
+    /// <summary>P1-b regression (codex pre-merge review): the reviewer's app-server child exits DURING
+    /// the park-ack await — before any definite reply. The hosted session-end MUST fire (an unconfirmed
+    /// park is not a park), NOT be suppressed. This holds only because the claim leaves a NEUTRAL end
+    /// reason and <c>ParkReviewerAsync</c> stamps <see cref="AgentOrchestrator.ReviewerParkedResumableReason"/>
+    /// itself, only after a definite <see cref="ParkAck.Parked"/>. Were the suppress reason pre-stamped
+    /// at claim time (the bug), the finalizer running in this window would suppress the session-end for a
+    /// park that never committed, orphaning the ledger row — neither durably parked nor cleanly closed.
+    /// Releasing the ack afterwards must NOT resurrect or double-end the already-gone agent.</summary>
+    [Test]
+    public async Task Child_exit_during_the_park_ack_await_does_not_suppress_the_session_end() {
+        var parkEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var parkGate    = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var server = new CaptureServerConnection {
+            ParkOutcome = ParkAck.Parked, ParkEntered = parkEntered, ParkGate = parkGate
+        };
+        await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var time  = new FakeTimeProvider();
+        var clock = new AgentActivityClock(time);
+        time.Advance(TimeSpan.FromMinutes(11));
+
+        var agent = SeedResumableReviewer(orch, "raced-exit", clock);
+
+        var candidate = orch.FindReviewersToReap().Single(c => c.Park);
+
+        // Start the park: it wins the claim, then BLOCKS awaiting the park ack (gate held open).
+        var park = orch.ParkReviewerForTest(candidate);
+        await parkEntered.Task.WaitAsync(HangGuard);
+
+        // Claim won, but the suppress reason must NOT be stamped yet — a mid-await exit must end normally.
+        await Assert.That(agent.IsReapClaimed).IsTrue();
+        await Assert.That(agent.PendingEndReason).IsNotEqualTo(AgentOrchestrator.ReviewerParkedResumableReason);
+
+        // The child exits on its own NOW (read loop unwinds → finalizer) while the ack is still in flight.
+        await orch.FinalizeAgentRunForTest(agent).WaitAsync(HangGuard);
+
+        // Session-end FIRED with the neutral reason (park unconfirmed → not suppressed); the slot is freed.
+        await Assert.That(server.EndSessionReasons).Contains("agent_exited");
+        await Assert.That(orch.GetAgentForTest("raced-exit")).IsNull();
+
+        // Release the ack; the park state machine finishes without throwing. The agent is already gone,
+        // so StopClaimedReapAsync no-ops (agent_gone) — no second session-end, no resurrection.
+        parkGate.SetResult();
+        await park.WaitAsync(HangGuard);
+
+        await Assert.That(server.EndSessionReasons.Count).IsEqualTo(1);
+    }
+
     /// <summary>An <see cref="ParkAck.Ambiguous"/> ack (no definite reply): tear down NOTHING and
     /// restore the pre-attempt state — the agent stays Running, the in-flight guard AND the reap latch
     /// are released, no session-end fires — so a later sweep re-selects it for park and can actually

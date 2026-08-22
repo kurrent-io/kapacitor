@@ -2919,9 +2919,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             switch (ack) {
                 case ParkAck.Parked:
-                    // Durable park acked. PendingEndReason is ReviewerParkedResumableReason (set by the
-                    // claim, restated here for locality) — it both attributes the teardown AND drives
-                    // FinalizeAgentRunAsync to SUPPRESS the hosted session-end so the thread survives.
+                    // Durable park acked. Stamp ReviewerParkedResumableReason NOW — this is the
+                    // authoritative set (the claim deliberately left a neutral default so a child-exit
+                    // during the ack await above could not suppress an unconfirmed park; see
+                    // TryLatchClaim). It both attributes the teardown AND drives FinalizeAgentRunAsync to
+                    // SUPPRESS the hosted session-end so the thread survives — and it is set strictly
+                    // before StopClaimedReapAsync below, whose stop is what triggers finalization.
                     // Complete every other local-teardown step through the shared stop path.
                     a.PendingEndReason = ReviewerParkedResumableReason;
                     LogReviewerParked(a.Id, canonicalSessionId);
@@ -3132,7 +3135,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return false;
         }
 
-        candidate.Agent.PendingEndReason = candidate.Reason;
+        // §2.7 B6 arm-A: a PARK candidate must NOT stamp its suppress reason
+        // (ReviewerParkedResumableReason) here at claim time. The claim happens BEFORE ParkReviewerAsync
+        // awaits the park ack, and FinalizeAgentRunAsync suppresses the hosted session-end whenever it
+        // sees that exact reason — so if the reviewer's app-server child exits DURING the ack await, the
+        // finalizer would suppress the session-end for a park that was never confirmed, orphaning the
+        // ledger row (neither durably parked nor cleanly closed). Stamp the neutral default instead;
+        // ParkReviewerAsync applies ReviewerParkedResumableReason itself, but only on a definite
+        // ParkAck.Parked and immediately before the stop that drives finalization (an unconfirmed park is
+        // not a park — a mid-await exit must end the session normally). Reap candidates are unchanged.
+        candidate.Agent.PendingEndReason = candidate.Park ? "agent_exited" : candidate.Reason;
 
         return true;
     }

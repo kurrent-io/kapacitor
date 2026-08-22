@@ -1326,20 +1326,21 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// <summary>
     /// True when <paramref name="ex"/> is the <see cref="Microsoft.AspNetCore.SignalR.HubException"/>
     /// SignalR raises when the connected server has no handler at all for the invoked hub method
-    /// name — the case a pre-B1 server hits for <c>ReportParticipantParked</c>. SignalR's server-side
-    /// message binder can't resolve an unknown target while parsing the invocation and throws a
-    /// <c>HubException</c> reporting the method doesn't exist; this codebase already relies on that
-    /// exact literal text to model the equivalent old-server case for <c>AcpSessionSourceClaim</c> (see
-    /// <c>AgentOrchestratorSourceClaimTests.Method_not_found_claim_is_a_coded_launch_failure_with_teardown</c>).
-    /// Matched case-insensitively on the stable "does not exist" substring rather than the exact
-    /// string (future SignalR/server wording may vary slightly), and narrowly scoped to
-    /// <see cref="Microsoft.AspNetCore.SignalR.HubException"/> only — a genuine transient
-    /// <c>HubException</c> (e.g. "Caller is not a registered daemon") does not contain that phrase and
-    /// is never misclassified as a permanent degrade.
+    /// name — the case a pre-B1 server hits for <c>ReportParticipantParked</c>. When a client invokes
+    /// a target the server's <c>DefaultHubDispatcher</c> can't resolve, it completes the invocation
+    /// with the error <c>Unknown hub method '&lt;target&gt;'</c> (sent regardless of
+    /// <c>EnableDetailedErrors</c>), surfaced on the client as a <c>HubException</c> carrying that
+    /// message — verified against aspnetcore v10.0.11
+    /// (<c>src/SignalR/server/Core/src/Internal/DefaultHubDispatcher.cs</c>). Matched case-insensitively
+    /// on the stable <c>"Unknown hub method"</c> substring (robust to the interpolated target name), and
+    /// narrowly scoped to <see cref="Microsoft.AspNetCore.SignalR.HubException"/> only: that phrase is
+    /// SignalR-internal protocol text no hub handler emits deliberately, so a genuine transient
+    /// <c>HubException</c> (e.g. "Caller is not a registered daemon") never contains it and is never
+    /// misclassified as a permanent degrade.
     /// </summary>
     static bool IsUnknownHubMethod(Exception ex) =>
         ex is Microsoft.AspNetCore.SignalR.HubException he
-        && he.Message.Contains("does not exist", StringComparison.OrdinalIgnoreCase);
+        && he.Message.Contains("Unknown hub method", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The actual <c>ReportParticipantParked</c> hub invocation, isolated into its own <c>virtual</c>

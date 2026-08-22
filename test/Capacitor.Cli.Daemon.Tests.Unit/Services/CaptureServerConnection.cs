@@ -364,11 +364,23 @@ sealed class CaptureServerConnection() : ServerConnection(
     /// claim never told the server at all.</summary>
     public List<(string AgentId, string CanonicalSessionId, string Reason)> ParkReports { get; } = [];
 
-    public override Task<ParkAck> ReportParticipantParkedAsync(
+    /// <summary>Signalled the moment <see cref="ReportParticipantParkedAsync"/> is entered (the park
+    /// report is in flight) so a test can interleave a racing child-exit/finalize in the ack-await
+    /// window. Null = no signal.</summary>
+    public TaskCompletionSource? ParkEntered { get; init; }
+
+    /// <summary>Held-open gate: when set, <see cref="ReportParticipantParkedAsync"/> awaits it before
+    /// returning <see cref="ParkOutcome"/>, keeping the park ack in flight while a test exercises a
+    /// concurrent finalize. Null = return the ack immediately.</summary>
+    public TaskCompletionSource? ParkGate { get; init; }
+
+    public override async Task<ParkAck> ReportParticipantParkedAsync(
             string agentId, string canonicalSessionId, string reason, CancellationToken ct = default) {
         lock (ParkReports) ParkReports.Add((agentId, canonicalSessionId, reason));
+        ParkEntered?.TrySetResult();
+        if (ParkGate is { } gate) await gate.Task;
 
-        return Task.FromResult(ParkOutcome);
+        return ParkOutcome;
     }
 
     public override async Task<EndAgentSessionResult> EndAgentSessionAsync(string agentId, string reason) {
