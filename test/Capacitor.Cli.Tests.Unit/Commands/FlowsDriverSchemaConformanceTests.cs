@@ -30,6 +30,11 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// but cannot express it: a harness whose registration drifts to a different command, or a tool that
 /// quietly gains or loses <c>vendor</c>, leaves a caller believing it named a reviewer when it sent
 /// nothing. A stale-schema driver must never be able to claim it launched the named vendor.</para>
+///
+/// <para><b>The one tolerated variation</b> is the <c>--driver &lt;vendor&gt;</c> stamp the six JSON
+/// harnesses carry on their <c>kcap-flows</c> args (see <see cref="KcapMcpServers.ForHarness"/>). It
+/// reaches the same subcommand and therefore the same schema — it is not command drift — and each
+/// harness must stamp its OWN vendor, which the arms below assert rather than merely tolerate.</para>
 /// </summary>
 public class FlowsDriverSchemaConformanceTests {
     // ── the canonical descriptor ──────────────────────────────────────────────────────────────
@@ -340,10 +345,17 @@ public class FlowsDriverSchemaConformanceTests {
 
         await Assert.That(p.Command).IsEqualTo(InjectedBinaryPath)
             .Because($"{p.Harness} must launch the same executable as every other driver");
+        // Every driver reaches the SAME `mcp flows` subcommand (hence the same tool schema). The six
+        // JSON harnesses additionally stamp `--driver <their own vendor>`, the only per-process signal
+        // of who is driving; Codex installs unstamped and infers its vendor from env. The stamp does
+        // not change the subcommand or the schema — it must be the harness's OWN vendor, never another.
         // ORDERED: argv order is semantic. An unordered comparison passes ["flows","mcp"], which
         // launches nothing.
-        await Assert.That(p.Args).IsEquivalentTo(new[] { "mcp", "flows" }, CollectionOrdering.Matching)
-            .Because($"{p.Harness} must reach the same subcommand, and therefore the same tool schema");
+        var expectedArgs = arm.BareInstall
+            ? new[] { "mcp", "flows" }
+            : new[] { "mcp", "flows", "--driver", arm.Flag.TrimStart('-') };
+        await Assert.That(p.Args).IsEquivalentTo(expectedArgs, CollectionOrdering.Matching)
+            .Because($"{p.Harness} must reach the same subcommand and stamp its own driver vendor");
     }
 
     // The two bundled static files are not written by an installer — Claude Code and Codex's native
@@ -409,7 +421,9 @@ public class FlowsDriverSchemaConformanceTests {
 
         await Assert.That(flows).IsNotNull()
             .Because($"{projection.Harness} would silently lose the ability to start a flow");
-        await Assert.That(flows!.Args).IsEquivalentTo(new[] { "mcp", "flows" }, CollectionOrdering.Matching);
+        // Each JSON projection stamps its OWN vendor — the harness string is the driver vendor.
+        await Assert.That(flows!.Args)
+            .IsEquivalentTo(new[] { "mcp", "flows", "--driver", projection.Harness }, CollectionOrdering.Matching);
         // Flows launches a PAID hosted reviewer, so it must never be auto-approved on registration.
         await Assert.That(flows.ReadOnly).IsFalse();
     }

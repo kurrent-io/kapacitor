@@ -13,6 +13,12 @@ public sealed record KcapMcpServer(string Name, string[] Args, bool NeedsProject
 public static class KcapMcpServers {
     public const string Command = "kcap";
 
+    /// <summary>The one server whose registration carries a driver stamp (see <see cref="ForHarness"/>).</summary>
+    internal const string FlowsServerName = "kcap-flows";
+
+    /// <summary>The flag that stamps the driving harness's vendor into the flows registration.</summary>
+    internal const string DriverArg = "--driver";
+
     public static readonly IReadOnlyList<KcapMcpServer> All = [
         new("kcap-review",   ["mcp", "review"],   NeedsProjectCwd: false,
             "PR review context tools — query implementation session transcripts.", ReadOnly: true),
@@ -35,8 +41,22 @@ public static class KcapMcpServers {
     /// non-read-only and is never auto-approved.</summary>
     public static IReadOnlyList<KcapMcpServer> ForCodex => All;
 
-    /// <summary>The shared set for every non-Claude JSON harness (Cursor, Copilot, OpenCode,
-    /// Kiro, Gemini, Antigravity). The full `All` list — `kcap-workitems` included.
-    /// Kept as a named seam (mirrors <see cref="ForCodex"/>) for a future per-harness divergence.</summary>
+    /// <summary>The bare (pre-stamp) set for every non-Claude JSON harness (Cursor, Copilot,
+    /// OpenCode, Kiro, Gemini, Antigravity) — the full `All` list, `kcap-workitems` included.
+    /// <see cref="ForHarness"/> derives each harness's actual registration from this by stamping
+    /// the flows entry with that harness's driver vendor.</summary>
     public static IReadOnlyList<KcapMcpServer> ForCursor => All;
+
+    /// <summary>The server set one JSON harness registers, with its <c>kcap-flows</c> entry stamped
+    /// <c>--driver &lt;vendor&gt;</c>. The stamp is the ONLY per-process signal for the driving harness's
+    /// identity on the six JSON harnesses, which — unlike Claude Code and Codex — export no distinctive
+    /// env var into the long-lived MCP server child (see <c>DriverVendor</c> / <c>HarnessRequesterContext</c>).
+    /// The extra argv reaches the SAME <c>kcap mcp flows</c> subcommand and therefore the same tool
+    /// schema; it only tells the server which vendor is driving, so a reviewer can be recommended that
+    /// differs from it. Claude/Codex stay on env inference (unstamped), so their registrations are
+    /// unchanged.</summary>
+    public static IReadOnlyList<KcapMcpServer> ForHarness(string vendor) =>
+        [.. ForCursor.Select(s => s.Name == FlowsServerName
+            ? s with { Args = [.. s.Args, DriverArg, vendor] }
+            : s)];
 }

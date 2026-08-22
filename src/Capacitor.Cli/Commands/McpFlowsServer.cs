@@ -15,7 +15,7 @@ using Capacitor.Cli.Core.Telemetry;
 namespace Capacitor.Cli.Commands;
 
 static class McpFlowsServer {
-    public static async Task<int> RunAsync(string baseUrl) {
+    public static async Task<int> RunAsync(string baseUrl, string? driverArg = null) {
         // Requester context is resolved ONCE here, from the running harness rather than from the
         // environment this process inherited — see HarnessRequesterContext for why an inherited
         // KCAP_SESSION_ID / process cwd names the launching session instead of this driver. Both the
@@ -24,7 +24,9 @@ static class McpFlowsServer {
         var requester    = HarnessRequesterContext.Resolve();
         var cwd          = requester.ProjectDir ?? Directory.GetCurrentDirectory();
         var repoRoot     = GitRepository.FindRoot(cwd);
-        var driverVendor = DriverVendor.Infer();
+        // Prefer the `--driver` stamp from this server's own registration (deterministic for the JSON
+        // harnesses); fall back to env inference for Claude/Codex, whose registrations are unstamped.
+        var driverVendor = DriverVendor.Infer(driverArg);
         var tools        = BuildToolsList();
 
         RepositoryPayload? repoInfo = null;

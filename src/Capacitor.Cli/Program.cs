@@ -417,7 +417,7 @@ switch (command) {
             case "sessions":
                 return await McpSessionsServer.RunAsync(baseUrl!);
             case "flows":
-                return await McpFlowsServer.RunAsync(baseUrl!);
+                return await McpFlowsServer.RunAsync(baseUrl!, GetArg(args, "--driver"));
             case "flow-result":
                 return await McpFlowResultServer.RunAsync(baseUrl!);
             case "memory":
