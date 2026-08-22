@@ -146,6 +146,10 @@ internal record AgentInstance(
     /// </summary>
     public string PendingEndReason { get; set; } = "agent_exited";
 
+    /// <summary>True while a park ack is outstanding; a sweep skips an agent already parking; reset
+    /// on ambiguous ack to allow retry.</summary>
+    public bool ParkAttemptInFlight { get; set; }
+
     // ── Local terminal attach (Phase 1) ──────────────────────────────────
     // Internal: these expose the daemon-internal ITerminalSink, so they can't be public
     // on this public record (CS0053). They're only touched inside the daemon assembly.
