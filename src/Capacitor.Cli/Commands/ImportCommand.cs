@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.RepoEvidence;
 using Capacitor.Cli.Harness.Claude;
 using Capacitor.Cli.Harness.Cursor;
 using Spectre.Console;
@@ -2174,6 +2175,40 @@ static class ImportCommand {
     }
 
     /// <summary>
+    /// Whole-transcript version of the live watcher's evidence scan (see
+    /// <c>RepoEvidenceScanner</c>): feeds every line through the two-slot mutation/read rule,
+    /// then promotes the read fallback if no mutation ever attributed. Import has no live tail
+    /// to keep scanning, so — unlike the watcher's one-shot prefix scan — this always runs to
+    /// end of file. <paramref name="findRoot"/>/<paramref name="detect"/> are injected so the
+    /// D1 gating in <see cref="ImportSingleSessionAsync"/> is unit-testable without disk.
+    /// </summary>
+    internal static async Task<JsonObject?> TryBuildEvidenceRepositoryNodeAsync(
+            string                                 vendor,
+            IEnumerable<string>                    transcriptLines,
+            Func<string, string?>                  findRoot,
+            Func<string, Task<RepositoryPayload?>> detect
+        ) {
+        try {
+            var scanner = new RepoEvidenceScanner<RepositoryPayload>(
+                findRoot, detect, p => p.Owner is not null && p.RepoName is not null);
+
+            foreach (var line in transcriptLines) {
+                if (await scanner.OnLineAsync(vendor, line) is { } attributed) {
+                    return RepositoryDetection.BuildRepositoryNode(attributed);
+                }
+            }
+
+            if (await scanner.PromoteReadFallbackAsync() is { } fallback) {
+                return RepositoryDetection.BuildRepositoryNode(fallback);
+            }
+
+            return null;
+        } catch {
+            return null; // fail-open: a bad transcript must never break import
+        }
+    }
+
+    /// <summary>
     /// Build a SessionId → repo lookup for every discovered transcript. Repo
     /// detection (git + `gh pr view`) is the slow part of the discovery phase
     /// and previously ran sequentially per-session, making `kcap import`
@@ -2862,6 +2897,22 @@ static class ImportCommand {
 
                 if (repoNode.Count > 0) startHook["repository"] = repoNode;
             }
+        }
+
+        // D1: the cwd itself isn't inside any git repo (or is missing entirely), so neither
+        // workspace_root above nor the cwd-based repository detection could find anything —
+        // fall back to scanning the transcript's own tool-use paths for a resolvable git root,
+        // same evidence rule the live watcher applies for sessions launched outside a repo.
+        if (session.Vendor == "claude"
+            && !startHook.ContainsKey("repository")
+            && (cwd is null || GitRepository.FindRoot(cwd) is null)) {
+            var evidenceNode = await TryBuildEvidenceRepositoryNodeAsync(
+                session.Vendor,
+                File.ReadLines(session.FilePath),
+                GitRepository.FindRoot,
+                root => RepositoryDetection.DetectRepositoryAsync(root, detectPullRequest: false));
+
+            if (evidenceNode is not null) startHook["repository"] = evidenceNode;
         }
 
         // The /hooks/session-start route binds vendor from the URL path
