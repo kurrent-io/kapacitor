@@ -1340,7 +1340,7 @@ public static partial class DaemonRunner {
     internal const string ClaudeLauncherPolicyVersion = "claude-unattended-v1";
     internal const string CursorLauncherPolicyVersion = "cursor-unattended-v4";
     internal const string CodexLauncherPolicyVersion = "codex-unattended-v1";
-    internal const string CodexAppServerLauncherPolicyVersion = "codex-appserver-unattended-v1";
+    internal const string CodexAppServerLauncherPolicyVersion = "codex-appserver-unattended-v2";
     internal const string CopilotLauncherPolicyVersion = "copilot-unattended-v1";
     internal const string AntigravityLauncherPolicyVersion = "antigravity-unattended-v1";
     internal const string OpenCodeLauncherPolicyVersion = "opencode-unattended-v1";
