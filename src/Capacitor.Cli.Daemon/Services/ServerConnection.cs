@@ -46,6 +46,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     static readonly TimeSpan PermissionRetryPollInterval = TimeSpan.FromMilliseconds(500);
     static readonly TimeSpan EndSessionRetryPollInterval  = TimeSpan.FromMilliseconds(500);
     static readonly TimeSpan AcpRetryPollInterval         = TimeSpan.FromMilliseconds(500);
+    static readonly TimeSpan ParkRetryPollInterval        = TimeSpan.FromMilliseconds(500);
 
     // Events for incoming commands from server
     public event Func<LaunchAgentCommand, Task>?    OnLaunchAgent;
@@ -1265,6 +1266,61 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
         ) => _hub.InvokeAsync<AcpLaunchConfirmOutcome>("ConfirmSessionLaunch", acpSessionId, ownershipToken, cancellationToken: ct);
 
     /// <summary>
+    /// AI-1762 §2.7 B6: reports a settled, resumable hosted reviewer that the daemon is about to
+    /// PARK (freeing its slot while keeping its app-server thread alive for a later resume) to the
+    /// server's <c>ReportParticipantParked</c> hub method, and folds the reply into a
+    /// <see cref="ParkAck"/>. Gated on <see cref="IsReady"/> and wrapped in <see cref="ConnectionRetry"/>
+    /// exactly like <see cref="AcpSessionSourceClaimAsync"/>/<see cref="ConfirmSessionLaunchAsync"/> —
+    /// a transient disconnect is retried transparently rather than surfacing.
+    ///
+    /// Unlike those two, this method NEVER throws. The arm-A park state machine
+    /// (<c>AgentOrchestrator.ParkReviewerAsync</c>) needs a definite three-way answer rather than a
+    /// two-way outcome-or-exception split, because an exception here must NOT be treated as a
+    /// rejection: <see cref="ParkAck.Ambiguous"/> — covering a <c>HubException</c>, an
+    /// <see cref="OperationCanceledException"/> (including daemon shutdown), or any other unmapped
+    /// exception — leaves the reviewer's local state untouched so the next reap sweep retries the
+    /// park, instead of falling back to a destructive end. Only the server's two definite wire
+    /// outcomes (<see cref="ParkParticipantOutcome.Parked"/>/<see cref="ParkParticipantOutcome.Rejected"/>)
+    /// map to their like-named <see cref="ParkAck"/> members; any other/unmapped value degrades to
+    /// <see cref="ParkAck.Ambiguous"/> rather than being assumed successful.
+    /// </summary>
+    public virtual async Task<ParkAck> ReportParticipantParkedAsync(
+            string agentId, string canonicalSessionId, string reason, CancellationToken ct = default
+        ) {
+        try {
+            var outcome = await ConnectionRetry.InvokeWithConnectionRetryAsync(
+                () => InvokeReportParticipantParkedRawAsync(agentId, canonicalSessionId, reason, ct),
+                () => IsReady,
+                ParkRetryPollInterval,
+                attempt => LogReportParticipantParkedRetry(agentId, attempt),
+                ct
+            );
+
+            return outcome switch {
+                ParkParticipantOutcome.Parked   => ParkAck.Parked,
+                ParkParticipantOutcome.Rejected => ParkAck.Rejected,
+                _                                => ParkAck.Ambiguous, // unmapped/future wire value — never assume success
+            };
+        } catch (Exception ex) {
+            LogReportParticipantParkedAmbiguous(ex, agentId);
+
+            return ParkAck.Ambiguous;
+        }
+    }
+
+    /// <summary>
+    /// The actual <c>ReportParticipantParked</c> hub invocation, isolated into its own <c>virtual</c>
+    /// method so <see cref="ReportParticipantParkedAsync"/>'s gating/mapping can be tested without a
+    /// live hub. A pre-B1 server has no such method, so <c>InvokeAsync</c> throws (method-not-found),
+    /// which <see cref="ReportParticipantParkedAsync"/> currently folds into <see cref="ParkAck.Ambiguous"/>
+    /// like any other exception (a later task tightens this specific case to <see cref="ParkAck.Rejected"/>
+    /// so a permanently-old server degrades to the normal reap path instead of retrying forever).
+    /// </summary>
+    internal virtual Task<ParkParticipantOutcome> InvokeReportParticipantParkedRawAsync(
+            string agentId, string canonicalSessionId, string reason, CancellationToken ct
+        ) => _hub.InvokeAsync<ParkParticipantOutcome>("ReportParticipantParked", agentId, canonicalSessionId, reason, cancellationToken: ct);
+
+    /// <summary>
     /// Queues a base64 PTY chunk for the hosted-agent terminal mirror:
     /// chunks are drained by <see cref="TerminalOutputSender"/>'s single ordered loop
     /// instead of being fired at <c>SendAsync</c> fire-and-forget, so they reach the
@@ -1496,6 +1552,12 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     [LoggerMessage(Level = LogLevel.Information, Message = "ConfirmSessionLaunch for session {AcpSessionId} interrupted by a connection drop (retry {Attempt}); waiting for the daemon connection to recover before retrying")]
     partial void LogConfirmSessionLaunchRetry(string acpSessionId, int attempt);
 
+    [LoggerMessage(Level = LogLevel.Information, Message = "ReportParticipantParked for agent {AgentId} interrupted by a connection drop (retry {Attempt}); waiting for the daemon connection to recover before retrying")]
+    partial void LogReportParticipantParkedRetry(string agentId, int attempt);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ReportParticipantParked for agent {AgentId} got no definite reply — treating as ambiguous so the next reap sweep retries the park")]
+    partial void LogReportParticipantParkedAmbiguous(Exception ex, string agentId);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Reconnect re-bind of ACP session {AcpSessionId} for agent {AgentId} failed (attempt {Attempt}/{MaxAttempts})")]
     partial void LogAcpRebindFailed(Exception ex, string agentId, string acpSessionId, int attempt, int maxAttempts);
 
@@ -1590,3 +1652,17 @@ internal sealed class AcpBindRejectedException(string agentId, string acpSession
     public string AgentId      { get; } = agentId;
     public string AcpSessionId { get; } = acpSessionId;
 }
+
+/// <summary>
+/// AI-1762 §2.7 B6: the daemon-local result of <see cref="ServerConnection.ReportParticipantParkedAsync"/> —
+/// purely in-memory, never (de)serialized. Widens the server's two-value wire outcome
+/// (<see cref="ParkParticipantOutcome"/>) with a third, daemon-only case the wire never encodes:
+/// <see cref="Ambiguous"/> covers any transport error, timeout, <c>HubException</c>, or otherwise
+/// unmapped result — i.e. no definite reply was received. <see cref="Parked"/> and
+/// <see cref="Rejected"/> mirror the like-named <see cref="ParkParticipantOutcome"/> members
+/// one-for-one. The arm-A park state machine (<c>AgentOrchestrator.ParkReviewerAsync</c>) branches
+/// on this: <c>Parked</c> completes the park teardown (session-end suppressed), <c>Rejected</c>
+/// falls back to the normal end path, and <c>Ambiguous</c> leaves everything intact for the next
+/// reap sweep to retry — never a destructive teardown on an uncertain reply.
+/// </summary>
+internal enum ParkAck { Parked, Rejected, Ambiguous }

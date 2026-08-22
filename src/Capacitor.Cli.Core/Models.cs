@@ -1082,6 +1082,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(AcpBindOutcome))]
 [JsonSerializable(typeof(AcpSourceClaimOutcome))]
 [JsonSerializable(typeof(AcpLaunchConfirmOutcome))]
+[JsonSerializable(typeof(ParkParticipantOutcome))]
 [JsonSerializable(typeof(TranscriptBatchAck))]
 // The AcpSessionStarted hub method's optional metadata argument. Registered as its own root type
 // (not just nested inside another JsonSerializable graph) because SignalR's JsonHubProtocol
@@ -1385,6 +1386,20 @@ public readonly record struct AcpSourceClaimOutcome(AcpBindOutcome Outcome, long
 /// means no ledger row (the claim never committed, or the session closed).
 /// </summary>
 public enum AcpLaunchConfirmOutcome { Confirmed = 0, AlreadyConfirmed = 1, Superseded = 2, NotFound = 3 }
+
+/// <summary>
+/// AI-1762 §2.7 B6 reply to the server's <c>ReportParticipantParked</c> hub method — a
+/// field-for-field mirror of the server-side <c>Capacitor.Events.ParkParticipantOutcome</c>.
+/// <see cref="Parked"/> (including an idempotent re-park) means the daemon may complete its local
+/// park teardown while suppressing the hosted session-end, since the app-server thread survives for
+/// a later resume; <see cref="Rejected"/> is a DEFINITE refusal (wrong reason string, not the owning
+/// connection, an ownership-claim miss, a ledger CAS refusal, or a malformed canonical id) — the
+/// daemon falls back to the normal end path instead of parking. There is no third wire value: an
+/// AMBIGUOUS outcome (transport error, timeout, unknown method against an old server) is the
+/// ABSENCE of a reply — never encoded here. <c>ServerConnection.ReportParticipantParkedAsync</c> is
+/// what folds that absence into the daemon-local <c>ParkAck.Ambiguous</c>.
+/// </summary>
+public enum ParkParticipantOutcome { Parked, Rejected }
 
 /// <summary>
 /// Ack returned from the server's <c>SendTranscriptBatchAcked</c> hub method (D3).
