@@ -31,6 +31,11 @@ public class DaemonConfig {
     public TimeSpan ReviewerMaxLifetime { get; set; } = TimeSpan.FromHours(6);
     public TimeSpan ReviewerIdleTimeout { get; set; } = TimeSpan.FromHours(2);
 
+    /// <summary>§2.7 B6 arm-A: how long a RESUMABLE hosted reviewer (app-server Codex) may sit idle
+    /// between rounds before the daemon PARKS it (freeing the slot, keeping the thread for resume) —
+    /// distinct from and shorter than <see cref="ReviewerIdleTimeout"/> (arm-B, the 2h hard reap).</summary>
+    public TimeSpan ReviewerResumableIdleTimeout { get; set; } = TimeSpan.FromMinutes(10);
+
     /// <summary>
     /// The daemon-local ceiling on a held ACP turn with a frozen activity seq: once <c>TurnInFlight</c>
     /// has stayed true with no further <c>Advance()</c> for longer than this, the reviewer is reaped as
