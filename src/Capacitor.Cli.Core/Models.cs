@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.RepoEvidence;
 using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Core;
@@ -126,6 +127,13 @@ class WatchState {
     public RepositoryPayload? Repository         { get; set; }
     public RepositoryPayload? LastSentRepository { get; set; }
     public DateTimeOffset     LastRepoDetection  { get; set; }
+
+    // Non-null only for a Claude session watcher launched outside any repo; see RepoEvidenceScanner.
+    // RepositoryFromEvidence, once true, protects Repository from being cleared by a later null
+    // cwd-based probe (see WatchCommand.ShouldReplaceRepository).
+    public RepoEvidenceScanner? EvidenceScanner        { get; set; }
+    public bool                 RepositoryFromEvidence { get; set; }
+
     public bool               InitialTitleSent   { get; set; }
     public bool               TitleGenerated     { get; set; }
     public int                TitleAttempts      { get; set; }

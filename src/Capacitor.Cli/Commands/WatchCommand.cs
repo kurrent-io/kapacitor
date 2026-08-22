@@ -12,6 +12,7 @@ using Capacitor.Cli.Core.Harness.Gemini;
 using Capacitor.Cli.Core.Harness.Kiro;
 using Capacitor.Cli.Core.Harness.OpenCode;
 using Capacitor.Cli.Core.Harness.Pi;
+using Capacitor.Cli.Core.RepoEvidence;
 using Capacitor.Cli.Harness.Antigravity;
 using Capacitor.Cli.Harness.Codex;
 using Capacitor.Cli.Harness.Cursor;
@@ -486,6 +487,26 @@ static partial class WatchCommand {
             state.LastRepoDetection = DateTimeOffset.UtcNow;
         }
 
+        // No cwd-derived repo (launched outside any checkout, or no cwd at all): fall back to
+        // scanning the transcript's own tool-use paths for a git root. Session-watcher only
+        // (agentId is null), matching the scope of the cwd-based detection above — a subagent
+        // watcher is always spawned with cwd: null too and has never had its own repo detection.
+        if (vendor == "claude" && agentId is null && (cwd is null || GitRepository.FindRoot(cwd) is null)) {
+            state.EvidenceScanner = new RepoEvidenceScanner(GitRepository.FindRoot);
+
+            try {
+                foreach (var line in File.ReadLines(transcriptPath)) {
+                    if (state.EvidenceScanner.OnLine(vendor, line) is { } root) {
+                        await ApplyEvidenceRootAsync(state, root);
+
+                        break;
+                    }
+                }
+            } catch {
+                // fail-open: this one-shot prefix scan is best-effort and must never block startup
+            }
+        }
+
         Log($"Watching {transcriptPath} for session {sessionId}" + (agentId is not null ? $" agent {agentId}" : ""));
 
         // Build SignalR hub connection
@@ -711,7 +732,14 @@ static partial class WatchCommand {
 
                 // Periodically refresh repository info (every 60s)
                 if (cwd is not null && DateTimeOffset.UtcNow - state.LastRepoDetection > TimeSpan.FromSeconds(60)) {
-                    state.Repository        = await RepositoryDetection.DetectRepositoryAsync(cwd);
+                    var detected = await RepositoryDetection.DetectRepositoryAsync(cwd);
+
+                    // An evidence-derived repo may only be replaced by another real detection,
+                    // never cleared back to null by a launch-cwd probe that still finds nothing.
+                    if (ShouldReplaceRepository(detected, state.RepositoryFromEvidence)) {
+                        state.Repository = detected;
+                    }
+
                     state.LastRepoDetection = DateTimeOffset.UtcNow;
                 }
 
@@ -911,6 +939,13 @@ static partial class WatchCommand {
         // eventually fires. Cursor's other exit paths (StopWatcher, parent-exit) are unaffected —
         // this skip is scoped to idleExit specifically.
         var cursorSuppressesEndPost = CursorSuppressesEndPost(vendor, idleExit);
+
+        // Two-slot rule's second slot: the final drain above never saw a mutation, so promote
+        // whatever read-only evidence it collected — otherwise a parent-exit session-end below
+        // would carry no repository at all.
+        if (state.EvidenceScanner?.PromoteReadFallback() is { } fallbackRoot) {
+            await ApplyEvidenceRootAsync(state, fallbackRoot);
+        }
 
         if (endReason is not null && agentId is null && state.ThresholdReached && !cursorSuppressesEndPost) {
             await PostSessionEndOnParentExitAsync(baseUrl, sessionId, transcriptPath, cwd, vendor, state.Repository, endReason);
@@ -2142,6 +2177,19 @@ static partial class WatchCommand {
                 newLines = EnrichKiroContextUsage(newLines, transcriptPath);
             }
 
+            // Evidence-based repo detection for a session launched outside any repo: feed this
+            // batch's lines to the scanner so a mutation (or, at final drain, a promoted read)
+            // attributes a root. state.EvidenceScanner is null for every other session.
+            if (state.EvidenceScanner is { Done: false } scanner) {
+                foreach (var line in newLines) {
+                    if (scanner.OnLine(vendor, line) is { } root) {
+                        await ApplyEvidenceRootAsync(state, root);
+
+                        break;
+                    }
+                }
+            }
+
             // Only include repository info when it has changed since last send
             var repoToSend = RepoPayloadChanged(state.Repository, state.LastSentRepository)
                 ? state.Repository
@@ -3247,6 +3295,23 @@ static partial class WatchCommand {
          || current.PrUrl     != lastSent.PrUrl
          || current.PrTitle   != lastSent.PrTitle
          || current.PrHeadRef != lastSent.PrHeadRef;
+    }
+
+    // An evidence-derived repo (from RepoEvidenceScanner, for a session launched outside any
+    // checkout) has no cwd to re-probe, so a periodic cwd-based refresh finding nothing must
+    // never be allowed to clear it back to null.
+    internal static bool ShouldReplaceRepository(RepositoryPayload? detected, bool repositoryFromEvidence) =>
+        detected is not null || !repositoryFromEvidence;
+
+    // Shared by the upfront prefix scan, the per-drained-line scan, and the final-drain
+    // read-fallback promotion — all three resolve an evidence-attributed root the same way.
+    static async Task ApplyEvidenceRootAsync(WatchState state, string root) {
+        var repo = await RepositoryDetection.DetectRepositoryAsync(root);
+
+        if (repo?.Owner is not null && repo.RepoName is not null) {
+            state.Repository             = repo;
+            state.RepositoryFromEvidence = true;
+        }
     }
 
     static string TruncateForTitle(string text, int maxLength) {
