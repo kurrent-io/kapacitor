@@ -1388,7 +1388,7 @@ public readonly record struct AcpSourceClaimOutcome(AcpBindOutcome Outcome, long
 public enum AcpLaunchConfirmOutcome { Confirmed = 0, AlreadyConfirmed = 1, Superseded = 2, NotFound = 3 }
 
 /// <summary>
-/// AI-1762 §2.7 B6 reply to the server's <c>ReportParticipantParked</c> hub method — a
+/// §2.7 B6 reply to the server's <c>ReportParticipantParked</c> hub method — a
 /// field-for-field mirror of the server-side <c>Capacitor.Events.ParkParticipantOutcome</c>.
 /// <see cref="Parked"/> (including an idempotent re-park) means the daemon may complete its local
 /// park teardown while suppressing the hosted session-end, since the app-server thread survives for

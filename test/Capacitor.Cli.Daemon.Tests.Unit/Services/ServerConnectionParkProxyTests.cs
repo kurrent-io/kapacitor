@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 /// <summary>
-/// AI-1762 §2.7 B6 task 2: covers <see cref="ServerConnection.ReportParticipantParkedAsync"/> — the
+/// §2.7 B6 task 2: covers <see cref="ServerConnection.ReportParticipantParkedAsync"/> — the
 /// daemon→hub park-report proxy — mapping the server's two-value wire outcome
 /// (<see cref="ParkParticipantOutcome"/>) plus "no definite reply" into the daemon-local
 /// <see cref="ParkAck"/>. Mirrors <c>AcpServerConnectionTests</c>'s approach exactly: no live SignalR

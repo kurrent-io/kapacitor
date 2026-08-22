@@ -1266,7 +1266,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
         ) => _hub.InvokeAsync<AcpLaunchConfirmOutcome>("ConfirmSessionLaunch", acpSessionId, ownershipToken, cancellationToken: ct);
 
     /// <summary>
-    /// AI-1762 §2.7 B6: reports a settled, resumable hosted reviewer that the daemon is about to
+    /// §2.7 B6: reports a settled, resumable hosted reviewer that the daemon is about to
     /// PARK (freeing its slot while keeping its app-server thread alive for a later resume) to the
     /// server's <c>ReportParticipantParked</c> hub method, and folds the reply into a
     /// <see cref="ParkAck"/>. Gated on <see cref="IsReady"/> and wrapped in <see cref="ConnectionRetry"/>
@@ -1689,7 +1689,7 @@ internal sealed class AcpBindRejectedException(string agentId, string acpSession
 }
 
 /// <summary>
-/// AI-1762 §2.7 B6: the daemon-local result of <see cref="ServerConnection.ReportParticipantParkedAsync"/> —
+/// §2.7 B6: the daemon-local result of <see cref="ServerConnection.ReportParticipantParkedAsync"/> —
 /// purely in-memory, never (de)serialized. Widens the server's two-value wire outcome
 /// (<see cref="ParkParticipantOutcome"/>) with a third, daemon-only case the wire never encodes:
 /// <see cref="Ambiguous"/> covers any transport error, timeout, <c>HubException</c>, or otherwise

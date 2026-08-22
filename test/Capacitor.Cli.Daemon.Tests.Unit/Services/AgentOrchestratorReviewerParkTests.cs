@@ -10,7 +10,7 @@ using Microsoft.Extensions.Time.Testing;
 namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 
 /// <summary>
-/// AI-1762 §2.7 B6 arm-A: the RESUMABLE-PARK path in <see cref="AgentOrchestrator"/>. A settled,
+/// §2.7 B6 arm-A: the RESUMABLE-PARK path in <see cref="AgentOrchestrator"/>. A settled,
 /// app-server hosted Codex reviewer idle past the SHORT resumable bound
 /// (<see cref="DaemonConfig.ReviewerResumableIdleTimeout"/>, 10m) is PARKED — its daemon slot freed
 /// like a reap, but its Codex thread kept alive (the hosted session-end suppressed) for a later
