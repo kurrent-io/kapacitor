@@ -20,14 +20,19 @@ public class SuggestReviewFlowSkillConformanceTests {
         // then SILENTLY fail to load it — so the skill never triggers there. Keep the folded
         // description under the cap. (An over-length description shipped only in a held branch once;
         // this guard stops it recurring.)
-        await Assert.That(FoldedDescription().Length).IsLessThanOrEqualTo(1024);
+        var len = FoldedDescription().Length;
+        await Assert.That(len).IsGreaterThan(0);            // guard: a broken extraction must fail, not pass vacuously
+        await Assert.That(len).IsLessThanOrEqualTo(1024);
     }
 
     // The folded description — whitespace collapsed, as YAML unfolds a `>-` block and as the harness
     // actually sees it. Raw-text substring checks are fragile to line wrapping (a wrapped phrase looks
     // absent), so pin against the folded form.
     static string FoldedDescription() {
-        var m = System.Text.RegularExpressions.Regex.Match(SkillText(), @"(?m)^description: >-\n((?:^  .*\n)+)");
+        // Normalize CRLF → LF first: a Windows checkout has `>-\r\n`, which the `\n`-anchored regex
+        // would otherwise miss, silently yielding an empty fold (green on mac/Linux, red on Windows).
+        var text = SkillText().Replace("\r\n", "\n").Replace("\r", "\n");
+        var m = System.Text.RegularExpressions.Regex.Match(text, @"(?m)^description: >-\n((?:^  .*\n)+)");
         return System.Text.RegularExpressions.Regex.Replace(m.Groups[1].Value, @"\s+", " ").Trim();
     }
 
