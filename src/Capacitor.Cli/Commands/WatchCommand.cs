@@ -2180,26 +2180,10 @@ static partial class WatchCommand {
                 newLines = EnrichKiroContextUsage(newLines, transcriptPath);
             }
 
-            // Evidence-based repo detection for a session launched outside any repo: feed this
-            // batch's lines to the scanner so a mutation attributes a root immediately.
-            // state.EvidenceScanner is null for every other session.
-            if (state.EvidenceScanner is { Done: false } scanner) {
-                foreach (var line in newLines) {
-                    if (await scanner.OnLineAsync(vendor, line) is { } repo) {
-                        ApplyEvidenceRepo(state, repo);
-
-                        break;
-                    }
-                }
-
-                // Final drain, no mutation ever landed: promote the read fallback (if any) NOW,
-                // before repoToSend below is computed, so it rides THIS batch — the one that
-                // actually reaches the server on a clean session end (PostSessionEndOnParentExitAsync
-                // never fires when endReason is null, so it can't be relied on to deliver this).
-                if (isFinalDrain && await scanner.PromoteReadFallbackAsync() is { } fallback) {
-                    ApplyEvidenceRepo(state, fallback);
-                }
-            }
+            // Evidence-based repo detection for a session launched outside any repo — extracted
+            // to ApplyEvidenceScanAsync so the final-drain fallback delivery (the actual send
+            // path, not just the promotion) is directly unit-testable with a fake scanner.
+            await ApplyEvidenceScanAsync(state, vendor, newLines, isFinalDrain);
 
             // Only include repository info when it has changed since last send
             var repoToSend = RepoPayloadChanged(state.Repository, state.LastSentRepository)
@@ -3319,6 +3303,27 @@ static partial class WatchCommand {
     static void ApplyEvidenceRepo(WatchState state, RepositoryPayload repo) {
         state.Repository             = repo;
         state.RepositoryFromEvidence = true;
+    }
+
+    // Extracted out of DrainNewLines so the final-drain fallback DELIVERY (not just
+    // RepoEvidenceScanner's own promotion, which was already covered) is unit-testable with a
+    // fake scanner and no HubConnection: a caller can assert state.Repository directly after
+    // isFinalDrain: true, and that a non-final drain leaves it untouched. No-op when
+    // state.EvidenceScanner is null (every non-Claude / already-in-repo session) or already Done.
+    internal static async Task ApplyEvidenceScanAsync(WatchState state, string vendor, IReadOnlyList<string> newLines, bool isFinalDrain) {
+        if (state.EvidenceScanner is not { Done: false } scanner) return;
+
+        foreach (var line in newLines) {
+            if (await scanner.OnLineAsync(vendor, line) is { } repo) {
+                ApplyEvidenceRepo(state, repo);
+
+                return;
+            }
+        }
+
+        if (isFinalDrain && await scanner.PromoteReadFallbackAsync() is { } fallback) {
+            ApplyEvidenceRepo(state, fallback);
+        }
     }
 
     static string TruncateForTitle(string text, int maxLength) {
