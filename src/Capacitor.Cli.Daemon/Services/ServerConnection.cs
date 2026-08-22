@@ -48,6 +48,15 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     static readonly TimeSpan AcpRetryPollInterval         = TimeSpan.FromMilliseconds(500);
     static readonly TimeSpan ParkRetryPollInterval        = TimeSpan.FromMilliseconds(500);
 
+    /// <summary>§2.7 B6 arm-A: an upper bound on the WHOLE park report (readiness gate + retries).
+    /// <c>ParkReviewerAsync</c> holds the reap claim across this call, so — unlike the other
+    /// <see cref="ConnectionRetry"/> callers, whose waits are bounded only by daemon shutdown — an
+    /// unbounded wait for <see cref="IsReady"/> here would pin an idle reviewer (claimed, slot not freed)
+    /// for the entire outage. On elapse the attempt folds to <see cref="ParkAck.Ambiguous"/>, releasing
+    /// the claim so a later sweep retries the park (park is best-effort; never worth pinning for).
+    /// Settable only so a test need not spend the real 30s proving the bound; production never sets it.</summary>
+    internal TimeSpan ParkAckBudget { get; init; } = TimeSpan.FromSeconds(30);
+
     // Events for incoming commands from server
     public event Func<LaunchAgentCommand, Task>?    OnLaunchAgent;
     public event Func<string, Task>?                OnStopAgent; // agentId
@@ -1295,13 +1304,21 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     public virtual async Task<ParkAck> ReportParticipantParkedAsync(
             string agentId, string canonicalSessionId, string reason, CancellationToken ct = default
         ) {
+        // Bound the whole attempt (readiness gate + retries) with ParkAckBudget so a disconnected daemon
+        // can never pin the caller: ParkReviewerAsync holds the reap claim across this await, and the
+        // readiness loop is otherwise bounded only by the shutdown token. On elapse the linked token
+        // cancels, ConnectionRetry surfaces OperationCanceledException, and the generic catch below folds
+        // it to Ambiguous — "no definite reply" — releasing the claim for a later sweep to retry. If
+        // IsReady never came, no report was sent, so there is nothing to reconcile.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(ParkAckBudget);
         try {
             var outcome = await ConnectionRetry.InvokeWithConnectionRetryAsync(
-                () => InvokeReportParticipantParkedRawAsync(agentId, canonicalSessionId, reason, ct),
+                () => InvokeReportParticipantParkedRawAsync(agentId, canonicalSessionId, reason, timeoutCts.Token),
                 () => IsReady,
                 ParkRetryPollInterval,
                 attempt => LogReportParticipantParkedRetry(agentId, attempt),
-                ct
+                timeoutCts.Token
             );
 
             return outcome switch {

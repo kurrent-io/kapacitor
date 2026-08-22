@@ -1559,6 +1559,7 @@ Hosted review-flow reviewers are *unattended* and count against the daemon's `--
 |----------------------|---------|-------------|
 | `KCAP_REVIEWER_MAX_LIFETIME` | `6h` (`21600`) | Max wall-clock lifetime, **in seconds**, for a hosted review-flow reviewer before the heartbeat reaps it. `0` disables the bound. |
 | `KCAP_REVIEWER_IDLE_TIMEOUT` | `2h` (`7200`)  | Max time, **in seconds**, a reviewer may go without output before the heartbeat reaps it. `0` disables the bound. |
+| `KCAP_REVIEWER_RESUMABLE_IDLE_TIMEOUT` | `10m` (`600`) | Max time, **in seconds**, a **resumable** (Codex app-server) reviewer may go idle before the heartbeat **parks** it — freeing its slot while keeping its thread alive for a later resume — instead of reaping it at `KCAP_REVIEWER_IDLE_TIMEOUT`. Applies only to resume-capable reviewers; all others are unaffected. `0` disables parking, so a resumable reviewer falls through to the ordinary idle reap. |
 
 #### Daemon log verbosity
 

@@ -112,6 +112,29 @@ public class ServerConnectionParkProxyTests {
     }
 
     /// <summary>
+    /// High regression (qodo pre-merge review): <c>ParkReviewerAsync</c> holds the reap claim across
+    /// this call, so a disconnected daemon (<see cref="ServerConnection.IsReady"/> never true) must not
+    /// pin it — the readiness gate is bounded by <c>ParkAckBudget</c>. When the budget elapses with no
+    /// reply the call returns <see cref="ParkAck.Ambiguous"/> (release + retry) PROMPTLY (the 5s
+    /// HangGuard, far above the 200ms budget, is what would trip if the bound were absent) and — because
+    /// IsReady was never observed — the hub was never invoked, so there is no half-sent report to
+    /// reconcile.
+    /// </summary>
+    [Test]
+    public async Task A_disconnected_daemon_bounds_the_park_by_the_budget_and_maps_to_Ambiguous() {
+        var conn = new TestServerConnection {
+            Ready         = false,                          // never becomes ready — the outage case
+            ParkAckBudget = TimeSpan.FromMilliseconds(200)
+        };
+
+        var ack = await conn.ReportParticipantParkedAsync("agent1", "canon-1", "reviewer_parked_resumable")
+            .WaitAsync(HangGuard);
+
+        await Assert.That(ack).IsEqualTo(ParkAck.Ambiguous);
+        await Assert.That(conn.Calls).IsEmpty();            // IsReady never true → the hub was never invoked
+    }
+
+    /// <summary>
     /// A cancellation that fires while the daemon is shut down mid-call is exactly the "no definite
     /// reply" case the arm-A park state machine must not treat as a rejection — it must fold to
     /// Ambiguous rather than propagate, so the caller never sees an exception out of this method.

@@ -242,11 +242,18 @@ internal record AgentInstance(
     /// paths cannot share a lock and must share a CAS instead.
     ///
     /// <para>Read via <see cref="IsReapClaimed"/> by <see cref="AgentOrchestrator.HandleSendInput"/>,
-    /// which refuses to deliver to a condemned agent. Never reset: a claimed agent is on its way down,
-    /// and <see cref="AgentOrchestrator.StopAgentCoreAsync"/> flipping the status to "Completed"
-    /// already takes it out of the reap candidate set permanently, so the latch adds no new
+    /// which refuses to deliver to a condemned agent. Effectively write-once: a claimed agent is on its
+    /// way down, and <see cref="AgentOrchestrator.StopAgentCoreAsync"/> flipping the status to
+    /// "Completed" already takes it out of the reap candidate set permanently, so the latch adds no new
     /// terminality — it only makes the losing side of the race observable to the delivery path BEFORE
-    /// teardown has physically closed the transport.</para></summary>
+    /// teardown has physically closed the transport.</para>
+    ///
+    /// <para>The SOLE reset is §2.7 B6 arm-A's <see cref="AgentOrchestrator.ParkReviewerAsync"/> on a
+    /// <see cref="ParkAck.Ambiguous"/> ack: a park that got no definite reply tears down NOTHING, so it
+    /// must un-condemn the still-Running agent (release the latch) for a later sweep to re-claim — a
+    /// claim that neither parks nor reaps may not permanently strand a live reviewer. That reset runs
+    /// while the agent is still Running (no teardown began) and before the in-flight guard is cleared,
+    /// so it never races a path that already assumed terminality.</para></summary>
     public int ReapClaimed;
 
     /// <summary><see cref="ReapClaimed"/> as a bool, through a
