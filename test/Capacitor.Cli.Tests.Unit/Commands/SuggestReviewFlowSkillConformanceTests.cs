@@ -17,9 +17,7 @@ public class SuggestReviewFlowSkillConformanceTests {
     [Test]
     public async Task Description_stays_within_the_1024_char_skill_limit() {
         // Strict harnesses (e.g. Copilot) reject a skill whose description exceeds 1024 chars and
-        // then SILENTLY fail to load it — so the skill never triggers there. Keep the folded
-        // description under the cap. (An over-length description shipped only in a held branch once;
-        // this guard stops it recurring.)
+        // then SILENTLY fail to load it — so the skill never triggers there. Keep it under the cap.
         var len = FoldedDescription().Length;
         await Assert.That(len).IsGreaterThan(0);            // guard: a broken extraction must fail, not pass vacuously
         await Assert.That(len).IsLessThanOrEqualTo(1024);
