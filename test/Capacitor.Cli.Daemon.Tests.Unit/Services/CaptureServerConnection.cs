@@ -352,6 +352,25 @@ sealed class CaptureServerConnection() : ServerConnection(
         return Task.CompletedTask;
     }
 
+    // ── §2.7 B6 arm-A: participant-park report capture ───────────────────────────────
+    /// <summary>The ack <see cref="ReportParticipantParkedAsync"/> returns; default
+    /// <see cref="ParkAck.Parked"/>. A park state-machine test sets this to drive the three branches
+    /// (Parked / Rejected / Ambiguous) deterministically.</summary>
+    public ParkAck ParkOutcome { get; set; } = ParkAck.Parked;
+
+    /// <summary>Every (agentId, canonicalSessionId, reason) passed to
+    /// <see cref="ReportParticipantParkedAsync"/>, in call order — lets a test assert the canonical
+    /// thread id and reason the daemon reported, and (by emptiness) that a park that aborted at the
+    /// claim never told the server at all.</summary>
+    public List<(string AgentId, string CanonicalSessionId, string Reason)> ParkReports { get; } = [];
+
+    public override Task<ParkAck> ReportParticipantParkedAsync(
+            string agentId, string canonicalSessionId, string reason, CancellationToken ct = default) {
+        lock (ParkReports) ParkReports.Add((agentId, canonicalSessionId, reason));
+
+        return Task.FromResult(ParkOutcome);
+    }
+
     public override async Task<EndAgentSessionResult> EndAgentSessionAsync(string agentId, string reason) {
         EndSessionReasons.Add(reason);
         lock (AcpCallOrder) AcpCallOrder.Add($"endSession:{agentId}");
