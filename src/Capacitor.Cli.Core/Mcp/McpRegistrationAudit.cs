@@ -111,7 +111,10 @@ public static class McpRegistrationAudit {
 
         if (!IsRecognizedKcapCommand(StringValue(obj["command"]), nativeBinaryPath)) return false;
 
-        if (obj["args"] is not JsonArray args || !ArgsAreCanonical(descriptor, name, args)) return false;
+        if (obj["args"] is not JsonArray args || args.Count != descriptor.Args.Length) return false;
+        for (var i = 0; i < descriptor.Args.Length; i++)
+            if (!string.Equals(StringValue(args[i]), descriptor.Args[i], StringComparison.Ordinal))
+                return false;
 
         foreach (var (key, value) in obj) {
             switch (key) {
@@ -211,31 +214,6 @@ public static class McpRegistrationAudit {
                      .Select(kv => kv.Key)
                      .ToArray())
             block.Remove(name);
-    }
-
-    /// <summary>The registered args must equal the descriptor's exactly, with ONE tolerated
-    /// extension: the <c>kcap-flows</c> entry may carry a trailing <c>--driver &lt;vendor&gt;</c> stamp,
-    /// because that is part of what kcap now writes for the six JSON harnesses (see
-    /// <see cref="KcapMcpServers.ForHarness"/> — kcap-flows reaches the same subcommand and
-    /// schema either way). Only the exact two-token shape with a KNOWN stamped vendor qualifies; any
-    /// other extra arg (a user customization) keeps the entry a conflict to preserve. The audit is
-    /// harness-agnostic, so it accepts any of the stamped vendors rather than the one belonging to
-    /// this particular config — a hand-written cross-vendor stamp is astronomically unlikely and is
-    /// still functionally kcap's own flows server.</summary>
-    static bool ArgsAreCanonical(KcapMcpServer descriptor, string name, JsonArray args) {
-        if (args.Count < descriptor.Args.Length) return false;
-        for (var i = 0; i < descriptor.Args.Length; i++)
-            if (!string.Equals(StringValue(args[i]), descriptor.Args[i], StringComparison.Ordinal))
-                return false;
-
-        var extra = args.Count - descriptor.Args.Length;
-        if (extra == 0) return true;
-
-        return extra == 2
-            && string.Equals(name, KcapMcpServers.FlowsServerName, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(StringValue(args[descriptor.Args.Length]), KcapMcpServers.DriverArg, StringComparison.Ordinal)
-            && StringValue(args[descriptor.Args.Length + 1]) is { } vendor
-            && HarnessMcpProjections.DriverStampVendors.Contains(vendor, StringComparer.Ordinal);
     }
 
     static KcapMcpServer? FindDescriptor(string name) =>

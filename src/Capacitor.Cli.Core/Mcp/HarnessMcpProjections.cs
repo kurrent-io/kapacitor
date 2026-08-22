@@ -55,11 +55,11 @@ public static class HarnessMcpProjections {
     public static readonly IReadOnlyList<HarnessMcpProjection> All =
         [Cursor, Copilot, Gemini, Kiro, OpenCode, Antigravity];
 
-    /// <summary>The exact set of vendor tokens kcap ever stamps as <c>--driver</c> on a flows
-    /// registration — the harness names above. This is the SAME list that decides who gets stamped
-    /// and what the registration audit recognises as canonical (see
-    /// <c>McpRegistrationAudit.IsCanonicalKcapEntry</c>), so the writer and the recogniser can never
-    /// drift: a harness added here is both stamped and recognised, or neither.</summary>
+    /// <summary>The exact set of vendor tokens kcap stamps as <c>--driver</c> on a flows
+    /// registration — the harness names above. <c>DriverVendor</c> validates an incoming stamp
+    /// against this (plus the two env-inferred vendors) so a malformed or stale registration can
+    /// never echo arbitrary text as <c>driver_vendor</c>. Derived from the projections so a new
+    /// harness is stamped and accepted from one edit.</summary>
     public static readonly IReadOnlyList<string> DriverStampVendors =
         [.. All.Select(p => p.Harness)];
 }

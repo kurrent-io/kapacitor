@@ -39,25 +39,6 @@ public class McpRegistrationAuditTests {
     }
 
     [Test]
-    [Arguments("cursor")]
-    [Arguments("antigravity")]
-    public async Task Flows_with_a_known_driver_stamp_is_a_canonical_duplicate(string vendor) {
-        // The JSON harnesses register kcap-flows as `mcp flows --driver <harness>` — kcap's own
-        // canonical shape, so a user-scope copy of it is a removable duplicate, not a conflict.
-        var json = $$"""
-        { "mcpServers": { "kcap-flows": { "command": "kcap", "args": ["mcp","flows","--driver","{{vendor}}"] } } }
-        """;
-
-        var findings = McpRegistrationAudit.FindClaudeDuplicates(json);
-        await Assert.That(findings.Count).IsEqualTo(1);
-        await Assert.That(findings[0].Issue).IsEqualTo(McpRegistrationIssue.CanonicalDuplicate);
-
-        var removed = McpRegistrationAudit.RemoveClaudeDuplicates(json);
-        var servers = (JsonObject)JsonNode.Parse(removed)!["mcpServers"]!;
-        await Assert.That(servers.ContainsKey("kcap-flows")).IsFalse();
-    }
-
-    [Test]
     public async Task Cosmetic_fields_do_not_break_canonical_classification() {
         // description + empty env are what the shipped plugin/older registrations carry.
         var json = """
@@ -75,9 +56,7 @@ public class McpRegistrationAuditTests {
     [Arguments("""{ "command": "kcap", "args": ["mcp","memory"] }""")]                                     // wrong args for name
     [Arguments("""{ "command": "kcap", "args": ["mcp","flows"], "custom": true }""")]                      // extra field
     [Arguments("""{ "command": "kcap", "args": ["mcp","flows","--extra"] }""")]                            // extra arg
-    [Arguments("""{ "command": "kcap", "args": ["mcp","flows","--driver"] }""")]                           // --driver without a value
-    [Arguments("""{ "command": "kcap", "args": ["mcp","flows","--driver","not-a-vendor"] }""")]            // --driver, unknown vendor
-    [Arguments("""{ "command": "kcap", "args": ["mcp","flows","--driver","cursor","--extra"] }""")]        // known stamp + trailing junk
+    [Arguments("""{ "command": "kcap", "args": ["mcp","flows","--driver","cursor"] }""")]                  // a --driver stamp lives in the harness's OWN config (owned via its marker), never in Claude's — if one appears here it is a customization to preserve, not a removable duplicate
     [Arguments("""{ "command": "kcap", "args": ["mcp","flows"], "cwd": "/some/other/repo" }""")]           // arbitrary cwd redirects execution context
     public async Task Divergent_same_name_entry_is_a_conflict_and_never_removed(string entryJson) {
         var json = $$"""{ "mcpServers": { "kcap-flows": {{entryJson}} } }""";
