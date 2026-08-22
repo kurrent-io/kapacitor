@@ -2209,6 +2209,25 @@ static class ImportCommand {
     }
 
     /// <summary>
+    /// Path-based overload: reads the transcript INSIDE this method's own try, so an
+    /// invalid/empty path (<c>File.ReadLines</c> validates its argument eagerly, before the
+    /// actual — lazy — file read) degrades to "no evidence" here too, instead of throwing as a
+    /// bare call argument at the caller, outside any try/catch.
+    /// </summary>
+    internal static async Task<JsonObject?> TryBuildEvidenceRepositoryNodeAsync(
+            string                                 vendor,
+            string                                 transcriptPath,
+            Func<string, string?>                  findRoot,
+            Func<string, Task<RepositoryPayload?>> detect
+        ) {
+        try {
+            return await TryBuildEvidenceRepositoryNodeAsync(vendor, File.ReadLines(transcriptPath), findRoot, detect);
+        } catch {
+            return null; // fail-open: an unreadable/invalid path must never break import
+        }
+    }
+
+    /// <summary>
     /// Build a SessionId → repo lookup for every discovered transcript. Repo
     /// detection (git + `gh pr view`) is the slow part of the discovery phase
     /// and previously ran sequentially per-session, making `kcap import`
@@ -2908,7 +2927,7 @@ static class ImportCommand {
             && (cwd is null || GitRepository.FindRoot(cwd) is null)) {
             var evidenceNode = await TryBuildEvidenceRepositoryNodeAsync(
                 session.Vendor,
-                File.ReadLines(session.FilePath),
+                session.FilePath,
                 GitRepository.FindRoot,
                 root => RepositoryDetection.DetectRepositoryAsync(root, detectPullRequest: false));
 
