@@ -128,4 +128,44 @@ public class RepoEvidenceScannerTests {
             await Assert.That(got[0].Kind).IsEqualTo(RepoEvidenceKind.Read);
         }
     }
+
+    // qodo #3 / Windows CI: a Windows-absolute path must attribute exactly like a Unix one — the
+    // gate and the parent-dir derivation both have to be OS-independent (this suite runs on
+    // ubuntu-latest AND windows-latest), not just accept whatever the running OS calls "absolute".
+    // Line() splices `path` straight into JSON text (no JSON-escaping), so a Windows path's
+    // backslashes must be pre-doubled in the literal here — JsonNode.Parse then unescapes `\\`
+    // back to the real single-backslash path the scanner actually receives (verified: a
+    // single-backslash literal produces invalid JSON, e.g. `\d` is not a legal JSON escape).
+    const string WindowsPathJsonEscaped = @"C:\\dev\\repo-a\\x.cs";
+    const string WindowsPath            = @"C:\dev\repo-a\x.cs";
+
+    [Test]
+    public async Task Windows_absolute_path_attributes_correctly() {
+        static string? WindowsFindRoot(string dir) => dir.StartsWith(@"C:\dev\repo-a", StringComparison.Ordinal) ? @"C:\dev\repo-a" : null;
+
+        var s = new RepoEvidenceScanner<FakeRepo>(
+            WindowsFindRoot, _ => Task.FromResult<FakeRepo?>(new("acme", "repo-a")), IsComplete);
+
+        var attributed = await s.OnLineAsync("claude", Line("Edit", "file_path", WindowsPathJsonEscaped));
+        await Assert.That(attributed).IsEqualTo(new FakeRepo("acme", "repo-a"));
+        await Assert.That(s.Done).IsTrue();
+    }
+
+    [Test]
+    public async Task ExtractClaudePaths_accepts_a_windows_drive_path() {
+        var got = RepoEvidencePaths.ExtractClaudePaths(Line("Edit", "file_path", WindowsPathJsonEscaped));
+        await Assert.That(got).HasSingleItem();
+        await Assert.That(got[0].Path).IsEqualTo(WindowsPath);
+    }
+
+    // qodo #2: a tool_use block can sit at the event's TOP-LEVEL content, not only nested under
+    // message.content — both shapes occur in real Claude transcripts.
+    [Test]
+    public async Task ExtractClaudePaths_reads_top_level_content_too() {
+        const string line = """{"type":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/a/b.cs"}}]}""";
+        var          got  = RepoEvidencePaths.ExtractClaudePaths(line);
+        await Assert.That(got).HasSingleItem();
+        await Assert.That(got[0].Path).IsEqualTo("/a/b.cs");
+        await Assert.That(got[0].Kind).IsEqualTo(RepoEvidenceKind.Mutation);
+    }
 }

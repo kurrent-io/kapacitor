@@ -74,8 +74,14 @@ public sealed class RepoEvidenceScanner<TRepo>(
         try { return isComplete(repo); } catch { return false; }
     }
 
+    // Lexical, not Path.GetDirectoryName: that rewrites/misreads the OTHER OS's separator style
+    // (a Unix path fed through Windows' Path becomes garbage, and vice versa), but evidence
+    // paths are native to whichever OS the transcript's own agent ran on, not this process's OS.
     static string? SafeDirectory(string path) {
-        try { return Path.GetDirectoryName(path); } catch { return null; }
+        try {
+            var lastSeparator = path.AsSpan().LastIndexOfAny('/', '\\');
+            return lastSeparator < 0 ? null : path[..lastSeparator];
+        } catch { return null; }
     }
 
     static T? Safe<T>(Func<T?> f) where T : class {
@@ -92,7 +98,11 @@ public static class RepoEvidencePaths {
         try {
             if (JsonNode.Parse(jsonlLine) is not JsonObject obj) return result;
             if (obj["type"]?.GetValue<string>() != "assistant") return result;
-            if (obj["message"]?["content"] is not JsonArray content) return result;
+
+            // A tool_use block can sit at the event's top-level `content` too, not only nested
+            // under `message.content` — both shapes occur in real Claude transcripts.
+            var content = (obj["message"]?["content"] as JsonArray) ?? (obj["content"] as JsonArray);
+            if (content is null) return result;
 
             foreach (var item in content) {
                 if (item is not JsonObject block) continue;
@@ -112,7 +122,7 @@ public static class RepoEvidencePaths {
                 if (spec is not { } sp) continue;
 
                 var path = input[sp.key]?.GetValue<string>();
-                if (path is not null && path.StartsWith('/')) result.Add((path, sp.kind));
+                if (path is not null && IsLexicallyAbsolute(path)) result.Add((path, sp.kind));
             }
         } catch {
             // fail-open
@@ -120,4 +130,20 @@ public static class RepoEvidencePaths {
 
         return result;
     }
+
+    /// <summary>Mirrors <c>Capacitor.Sessions.RepoBackfill.RepoAttributionMatcher.IsLexicallyAbsolute</c>
+    /// in the server repo (reimplemented locally — Cli.Core takes no dependency on the server).
+    /// Unix-rooted, Windows drive-rooted, or UNC — never <c>Path.IsPathRooted</c>/<c>Path.IsPathFullyQualified</c>,
+    /// which judge by whichever OS is running the scan, not whichever OS produced the path (a Unix
+    /// path is rejected by Windows' Path, and a Windows path by Unix's).</summary>
+    internal static bool IsLexicallyAbsolute(string path) {
+        if (string.IsNullOrEmpty(path)) return false;
+        if (path[0] == '/') return true;                                        // Unix
+        if (path.Length >= 2 && path[0] == '\\' && path[1] == '\\') return true; // UNC \\host\share
+        if (path.Length >= 3 && IsAsciiLetter(path[0]) && path[1] == ':'
+            && (path[2] == '\\' || path[2] == '/')) return true;                 // C:\... or C:/...
+        return false;
+    }
+
+    static bool IsAsciiLetter(char c) => (uint)((c | 0x20) - 'a') <= 'z' - 'a';
 }
