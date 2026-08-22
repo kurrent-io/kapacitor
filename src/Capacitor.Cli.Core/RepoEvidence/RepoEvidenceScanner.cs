@@ -5,33 +5,47 @@ namespace Capacitor.Cli.Core.RepoEvidence;
 public enum RepoEvidenceKind { Mutation, Read }
 
 /// <summary>
-/// Derives a git root from absolute paths in tool-use inputs, for sessions
-/// launched outside any repo. Two-slot rule: the first mutation-derived root
-/// attributes immediately; the first read-derived root is promoted only at
-/// final drain if no mutation ever landed. Evidence is the tool INPUT —
-/// results are never consulted. Fail-open on every parse or resolver error.
+/// Derives a resolved repo from absolute paths in tool-use inputs, for sessions launched
+/// outside any repo. Two-slot rule: the first mutation-derived root that resolves to a
+/// COMPLETE repo (<paramref name="isComplete"/>) wins slot A immediately; the first
+/// read-derived root that resolves complete is remembered as slot B and promoted only at
+/// final drain if slot A never landed. A root that fails to resolve, or resolves incomplete
+/// (e.g. a local repo with no remote), is skipped — scanning continues past it rather than
+/// latching onto something unusable. Each distinct root is resolved at most once (cached), to
+/// bound the resolver's cost. Evidence is the tool INPUT — results are never consulted.
+/// Fail-open on every parse or resolver error. Generic so Capacitor.Cli.Core never depends on
+/// the concrete repo type or how it's resolved — both live in the higher-level Cli project.
 /// </summary>
-public sealed class RepoEvidenceScanner(Func<string, string?> findRoot) {
-    public string? AttributedRoot   { get; private set; }
-    public string? ReadFallbackRoot { get; private set; }
-    public bool    Done => AttributedRoot is not null;
+public sealed class RepoEvidenceScanner<TRepo>(
+        Func<string, string?>      findRoot,
+        Func<string, Task<TRepo?>> resolve,
+        Func<TRepo, bool>          isComplete
+    ) where TRepo : class {
+    readonly Dictionary<string, TRepo?> _resolved = new(StringComparer.Ordinal);
 
-    public string? OnLine(string vendor, string jsonlLine) {
+    public TRepo? Attributed   { get; private set; }
+    public TRepo? ReadFallback { get; private set; }
+    public bool   Done => Attributed is not null;
+
+    public async Task<TRepo?> OnLineAsync(string vendor, string jsonlLine) {
         if (Done || vendor != "claude") return null;
 
         try {
-            foreach (var (path, kind) in ExtractClaudePaths(jsonlLine)) {
+            foreach (var (path, kind) in RepoEvidencePaths.ExtractClaudePaths(jsonlLine)) {
                 var dir  = SafeDirectory(path);
                 if (dir is null) continue;
                 var root = Safe(() => findRoot(dir));
                 if (root is null) continue;
 
+                var repo = await ResolveCachedAsync(root);
+                if (repo is null || !SafeIsComplete(repo)) continue;
+
                 if (kind == RepoEvidenceKind.Mutation) {
-                    AttributedRoot = root;
-                    return root;
+                    Attributed = repo;
+                    return repo;
                 }
 
-                ReadFallbackRoot ??= root;
+                ReadFallback ??= repo;
             }
         } catch {
             // fail-open: a bad line must never break watching or import
@@ -40,12 +54,38 @@ public sealed class RepoEvidenceScanner(Func<string, string?> findRoot) {
         return null;
     }
 
-    public string? PromoteReadFallback() {
-        if (Done || ReadFallbackRoot is null) return null;
-        AttributedRoot = ReadFallbackRoot;
-        return AttributedRoot;
+    public async Task<TRepo?> PromoteReadFallbackAsync() {
+        if (Done || ReadFallback is null) return null;
+        Attributed = ReadFallback;
+        return Attributed;
     }
 
+    async Task<TRepo?> ResolveCachedAsync(string root) {
+        if (_resolved.TryGetValue(root, out var cached)) return cached;
+
+        TRepo? repo;
+        try { repo = await resolve(root); } catch { repo = null; }
+
+        _resolved[root] = repo;
+        return repo;
+    }
+
+    bool SafeIsComplete(TRepo repo) {
+        try { return isComplete(repo); } catch { return false; }
+    }
+
+    static string? SafeDirectory(string path) {
+        try { return Path.GetDirectoryName(path); } catch { return null; }
+    }
+
+    static T? Safe<T>(Func<T?> f) where T : class {
+        try { return f(); } catch { return null; }
+    }
+}
+
+// Not nested inside RepoEvidenceScanner<TRepo>: CA1000 forbids public static members on a
+// generic type, and extraction doesn't depend on TRepo anyway.
+public static class RepoEvidencePaths {
     public static IReadOnlyList<(string Path, RepoEvidenceKind Kind)> ExtractClaudePaths(string jsonlLine) {
         var result = new List<(string, RepoEvidenceKind)>();
 
@@ -79,13 +119,5 @@ public sealed class RepoEvidenceScanner(Func<string, string?> findRoot) {
         }
 
         return result;
-    }
-
-    static string? SafeDirectory(string path) {
-        try { return Path.GetDirectoryName(path); } catch { return null; }
-    }
-
-    static T? Safe<T>(Func<T?> f) where T : class {
-        try { return f(); } catch { return null; }
     }
 }

@@ -131,8 +131,8 @@ class WatchState {
     // Non-null only for a Claude session watcher launched outside any repo; see RepoEvidenceScanner.
     // RepositoryFromEvidence, once true, protects Repository from being cleared by a later null
     // cwd-based probe (see WatchCommand.ShouldReplaceRepository).
-    public RepoEvidenceScanner? EvidenceScanner        { get; set; }
-    public bool                 RepositoryFromEvidence { get; set; }
+    public RepoEvidenceScanner<RepositoryPayload>? EvidenceScanner        { get; set; }
+    public bool                                    RepositoryFromEvidence { get; set; }
 
     public bool               InitialTitleSent   { get; set; }
     public bool               TitleGenerated     { get; set; }

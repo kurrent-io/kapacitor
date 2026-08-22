@@ -492,12 +492,14 @@ static partial class WatchCommand {
         // (agentId is null), matching the scope of the cwd-based detection above — a subagent
         // watcher is always spawned with cwd: null too and has never had its own repo detection.
         if (vendor == "claude" && agentId is null && (cwd is null || GitRepository.FindRoot(cwd) is null)) {
-            state.EvidenceScanner = new RepoEvidenceScanner(GitRepository.FindRoot);
+            state.EvidenceScanner = new RepoEvidenceScanner<RepositoryPayload>(
+                GitRepository.FindRoot, root => RepositoryDetection.DetectRepositoryAsync(root),
+                p => p.Owner is not null && p.RepoName is not null);
 
             try {
                 foreach (var line in File.ReadLines(transcriptPath)) {
-                    if (state.EvidenceScanner.OnLine(vendor, line) is { } root) {
-                        await ApplyEvidenceRootAsync(state, root);
+                    if (await state.EvidenceScanner.OnLineAsync(vendor, line) is { } repo) {
+                        ApplyEvidenceRepo(state, repo);
 
                         break;
                     }
@@ -940,11 +942,12 @@ static partial class WatchCommand {
         // this skip is scoped to idleExit specifically.
         var cursorSuppressesEndPost = CursorSuppressesEndPost(vendor, idleExit);
 
-        // Two-slot rule's second slot: the final drain above never saw a mutation, so promote
-        // whatever read-only evidence it collected — otherwise a parent-exit session-end below
-        // would carry no repository at all.
-        if (state.EvidenceScanner?.PromoteReadFallback() is { } fallbackRoot) {
-            await ApplyEvidenceRootAsync(state, fallbackRoot);
+        // Belt-and-suspenders: normally a no-op by now — the final drain above (inside
+        // DrainNewLines's isFinalDrain branch) already promoted and applied any read fallback as
+        // part of the same batch that reaches the server on a clean exit. This only still matters
+        // if that branch didn't run at all (e.g. the final drain found the transcript file gone).
+        if (state.EvidenceScanner is { } scanner && await scanner.PromoteReadFallbackAsync() is { } fallbackRepo) {
+            ApplyEvidenceRepo(state, fallbackRepo);
         }
 
         if (endReason is not null && agentId is null && state.ThresholdReached && !cursorSuppressesEndPost) {
@@ -2178,15 +2181,23 @@ static partial class WatchCommand {
             }
 
             // Evidence-based repo detection for a session launched outside any repo: feed this
-            // batch's lines to the scanner so a mutation (or, at final drain, a promoted read)
-            // attributes a root. state.EvidenceScanner is null for every other session.
+            // batch's lines to the scanner so a mutation attributes a root immediately.
+            // state.EvidenceScanner is null for every other session.
             if (state.EvidenceScanner is { Done: false } scanner) {
                 foreach (var line in newLines) {
-                    if (scanner.OnLine(vendor, line) is { } root) {
-                        await ApplyEvidenceRootAsync(state, root);
+                    if (await scanner.OnLineAsync(vendor, line) is { } repo) {
+                        ApplyEvidenceRepo(state, repo);
 
                         break;
                     }
+                }
+
+                // Final drain, no mutation ever landed: promote the read fallback (if any) NOW,
+                // before repoToSend below is computed, so it rides THIS batch — the one that
+                // actually reaches the server on a clean session end (PostSessionEndOnParentExitAsync
+                // never fires when endReason is null, so it can't be relied on to deliver this).
+                if (isFinalDrain && await scanner.PromoteReadFallbackAsync() is { } fallback) {
+                    ApplyEvidenceRepo(state, fallback);
                 }
             }
 
@@ -3303,15 +3314,11 @@ static partial class WatchCommand {
     internal static bool ShouldReplaceRepository(RepositoryPayload? detected, bool repositoryFromEvidence) =>
         detected is not null || !repositoryFromEvidence;
 
-    // Shared by the upfront prefix scan, the per-drained-line scan, and the final-drain
-    // read-fallback promotion — all three resolve an evidence-attributed root the same way.
-    static async Task ApplyEvidenceRootAsync(WatchState state, string root) {
-        var repo = await RepositoryDetection.DetectRepositoryAsync(root);
-
-        if (repo?.Owner is not null && repo.RepoName is not null) {
-            state.Repository             = repo;
-            state.RepositoryFromEvidence = true;
-        }
+    // Shared by every EvidenceScanner call site — the scanner already resolved and validated
+    // completeness (RepoEvidenceScanner's isComplete), so this just records the result.
+    static void ApplyEvidenceRepo(WatchState state, RepositoryPayload repo) {
+        state.Repository             = repo;
+        state.RepositoryFromEvidence = true;
     }
 
     static string TruncateForTitle(string text, int maxLength) {
