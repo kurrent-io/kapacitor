@@ -119,12 +119,9 @@ public class AgentVerbDispatchTests {
         // A string, not ArgumentList: quote-aware parsing, so an argument may contain a space.
         psi.Arguments = $"{argLine} --no-update-check";
 
-        // Isolate the config surface to a FRESH dir. Clearing KCAP_URL alone is not enough: the CLI
-        // resolves the server from a persisted profile too, and the child inherits the assembly's
-        // SHARED KCAP_CONFIG_DIR (IntegrationGlobalSetup). A sibling integration test can write a
-        // server_url into that shared config, which would defeat clearServerUrl and stop
-        // "no server configured" from firing on a loaded runner. A per-call config dir makes the
-        // test-controlled KCAP_URL the only server signal.
+        // Isolate the config surface to a FRESH dir: clearing KCAP_URL alone isn't enough — the CLI
+        // also reads a persisted profile under the assembly's SHARED KCAP_CONFIG_DIR, which a sibling
+        // test can populate. A per-call dir makes KCAP_URL the only server signal.
         using var configDir = new TempDir();
         psi.Environment["KCAP_CONFIG_DIR"] = configDir.Path;
         psi.Environment["KCAP_URL"] = clearServerUrl ? "" : "http://127.0.0.1:1";
