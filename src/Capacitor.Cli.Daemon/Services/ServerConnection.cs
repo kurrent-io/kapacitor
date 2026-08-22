@@ -1276,13 +1276,21 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// Unlike those two, this method NEVER throws. The arm-A park state machine
     /// (<c>AgentOrchestrator.ParkReviewerAsync</c>) needs a definite three-way answer rather than a
     /// two-way outcome-or-exception split, because an exception here must NOT be treated as a
-    /// rejection: <see cref="ParkAck.Ambiguous"/> — covering a <c>HubException</c>, an
-    /// <see cref="OperationCanceledException"/> (including daemon shutdown), or any other unmapped
-    /// exception — leaves the reviewer's local state untouched so the next reap sweep retries the
-    /// park, instead of falling back to a destructive end. Only the server's two definite wire
-    /// outcomes (<see cref="ParkParticipantOutcome.Parked"/>/<see cref="ParkParticipantOutcome.Rejected"/>)
-    /// map to their like-named <see cref="ParkAck"/> members; any other/unmapped value degrades to
-    /// <see cref="ParkAck.Ambiguous"/> rather than being assumed successful.
+    /// rejection by default: <see cref="ParkAck.Ambiguous"/> — covering a transient
+    /// <c>HubException</c>, an <see cref="OperationCanceledException"/> (including daemon shutdown),
+    /// or any other unmapped exception — leaves the reviewer's local state untouched so the next reap
+    /// sweep retries the park, instead of falling back to a destructive end. Only the server's two
+    /// definite wire outcomes (<see cref="ParkParticipantOutcome.Parked"/>/
+    /// <see cref="ParkParticipantOutcome.Rejected"/>) map to their like-named <see cref="ParkAck"/>
+    /// members; any other/unmapped value degrades to <see cref="ParkAck.Ambiguous"/> rather than being
+    /// assumed successful.
+    ///
+    /// One exception IS treated as a definite outcome: <see cref="IsUnknownHubMethod"/> singles out
+    /// the <c>HubException</c> a pre-B1 server raises because it has no <c>ReportParticipantParked</c>
+    /// handler at all. That is a PERMANENT degrade, not a transient hiccup — folding it into Ambiguous
+    /// would have <c>ParkReviewerAsync</c> retry the park forever against a server that will never grow
+    /// the method. Mapping it to <see cref="ParkAck.Rejected"/> instead makes the caller fall back to
+    /// the normal reap, same as a definite server-side refusal.
     /// </summary>
     public virtual async Task<ParkAck> ReportParticipantParkedAsync(
             string agentId, string canonicalSessionId, string reason, CancellationToken ct = default
@@ -1301,6 +1309,13 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                 ParkParticipantOutcome.Rejected => ParkAck.Rejected,
                 _                                => ParkAck.Ambiguous, // unmapped/future wire value — never assume success
             };
+        } catch (Exception ex) when (IsUnknownHubMethod(ex)) {
+            // Pre-B1 server: ReportParticipantParked doesn't exist there and never will until the
+            // server is upgraded. Definite degrade, not "no reply" — fall back to the normal reap
+            // instead of retrying this park forever (see the doc comment above).
+            LogReportParticipantParkedUnknownMethod(agentId);
+
+            return ParkAck.Rejected;
         } catch (Exception ex) {
             LogReportParticipantParkedAmbiguous(ex, agentId);
 
@@ -1309,12 +1324,29 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     }
 
     /// <summary>
+    /// True when <paramref name="ex"/> is the <see cref="Microsoft.AspNetCore.SignalR.HubException"/>
+    /// SignalR raises when the connected server has no handler at all for the invoked hub method
+    /// name — the case a pre-B1 server hits for <c>ReportParticipantParked</c>. SignalR's server-side
+    /// message binder can't resolve an unknown target while parsing the invocation and throws a
+    /// <c>HubException</c> reporting the method doesn't exist; this codebase already relies on that
+    /// exact literal text to model the equivalent old-server case for <c>AcpSessionSourceClaim</c> (see
+    /// <c>AgentOrchestratorSourceClaimTests.Method_not_found_claim_is_a_coded_launch_failure_with_teardown</c>).
+    /// Matched case-insensitively on the stable "does not exist" substring rather than the exact
+    /// string (future SignalR/server wording may vary slightly), and narrowly scoped to
+    /// <see cref="Microsoft.AspNetCore.SignalR.HubException"/> only — a genuine transient
+    /// <c>HubException</c> (e.g. "Caller is not a registered daemon") does not contain that phrase and
+    /// is never misclassified as a permanent degrade.
+    /// </summary>
+    static bool IsUnknownHubMethod(Exception ex) =>
+        ex is Microsoft.AspNetCore.SignalR.HubException he
+        && he.Message.Contains("does not exist", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// The actual <c>ReportParticipantParked</c> hub invocation, isolated into its own <c>virtual</c>
     /// method so <see cref="ReportParticipantParkedAsync"/>'s gating/mapping can be tested without a
     /// live hub. A pre-B1 server has no such method, so <c>InvokeAsync</c> throws (method-not-found),
-    /// which <see cref="ReportParticipantParkedAsync"/> currently folds into <see cref="ParkAck.Ambiguous"/>
-    /// like any other exception (a later task tightens this specific case to <see cref="ParkAck.Rejected"/>
-    /// so a permanently-old server degrades to the normal reap path instead of retrying forever).
+    /// which <see cref="ReportParticipantParkedAsync"/> singles out via <see cref="IsUnknownHubMethod"/>
+    /// and maps to <see cref="ParkAck.Rejected"/> rather than treating it like any other exception.
     /// </summary>
     internal virtual Task<ParkParticipantOutcome> InvokeReportParticipantParkedRawAsync(
             string agentId, string canonicalSessionId, string reason, CancellationToken ct
@@ -1557,6 +1589,9 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "ReportParticipantParked for agent {AgentId} got no definite reply — treating as ambiguous so the next reap sweep retries the park")]
     partial void LogReportParticipantParkedAmbiguous(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ReportParticipantParked for agent {AgentId} failed because the connected server has no such hub method (pre-B1) — treating as Rejected so the caller falls back to the normal reap instead of retrying forever")]
+    partial void LogReportParticipantParkedUnknownMethod(string agentId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Reconnect re-bind of ACP session {AcpSessionId} for agent {AgentId} failed (attempt {Attempt}/{MaxAttempts})")]
     partial void LogAcpRebindFailed(Exception ex, string agentId, string acpSessionId, int attempt, int maxAttempts);

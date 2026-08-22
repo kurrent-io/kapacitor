@@ -1395,9 +1395,13 @@ public enum AcpLaunchConfirmOutcome { Confirmed = 0, AlreadyConfirmed = 1, Super
 /// a later resume; <see cref="Rejected"/> is a DEFINITE refusal (wrong reason string, not the owning
 /// connection, an ownership-claim miss, a ledger CAS refusal, or a malformed canonical id) — the
 /// daemon falls back to the normal end path instead of parking. There is no third wire value: an
-/// AMBIGUOUS outcome (transport error, timeout, unknown method against an old server) is the
+/// AMBIGUOUS outcome (a transient transport error or timeout) is the
 /// ABSENCE of a reply — never encoded here. <c>ServerConnection.ReportParticipantParkedAsync</c> is
-/// what folds that absence into the daemon-local <c>ParkAck.Ambiguous</c>.
+/// what folds that absence into the daemon-local <c>ParkAck.Ambiguous</c>. A pre-B1 server with no
+/// <c>ReportParticipantParked</c> handler at all is a separate, PERMANENT case that same method also
+/// handles: it recognizes the resulting "unknown hub method" <c>HubException</c> specifically and maps
+/// it to the daemon-local <c>ParkAck.Rejected</c> instead of Ambiguous, so a permanently-old server
+/// degrades to the normal reap rather than retrying the park forever.
 /// </summary>
 public enum ParkParticipantOutcome { Parked, Rejected }
 

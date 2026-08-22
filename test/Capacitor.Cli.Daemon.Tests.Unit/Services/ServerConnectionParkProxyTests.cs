@@ -86,6 +86,29 @@ public class ServerConnectionParkProxyTests {
     }
 
     /// <summary>
+    /// A pre-B1 server has no <c>ReportParticipantParked</c> hub method at all: SignalR's server-side
+    /// message binder can't resolve the target, so the invoke throws a <c>HubException</c> reporting
+    /// the method doesn't exist — the same literal text (see <c>AgentOrchestratorSourceClaimTests
+    /// .Method_not_found_claim_is_a_coded_launch_failure_with_teardown</c>) this codebase already uses
+    /// to model the equivalent old-server case for <c>AcpSessionSourceClaim</c>. Unlike the generic
+    /// transient HubException in <see cref="A_thrown_HubException_maps_to_ParkAck_Ambiguous_never_throws"/>,
+    /// this is a DEFINITE, permanent degrade: mapping it to Ambiguous would have
+    /// <c>AgentOrchestrator.ParkReviewerAsync</c> retry the park forever against a server that will
+    /// never grow the method. Rejected makes it fall back to the normal reap instead.
+    /// </summary>
+    [Test]
+    public async Task Park_against_a_server_without_the_hub_method_falls_back_to_reap() {
+        var conn = new TestServerConnection {
+            ThrowOnInvoke = new Microsoft.AspNetCore.SignalR.HubException("Method does not exist.")
+        };
+
+        var ack = await conn.ReportParticipantParkedAsync("agent1", "canon-1", "reviewer_parked_resumable")
+            .WaitAsync(HangGuard);
+
+        await Assert.That(ack).IsEqualTo(ParkAck.Rejected);
+    }
+
+    /// <summary>
     /// A cancellation that fires while the daemon is shut down mid-call is exactly the "no definite
     /// reply" case the arm-A park state machine must not treat as a rejection — it must fold to
     /// Ambiguous rather than propagate, so the caller never sees an exception out of this method.
