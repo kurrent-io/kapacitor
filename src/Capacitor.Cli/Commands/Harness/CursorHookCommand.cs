@@ -161,13 +161,17 @@ public static class CursorHookCommand {
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
             Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory = null,
             TimeSpan?                                         memoryBudgetOverride = null,
-            ISessionStartMemoryScopeResolver?                 memoryScopeResolver = null
+            ISessionStartMemoryScopeResolver?                 memoryScopeResolver = null,
+            // Testability seam: drives the memory-budget timer so a test can fire it deterministically
+            // after the request has entered its handler. Production leaves it null (system clock).
+            TimeProvider?                                    memoryBudgetClock = null
         ) {
         using var cts = new CancellationTokenSource(budgetTotal);
         var kindSignal = new ResolvedEventKindSignal();
 
         var inner    = HandleCoreInner(client, baseUrl, stdin, spool, budgetTotal, cts.Token, kindSignal,
-                           memoryClientFactory, memoryStoreFactory, memoryBudgetOverride, memoryScopeResolver);
+                           memoryClientFactory, memoryStoreFactory, memoryBudgetOverride, memoryScopeResolver,
+                           memoryBudgetClock);
         var deadline = Task.Delay(budgetTotal);
         var winner   = await Task.WhenAny(inner, deadline);
 
@@ -226,7 +230,8 @@ public static class CursorHookCommand {
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
             Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory,
             TimeSpan?                                         memoryBudgetOverride,
-            ISessionStartMemoryScopeResolver?                 memoryScopeResolver
+            ISessionStartMemoryScopeResolver?                 memoryScopeResolver,
+            TimeProvider?                                    memoryBudgetClock
         ) {
         var sw = Stopwatch.StartNew();
         bool BudgetExpired() => sw.Elapsed >= budgetTotal;
@@ -512,7 +517,8 @@ public static class CursorHookCommand {
             if (eventName != "sessionStart") return null;
             var fragment = await RunMemoryOrchestrationAsync(
                 client, baseUrl, sessionId, workspaceRoot, sw, budgetTotal, ct,
-                memoryClientFactory, memoryStoreFactory, memoryBudgetOverride, memoryScopeResolver);
+                memoryClientFactory, memoryStoreFactory, memoryBudgetOverride, memoryScopeResolver,
+                memoryBudgetClock);
             // The static work-items nudge, isolated from the lease-driven fragment above and
             // merged only at render. The opt-out flag is not in scope here (it lives inside the
             // orchestration), so re-read it; sessionStart fires once per session and the read is
@@ -555,7 +561,8 @@ public static class CursorHookCommand {
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
             Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory,
             TimeSpan?                                         memoryBudgetOverride,
-            ISessionStartMemoryScopeResolver?                 memoryScopeResolver
+            ISessionStartMemoryScopeResolver?                 memoryScopeResolver,
+            TimeProvider?                                    memoryBudgetClock
         ) {
         if (sessionId is null) return null;
 
@@ -577,8 +584,10 @@ public static class CursorHookCommand {
         if (disabled && guidelinesDisabled) return null;
 
         try {
-            using var memCts = CancellationTokenSource.CreateLinkedTokenSource(dispatcherCt);
-            memCts.CancelAfter(memBudget);
+            // The budget timer runs on memoryBudgetClock (system clock in production); a test can
+            // pass a fake clock and advance it to fire this deadline deterministically.
+            using var budgetCts = new CancellationTokenSource(memBudget, memoryBudgetClock ?? TimeProvider.System);
+            using var memCts    = CancellationTokenSource.CreateLinkedTokenSource(dispatcherCt, budgetCts.Token);
 
             var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
             // Both lanes share the one factory (the shared hook client by default). disposeClients is

@@ -7,6 +7,7 @@ using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Cursor;
 using Capacitor.Cli.Harness.Cursor;
 using Capacitor.Cli.SessionStartMemory;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.Cli.Tests.Unit.Commands.Harness;
 
@@ -875,29 +876,32 @@ public class CursorHookCommandTests {
         var handler = new CancelAwareHandler();
         using var neverRespondingClient = new HttpClient(handler);
 
-        // Cancellation is deterministic, not wall-clock: the generous budgets never fire; the handler
-        // signals entry and the test cancels via Release() strictly after, so entry can't lose the
-        // race the old 250ms budget used to. The stub resolver keeps a git spawn out of the path.
+        // Deterministic, not wall-clock: the memory budget runs on a FakeTimeProvider, so the 250ms
+        // deadline fires only when the test advances the clock — after the request has entered the
+        // handler (EnteredSignal). That removes the entry race the real 250ms budget had while still
+        // cancelling through the production budget token (not the 15s outer deadline, never advanced
+        // here). The stub resolver keeps a git spawn out of the path.
+        var budgetClock = new FakeTimeProvider();
         var elapsed = System.Diagnostics.Stopwatch.StartNew();
         var call = CursorHookCommand.HandleCore(
-            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(60),
+            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(15),
             memoryClientFactory: (_, _) => Task.FromResult(neverRespondingClient),
             memoryStoreFactory: storeFactory,
-            memoryBudgetOverride: TimeSpan.FromSeconds(30),
-            memoryScopeResolver: new StubScopeResolver());
+            memoryBudgetOverride: TimeSpan.FromMilliseconds(250),
+            memoryScopeResolver: new StubScopeResolver(),
+            memoryBudgetClock: budgetClock);
 
-        // Bounded so a future change that skips the fetch fails fast here instead of hanging.
+        // Wait (bounded, real-time) for the request to ENTER the handler, then fire the budget clock.
         await handler.EnteredSignal.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        handler.Release();
+        budgetClock.Advance(TimeSpan.FromMilliseconds(250));
 
         var exit1 = await call;
         elapsed.Stop();
         await Assert.That(exit1).IsEqualTo(0);
-        // Entered rules out a skipped attempt; TokenWasCancelable proves the budget/deadline token is
-        // actually plumbed into the request (not CancellationToken.None); Cancelled confirms the fetch
-        // observed cancellation; and returning far inside the budgets leaves Release() as the cause.
+        // Cancelled fires only because advancing the budget clock cancelled the request's OWN token —
+        // proving the memory-budget token governs the fetch. Entered rules out a skipped attempt, and
+        // returning far inside the 15s outer deadline rules that out as the cause.
         await Assert.That(handler.Entered).IsTrue();
-        await Assert.That(handler.TokenWasCancelable).IsTrue();
         await Assert.That(handler.Cancelled).IsTrue();
         await Assert.That(elapsed.Elapsed.TotalSeconds).IsLessThan(10);
 
@@ -1138,43 +1142,28 @@ public class CursorHookCommandTests {
             Task.FromResult(new SessionStartMemoryScope(RepoHash: null, MachineTag: "test-machine"));
     }
 
-    // A GET that never resolves on its own; cancellation is test-driven (EnteredSignal → Release())
-    // rather than racing a real-time budget. It records whether the request's own token is cancelable
-    // so the test can prove the budget/deadline token is actually plumbed into the request.
+    // A GET that never resolves on its own — it ends only when its OWN CancellationToken (the memory
+    // budget/deadline) fires, honoured properly (unlike StubHandler, which ignores ct). Signals entry
+    // so the test advances the budget clock strictly after the request has entered.
     sealed class CancelAwareHandler : HttpMessageHandler {
-        readonly CancellationTokenSource _release = new();
         volatile bool _entered;
         volatile bool _cancelled;
-        volatile bool _tokenWasCancelable;
         // Separate "never fetched at all", "fetched and abandoned", and "fetched and cancelled".
         public bool Entered => _entered;
         public bool Cancelled => _cancelled;
-        // False would mean production passed CancellationToken.None — the budget/deadline token was
-        // not plumbed into the request.
-        public bool TokenWasCancelable => _tokenWasCancelable;
-        // Fires the moment SendAsync is entered, so the test can cancel strictly after entry.
+        // Fires the moment SendAsync is entered, so the test advances the budget clock only after entry.
         public TaskCompletionSource EnteredSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        // Deterministically cancel the in-flight request. Call only once EnteredSignal has fired.
-        public void Release() => _release.Cancel();
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
             _entered = true;
-            _tokenWasCancelable = ct.CanBeCanceled;
             EnteredSignal.TrySetResult();
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _release.Token);
             try {
-                await Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             } catch (OperationCanceledException) {
                 _cancelled = true;
                 throw;
             }
             return new HttpResponseMessage(HttpStatusCode.OK);
-        }
-
-        protected override void Dispose(bool disposing) {
-            if (disposing) _release.Dispose();
-            base.Dispose(disposing);
         }
     }
 }
