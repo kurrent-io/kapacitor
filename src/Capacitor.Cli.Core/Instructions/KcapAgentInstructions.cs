@@ -47,8 +47,8 @@ public static class KcapAgentInstructions {
         design**, proactively OFFER an independent second-harness review before wrapping up, even if
         the user didn't ask, because a fresh, separate reviewer catches what your own model misses.
         Call `kcap-flows` `list_reviewer_vendors` to see which reviewers can run for this repo,
-        recommend one (prefer a vendor other than yourself), and call `start_review_flow` ONLY after
-        the user accepts — never auto-start it. Skip the offer when the user asked you to review
+        recommend one (prefer a vendor other than yourself), and call `kcap-flows` `start_review_flow`
+        ONLY after the user accepts — never auto-start it. Skip the offer when the user asked you to review
         something yourself, or while you're mid-task and the work isn't finished.
         """;
 }
