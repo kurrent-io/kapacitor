@@ -875,21 +875,30 @@ public class CursorHookCommandTests {
         var handler = new CancelAwareHandler();
         using var neverRespondingClient = new HttpClient(handler);
 
-        // Nothing here is wall-clock derived: the override pins the memory stage's budget, the stub
-        // resolver keeps a git spawn out of it, and budgetTotal sits far enough above the inner
-        // phase that the outer deadline can't pre-empt it. The 250ms is the cancellation window.
+        // Nothing here is wall-clock derived. The budgets are generous ceilings that never fire —
+        // cancellation is triggered deterministically by the handler's own Release(), called only
+        // after SendAsync has been ENTERED (EnteredSignal). Previously the 250ms budget raced the
+        // request entry: under CI load the token could fire before SendAsync ran, so `Entered` was
+        // false and the test failed on an unrelated PR. The stub resolver still keeps a git spawn
+        // out of the path.
         var elapsed = System.Diagnostics.Stopwatch.StartNew();
-        var exit1 = await CursorHookCommand.HandleCore(
-            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(15),
+        var call = CursorHookCommand.HandleCore(
+            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(60),
             memoryClientFactory: (_, _) => Task.FromResult(neverRespondingClient),
             memoryStoreFactory: storeFactory,
-            memoryBudgetOverride: TimeSpan.FromMilliseconds(250),
+            memoryBudgetOverride: TimeSpan.FromSeconds(30),
             memoryScopeResolver: new StubScopeResolver());
+
+        await handler.EnteredSignal.Task; // the fetch has entered the handler...
+        handler.Release();                // ...only now cancel it — entry can never lose the race.
+
+        var exit1 = await call;
         elapsed.Stop();
         await Assert.That(exit1).IsEqualTo(0);
         // Entered rules out a skipped attempt (which would prove nothing); Cancelled rules out the
         // request being abandoned by a wrapper while it kept running; and returning far inside the
-        // 15s deadline rules that deadline out as the thing that ended it, leaving the 250ms budget.
+        // generous budgets rules those timers out as the thing that ended it, leaving the
+        // deterministic Release() as the sole cancellation source.
         await Assert.That(handler.Entered).IsTrue();
         await Assert.That(handler.Cancelled).IsTrue();
         await Assert.That(elapsed.Elapsed.TotalSeconds).IsLessThan(10);
@@ -1131,26 +1140,45 @@ public class CursorHookCommandTests {
             Task.FromResult(new SessionStartMemoryScope(RepoHash: null, MachineTag: "test-machine"));
     }
 
-    // A GET that never resolves on its own — it only ends via the caller's own
-    // cancellation, honoured properly (unlike StubHandler, which ignores its ct). Used to
-    // prove a memory fetch cancelled at the budget deadline leaves the lease uncommitted
-    // rather than committing a spurious "completed" record.
+    // A GET that never resolves on its own — it only ends via cancellation, honoured properly
+    // (unlike StubHandler, which ignores its ct). Used to prove a cancelled memory fetch leaves the
+    // lease uncommitted rather than committing a spurious "completed" record.
+    //
+    // Cancellation is TEST-DRIVEN, not wall-clock-driven: SendAsync signals
+    // <see cref="EnteredSignal"/> the instant it is entered, and the test calls <see cref="Release"/>
+    // only AFTER awaiting that signal — so entry deterministically precedes cancellation and can
+    // never lose a race to a real-time budget the way `memBudget: 250ms` did. The request is still
+    // bound to (and honours) its own budget/deadline token via the linked source, so the fetch is
+    // still proven to be cancellable through the plumbing under test.
     sealed class CancelAwareHandler : HttpMessageHandler {
+        readonly CancellationTokenSource _release = new();
         volatile bool _entered;
         volatile bool _cancelled;
         // Separate "never fetched at all", "fetched and abandoned", and "fetched and cancelled".
         public bool Entered => _entered;
         public bool Cancelled => _cancelled;
+        // Fires the moment SendAsync is entered, so the test can cancel strictly after entry.
+        public TaskCompletionSource EnteredSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Deterministically cancel the in-flight request. Call only once EnteredSignal has fired.
+        public void Release() => _release.Cancel();
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
             _entered = true;
+            EnteredSignal.TrySetResult();
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _release.Token);
             try {
-                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                await Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
             } catch (OperationCanceledException) {
                 _cancelled = true;
                 throw;
             }
             return new HttpResponseMessage(HttpStatusCode.OK);
+        }
+
+        protected override void Dispose(bool disposing) {
+            if (disposing) _release.Dispose();
+            base.Dispose(disposing);
         }
     }
 }
