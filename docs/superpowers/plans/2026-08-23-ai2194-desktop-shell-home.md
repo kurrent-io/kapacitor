@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **Nothing here is safety-bearing.** `AppState` is app-owned UX state only; the CLI's fixed-namespace marker remains the source of truth for anything else (`AppStateStore.cs:6`).
-- **AOT.** The app publishes NativeAOT. Every new serialized type joins a `JsonSerializerContext`; no reflection-based `JsonSerializer` overloads. Verify with `dotnet publish src/Capacitor.Cli/Capacitor.Cli.csproj -c Release 2>&1 | grep -E 'IL[23][01][0-9]{2}'` — must be empty.
+- **AOT — know what is actually gated.** `Capacitor.Cli` is the ONLY project with `PublishAot=true`, and it references only `Capacitor.Cli.Core`. So `dotnet publish src/Capacitor.Cli/Capacitor.Cli.csproj -c Release 2>&1 | grep -E 'IL[23][01][0-9]{2}'` (must be empty) gates Core, CLI and daemon code — Task 1's `StatusIpc.cs` change among them — and says **nothing** about `Capacitor.App`, which is not in that graph and is not AOT-published today. Every new serialized type still joins a `JsonSerializerContext` and no reflection-based `JsonSerializer` overload is used **anywhere**, app code included: the app already does this consistently (`AppStateStore`, `KcapCli`), and a reflection dependency introduced now would silently foreclose ever AOT-publishing the app. Treat it as house style in the app and as an enforced gate in Core.
 - **`JsonArray` collection expressions are banned** — `[a, b]` compiles to `Add<T>()` which needs dynamic code. Use `new JsonArray(a, b)`.
 - **Additive DTO members only.** `DaemonInfoDto`/`AgentStatusDto` members are appended with defaults; never reorder or retype. No new `FrameType` values in this slice.
 - **Harness availability is never version-gated.** It comes from the runtime factory's own `IsAvailable()`, mirroring the borrowed-review invariant: a vendor auto-update must not silently withdraw a capability.
@@ -471,10 +471,10 @@ public interface ILaunchClient {
     Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct);
 }
 
-/// The RequestLaunchAgentV2 hub argument. A concrete record, not an anonymous type: this
-/// assembly publishes NativeAOT, so the payload rides a source-generated context (below) and
-/// the HubConnection is told to use it. Member names must match LaunchAgentRequestV2's
-/// properties — the hub binds by name.
+/// The RequestLaunchAgentV2 hub argument. A concrete record, not an anonymous type: the app
+/// serializes through source-generated contexts throughout (AppStateStore, KcapCli), and a
+/// reflection dependency here would foreclose ever AOT-publishing it. Member names must match
+/// LaunchAgentRequestV2's properties — the hub binds by name.
 public sealed record LaunchAgentRequestV2Payload {
     [JsonPropertyName("daemonName")]          public required string   DaemonName          { get; init; }
     [JsonPropertyName("prompt")]              public          string?  Prompt              { get; init; }
@@ -557,7 +557,8 @@ git commit -m "feat(app): launch sessions through the server hub"
 - Test: `test/Capacitor.App.Tests.Unit/HomeViewModelTests.cs`
 
 **Interfaces:**
-- Consumes: `IDaemonClientService` (Task 0, pre-existing), `IAppStateStore.HarnessByRepo` (Task 2), `HarnessCatalog.Build` (Task 3), `ILaunchClient.StartAsync` (Task 4).
+- Consumes: `IDaemonClientService` (pre-existing), `IAppStateStore` / `AppState.HarnessByRepo` (Task 2), `HostedHarnessCatalog.Build` (Task 3 — note the type is `HostedHarnessCatalog`, NOT `HarnessCatalog`; the latter is the pre-existing `Capacitor.Cli.Core.Setup` type this one deliberately derives from), `ILaunchClient.StartAsync` (Task 4).
+- **Harness list source:** `HostedHarnessCatalog.Build(snapshot.Daemon.SupportedVendors)` once a `DaemonStatusDto` has arrived on `IDaemonClientService.Snapshots`. Before the first snapshot, use `HostedHarnessCatalog.Build(null)` — everything available. Never start from an empty list: empty is indistinguishable from "this daemon hosts nothing", which is the confusion the null-means-unknown rule exists to prevent.
 - Produces:
   - `HomeViewModel(IDaemonClientService daemon, IAppStateStore state, ILaunchClient launch)`
   - `string SelectedRepoPath { get; set; }` — `""` for the scratch target.
@@ -795,6 +796,8 @@ Expected: PASS, including the pre-existing `MainWindowSmokeTests`.
 
 Run: `dotnet publish src/Capacitor.Cli/Capacitor.Cli.csproj -c Release 2>&1 | grep -E 'IL[23][01][0-9]{2}'`
 Expected: no output.
+
+This gates Core, CLI and daemon code — it is the regression check for Task 1's `StatusIpc.cs` change. It does **not** compile `Capacitor.App`, which is not in the AOT graph. The app's source-generated JSON discipline is convention, not enforced here; if you want evidence for an app type, build with `-p:EmitCompilerGeneratedFiles=true` and read the generated context.
 
 - [ ] **Step 8: Update the README**
 
