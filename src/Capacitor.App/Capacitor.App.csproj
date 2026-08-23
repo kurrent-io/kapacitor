@@ -18,6 +18,7 @@
         <PackageReference Include="Avalonia.Themes.Fluent" />
         <PackageReference Include="ReactiveUI.Avalonia" />
         <PackageReference Include="DynamicData" />
+        <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
     </ItemGroup>
     <ItemGroup>
         <!-- .axaml files are auto-included as AvaloniaXaml by Avalonia's build props; plain
