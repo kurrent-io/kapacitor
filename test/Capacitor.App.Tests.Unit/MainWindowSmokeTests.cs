@@ -26,6 +26,16 @@ public class MainWindowSmokeTests {
         return (actions, notifier);
     }
 
+    // Home is the default-selected tab (Task 6, AI-2194); the Agents TabItem carries no x:Name
+    // (only HomeTabItem/ActivityTabItem do), so it's found by its header text instead — same
+    // Name-scope lookup style as everything else in this file, one step removed.
+    static void SelectAgentsTab(MainWindow window) {
+        var tabs = window.GetVisualDescendants().OfType<TabControl>().First(t => t.Name == "MainTabs");
+        var agentsTab = window.GetVisualDescendants().OfType<TabItem>().First(t => t.Header as string == "Agents");
+        tabs.SelectedItem = agentsTab;
+        Dispatcher.UIThread.RunJobs();
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task MainWindow_renders_daemon_identity_server_url_and_agent_count() {
@@ -200,6 +210,10 @@ public class MainWindowSmokeTests {
             window.Show();
             Dispatcher.UIThread.RunJobs();
 
+            // Home is the default-selected tab (Task 6, AI-2194) — this test asserts what the
+            // Agents tab CONTAINS, so select it explicitly rather than relying on it opening first.
+            SelectAgentsTab(window);
+
             var emptyState = window.GetVisualDescendants().OfType<TextBlock>()
                 .FirstOrDefault(t => t.Name == "EmptyStateText");
             var texts = string.Join('\n', window.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text ?? ""));
@@ -231,6 +245,10 @@ public class MainWindowSmokeTests {
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
+
+            // Home is the default-selected tab (Task 6, AI-2194) — this test asserts what the
+            // Agents tab CONTAINS, so select it explicitly rather than relying on it opening first.
+            SelectAgentsTab(window);
 
             Grid Header() => window.GetVisualDescendants().OfType<Grid>().First(g => g.Name == "AgentsGridHeader");
 

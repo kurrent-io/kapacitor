@@ -46,13 +46,10 @@
              refresh cadence tracks both tab selection and the window's own on-screen state. -->
         <TabControl Grid.Row="1" x:Name="MainTabs" Margin="0,8,0,0" SelectionChanged="OnTabSelectionChanged">
             <TabItem x:Name="HomeTabItem" Header="Home">
-                <views:HomeView />
+                <views:HomeView DataContext="{Binding Home}" />
             </TabItem>
 
-            <!-- IsSelected pins Agents as the still-default tab: TabControl otherwise defaults
-                 SelectedIndex to 0, and Home now occupies that slot — every existing smoke test
-                 assumes Agents content is realized without an explicit selection first. -->
-            <TabItem Header="Agents" IsSelected="True">
+            <TabItem Header="Agents">
                 <!-- The ENTIRE pre-existing agents block, unchanged: control names preserved so
                      the existing smoke tests keep finding them in the window's name scope. -->
                 <Grid RowDefinitions="Auto,*">

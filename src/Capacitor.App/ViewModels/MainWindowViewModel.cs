@@ -111,6 +111,12 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// not something built here.
     public ActivityViewModel Activity { get; }
 
+    /// The Home tab (Task 6, AI-2194) — constructed at the composition root over the SAME
+    /// IDaemonClientService instance this window uses, never a second daemon connection. Null
+    /// only for a caller that doesn't supply one (most existing tests predate Home); HomeView
+    /// tolerates a null DataContext, same as any other unbound view.
+    public HomeViewModel? Home { get; }
+
     ObservableAsPropertyHelper<bool>? _gridEnabled;
     public bool GridEnabled => _gridEnabled?.Value ?? false;
 
@@ -159,11 +165,12 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     public MainWindowViewModel(
             IDaemonClientService service, AgentActionService actions, ITicker ticker,
             CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
-            IObservable<string?>? lifecycleStatus = null, TimeProvider? time = null) {
+            IObservable<string?>? lifecycleStatus = null, TimeProvider? time = null, HomeViewModel? home = null) {
         _service = service;
         _time = time ?? TimeProvider.System;
         Agents = new ReadOnlyObservableCollection<AgentRowViewModel>(_agentsSource);
         Activity = activity;
+        Home = home;
 
         // ReactiveCommand's own CanExecute observable already ANDs the supplied canExecute with
         // "not currently executing" (confirmed against the installed ReactiveUI 23.2.28 API

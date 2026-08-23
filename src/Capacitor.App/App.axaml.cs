@@ -65,6 +65,12 @@ public partial class App : Application {
     // frame: the prompt window factory and BuildAndShowMainWindow both close over the SAME
     // instance.
     ActivityViewModel? _activity;
+    // Constructed INSIDE BuildAndShowMainWindow (Task 6, AI-2194), over the same `service`
+    // instance MainWindowViewModel itself uses — retrieved back off the built window's own
+    // DataContext right below, so this field (and therefore disposal) never needs a second
+    // construction path or a signature change to BuildAndShowMainWindow (AppStartupTests calls
+    // that method directly, with no Home argument).
+    HomeViewModel? _home;
     TrayViewModel? _trayVm;
     TrayIconManager? _tray;
     // No disposal needed — RefCount tears its Interval down with its last subscriber, and every
@@ -158,7 +164,7 @@ public partial class App : Application {
             if (_wizardWindow is { IsVisible: true } wizard) wizard.Close();
             Console.Error.WriteLine($"kcap app failed to start: {ex}");
             await HandleStartupFailureAsync(
-                desktop, ex, _service, _shutdown, [_tray, _trayVm, _promptCoordinator, _consent, _activity, _pause], _lifecycle, _lane);
+                desktop, ex, _service, _shutdown, [_tray, _trayVm, _promptCoordinator, _consent, _activity, _home, _pause], _lifecycle, _lane);
             // all already disposed above — never let a later OnShutdownRequested (e.g. Cmd+Q
             // while the error window is up) dispose any of them a second time
             _service = null;
@@ -172,6 +178,7 @@ public partial class App : Application {
             _consent = null;
             _pause = null;
             _activity = null;
+            _home = null;
             _wizardAuth = null; // its attempt, if any, already settled through the wizard's own close path
             _wizardImport = null; // same — any in-flight run already settled through the wizard's own close path
             _wizardWindow = null;
@@ -272,6 +279,10 @@ public partial class App : Application {
         _coordinator.QuitInProgress = _shutdownStarted;
         _coordinator.ShowMainWindow();
         desktop.MainWindow = _coordinator.Window;
+        // BuildAndShowMainWindow constructs Home itself (over the same `service`) — read back off
+        // the window's own DataContext rather than threading a new parameter through, so
+        // AppStartupTests' existing direct call to that method needs no change.
+        _home = (_coordinator.Window?.DataContext as MainWindowViewModel)?.Home;
 
         // LAST, deliberately (spec §9): anything above throwing lands in the catch with no
         // tray icon ever created, leaving the error window as the only surface.
@@ -567,8 +578,15 @@ public partial class App : Application {
         // Notifier is set on the WINDOW (spec §11 toast overlay), not the ViewModel — the toast
         // is a View-level concern (WindowNotificationManager lives on MainWindow) independent of
         // the VM's WhenActivated-scoped projections.
+        //
+        // Home (Task 6, AI-2194) is built here, over the SAME `service` instance MainWindowViewModel
+        // itself uses — never a second daemon connection. AppStateStore/ServerLaunchClient are both
+        // cheap, self-contained constructions (file-path-gated I/O; a HubConnection that only opens
+        // lazily on first StartAsync), the same reasoning BuildLifecycleController's own
+        // `new AppStateStore(PathHelpers.ConfigPath("app-state.json"))` already relies on.
+        var home = new HomeViewModel(service, new AppStateStore(PathHelpers.ConfigPath("app-state.json")), new ServerLaunchClient());
         var window = new MainWindow {
-            DataContext = new MainWindowViewModel(service, actions, ticker, shutdownToken, activity, startAction, lifecycleStatus),
+            DataContext = new MainWindowViewModel(service, actions, ticker, shutdownToken, activity, startAction, lifecycleStatus, home: home),
             Notifier = notifier,
         };
         window.Show();
@@ -993,7 +1011,7 @@ public partial class App : Application {
             // disposed one. A resolve already in flight was cancelled by _shutdown at the top of
             // OnShutdownRequested and settles on the ViewModel's silent-abort path.
             await DisposeUiThenConfirmShutdownAsync(
-                [_tray, _trayVm, _promptCoordinator, _consent, _activity, _pause],
+                [_tray, _trayVm, _promptCoordinator, _consent, _activity, _home, _pause],
                 DisposeLifecycleAndServiceAsync, () => _shutdownConfirmed = true, desktop, _exitCode);
         } else {
             await DisposeLifecycleAndServiceAsync();
