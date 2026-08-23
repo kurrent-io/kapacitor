@@ -5,22 +5,11 @@ using Capacitor.Cli.Core;
 namespace Capacitor.Cli.Harness.Claude;
 
 /// <summary>
-/// Hands the Claude <c>SessionEnd</c> event to a detached continuation of this same hook so the
-/// hook itself returns at once.
+/// Hands the Claude <c>SessionEnd</c> event to a detached re-invocation of this hook so the hook
+/// itself returns at once: Claude Code caps a plugin's SessionEnd hook at 1.5 s regardless of
+/// the <c>hooks.json</c> timeout, and the session-end path cannot fit. The continuation runs that
+/// path unchanged under its 15 s budget. Reasoning in <c>docs/CHANGES.md</c>.
 /// </summary>
-/// <remarks>
-/// Claude Code runs SessionEnd hooks on shutdown, <c>/clear</c> and resume under a grace it
-/// computes from <c>settings.json</c> hook timeouts only — a plugin's <c>hooks.json</c> timeout is
-/// matched but never read — so a plugin-sourced hook gets the 1.5 s floor, then is killed. The
-/// session-end path (server-URL git probe, spool drain, auth, watcher kill, transcript drain,
-/// POST) cannot fit, and killing the watcher before the POST left nothing to end the session.
-///
-/// <para>The hook therefore re-invokes itself with <see cref="DetachedFlag"/>, pipes the payload
-/// to that child's stdin and exits; the child runs the unchanged session-end path under today's
-/// 15 s budget, with its output in the session log and its own session so neither Claude's abort
-/// of the hook nor a closing terminal reaches it. The spool fallback and the <c>ended_at</c>
-/// idempotency stamp ride along untouched because the path itself is untouched.</para>
-/// </remarks>
 static class ClaudeSessionEndHandoff {
     public const string DetachedFlag = "--detached";
 
@@ -40,10 +29,12 @@ static class ClaudeSessionEndHandoff {
     }
 
     /// <summary>
-    /// Starts the detached continuation and feeds it <paramref name="body"/>. False when the
-    /// child could not be started — the caller then runs the event inline, as before.
+    /// Starts the detached continuation and feeds it <paramref name="body"/>. False when that did
+    /// not fully happen — the caller then runs the event inline, as before.
     /// </summary>
     public static bool TrySpawn(string[] args, string body) {
+        Process? process = null;
+
         try {
             var psi = new ProcessStartInfo(Environment.ProcessPath ?? "kcap") {
                 RedirectStandardInput  = true,
@@ -60,7 +51,7 @@ static class ClaudeSessionEndHandoff {
             // pipes open, or Claude waits on them past the hook's own exit.
             ProcessHelpers.PreventInheritedHandles();
 
-            var process = WatcherManager.StartProcess(psi);
+            process = WatcherManager.StartProcess(psi);
 
             if (process is null) {
                 Console.Error.WriteLine("[kcap] session-end hand-off: failed to start the detached continuation; running inline");
@@ -77,29 +68,46 @@ static class ClaudeSessionEndHandoff {
         } catch (Exception ex) {
             Console.Error.WriteLine($"[kcap] session-end hand-off failed: {ex.Message}; running inline");
 
+            // A child that started but never got the full payload must not outlive this failure:
+            // the inline path is about to do the work, and two owners would double-post.
+            try { process?.Kill(entireProcessTree: true); } catch { }
+
             return false;
+        } finally {
+            process?.Dispose();
         }
     }
 
     /// <summary>
-    /// The continuation's own setup: its std pipes were closed the instant it started, so output
-    /// goes to the session log (shared with the watcher, whose lines it interleaves with), and it
-    /// leaves the terminal's session so a closing window cannot SIGHUP it mid-drain.
+    /// The continuation's own setup: output to the session log (its pipes are already closed) and
+    /// out of the terminal's session so a closing window cannot SIGHUP it mid-drain.
     /// </summary>
     public static void EnterDetached(string body) {
-        try {
-            string? sessionId = null;
-            try { sessionId = JsonNode.Parse(body)?["session_id"]?.GetValue<string>()?.Replace("-", ""); } catch { }
+        TextWriter writer;
 
+        try {
             var logDir = PathHelpers.ConfigPath("logs");
             Directory.CreateDirectory(logDir);
-            var logWriter = new StreamWriter(Path.Combine(logDir, $"{sessionId ?? "claude-session-end"}.log"), append: true) { AutoFlush = true };
-            Console.SetOut(logWriter);
-            Console.SetError(logWriter);
+            writer = new StreamWriter(Path.Combine(logDir, $"{LogName(body)}.log"), append: true) { AutoFlush = true };
         } catch {
-            // Logging is best-effort; the drain and POST matter more.
+            writer = TextWriter.Null;
         }
 
+        Console.SetOut(writer);
+        Console.SetError(writer);
+
         ProcessHelpers.DetachFromControllingTerminal();
+    }
+
+    // The watcher's log name for a well-formed id, so the two interleave in one file; anything
+    // else (the id is payload data) stays inside the logs directory under a fixed name.
+    internal static string LogName(string body) {
+        try {
+            var sessionId = JsonNode.Parse(body)?["session_id"]?.GetValue<string>()?.Replace("-", "");
+
+            if (sessionId is { Length: > 0 } && sessionId.All(char.IsAsciiLetterOrDigit)) return sessionId;
+        } catch { }
+
+        return "claude-session-end";
     }
 }

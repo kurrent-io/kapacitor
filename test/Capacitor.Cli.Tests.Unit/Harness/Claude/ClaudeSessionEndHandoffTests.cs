@@ -110,4 +110,40 @@ public class ClaudeSessionEndHandoffTests : IDisposable {
 
         await Assert.That(ClaudeSessionEndHandoff.TrySpawn(HookArgs, SessionEndBody)).IsFalse();
     }
+
+    [Test]
+    public async Task A_child_that_never_receives_the_payload_is_killed_before_the_inline_fallback() {
+        Skip.When(OperatingSystem.IsWindows(), "uses /bin/sh to stand in for the continuation");
+
+        // A started child whose stdin was not redirected: the payload write throws after the
+        // process exists, the shape of any post-start failure.
+        var pid = 0;
+        var identity = "";
+        WatcherManager.ProcessStarterForTesting = _ => {
+            var stub = new ProcessStartInfo("/bin/sh") { UseShellExecute = false };
+            stub.ArgumentList.Add("-c");
+            stub.ArgumentList.Add("sleep 30");
+            var child = Process.Start(stub)!;
+            // TrySpawn disposes its handle, so the pid plus start identity is captured here.
+            pid      = child.Id;
+            identity = PidIdentity.Capture(pid);
+            return child;
+        };
+
+        var spawned = ClaudeSessionEndHandoff.TrySpawn(HookArgs, SessionEndBody);
+
+        await Assert.That(spawned).IsFalse();
+        await Assert.That(pid).IsNotEqualTo(0);
+        await PidIdentity.WaitUntilGoneAsync(pid, identity, TimeSpan.FromSeconds(10));
+    }
+
+    [Test]
+    [Arguments("""{"session_id":"9dc27753-7645-4e46-91ec-c2d69973c152"}""", "9dc2775376454e4691ecc2d69973c152")]
+    [Arguments("""{"session_id":"../../etc/passwd"}""", "claude-session-end")]
+    [Arguments("""{"session_id":""}""", "claude-session-end")]
+    [Arguments("""{}""", "claude-session-end")]
+    [Arguments("not json", "claude-session-end")]
+    public async Task Log_name_is_the_watcher_key_or_a_fixed_name(string body, string expected) {
+        await Assert.That(ClaudeSessionEndHandoff.LogName(body)).IsEqualTo(expected);
+    }
 }

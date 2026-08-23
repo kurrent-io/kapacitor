@@ -77,10 +77,8 @@ if (Environment.GetEnvironmentVariable("KCAP_SKIP") is "1"
 var hookProcessStart = System.Diagnostics.Stopwatch.GetTimestamp();
 var isHook = command == "hook";
 
-// Claude's SessionEnd gets 1.5 s before Claude kills the hook (see ClaudeSessionEndHandoff), so
-// it is handed to a detached continuation HERE — ahead of ResolveServerUrl's git probes and the
-// global spool drain below, either of which alone can spend that grace. Stdin is read once and
-// replayed to the dispatcher; the continuation enters with its output already off the dead pipes.
+// Claude kills a SessionEnd hook after 1.5 s (ClaudeSessionEndHandoff), so the hand-off sits
+// ahead of ResolveServerUrl's git probes and the global spool drain, each of which can spend it.
 string? claudeHookBody = null;
 if (isHook && args.Contains("--claude")) {
     try { claudeHookBody = await Console.In.ReadToEndAsync(); } catch { claudeHookBody = ""; }
