@@ -17,19 +17,24 @@ public interface ILaunchClient {
 /// serializes through source-generated contexts throughout (AppStateStore, KcapCli), and a
 /// reflection dependency here would foreclose ever AOT-publishing it. Member names must match
 /// LaunchAgentRequestV2's properties — the hub binds by name.
+// Explicit snake_case on every member: the server applies PropertyNamingPolicy =
+// SnakeCaseLower to all hub payloads (kcap-server JsonDefaults.ConfigureSignalRPayload).
+// LaunchHubJson.Configure mirrors that policy too — belt and braces, since a naming policy
+// set only on JsonSerializerOptions is not guaranteed to reach a source generator's
+// precomputed metadata for a property that carries its own [JsonPropertyName].
 public sealed record LaunchAgentRequestV2Payload {
-    [JsonPropertyName("daemonName")]          public required string   DaemonName          { get; init; }
-    [JsonPropertyName("prompt")]              public          string?  Prompt              { get; init; }
-    [JsonPropertyName("model")]               public required string   Model               { get; init; }
-    [JsonPropertyName("effort")]              public          string?  Effort              { get; init; }
-    [JsonPropertyName("repoPath")]            public required string   RepoPath            { get; init; }
-    [JsonPropertyName("tools")]               public          string[]? Tools              { get; init; }
-    [JsonPropertyName("attachmentIds")]       public          string[]? AttachmentIds      { get; init; }
-    [JsonPropertyName("visibility")]          public          string?  Visibility          { get; init; }
-    [JsonPropertyName("grants")]              public          object[]? Grants             { get; init; }
-    [JsonPropertyName("vendor")]              public required string   Vendor              { get; init; }
-    [JsonPropertyName("codexPosture")]        public          object?  CodexPosture        { get; init; }
-    [JsonPropertyName("acpPermissionPreset")] public          string?  AcpPermissionPreset { get; init; }
+    [JsonPropertyName("daemon_name")]           public required string   DaemonName          { get; init; }
+    [JsonPropertyName("prompt")]                public          string?  Prompt              { get; init; }
+    [JsonPropertyName("model")]                 public required string   Model               { get; init; }
+    [JsonPropertyName("effort")]                public          string?  Effort              { get; init; }
+    [JsonPropertyName("repo_path")]             public required string   RepoPath            { get; init; }
+    [JsonPropertyName("tools")]                 public          string[]? Tools              { get; init; }
+    [JsonPropertyName("attachment_ids")]        public          string[]? AttachmentIds      { get; init; }
+    [JsonPropertyName("visibility")]            public          string?  Visibility          { get; init; }
+    [JsonPropertyName("grants")]                public          object[]? Grants             { get; init; }
+    [JsonPropertyName("vendor")]                public required string   Vendor              { get; init; }
+    [JsonPropertyName("codex_posture")]         public          object?  CodexPosture        { get; init; }
+    [JsonPropertyName("acp_permission_preset")] public          string?  AcpPermissionPreset { get; init; }
 }
 
 [JsonSerializable(typeof(LaunchAgentRequestV2Payload))]

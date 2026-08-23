@@ -54,8 +54,9 @@ public sealed class ServerLaunchClient : ILaunchClient, IAsyncDisposable {
                     }
                 )
                 // AOT: point the JSON protocol at the generated context, or the payload
-                // serializes reflectively at runtime and NativeAOT publish warns.
-                .AddJsonProtocol(o => o.PayloadSerializerOptions.TypeInfoResolver = LaunchJsonContext.Default)
+                // serializes reflectively at runtime and NativeAOT publish warns. Shared with
+                // the tests via LaunchHubJson so the wire format can't silently diverge.
+                .AddJsonProtocol(o => LaunchHubJson.Configure(o.PayloadSerializerOptions))
                 .Build();
 
             await hub.StartAsync(ct);
