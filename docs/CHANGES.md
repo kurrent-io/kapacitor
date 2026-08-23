@@ -7,6 +7,20 @@ Not release notes. Each entry is written as of the change that produced it and i
 code moves on; where an entry disagrees with the code, the code wins.
 
 
+## Claude SessionEnd hand-off
+
+Claude Code computes the grace it gives SessionEnd hooks from `settings.json` timeouts only; a
+plugin's `hooks.json` timeout is used for matching but never for that computation, so kcap's
+SessionEnd hook gets the 1.5 s floor and is killed — after it has already killed the watcher whose
+parent-exit watchdog would otherwise have ended the session. The hook therefore reads its payload,
+re-invokes itself with `--detached`, pipes the payload to that child and exits, all before the
+server-URL git probes and the global spool drain that `Program.cs` runs ahead of every hook. The
+continuation runs the unchanged session-end path — spool fallback and `ended_at` idempotency
+included — under the 15 s `HookBudget` that used to be the hook's, with its output in the session
+log and its own session so neither Claude's abort nor a closing terminal can reach it. Only
+SessionEnd is handed off: SubagentStop is already `async` in `hooks.json`, and the others honour
+their timeouts.
+
 ## Review flows and reviewer selection
 
 Review flows use a vendor-neutral catalog-start v2 protocol: reserved `spec-review`/`code-review`

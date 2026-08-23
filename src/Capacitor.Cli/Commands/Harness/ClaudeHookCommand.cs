@@ -19,11 +19,12 @@ namespace Capacitor.Cli.Commands.Harness;
 /// </summary>
 public static class ClaudeHookCommand {
     // Hard ceiling on the best-effort pre-POST drain (watcher kill + inline transcript
-    // drain) for session-end / subagent-stop. Claude kills the SessionEnd hook at its
-    // configured timeout (15s); a slow or retrying remote call in the drain could consume
-    // all of it (the HTTP retry helper alone allows up to 30s) and the session-end POST
-    // would never be sent, leaving the session stuck "Active". 8s leaves ample headroom to
-    // send the POST; the server's StopAndDrain + the "kcap import" hint recover the rest.
+    // drain) for session-end / subagent-stop. Session-end runs in the detached continuation
+    // (ClaudeSessionEndHandoff) under HookBudget's 15s, subagent-stop inside the hook; either
+    // way a slow or retrying remote call in the drain could consume the whole budget (the HTTP
+    // retry helper alone allows up to 30s) and the lifecycle POST would never be sent, leaving
+    // the session stuck "Active". 8s leaves ample headroom to send the POST; the server's
+    // StopAndDrain + the "kcap import" hint recover the rest.
     static readonly TimeSpan PreHookDrainCap = TimeSpan.FromSeconds(8);
 
     public static Task<int> Handle(string baseUrl, TextReader stdin, long processStart = 0,

@@ -77,6 +77,21 @@ if (Environment.GetEnvironmentVariable("KCAP_SKIP") is "1"
 var hookProcessStart = System.Diagnostics.Stopwatch.GetTimestamp();
 var isHook = command == "hook";
 
+// Claude's SessionEnd gets 1.5 s before Claude kills the hook (see ClaudeSessionEndHandoff), so
+// it is handed to a detached continuation HERE — ahead of ResolveServerUrl's git probes and the
+// global spool drain below, either of which alone can spend that grace. Stdin is read once and
+// replayed to the dispatcher; the continuation enters with its output already off the dead pipes.
+string? claudeHookBody = null;
+if (isHook && args.Contains("--claude")) {
+    try { claudeHookBody = await Console.In.ReadToEndAsync(); } catch { claudeHookBody = ""; }
+
+    if (ClaudeSessionEndHandoff.IsDetached(args)) {
+        ClaudeSessionEndHandoff.EnterDetached(claudeHookBody);
+    } else if (ClaudeSessionEndHandoff.ShouldHandOff(args, claudeHookBody) && ClaudeSessionEndHandoff.TrySpawn(args, claudeHookBody)) {
+        return 0;
+    }
+}
+
 // Agent-spawned commands owe an output contract, or must leave no orphaned child, so an unusable
 // server URL must not kill them mid-contract — EnsureAbsolute throws for them instead of exiting.
 // Interactive commands keep exiting 2 with the actionable hint, which is the right UX with a user
@@ -798,7 +813,7 @@ switch (command) {
                 sessionId: null); // current session unknown here — reading stdin now would consume it
         }
         if (args.Contains("--claude")) {
-            return await ClaudeHookCommand.Handle(baseUrl!, Console.In, processStart: hookProcessStart);
+            return await ClaudeHookCommand.Handle(baseUrl!, new StringReader(claudeHookBody!), processStart: hookProcessStart);
         }
         if (args.Contains("--codex")) {
             return await CodexHookCommand.Handle(baseUrl!, Console.In, hookProcessStart);

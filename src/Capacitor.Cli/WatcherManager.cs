@@ -50,8 +50,8 @@ static partial class WatcherManager {
     internal static Func<string, Task>? SpawnOverrideForTesting;
 
     /// <summary>
-    /// Test seam for the ACTUAL <c>Process.Start</c> call inside <see cref="SpawnWatcher"/> and
-    /// <see cref="SpawnCopilotFinalizeDrain"/>. Distinct from <see cref="SpawnOverrideForTesting"/>,
+    /// Test seam for the ACTUAL <c>Process.Start</c> call inside <see cref="SpawnWatcher"/>,
+    /// <see cref="SpawnCopilotFinalizeDrain"/> and <c>ClaudeSessionEndHandoff.TrySpawn</c>. Distinct from <see cref="SpawnOverrideForTesting"/>,
     /// which only <c>SpawnForKeyAsync</c> consults and so cannot observe those methods at all.
     ///
     /// <para>Needed because both call static <c>Process.Start</c> inside a catch-all, and the finalize
@@ -63,7 +63,7 @@ static partial class WatcherManager {
     /// </summary>
     internal static Func<ProcessStartInfo, Process?>? ProcessStarterForTesting;
 
-    static Process? StartProcess(ProcessStartInfo psi) =>
+    internal static Process? StartProcess(ProcessStartInfo psi) =>
         ProcessStarterForTesting is { } fake ? fake(psi) : Process.Start(psi);
 
     internal static string BuildSpawnArgs(
