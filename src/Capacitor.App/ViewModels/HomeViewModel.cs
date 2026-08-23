@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Reactive;
+using System.Reactive.Disposables;
+using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
 using Capacitor.App.Services;
 using DynamicData;
@@ -16,7 +18,7 @@ namespace Capacitor.App.ViewModels;
 /// MainWindowViewModel/ConsentPromptViewModel), so both projections below ObserveOn
 /// RxSchedulers.MainThreadScheduler BEFORE the operator that touches bound state — Task 6's
 /// ItemsControl binding must never see a mutation off the UI thread.
-public sealed class HomeViewModel : ReactiveObject {
+public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// A repository with no remembered choice falls back to this — never to whatever vendor was
     /// selected for a DIFFERENT repository, which would leak a preference across repositories.
     public const string DefaultVendor = "claude";
@@ -29,6 +31,7 @@ public sealed class HomeViewModel : ReactiveObject {
     readonly IDaemonClientService _daemon;
     readonly IAppStateStore _state;
     readonly ILaunchClient _launch;
+    readonly CompositeDisposable _disposables = new();
 
     string _selectedRepoPath = ScratchRepoPath;
     public string SelectedRepoPath {
@@ -87,7 +90,8 @@ public sealed class HomeViewModel : ReactiveObject {
         _harnesses = daemon.Snapshots
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .Select(s => HostedHarnessCatalog.Build(s.Daemon.SupportedVendors))
-            .ToProperty(this, x => x.Harnesses, HostedHarnessCatalog.Build(null));
+            .ToProperty(this, x => x.Harnesses, HostedHarnessCatalog.Build(null))
+            .DisposeWith(_disposables);
 
         Sessions = new ReadOnlyObservableCollection<SessionCardViewModel>(_sessionsSource);
         // ObserveOn BEFORE the binding operator (SortAndBind counts as "Bind" here, same as
@@ -97,10 +101,15 @@ public sealed class HomeViewModel : ReactiveObject {
             .Transform(dto => new SessionCardViewModel(dto))
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .SortAndBind(_sessionsSource, RowComparer)
-            .Subscribe();
+            .Subscribe()
+            .DisposeWith(_disposables);
 
         StartCommand = ReactiveCommand.CreateFromTask(StartAsync);
     }
+
+    // Constructor-scoped (like TrayViewModel/ActivityViewModel), not WhenActivated — the OAPH and
+    // the Agents subscription above run for this object's whole lifetime, not a window's.
+    public void Dispose() => _disposables.Dispose();
 
     /// Sets the selection and, when RememberHarness, persists it for SelectedRepoPath.
     /// RememberHarness = false skips the write only — it must never erase an existing choice.

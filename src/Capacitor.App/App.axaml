@@ -2,6 +2,26 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="Capacitor.App.App"
              RequestedThemeVariant="Default">
+    <Application.Resources>
+        <!-- The Home surface's design palette (AI-2171 Linear comment; prototyped verbatim in
+             prototypes/AI-2171-desktop-sessions/PrototypeUi.cs). Kcap-prefixed keys so these never
+             shadow a FluentTheme resource of the same short name — MainWindow's existing controls
+             stay on FluentTheme defaults untouched. -->
+        <ResourceDictionary>
+            <SolidColorBrush x:Key="KcapCanvasBrush" Color="#0B0D12" />
+            <SolidColorBrush x:Key="KcapSurfaceBrush" Color="#12151D" />
+            <SolidColorBrush x:Key="KcapSurfaceRaisedBrush" Color="#191D27" />
+            <SolidColorBrush x:Key="KcapBorderBrush" Color="#2A3040" />
+            <SolidColorBrush x:Key="KcapTextBrush" Color="#F1F3F7" />
+            <SolidColorBrush x:Key="KcapMutedBrush" Color="#9299AA" />
+            <SolidColorBrush x:Key="KcapAccentBrush" Color="#5BE0B3" />
+            <SolidColorBrush x:Key="KcapAccentDimBrush" Color="#173F36" />
+            <SolidColorBrush x:Key="KcapWarningBrush" Color="#F4B860" />
+            <SolidColorBrush x:Key="KcapWarningDimBrush" Color="#45351E" />
+            <SolidColorBrush x:Key="KcapPurpleBrush" Color="#A994FF" />
+            <SolidColorBrush x:Key="KcapDangerBrush" Color="#FF7272" />
+        </ResourceDictionary>
+    </Application.Resources>
     <Application.Styles>
         <FluentTheme />
     </Application.Styles>

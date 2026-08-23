@@ -1,0 +1,102 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:Capacitor.App.ViewModels"
+             xmlns:views="clr-namespace:Capacitor.App.Views"
+             x:Class="Capacitor.App.Views.HomeView"
+             x:DataType="vm:HomeViewModel"
+             Background="{StaticResource KcapCanvasBrush}">
+    <ScrollViewer>
+        <StackPanel Margin="28" Spacing="20" MaxWidth="960" HorizontalAlignment="Stretch">
+            <!-- Greeting row: Search and New session are decorative placeholders here (spec's own
+                 nav rail + real search land in AI-2195); New session just focuses the goal box. -->
+            <Grid ColumnDefinitions="*,Auto">
+                <StackPanel Spacing="3">
+                    <TextBlock Text="Home" FontSize="22" FontWeight="Bold" Foreground="{StaticResource KcapTextBrush}" />
+                    <TextBlock Text="Here's where your work is moving." FontSize="12" Foreground="{StaticResource KcapMutedBrush}" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+                    <Button Content="Search" Background="{StaticResource KcapSurfaceRaisedBrush}"
+                            BorderBrush="{StaticResource KcapBorderBrush}" Foreground="{StaticResource KcapTextBrush}" />
+                    <Button x:Name="NewSessionButton" Content="New session" Click="OnNewSessionClick"
+                            Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" FontWeight="SemiBold" />
+                </StackPanel>
+            </Grid>
+
+            <!-- Launcher card: goal, repository chip, harness chip, remember toggle, Start. -->
+            <Border Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                    BorderThickness="1" CornerRadius="10" Padding="16">
+                <StackPanel Spacing="12">
+                    <TextBox x:Name="GoalInput" Text="{Binding Goal}"
+                             PlaceholderText="What should we build? Type a goal or paste an issue, PR, or work-item URL…"
+                             Background="{StaticResource KcapSurfaceRaisedBrush}" Foreground="{StaticResource KcapTextBrush}"
+                             BorderBrush="{StaticResource KcapBorderBrush}" AcceptsReturn="False" />
+
+                    <WrapPanel ItemSpacing="8" LineSpacing="8" VerticalAlignment="Center">
+                        <Button x:Name="RepositoryChip" Click="OnRepositoryChipClick"
+                                Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="10,5"
+                                Content="{Binding SelectedRepoPath, Converter={x:Static views:RepositoryLabelConverter.Instance}}"
+                                ToolTip.Tip="{Binding SelectedRepoPath}" />
+
+                        <Button x:Name="HarnessChip" Click="OnHarnessChipClick"
+                                Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="10,5">
+                            <Button.Content>
+                                <MultiBinding Converter="{x:Static views:HarnessChipTextConverter.Instance}">
+                                    <Binding Path="Harnesses" />
+                                    <Binding Path="SelectedVendor" />
+                                </MultiBinding>
+                            </Button.Content>
+                        </Button>
+
+                        <CheckBox x:Name="RememberToggle" Content="Remember" IsChecked="{Binding RememberHarness}"
+                                  Foreground="{StaticResource KcapMutedBrush}" />
+
+                        <Button x:Name="StartButton" Content="Start" Command="{Binding StartCommand}"
+                                Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" FontWeight="SemiBold"
+                                CornerRadius="7" Padding="16,7"
+                                IsEnabled="{Binding SelectedRepoPath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    </WrapPanel>
+
+                    <TextBlock x:Name="StartErrorText" Text="{Binding StartError}" Foreground="{StaticResource KcapDangerBrush}"
+                               TextWrapping="Wrap"
+                               IsVisible="{Binding StartError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </StackPanel>
+            </Border>
+
+            <!-- Active sessions. -->
+            <TextBlock Text="Active sessions" FontSize="16" FontWeight="Bold" Foreground="{StaticResource KcapTextBrush}" />
+
+            <TextBlock x:Name="NoSessionsText" Text="No active sessions" FontSize="12" Foreground="{StaticResource KcapMutedBrush}"
+                       IsVisible="{Binding Sessions.Count, Converter={x:Static views:CountIsZeroConverter.Instance}}" />
+
+            <ItemsControl x:Name="SessionCards" ItemsSource="{Binding Sessions}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel ItemSpacing="12" LineSpacing="12" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:SessionCardViewModel">
+                        <Border Width="260" Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                BorderThickness="1" CornerRadius="10" Padding="14">
+                            <StackPanel Spacing="8">
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <Ellipse Width="8" Height="8" Fill="{Binding StatusDot}" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding Title}" FontWeight="Bold" Foreground="{StaticResource KcapTextBrush}"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                                <TextBlock Text="{Binding RepoFull}" FontSize="11" Foreground="{StaticResource KcapMutedBrush}"
+                                           ToolTip.Tip="{Binding RepoFull}" TextTrimming="CharacterEllipsis" />
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="{StaticResource KcapPurpleBrush}" />
+                                    <TextBlock Grid.Column="1" Text="{Binding Age}" FontSize="10" Foreground="{StaticResource KcapMutedBrush}" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>
