@@ -1,3 +1,5 @@
+using Capacitor.Cli.Core.Setup;
+
 namespace Capacitor.App.Services;
 
 public sealed record HarnessOption(string Vendor, string Label, string TransportFamily, bool Available);
@@ -6,18 +8,20 @@ public sealed record HarnessOption(string Vendor, string Label, string Transport
 /// (DaemonInfoDto.SupportedVendors), never from a version check — a vendor auto-update must not
 /// silently withdraw a harness. A vendor the daemon advertises but this build has never heard of
 /// is still offered, listed under its raw token: the daemon is the authority on what it can host.
-public static class HarnessCatalog {
-    static readonly (string Vendor, string Label, string Family)[] Known = [
-        ("claude",      "Claude",      "pty"),
-        ("codex",       "Codex",       "pty"),
-        ("cursor",      "Cursor",      "acp"),
-        ("copilot",     "Copilot",     "acp"),
-        ("gemini",      "Gemini",      "acp"),
-        ("kiro",        "Kiro",        "acp"),
-        ("opencode",    "OpenCode",    "acp"),
-        ("antigravity", "Antigravity", "rpc"),
-        ("pi",          "Pi",          "rpc"),
-    ];
+public static class HostedHarnessCatalog {
+    // Transport family for each vendor: how the daemon hosts it (pty, acp, or rpc).
+    // Vendors absent from this map default to "rpc".
+    static readonly Dictionary<string, string> TransportFamilies = new(StringComparer.OrdinalIgnoreCase) {
+        { "claude",      "pty" },
+        { "codex",       "pty" },
+        { "cursor",      "acp" },
+        { "copilot",     "acp" },
+        { "gemini",      "acp" },
+        { "kiro",        "acp" },
+        { "opencode",    "acp" },
+        { "antigravity", "rpc" },
+        { "pi",          "rpc" },
+    };
 
     public static IReadOnlyList<HarnessOption> Build(string[]? supportedVendors) {
         // null = an older daemon that never sent the field: unknown, not empty.
@@ -25,13 +29,17 @@ public static class HarnessCatalog {
             ? null
             : new HashSet<string>(supportedVendors, StringComparer.OrdinalIgnoreCase);
 
-        var options = Known
-            .Select(k => new HarnessOption(k.Vendor, k.Label, k.Family, advertised?.Contains(k.Vendor) ?? true))
+        var options = HarnessCatalog.All
+            .Select(k => new HarnessOption(
+                k.VendorId,
+                k.Label,
+                TransportFamilies.TryGetValue(k.VendorId, out var family) ? family : "rpc",
+                advertised?.Contains(k.VendorId) ?? true))
             .ToList();
 
         if (advertised is null) return options;
 
-        var known = new HashSet<string>(Known.Select(k => k.Vendor), StringComparer.OrdinalIgnoreCase);
+        var known = new HashSet<string>(HarnessCatalog.All.Select(k => k.VendorId), StringComparer.OrdinalIgnoreCase);
         foreach (var extra in supportedVendors!.Where(v => !known.Contains(v)).Distinct(StringComparer.OrdinalIgnoreCase))
             options.Add(new HarnessOption(extra, extra, "rpc", true));
 
