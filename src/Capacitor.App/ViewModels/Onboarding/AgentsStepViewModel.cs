@@ -11,11 +11,11 @@ namespace Capacitor.App.ViewModels.Onboarding;
 /// order (spec §5's exclusive-flag list, Claude first) — shared by the Agents and Import steps.
 internal sealed record AgentVendor(string Label, string? Flag, Func<AgentDetectionResult, DetectedAgent> Select);
 
-/// Re-derived from the Core <see cref="HarnessCatalog"/> so the app and the CLI enumerate the same
+/// Re-derived from the Core <see cref="Capacitor.Cli.Core.Setup.HarnessCatalog"/> so the app and the CLI enumerate the same
 /// vendors, in the same order — a tenth harness added to the catalog appears here automatically.
 internal static class AgentVendors {
     public static readonly IReadOnlyList<AgentVendor> All =
-        HarnessCatalog.All.Select(h => new AgentVendor(h.Label, h.InstallFlag, h.Select)).ToList();
+        Capacitor.Cli.Core.Setup.HarnessCatalog.All.Select(h => new AgentVendor(h.Label, h.InstallFlag, h.Select)).ToList();
 }
 
 public enum AgentInstallStatus { NotRun, Installing, Succeeded, Failed }
