@@ -11,10 +11,11 @@ namespace Capacitor.App.ViewModels;
 /// The Home tab's view-model (Task 5, AI-2194): repository + harness picker, a free-text goal, and
 /// the Start action that launches a session through ILaunchClient. Constructed once, like
 /// TrayViewModel/ActivityViewModel — not gated behind IActivatableViewModel — since Harnesses and
-/// Sessions must be live from construction, not deferred to a window's activation. DEVIATION from
-/// MainWindowViewModel/TrayViewModel: no ObserveOn(RxSchedulers.MainThreadScheduler) here — that
-/// marshaling is Task 6's concern once a real View subscribes these projections to the UI thread;
-/// this task's own tests construct and drive the VM directly, off the Avalonia headless session.
+/// Sessions must be live from construction, not deferred to a window's activation. Snapshots and
+/// Agents are mutated on the daemon client's own background thread (same as
+/// MainWindowViewModel/ConsentPromptViewModel), so both projections below ObserveOn
+/// RxSchedulers.MainThreadScheduler BEFORE the operator that touches bound state — Task 6's
+/// ItemsControl binding must never see a mutation off the UI thread.
 public sealed class HomeViewModel : ReactiveObject {
     /// A repository with no remembered choice falls back to this — never to whatever vendor was
     /// selected for a DIFFERENT repository, which would leak a preference across repositories.
@@ -81,14 +82,20 @@ public sealed class HomeViewModel : ReactiveObject {
 
         // Never starts empty (task-5-brief decision 2): a null SupportedVendors means "daemon
         // capability unknown", not "hosts nothing" — Build(null) offers everything until the first
-        // real snapshot narrows it.
+        // real snapshot narrows it. ObserveOn BEFORE ToProperty: Snapshots is pushed from the
+        // daemon client's own background thread (MainWindowViewModel's identical comment).
         _harnesses = daemon.Snapshots
+            .ObserveOn(RxSchedulers.MainThreadScheduler)
             .Select(s => HostedHarnessCatalog.Build(s.Daemon.SupportedVendors))
             .ToProperty(this, x => x.Harnesses, HostedHarnessCatalog.Build(null));
 
         Sessions = new ReadOnlyObservableCollection<SessionCardViewModel>(_sessionsSource);
+        // ObserveOn BEFORE the binding operator (SortAndBind counts as "Bind" here, same as
+        // MainWindowViewModel.Agents/ConsentPromptViewModel.Pending): the cache is mutated on the
+        // daemon client's background thread.
         daemon.Agents.Connect()
             .Transform(dto => new SessionCardViewModel(dto))
+            .ObserveOn(RxSchedulers.MainThreadScheduler)
             .SortAndBind(_sessionsSource, RowComparer)
             .Subscribe();
 
