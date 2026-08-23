@@ -1,4 +1,5 @@
 using Capacitor.App.Services;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -28,6 +29,18 @@ public class HostedHarnessCatalogTests {
         await Assert.That(options["opencode"].TransportFamily).IsEqualTo("acp");
         await Assert.That(options["antigravity"].TransportFamily).IsEqualTo("rpc");
         await Assert.That(options["pi"].TransportFamily).IsEqualTo("rpc");
+    }
+
+    /// The vendor list comes from Core, the transport map does not: a tenth vendor added there
+    /// would fall through to "rpc" and be labelled "chat" in the picker with nobody the wiser.
+    /// This turns that into a red suite on the PR that adds it. The runtime fallback stays — a
+    /// vendor only the DAEMON knows about must still be listed, not dropped.
+    [Test]
+    public async Task Every_core_vendor_has_an_explicit_transport_family() {
+        var mapped = new HashSet<string>(HostedHarnessCatalog.MappedVendors, StringComparer.OrdinalIgnoreCase);
+        var unmapped = HarnessCatalog.All.Select(k => k.VendorId).Where(v => !mapped.Contains(v)).ToList();
+
+        await Assert.That(unmapped).IsEmpty();
     }
 
     [Test]

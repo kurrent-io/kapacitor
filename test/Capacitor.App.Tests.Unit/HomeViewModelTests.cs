@@ -123,6 +123,9 @@ public class HomeViewModelTests {
         });
     }
 
+    /// Storage isolation only: ScratchRepoPath ("") is a reserved HarnessByRepo key that must not
+    /// share or clobber a real repository's remembered vendor. It says nothing about launching it
+    /// — the daemon does not accept a repo-less launch (HomeViewModel.ScratchRepoPath).
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task The_scratch_target_keeps_its_own_remembered_harness() {
@@ -141,6 +144,29 @@ public class HomeViewModelTests {
 
             await vm.SelectRepositoryAsync("/repo/a");
             await Assert.That(vm.SelectedVendor).IsEqualTo("codex");
+        });
+    }
+
+    /// The daemon's advertised vendor set is what narrows the picker, end to end: a snapshot
+    /// arriving on the Snapshots stream must reach the bound Harnesses list.
+    /// HostedHarnessCatalogTests covers Build in isolation; this covers the wire into it, which
+    /// nothing else did.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_daemon_snapshot_narrows_the_harness_picker() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient());
+
+            // Before any snapshot: capability unknown, so everything is offered.
+            var piBefore = vm.Harnesses.Single(h => h.Vendor == "pi").Available;
+
+            daemon.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(supportedVendors: ["claude", "codex"]));
+
+            await Assert.That(piBefore).IsTrue();
+            await Assert.That(vm.Harnesses.Single(h => h.Vendor == "pi").Available).IsFalse();
+            await Assert.That(vm.Harnesses.Single(h => h.Vendor == "claude").Available).IsTrue();
         });
     }
 

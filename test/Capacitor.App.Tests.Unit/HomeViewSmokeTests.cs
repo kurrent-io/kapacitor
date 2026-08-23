@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Specialized;
 using System.Reactive.Linq;
 using Avalonia.Controls;
 using Avalonia.Threading;
@@ -128,6 +129,55 @@ public class HomeViewSmokeTests {
         await Assert.That(visibleAfterFailure).IsTrue();
         await Assert.That(errorMessage).IsEqualTo("Daemon 'kcap-dev' is at capacity.");
         await Assert.That(visibleAfterSuccess).IsFalse();
+    }
+
+    /// Regression guard for HomeViewModel's ObserveOn before SortAndBind. In production the
+    /// Agents cache is mutated on the daemon client's own pump thread and SortAndBind writes
+    /// straight into the collection SessionCards is bound to, so the assertion that matters is
+    /// WHICH THREAD the bound collection is mutated on. "Does not throw" does not work here:
+    /// measured with the ObserveOn deleted, the off-thread push raises nothing and the container
+    /// still realizes — a bare Dispatcher.VerifyAccess and a control property set from the same
+    /// background thread DO throw, so the harness enforces affinity; this path simply defers its
+    /// UI work. Thread identity is what distinguishes marshalled from unmarshalled. Deliberately
+    /// NOT wrapped in WithImmediateRxScheduler — that pins the scheduler to Immediate, which turns
+    /// the ObserveOn under test into a no-op.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task An_agent_arriving_off_the_UI_thread_reaches_the_grid_on_the_UI_thread() {
+        var (mutatedOnUiThread, realizedCount, failure) = await AvaloniaSession.DispatchAsync(async () => {
+            var (view, vm, service, _, tmp) = Build();
+            using var _tmp = tmp;
+            var window = new Window { Content = view };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            var sessionCards = Find<ItemsControl>(window, "SessionCards")!;
+            // ReadOnlyObservableCollection exposes CollectionChanged only through the interface.
+            bool? onUiThread = null;
+            ((INotifyCollectionChanged)vm.Sessions).CollectionChanged += (_, _) => onUiThread ??= Dispatcher.UIThread.CheckAccess();
+
+            // Captured rather than propagated, so a thread-affinity throw arrives as a named
+            // assertion failure instead of a bare rethrow out of the dispatch.
+            Exception? thrown = null;
+            try {
+                await Task.Run(() => service.Agents.AddOrUpdate(new AgentStatusDto(
+                    "a", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null, null)));
+            } catch (Exception ex) {
+                thrown = ex;
+            }
+
+            Dispatcher.UIThread.RunJobs();
+            var count = ItemCount(sessionCards);
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            vm.Dispose();
+            return (onUiThread, count, thrown?.ToString());
+        });
+
+        await Assert.That(failure).IsNull();
+        await Assert.That(mutatedOnUiThread).IsTrue();
+        await Assert.That(realizedCount).IsEqualTo(1);
     }
 
     [Test]
