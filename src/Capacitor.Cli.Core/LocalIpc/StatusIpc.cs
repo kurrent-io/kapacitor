@@ -20,7 +20,11 @@ public sealed record DaemonStatusDto(DaemonInfoDto Daemon, List<AgentStatusDto> 
 /// </summary>
 public sealed record DaemonInfoDto(
     string Name, string Version, string ServerUrl, string Connection, int MaxAgents, int ActiveAgents,
-    int? Pid = null, string? InstanceId = null);
+    int? Pid = null, string? InstanceId = null,
+    // Vendor tokens this daemon can host, from the runtime factories' own availability probe —
+    // the same set advertised to the server on DaemonConnect. Trailing/additive: null from a
+    // daemon that predates it, which a client must read as UNKNOWN, never as "hosts nothing".
+    string[]? SupportedVendors = null);
 
 /// <summary>
 /// <see cref="Status"/> is the daemon's internal status string VERBATIM (PascalCase, open
