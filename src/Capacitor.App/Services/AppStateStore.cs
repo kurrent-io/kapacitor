@@ -10,7 +10,11 @@ public sealed record AppState(
     bool ShimOffered = false,
     bool ShimDenied = false,
     IReadOnlyList<string>? DeclinedTakeoverPairs = null,
-    bool ConsentQuarantineAcked = false);
+    bool ConsentQuarantineAcked = false,
+    // Absolute repo path -> vendor token. "" is the scratch ("No repository") target.
+    // Absent key = never chosen here; the caller picks its own default rather than
+    // inheriting another repository's choice.
+    IReadOnlyDictionary<string, string>? HarnessByRepo = null);
 
 public interface IAppStateStore {
     Task<AppState> LoadAsync();
