@@ -18,10 +18,11 @@ public interface ILaunchClient {
 /// reflection dependency here would foreclose ever AOT-publishing it. Member names must match
 /// LaunchAgentRequestV2's properties — the hub binds by name.
 // Explicit snake_case on every member: the server applies PropertyNamingPolicy =
-// SnakeCaseLower to all hub payloads (kcap-server JsonDefaults.ConfigureSignalRPayload).
-// LaunchHubJson.Configure mirrors that policy too — belt and braces, since a naming policy
-// set only on JsonSerializerOptions is not guaranteed to reach a source generator's
-// precomputed metadata for a property that carries its own [JsonPropertyName].
+// SnakeCaseLower to all hub payloads (kcap-server JsonDefaults.ConfigureSignalRPayload), and
+// LaunchHubJson.Configure sets the same policy here. The explicit names are what survive that
+// policy whatever it is set to, and they put the wire contract in plain sight next to the
+// server record each member must match — this file has already shipped one launch-breaking
+// key-casing defect, so the names are pinned rather than derived.
 public sealed record LaunchAgentRequestV2Payload {
     [JsonPropertyName("daemon_name")]           public required string   DaemonName          { get; init; }
     [JsonPropertyName("prompt")]                public          string?  Prompt              { get; init; }

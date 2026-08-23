@@ -23,7 +23,7 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
     IDisposable? _notifierSubscription;
     IAppNotifier? _notifier;
 
-    // Defaults to false — the Agents TabItem is selected first (MainWindow.axaml), so Activity
+    // Defaults to false — the Home TabItem is selected first (MainWindow.axaml), so Activity
     // starts unselected regardless of the window's own visibility.
     bool _activityTabSelected;
 

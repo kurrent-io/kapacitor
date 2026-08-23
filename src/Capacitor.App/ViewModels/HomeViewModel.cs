@@ -23,9 +23,11 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// selected for a DIFFERENT repository, which would leak a preference across repositories.
     public const string DefaultVendor = "claude";
 
-    /// The "No repository" target: a session started against it runs in a daemon-owned worktree
-    /// with no upstream checkout. Still a normal AppState.HarnessByRepo key, so it keeps its own
-    /// remembered harness like any real repo path.
+    /// Reserved key for the not-yet-in-a-repository target. It is a normal AppState.HarnessByRepo
+    /// key, so it round-trips and keeps its own remembered harness like any real repo path —
+    /// but LAUNCHING it is not supported yet: AgentOrchestrator rejects a launch whose repo path
+    /// fails Directory.Exists, which "" does. Until the daemon accepts a repo-less launch this is
+    /// a storage key only.
     public const string ScratchRepoPath = "";
 
     readonly IDaemonClientService _daemon;
@@ -96,7 +98,10 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         Sessions = new ReadOnlyObservableCollection<SessionCardViewModel>(_sessionsSource);
         // ObserveOn BEFORE the binding operator (SortAndBind counts as "Bind" here, same as
         // MainWindowViewModel.Agents/ConsentPromptViewModel.Pending): the cache is mutated on the
-        // daemon client's background thread.
+        // daemon client's background thread. Transform stays upstream of it, which is only safe
+        // because a SessionCardViewModel holds no thread-affine Avalonia object (its status dot is
+        // an ImmutableSolidColorBrush) — adding one would have to move Transform below the
+        // ObserveOn.
         daemon.Agents.Connect()
             .Transform(dto => new SessionCardViewModel(dto))
             .ObserveOn(RxSchedulers.MainThreadScheduler)

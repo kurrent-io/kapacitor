@@ -71,6 +71,11 @@ public partial class App : Application {
     // construction path or a signature change to BuildAndShowMainWindow (AppStartupTests calls
     // that method directly, with no Home argument).
     HomeViewModel? _home;
+    // Home's launch transport, held here because it is the one graph object that outlives a
+    // window rebuild (MainWindowCoordinator can build a second window over the same client) and
+    // owns a live HubConnection. Disposed after _home on both teardown paths — never before, or a
+    // launch still in flight would lose its transport mid-invoke.
+    ServerLaunchClient? _launch;
     TrayViewModel? _trayVm;
     TrayIconManager? _tray;
     // No disposal needed — RefCount tears its Interval down with its last subscriber, and every
@@ -165,6 +170,7 @@ public partial class App : Application {
             Console.Error.WriteLine($"kcap app failed to start: {ex}");
             await HandleStartupFailureAsync(
                 desktop, ex, _service, _shutdown, [_tray, _trayVm, _promptCoordinator, _consent, _activity, _home, _pause], _lifecycle, _lane);
+            await DisposeLaunchClientAsync(); // after _home above — its only caller
             // all already disposed above — never let a later OnShutdownRequested (e.g. Cmd+Q
             // while the error window is up) dispose any of them a second time
             _service = null;
@@ -270,8 +276,13 @@ public partial class App : Application {
             Notifier = notifier,
         });
 
+        // One launch client for the app, not one per window the coordinator builds — each carries
+        // its own HubConnection, and only a held instance can be disposed at teardown.
+        var launch = new ServerLaunchClient();
+        _launch = launch;
+
         _coordinator = new MainWindowCoordinator(
-            () => BuildAndShowMainWindow(service, actions, notifier, ticker, _shutdown.Token, activity, lifecycle.StartActionAsync, lifecycleStatus));
+            () => BuildAndShowMainWindow(service, actions, notifier, ticker, _shutdown.Token, activity, lifecycle.StartActionAsync, lifecycleStatus, launch));
         // A shutdown that started before this continuation resumed already ran its first
         // pass against a null coordinator, so a window built now must never be
         // close-protected (BeginShutdownPass's rule 1 is the general defense; this is the
@@ -574,7 +585,7 @@ public partial class App : Application {
     internal static MainWindow BuildAndShowMainWindow(
             IDaemonClientService service, AgentActionService actions, IAppNotifier notifier, ITicker ticker,
             CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
-            IObservable<string?>? lifecycleStatus = null) {
+            IObservable<string?>? lifecycleStatus = null, ILaunchClient? launch = null) {
         // Notifier is set on the WINDOW (spec §11 toast overlay), not the ViewModel — the toast
         // is a View-level concern (WindowNotificationManager lives on MainWindow) independent of
         // the VM's WhenActivated-scoped projections.
@@ -583,8 +594,10 @@ public partial class App : Application {
         // itself uses — never a second daemon connection. AppStateStore/ServerLaunchClient are both
         // cheap, self-contained constructions (file-path-gated I/O; a HubConnection that only opens
         // lazily on first StartAsync), the same reasoning BuildLifecycleController's own
-        // `new AppStateStore(PathHelpers.ConfigPath("app-state.json"))` already relies on.
-        var home = new HomeViewModel(service, new AppStateStore(PathHelpers.ConfigPath("app-state.json")), new ServerLaunchClient());
+        // `new AppStateStore(PathHelpers.ConfigPath("app-state.json"))` already relies on. The
+        // composition root passes its held client so teardown can dispose it; a caller that passes
+        // none (a test) gets an unheld one, which owns nothing until a launch is actually made.
+        var home = new HomeViewModel(service, new AppStateStore(PathHelpers.ConfigPath("app-state.json")), launch ?? new ServerLaunchClient());
         var window = new MainWindow {
             DataContext = new MainWindowViewModel(service, actions, ticker, shutdownToken, activity, startAction, lifecycleStatus, home: home),
             Notifier = notifier,
@@ -1019,8 +1032,12 @@ public partial class App : Application {
         }
     }
 
-    // _lifecycle goes first (guarded, so a throw never skips _service's disposal); the lane goes LAST — its substrate must outlive any caller still awaiting RunAsync.
+    // Runs after the UI disposables (DisposeUiThenConfirmShutdownAsync), so _home is already gone
+    // when its launch client is torn down here. _lifecycle then goes first (guarded, so a throw
+    // never skips _service's disposal); the lane goes LAST — its substrate must outlive any caller
+    // still awaiting RunAsync.
     async ValueTask DisposeLifecycleAndServiceAsync() {
+        await DisposeLaunchClientAsync().ConfigureAwait(false);
         if (_lifecycle is not null) {
             try {
                 await _lifecycle.DisposeAsync().ConfigureAwait(false);
@@ -1036,6 +1053,19 @@ public partial class App : Application {
                 Console.Error.WriteLine($"kcap app failed to dispose the daemon mutation lane during shutdown: {ex}");
             }
         }
+    }
+
+    // Idempotent (both teardown paths can reach it) and guarded for the same reason DisposeAll is:
+    // a failing hub disposal must never skip the disposals that follow.
+    async ValueTask DisposeLaunchClientAsync() {
+        if (_launch is null) return;
+
+        try {
+            await _launch.DisposeAsync().ConfigureAwait(false);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap app failed to dispose the launch client during teardown: {ex}");
+        }
+        _launch = null;
     }
 
     /// <summary>Quiesces shutdown in two phases: sign-in and import finish uncapped so an in-progress commit isn't torn down, then lifecycle/lane quiesce under the cap.</summary>

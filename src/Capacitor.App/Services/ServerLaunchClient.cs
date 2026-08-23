@@ -59,7 +59,15 @@ public sealed class ServerLaunchClient : ILaunchClient, IAsyncDisposable {
                 .AddJsonProtocol(o => LaunchHubJson.Configure(o.PayloadSerializerOptions))
                 .Build();
 
-            await hub.StartAsync(ct);
+            // A failed start leaves a live HubConnection nothing else can reach (_hub is still
+            // null), so it must be disposed here or its transport/timers leak for the run.
+            try {
+                await hub.StartAsync(ct);
+            } catch {
+                await hub.DisposeAsync();
+                throw;
+            }
+
             _hub = hub;
             return hub;
         } finally {
@@ -67,8 +75,19 @@ public sealed class ServerLaunchClient : ILaunchClient, IAsyncDisposable {
         }
     }
 
+    /// Takes the gate first: disposing it out from under an in-flight GetConnectionAsync would
+    /// fault that launch's Release. A launch arriving after this point fails with
+    /// ObjectDisposedException, which StartAsync already turns into a failed LaunchOutcome.
     public async ValueTask DisposeAsync() {
-        if (_hub is not null) await _hub.DisposeAsync();
-        _gate.Dispose();
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try {
+            if (_hub is not null) {
+                await _hub.DisposeAsync();
+                _hub = null;
+            }
+        } finally {
+            _gate.Release();
+            _gate.Dispose();
+        }
     }
 }

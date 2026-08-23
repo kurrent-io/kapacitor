@@ -41,7 +41,7 @@
             </StackPanel>
         </StackPanel>
 
-        <!-- Tabs (spec §7): Agents | Activity. Settings joins as a third tab in slice 4.
+        <!-- Tabs (spec §7): Home | Agents | Activity. Home is the default selection.
              SelectionChanged is wired in code-behind (MainWindow.axaml.cs) so the Activity tab's
              refresh cadence tracks both tab selection and the window's own on-screen state. -->
         <TabControl Grid.Row="1" x:Name="MainTabs" Margin="0,8,0,0" SelectionChanged="OnTabSelectionChanged">

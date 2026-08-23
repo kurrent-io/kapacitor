@@ -10,7 +10,10 @@ public sealed record HarnessOption(string Vendor, string Label, string Transport
 /// is still offered, listed under its raw token: the daemon is the authority on what it can host.
 public static class HostedHarnessCatalog {
     // Transport family for each vendor: how the daemon hosts it (pty, acp, or rpc).
-    // Vendors absent from this map default to "rpc".
+    // Vendors absent from this map default to "rpc" — which reads as "chat" in the picker, true or
+    // not, so HostedHarnessCatalogTests pins every vendor in Core's HarnessCatalog to an entry
+    // here. The fallback stays for a vendor only the DAEMON knows about; it is not a licence to
+    // skip a tenth entry when one is added to Core.
     static readonly Dictionary<string, string> TransportFamilies = new(StringComparer.OrdinalIgnoreCase) {
         { "claude",      "pty" },
         { "codex",       "pty" },
@@ -22,6 +25,10 @@ public static class HostedHarnessCatalog {
         { "antigravity", "rpc" },
         { "pi",          "rpc" },
     };
+
+    /// The vendors with an EXPLICIT family above — what the guard test reads, since Build's
+    /// fallback makes an unmapped vendor indistinguishable from a mapped "rpc" one.
+    internal static IReadOnlyCollection<string> MappedVendors => TransportFamilies.Keys;
 
     public static IReadOnlyList<HarnessOption> Build(string[]? supportedVendors) {
         // null = an older daemon that never sent the field: unknown, not empty.

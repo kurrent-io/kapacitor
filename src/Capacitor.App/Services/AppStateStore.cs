@@ -11,9 +11,10 @@ public sealed record AppState(
     bool ShimDenied = false,
     IReadOnlyList<string>? DeclinedTakeoverPairs = null,
     bool ConsentQuarantineAcked = false,
-    // Absolute repo path -> vendor token. "" is the scratch ("No repository") target.
-    // Absent key = never chosen here; the caller picks its own default rather than
-    // inheriting another repository's choice.
+    // Absolute repo path -> vendor token. "" is the reserved key for the not-yet-in-a-repository
+    // target (HomeViewModel.ScratchRepoPath) — a stored preference only, since the daemon does
+    // not accept a repo-less launch. Absent key = never chosen here; the caller picks its own
+    // default rather than inheriting another repository's choice.
     IReadOnlyDictionary<string, string>? HarnessByRepo = null);
 
 public interface IAppStateStore {
