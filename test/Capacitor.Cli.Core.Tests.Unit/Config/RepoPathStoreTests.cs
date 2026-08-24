@@ -280,7 +280,9 @@ public class RepoPathStoreTests {
         var entries = await RepoPathStore.LoadAsync();
 
         await Assert.That(entries.Length).IsEqualTo(2);
-        var repo = entries.Single(e => e.Path == "/gone/repo");
+        // GetFullPath, like every assertion in this class: on Windows a rootless "/gone/repo"
+        // normalizes to "<drive>:\gone\repo".
+        var repo = entries.Single(e => e.Path == Path.GetFullPath("/gone/repo"));
         await Assert.That(repo.LastUsed).IsEqualTo(newer);
     }
 }
