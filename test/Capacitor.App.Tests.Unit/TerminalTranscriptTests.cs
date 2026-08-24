@@ -197,6 +197,35 @@ namespace Capacitor.App.Tests.Unit;
 // Package/license: both packages are net-standard MIT-licensed (SvcSystems.UI.Terminal per its
 // GitHub repo's codecov badge and MIT LICENSE; XTerm.NET's README states "License: MIT"
 // explicitly). See task-8-report.md for the full `dotnet list ... --include-transitive` graph.
+//
+// ── WHAT THE ALT-SCREEN ASSERTIONS DO AND DON'T PROVE (fixed after review; read before reusing
+//    this transcript pattern in Tasks 11/12) ────────────────────────────────────────────────
+//   The transcript is fed in two pieces specifically so alt-screen ENTRY can be pinned, not
+//   just exit: `alternateActiveDuringAltScreen` is read immediately after the \x1b[?1049h
+//   prefix, before any suffix bytes are fed. The FIRST version of this test only asserted
+//   `IsAlternateBufferActive == false` at the very end and `mainBufferText.Contains("back")`
+//   — both of those hold identically whether \x1b[?1049h/l are interpreted OR silently
+//   no-op'd (proven empirically: stripping the 1049 codes still ends with
+//   IsAlternateBufferActive == false and "back" present, because "back" is fed unconditionally
+//   after where \x1b[?1049l would have been). That version was NOT exercising alt-screen
+//   support at all — it would have passed against a build with the alt-buffer switch
+//   completely deleted. Proven now:
+//     1. Entry:     alternateActiveDuringAltScreen is asserted TRUE right after \x1b[?1049h.
+//     2. Exit:      isAlternateBufferActiveAfter is asserted FALSE after \x1b[?1049l.
+//     3. Isolation: mainBufferText.DoesNotContain("alt") — the alt-buffer's own text must NOT
+//        leak into the main buffer once switched back (with the codes stripped, "alt" DOES
+//        appear in mainBufferText, since everything then lands in the one buffer:
+//        "    mid alt  back"). This is what actually confirms the model is using two distinct
+//        buffer objects, not just flipping a flag.
+//   Still NOT proven by this test: alt-buffer content itself (what "mid" writes to the alt
+//   screen render as, its own cursor/attribute state, or that re-entering alt-screen a second
+//   time clears it) — only that alt-buffer writes don't bleed into the main buffer and that the
+//   flag flips correctly around one enter/leave cycle. A future test touching alt-buffer
+//   *content* (not just isolation) should read `engine.Buffer` while `IsAlternateBufferActive`
+//   is still true (i.e. mid-transcript, the same way `alternateActiveDuringAltScreen` is
+//   captured here), since `Terminal.Engine.Buffer`/`GetLine` always reflect whichever buffer is
+//   CURRENTLY active — there is no separate always-addressable "the alt buffer" accessor once
+//   you've switched back.
 
 /// The acceptance gate for emulation fidelity: a captured ANSI/TUI stream
 /// (colors, cursor addressing, alternate screen) through the decode-and-feed
@@ -205,7 +234,8 @@ namespace Capacitor.App.Tests.Unit;
 public class TerminalTranscriptTests {
     [Test]
     public async Task A_recorded_tui_transcript_feeds_without_faulting_and_lands_expected_cells() {
-        var (row0Text, row0Bold, row0FgColor, midCells, isAlternateBufferActive, mainBufferText) =
+        var (row0Text, row0Bold, row0FgColor, midCells, alternateActiveDuringAltScreen,
+                isAlternateBufferActiveAfter, mainBufferText) =
             await AvaloniaSession.DispatchAsync(() => {
                 var model = new TerminalControlModel(new TerminalOptions {
                     Cols = 80,
@@ -213,14 +243,21 @@ public class TerminalTranscriptTests {
                     ReflowOnResize = false,
                 });
                 var decoder = new Utf8StreamDecoder();
+                var engine = model.Terminal.Engine;
 
-                // transcript: SGR color, cursor addressing, alt-screen enter/leave, text
-                var transcript = "\x1b[2J\x1b[H\x1b[1;31mRED\x1b[0m\x1b[10;5Hmid\x1b[?1049h alt \x1b[?1049l back"u8.ToArray();
-                foreach (var chunk in Chunk(transcript, 7)) // deliberately ugly boundaries
+                // transcript, split at the alt-screen boundary so ENTRY can be pinned (not just
+                // exit): prefix ends with \x1b[?1049h; suffix carries the alt-only text, the
+                // \x1b[?1049l exit, and the post-exit text.
+                var prefix = "\x1b[2J\x1b[H\x1b[1;31mRED\x1b[0m\x1b[10;5Hmid\x1b[?1049h"u8.ToArray();
+                var suffix = " alt \x1b[?1049l back"u8.ToArray();
+
+                foreach (var chunk in Chunk(prefix, 7)) // deliberately ugly boundaries
+                    model.Feed(decoder.Decode(chunk));
+                var alternateActiveDuringAltScreen = engine.IsAlternateBufferActive;
+
+                foreach (var chunk in Chunk(suffix, 7)) // deliberately ugly boundaries
                     model.Feed(decoder.Decode(chunk));
                 model.Feed(decoder.Flush());
-
-                var engine = model.Terminal.Engine;
 
                 var row0 = engine.Buffer.Lines[0]!;
                 var row9 = engine.Buffer.Lines[9]!;
@@ -233,7 +270,8 @@ public class TerminalTranscriptTests {
                     row0Bold: row0[0].Attributes.IsBold(),
                     row0FgColor: row0[0].Attributes.GetFgColor(),
                     midCells: mid,
-                    isAlternateBufferActive: engine.IsAlternateBufferActive,
+                    alternateActiveDuringAltScreen,
+                    isAlternateBufferActiveAfter: engine.IsAlternateBufferActive,
                     mainBufferText: mainText);
             });
 
@@ -241,8 +279,13 @@ public class TerminalTranscriptTests {
         await Assert.That(row0Bold).IsTrue();
         await Assert.That(row0FgColor).IsEqualTo(1); // SGR 31 -> legacy palette index 1 (red)
         await Assert.That(midCells).IsEquivalentTo(["m", "i", "d"], CollectionOrdering.Matching);
-        await Assert.That(isAlternateBufferActive).IsFalse();
+        await Assert.That(alternateActiveDuringAltScreen).IsTrue();  // alt-screen ENTRY pinned
+        await Assert.That(isAlternateBufferActiveAfter).IsFalse();   // alt-screen EXIT pinned
         await Assert.That(mainBufferText).Contains("back");
+        // The alt-buffer's own text must NOT leak into the main buffer once we've switched
+        // back — this is the isolation check the original version of this test was missing
+        // (it passed identically whether \x1b[?1049h/l were interpreted or silently no-op'd).
+        await Assert.That(mainBufferText).DoesNotContain("alt");
     }
 
     static IEnumerable<byte[]> Chunk(byte[] data, int size) {
