@@ -124,7 +124,7 @@ public sealed class BrowserFirstRunFlow(
             // Polled before the first sleep: a flow the browser has already finished — a resumed link,
             // or a tab that was quicker than this process — should not wait out an interval to be noticed.
             if (!first) {
-                if (await WaitForIntervalAsync(interval, last, ct)) return new FirstRunFlowResult.Dismissed(last);
+                if (await WaitForIntervalAsync(interval, deadline, last, ct)) return new FirstRunFlowResult.Dismissed(last);
 
                 // The sleep crossed the budget's deadline — the backstop has been reached, and polling
                 // once more would extend it by the backoff plus the HTTP timeout.
@@ -201,8 +201,13 @@ public sealed class BrowserFirstRunFlow(
     }
 
     /// <summary>Sleeps out <paramref name="interval"/> in <see cref="KeyPollSlice"/> slices, returning
-    /// true when a keypress ended the wait early (it has been drained).</summary>
-    async Task<bool> WaitForIntervalAsync(TimeSpan interval, FirstRunFlowResponse? last, CancellationToken ct) {
+    /// true when a keypress ended the wait early (it has been drained). Capped at what remains of the
+    /// budget: a server Retry-After longer than the backstop must not extend the flow past its deadline.</summary>
+    async Task<bool> WaitForIntervalAsync(TimeSpan interval, DateTimeOffset deadline, FirstRunFlowResponse? last, CancellationToken ct) {
+        var remaining = deadline - _clock.GetUtcNow();
+
+        if (remaining < interval) interval = remaining;
+
         var waited = TimeSpan.Zero;
 
         while (waited < interval) {

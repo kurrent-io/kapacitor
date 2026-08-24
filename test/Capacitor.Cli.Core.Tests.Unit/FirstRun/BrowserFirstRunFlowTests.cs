@@ -524,6 +524,20 @@ public class BrowserFirstRunFlowTests {
     }
 
     [Test]
+    public async Task A_retry_after_longer_than_the_budget_does_not_extend_the_wait() {
+        // The budget is the backstop, not the interval: a route that asks for an hour must not turn
+        // a 30-minute wait into an hour-long one — even on a host with no keyboard to end it early.
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(429, null, TimeSpan.FromHours(1)));
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Abandoned>();
+        await Assert.That(h.Clock.GetUtcNow() - ClockBase).IsLessThanOrEqualTo(TimeSpan.FromMinutes(31));
+        await Assert.That(h.Channel.PollCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task A_keyboard_that_cannot_be_watched_is_never_read() {
         // Redirected stdin, or no console at all. Polling it would throw, and the flow must not care.
         var h = Build(new FakeKeys(canWatch: false, pressAfter: 0));

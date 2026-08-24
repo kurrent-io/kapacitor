@@ -955,7 +955,7 @@ public static class SetupCommand {
                 // expired / not authenticated / wrong server all share one remedy.
                 if (authStatus is not AuthStatus.Ok) {
                     if (authStatus != AuthStatus.NoAuthRequired)
-                        await Console.Out.WriteLineAsync(
+                        AnsiConsole.MarkupLine(
                             "  [dim]Skipped browser setup: the stored token is not usable. Run 'kcap login' to re-authenticate.[/]");
 
                     return;
