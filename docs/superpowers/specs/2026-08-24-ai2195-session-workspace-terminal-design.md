@@ -92,13 +92,19 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
   — the pump awaits each before reading the next frame, so delivery is serial
   and ordered (snapshot strictly before any output), and the daemon's
   slow-client overflow protection stays meaningful: a slow UI backs the socket
-  up rather than ballooning an unbounded dispatcher queue. **Callbacks receive
-  the run's cancellation token**, which disposal/retirement cancels — the app's
-  UI-thread dispatch awaits honor it — so a stuck callback releases rather than
-  retaining the disposed VM/model (see teardown). A callback exception faults
-  the run *when it claims the cause slot* (below). With termination folded into
-  the result, "no events after termination" is structural, not a rule to
-  police.
+  up rather than ballooning an unbounded dispatcher queue. **Callbacks receive an internal run-lifetime token, not the caller's.** The
+  client owns a run-lifetime `CancellationTokenSource` linked to the caller's
+  token — `DisposeAsync` cannot cancel a caller-owned token; only its source
+  can. External cancellation first tries to claim the `Cancellation` cause,
+  then cancels the internal token; `DisposeAsync` first claims `Detached`,
+  then cancels the internal token and closes the socket. The app's UI-thread
+  dispatch awaits honor the internal token, so a stuck callback releases
+  rather than retaining the disposed VM/model (see teardown). A callback
+  `OperationCanceledException` produced by either path **projects the
+  already-recorded winner** — it never becomes a callback-fault cause of its
+  own; a genuine callback exception faults the run *when it claims the cause
+  slot* (below). With termination folded into the result, "no events after
+  termination" is structural, not a rule to police.
 - Outbound methods: `SendInputAsync(bytes)`, `ResizeAsync(cols, rows)`,
   `DetachAsync()`. All writes serialize behind one lock (input and resize share
   the stream — same reason the CLI holds a write semaphore), and **the client —
@@ -169,6 +175,17 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
   cancelling *and* disposing; whichever claims first decides. `DisposeAsync`
   never rethrows the retired run's cancellation (or any expected-teardown
   exception).
+- **Losing exceptions flow to an injected diagnostic sink — the client's one
+  observation seam.** Core is BCL-only and its LocalIpc convention returns
+  failures as data, never logs internally — so `AgentAttachClient` takes an
+  optional constructor delegate (`Action<string, Exception>`-shaped, default
+  no-op); the client alone invokes it, so `RunAsync`, `DisposeAsync`, and the
+  app's teardown tracker can never double-log the same exception. The rule is
+  scoped precisely: **every actual losing *exception* is observed through the
+  sink exactly once** — a losing cause *attempt* with no exception (e.g.
+  callback-fault-first followed by Dispose) logs nothing. The app wires the
+  sink to its logger; tests assert against a recording sink, not stderr
+  capture.
 - **Losers are observed exactly once and never become a second result:**
   - *callback fault vs `DisposeAsync`* — Dispose claims first: the callback
     exception is consumed and logged once, `RunAsync` settles `Detached`,
@@ -455,10 +472,16 @@ TDD throughout (red-green per test):
   cross-races with loser behavior pinned** — an input-write failure racing
   `DetachAsync`, and a callback fault racing `DisposeAsync`, each asserted in
   BOTH orderings: the actual `AttachOutcome`/fault, the outbound call and
-  `DisposeAsync` completing without rethrow of the losing exception, and the
-  loser logged exactly once, never a second result; calls made before the run
-  and after termination; a throwing callback faults the run after the client
-  turns terminal (subsequent writes rejected).
+  `DisposeAsync` completing without rethrow of the losing exception, and every
+  actual losing exception observed through the recording diagnostic sink
+  exactly once (a losing cause attempt with no exception logs nothing), never
+  a second result; **the lifetime-token contract** — `DisposeAsync` while the
+  caller token stays uncancelled (awaited callback exits via the internal
+  token, `RunAsync` returns `Detached`, the external token is untouched),
+  caller-cancel while inside a callback (`OperationCanceledException`), and
+  the two-way race; calls made before the run and after termination; a
+  throwing callback faults the run after the client turns terminal
+  (subsequent writes rejected).
 - **Wire**: `StatusIpcJsonTests` — old JSON without `has_terminal` → `null`;
   `true`/`false`/`null` all serialize with the member present; `false` never
   omitted.
