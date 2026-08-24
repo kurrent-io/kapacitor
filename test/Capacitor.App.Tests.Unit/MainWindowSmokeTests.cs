@@ -26,7 +26,7 @@ public class MainWindowSmokeTests {
         return (actions, notifier);
     }
 
-    // Home is the default-selected tab (Task 6, AI-2194); the Agents TabItem carries no x:Name
+    // Home is the default-selected tab; the Agents TabItem carries no x:Name
     // (only HomeTabItem/ActivityTabItem do), so it's found by its header text instead — same
     // Name-scope lookup style as everything else in this file, one step removed.
     static void SelectAgentsTab(MainWindow window) {
@@ -210,7 +210,7 @@ public class MainWindowSmokeTests {
             window.Show();
             Dispatcher.UIThread.RunJobs();
 
-            // Home is the default-selected tab (Task 6, AI-2194) — this test asserts what the
+            // Home is the default-selected tab — this test asserts what the
             // Agents tab CONTAINS, so select it explicitly rather than relying on it opening first.
             SelectAgentsTab(window);
 
@@ -246,7 +246,7 @@ public class MainWindowSmokeTests {
             window.Show();
             Dispatcher.UIThread.RunJobs();
 
-            // Home is the default-selected tab (Task 6, AI-2194) — this test asserts what the
+            // Home is the default-selected tab — this test asserts what the
             // Agents tab CONTAINS, so select it explicitly rather than relying on it opening first.
             SelectAgentsTab(window);
 

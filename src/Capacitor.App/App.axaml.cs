@@ -65,7 +65,7 @@ public partial class App : Application {
     // frame: the prompt window factory and BuildAndShowMainWindow both close over the SAME
     // instance.
     ActivityViewModel? _activity;
-    // Constructed INSIDE BuildAndShowMainWindow (Task 6, AI-2194), over the same `service`
+    // Constructed INSIDE BuildAndShowMainWindow, over the same `service`
     // instance MainWindowViewModel itself uses — retrieved back off the built window's own
     // DataContext right below, so this field (and therefore disposal) never needs a second
     // construction path or a signature change to BuildAndShowMainWindow (AppStartupTests calls
@@ -590,14 +590,16 @@ public partial class App : Application {
         // is a View-level concern (WindowNotificationManager lives on MainWindow) independent of
         // the VM's WhenActivated-scoped projections.
         //
-        // Home (Task 6, AI-2194) is built here, over the SAME `service` instance MainWindowViewModel
+        // Home is built here, over the SAME `service` instance MainWindowViewModel
         // itself uses — never a second daemon connection. AppStateStore/ServerLaunchClient are both
         // cheap, self-contained constructions (file-path-gated I/O; a HubConnection that only opens
         // lazily on first StartAsync), the same reasoning BuildLifecycleController's own
         // `new AppStateStore(PathHelpers.ConfigPath("app-state.json"))` already relies on. The
         // composition root passes its held client so teardown can dispose it; a caller that passes
         // none (a test) gets an unheld one, which owns nothing until a launch is actually made.
-        var home = new HomeViewModel(service, new AppStateStore(PathHelpers.ConfigPath("app-state.json")), launch ?? new ServerLaunchClient());
+        var home = new HomeViewModel(
+            service, new AppStateStore(PathHelpers.ConfigPath("app-state.json")),
+            launch ?? new ServerLaunchClient(), shutdownToken);
         var window = new MainWindow {
             DataContext = new MainWindowViewModel(service, actions, ticker, shutdownToken, activity, startAction, lifecycleStatus, home: home),
             Notifier = notifier,

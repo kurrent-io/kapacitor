@@ -3,8 +3,7 @@
              x:Class="Capacitor.App.App"
              RequestedThemeVariant="Default">
     <Application.Resources>
-        <!-- The Home surface's design palette (AI-2171 Linear comment; prototyped verbatim in
-             prototypes/AI-2171-desktop-sessions/PrototypeUi.cs). Kcap-prefixed keys so these never
+        <!-- The Home surface's design palette. Kcap-prefixed keys so these never
              shadow a FluentTheme resource of the same short name — MainWindow's existing controls
              stay on FluentTheme defaults untouched. -->
         <ResourceDictionary>

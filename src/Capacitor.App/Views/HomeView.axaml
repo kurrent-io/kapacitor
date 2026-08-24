@@ -8,7 +8,7 @@
     <ScrollViewer>
         <StackPanel Margin="28" Spacing="20" MaxWidth="960" HorizontalAlignment="Stretch">
             <!-- Greeting row: Search and New session are decorative placeholders here (spec's own
-                 nav rail + real search land in AI-2195); New session just focuses the goal box. -->
+                 nav rail + real search land with the session workspace); New session just focuses the goal box. -->
             <Grid ColumnDefinitions="*,Auto">
                 <StackPanel Spacing="3">
                     <TextBlock Text="Home" FontSize="22" FontWeight="Bold" Foreground="{StaticResource KcapTextBrush}" />

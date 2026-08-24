@@ -111,7 +111,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// not something built here.
     public ActivityViewModel Activity { get; }
 
-    /// The Home tab (Task 6, AI-2194) — constructed at the composition root over the SAME
+    /// The Home tab — constructed at the composition root over the SAME
     /// IDaemonClientService instance this window uses, never a second daemon connection. Null
     /// only for a caller that doesn't supply one (most existing tests predate Home); HomeView
     /// tolerates a null DataContext, same as any other unbound view.

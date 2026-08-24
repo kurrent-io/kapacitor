@@ -8,7 +8,7 @@ using Capacitor.App.ViewModels;
 
 namespace Capacitor.App.Views;
 
-/// The Home tab (Task 6, AI-2194): DataContext is supplied externally (a plainly-constructed
+/// The Home tab: DataContext is supplied externally (a plainly-constructed
 /// HomeViewModel), same contract as ConsentPromptWindow/MainWindow — this view never builds its
 /// own ViewModel.
 public partial class HomeView : UserControl {
@@ -16,7 +16,7 @@ public partial class HomeView : UserControl {
 
     void OnNewSessionClick(object? sender, RoutedEventArgs e) => GoalInput.Focus();
 
-    // Repository picker (task-6-brief open question 2): this slice has no repository registry, so
+    // Repository picker: this slice has no repository registry, so
     // the only affordance is "add one" via a native folder picker — SelectRepositoryAsync persists
     // the choice through AppState.HarnessByRepo like any other repository.
     async void OnRepositoryChipClick(object? sender, RoutedEventArgs e) {

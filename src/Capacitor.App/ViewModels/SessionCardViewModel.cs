@@ -4,7 +4,7 @@ using Capacitor.Cli.Core.LocalIpc;
 
 namespace Capacitor.App.ViewModels;
 
-/// One card of the Home tab's "Active sessions" grid (Task 5). Constructed once per
+/// One card of the Home tab's "Active sessions" grid. Constructed once per
 /// AgentStatusDto revision — DynamicData's Transform recreates the whole object on every change,
 /// same as AgentRowViewModel — so every field is computed once from the dto passed to the
 /// constructor. HomeViewModel has no ticker (unlike MainWindowViewModel), so Age is a

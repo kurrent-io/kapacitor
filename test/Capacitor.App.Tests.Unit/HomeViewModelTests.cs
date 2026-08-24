@@ -25,6 +25,33 @@ public class HomeViewModelTests {
         return new HomeViewModel(new FakeDaemonClientService(), store, launch);
     }
 
+    /// Repo keys compare the way the filesystem does — so the SAME repository reached under
+    /// different casing restores its harness on Windows/macOS, and stays distinct on Linux where
+    /// two such paths really are two repositories. Asserting the platform's own answer rather than
+    /// one hardcoded expectation is what lets this run on every CI leg.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Repo_keys_compare_the_way_the_filesystem_does() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var vm = Build(out _, out var store, path);
+
+            await vm.SelectRepositoryAsync("/repo/Alpha");
+            await vm.ChooseHarnessAsync("codex");
+            await vm.SelectRepositoryAsync("/repo/alpha");
+
+            var expected = OperatingSystem.IsLinux() ? HomeViewModel.DefaultVendor : "codex";
+            await Assert.That(vm.SelectedVendor).IsEqualTo(expected);
+
+            // And re-choosing under the other casing must overwrite, not accumulate a second
+            // shadowing entry, wherever the two paths are the same repository.
+            await vm.ChooseHarnessAsync("pi");
+            var saved = await store.LoadAsync();
+            var expectedKeys = OperatingSystem.IsLinux() ? 2 : 1;
+            await Assert.That(saved.HarnessByRepo!.Count).IsEqualTo(expectedKeys);
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Choosing_a_harness_remembers_it_for_that_repository() {

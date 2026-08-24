@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Capacitor.App.Services;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -48,7 +49,7 @@ public class LaunchRequestTests {
     [Test]
     public async Task Blank_prompt_is_sent_as_null() {
         var json = Payload(new LaunchRequest("kcap-dev", "/repo", "claude", "   "));
-        await Assert.That(json.GetProperty("prompt").ValueKind).IsEqualTo(JsonValueKind.Null);
+        await Assert.That(json.GetProperty("prompt").IsNull).IsTrue();
     }
 
     [Test]

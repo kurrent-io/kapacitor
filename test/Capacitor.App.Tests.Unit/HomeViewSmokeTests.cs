@@ -12,7 +12,7 @@ using DynamicData;
 
 namespace Capacitor.App.Tests.Unit;
 
-/// Headless rendering acceptance for the Home tab (Task 6, AI-2194). HomeView is a UserControl,
+/// Headless rendering acceptance for the Home tab. HomeView is a UserControl,
 /// not a Window (unlike MainWindow) — each test hosts it inside a plain Window purely to give
 /// headless something to Show(); session setup and control lookup otherwise copy
 /// MainWindowSmokeTests exactly (see that file's own header comment).
