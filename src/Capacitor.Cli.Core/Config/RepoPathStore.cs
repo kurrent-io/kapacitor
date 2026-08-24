@@ -22,14 +22,36 @@ public static class RepoPathStore {
 
         try {
             var json = await File.ReadAllTextAsync(StorePath);
-            return JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.RepoEntryArray) ?? [];
+            return Collapse(JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.RepoEntryArray) ?? []);
         } catch {
             return [];
         }
     }
 
+    /// Worktree entries written before AddAsync resolved them (GH #655) collapse on read into
+    /// their main repository, newest last_used winning — so historical pollution disappears from
+    /// every consumer without a migration, and the next write persists the cleaned list.
+    static RepoEntry[] Collapse(RepoEntry[] entries) {
+        if (entries.Length == 0) return entries;
+
+        var comparer = PathComparison == StringComparison.Ordinal
+            ? StringComparer.Ordinal
+            : StringComparer.OrdinalIgnoreCase;
+        var byRepo = new Dictionary<string, RepoEntry>(comparer);
+        foreach (var entry in entries) {
+            var resolved = NormalizePath(GitRepository.ResolveMainRepoRoot(entry.Path));
+            if (!byRepo.TryGetValue(resolved, out var existing) || entry.LastUsed > existing.LastUsed)
+                byRepo[resolved] = entry with { Path = resolved };
+        }
+
+        return [..byRepo.Values];
+    }
+
     public static async Task AddAsync(string path) {
-        var normalized = NormalizePath(path);
+        // A linked worktree registers as its main repository: user-facing repo lists show actual
+        // repositories, and review flows launching into a requester's worktree must not mint a
+        // "known repo" out of it (GH #655).
+        var normalized = NormalizePath(GitRepository.ResolveMainRepoRoot(path));
 
         await Lock.WaitAsync();
 

@@ -241,4 +241,46 @@ public class RepoPathStoreTests {
         await Assert.That(paths.Length).IsEqualTo(1);
         await Assert.That(paths[0]).IsEqualTo(Path.GetFullPath("/tmp/project-x"));
     }
+
+    // ── Worktree resolution (GH #655) ─────────────────────────────────────────
+
+    /// Agent registrations persist the launch path, and review flows launch into the requester's
+    /// worktree — the store, not the caller, is where that collapses to the main repository, so
+    /// every consumer (server launch dialog, app menu, `kcap repos list`) inherits it.
+    [Test]
+    public async Task Add_resolves_a_linked_worktree_to_its_main_repository() {
+        using var tmp = new TempDir();
+        var main = tmp.CreateDir("main");
+        tmp.CreateDir("main", ".git", "worktrees", "wt1");
+        var wt = tmp.CreateDir("wt");
+        File.WriteAllText(Path.Combine(wt, ".git"), $"gitdir: {Path.Combine(main, ".git", "worktrees", "wt1")}\n");
+
+        await RepoPathStore.AddAsync(main);
+        await RepoPathStore.AddAsync(wt);
+
+        var entries = await RepoPathStore.LoadAsync();
+        await Assert.That(entries.Length).IsEqualTo(1);
+        await Assert.That(entries[0].Path).IsEqualTo(Path.GetFullPath(main));
+    }
+
+    /// Historical pollution: entries written before the resolution existed, whose worktree
+    /// directories are long gone. Read-side resolution collapses them without a migration,
+    /// keeping the newest last_used per surviving repository.
+    [Test]
+    public async Task Load_collapses_dead_worktree_entries_into_their_repository() {
+        var older = DateTimeOffset.UtcNow.AddDays(-2);
+        var newer = DateTimeOffset.UtcNow.AddDays(-1);
+        var polluted = new RepoEntry[] {
+            new() { Path = "/gone/repo", LastUsed = older },
+            new() { Path = "/gone/repo/.claude/worktrees/leaf", LastUsed = newer },
+            new() { Path = "/gone/other", LastUsed = older },
+        };
+        await File.WriteAllTextAsync(ReposJsonPath, System.Text.Json.JsonSerializer.Serialize(polluted));
+
+        var entries = await RepoPathStore.LoadAsync();
+
+        await Assert.That(entries.Length).IsEqualTo(2);
+        var repo = entries.Single(e => e.Path == "/gone/repo");
+        await Assert.That(repo.LastUsed).IsEqualTo(newer);
+    }
 }

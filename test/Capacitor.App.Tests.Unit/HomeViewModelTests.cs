@@ -308,6 +308,25 @@ public class HomeViewModelTests {
         });
     }
 
+    /// A reviewer launched into a requester's worktree reports that worktree as its RepoPath —
+    /// the menu must offer the repository, never the agent's checkout (GH #655).
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task An_agents_worktree_path_is_listed_as_its_repository() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
+
+            daemon.Agents.AddOrUpdate(Agent("x", "/repo/a/.claude/worktrees/leafy"));
+
+            var repos = await vm.ListRepositoriesAsync();
+
+            await Assert.That(repos.Any(r => r.RepoPath == "/repo/a")).IsTrue();
+            await Assert.That(repos.Any(r => r.RepoPath.Contains("worktrees"))).IsFalse();
+        });
+    }
+
     /// The daemon's persisted known-repos store (repos.json — the same list DaemonConnect.RepoPaths
     /// feeds the server's launch dialog) is a source of its own: a repo you once ran an agent in
     /// must appear with no live agent and no locally remembered harness.

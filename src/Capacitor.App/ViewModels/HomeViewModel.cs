@@ -4,6 +4,7 @@ using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
 using Capacitor.App.Services;
+using Capacitor.Cli.Core;
 using DynamicData;
 using DynamicData.Binding;
 using ReactiveUI;
@@ -163,8 +164,11 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
 
         foreach (var key in byRepo?.Keys ?? [])
             Add(key);
+        // An agent's RepoPath can be a worktree checkout (review flows launch into the
+        // requester's worktree) — the menu offers the repository, never the checkout (GH #655).
         foreach (var agent in _daemon.Agents.Items)
-            Add(agent.RepoPath);
+            if (agent.RepoPath is { Length: > 0 } repoPath)
+                Add(GitRepository.ResolveMainRepoRoot(repoPath));
         foreach (var repo in known)
             Add(repo);
         Add(SelectedRepoPath);
