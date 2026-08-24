@@ -296,6 +296,8 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
     /// <c>recovery_surface=takeover|reinstall|attention</c> (the pinned <see cref="ReasonRouting"/>
     /// table) — never guessed at from prose. On non-launchd the ladder degrades to plain install/start
     /// (no gates, no rollback); the JSON reports <c>verified:false</c> so the flow's copy can say so.
+    /// On launchd a resolvable profile is required up front — a unit baked without one could never
+    /// pass the start gate's identity half, so ensure refuses rather than report a dead-end install.
     /// </summary>
     internal async Task<int> Ensure(string[] args) {
         var json        = args.Contains("--json");
@@ -308,10 +310,24 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
         var txnActive = ServiceTxnLock.IsHeld(store, id);
         var txnMarker = ServiceTxnMarker.Exists(store, id);
 
+        // The classifier gets the job pid plus whether THIS manager can supply one: on launchd,
+        // already-enabled additionally requires the running job to own the validated daemon pid
+        // (systemd/Windows cannot report one, so their coarser verified:false arm stands).
         var decision = EnsureClassifier.Classify(
-            query.Probe, query.State, query.UnitPresent, daemonPid, txnMarker, txnActive);
+            query.Probe, query.State, query.UnitPresent, daemonPid, txnMarker, txnActive,
+            query.JobPid, manager is LaunchdServiceManager);
 
         var state = ServiceStateToken(query);
+
+        // On launchd the start gate's identity half demands a non-empty invoking KCAP_PROFILE, so a
+        // unit baked without one can never be gated-started — installing it bakes a dead end. Fail
+        // closed with a coded reason rather than letting the install report success. (A URL-only
+        // unit is only coherent off-macOS, where there is no gate; there the plain arms stand.)
+        if (manager is LaunchdServiceManager && string.IsNullOrEmpty(profileName)
+            && decision.Action is EnsureAction.Install or EnsureAction.Start) {
+            var refusedAction = decision.Action == EnsureAction.Install ? "install" : "start";
+            return await Report(new ServiceEnsureJson(id, state, refusedAction, "refused", null, "no_profile_configured"), 1, json);
+        }
 
         switch (decision.Action) {
             case EnsureAction.AlreadyEnabled:
@@ -346,10 +362,14 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
     }
 
     /// <summary>Wire token for the fresh-read state. An Unknown probe is reported as "unknown" rather
-    /// than falling through to a state value — the same never-masquerade rule status --json applies.</summary>
-    static string ServiceStateToken(ServiceQuery q) => q.Probe == LabelProbe.Unknown
+    /// than falling through to a state value — the same never-masquerade rule status --json applies.
+    /// A unit that is present but stopped reads <c>NotInstalled</c> on launchd (the label is not
+    /// loaded) yet is genuinely installed — derive from unit presence so the JSON never pairs
+    /// <c>state:"not_installed"</c> with <c>action:"start"</c>.</summary>
+    internal static string ServiceStateToken(ServiceQuery q) => q.Probe == LabelProbe.Unknown
         ? "unknown"
         : q.State switch {
+            ServiceState.NotInstalled when q.UnitPresent => "installed",
             ServiceState.NotInstalled => "not_installed",
             ServiceState.Installed    => "installed",
             ServiceState.Running      => "running",
@@ -398,6 +418,8 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
         var spec    = new ServiceSpec(id, daemonPath, logPath, env, []);
 
         StartGateReason? gateReason = null;
+        string? viabilityReason = null;
+        string? bootRefusalToken = null;
         int exit;
         if (manager is LaunchdServiceManager) {
             var profileUrlValid = await ServiceInstallViability.PinnedProfileServerUrlValidAsync(env);
@@ -407,12 +429,14 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
             exit = await engine.InstallVerifiedAsync(spec, replace: false, CapacitorVersion.Current());
             // InstallVerifiedAsync never returns StartGate — its gated refusals are viability/drift —
             // so gateReason stays null here and StartGate recovery never fires from the install arm.
-            gateReason = engine.LastGateReason;
+            gateReason       = engine.LastGateReason;
+            viabilityReason  = engine.LastViabilityReason;
+            bootRefusalToken = engine.LastBootRefusalToken;
         } else {
             exit = await InstallPlain(spec, startNow: true);
         }
 
-        if (exit != 0) return await EnsureFailure(exit, gateReason, state, "install", json);
+        if (exit != 0) return await EnsureFailure(exit, gateReason, state, "install", json, viabilityReason, bootRefusalToken);
         return await Report(new ServiceEnsureJson(id, state, "install", "installed", Verified: manager is LaunchdServiceManager), 0, json);
     }
 
@@ -421,7 +445,10 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
     /// regardless of what the installing shell exported. <c>prompt</c> WINS over an ambient value
     /// (a refusal exported as <c>deny</c>/<c>allow</c> must not survive into the unit): the flow's
     /// contract is "an app-installed daemon is born prompt", and the gate's identity half re-reads
-    /// the expect pin, so a unit without it can never pass a later gated start.</summary>
+    /// the expect pin, so a unit without it can never pass a later gated start.
+    /// <para>When a profile IS pinned, the ambient <c>KCAP_URL</c> is stripped: URL resolution
+    /// outranks profile resolution (ProfileResolver), so a unit that bakes both would resolve the
+    /// ambient URL and refuse on the expectation mismatch — the pin must be the sole URL authority.</para></summary>
     internal static Dictionary<string, string> EnsureUnitEnv(
             string? profileName, string serverUrl, IReadOnlyDictionary<string, string> ambient) {
         var env = new Dictionary<string, string>(ambient) {
@@ -429,7 +456,10 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
             ["KCAP_EXPECT_SERVER_URL"]    = serverUrl,
         };
         // Same "explicit pin wins" rule as ServiceEnvironment.Build — only a real profile is pinned.
-        if (!string.IsNullOrEmpty(profileName)) env["KCAP_PROFILE"] = profileName;
+        if (!string.IsNullOrEmpty(profileName)) {
+            env["KCAP_PROFILE"] = profileName;
+            env.Remove("KCAP_URL");
+        }
         return env;
     }
 
@@ -441,18 +471,20 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
             return await Report(new ServiceEnsureJson(id, state, "start", "refused", null, "no_server_configured"), 1, json);
 
         StartGateReason? gateReason = null;
+        string? bootRefusalToken = null;
         int exit;
         if (manager is LaunchdServiceManager) {
             var engine = new ServiceVerify(store, (LaunchdServiceManager)manager,
                 n => DaemonPidProbe.ValidatedPid(store, n), (n, t) => HelloProbe.RunAsync(store, n, t),
                 TimeProvider.System, gateEnv: EnsureGateEnv(profileName, serverUrl));
             exit = await engine.StartVerifiedAsync(id);
-            gateReason = engine.LastGateReason;
+            gateReason       = engine.LastGateReason;
+            bootRefusalToken = engine.LastBootRefusalToken;
         } else {
             exit = await StartPlain();
         }
 
-        if (exit != 0) return await EnsureFailure(exit, gateReason, state, "start", json);
+        if (exit != 0) return await EnsureFailure(exit, gateReason, state, "start", json, bootRefusalToken: bootRefusalToken);
         return await Report(new ServiceEnsureJson(id, state, "start", "started", Verified: manager is LaunchdServiceManager), 0, json);
     }
 
@@ -468,12 +500,16 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
 
     /// <summary>Shared non-success tail: the verify transaction already emitted its coded token and
     /// <c>start_gate_reason=</c> line; the pure <see cref="EnsureFailureMap"/> derives the JSON's
-    /// recovery/reason fields, and the <c>recovery_surface=</c> line is re-emitted when a gate
-    /// refused. The exit code always passes through unchanged.</summary>
-    async Task<int> EnsureFailure(int exit, StartGateReason? gateReason, string state, string action, bool json) {
-        var (recovery, reason) = EnsureFailureMap.Map(exit, gateReason, verified: manager is LaunchdServiceManager);
+    /// recovery/reason fields — including the engine's structured viability/boot-refusal reasons —
+    /// and the <c>recovery_surface=</c> line is re-emitted when a surface is mapped. The verified
+    /// flag matches this run's transaction (true on the launchd arms), and the exit code always
+    /// passes through unchanged.</summary>
+    async Task<int> EnsureFailure(int exit, StartGateReason? gateReason, string state, string action, bool json,
+            string? viabilityReason = null, string? bootRefusalToken = null) {
+        var verified = manager is LaunchdServiceManager;
+        var (recovery, reason) = EnsureFailureMap.Map(exit, gateReason, verified, viabilityReason, bootRefusalToken);
         if (recovery is not null) await Console.Error.WriteLineAsync($"recovery_surface={recovery}");
-        return await Report(new ServiceEnsureJson(id, state, action, "refused", recovery, reason), exit, json);
+        return await Report(new ServiceEnsureJson(id, state, action, "refused", recovery, reason, Verified: verified), exit, json);
     }
 
     /// <summary>

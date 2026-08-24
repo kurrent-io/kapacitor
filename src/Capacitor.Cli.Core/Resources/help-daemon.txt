@@ -78,17 +78,23 @@ Subcommands for service (per-user; auto-restarts on crash/SIGKILL, starts at log
                           Flow-driven ladder: from a fresh status read, install
                           when there is no unit (baking the born-prompt consent
                           directive) or start when the unit is present but
-                          stopped; "already enabled" when the daemon is running.
-                          On macOS/launchd both arms run the verified
-                          transaction, so a gate refusal exits with the coded
-                          verify exit plus start_gate_reason=, mapped to
-                          recovery_surface=takeover|reinstall|attention — never
-                          guessed from prose. Windows/Linux degrade to plain
-                          install/start (no gates; --json reports
-                          verified:false). Ambiguous states (unknown probe,
-                          active transaction, orphan label, stale marker) fail
-                          closed to attention with a coded reason — never
-                          mutated into.
+                          stopped; "already enabled" when the daemon is running
+                          (on launchd only when the service job owns the
+                          validated daemon pid). On macOS/launchd both arms run
+                          the verified transaction, so a gate refusal exits with
+                          the coded verify exit plus start_gate_reason=, mapped
+                          to recovery_surface=takeover|reinstall|attention —
+                          never guessed from prose; coded viability/refusal
+                          reasons route likewise (package_inconsistent →
+                          reinstall, boot refusals → storage/takeover), and
+                          refused launchd transactions report verified:true.
+                          Windows/Linux degrade to plain install/start (no
+                          gates; --json reports verified:false). macOS requires
+                          a resolvable profile (no_profile_configured refusal
+                          otherwise). Ambiguous states (unknown probe, active
+                          transaction, orphan label — running included — stale
+                          marker) fail closed to attention with a coded reason
+                          — never mutated into.
   status [--name N] [--json]
                           Show installed / running state. --json emits a
                           machine-readable snapshot (service/job/daemon pids,

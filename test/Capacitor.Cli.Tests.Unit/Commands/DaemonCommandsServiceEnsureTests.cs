@@ -51,4 +51,23 @@ public class DaemonCommandsServiceEnsureTests {
         var exit = await new DaemonServiceCommands(Daemons.Store, manager, "test-id").Ensure(["--json"]);
         await Assert.That(exit).IsEqualTo(1);
     }
+
+    // F1: on launchd a unit baked without a resolvable profile can never pass the start gate's
+    // identity half (it demands a non-empty invoking KCAP_PROFILE), so the install arm must fail
+    // closed up front rather than report a success that can never be gated-started. Driven with a
+    // real LaunchdServiceManager whose launchctl calls are stubbed to "no such service" — the
+    // refusal fires before any transaction work.
+    [Test]
+    public async Task Launchd_install_without_a_profile_fails_closed() {
+        Capacitor.Cli.Core.Config.AppConfig.ResetResolvedStateForTesting();
+        var manager = new LaunchdServiceManager(
+            runProcess: (_, _) => (1, "", "Could not find service: io.kurrent.kcap.daemon.test-id"),
+            runBounded: (_, _, _) => (1, "", "Could not find service: io.kurrent.kcap.daemon.test-id", false));
+
+        using var capture = ConsoleOutput.StartCapture();
+        var exit = await new DaemonServiceCommands(Daemons.Store, manager, "test-id").Ensure(["--json"]);
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(capture.GetCapturedOutput()).Contains("no_profile_configured");
+    }
 }

@@ -621,6 +621,8 @@ public class ServiceVerifyInstallTests {
         await Assert.That(lines).IsEquivalentTo(["viability_reason=package_inconsistent"]);
         await Assert.That(manager.Calls).IsEmpty();
         await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
+        // F8: the coded reason must also be surfaced in-process, for the ensure ladder's JSON.
+        await Assert.That(sut.LastViabilityReason).IsEqualTo("package_inconsistent");
     }
 
     /// <summary>The pre-bootstrap TOCTOU recheck. Viability's digest check passes (call 1)
@@ -818,6 +820,8 @@ public class ServiceVerifyInstallTests {
         await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
         var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
         await Assert.That(lines.Count(l => l == "refusal_reason=server_expectation_mismatch")).IsEqualTo(1);
+        // F8: the attributed refusal token must also be surfaced in-process, for the ensure ladder's JSON.
+        await Assert.That(sut.LastBootRefusalToken).IsEqualTo("server_expectation_mismatch");
     }
 
     [Test, NotInParallel]
@@ -856,5 +860,6 @@ public class ServiceVerifyInstallTests {
         await Assert.That(exit).IsEqualTo(VerifyExit.ReadinessTimeout);
         var lines = capture.GetCapturedError().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
         await Assert.That(lines.Any(l => l.StartsWith("refusal_reason=", StringComparison.Ordinal))).IsFalse();
+        await Assert.That(sut.LastBootRefusalToken).IsNull();
     }
 }

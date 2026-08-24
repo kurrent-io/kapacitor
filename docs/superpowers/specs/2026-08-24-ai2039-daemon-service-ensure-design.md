@@ -19,12 +19,24 @@ From a fresh `service status --json`:
 | --- | --- | --- |
 | no unit | `service install --verify` | bakes `KCAP_CONSENT_SEED_DEFAULT=prompt` — the app-installed daemon is born `prompt` |
 | unit present, stopped | `service start --verify` | gated when the invoking launcher carries the seed directive |
-| running (validated daemon pid) | none | already enabled — reachable is the flow's done state; service-vs-manual ownership is the detour's visibility question, not the ladder's |
-| anything ambiguous | none — fail closed | unknown probe, txn marker/active, orphan label, running-unconfirmed — attention, never guessed |
+| running (validated daemon pid, and on launchd the service job owning it) | none | already enabled — reachable is the flow's done state; service-vs-manual ownership is the detour's visibility question, not the ladder's |
+| anything ambiguous | none — fail closed | unknown probe, txn marker/active, orphan label (running included — a loaded label whose unit file is gone cannot survive a relaunch), running-unconfirmed — attention, never guessed; the repair rows precede even the success arm so ambiguity can never ride a validated pid into "already enabled" |
 
 Gate failures surface as coded exits (`verify_start_gate` = 28, `verify_start_gate_drift` = 29)
 with one machine-readable `start_gate_reason=` line, mapped by `ReasonRouting` to **takeover**,
-**reinstall** or **fail-closed attention** — never derived from prose.
+**reinstall** or **fail-closed attention** — never derived from prose. The engine's other coded
+reasons travel the same wire: a gated-install viability abort with `package_inconsistent` routes
+to **reinstall**, and an attributed readiness-timeout boot refusal (`consent_seed_unwritable`,
+`server_expectation_mismatch`, …) routes through `ReasonRouting.ForBootRefusal` to
+**storage**/**takeover**/**attention** — the flow never sees a bare `verify_viability`/
+`verify_readiness_timeout` when the engine already named a reason. Refused launchd transactions
+serialize `verified:true` (the verified transaction did run); `verified:false` remains the plain
+off-macOS signal. On launchd a resolvable profile is a hard precondition: a unit baked without one
+could never pass the start gate's identity half (it demands a non-empty invoking `KCAP_PROFILE`),
+so ensure refuses with `no_profile_configured` before any mutation rather than reporting a
+dead-end install. Pinning a profile strips any ambient `KCAP_URL` from the unit env — URL
+resolution outranks profile resolution, so baking both would point the daemon at the wrong server
+and refuse on the expectation mismatch; the pin is the sole URL authority.
 
 ## Changes
 
@@ -42,7 +54,8 @@ is the same rescue shape as AI-2167 (classes leaving the app before AI-2053 dele
 New verb in `DaemonServiceCommands`:
 
 - fresh status query + the same lifecycle evidence `status --json` reads (probe/state/unit
-  presence, txn marker/active, validated daemon pid);
+  presence, txn marker/active, validated daemon pid, and — for the already-enabled arm on launchd —
+  the service job's own pid, which must own the validated daemon);
 - pure classification (unit absent → install; unit present + stopped → start; running → already
   enabled; ambiguous → attention), mirroring `ServiceStatusRender`'s "unknown never masquerades";
 - install path builds the spec env via `ServiceEnvironment.Capture` and **force-bakes**

@@ -30,13 +30,15 @@ public readonly record struct EnsureDecision(EnsureAction Action, string? Reason
 /// <summary>
 /// Pure ladder classifier: from the same evidence <c>status --json</c> reads, decide install /
 /// start / already-enabled, or fail closed. Precedence mirrors the wizard's step-7 matrix: an
-/// unreadable probe, a live transaction, then the repair rows (orphan label, stale marker) ahead
-/// of any mutation — never install/start into an ambiguous state.
+/// unreadable probe, a live transaction, then the repair rows (orphan label, stale marker) —
+/// ALL ahead of any success or mutation row, so an ambiguity can never ride a validated pid
+/// into "already enabled" (the fail-closed rule the docs state unqualified).
 /// </summary>
 internal static class EnsureClassifier {
     public static EnsureDecision Classify(
             LabelProbe probe, ServiceState state, bool unitPresent,
-            int? daemonPid, bool txnMarker, bool txnActive) {
+            int? daemonPid, bool txnMarker, bool txnActive,
+            int? jobPid = null, bool jobPidAvailable = false) {
         // Unreadable evidence is the same fail-closed as status --json's unknown state: an unknown
         // probe must never masquerade as the well-defined not_installed row.
         if (probe == LabelProbe.Unknown)
@@ -47,19 +49,26 @@ internal static class EnsureClassifier {
         if (txnActive)
             return new EnsureDecision(EnsureAction.Attention, "txn_active");
 
-        // A validated pid means the daemon is up; that is the flow's done state.
-        if (state == ServiceState.Running && daemonPid is not null)
-            return new EnsureDecision(EnsureAction.AlreadyEnabled);
-
-        // State says installed but no unit file on disk — the label is orphaned. Repair, never a blind start.
-        if (state == ServiceState.Installed && !unitPresent)
+        // The repair rows precede the success arm. A loaded label whose unit file is gone — whether
+        // it reads Installed or Running — is an installation that cannot survive a relaunch: orphaned,
+        // never "already enabled". A stale marker means a prior transaction never reached a terminal
+        // state: ambiguous, never success.
+        if ((state == ServiceState.Installed || state == ServiceState.Running) && !unitPresent)
             return new EnsureDecision(EnsureAction.Attention, "orphan_label");
 
-        // A stale marker precedes every mutation row, never a blind reinstall (§6a).
         if (txnMarker)
             return new EnsureDecision(EnsureAction.Attention, "stale_marker");
 
-        // Running without a validated pid is unconfirmed, not success.
+        // "Already enabled" means the service job OWNS the validated daemon pid. On launchd the
+        // manager reports the job's pid, and it must equal the validated daemon pid — a Running
+        // label whose job pid is absent/unparseable or points elsewhere is unconfirmed, not success.
+        // Managers that cannot supply a job pid (systemd, Windows) keep the coarser check; their
+        // already-enabled arm is the documented verified:false one.
+        if (state == ServiceState.Running && daemonPid is not null
+            && (!jobPidAvailable || jobPid == daemonPid))
+            return new EnsureDecision(EnsureAction.AlreadyEnabled);
+
+        // Running without a validated pid, or on launchd without the job owning it, is unconfirmed.
         if (state == ServiceState.Running)
             return new EnsureDecision(EnsureAction.Attention, "running_unconfirmed");
 
@@ -83,17 +92,22 @@ public static class RecoverySurfaceTokens {
 }
 
 /// <summary>
-/// Pure: the wire fields for an ensure failure — <c>recovery</c> (gate refusals only) and
-/// <c>reason</c>. Kept separate from I/O so the JSON contract is testable without a real service
-/// manager. A gate refusal maps its <c>start_gate_reason=</c> token through <see cref="ReasonRouting"/>
-/// (takeover/reinstall/attention); drift is the gate's TOCTOU re-check refusing, surfaced as the
-/// attention row with its token, never auto-retried; every other exit on a verified run carries its
-/// <c>verify_*</c> token; a plain (non-launchd) failure carries a plain token, never a <c>verify_*</c>
-/// one — the verify prefix must not claim a transaction that never ran.
+/// Pure: the wire fields for an ensure failure — <c>recovery</c> and <c>reason</c>. Kept separate
+/// from I/O so the JSON contract is testable without a real service manager. A gate refusal maps
+/// its <c>start_gate_reason=</c> token through <see cref="ReasonRouting"/> (takeover/reinstall/
+/// attention); drift is the gate's TOCTOU re-check refusing, surfaced as the attention row with
+/// its token, never auto-retried; a gated-install viability abort carries the engine's coded
+/// <c>viability_reason=</c> token (package_inconsistent → reinstall) when one was emitted; an
+/// attributed readiness-timeout boot refusal carries the marker's coded token through
+/// <see cref="ReasonRouting.ForBootRefusal"/> (takeover/storage/attention) instead of collapsing
+/// to the generic verify token. Every other exit on a verified run carries its <c>verify_*</c>
+/// token; a plain (non-launchd) failure carries a plain token, never a <c>verify_*</c> one — the
+/// verify prefix must not claim a transaction that never ran.
 /// </summary>
 internal static class EnsureFailureMap {
     public static (string? Recovery, string? Reason) Map(
-            int exit, StartGateReason? gateReason, bool verified) {
+            int exit, StartGateReason? gateReason, bool verified,
+            string? viabilityReason = null, string? bootRefusalToken = null) {
         if (exit == VerifyExit.StartGate) {
             var reason = gateReason is { } r ? ServiceVerify.GateReasonToken(r) : null;
             var surface = reason is not null
@@ -107,6 +121,18 @@ internal static class EnsureFailureMap {
             // attention row, never auto-retried (same rule as the app's own table); the reason token
             // keeps the JSON and the human line from reading empty.
             return (RecoverySurfaceTokens.Token(RecoverySurface.Attention), VerifyExitToken(exit));
+
+        // A gated-install viability abort with a coded reason: the engine's own package_inconsistent
+        // evidence routes to reinstall (the same token the start gate's table maps), never the
+        // generic verify_viability token that says nothing about what to do next.
+        if (exit == VerifyExit.Viability && viabilityReason is not null)
+            return (RecoverySurfaceTokens.Token(ReasonRouting.ForDaemonStart(viabilityReason)), viabilityReason);
+
+        // An attributed readiness-timeout boot refusal carries the marker's coded token — the flow
+        // can route consent_seed_unwritable to storage or server_expectation_mismatch to takeover
+        // instead of seeing only verify_readiness_timeout. Unattributed timeouts fall through.
+        if (exit == VerifyExit.ReadinessTimeout && bootRefusalToken is not null)
+            return (RecoverySurfaceTokens.Token(ReasonRouting.ForBootRefusal(bootRefusalToken)), bootRefusalToken);
 
         // Not a gate refusal. Verified runs carry their verify_* token; plain runs never wear the
         // verify prefix (exit 1 is lock contention or a manager error, not a verify outcome).
