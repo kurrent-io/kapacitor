@@ -20,6 +20,11 @@ public sealed class XtermTerminalSurface : ITerminalSurface {
     public event Action<byte[]>? InputProduced;
     public event Action<int, int>? Resized;
 
+    // Terminal (the SvcSystems wrapper), not the model itself — the model has no direct Cols/Rows
+    // of its own (Task 8 discovery); Terminal.Cols/Rows are live, tracking every resize applied
+    // via Model.Terminal.Resize(cols, rows).
+    public (int Cols, int Rows) CurrentSize => (Model.Terminal.Cols, Model.Terminal.Rows);
+
     public XtermTerminalSurface(int cols, int rows) {
         Model = new TerminalControlModel(new TerminalOptions {
             Cols = cols,

@@ -301,9 +301,13 @@ public sealed class TerminalTabViewModel : ReactiveObject {
             // never call the factory for a retired attempt.
             if (Retired(generation)) return;
 
-            var client = _factory(
+            // Declared before assignment so OnAttachedAsync's closure below can capture it -- by
+            // the time that callback actually runs (after an Attach reply), the factory call
+            // this closure is an argument OF will already have returned and assigned it.
+            ITerminalAttachClient client = null!;
+            client = _factory(
                 _agentId,
-                (snapshot, reason, ct) => OnAttachedAsync(generation, surface, decoder, snapshot, reason, ct),
+                (snapshot, reason, ct) => OnAttachedAsync(generation, client, surface, decoder, snapshot, reason, ct),
                 (bytes, ct) => OnOutputAsync(generation, surface, decoder, bytes, ct));
 
             // One more check right before publishing: a retirement landing exactly between the
@@ -344,12 +348,24 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         };
     }
 
-    async Task OnAttachedAsync(int generation, ITerminalSurface surface, Utf8StreamDecoder decoder, byte[] snapshot, string? reason, CancellationToken ct) {
+    async Task OnAttachedAsync(int generation, ITerminalAttachClient client, ITerminalSurface surface, Utf8StreamDecoder decoder, byte[] snapshot, string? reason, CancellationToken ct) {
         var text = decoder.Decode(snapshot);
         await Dispatcher.UIThread.InvokeAsync(() => {
             if (generation != _attemptGeneration) return;
             surface.Feed(text);
             State = TerminalSessionState.Attached(reason);
+
+            // RunAsync's own initial cols/rows are the phantom DefaultCols/Rows constant -- the
+            // client's post-attach nudge (AgentAttachClient's own "repaint nudge") fires at that
+            // size because the real pane size is never known before RunAsync starts (the surface's
+            // Model-assignment resize fires before WireSurface even subscribes). Correct it here,
+            // once, at the surface's OWN current size -- read-only never influences the PTY's
+            // clamp, so no nudge for it (mirrors AgentAttachClient's own AttachedReadOnly case,
+            // which sends no nudge at all). Fire-and-forget: ResizeAsync never throws by contract
+            // (guarded internally, same as WireSurface's user-driven resize below), and the
+            // generation check above already retires a stale attempt's call -- a later retirement
+            // simply makes this a no-op, never a use of a stale VM field.
+            if (reason is null) _ = client.ResizeAsync(surface.CurrentSize.Cols, surface.CurrentSize.Rows);
         }, DispatcherPriority.Default, ct);
     }
 

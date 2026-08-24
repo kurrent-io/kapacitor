@@ -33,6 +33,7 @@ public class WorkspaceNavigationTests {
         public event Action<int, int>? Resized;
         public void RaiseInput(byte[] bytes) => InputProduced?.Invoke(bytes);
         public void RaiseResize(int cols, int rows) => Resized?.Invoke(cols, rows);
+        public (int Cols, int Rows) CurrentSize { get; set; } = (80, 24);
     }
 
     /// The tracker as the VM sees it (Action&lt;Func&lt;Task&gt;&gt;): records every registration and

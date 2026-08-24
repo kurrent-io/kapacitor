@@ -15,4 +15,9 @@ public interface ITerminalSurface {
 
     /// User-driven resize (cols, rows) — the VM forwards this to ResizeAsync.
     event Action<int, int>? Resized;
+
+    /// The surface's own current dimensions — read once, right after a read-write Attached, to
+    /// correct the client's post-attach nudge (sent at RunAsync's phantom initial size, before the
+    /// real pane size was ever known) to what the pane is actually showing.
+    (int Cols, int Rows) CurrentSize { get; }
 }

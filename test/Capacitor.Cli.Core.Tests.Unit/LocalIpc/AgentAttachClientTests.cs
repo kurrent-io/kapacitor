@@ -46,6 +46,11 @@ public class AgentAttachClientTests {
 
         var outcome = await run;
 
+        // The Received pump is a background drain (ScriptedAttachServer's own doc comment);
+        // waiting for the frame we actually assert on makes the read deterministic instead of
+        // racing that pump.
+        await server.WaitForReceivedAsync(FrameType.Resize);
+
         await Assert.That(first.Type).IsEqualTo(FrameType.Attach);
         await Assert.That(first.Text).IsEqualTo(AgentId);
         await Assert.That(outcome).IsEqualTo(new AttachOutcome.Exited(7));
@@ -53,7 +58,7 @@ public class AgentAttachClientTests {
         await Assert.That(rec.Attached.Single().Reason).IsNull();
         await Assert.That(rec.Output.Single()).IsEquivalentTo(new byte[] { 4, 5 });
         // resize nudge at the initial size, after the read-write Attached:
-        var resize = server.Received.Single(f => f.Type == FrameType.Resize);
+        var resize = server.SnapshotReceived().Single(f => f.Type == FrameType.Resize);
         await Assert.That(resize.Cols).IsEqualTo((ushort)120);
         await Assert.That(resize.Rows).IsEqualTo((ushort)40);
     }
@@ -280,10 +285,15 @@ public class AgentAttachClientTests {
         await server.SendExitedAsync(0);
         await run;
 
-        await Assert.That(server.Received.Count(f => f.Type == FrameType.Stdin)).IsEqualTo(0);
+        // Deterministic: the stream is ordered, so observing the post-attach Resize nudge proves
+        // any erroneous pre-attach Stdin (which would have arrived first) is already recorded too.
+        await server.WaitForReceivedAsync(FrameType.Resize);
+
+        var received = server.SnapshotReceived();
+        await Assert.That(received.Count(f => f.Type == FrameType.Stdin)).IsEqualTo(0);
         // the only Resize is the post-attach nudge at the run's initial size:
-        await Assert.That(server.Received.Count(f => f.Type == FrameType.Resize)).IsEqualTo(1);
-        await Assert.That(server.Received.Single(f => f.Type == FrameType.Resize).Cols).IsEqualTo((ushort)80);
+        await Assert.That(received.Count(f => f.Type == FrameType.Resize)).IsEqualTo(1);
+        await Assert.That(received.Single(f => f.Type == FrameType.Resize).Cols).IsEqualTo((ushort)80);
     }
 
     [Test]

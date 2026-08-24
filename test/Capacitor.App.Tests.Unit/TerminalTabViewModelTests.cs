@@ -31,6 +31,7 @@ public class TerminalTabViewModelTests {
         public event Action<int, int>? Resized;
         public void RaiseInput(byte[] bytes) => InputProduced?.Invoke(bytes);
         public void RaiseResize(int cols, int rows) => Resized?.Invoke(cols, rows);
+        public (int Cols, int Rows) CurrentSize { get; set; } = (80, 24);
     }
 
     static AgentStatusDto Agent(string id, string vendor, bool? hasTerminal, string? repoPath = null) => new(
@@ -66,11 +67,12 @@ public class TerminalTabViewModelTests {
         });
 
     static async Task<(FakeDaemonClientService Daemon, FakeTerminalAttachClientFactory Factory, FakeTimeProvider Time, TerminalTabViewModel Vm, FakeTerminalAttachClient Client)>
-            BuildConnectingAsync(string vendor = "claude", bool? hasTerminal = true, string agentId = "a1", Action<FakeTerminalAttachClient>? configureNext = null) {
+            BuildConnectingAsync(string vendor = "claude", bool? hasTerminal = true, string agentId = "a1",
+                Action<FakeTerminalAttachClient>? configureNext = null, Func<ITerminalSurface>? surfaceFactory = null) {
         var daemon = new FakeDaemonClientService();
         var factory = new FakeTerminalAttachClientFactory { ConfigureNext = configureNext };
         var time = new FakeTimeProvider();
-        var vm = Build(daemon, factory, time, agentId);
+        var vm = Build(daemon, factory, time, agentId, surfaceFactory);
 
         daemon.Agents.AddOrUpdate(Agent(agentId, vendor, hasTerminal));
         await (vm.PendingResolveWorkForTesting ?? Task.CompletedTask);
@@ -201,6 +203,33 @@ public class TerminalTabViewModelTests {
 
             await Assert.That(client.SentInput).IsEmpty();
             await Assert.That(client.Resizes).IsEmpty();
+        });
+    }
+
+    /// I1 (final review): RunAsync's initial cols/rows are the phantom DefaultCols/Rows constant
+    /// (80x24), sent before the surface's real pane size is ever known -- a read-write Attached
+    /// must resend the surface's OWN current size to correct that nudge. A read-only attach gets
+    /// no nudge at all (belt-and-braces with WireSurface's own ReadOnly guard on user-driven
+    /// resizes -- this is the SEPARATE post-attach nudge fired once from OnAttachedAsync itself).
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Read_write_attach_resends_the_surfaces_real_size_and_read_only_sends_none() {
+        await RunOnUiAsync(async () => {
+            var (_, _, _, vm, client) = await BuildConnectingAsync(
+                surfaceFactory: () => new FakeTerminalSurface { CurrentSize = (137, 41) });
+
+            await client.TriggerAttached([]);
+
+            await Assert.That(vm.State.ReadOnly).IsFalse();
+            await Assert.That(client.Resizes.Single()).IsEqualTo((137, 41));
+
+            var (_, _, _, vm2, client2) = await BuildConnectingAsync(
+                agentId: "a2", surfaceFactory: () => new FakeTerminalSurface { CurrentSize = (137, 41) });
+
+            await client2.TriggerAttached([], reason: "review");
+
+            await Assert.That(vm2.State.ReadOnly).IsTrue();
+            await Assert.That(client2.Resizes).IsEmpty();
         });
     }
 

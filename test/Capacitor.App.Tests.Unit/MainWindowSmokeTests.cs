@@ -460,5 +460,6 @@ public class MainWindowSmokeTests {
         public event Action<int, int>? Resized;
         public void RaiseInput(byte[] bytes) => InputProduced?.Invoke(bytes);
         public void RaiseResize(int cols, int rows) => Resized?.Invoke(cols, rows);
+        public (int Cols, int Rows) CurrentSize { get; set; } = (80, 24);
     }
 }

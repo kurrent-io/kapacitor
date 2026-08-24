@@ -37,12 +37,22 @@ sealed class ScriptedAttachServer : IAsyncDisposable {
     /// Polls until a frame of the given type has been recorded. Bytes already handed to the
     /// kernel are observable here only once the background pump task above is actually
     /// scheduled to drain them — a client-side write completing does not guarantee that.
+    /// Bounded so a regression that stops the pump delivering the frame FAILS the test with a
+    /// named timeout instead of hanging the run indefinitely.
     public async Task WaitForReceivedAsync(FrameType type, CancellationToken ct = default) {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while (true) {
             lock (Received) { if (Received.Any(f => f.Type == type)) return; }
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException($"ScriptedAttachServer.WaitForReceivedAsync: no {type} frame recorded within 10s.");
             await Task.Delay(5, ct).ConfigureAwait(false);
         }
     }
+
+    /// A locked copy for a test that needs to enumerate Received directly (Single/Count/etc.) —
+    /// the field itself is mutated by the background pump under the same lock, so an unlocked
+    /// enumeration races it.
+    public List<LocalFrame> SnapshotReceived() { lock (Received) return Received.ToList(); }
 
     public Task SendAsync(LocalFrame frame) => FrameCodec.WriteAsync(_stream!, frame, CancellationToken.None);
     public Task SendAttachedAsync(string agentId, byte[] snapshot) => SendAsync(FrameCodec.Attached(agentId, snapshot));
