@@ -255,8 +255,11 @@ public class PathShimInstallerTests {
         await Assert.That(result.Outcome).IsEqualTo(ShimOutcome.InstalledButNotOnPath);
     }
 
+    // An unknown re-probe is NOT the same as "not on PATH": asserting the PATH's contents from a
+    // probe that returned nothing would be a guess, so the link is reported Failed with a
+    // "could not re-verify" detail rather than a fabricated diagnosis.
     [Test]
-    public async Task InstallAsync_success_then_probe_null_is_installed_but_not_on_path() {
+    public async Task InstallAsync_success_then_probe_null_fails_closed_with_could_not_reverify_detail() {
         Skip.When(OperatingSystem.IsWindows(), "macOS lstat semantics");
 
         using var tmp = new TempDir();
@@ -269,7 +272,9 @@ public class PathShimInstallerTests {
 
         var result = await Install(installer, dest, target, CancellationToken.None);
 
-        await Assert.That(result.Outcome).IsEqualTo(ShimOutcome.InstalledButNotOnPath);
+        await Assert.That(result.Outcome).IsEqualTo(ShimOutcome.Failed);
+        await Assert.That(result.Detail).Contains("could not re-verify");
+        await Assert.That(result.SudoFallback).IsNull();
     }
 
     [Test]

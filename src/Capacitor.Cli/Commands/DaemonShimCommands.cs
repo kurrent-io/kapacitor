@@ -10,7 +10,7 @@ namespace Capacitor.Cli.Commands;
 /// installed, or whether to fail closed with a coded reason. Pure — no I/O — so the ladder is
 /// directly testable. Every ambiguous row fails closed, never guessed.
 /// </summary>
-public enum ShimEnsureAction {
+internal enum ShimEnsureAction {
     /// <summary>kcap already resolves from the terminal — nothing to do.</summary>
     AlreadyOnPath,
 
@@ -23,7 +23,7 @@ public enum ShimEnsureAction {
 
 /// <summary>One ladder classification. <see cref="Reason"/> is non-null only for
 /// <see cref="ShimEnsureAction.Refuse"/> — a coded token naming the row, never prose.</summary>
-public readonly record struct ShimEnsureDecision(ShimEnsureAction Action, string? Reason = null);
+internal readonly record struct ShimEnsureDecision(ShimEnsureAction Action, string? Reason = null);
 
 /// <summary>
 /// Pure ladder classifier for the PATH shim (spec §5): only a POSITIVE probe finding no
@@ -66,13 +66,24 @@ public static class DaemonShimCommands {
     /// real <c>$SHELL</c>).</param>
     /// <param name="install">Test seam for the shim install (the production installer prompts via
     /// osascript).</param>
+    /// <param name="preflight">Test seam for the destination preflight — the production default
+    /// refuses on any non-target filesystem entry at <see cref="PathShimInstaller.Destination"/>.
+    /// Injected independently of <paramref name="install"/> so the conflict row is stubbable.</param>
     /// <param name="isMacOs">Test seam — the shim is osascript-based, so the classifier refuses
-    /// off-macOS; production resolves the real OS.</param>
+    /// off-macOS. A bool cannot distinguish "unspecified" from "explicitly false" on a macOS host,
+    /// so this is nullable: null resolves to the real OS, false forces the off-macOS arm.</param>
     internal static async Task<int> Ensure(string[] args, Func<string?>? resolveTarget = null,
             ILoginShellProbe? probe = null, Func<string, CancellationToken, Task<ShimResult>>? install = null,
-            bool isMacOs = default) {
+            Func<string, ShimPreflight>? preflight = null, bool? isMacOs = null) {
+        // Only --json is a legal flag; anything else (including --help and typos) is rejected
+        // before the first probe or prompt — this verb's own ladder principle is fail-closed, and
+        // an unknown flag must not be silently ignored into a mutation. (-h/--help never reach
+        // here: Program.cs intercepts them for the whole command group.)
+        if (args.Any(a => a != "--json"))
+            return Usage();
+
         var json = args.Contains("--json");
-        isMacOs |= OperatingSystem.IsMacOS();
+        isMacOs ??= OperatingSystem.IsMacOS();
 
         var target = (resolveTarget ?? (() => Environment.ProcessPath))();
         if (string.IsNullOrEmpty(target)) {
@@ -82,7 +93,7 @@ public static class DaemonShimCommands {
         probe ??= new LoginShellProbe(new ProcessRunner(), Environment.GetEnvironmentVariable);
         var onPath = await probe.KcapOnPathAsync(CancellationToken.None).ConfigureAwait(false);
 
-        var decision = ShimEnsureClassifier.Classify(onPath, isMacOs);
+        var decision = ShimEnsureClassifier.Classify(onPath, isMacOs.Value);
         return decision.Action switch {
             ShimEnsureAction.AlreadyOnPath =>
                 await Report(new ShimEnsureJson(Capability, target, onPath != null, onPath, "none", "already_on_path"), 0, json),
@@ -90,24 +101,25 @@ public static class DaemonShimCommands {
             ShimEnsureAction.Refuse =>
                 await Report(new ShimEnsureJson(Capability, target, onPath != null, onPath, "none", "refused", decision.Reason), 1, json),
 
-            _ => await Install(target, json, install),
+            _ => await Install(target, json, probe, install, preflight),
         };
     }
 
-    static async Task<int> Install(string target, bool json, Func<string, CancellationToken, Task<ShimResult>>? install) {
+    static async Task<int> Install(string target, bool json, ILoginShellProbe probe,
+            Func<string, CancellationToken, Task<ShimResult>>? install, Func<string, ShimPreflight>? preflight) {
         // Preflight is checked here (before the admin prompt) so a conflict is a coded refusal
         // with what was found, not a prompt that then fails. AlreadyInstalled and Installable
-        // both flow into InstallAsync, which re-probes fresh and maps the same way.
-        if (install is null
-                && PathShimInstaller.Preflight(PathShimInstaller.Destination, target) == ShimPreflight.Conflict) {
+        // both flow into InstallAsync, which re-probes fresh and maps the same way. The preflight
+        // seam is independent of the install seam so the conflict row is stubbable in tests.
+        preflight ??= target => PathShimInstaller.Preflight(PathShimInstaller.Destination, target);
+        if (preflight(target) == ShimPreflight.Conflict) {
             var conflict = $"a different filesystem entry already exists at {PathShimInstaller.Destination} and was left untouched";
             return await Report(new ShimEnsureJson(Capability, target, true, false, "install", "refused", "conflict", conflict), 1, json);
         }
 
         var result = install is not null
             ? await install(target, CancellationToken.None).ConfigureAwait(false)
-            : await new PathShimInstaller(new ProcessRunner(),
-                    new LoginShellProbe(new ProcessRunner(), Environment.GetEnvironmentVariable))
+            : await new PathShimInstaller(new ProcessRunner(), probe)
                 .InstallAsync(target, CancellationToken.None).ConfigureAwait(false);
         return result.Outcome switch {
             ShimOutcome.Installed =>
@@ -121,7 +133,7 @@ public static class DaemonShimCommands {
                 await Report(new ShimEnsureJson(Capability, target, true, false, "install", "cancelled"), 1, json),
 
             _ =>
-                await Report(new ShimEnsureJson(Capability, target, true, false, "install", "failed",
+                await Report(new ShimEnsureJson(Capability, target, true, null, "install", "failed",
                     Detail: result.Detail, SudoFallback: result.SudoFallback), 1, json),
         };
     }
@@ -137,30 +149,41 @@ public static class DaemonShimCommands {
                 await Console.Out.WriteLineAsync("kcap is already on your terminal PATH.");
                 return 0;
             case "installed":
-                await Console.Out.WriteLineAsync($"Linked {PathShimInstaller.Destination} to {dto.Target}; kcap is now on your terminal PATH.");
+                // Not "Linked … to …" — the AlreadyInstalled preflight row reaches here without
+                // creating anything, so claiming a fresh link would be a lie.
+                await Console.Out.WriteLineAsync("kcap is now on your terminal PATH.");
                 return 0;
             case "installed_not_on_path":
-                await Console.Out.WriteLineAsync(dto.Detail);
+                await Console.Out.WriteLineAsync(Sanitize(dto.Detail));
                 return 1;
             case "cancelled":
                 await Console.Out.WriteLineAsync("Installing the command-line tool was canceled.");
                 return 1;
             case "failed" when dto.SudoFallback is not null:
-                await Console.Error.WriteLineAsync($"{dto.Detail} Or run: {dto.SudoFallback}");
+                await Console.Error.WriteLineAsync($"{Sanitize(dto.Detail)} Or run: {Sanitize(dto.SudoFallback)}");
                 return 1;
             case "failed":
-                await Console.Error.WriteLineAsync(dto.Detail ?? "Installing the command-line tool failed.");
+                await Console.Error.WriteLineAsync(Sanitize(dto.Detail) ?? "Installing the command-line tool failed.");
                 return 1;
             default: // refused
                 await Console.Error.WriteLineAsync(dto.Reason switch {
                     "no_cli_path"          => "Could not resolve this CLI's own path.",
                     "probe_unknown"        => "Could not determine whether kcap is on your terminal PATH.",
                     "unsupported_platform" => "The command-line tool install is only available on macOS.",
-                    "conflict"             => dto.Detail,
+                    "conflict"             => Sanitize(dto.Detail),
                     _                      => "Path fix refused.",
                 });
                 return 1;
         }
+    }
+
+    /// Human output is terminal-bound; a macOS path or shell error text may legally carry ESC /
+    /// other control bytes, which could inject ANSI sequences into the operator's terminal. The
+    /// flow consumes the JSON arm (already escaped by System.Text.Json), so this only guards the
+    /// console lines. Newlines/tabs are preserved — the Detail's own line breaks are intended.
+    static string? Sanitize(string? text) {
+        if (text is null) return null;
+        return new string(text.Where(c => !char.IsControl(c) || c is '\n' or '\t').ToArray());
     }
 
     static int Usage() {

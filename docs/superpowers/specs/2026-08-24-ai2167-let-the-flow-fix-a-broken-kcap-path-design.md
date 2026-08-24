@@ -13,9 +13,10 @@ being retired by AI-2053:
 - **`PathShimInstaller`** — the shim writer (osascript admin prompt, non-forcing `ln -s`,
   lstat preflight taxonomy, post-install re-probe that never reports success on the symlink alone).
 
-This ticket is the **rescue** of those two classes into `Capacitor.Cli.Core` (same shape as AI-2039's
-`ReasonRouting` move), plus **the capability that drives the shim writer** — because the flow cannot
-simply ask for it either.
+This ticket is the **rescue** of those two classes into `Capacitor.Cli.Core` (the same rescue shape
+used for the app's daemon-mutation mapping — types leave the app before AI-2053 deletes it, the app
+picks them up via `using`), plus **the capability that drives the shim writer** — because the flow
+cannot simply ask for it either.
 
 ## The lane rule (retirement spec §6.1)
 
@@ -59,8 +60,8 @@ shared by app and CLI (the same one-copy rule as `ReasonRouting`):
 
 ### 3. `kcap daemon shim ensure` — the named capability
 
-New verb in the `kcap daemon` group (the flow's other ladder verb, `service ensure`, already lives
-there; the shim is the CLI-visibility half of the same machine-setup story):
+New verb in the `kcap daemon` group (the same group as `service`, where the flow's other
+machine-setup ladder verb lives; the shim is the CLI-visibility half of the same story):
 
 - **Resolves the target itself**: the running CLI's own binary path (`Environment.ProcessPath`) —
   never a server-supplied path. No target → coded refusal.
@@ -69,12 +70,13 @@ there; the shim is the CLI-visibility half of the same machine-setup story):
   - probe positive → **already_on_path** — nothing to do (the flow's done state).
   - probe unknown → **fail closed** — `probe_unknown`, never guessed, nothing touched.
   - probe negative → macOS only: preflight (installable → install; already-installed → re-probe;
-    conflict → coded failure); off-macOS → `unsupported_platform` refusal (the shim is
-    osascript-based; copy reflects plain "show me the line" off-macOS, the same degraded shape as
-    `service ensure`'s `verified:false`).
-- **Reports machine-readably**: `--json` payload + coded exit, mirroring `ServiceEnsureJson`'s
-  contract (outcome token, never prose; refusal rows carry a coded reason). Human output without
-  `--json`.
+    conflict → coded refusal); off-macOS → `unsupported_platform` refusal (the shim is
+    osascript-based; copy reflects plain "show me the line" off-macOS).
+  - a **null re-probe after install** fails closed to `failed` ("could not re-verify") — the link
+    exists, but the PATH's contents were never positively re-read, so they are not asserted.
+- **Reports machine-readably**: `--json` payload (outcome token, never prose; refusal rows carry a
+  coded reason), following the shape of the service group's existing `status --json` contract. Human
+  output without `--json`.
 
 ### 4. README + `help-daemon.txt`
 

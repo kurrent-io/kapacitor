@@ -41,8 +41,8 @@ public sealed class ShimOfferCoordinator {
             ILifecycleSurface surface, string? target, CancellationToken lifetime, bool autoOfferSuppressed = false)
         : this(phaseClosed, probe, installer, store, surface, target, lifetime, PathShimInstaller.Destination, autoOfferSuppressed) { }
 
-    // Test seam mirroring PathShimInstaller.InstallAsync's own internal destination-override
-    // overload: lets tests drive real Preflight/InstallAsync taxonomy against a temp path instead
+    // Test seam mirroring PathShimInstaller.InstallAsync's own destination-override overload:
+    // lets tests drive real Preflight/InstallAsync taxonomy against a temp path instead
     // of the real /usr/local/bin/kcap. Production always goes through the public constructor
     // above, which pins `destination` to PathShimInstaller.Destination.
     internal ShimOfferCoordinator(

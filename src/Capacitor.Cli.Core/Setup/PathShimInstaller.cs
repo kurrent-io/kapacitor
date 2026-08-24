@@ -6,9 +6,9 @@ public enum ShimOutcome { Installed, InstalledButNotOnPath, Cancelled, Failed }
 
 public sealed record ShimResult(ShimOutcome Outcome, string? Detail, string? SudoFallback);
 
-/// Installs a `/usr/local/bin/kcap` symlink to the resolved CLI so a terminal PATH that omits the
-/// app's own resolution still finds `kcap` (spec §5). Mechanics only — the once-ever offer and
-/// tray-menu wiring live in ShimOfferCoordinator.
+/// Installs a `/usr/local/bin/kcap` symlink to a resolved CLI so a terminal PATH that omits the
+/// CLI's own location still finds `kcap` (spec §5). Mechanics only — the once-ever offer and
+/// tray-menu wiring live in the desktop app's ShimOfferCoordinator.
 public sealed class PathShimInstaller(IProcessRunner runner, ILoginShellProbe probe) {
     public const string Destination = "/usr/local/bin/kcap";
 
@@ -54,14 +54,21 @@ public sealed class PathShimInstaller(IProcessRunner runner, ILoginShellProbe pr
     /// alone"): re-run the login-shell PATH probe and only call it Installed when `kcap` actually
     /// resolves — otherwise InstalledButNotOnPath with the same actionable Detail. Forces a FRESH
     /// probe (never the pre-install cached answer, which the offer decision itself already
-    /// consumed and is now stale — the install just changed the filesystem).
+    /// consumed and is now stale — the install just changed the filesystem). An UNKNOWN re-probe
+    /// (both attempts failed/timed out) is not the same as "not on PATH": asserting the PATH's
+    /// contents from a probe that returned nothing would be a guess, so it fails closed to Failed
+    /// with a "could not re-verify" detail instead.
     async Task<ShimResult> ProbeOutcomeAsync(string destination, CancellationToken ct) {
         var onPath = await probe.KcapOnPathAsync(ct, forceRefresh: true).ConfigureAwait(false);
-        return onPath == true
-            ? new ShimResult(ShimOutcome.Installed, null, null)
-            : new ShimResult(ShimOutcome.InstalledButNotOnPath,
+        return onPath switch {
+            true  => new ShimResult(ShimOutcome.Installed, null, null),
+            false => new ShimResult(ShimOutcome.InstalledButNotOnPath,
                 $"kcap was linked at {destination}, but your login shell's PATH doesn't include /usr/local/bin. Add: export PATH=\"/usr/local/bin:$PATH\"",
-                null);
+                null),
+            _     => new ShimResult(ShimOutcome.Failed,
+                $"kcap was linked at {destination}, but the login-shell probe could not re-verify whether it is on your terminal PATH.",
+                null),
+        };
     }
 
     /// lstat taxonomy on `destination`, never following through a foreign link: absent →
