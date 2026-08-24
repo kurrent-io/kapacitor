@@ -120,12 +120,17 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
   `InvalidDataException` on malformed frames; dial/read/write can throw
   `SocketException`/`IOException`; closing the socket locally completes a
   blocked read *by exception*, not by null):
-  - failures before a successful attach (dial refused, handshake error) →
-    `Failed(message)`;
-  - after attach, any **locally initiated** close — `DetachAsync` or
-    `DisposeAsync` closing the socket, whatever exception that surfaces in the
-    pending read — settles as `Detached`; `DisposeAsync` never rethrows the
-    exception its own expected close produced;
+  - **local-close intent takes precedence at every phase, not just after
+    attach**: once `DetachAsync`/`DisposeAsync` has recorded intent, any
+    close-induced exception — during dial, while writing the opening `Attach`,
+    awaiting the first reply, or streaming — settles as `Detached` (an
+    `Exited`/`Error` frame the pump had already read still wins). Expected
+    local teardown never faults `DisposeAsync` and never transiently publishes
+    `Failed`. `DetachAsync`/`DisposeAsync` **before** `RunAsync` puts the
+    client terminal immediately: a later `RunAsync` returns `Detached` without
+    dialing;
+  - failures before a successful attach **without local intent** (dial refused,
+    handshake error) → `Failed(message)`;
   - after attach, **uninitiated** transport failure or truncation →
     `ConnectionLost`;
   - a malformed or protocol-unexpected frame → `Failed` (protocol failure);
@@ -133,6 +138,15 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
   - a throwing callback still faults the run (exception out of `RunAsync`), and
     the client transitions terminal first, so later writes are rejected rather
     than racing a faulted pump.
+- **Outbound write failures route to the pump, which stays the single
+  linearization point.** `SendInputAsync`/`ResizeAsync`/`DetachAsync` write from
+  caller tasks while the pump can be blocked in a read (the CLI being ported
+  has the same shape). A transport failure in an input/resize write atomically
+  terminalizes the client and closes the socket, so the blocked read completes
+  and `RunAsync` settles `ConnectionLost`; the initiating outbound call
+  **completes without rethrowing** — the failure is the run's to report, so
+  there is never a second result or a hung pump. A `Detach` write failure with
+  intent recorded resolves the same way every local close does: `Detached`.
 - Disposal: the client is **`IAsyncDisposable`**. `DisposeAsync` records detach
   intent, closes the socket, and awaits the pump's completion — so "dispose"
   anywhere in this spec means an awaited async teardown, never a synchronous
@@ -258,12 +272,19 @@ composition root gains one small app-lifetime piece: a **workspace teardown
 tracker** that every teardown registers with.
 
 **The teardown algorithm is bounded and always reaches the socket close.**
-`DetachAsync` is best-effort with a short bound — it can wait behind the write
-lock or a stalled socket and has no cancellation of its own — and a `finally`
-path closes the socket (`DisposeAsync`) regardless, within the bound. Releasing
-the PTY dimension clamp is guaranteed by the local socket close, never by the
-Detach frame arriving. The tracker isolates per-teardown exceptions: one failed
-teardown logs and completes, never poisoning the drain.
+The Detach write is best-effort with a **1-second** bound — it can wait behind
+the write lock or a stalled socket — and a `finally` path closes the socket
+(`DisposeAsync`) regardless; a whole teardown's budget is **3 seconds** before
+the socket is force-closed. Releasing the PTY dimension clamp is guaranteed by
+the local socket close, never by the Detach frame arriving. The shutdown drain
+has its own **separate 5-second total** deadline across all pending teardowns
+concurrently; on expiry the drain stops waiting and shutdown proceeds (the
+process exit closes any straggler socket at the OS level — the deadline governs
+how long we wait for *graceful* detach frames, not whether the clamp releases).
+All three durations flow through an injected `TimeProvider` so the
+never-completing-write tests are deterministic, not real-time. The tracker
+isolates per-teardown exceptions: one failed teardown logs and completes, never
+poisoning the drain.
 
 Exit paths:
 
@@ -283,12 +304,22 @@ Exit paths:
   never went through Back/close-to-hide would otherwise register its teardown
   after the drain, against already-disposed dependencies. Therefore the
   **first shutdown pass synchronously unhooks `CurrentWorkspace` from the
-  current VM and registers its teardown before draining**. The drain then
-  **seals** the tracker atomically: registration and seal cannot race past the
-  final snapshot, a post-seal registration is refused (its workspace is already
-  torn or tears down as an idempotent no-op), and the later real close of the
-  window is idempotent. The drain awaits pending teardowns (bounded — a few
-  seconds) before service disposal proceeds.
+  current VM (when a window exists — the coordinator can also build one after
+  shutdown began, see below) and registers its teardown before draining**. The
+  drain then **seals** the tracker atomically: registration and seal cannot
+  race past the final snapshot, and the later real close of the window is
+  idempotent. Sealing is belt-and-braces, not the guard itself:
+  - **the navigation seam closes with shutdown** — the first pass latches
+    shutdown into the navigation generation, and `OpenSession` (card click and
+    launch auto-open alike) rejects from then on, so no new workspace or attach
+    can be created while quiesce/disposal runs, including inside a window the
+    coordinator builds after shutdown began;
+  - **a post-seal `Track` is not silently refused** — it immediately performs
+    and observes the same bounded socket-close teardown, so even a path that
+    slips past the latch cannot hold a socket open.
+
+  The drain awaits pending teardowns (its own bounded deadline, above) before
+  service disposal proceeds.
 
 Detach never stops the agent; reopening reattaches and the scrollback replay
 restores history. No app-side buffer persistence.
@@ -327,10 +358,17 @@ TDD throughout (red-green per test):
   EOF → `ConnectionLost`; the outcome observable by an ordinary awaiting caller;
   `DisposeAsync` awaits pump completion; **exceptional-path classification** —
   connect refusal → `Failed`; mid-header and mid-payload stream loss →
-  `ConnectionLost`; an unexpected/malformed frame → `Failed`; a write failure;
-  `DisposeAsync` closing a blocked read settles `Detached` and rethrows
-  nothing; calls made before the run and after termination; a throwing callback
-  faults the run after the client turns terminal (subsequent writes rejected).
+  `ConnectionLost`; an unexpected/malformed frame → `Failed`; **disposal at
+  every pre-attach phase** — during a blocked connect, mid-opening-write, and
+  awaiting the first reply — settles `Detached`, faults nothing, and never
+  transiently publishes `Failed`; `DetachAsync`/`DisposeAsync` before `RunAsync`
+  → a later run returns `Detached` without dialing; **outbound write failure
+  with the read side held open** — the initiating call completes without
+  rethrow, the pump settles `ConnectionLost` (or `Detached` for a failed
+  Detach write), exactly one result, no hung pump; `DisposeAsync` closing a
+  blocked read settles `Detached` and rethrows nothing; calls made before the
+  run and after termination; a throwing callback faults the run after the
+  client turns terminal (subsequent writes rejected).
 - **Wire**: `StatusIpcJsonTests` — old JSON without `has_terminal` → `null`;
   `true`/`false`/`null` all serialize with the member present; `false` never
   omitted.
@@ -352,7 +390,10 @@ TDD throughout (red-green per test):
   a live workspace and no pre-existing tracked teardown** — the first pass
   registers it, the drain seals atomically, and its socket teardown completes
   before service disposal; a **never-completing Detach write on intercepted
-  close** — the socket is force-closed within the teardown bound; a
+  close** — the socket is force-closed within the teardown bound under a test
+  `TimeProvider`; an **explicit `OpenSession` after the first shutdown
+  pass/seal** and a **window constructed after shutdown began** — neither
+  creates a client or socket; a
   **scheduler assertion** driving retry/reattach completion from a background
   thread that fails on any off-UI-thread model construction or bound-state
   mutation; **stale-generation launches** — a delayed launch success after
