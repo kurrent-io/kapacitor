@@ -38,6 +38,7 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     readonly IDaemonClientService _daemon;
     readonly IAppStateStore _state;
     readonly ILaunchClient _launch;
+    readonly Func<Task<string[]>> _knownRepos;
     readonly CompositeDisposable _disposables = new();
 
     string _selectedRepoPath = ScratchRepoPath;
@@ -89,12 +90,16 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// shutdown, so an in-flight hub invoke holding no token races that teardown.
     readonly CancellationToken _shutdown;
 
+    /// knownRepos is RepoPathStore.GetSortedPathsAsync in production — the same persisted list
+    /// DaemonConnect.RepoPaths feeds the server's launch dialog. Required (no defaulted overload)
+    /// so a test can never silently read the developer's own ~/.config/kcap/repos.json.
     public HomeViewModel(
             IDaemonClientService daemon, IAppStateStore state, ILaunchClient launch,
-            CancellationToken shutdown = default) {
+            Func<Task<string[]>> knownRepos, CancellationToken shutdown = default) {
         _daemon = daemon;
         _state = state;
         _launch = launch;
+        _knownRepos = knownRepos;
         _shutdown = shutdown;
 
         // Never starts empty: a null SupportedVendors means "daemon
@@ -140,13 +145,15 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
 
     /// The repository chip's menu, assembled per open rather than kept as a live projection — the
     /// flyout is transient, so reading at click time is always fresh with no extra subscription.
-    /// Sources: remembered HarnessByRepo keys, distinct agent RepoPaths, and the current selection
-    /// (a picker-added repo with no remembered harness and no agent yet lives nowhere else).
+    /// Sources: remembered HarnessByRepo keys, distinct agent RepoPaths, the daemon's persisted
+    /// known repos (what the server's launch dialog sees), and the current selection (a
+    /// picker-added repo with no remembered harness and no agent yet lives nowhere else).
     /// Deduped under PathComparer with remembered keys added first, so where two casings are one
     /// repository the casing the user picked is the one displayed. Scratch is always last; the
     /// view renders it separated.
     public async Task<IReadOnlyList<RepositoryOption>> ListRepositoriesAsync() {
         var byRepo = (await _state.LoadAsync()).HarnessByRepo;
+        var known = await _knownRepos();
 
         var seen = new HashSet<string>(PathComparer);
         var paths = new List<string>();
@@ -158,6 +165,8 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
             Add(key);
         foreach (var agent in _daemon.Agents.Items)
             Add(agent.RepoPath);
+        foreach (var repo in known)
+            Add(repo);
         Add(SelectedRepoPath);
 
         var selected = SelectedRepoPath;

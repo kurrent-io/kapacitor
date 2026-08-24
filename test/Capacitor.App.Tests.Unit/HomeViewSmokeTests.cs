@@ -28,7 +28,7 @@ public class HomeViewSmokeTests {
         var tmp = TempDir.WithPathTo("app-state.json", out var path);
         var service = new FakeDaemonClientService();
         var launch = new RecordingLaunchClient();
-        var vm = new HomeViewModel(service, new AppStateStore(path), launch);
+        var vm = new HomeViewModel(service, new AppStateStore(path), launch, () => Task.FromResult(Array.Empty<string>()));
         return (new HomeView { DataContext = vm }, vm, service, launch, tmp);
     }
 

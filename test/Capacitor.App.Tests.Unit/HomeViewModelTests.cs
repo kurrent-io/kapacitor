@@ -21,10 +21,14 @@ public class HomeViewModelTests {
         }
     }
 
+    /// Scripted stand-in for RepoPathStore.GetSortedPathsAsync — the real store reads the
+    /// developer's own ~/.config/kcap/repos.json, which no test may touch.
+    static Func<Task<string[]>> Known(params string[] paths) => () => Task.FromResult(paths);
+
     static HomeViewModel Build(out RecordingLaunchClient launch, out AppStateStore store, string statePath) {
         launch = new RecordingLaunchClient();
         store = new AppStateStore(statePath);
-        return new HomeViewModel(new FakeDaemonClientService(), store, launch);
+        return new HomeViewModel(new FakeDaemonClientService(), store, launch, Known());
     }
 
     /// Repo keys compare the way the filesystem does — so the SAME repository reached under
@@ -187,7 +191,7 @@ public class HomeViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
             var daemon = new FakeDaemonClientService();
-            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient());
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
 
             await vm.SelectRepositoryAsync("/repo/a");
             await vm.ChooseHarnessAsync("codex");
@@ -213,7 +217,7 @@ public class HomeViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
             var daemon = new FakeDaemonClientService();
-            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient());
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
 
             await vm.SelectRepositoryAsync("/repo/Alpha");
             await vm.ChooseHarnessAsync("codex");
@@ -234,7 +238,7 @@ public class HomeViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
             var daemon = new FakeDaemonClientService();
-            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient());
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
 
             await vm.SelectRepositoryAsync(HomeViewModel.ScratchRepoPath);
             await vm.ChooseHarnessAsync("pi");
@@ -255,7 +259,7 @@ public class HomeViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
             var daemon = new FakeDaemonClientService();
-            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient());
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
 
             daemon.Agents.AddOrUpdate(Agent("x", null));
 
@@ -274,7 +278,7 @@ public class HomeViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
             var daemon = new FakeDaemonClientService();
-            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient());
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
 
             vm.RememberHarness = false;
             await vm.SelectRepositoryAsync("/repo/fresh");
@@ -292,7 +296,7 @@ public class HomeViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
             var daemon = new FakeDaemonClientService();
-            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient());
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
 
             daemon.Agents.AddOrUpdate(Agent("x", "/x/bravo"));
             daemon.Agents.AddOrUpdate(Agent("y", "/y/alpha"));
@@ -301,6 +305,49 @@ public class HomeViewModelTests {
 
             await Assert.That(repos[0].RepoPath).IsEqualTo("/y/alpha");
             await Assert.That(repos[1].RepoPath).IsEqualTo("/x/bravo");
+        });
+    }
+
+    /// The daemon's persisted known-repos store (repos.json — the same list DaemonConnect.RepoPaths
+    /// feeds the server's launch dialog) is a source of its own: a repo you once ran an agent in
+    /// must appear with no live agent and no locally remembered harness.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task The_repository_list_includes_the_daemons_persisted_known_repos() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            using var vm = new HomeViewModel(
+                new FakeDaemonClientService(), new AppStateStore(path), new RecordingLaunchClient(),
+                Known("/repo/recorded"));
+
+            var repos = await vm.ListRepositoriesAsync();
+
+            var known = repos.Single(r => r.RepoPath == "/repo/recorded");
+            await Assert.That(known.Vendor).IsEqualTo(HomeViewModel.DefaultVendor);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_known_repo_dedups_against_a_remembered_key_the_way_the_filesystem_does() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var daemon = new FakeDaemonClientService();
+            using var vm = new HomeViewModel(
+                daemon, new AppStateStore(path), new RecordingLaunchClient(),
+                Known("/repo/alpha", "/repo/beta"));
+
+            await vm.SelectRepositoryAsync("/repo/Alpha");
+            await vm.ChooseHarnessAsync("codex");
+
+            var repos = (await vm.ListRepositoriesAsync()).Where(r => r.RepoPath.Length > 0).ToList();
+
+            // beta only exists in the store, so it proves the source is wired; alpha collides
+            // with the remembered key wherever the filesystem says they are one repository.
+            await Assert.That(repos.Any(r => r.RepoPath == "/repo/beta")).IsTrue();
+            var expected = OperatingSystem.IsLinux() ? 3 : 2;
+            await Assert.That(repos.Count).IsEqualTo(expected);
+            await Assert.That(repos.Any(r => r.RepoPath == "/repo/Alpha")).IsTrue();
         });
     }
 
@@ -314,7 +361,7 @@ public class HomeViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
             var daemon = new FakeDaemonClientService();
-            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient());
+            using var vm = new HomeViewModel(daemon, new AppStateStore(path), new RecordingLaunchClient(), Known());
 
             // Before any snapshot: capability unknown, so everything is offered.
             var piBefore = vm.Harnesses.Single(h => h.Vendor == "pi").Available;

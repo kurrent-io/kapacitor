@@ -599,7 +599,7 @@ public partial class App : Application {
         // none (a test) gets an unheld one, which owns nothing until a launch is actually made.
         var home = new HomeViewModel(
             service, new AppStateStore(PathHelpers.ConfigPath("app-state.json")),
-            launch ?? new ServerLaunchClient(), shutdownToken);
+            launch ?? new ServerLaunchClient(), RepoPathStore.GetSortedPathsAsync, shutdownToken);
         var window = new MainWindow {
             DataContext = new MainWindowViewModel(service, actions, ticker, shutdownToken, activity, startAction, lifecycleStatus, home: home),
             Notifier = notifier,
