@@ -39,8 +39,10 @@ public class DaemonShimCommandsTests {
     public async Task ResolveLinkTarget_uses_the_npm_launcher_when_this_is_an_npm_install() {
         // .../node_modules/@kurrent/kcap-linux-x64/bin/kcap  →  launcher:
         // .../node_modules/@kurrent/kcap/bin/kcap.js
-        var native = "/usr/local/lib/node_modules/@kurrent/kcap-linux-x64/bin/kcap";
-        var launcher = "/usr/local/lib/node_modules/@kurrent/kcap/bin/kcap.js";
+        // GetFullPath both sides: the production branch normalizes the derived launcher, and on
+        // Windows a hardcoded POSIX path would otherwise compare against the current drive's root.
+        var native   = Path.GetFullPath("/usr/local/lib/node_modules/@kurrent/kcap-linux-x64/bin/kcap");
+        var launcher = Path.GetFullPath("/usr/local/lib/node_modules/@kurrent/kcap/bin/kcap.js");
 
         var target = DaemonShimCommands.ResolveLinkTarget(() => native, p => p == launcher);
 
