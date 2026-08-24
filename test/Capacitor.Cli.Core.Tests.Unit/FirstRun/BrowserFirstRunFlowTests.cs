@@ -403,13 +403,15 @@ public class BrowserFirstRunFlowTests {
     [Test]
     public async Task Gives_up_after_its_own_budget__not_the_flows_twelve_hours() {
         // The commonest way this ends unfinished is a closed tab, and the flow's TTL is sized for a
-        // link surviving a working day rather than for a terminal sitting open on one.
+        // link surviving a working day rather than for a terminal sitting open on one. The backstop
+        // is not extended: no poll fires once the deadline has passed.
         var h = Build();
 
         var result = await Run(h);
 
         await Assert.That(result).IsTypeOf<FirstRunFlowResult.Abandoned>();
         await Assert.That(h.Clock.GetUtcNow() - ClockBase).IsLessThanOrEqualTo(TimeSpan.FromMinutes(31));
+        await Assert.That(h.Channel.PollTimes[^1]).IsLessThan(ClockBase + TimeSpan.FromMinutes(30));
         await Assert.That(((FirstRunFlowResult.Abandoned)result).View).IsNotNull();
         await Assert.That(h.Progress.WaitEnds).IsEqualTo(1);
     }
@@ -431,14 +433,28 @@ public class BrowserFirstRunFlowTests {
     [Test]
     public async Task A_keypress_that_preceded_the_wait_is_drained__not_treated_as_a_dismiss() {
         // A byte left in stdin from an earlier step — the Return that confirmed "Logged in as …" —
-        // is not an answer to "press any key to carry on here". It is drained once at the start of
-        // the wait, and the flow goes on polling rather than dismissing on it.
+        // is not an answer to "press any key to carry on here". It is drained once before the prompt
+        // renders, and the flow goes on polling rather than dismissing on it.
         var h = Build(new FakeKeys(canWatch: true, pressAfter: 0));
 
         var result = await Run(h);
 
         await Assert.That(h.Keys.Drains).IsEqualTo(1);
         await Assert.That(result).IsTypeOf<FirstRunFlowResult.Abandoned>();
+    }
+
+    [Test]
+    public async Task A_keypress_made_in_response_to_the_prompt_is_a_real_dismissal() {
+        // The pre-wait drain exists for keys that preceded the leg; a key pressed after the prompt
+        // has rendered is a genuine "carry on here" and must dismiss — not be drained as stale, as
+        // the sibling test's pre-prompt key is. The one drain here is the dismissal's own, so the
+        // key's trailing Return is not the next prompt's answer.
+        var h = Build(new FakeKeys(canWatch: true, pressAfter: 1));
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Dismissed>();
+        await Assert.That(h.Keys.Drains).IsEqualTo(1);
     }
 
     [Test]
@@ -492,6 +508,19 @@ public class BrowserFirstRunFlowTests {
         await Run(h);
 
         await Assert.That(h.Channel.PollTimes[1] - h.Channel.PollTimes[0]).IsEqualTo(TimeSpan.FromSeconds(10));
+    }
+
+    [Test]
+    public async Task Honours_a_poll_429s_retry_after_beyond_the_local_cap() {
+        // The server's Retry-After is its rate-limit window: 60s stays 60s even though a locally
+        // computed gap would never exceed 30s.
+        var h = Build();
+        h.Channel.Polls.Enqueue(new(429, null, TimeSpan.FromSeconds(60)));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Channel.PollTimes[1] - h.Channel.PollTimes[0]).IsEqualTo(TimeSpan.FromSeconds(60));
     }
 
     [Test]

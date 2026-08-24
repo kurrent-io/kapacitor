@@ -940,12 +940,9 @@ public static class SetupCommand {
 
         FirstRunFlowResult result;
 
-        // Built through the ONE authenticated-client choke point, so the bearer is resolved against
-        // this server (refreshing if expired, binding-checked) and a mid-poll 401 is recovered by
-        // refresh — a short-lived WorkOS token cannot turn the back half of a thirty-minute wait into
-        // a dead sign-in. Nothing in the leg throws: the client degrades and the flow answers with a
-        // result. This catches what neither can — a token-file IO fault, a malformed URL reaching
-        // HttpRequestMessage — so a leg whose every branch promises to degrade cannot crash setup.
+        // Through the ONE authenticated-client choke point, so the bearer refreshes and a 401 is
+        // recovered rather than ending a wait that can outlive a short-lived WorkOS token. The try
+        // keeps the leg's "no reachable failure crashes setup" promise whole.
         try {
             var (http, authStatus) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(
                 serverUrl, autoRetryUnauthorized: true);

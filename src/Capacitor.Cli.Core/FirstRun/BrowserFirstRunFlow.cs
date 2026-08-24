@@ -98,6 +98,11 @@ public sealed class BrowserFirstRunFlow(
 
         var setupUrl = $"{serverUrl.TrimEnd('/')}/setup?s={Uri.EscapeDataString(flowId)}";
 
+        // Drained before the prompt renders, so the two presses stay apart: one that preceded this
+        // leg — the Return that confirmed an earlier step — is not an answer to "press any key to
+        // carry on here", and one made in response to that prompt is a real dismissal, never stale.
+        if (_keys.CanWatch && _keys.KeyAvailable) _keys.Drain();
+
         progress.Opening(setupUrl);
         _openBrowser(setupUrl);
 
@@ -115,15 +120,16 @@ public sealed class BrowserFirstRunFlow(
 
         FirstRunFlowResponse? last = null;
 
-        // A keypress that preceded this leg — the Return that confirmed an earlier step — is not an
-        // answer to "press any key to carry on here". Drained once, so only presses from here on count.
-        if (_keys.CanWatch && _keys.KeyAvailable) _keys.Drain();
-
         while (_clock.GetUtcNow() < deadline) {
             // Polled before the first sleep: a flow the browser has already finished — a resumed link,
             // or a tab that was quicker than this process — should not wait out an interval to be noticed.
-            if (!first && await WaitForIntervalAsync(interval, last, ct))
-                return new FirstRunFlowResult.Dismissed(last);
+            if (!first) {
+                if (await WaitForIntervalAsync(interval, last, ct)) return new FirstRunFlowResult.Dismissed(last);
+
+                // The sleep crossed the budget's deadline — the backstop has been reached, and polling
+                // once more would extend it by the backoff plus the HTTP timeout.
+                if (_clock.GetUtcNow() >= deadline) break;
+            }
 
             first = false;
 
@@ -210,14 +216,14 @@ public sealed class BrowserFirstRunFlow(
         return false;
     }
 
-    /// <summary>The next poll gap: the server's Retry-After when it is longer than the current gap,
-    /// otherwise the gap doubled — capped at <see cref="MaxInterval"/> and never below
-    /// <see cref="PollInterval"/>.</summary>
+    /// <summary>The next poll gap. The server's Retry-After is its rate-limit window and is honoured
+    /// as-is (never below the base cadence); only the locally computed doubling is capped at
+    /// <see cref="MaxInterval"/>, so a down or rate-limiting server is not hammered.</summary>
     static TimeSpan Backoff(TimeSpan current, TimeSpan? retryAfter) {
-        var next = retryAfter is { } ra && ra > current ? ra : current * 2;
+        if (retryAfter is { } ra) return ra > PollInterval ? ra : PollInterval;
 
-        if (next < PollInterval) next = PollInterval;
+        var doubled = current * 2;
 
-        return next > MaxInterval ? MaxInterval : next;
+        return doubled > MaxInterval ? MaxInterval : doubled;
     }
 }
