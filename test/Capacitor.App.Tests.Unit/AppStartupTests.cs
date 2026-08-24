@@ -10,6 +10,7 @@ using Capacitor.App.Views;
 using Capacitor.Cli.Core.LocalIpc;
 using TUnit.Assertions.Enums;
 using AppUnderTest = Capacitor.App.App;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.App.Tests.Unit;
 

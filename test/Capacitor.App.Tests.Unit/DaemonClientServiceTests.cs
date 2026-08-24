@@ -5,6 +5,7 @@ using Capacitor.App.Services.Mutation;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.LocalIpc;
 using TUnit.Assertions.Enums;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.App.Tests.Unit;
 

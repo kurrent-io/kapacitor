@@ -2,6 +2,7 @@ using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
 using Capacitor.Cli.Core;
 using AppUnderTest = Capacitor.App.App;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.App.Tests.Unit;
 

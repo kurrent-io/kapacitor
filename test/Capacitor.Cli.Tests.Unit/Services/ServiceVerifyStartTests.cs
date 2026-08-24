@@ -443,6 +443,37 @@ public class ServiceVerifyStartTests {
         await Assert.That(ServiceTxnMarker.Exists(Daemons.Store, Id)).IsFalse();
     }
 
+    // F5: the in-process evidence properties describe ONE operation — a reused engine must not
+    // carry a prior gate refusal into a later call. A gate-refusing start leaves the reason set;
+    // the next call's lock contention (a non-gate exit, before any gate evaluation) must observe
+    // the entry reset.
+    [Test, NotInParallel]
+    public async Task Last_gate_reason_is_cleared_at_the_next_operation_entry() {
+        var manager = new FakeServiceManager();
+
+        static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
+            Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
+
+        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System,
+            readPlist: _ => null,
+            plistExists: _ => false,
+            gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
+
+        using (var capture = ConsoleOutput.StartErrorCapture()) {
+            await Assert.That(await sut.StartVerifiedAsync(Id)).IsEqualTo(VerifyExit.StartGate);
+        }
+        await Assert.That(sut.LastGateReason).IsNotNull();
+
+        // Hold the lock so the second call exits Contended before any gate evaluation.
+        using var held = ServiceTxnLock.TryAcquire(Daemons.Store, Id, TimeSpan.FromSeconds(1));
+        await Assert.That(held).IsNotNull();
+
+        using (var capture = ConsoleOutput.StartErrorCapture()) {
+            await Assert.That(await sut.StartVerifiedAsync(Id)).IsEqualTo(VerifyExit.Contended);
+        }
+        await Assert.That(sut.LastGateReason).IsNull();
+    }
+
     [Test]
     public async Task Plist_drift_between_phase_a_and_phase_b_rolls_back_to_29_without_ever_starting() {
         // Loaded at the fresh query — the gated path must boot it out (never kickstart it)

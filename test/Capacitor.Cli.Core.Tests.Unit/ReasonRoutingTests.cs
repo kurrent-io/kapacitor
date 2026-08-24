@@ -1,8 +1,6 @@
-using Capacitor.App.Services.Mutation;
+namespace Capacitor.Cli.Core.Tests.Unit;
 
-namespace Capacitor.App.Tests.Unit;
-
-public class MutationModelTests {
+public class ReasonRoutingTests {
     // ---- ForStartGate (spec §3/§4 pinned table) ----
 
     [Test]

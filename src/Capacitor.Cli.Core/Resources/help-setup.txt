@@ -98,6 +98,14 @@ skills, instructions, MCP) for all of them, instead of one prompt per agent.
 Hooks are installed user-wide (Pi, OpenCode, and Antigravity install a
 plugin/hooks-block rather than a shell-hooks file).
 
+Once you are signed in, on a server that offers browser setup kcap creates a
+setup link, opens your browser on it, and waits while you work through the
+screens there. The link is printed as well as opened, so a machine with no
+browser of its own can be finished from one on another. Press any key to stop
+waiting; setup carries on in the terminal either way. Skipped on servers that
+do not offer it, on servers that need no sign-in (auth provider None), and
+under --no-prompt.
+
 When you sign in with Kurrent's hosted auth and discovery finds no tenant, setup
 asks how to continue: create one for you (organization name + workspace slug) and
 wait for it to go live, point at a workspace you already belong to (enter its slug

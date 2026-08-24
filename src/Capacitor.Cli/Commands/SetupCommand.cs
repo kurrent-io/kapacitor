@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Harness.Claude;
 using Capacitor.Cli.Core.Harness.Codex;
@@ -53,6 +54,45 @@ sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
     // Blank separators and already-indented copy (the device-flow numbered list) pass through as-is.
     internal static string Indent(string message) =>
         string.IsNullOrWhiteSpace(message) || message.StartsWith(' ') ? message : $"  {message}";
+}
+
+/// <summary>The browser leg's rendering, at setup's two-space indent. The URL is printed whether
+/// or not a browser opened: a machine with no browser of its own has a human at a different one.</summary>
+sealed class SpectreFirstRunFlowProgress : IFirstRunFlowProgress {
+    bool   _waiting;
+    string? _url;
+    int    _ticks;
+
+    public void Opening(string setupUrl) {
+        _waiting = true;
+        _url     = setupUrl;
+
+        AnsiConsole.MarkupLine(SetupAuthProgress.Indent("Opening your browser to finish setup."));
+        AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[dim]If it didn't open:[/]  {Markup.Escape(setupUrl)}"));
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine(SetupAuthProgress.Indent("[dim]Press any key to carry on here instead.[/]"));
+        AnsiConsole.WriteLine();
+        AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
+    }
+
+    public void PollTick() {
+        // Every thirty ticks (~a minute) the URL is reprinted: the dots would otherwise scroll the
+        // one line a machine with no browser of its own needs to read off a standard terminal.
+        if (++_ticks % 30 == 0 && _url is { } url) {
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[dim]If it didn't open:[/]  {Markup.Escape(url)}"));
+            AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
+        }
+
+        AnsiConsole.Write(".");
+    }
+
+    public void WaitEnded() {
+        if (!_waiting) return;
+
+        _waiting = false;
+        AnsiConsole.WriteLine();
+    }
 }
 
 public static class SetupCommand {
@@ -173,6 +213,11 @@ public static class SetupCommand {
 
         var loginStepResult = await RunLoginStepAsync(loginComplete, provider, serverUrl, forceDevice, activeProfile);
         if (loginStepResult != 0) return loginStepResult;
+
+        // The browser leg, where the tenant serves one. Unnumbered because it is not a step: the
+        // steps below run either way, and on every tenant that has not turned the flow on this
+        // returns without a word. It has to sit after login — both routes are authenticated.
+        await RunBrowserFlowStepAsync(serverUrl, provider, noPrompt);
 
         await Console.Out.WriteLineAsync();
 
@@ -875,6 +920,92 @@ public static class SetupCommand {
 
         return 0;
     }
+
+    /// <summary>Per request, not per leg: the poll below runs for as long as a human takes.</summary>
+    static readonly TimeSpan BrowserFlowHttpTimeout = TimeSpan.FromSeconds(15);
+
+    /// <summary>Creates the first-run flow, opens the browser on it, and polls it as itself.
+    /// Reports, and configures nothing: <c>kcap setup</c> writes Claude Code hooks and a hook entry is a
+    /// command string Claude Code runs, so nothing the browser settles is executed here. Every outcome
+    /// leaves setup running — sign-in has already happened, so nothing in this leg can strand a machine.</summary>
+    static async Task RunBrowserFlowStepAsync(string serverUrl, string provider, bool noPrompt) {
+        // --no-prompt is a scripted run and this waits on a human. None has no identity for a flow to
+        // be owned by, and its routes are authenticated. Headless is deliberately NOT a skip: a
+        // machine with no browser of its own is exactly the one whose user is sitting at another, and
+        // the URL is printed for them to carry across — the device path keeps the screens rather than
+        // designing that population out of them.
+        if (noPrompt || provider == AuthProvider.None) return;
+
+        await Console.Out.WriteLineAsync();
+
+        FirstRunFlowResult result;
+
+        // Through the ONE authenticated-client choke point, so the bearer refreshes and a 401 is
+        // recovered rather than ending a wait that can outlive a short-lived WorkOS token. The try
+        // keeps the leg's "no reachable failure crashes setup" promise whole.
+        try {
+            var (http, authStatus) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(
+                serverUrl, autoRetryUnauthorized: true);
+
+            using (http) {
+                http.Timeout = BrowserFlowHttpTimeout;
+
+                // Ok runs the leg. NoAuthRequired is the None-provider skip again — silent, for the
+                // same reason. The rest get one line: the factory's quiet variant prints nothing, and
+                // expired / not authenticated / wrong server all share one remedy.
+                if (authStatus is not AuthStatus.Ok) {
+                    if (authStatus != AuthStatus.NoAuthRequired)
+                        AnsiConsole.MarkupLine(
+                            "  [dim]Skipped browser setup: the stored token is not usable. Run 'kcap login' to re-authenticate.[/]");
+
+                    return;
+                }
+
+                result = await new BrowserFirstRunFlow(
+                        new FirstRunFlowClient(http), new SpectreFirstRunFlowProgress())
+                    .RunAsync(serverUrl, Environment.MachineName, CancellationToken.None);
+            }
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            AnsiConsole.MarkupLine($"  [yellow]![/] Could not start browser setup: {Markup.Escape(ex.Message)}");
+
+            return;
+        }
+
+        // Silent: this tenant does not serve the flow, which is every tenant that has not turned it
+        // on. Announcing it would report our rollout as though it were the user's problem.
+        if (result is FirstRunFlowResult.Unavailable) return;
+
+        AnsiConsole.MarkupLine(BrowserFlowOutcome(result));
+
+        // Not after a keypress: that outcome's own line already says where setup went, and saying it
+        // twice would be the only thing this added.
+        if (result is not (FirstRunFlowResult.Finished or FirstRunFlowResult.Dismissed))
+            AnsiConsole.MarkupLine("  [dim]Carrying on here.[/]");
+    }
+
+    /// <summary>The leg's one line about how it ended, split from the write so the copy is testable.
+    /// <see cref="FirstRunFlowResult.Unavailable"/> has none — it is not reported at all.</summary>
+    internal static string BrowserFlowOutcome(FirstRunFlowResult result) => result switch {
+        FirstRunFlowResult.Finished => "  [green]✓[/] Browser setup finished.",
+
+        FirstRunFlowResult.Expired =>
+            "  [yellow]![/] That setup link expired before the browser finished with it.",
+
+        FirstRunFlowResult.Abandoned => "  [yellow]![/] The browser didn't finish setup.",
+
+        // Not a warning. The user chose this, and dressing a choice up as something gone wrong is how
+        // a CLI teaches people to read past its warnings.
+        FirstRunFlowResult.Dismissed => "  [dim]Left the browser to it.[/]",
+
+        // The server asks for ten minutes, which is not a wait an interactive setup can offer, so the
+        // number is reported rather than slept through.
+        FirstRunFlowResult.RateLimited limited =>
+            $"  [yellow]![/] Too many setup links created recently. Browser setup is available again in {Math.Max(1, (int)Math.Ceiling(limited.RetryAfter.TotalMinutes))} min.",
+
+        FirstRunFlowResult.Failed failed => $"  [yellow]![/] {Markup.Escape(failed.Message)}",
+
+        _ => "  [yellow]![/] Browser setup did not finish."
+    };
 
     internal static async Task<(string ServerUrl, string Provider, bool LoginComplete)?> RunDiscoveryAsync(
             string[] args, bool forceDevice) {
