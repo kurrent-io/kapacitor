@@ -115,6 +115,24 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
   as: the first terminal frame read (`Exited`/`Error`) wins even when detach
   intent is pending; EOF with detach intent pending → `Detached`; EOF without it
   → `ConnectionLost`. Exactly one outcome, assigned at exactly one point.
+- **Exceptional paths classify too** — the pump sees more than frames and clean
+  EOF (`FrameCodec.ReadAsync` throws `EndOfStreamException` on truncation and
+  `InvalidDataException` on malformed frames; dial/read/write can throw
+  `SocketException`/`IOException`; closing the socket locally completes a
+  blocked read *by exception*, not by null):
+  - failures before a successful attach (dial refused, handshake error) →
+    `Failed(message)`;
+  - after attach, any **locally initiated** close — `DetachAsync` or
+    `DisposeAsync` closing the socket, whatever exception that surfaces in the
+    pending read — settles as `Detached`; `DisposeAsync` never rethrows the
+    exception its own expected close produced;
+  - after attach, **uninitiated** transport failure or truncation →
+    `ConnectionLost`;
+  - a malformed or protocol-unexpected frame → `Failed` (protocol failure);
+  - caller cancellation remains `OperationCanceledException`;
+  - a throwing callback still faults the run (exception out of `RunAsync`), and
+    the client transitions terminal first, so later writes are rejected rather
+    than racing a faulted pump.
 - Disposal: the client is **`IAsyncDisposable`**. `DisposeAsync` records detach
   intent, closes the socket, and awaits the pump's completion — so "dispose"
   anywhere in this spec means an awaited async teardown, never a synchronous
@@ -189,7 +207,13 @@ accepted** — the daemon replays the full scrollback on every connection
 (overflow recovery included), so feeding a replay into an emulator that already
 consumed the pre-error live stream would duplicate history and smear cursor /
 alternate-screen state; the view stays bound to the VM-owned property and just
-sees the replacement. VM tests script the factory. States:
+sees the replacement. **Every UI-affine step runs awaited on the UI thread**,
+not just output application: the terminal control model is an `AvaloniaObject`
+(construction/use can acquire UI-thread affinity — the repo codifies this for
+brushes already), and retry/reattach completions arrive from background pumps —
+so model construction, event wiring, the bound-property swap, and every
+terminal-state/outcome mutation dispatch to `RxSchedulers.MainThreadScheduler`.
+VM tests script the factory. States:
 
 `Connecting → Attached (read-write | read-only with reason) → Detached / Exited(code) / Failed(error)`
 
@@ -231,7 +255,17 @@ Each `MainWindowViewModel` owns its `CurrentWorkspace`, and workspace teardown
 is **asynchronous by nature** (`DetachAsync` + socket close + pump completion),
 which the app's existing synchronous disposal pass cannot express. So the
 composition root gains one small app-lifetime piece: a **workspace teardown
-tracker** that every teardown registers with. Exit paths:
+tracker** that every teardown registers with.
+
+**The teardown algorithm is bounded and always reaches the socket close.**
+`DetachAsync` is best-effort with a short bound — it can wait behind the write
+lock or a stalled socket and has no cancellation of its own — and a `finally`
+path closes the socket (`DisposeAsync`) regardless, within the bound. Releasing
+the PTY dimension clamp is guaranteed by the local socket close, never by the
+Detach frame arriving. The tracker isolates per-teardown exceptions: one failed
+teardown logs and completes, never poisoning the drain.
+
+Exit paths:
 
 - **Back / opening another session**: the VM starts the outgoing workspace's
   async teardown (tracked) and swaps `CurrentWorkspace`.
@@ -244,9 +278,17 @@ tracker** that every teardown registers with. Exit paths:
   window + VM on next show; the discarded VM's workspace teardown is started
   (tracked) as part of that close, so a rebuilt window never inherits or leaks
   an attach.
-- **App shutdown**: the teardown seam **awaits** the tracker's pending
-  teardowns (bounded — a few seconds) before the process exits, so a detach
-  frame is not abandoned mid-write.
+- **App shutdown**: the shutdown sequence sets quit-in-progress first and only
+  closes the window *after* async service disposal — so a live workspace that
+  never went through Back/close-to-hide would otherwise register its teardown
+  after the drain, against already-disposed dependencies. Therefore the
+  **first shutdown pass synchronously unhooks `CurrentWorkspace` from the
+  current VM and registers its teardown before draining**. The drain then
+  **seals** the tracker atomically: registration and seal cannot race past the
+  final snapshot, a post-seal registration is refused (its workspace is already
+  torn or tears down as an idempotent no-op), and the later real close of the
+  window is idempotent. The drain awaits pending teardowns (bounded — a few
+  seconds) before service disposal proceeds.
 
 Detach never stops the agent; reopening reattaches and the scrollback replay
 restores history. No app-side buffer persistence.
@@ -283,8 +325,12 @@ TDD throughout (red-green per test):
   linearization** — detach intent + EOF → `Detached`; a terminal frame read
   after detach intent wins (`Exited`/`Failed`, exactly one outcome); uninitiated
   EOF → `ConnectionLost`; the outcome observable by an ordinary awaiting caller;
-  `DisposeAsync` awaits pump completion; calls made before the run and after
-  termination; a throwing callback faults the run.
+  `DisposeAsync` awaits pump completion; **exceptional-path classification** —
+  connect refusal → `Failed`; mid-header and mid-payload stream loss →
+  `ConnectionLost`; an unexpected/malformed frame → `Failed`; a write failure;
+  `DisposeAsync` closing a blocked read settles `Detached` and rethrows
+  nothing; calls made before the run and after termination; a throwing callback
+  faults the run after the client turns terminal (subsequent writes rejected).
 - **Wire**: `StatusIpcJsonTests` — old JSON without `has_terminal` → `null`;
   `true`/`false`/`null` all serialize with the member present; `false` never
   omitted.
@@ -302,11 +348,16 @@ TDD throughout (red-green per test):
   navigation open/close on `MainWindowViewModel` including the **coordinator's
   actual intercepted-close path proving a Detach frame and socket teardown**
   (not just a direct `CloseWorkspace()` call), plus the **real-close /
-  rebuilt-window path** (a fresh window inherits no attach) and **shutdown
-  awaiting pending teardowns** via the tracker; **stale-generation launches** —
-  a delayed launch success after intercepted close, and after the user opened a
-  different session, opens/replaces nothing; card-click and launch-success
-  entry paths.
+  rebuilt-window path** (a fresh window inherits no attach) and **shutdown with
+  a live workspace and no pre-existing tracked teardown** — the first pass
+  registers it, the drain seals atomically, and its socket teardown completes
+  before service disposal; a **never-completing Detach write on intercepted
+  close** — the socket is force-closed within the teardown bound; a
+  **scheduler assertion** driving retry/reattach completion from a background
+  thread that fails on any off-UI-thread model construction or bound-state
+  mutation; **stale-generation launches** — a delayed launch success after
+  intercepted close, and after the user opened a different session,
+  opens/replaces nothing; card-click and launch-success entry paths.
 - **Terminal rendering**: a headless recorded-transcript test feeding a captured
   ANSI/TUI byte stream (colors, cursor addressing, alternate screen) through the
   decode-and-feed path, with `ReflowOnResize = false` set per upstream's own TUI
@@ -332,5 +383,6 @@ TDD throughout (red-green per test):
   before merge (this machine).
 - **Dimension clamp**: an app viewer at a small window shrinks the PTY for all
   viewers (existing daemon semantics, tmux-style). Accepted; the read-only path
-  never contributes, and workspace disposal on every exit path (close-to-hide
-  included) guarantees a hidden window never keeps clamping.
+  never contributes, and on every exit path (close-to-hide included) clamp
+  release is guaranteed by the **local socket close** in the teardown's bounded
+  `finally` — the Detach frame is best-effort on top.
