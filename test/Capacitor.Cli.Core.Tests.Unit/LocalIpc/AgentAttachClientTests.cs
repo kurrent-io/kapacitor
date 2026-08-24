@@ -18,6 +18,18 @@ public class AgentAttachClientTests {
         public Func<byte[], CancellationToken, Task> OnOutput => (b, _) => { Output.Add(b); return Task.CompletedTask; };
     }
 
+    sealed class RecordingSink {
+        public readonly List<(string Context, Exception Ex)> Entries = [];
+        readonly object _gate = new();
+        public int MaxConcurrent; int _current;
+        public Action<string, Exception> Callback => (c, e) => {
+            var now = Interlocked.Increment(ref _current);
+            MaxConcurrent = Math.Max(MaxConcurrent, now);
+            lock (_gate) Entries.Add((c, e));
+            Interlocked.Decrement(ref _current);
+        };
+    }
+
     [Test]
     public async Task Read_write_attach_delivers_snapshot_then_output_then_exit_and_nudges_resize() {
         var (server, tmp) = NewServer();
@@ -350,5 +362,163 @@ public class AgentAttachClientTests {
         await client.SendInputAsync([1, 2, 3]);                    // must not throw
 
         await Assert.That(await run).IsEqualTo(new AttachOutcome.ConnectionLost());
+    }
+
+    [Test]
+    public async Task Routine_dispose_produces_zero_diagnostics() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var sink = new RecordingSink();
+        var rec = new Recorder();
+        var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput, sink.Callback);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await Task.Delay(50);
+
+        await client.DisposeAsync();
+        await run;
+
+        await Assert.That(sink.Entries).IsEmpty();
+    }
+
+    [Test]
+    public async Task Callback_fault_losing_to_dispose_is_logged_once_and_run_settles_detached() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var sink = new RecordingSink();
+        var boom = new InvalidOperationException("render exploded");
+        var disposeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        AgentAttachClient client = null!;
+        client = new AgentAttachClient(server.Path, AgentId,
+            (_, _, _) => Task.CompletedTask,
+            async (_, _) => { await disposeStarted.Task; throw boom; },   // fault AFTER dispose claimed
+            sink.Callback);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await server.SendStdoutAsync([1]);
+        await Task.Delay(50);
+
+        var dispose = client.DisposeAsync();
+        disposeStarted.SetResult();
+        await dispose;                                             // completes normally, no rethrow
+
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.Detached());
+        await Assert.That(sink.Entries.Count(e => ReferenceEquals(e.Ex, boom))).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Callback_fault_claiming_first_faults_run_and_dispose_does_not_rethrow() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var sink = new RecordingSink();
+        var boom = new InvalidOperationException("render exploded");
+        var client = new AgentAttachClient(server.Path, AgentId,
+            (_, _, _) => Task.CompletedTask,
+            (_, _) => throw boom,
+            sink.Callback);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await server.SendStdoutAsync([1]);
+
+        var thrown = await Assert.ThrowsAsync<AttachCallbackException>(async () => await run);
+        await client.DisposeAsync();                               // completes normally
+
+        await Assert.That(thrown!.InnerException).IsSameReferenceAs(boom);
+        // the fault WON — it is the result, not a losing diagnostic:
+        await Assert.That(sink.Entries.Any(e => ReferenceEquals(e.Ex, boom))).IsFalse();
+    }
+
+    [Test]
+    public async Task A_throwing_sink_is_swallowed_and_alters_nothing() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput,
+            (_, _) => throw new InvalidOperationException("sink bug"));
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await Task.Delay(50);
+
+        server.CloseConnection();
+        await client.SendInputAsync([1]);                          // write failure → loser or winner, sink throws either way
+
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.ConnectionLost());
+        await client.DisposeAsync();                               // still clean
+    }
+
+    /// A second, independent throwing-sink drive: unlike the sink above, this one
+    /// counts its own invocations, so the test can assert it was actually called
+    /// (not merely that nothing escaped) while pinning the same "no rethrow, no
+    /// altered outcome" contract on a fresh write-failure path.
+    [Test]
+    public async Task Throwing_sink_is_invoked_and_swallowed_without_altering_the_outcome() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        var sinkCalls = 0;
+        var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput,
+            (_, _) => { Interlocked.Increment(ref sinkCalls); throw new InvalidOperationException("sink bug"); });
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await Task.Delay(50);
+
+        server.CloseConnection();
+        await client.SendInputAsync([1, 2, 3]);                    // must not throw despite the sink throwing
+
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.ConnectionLost());
+        await Assert.That(sinkCalls).IsGreaterThanOrEqualTo(1);    // the throwing sink was actually invoked
+        await client.DisposeAsync();                               // still clean
+        await client.DisposeAsync();                               // idempotent even after a throwing sink
+    }
+
+    /// Two real producers fail around the same moment — an input-write failure and
+    /// an output-callback fault — and race for the one cause slot. Whichever wins
+    /// decides `RunAsync`'s result; the loser rule then pins exactly which
+    /// exception(s) reach the sink, and `MaxConcurrent == 1` proves `_sinkLock`
+    /// actually serializes the two producers rather than merely happening not to
+    /// overlap.
+    [Test]
+    public async Task Concurrent_losers_are_serialized_into_the_sink() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var sink = new RecordingSink();
+        var boom = new InvalidOperationException("callback exploded");
+        var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new AgentAttachClient(server.Path, AgentId,
+            (_, _, _) => Task.CompletedTask,
+            async (_, _) => { await proceed.Task; throw boom; },    // stdout callback: armed, not yet fired
+            sink.Callback);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await server.SendStdoutAsync([1]);
+        await Task.Delay(50);                                      // pump is now blocked inside the callback
+
+        server.CloseConnection();                                  // break the transport under the writer
+        var write = client.SendInputAsync([9]);                    // races the callback fault for the cause slot
+        proceed.SetResult();                                       // let the callback fault fire concurrently
+
+        await write;                                               // must not throw either way
+
+        AttachOutcome? outcome = null;
+        AttachCallbackException? thrown = null;
+        try { outcome = await run; }
+        catch (AttachCallbackException ex) { thrown = ex; }
+        await client.DisposeAsync();
+
+        await Assert.That(sink.MaxConcurrent).IsEqualTo(1);        // serialized despite the race
+
+        if (thrown is not null) {
+            // the callback fault won the slot: it IS the run's result, not a diagnostic;
+            // the write failure lost and is observed exactly once.
+            await Assert.That(thrown.InnerException).IsSameReferenceAs(boom);
+            await Assert.That(sink.Entries.Any(e => ReferenceEquals(e.Ex, boom))).IsFalse();
+            await Assert.That(sink.Entries.Count(e => e.Context == "outbound write")).IsEqualTo(1);
+        } else {
+            // the write failure won the slot: ConnectionLost carries no detail, so it is
+            // reported even as the winner; the callback fault lost and is observed once.
+            await Assert.That(outcome).IsEqualTo(new AttachOutcome.ConnectionLost());
+            await Assert.That(sink.Entries.Count(e => e.Context == "outbound write")).IsEqualTo(1);
+            await Assert.That(sink.Entries.Count(e => ReferenceEquals(e.Ex, boom))).IsEqualTo(1);
+        }
     }
 }

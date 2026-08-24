@@ -123,7 +123,12 @@ public sealed class AgentAttachClient : IAsyncDisposable {
     async Task<bool> InvokeCallbackAsync(Func<Task> callback) {
         try { await callback().ConfigureAwait(false); return true; }
         catch (OperationCanceledException) when (_lifetime!.IsCancellationRequested) { throw; }
-        catch (Exception ex) { TryClaim(ex); return false; }
+        catch (Exception ex) {
+            // A won claim IS the run's result (Project rethrows it) — not a diagnostic;
+            // only a loss (Dispose or another producer already claimed) is reported.
+            if (!TryClaim(ex)) ReportIfLost("callback", ex);
+            return false;
+        }
     }
 
     void ClassifyPumpException(Exception ex) {
@@ -132,15 +137,27 @@ public sealed class AgentAttachClient : IAsyncDisposable {
             TryClaim(new AttachOutcome.Detached());   // local close at any phase; expected — not a diagnostic
             return;
         }
-        if (ex is InvalidDataException) { TryClaim(new AttachOutcome.Failed($"protocol failure: {ex.Message}")); ReportIfLost("protocol", ex); return; }
-        if (!_attachedAny) { TryClaim(new AttachOutcome.Failed(ex.Message)); ReportIfLost("pre-attach", ex); return; }
-        TryClaim(new AttachOutcome.ConnectionLost());
-        ReportIfLost("transport", ex);
+        // A won claim carries its own detail in the outcome (Failed's message), so
+        // reporting only fires on a genuine loss — never duplicate the winning result.
+        if (ex is InvalidDataException) {
+            if (!TryClaim(new AttachOutcome.Failed($"protocol failure: {ex.Message}"))) ReportIfLost("protocol", ex);
+            return;
+        }
+        if (!_attachedAny) {
+            if (!TryClaim(new AttachOutcome.Failed(ex.Message))) ReportIfLost("pre-attach", ex);
+            return;
+        }
+        if (!TryClaim(new AttachOutcome.ConnectionLost())) ReportIfLost("transport", ex);
     }
 
-    // An exception whose cause attempt LOST still gets observed exactly once (Task 7 tests pin this).
+    // Called only once the caller already knows this attempt LOST the cause-slot
+    // race (a failed TryClaim) — every actual losing exception is observed exactly
+    // once, regardless of which cause won. The one exclusion: a socket-close
+    // IOException/ObjectDisposedException that lost to a Detached claim is the
+    // normal knock-on of CloseTransport(), not a genuine failure to diagnose.
     void ReportIfLost(string context, Exception ex) {
-        if (_cause is AttachOutcome.Detached || ReferenceEquals(_cause, CancelledSentinel)) Report(context, ex);
+        if (ex is IOException or ObjectDisposedException && _cause is AttachOutcome.Detached) return;
+        Report(context, ex);
     }
 
     AttachOutcome Project() =>
@@ -182,8 +199,10 @@ public sealed class AgentAttachClient : IAsyncDisposable {
                 await FrameCodec.WriteAsync(_stream!, frame, CancellationToken.None).ConfigureAwait(false);
             } finally { _writeLock.Release(); }
         } catch (Exception ex) {
+            // ConnectionLost carries no detail, so a won claim is reported too — unlike a
+            // callback fault, the sink is the only place this exception ever surfaces.
             if (TryClaim(new AttachOutcome.ConnectionLost())) Report("outbound write", ex);
-            else if (_cause is AttachOutcome.Detached || ReferenceEquals(_cause, CancelledSentinel)) Report("outbound write", ex);
+            else ReportIfLost("outbound write", ex);
             CloseTransport();
         }
     }
