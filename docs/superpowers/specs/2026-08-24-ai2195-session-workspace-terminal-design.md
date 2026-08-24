@@ -134,10 +134,19 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
   - after attach, **uninitiated** transport failure or truncation →
     `ConnectionLost`;
   - a malformed or protocol-unexpected frame → `Failed` (protocol failure);
-  - caller cancellation remains `OperationCanceledException`;
+  - caller cancellation surfaces as `OperationCanceledException` — **when
+    cancellation is the recorded cause** (below);
   - a throwing callback still faults the run (exception out of `RunAsync`), and
     the client transitions terminal first, so later writes are rejected rather
     than racing a faulted pump.
+- **One atomic terminal-cause slot resolves every race.** Terminal frame read,
+  local-close intent, and observed cancellation all try to record themselves as
+  the run's terminal cause; the **first recorded cause wins** and alone decides
+  what `RunAsync` produces (`Exited`/`Failed` for a frame, `Detached` for local
+  close, `OperationCanceledException` for cancellation). The app retires an
+  attempt by cancelling *and* disposing, which makes both clauses applicable —
+  the slot, not scheduling, decides. `DisposeAsync` never rethrows the retired
+  run's cancellation (or any expected-teardown exception).
 - **Outbound write failures route to the pump, which stays the single
   linearization point.** `SendInputAsync`/`ResizeAsync`/`DetachAsync` write from
   caller tasks while the pump can be blocked in a read (the CLI being ported
@@ -231,9 +240,15 @@ VM tests script the factory. States:
 
 `Connecting → Attached (read-write | read-only with reason) → Detached / Exited(code) / Failed(error)`
 
-The terminal states map one-to-one from the client's `AttachOutcome`;
-`ConnectionLost` maps to `Failed` with a lost-connection message and the
-reattach affordance.
+The terminal states map from the client's **entire completion surface**, not
+just `AttachOutcome`: `ConnectionLost` maps to `Failed` with a lost-connection
+message and the reattach affordance; a **non-cancellation `RunAsync` fault**
+(the callbacks decode and feed a third-party engine untrusted PTY bytes — a
+real failure path) is caught and rendered as `Failed` (local rendering error)
+with the reattach affordance, applied on the UI scheduler; an
+`OperationCanceledException` from a retired or disposed attempt generation is
+swallowed silently and mutates nothing — a retired attempt never touches VM
+state after its replacement begins.
 
 - Output delivery: the VM awaits each `OnOutputAsync` by decoding through **one
   incremental `System.Text.Decoder` spanning the snapshot and every live
@@ -252,10 +267,19 @@ reattach affordance.
   it directly) is verified at implementation and is an acceptance item. Read-only
   mode suppresses all input/resize and shows the daemon's reason banner (canvas:
   attach banner with Detach button).
-- Launch race: if attach fails with "no such agent" while the agent is not yet
-  (or no longer) in the status cache, retry with backoff for up to 10 seconds
-  before surfacing the error — this is the `LaunchOutcome.AgentId` path booting.
-  The delay policy is injected (`TimeProvider`) so tests are deterministic.
+- **The workspace opens in a `Resolving` state and no attach client exists
+  until the session's first status DTO arrives.** `OpenSession` carries only an
+  agent id; `HasTerminal`/vendor arrive with the first matching
+  `AgentStatusDto` in the daemon cache. Attaching optimistically would race the
+  gate — a fresh ACP/app-server session would show "no such agent" then the
+  daemon's no-terminal refusal before the `has_terminal=false` note could
+  render. So: `Resolving` waits (up to 10 seconds, `TimeProvider`-injected) for
+  the first matching DTO, then applies the gate — `has_terminal=false` renders
+  the no-terminal note with **zero socket or client attempts ever made**;
+  `true`/`null`+PTY-fallback constructs the first attach client; timeout
+  surfaces a not-found error. **Initial absence (`Resolving`) and
+  "observed then left the cache" (session ended) are distinct states** — the
+  second only exists after a first observation.
 - Signal precedence: `Exited(code)` and daemon `Error` are more specific than
   the agent leaving the status cache; the generic "session ended" state never
   overwrites an already-terminal exited/failed state (the two signals arrive on
@@ -272,19 +296,22 @@ composition root gains one small app-lifetime piece: a **workspace teardown
 tracker** that every teardown registers with.
 
 **The teardown algorithm is bounded and always reaches the socket close.**
-The Detach write is best-effort with a **1-second** bound — it can wait behind
-the write lock or a stalled socket — and a `finally` path closes the socket
-(`DisposeAsync`) regardless; a whole teardown's budget is **3 seconds** before
-the socket is force-closed. Releasing the PTY dimension clamp is guaranteed by
-the local socket close, never by the Detach frame arriving. The shutdown drain
-has its own **separate 5-second total** deadline across all pending teardowns
-concurrently; on expiry the drain stops waiting and shutdown proceeds (the
-process exit closes any straggler socket at the OS level — the deadline governs
-how long we wait for *graceful* detach frames, not whether the clamp releases).
-All three durations flow through an injected `TimeProvider` so the
+The timeline, explicitly: wait at most **1 second** for the Detach write (it
+can wait behind the write lock or a stalled socket); then **close the socket
+immediately** — `DisposeAsync`'s contract closes before awaiting the pump, so
+the local socket is force-closed by roughly the 1-second mark on every path;
+the remainder of the **3-second** per-teardown budget is spent awaiting and
+observing pump completion. The shutdown drain has its own **separate 5-second
+total** across all pending teardowns concurrently; on expiry the drain stops
+waiting and shutdown proceeds. **Expiry can leave a straggler *task*
+(an unobserved pump), never a straggler *socket*** — every teardown closed its
+socket within its own first second, which is what the clamp-release guarantee
+in Risks rests on; the deadlines govern how long we wait for graceful detach
+frames and pump observation, not whether the clamp releases. All three
+durations flow through an injected `TimeProvider` so the
 never-completing-write tests are deterministic, not real-time. The tracker
-isolates per-teardown exceptions: one failed teardown logs and completes, never
-poisoning the drain.
+isolates per-teardown exceptions: one failed teardown logs and completes,
+never poisoning the drain.
 
 Exit paths:
 
@@ -375,9 +402,18 @@ TDD throughout (red-green per test):
 - **Daemon**: `has_terminal` stamped true for a PTY runtime, false for ACP and
   codex app-server runtimes, asserted on the **serialized** status payload.
 - **App VMs**: scripted fake attach factory — state transitions, read-only
-  suppression, retry-on-boot under a test `TimeProvider`, one-client-per-attempt
-  and single-flight reattach, exited/error precedence over session-ended,
-  null/malformed `LaunchOutcome.AgentId` guard; UTF-8 assembly with 2-, 3- and
+  suppression; **the `Resolving` gate**: launch success while the agent is
+  absent from the cache followed by `has_terminal=false` renders the note with
+  zero client/socket attempts; `true` and `null`+PTY-fallback proceed to
+  attach; resolve timeout under a test `TimeProvider`; removal after first
+  observation (session ended) is a different state than initial absence;
+  one-client-per-attempt and single-flight reattach; **cancellation vs
+  local-close precedence**: cancel-before-dispose, dispose-before-cancel, and
+  the simultaneous race each yield exactly one recorded cause, and a retired
+  attempt mutates no VM state after its replacement begins; **a throwing
+  output callback / background `RunAsync` fault** renders `Failed` with the
+  reattach affordance on the UI scheduler; exited/error precedence over
+  session-ended, null/malformed `LaunchOutcome.AgentId` guard; UTF-8 assembly with 2-, 3- and
   4-byte characters split across every frame boundary including the
   snapshot/live seam; a terminal query/response sequence forwarded read-write
   and suppressed read-only; **reattach freshness** — consume output, receive
