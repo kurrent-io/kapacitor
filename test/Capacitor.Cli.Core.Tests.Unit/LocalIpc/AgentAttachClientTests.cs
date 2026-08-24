@@ -108,4 +108,133 @@ public class AgentAttachClientTests {
         await Assert.That(maxConcurrent).IsEqualTo(1);
         await Assert.That(count).IsEqualTo(2);
     }
+
+    [Test]
+    public async Task Detach_intent_plus_eof_settles_detached() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        await using var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+
+        await client.DetachAsync();
+        await server.WaitForReceivedAsync(FrameType.Detach);   // deterministic: pump has drained it
+        server.CloseConnection();                       // daemon closes; no ack
+
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.Detached());
+        await Assert.That(server.Received.Any(f => f.Type == FrameType.Detach)).IsTrue();
+    }
+
+    [Test]
+    public async Task A_terminal_frame_read_after_detach_intent_still_wins() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        await using var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+
+        await client.DetachAsync();
+        await server.SendExitedAsync(3);                // daemon raced: exit after Detach
+
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.Exited(3));
+    }
+
+    [Test]
+    public async Task Uninitiated_eof_after_attach_is_connection_lost() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        await using var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        server.CloseConnection();
+
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.ConnectionLost());
+    }
+
+    [Test]
+    public async Task Mid_header_truncation_after_attach_is_connection_lost() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        await using var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await server.SendRawThenCloseAsync([0x41, 0x00]);          // stdout type byte + half a length
+
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.ConnectionLost());
+    }
+
+    [Test]
+    public async Task Connect_refusal_without_intent_is_failed() {
+        using var tmp = new TempDir("sock");
+        var rec = new Recorder();
+        await using var client = new AgentAttachClient(tmp.GetResolvedPath("nobody.sock"), AgentId, rec.OnAttached, rec.OnOutput);
+
+        var outcome = await client.RunAsync(80, 24, CancellationToken.None);
+
+        await Assert.That(outcome).IsAssignableTo<AttachOutcome.Failed>();
+    }
+
+    [Test]
+    public async Task Dispose_during_blocked_first_reply_settles_detached_without_fault() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.FirstFrame.Task;                   // Attach written, first reply pending
+
+        await client.DisposeAsync();                    // must not throw
+
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.Detached());
+    }
+
+    [Test]
+    public async Task Dispose_before_run_makes_a_later_run_return_detached_without_dialing() {
+        using var tmp = new TempDir("sock");
+        var rec = new Recorder();
+        var client = new AgentAttachClient(tmp.GetResolvedPath("nobody.sock"), AgentId, rec.OnAttached, rec.OnOutput);
+        await client.DisposeAsync();
+
+        var outcome = await client.RunAsync(80, 24, CancellationToken.None);   // path does not even exist
+
+        await Assert.That(outcome).IsEqualTo(new AttachOutcome.Detached());
+    }
+
+    [Test]
+    public async Task Caller_cancellation_surfaces_as_oce_and_dispose_does_not_rethrow_it() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+        using var cts = new CancellationTokenSource();
+        var run = client.RunAsync(80, 24, cts.Token);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await run);
+        await client.DisposeAsync();                    // must complete cleanly
+    }
+
+    [Test]
+    public async Task Dispose_while_caller_token_uncancelled_exits_a_stuck_callback_via_internal_token() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new AgentAttachClient(server.Path, AgentId,
+            (_, _, _) => Task.CompletedTask,
+            async (_, ct) => { entered.SetResult(); await Task.Delay(Timeout.Infinite, ct); });
+        var run = client.RunAsync(80, 24, CancellationToken.None);   // external token: none, never cancelled
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await server.SendStdoutAsync([1]);
+        await entered.Task;                              // callback is now stuck on the internal token
+
+        await client.DisposeAsync();
+
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.Detached());
+    }
 }

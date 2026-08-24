@@ -63,7 +63,10 @@ public sealed class AgentAttachClient : IAsyncDisposable {
             await FrameCodec.WriteAsync(_stream, new LocalFrame(FrameType.Attach) { Text = _agentId }, ct).ConfigureAwait(false);
 
             while (true) {
-                var frame = await FrameCodec.ReadAsync(_stream, CancellationToken.None).ConfigureAwait(false);
+                // The internal token, not the caller's: a caller cancellation and an
+                // internal Dispose both route through here, so one mechanism unblocks
+                // a pending read either way — no socket teardown required to cancel.
+                var frame = await FrameCodec.ReadAsync(_stream, _lifetime.Token).ConfigureAwait(false);
                 if (frame is null) {                                     // clean EOF
                     TryClaim(_detachRequested ? new AttachOutcome.Detached() : new AttachOutcome.ConnectionLost());
                     break;
@@ -72,18 +75,18 @@ public sealed class AgentAttachClient : IAsyncDisposable {
                     case FrameType.Attached: {
                         var (_, snapshot) = FrameCodec.Attached(frame);
                         _attachedAny = true;
-                        await _onAttached(snapshot, null, _lifetime.Token).ConfigureAwait(false);
+                        if (!await InvokeCallbackAsync(() => _onAttached(snapshot, null, _lifetime.Token))) goto done;
                         await WriteLockedAsync(SizeFrame(cols, rows)).ConfigureAwait(false);  // repaint nudge
                         break;
                     }
                     case FrameType.AttachedReadOnly: {
                         var (_, reason, snapshot) = FrameCodec.AttachedReadOnly(frame);
                         _attachedAny = true;
-                        await _onAttached(snapshot, reason, _lifetime.Token).ConfigureAwait(false);
+                        if (!await InvokeCallbackAsync(() => _onAttached(snapshot, reason, _lifetime.Token))) goto done;
                         break;                                            // no nudge: never influence the clamp
                     }
                     case FrameType.Stdout:
-                        await _onOutput(frame.Bytes, _lifetime.Token).ConfigureAwait(false);
+                        if (!await InvokeCallbackAsync(() => _onOutput(frame.Bytes, _lifetime.Token))) goto done;
                         break;
                     case FrameType.Exited:
                         TryClaim(new AttachOutcome.Exited(frame.ExitCode));
@@ -98,26 +101,45 @@ public sealed class AgentAttachClient : IAsyncDisposable {
             }
             done: ;
         } catch (Exception ex) {
-            ClassifyPumpException(ex);      // Task 5 fills this in fully
+            ClassifyPumpException(ex);
         } finally {
             CloseTransport();
         }
         return Project();
     }
 
-    // Task 5 completes classification; Task 4 needs only enough for its tests.
+    // A callback exception claims the cause with the raw exception itself (Project
+    // wraps it as AttachCallbackException). An OperationCanceledException while the
+    // internal token is cancelled is expected teardown, not a callback bug: rethrown
+    // so the outer catch classifies it the same way any other close-induced exception
+    // is classified (Detached / CancelledSentinel / ConnectionLost).
+    async Task<bool> InvokeCallbackAsync(Func<Task> callback) {
+        try { await callback().ConfigureAwait(false); return true; }
+        catch (OperationCanceledException) when (_lifetime!.IsCancellationRequested) { throw; }
+        catch (Exception ex) { TryClaim(ex); return false; }
+    }
+
     void ClassifyPumpException(Exception ex) {
-        if (_detachRequested || _cause is not null) { /* local close or already decided */ }
-        else if (!_attachedAny) TryClaim(new AttachOutcome.Failed(ex.Message));
-        else TryClaim(new AttachOutcome.ConnectionLost());
-        if (_cause is AttachOutcome && _cause is not AttachOutcome.Detached && ex is not OperationCanceledException)
-            Report("attach pump", ex);   // refine in Task 7 per loser rules
+        if (ex is OperationCanceledException && ReferenceEquals(_cause, CancelledSentinel)) return;
+        if (_detachRequested || _cause is AttachOutcome.Detached) {
+            TryClaim(new AttachOutcome.Detached());   // local close at any phase; expected — not a diagnostic
+            return;
+        }
+        if (ex is InvalidDataException) { TryClaim(new AttachOutcome.Failed($"protocol failure: {ex.Message}")); ReportIfLost("protocol", ex); return; }
+        if (!_attachedAny) { TryClaim(new AttachOutcome.Failed(ex.Message)); ReportIfLost("pre-attach", ex); return; }
+        TryClaim(new AttachOutcome.ConnectionLost());
+        ReportIfLost("transport", ex);
+    }
+
+    // An exception whose cause attempt LOST still gets observed exactly once (Task 7 tests pin this).
+    void ReportIfLost(string context, Exception ex) {
+        if (_cause is AttachOutcome.Detached || ReferenceEquals(_cause, CancelledSentinel)) Report(context, ex);
     }
 
     AttachOutcome Project() =>
         _cause switch {
             AttachOutcome o => o,
-            Exception fault => throw new AttachCallbackException(fault),   // Task 5 refines
+            Exception fault => throw new AttachCallbackException(fault),
             _ when ReferenceEquals(_cause, CancelledSentinel) => throw new OperationCanceledException(),
             _ => new AttachOutcome.ConnectionLost(),
         };
@@ -132,17 +154,33 @@ public sealed class AgentAttachClient : IAsyncDisposable {
 
     void CloseTransport() { try { _stream?.Dispose(); } catch { } try { _socket?.Dispose(); } catch { } }
 
-    // Tasks 5-7 implement these fully; Task 4 ships minimal versions that keep
+    // Task 6 implements these fully; Task 4 ships minimal versions that keep
     // the signatures compiling.
     public Task SendInputAsync(byte[] bytes) => throw new NotImplementedException("Task 6");
     public Task ResizeAsync(int cols, int rows) => throw new NotImplementedException("Task 6");
-    public Task DetachAsync() => throw new NotImplementedException("Task 5");
+
+    /// Records intent and sends the Detach frame; never itself claims the cause slot
+    /// except when there is no stream, or the write fails — both mean the connection is
+    /// already effectively gone locally, so that IS a local close. Idempotent. A terminal
+    /// frame the pump reads after this still wins the race (Exited/Failed beat Detached).
+    public async Task DetachAsync() {
+        if (_detachRequested) return;
+        _detachRequested = true;
+        if (_stream is null) { TryClaim(new AttachOutcome.Detached()); return; }
+        try { await WriteLockedAsync(LocalFrame.Detach()).ConfigureAwait(false); }
+        catch { TryClaim(new AttachOutcome.Detached()); CloseTransport(); }   // detach write failure = local close
+    }
+
     public async ValueTask DisposeAsync() {
         _detachRequested = true;
-        TryClaim(new AttachOutcome.Detached());
+        TryClaim(new AttachOutcome.Detached());       // the one eager local terminalizer
         _lifetime?.Cancel();
         CloseTransport();
-        if (_run is { } run) { try { await run.ConfigureAwait(false); } catch { /* Task 5 refines */ } }
+        if (_run is { } run) {
+            try { await run.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }    // retired run's cancellation: never rethrown
+            catch (AttachCallbackException) { }        // already reported where it claimed / lost
+        }
     }
 }
 

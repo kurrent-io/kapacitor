@@ -34,6 +34,16 @@ sealed class ScriptedAttachServer : IAsyncDisposable {
         }, ct);
     }
 
+    /// Polls until a frame of the given type has been recorded. Bytes already handed to the
+    /// kernel are observable here only once the background pump task above is actually
+    /// scheduled to drain them — a client-side write completing does not guarantee that.
+    public async Task WaitForReceivedAsync(FrameType type, CancellationToken ct = default) {
+        while (true) {
+            lock (Received) { if (Received.Any(f => f.Type == type)) return; }
+            await Task.Delay(5, ct).ConfigureAwait(false);
+        }
+    }
+
     public Task SendAsync(LocalFrame frame) => FrameCodec.WriteAsync(_stream!, frame, CancellationToken.None);
     public Task SendAttachedAsync(string agentId, byte[] snapshot) => SendAsync(FrameCodec.Attached(agentId, snapshot));
     public Task SendAttachedReadOnlyAsync(string agentId, string reason, byte[] snapshot) => SendAsync(FrameCodec.AttachedReadOnly(agentId, reason, snapshot));
