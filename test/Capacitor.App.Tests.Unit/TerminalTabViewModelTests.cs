@@ -206,30 +206,28 @@ public class TerminalTabViewModelTests {
         });
     }
 
-    /// I1 (final review): RunAsync's initial cols/rows are the phantom DefaultCols/Rows constant
-    /// (80x24), sent before the surface's real pane size is ever known -- a read-write Attached
-    /// must resend the surface's OWN current size to correct that nudge. A read-only attach gets
-    /// no nudge at all (belt-and-braces with WireSurface's own ReadOnly guard on user-driven
-    /// resizes -- this is the SEPARATE post-attach nudge fired once from OnAttachedAsync itself).
+    /// I1 (final review, reworked): a post-attach resend fired from inside OnAttachedAsync is
+    /// structurally defeated -- Core's own post-attach repaint nudge (AgentAttachClient.
+    /// RunCoreAsync, right after a read-write Attached) writes at whatever size RunAsync started
+    /// with and follows immediately after any same-callback resend on the wire; the daemon applies
+    /// resizes in stream order with last-write-wins, so the resend never survives. The fix instead
+    /// starts the run itself at the surface's real size (TryStartAttemptAsync reads CurrentSize
+    /// right after the UI swap dispatch, before calling RunAsync) -- committed before any Attach
+    /// reply, so it holds regardless of whether the attach turns out read-write or read-only.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Read_write_attach_resends_the_surfaces_real_size_and_read_only_sends_none() {
+    public async Task Attach_starts_the_run_at_the_surfaces_real_current_size() {
         await RunOnUiAsync(async () => {
-            var (_, _, _, vm, client) = await BuildConnectingAsync(
+            var (_, _, _, _, client) = await BuildConnectingAsync(
                 surfaceFactory: () => new FakeTerminalSurface { CurrentSize = (137, 41) });
 
-            await client.TriggerAttached([]);
+            await Assert.That((client.Cols, client.Rows)).IsEqualTo((137, 41));
 
-            await Assert.That(vm.State.ReadOnly).IsFalse();
-            await Assert.That(client.Resizes.Single()).IsEqualTo((137, 41));
-
-            var (_, _, _, vm2, client2) = await BuildConnectingAsync(
+            var (_, _, _, _, client2) = await BuildConnectingAsync(
                 agentId: "a2", surfaceFactory: () => new FakeTerminalSurface { CurrentSize = (137, 41) });
+            await client2.TriggerAttached([], reason: "review");   // read-only: same RunAsync argument either way
 
-            await client2.TriggerAttached([], reason: "review");
-
-            await Assert.That(vm2.State.ReadOnly).IsTrue();
-            await Assert.That(client2.Resizes).IsEmpty();
+            await Assert.That((client2.Cols, client2.Rows)).IsEqualTo((137, 41));
         });
     }
 

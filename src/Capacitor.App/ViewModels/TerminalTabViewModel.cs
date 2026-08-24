@@ -280,6 +280,13 @@ public sealed class TerminalTabViewModel : ReactiveObject {
             var token = cts.Token;
             _attemptCts = cts;
 
+            // Pre-swap fallback -- overwritten below once the real surface exists. Never actually
+            // observed as RunAsync's argument on the success path (the only way past the dispatch
+            // below without a real surface is the OperationCanceledException catch, which returns
+            // before cols/rows are ever read), but keeps the constant genuinely load-bearing rather
+            // than a stray literal.
+            var (cols, rows) = (DefaultCols, DefaultRows);
+
             ITerminalSurface surface;
             Utf8StreamDecoder decoder;
             try {
@@ -297,17 +304,24 @@ public sealed class TerminalTabViewModel : ReactiveObject {
                 return; // retired before the swap even finished
             }
 
+            // By now the dispatched swap above has run the view's Model binding AND the control's
+            // own synchronous Model-assignment resize (Task 11/12) -- CurrentSize is the real pane
+            // size, not the phantom default above. Read it BEFORE RunAsync starts (not resent
+            // after Attached, final review I1/I1-rework): AgentAttachClient's own post-attach nudge
+            // writes at whatever size RunAsync was given, and the pump's OWN follow-on write beat a
+            // same-callback resend in practice -- last write wins on the wire, so a resend from
+            // inside OnAttachedAsync is a structurally defeated no-op. A never-laid-out first open
+            // still reads the ctor's own 80x24 (App.axaml.cs's XtermTerminalSurface(80, 24)) here
+            // too; WireSurface's Resized lane self-heals that once the control is actually measured.
+            (cols, rows) = surface.CurrentSize;
+
             // Suspension point 2 (the one most likely to straddle a concurrent TeardownAsync):
             // never call the factory for a retired attempt.
             if (Retired(generation)) return;
 
-            // Declared before assignment so OnAttachedAsync's closure below can capture it -- by
-            // the time that callback actually runs (after an Attach reply), the factory call
-            // this closure is an argument OF will already have returned and assigned it.
-            ITerminalAttachClient client = null!;
-            client = _factory(
+            var client = _factory(
                 _agentId,
-                (snapshot, reason, ct) => OnAttachedAsync(generation, client, surface, decoder, snapshot, reason, ct),
+                (snapshot, reason, ct) => OnAttachedAsync(generation, surface, decoder, snapshot, reason, ct),
                 (bytes, ct) => OnOutputAsync(generation, surface, decoder, bytes, ct));
 
             // One more check right before publishing: a retirement landing exactly between the
@@ -320,7 +334,7 @@ public sealed class TerminalTabViewModel : ReactiveObject {
 
             _client = client;
             WireSurface(surface, client, generation);
-            _runTask = RunAttemptAsync(generation, client, surface, decoder, token);
+            _runTask = RunAttemptAsync(generation, client, surface, decoder, cols, rows, token);
         } catch (OperationCanceledException) {
             // Retired before the swap even finished (e.g. TeardownAsync raced this call) --
             // expected, not an error.
@@ -348,24 +362,12 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         };
     }
 
-    async Task OnAttachedAsync(int generation, ITerminalAttachClient client, ITerminalSurface surface, Utf8StreamDecoder decoder, byte[] snapshot, string? reason, CancellationToken ct) {
+    async Task OnAttachedAsync(int generation, ITerminalSurface surface, Utf8StreamDecoder decoder, byte[] snapshot, string? reason, CancellationToken ct) {
         var text = decoder.Decode(snapshot);
         await Dispatcher.UIThread.InvokeAsync(() => {
             if (generation != _attemptGeneration) return;
             surface.Feed(text);
             State = TerminalSessionState.Attached(reason);
-
-            // RunAsync's own initial cols/rows are the phantom DefaultCols/Rows constant -- the
-            // client's post-attach nudge (AgentAttachClient's own "repaint nudge") fires at that
-            // size because the real pane size is never known before RunAsync starts (the surface's
-            // Model-assignment resize fires before WireSurface even subscribes). Correct it here,
-            // once, at the surface's OWN current size -- read-only never influences the PTY's
-            // clamp, so no nudge for it (mirrors AgentAttachClient's own AttachedReadOnly case,
-            // which sends no nudge at all). Fire-and-forget: ResizeAsync never throws by contract
-            // (guarded internally, same as WireSurface's user-driven resize below), and the
-            // generation check above already retires a stale attempt's call -- a later retirement
-            // simply makes this a no-op, never a use of a stale VM field.
-            if (reason is null) _ = client.ResizeAsync(surface.CurrentSize.Cols, surface.CurrentSize.Rows);
         }, DispatcherPriority.Default, ct);
     }
 
@@ -377,10 +379,10 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         }, DispatcherPriority.Default, ct);
     }
 
-    async Task RunAttemptAsync(int generation, ITerminalAttachClient client, ITerminalSurface surface, Utf8StreamDecoder decoder, CancellationToken ct) {
+    async Task RunAttemptAsync(int generation, ITerminalAttachClient client, ITerminalSurface surface, Utf8StreamDecoder decoder, int cols, int rows, CancellationToken ct) {
         AttachOutcome outcome;
         try {
-            outcome = await client.RunAsync(DefaultCols, DefaultRows, ct).ConfigureAwait(false);
+            outcome = await client.RunAsync(cols, rows, ct).ConfigureAwait(false);
         } catch (OperationCanceledException) {
             return; // retired attempt's own cancellation -- silent, never an error
         } catch (AttachCallbackException ex) {
