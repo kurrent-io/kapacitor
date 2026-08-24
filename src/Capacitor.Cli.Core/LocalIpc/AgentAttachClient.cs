@@ -18,9 +18,13 @@ public sealed class AgentAttachClient : IAsyncDisposable {
 
     Socket? _socket;
     NetworkStream? _stream;
-    CancellationTokenSource? _lifetime;   // linked to the caller token; callbacks get this token
+    // Deliberately unlinked: the sole propagation path from the caller token is the
+    // `reg` callback in RunCoreAsync, which claims the cause before cancelling this —
+    // claim-before-cancel is then structural, not an artifact of CTS callback ordering.
+    CancellationTokenSource? _lifetime;
     volatile bool _detachRequested;       // intent, never a cause
     volatile bool _attachedAny;           // true after either Attached reply
+    int _disposed;                        // guards DisposeAsync re-entrancy
     Task<AttachOutcome>? _run;
 
     public AgentAttachClient(
@@ -54,7 +58,7 @@ public sealed class AgentAttachClient : IAsyncDisposable {
     }
 
     async Task<AttachOutcome> RunCoreAsync(int cols, int rows, CancellationToken ct) {
-        _lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _lifetime = new CancellationTokenSource();
         using var reg = ct.Register(() => { if (TryClaim(CancelledSentinel)) _lifetime.Cancel(); });
         try {
             _socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
@@ -172,6 +176,7 @@ public sealed class AgentAttachClient : IAsyncDisposable {
     }
 
     public async ValueTask DisposeAsync() {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;   // a second call is a safe no-op
         _detachRequested = true;
         TryClaim(new AttachOutcome.Detached());       // the one eager local terminalizer
         _lifetime?.Cancel();
@@ -181,6 +186,11 @@ public sealed class AgentAttachClient : IAsyncDisposable {
             catch (OperationCanceledException) { }    // retired run's cancellation: never rethrown
             catch (AttachCallbackException) { }        // already reported where it claimed / lost
         }
+        // Deferred until the pump (which reads _lifetime.Token throughout RunCoreAsync)
+        // has fully stopped — disposing earlier would race a live Token access into
+        // ObjectDisposedException instead of the OperationCanceledException it expects.
+        _lifetime?.Dispose();
+        _writeLock.Dispose();
     }
 }
 

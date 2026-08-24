@@ -237,4 +237,19 @@ public class AgentAttachClientTests {
 
         await Assert.That(await run).IsEqualTo(new AttachOutcome.Detached());
     }
+
+    [Test]
+    public async Task Double_dispose_and_dispose_after_a_completed_run_are_both_safe() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await server.SendExitedAsync(0);
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.Exited(0));   // run already completed, unforced
+
+        await client.DisposeAsync();                    // dispose after a completed run: must not throw
+        await client.DisposeAsync();                    // second dispose: must not throw
+    }
 }
