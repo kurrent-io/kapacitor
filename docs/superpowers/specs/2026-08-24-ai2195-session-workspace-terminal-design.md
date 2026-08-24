@@ -139,13 +139,27 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
   - a throwing callback still faults the run (exception out of `RunAsync`), and
     the client transitions terminal first, so later writes are rejected rather
     than racing a faulted pump.
-- **One atomic terminal-cause slot resolves every race.** Terminal frame read,
-  local-close intent, and observed cancellation all try to record themselves as
-  the run's terminal cause; the **first recorded cause wins** and alone decides
-  what `RunAsync` produces (`Exited`/`Failed` for a frame, `Detached` for local
-  close, `OperationCanceledException` for cancellation). The app retires an
-  attempt by cancelling *and* disposing, which makes both clauses applicable —
-  the slot, not scheduling, decides. `DisposeAsync` never rethrows the retired
+- **One atomic terminal-cause slot resolves every race — and detach intent is
+  not a cause.** `DetachAsync` only records *intent* and sends the frame; it
+  never claims the slot, which is what lets a subsequently read `Exited`/`Error`
+  frame still win after a detach (the daemon really does send `Exited` after
+  reading a `Detach`). The causes that do compete for the slot, each claiming
+  it exactly once by compare-exchange:
+  - a terminal frame read → `Exited`/`Failed`;
+  - EOF or close-induced read failure **with detach intent pending** →
+    `Detached`;
+  - uninitiated transport loss/truncation → `ConnectionLost`;
+  - protocol failure (malformed/unexpected frame) → `Failed`;
+  - an outbound input/resize write failure → `ConnectionLost`;
+  - a callback fault → the faulted run;
+  - observed cancellation → `OperationCanceledException`;
+  - `DisposeAsync` → claims `Detached` immediately, before force-closing the
+    socket (the one local action that terminalizes eagerly).
+
+  Compare-exchange guarantees exactly one winner; actual event ordering
+  determines *which* cause wins — the slot removes double-results, not
+  nondeterminism. The app retires an attempt by cancelling *and* disposing;
+  whichever claims first decides. `DisposeAsync` never rethrows the retired
   run's cancellation (or any expected-teardown exception).
 - **Outbound write failures route to the pump, which stays the single
   linearization point.** `SendInputAsync`/`ResizeAsync`/`DetachAsync` write from
@@ -280,6 +294,16 @@ state after its replacement begins.
   surfaces a not-found error. **Initial absence (`Resolving`) and
   "observed then left the cache" (session ended) are distinct states** — the
   second only exists after a first observation.
+- **Resolving has its own disposal/linearization contract**, because it owns an
+  asynchronous cache subscription plus a timer that race Back, replacement,
+  close-to-hide, and shutdown: the workspace holds a resolve
+  generation/cancellation, and **disposal wins permanently** — once navigation
+  has left, no later DTO or timer callback constructs a client or mutates
+  bound state. DTO-vs-timeout has one atomic winner (same compare-exchange
+  shape as the client's cause slot). **Timeout drops the cache subscription**:
+  a DTO arriving after timeout is ignored — the not-found state carries an
+  explicit retry affordance rather than auto-recovering, so the state a user
+  is looking at never changes underneath them without an action.
 - Signal precedence: `Exited(code)` and daemon `Error` are more specific than
   the agent leaving the status cache; the generic "session ended" state never
   overwrites an already-terminal exited/failed state (the two signals arrive on
@@ -303,11 +327,15 @@ the local socket is force-closed by roughly the 1-second mark on every path;
 the remainder of the **3-second** per-teardown budget is spent awaiting and
 observing pump completion. The shutdown drain has its own **separate 5-second
 total** across all pending teardowns concurrently; on expiry the drain stops
-waiting and shutdown proceeds. **Expiry can leave a straggler *task*
-(an unobserved pump), never a straggler *socket*** — every teardown closed its
-socket within its own first second, which is what the clamp-release guarantee
-in Risks rests on; the deadlines govern how long we wait for graceful detach
-frames and pump observation, not whether the clamp releases. All three
+waiting and shutdown proceeds. **Expiry can leave a straggler *task*, never a straggler *socket*** — every
+teardown closed its socket within its own first second, which is what the
+clamp-release guarantee in Risks rests on; the deadlines govern how long we
+wait for graceful detach frames and pump observation, not whether the clamp
+releases. **A timed-out pump is abandoned by the await, never left
+unobserved**: the wrapper attaches a continuation that consumes and logs its
+eventual completion or fault (the callback/rendering fault is a real
+possibility) without re-entering VM state — so a late fault cannot go
+unobserved, and cannot retain the disposed VM/model past its logging. All three
 durations flow through an injected `TimeProvider` so the
 never-completing-write tests are deterministic, not real-time. The tracker
 isolates per-teardown exceptions: one failed teardown logs and completes,
@@ -393,9 +421,11 @@ TDD throughout (red-green per test):
   with the read side held open** — the initiating call completes without
   rethrow, the pump settles `ConnectionLost` (or `Detached` for a failed
   Detach write), exactly one result, no hung pump; `DisposeAsync` closing a
-  blocked read settles `Detached` and rethrows nothing; calls made before the
-  run and after termination; a throwing callback faults the run after the
-  client turns terminal (subsequent writes rejected).
+  blocked read settles `Detached` and rethrows nothing; **cause-slot
+  cross-races** — an input-write failure racing `DetachAsync`, and a callback
+  fault racing `DisposeAsync`, each produce exactly one recorded cause; calls
+  made before the run and after termination; a throwing callback faults the
+  run after the client turns terminal (subsequent writes rejected).
 - **Wire**: `StatusIpcJsonTests` — old JSON without `has_terminal` → `null`;
   `true`/`false`/`null` all serialize with the member present; `false` never
   omitted.
@@ -407,6 +437,10 @@ TDD throughout (red-green per test):
   zero client/socket attempts; `true` and `null`+PTY-fallback proceed to
   attach; resolve timeout under a test `TimeProvider`; removal after first
   observation (session ended) is a different state than initial absence;
+  **Resolving disposal** — Back, replacement, intercepted close, and shutdown
+  while still Resolving each produce zero clients/sockets and no later
+  DTO/timer callback mutates state; DTO-vs-timeout has one atomic winner;
+  a DTO after timeout is ignored until the explicit retry;
   one-client-per-attempt and single-flight reattach; **cancellation vs
   local-close precedence**: cancel-before-dispose, dispose-before-cancel, and
   the simultaneous race each yield exactly one recorded cause, and a retired
@@ -427,9 +461,10 @@ TDD throughout (red-green per test):
   registers it, the drain seals atomically, and its socket teardown completes
   before service disposal; a **never-completing Detach write on intercepted
   close** — the socket is force-closed within the teardown bound under a test
-  `TimeProvider`; an **explicit `OpenSession` after the first shutdown
-  pass/seal** and a **window constructed after shutdown began** — neither
-  creates a client or socket; a
+  `TimeProvider`; a **pump faulting after the 3-second teardown budget** — the
+  fault is observed and logged exactly once with no late UI mutation; an
+  **explicit `OpenSession` after the first shutdown pass/seal** and a **window
+  constructed after shutdown began** — neither creates a client or socket; a
   **scheduler assertion** driving retry/reattach completion from a background
   thread that fails on any off-UI-thread model construction or bound-state
   mutation; **stale-generation launches** — a delayed launch success after
