@@ -215,6 +215,22 @@ public class FirstRunFlowClientTests {
     }
 
     [Test]
+    public async Task PollAsync_carries_a_429s_retry_after() {
+        // The loop backs off on the server's own number, not a fixed step — same header, both routes.
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(PollPath).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(429)
+                .WithHeader("Retry-After", "60"));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http).PollAsync(server.Urls[0], FlowId, CancellationToken.None);
+
+        await Assert.That(outcome.StatusCode).IsEqualTo(429);
+        await Assert.That(outcome.RetryAfter).IsEqualTo(TimeSpan.FromSeconds(60));
+    }
+
+    [Test]
     public async Task Degrades_to_status_0_when_the_server_is_unreachable() {
         using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(250) };
 

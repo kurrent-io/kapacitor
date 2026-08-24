@@ -40,12 +40,15 @@ public static class HttpClientExtensions {
     /// and returns the reason. Does NOT write to stderr — the caller chooses how, and whether, to
     /// surface it. Hook callers should prefer this over <see cref="CreateAuthenticatedClientAsync"/>
     /// so they can stay quiet on high-frequency events and exit cleanly instead of erroring per-turn.
+    /// <paramref name="autoRetryUnauthorized"/> installs the 401-refresh-retry handler on the same
+    /// terms <see cref="CreateAuthenticatedClientAsync"/> does — a caller that runs the leg long
+    /// enough for a token to expire mid-flight wants it; a hook that POSTs once does not.
     /// </summary>
     public static async Task<(HttpClient Client, AuthStatus Status)> CreateClientWithAuthStatusAsync(
         string? baseUrl = null, CancellationToken ct = default, bool allowAutoRedirect = true,
-        string? rejectedAccessToken = null) {
+        string? rejectedAccessToken = null, bool autoRetryUnauthorized = false) {
         var (client, status, _, _) = await CreateClientCoreAsync(baseUrl, ct, allowAutoRedirect,
-            rejectedAccessToken, autoRetryUnauthorized: false);
+            rejectedAccessToken, autoRetryUnauthorized);
 
         return (client, status);
     }

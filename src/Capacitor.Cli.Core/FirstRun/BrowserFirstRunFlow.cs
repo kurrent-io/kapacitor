@@ -28,10 +28,11 @@ public sealed class BrowserFirstRunFlow(
     /// The server has no floor on this route.</summary>
     static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
 
-    /// <summary>Applied on a 429 against the poll.</summary>
-    static readonly TimeSpan SlowDownStep = TimeSpan.FromSeconds(2);
-
     static readonly TimeSpan MaxInterval = TimeSpan.FromSeconds(30);
+
+    /// <summary>The delay is slept in slices this long so a keypress is noticed within one slice
+    /// rather than after the whole interval — a 30s backoff must not swallow the escape hatch.</summary>
+    static readonly TimeSpan KeyPollSlice = TimeSpan.FromMilliseconds(200);
 
     /// <summary>
     /// How many fresh ids to try against a 409. A 409 means the id belongs to someone else, which
@@ -77,9 +78,14 @@ public sealed class BrowserFirstRunFlow(
             if (created.StatusCode == 0)
                 return new FirstRunFlowResult.Failed("Could not reach the server to start browser setup.");
 
-            if (created.StatusCode is < 200 or >= 300 || created.Body is null)
+            if (created.StatusCode is < 200 or >= 300)
                 return new FirstRunFlowResult.Failed(
                     $"The server did not accept a browser setup link (HTTP {created.StatusCode}).");
+
+            // The poll side treats this exact condition as a blip rather than an answer, and so does
+            // the create: the server answered, and the reply was not readable by this build.
+            if (created.Body is null)
+                return new FirstRunFlowResult.Failed("The server answered, but its reply could not be read.");
 
             // A flow other than the one asked for is not an answer to the question. It cannot happen
             // against the server this was written for, which is exactly why a disagreement is worth
@@ -109,27 +115,38 @@ public sealed class BrowserFirstRunFlow(
 
         FirstRunFlowResponse? last = null;
 
+        // A keypress that preceded this leg — the Return that confirmed an earlier step — is not an
+        // answer to "press any key to carry on here". Drained once, so only presses from here on count.
+        if (_keys.CanWatch && _keys.KeyAvailable) _keys.Drain();
+
         while (_clock.GetUtcNow() < deadline) {
             // Polled before the first sleep: a flow the browser has already finished — a resumed link,
             // or a tab that was quicker than this process — should not wait out an interval to be noticed.
-            if (!first) await Task.Delay(interval, _clock, ct);
+            if (!first && await WaitForIntervalAsync(interval, last, ct))
+                return new FirstRunFlowResult.Dismissed(last);
 
             first = false;
 
-            // The way out of a wait whose browser is never coming back — a closed tab, a link opened on
-            // a machine that then went away. Drained rather than read, because the key is usually
-            // followed by a Return that the next prompt would otherwise take as its answer.
-            if (_keys.CanWatch && _keys.KeyAvailable) {
-                _keys.Drain();
-
-                return new FirstRunFlowResult.Dismissed(last);
-            }
-
             var poll = await channel.PollAsync(serverUrl, flowId, ct);
+
+            // A key that arrived while the poll was in flight: noticed here rather than after another
+            // interval. Drained rather than read, because the key is usually followed by a Return that
+            // the next prompt would otherwise take as its answer.
+            if (DismissIfKeyDown(last) is { } duringPoll) return duringPoll;
 
             switch (FirstRunFlowPoll.Classify(poll.StatusCode, poll.Body is not null)) {
                 case FirstRunPollVerdict.State:
+                    // The create path's guard, applied to the poll too: an answer about a flow other
+                    // than the one asked for is not an answer, and a disagreement is worth stopping on
+                    // rather than reporting another flow's outcome as this one's.
+                    if (!string.Equals(poll.Body!.FlowId, flowId, StringComparison.Ordinal))
+                        return new FirstRunFlowResult.Failed("The server answered about a different setup link.");
+
                     last = poll.Body;
+
+                    // Healthy again — back to the tight cadence, so a terminal reacts to the human
+                    // at the speed the human works at.
+                    interval = PollInterval;
 
                     if (FirstRunFlowOutcomes.IsFinished(last!)) return new FirstRunFlowResult.Finished(last!);
 
@@ -144,15 +161,20 @@ public sealed class BrowserFirstRunFlow(
                     return new FirstRunFlowResult.Failed("The server no longer recognises this setup link.");
 
                 case FirstRunPollVerdict.Unauthenticated:
-                    return new FirstRunFlowResult.Failed("The server stopped accepting this sign-in mid-setup.");
+                    return new FirstRunFlowResult.Failed(
+                        "The server stopped accepting this sign-in mid-setup. Run 'kcap login' to re-authenticate.");
 
                 case FirstRunPollVerdict.SlowDown:
-                    interval = interval + SlowDownStep < MaxInterval ? interval + SlowDownStep : MaxInterval;
+                    // The server's own Retry-After wins when it is longer than the current gap; every
+                    // other unhappy poll grows the gap too, so a down or rate-limiting server is not
+                    // hammered at the base cadence. Only a good state restores it.
+                    interval = Backoff(interval, poll.RetryAfter);
                     progress.PollTick();
 
                     break;
 
                 default:
+                    interval = Backoff(interval, null);
                     progress.PollTick();
 
                     break;
@@ -160,5 +182,42 @@ public sealed class BrowserFirstRunFlow(
         }
 
         return new FirstRunFlowResult.Abandoned(last);
+    }
+
+    /// <summary>Dismisses when a key is down, draining it. Null when there is nothing to dismiss, so
+    /// the call site can read it as "did a key arrive while I awaited?".</summary>
+    FirstRunFlowResult? DismissIfKeyDown(FirstRunFlowResponse? last) {
+        if (!_keys.CanWatch || !_keys.KeyAvailable) return null;
+
+        _keys.Drain();
+
+        return new FirstRunFlowResult.Dismissed(last);
+    }
+
+    /// <summary>Sleeps out <paramref name="interval"/> in <see cref="KeyPollSlice"/> slices, returning
+    /// true when a keypress ended the wait early (it has been drained).</summary>
+    async Task<bool> WaitForIntervalAsync(TimeSpan interval, FirstRunFlowResponse? last, CancellationToken ct) {
+        var waited = TimeSpan.Zero;
+
+        while (waited < interval) {
+            if (DismissIfKeyDown(last) is not null) return true;
+
+            var slice = interval - waited < KeyPollSlice ? interval - waited : KeyPollSlice;
+            await Task.Delay(slice, _clock, ct);
+            waited += slice;
+        }
+
+        return false;
+    }
+
+    /// <summary>The next poll gap: the server's Retry-After when it is longer than the current gap,
+    /// otherwise the gap doubled — capped at <see cref="MaxInterval"/> and never below
+    /// <see cref="PollInterval"/>.</summary>
+    static TimeSpan Backoff(TimeSpan current, TimeSpan? retryAfter) {
+        var next = retryAfter is { } ra && ra > current ? ra : current * 2;
+
+        if (next < PollInterval) next = PollInterval;
+
+        return next > MaxInterval ? MaxInterval : next;
     }
 }

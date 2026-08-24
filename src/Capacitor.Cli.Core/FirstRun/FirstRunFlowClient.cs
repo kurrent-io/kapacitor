@@ -9,8 +9,9 @@ namespace Capacitor.Cli.Core.FirstRun;
 public sealed record FirstRunCreateOutcome(int StatusCode, FirstRunFlowResponse? Body, TimeSpan? RetryAfter = null);
 
 /// <summary>One poll. The body is absent on every non-200, and on a 200 whose body was unreadable —
-/// which <see cref="FirstRunFlowPoll.Classify"/> treats as a blip rather than as an answer.</summary>
-public sealed record FirstRunPollOutcome(int StatusCode, FirstRunFlowResponse? Body);
+/// which <see cref="FirstRunFlowPoll.Classify"/> treats as a blip rather than as an answer.
+/// <paramref name="RetryAfter"/> is populated only on a 429, and only when the server sent one.</summary>
+public sealed record FirstRunPollOutcome(int StatusCode, FirstRunFlowResponse? Body, TimeSpan? RetryAfter = null);
 
 /// <summary>The two flow routes, as a seam: the loop, the backoff and the guards around them are the
 /// part worth testing, and they should not need a socket to exercise.</summary>
@@ -64,7 +65,7 @@ public sealed class FirstRunFlowClient(HttpClient http) : IFirstRunFlowChannel {
                 HttpMethod.Get, $"{Base(serverUrl)}/api/first-run/flows/{Uri.EscapeDataString(flowId)}");
             using var resp = await http.SendAsync(req, ct);
 
-            if (!resp.IsSuccessStatusCode) return new((int)resp.StatusCode, null);
+            if (!resp.IsSuccessStatusCode) return new((int)resp.StatusCode, null, RetryAfter(resp));
 
             return new((int)resp.StatusCode, await ReadAsync(resp, ct));
         } catch (Exception e) when (IsTransient(e, ct)) {

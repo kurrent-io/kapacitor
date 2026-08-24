@@ -40,10 +40,9 @@ public static class FirstRunFlowPoll {
         410 => FirstRunPollVerdict.Expired,
         429 => FirstRunPollVerdict.SlowDown,
 
-        // Terminal rather than retried. The bearer was minted before the loop started and nothing in
-        // it refreshes one, so every later tick answers the same 401 — seventeen minutes of polling
-        // followed by "expired", for a flow that was only ever a re-login away. The budget below is
-        // far shorter than any token's life, so meeting this at all means something else changed.
+        // Terminal rather than retried: the authenticated client refreshes on a 401 once, so meeting
+        // this at all means the refresh itself failed. Every later tick answers the same 401, and the
+        // remedy is a re-login, not another attempt.
         401 or 403 => FirstRunPollVerdict.Unauthenticated,
 
         // 408 is the server asking for another go; every other 4xx is this build sending something the

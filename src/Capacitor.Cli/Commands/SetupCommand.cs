@@ -59,10 +59,13 @@ sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
 /// <summary>The browser leg's rendering, at setup's two-space indent. The URL is printed whether
 /// or not a browser opened: a machine with no browser of its own has a human at a different one.</summary>
 sealed class SpectreFirstRunFlowProgress : IFirstRunFlowProgress {
-    bool _waiting;
+    bool   _waiting;
+    string? _url;
+    int    _ticks;
 
     public void Opening(string setupUrl) {
         _waiting = true;
+        _url     = setupUrl;
 
         AnsiConsole.MarkupLine(SetupAuthProgress.Indent("Opening your browser to finish setup."));
         AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[dim]If it didn't open:[/]  {Markup.Escape(setupUrl)}"));
@@ -72,7 +75,17 @@ sealed class SpectreFirstRunFlowProgress : IFirstRunFlowProgress {
         AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
     }
 
-    public void PollTick() => AnsiConsole.Write(".");
+    public void PollTick() {
+        // Every thirty ticks (~a minute) the URL is reprinted: the dots would otherwise scroll the
+        // one line a machine with no browser of its own needs to read off a standard terminal.
+        if (++_ticks % 30 == 0 && _url is { } url) {
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"[dim]If it didn't open:[/]  {Markup.Escape(url)}"));
+            AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
+        }
+
+        AnsiConsole.Write(".");
+    }
 
     public void WaitEnded() {
         if (!_waiting) return;
@@ -204,7 +217,7 @@ public static class SetupCommand {
         // The browser leg, where the tenant serves one. Unnumbered because it is not a step: the
         // steps below run either way, and on every tenant that has not turned the flow on this
         // returns without a word. It has to sit after login — both routes are authenticated.
-        await RunBrowserFlowStepAsync(serverUrl, provider, activeProfile, noPrompt);
+        await RunBrowserFlowStepAsync(serverUrl, provider, noPrompt);
 
         await Console.Out.WriteLineAsync();
 
@@ -915,7 +928,7 @@ public static class SetupCommand {
     /// Reports, and configures nothing: <c>kcap setup</c> writes Claude Code hooks and a hook entry is a
     /// command string Claude Code runs, so nothing the browser settles is executed here. Every outcome
     /// leaves setup running — sign-in has already happened, so nothing in this leg can strand a machine.</summary>
-    static async Task RunBrowserFlowStepAsync(string serverUrl, string provider, string profile, bool noPrompt) {
+    static async Task RunBrowserFlowStepAsync(string serverUrl, string provider, bool noPrompt) {
         // --no-prompt is a scripted run and this waits on a human. None has no identity for a flow to
         // be owned by, and its routes are authenticated. Headless is deliberately NOT a skip: a
         // machine with no browser of its own is exactly the one whose user is sitting at another, and
@@ -923,31 +936,42 @@ public static class SetupCommand {
         // designing that population out of them.
         if (noPrompt || provider == AuthProvider.None) return;
 
-        var tokens = await TokenStore.LoadAsync(profile);
-
-        // Login ran immediately above, so no usable token here is a failure that already reported
-        // itself. Saying it twice would be the only thing this added.
-        if (tokens?.AccessToken is not { Length: > 0 } accessToken) return;
-
         await Console.Out.WriteLineAsync();
 
         FirstRunFlowResult result;
 
-        using (var http = new HttpClient { Timeout = BrowserFlowHttpTimeout }) {
-            http.DefaultRequestHeaders.Authorization = new("Bearer", accessToken);
+        // Built through the ONE authenticated-client choke point, so the bearer is resolved against
+        // this server (refreshing if expired, binding-checked) and a mid-poll 401 is recovered by
+        // refresh — a short-lived WorkOS token cannot turn the back half of a thirty-minute wait into
+        // a dead sign-in. Nothing in the leg throws: the client degrades and the flow answers with a
+        // result. This catches what neither can — a token-file IO fault, a malformed URL reaching
+        // HttpRequestMessage — so a leg whose every branch promises to degrade cannot crash setup.
+        try {
+            var (http, authStatus) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(
+                serverUrl, autoRetryUnauthorized: true);
 
-            // Nothing in the leg throws: the client degrades and the flow answers with a result. This
-            // catches what neither can — a malformed URL reaching HttpRequestMessage, say — so a leg
-            // whose every branch promises to degrade cannot crash setup instead.
-            try {
+            using (http) {
+                http.Timeout = BrowserFlowHttpTimeout;
+
+                // Ok runs the leg. NoAuthRequired is the None-provider skip again — silent, for the
+                // same reason. The rest get one line: the factory's quiet variant prints nothing, and
+                // expired / not authenticated / wrong server all share one remedy.
+                if (authStatus is not AuthStatus.Ok) {
+                    if (authStatus != AuthStatus.NoAuthRequired)
+                        await Console.Out.WriteLineAsync(
+                            "  [dim]Skipped browser setup: the stored token is not usable. Run 'kcap login' to re-authenticate.[/]");
+
+                    return;
+                }
+
                 result = await new BrowserFirstRunFlow(
                         new FirstRunFlowClient(http), new SpectreFirstRunFlowProgress())
                     .RunAsync(serverUrl, Environment.MachineName, CancellationToken.None);
-            } catch (Exception ex) when (ex is not OperationCanceledException) {
-                AnsiConsole.MarkupLine($"  [yellow]![/] Could not start browser setup: {Markup.Escape(ex.Message)}");
-
-                return;
             }
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            AnsiConsole.MarkupLine($"  [yellow]![/] Could not start browser setup: {Markup.Escape(ex.Message)}");
+
+            return;
         }
 
         // Silent: this tenant does not serve the flow, which is every tenant that has not turned it
