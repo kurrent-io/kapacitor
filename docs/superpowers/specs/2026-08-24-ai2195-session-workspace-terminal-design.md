@@ -37,18 +37,30 @@ Settled with the owner during brainstorming, 2026-08-24:
 
 `AgentStatusDto` (`src/Capacitor.Cli.Core/LocalIpc/StatusIpc.cs`) gains one field:
 
-- `HasTerminal` — `bool?`, serialized `has_terminal`, always emitted by a daemon
-  that knows it. The daemon stamps `agent.Runtime.EmitsTerminalOutput` when
-  building status payloads. `null` means "older daemon, unknown" and the app
-  falls back to `HostedHarnessCatalog.TransportFamilies` (vendor heuristic).
+- `HasTerminal` — declared as a **trailing `bool? HasTerminal = null`** member, so
+  every existing positional construction stays valid; serialized `has_terminal`,
+  always emitted (never conditionally omitted — `false` is a real value, not an
+  absence). The daemon stamps `agent.Runtime.EmitsTerminalOutput` in
+  `SnapshotAgentsForStatus`. `null` means "older daemon, unknown" and the app
+  falls back to the vendor heuristic.
+
+Serialization acceptance (extends `StatusIpcJsonTests`): old JSON without the
+member deserializes to `null`; `true`, `false`, and `null` all serialize with
+`has_terminal` present in the declared trailing order; `false` is never omitted.
+The daemon-side test asserts the final **serialized** status payload, not just an
+in-memory DTO.
 
 Deliberately a bool, not a transport token: `IHostedAgentRuntime.RuntimeTransport`
 defaults to `"pty"` even for ACP runtimes (only codex app-server overrides it), so
 it is the wrong source of truth for this gate. Nothing else on the wire changes;
 `FrameType` is untouched.
 
-The header's transport label derives from the vendor map, corrected to the "chat"
-family whenever `has_terminal` is authoritatively false.
+App-side projection: `HostedHarnessCatalog.TransportFamilies` is private, so the
+catalog gains one shared lookup (family-for-vendor) rather than the workspace
+duplicating the map. `has_terminal=false` cannot distinguish ACP / rpc /
+app-server, so the correction rule is: keep the vendor family when it is already
+non-PTY; only a *conflicting* PTY guess is overridden, to the generic "chat"
+family.
 
 ## 2. Core attach client
 
@@ -65,16 +77,38 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
   prefixes on this path).
 - First reply is exactly one of `Attached(snapshot)`,
   `AttachedReadOnly(reason, snapshot)`, or `Error(text)`; then `Stdout` frames
-  stream until `Exited(code)`, `Error`, or EOF. EOF without `Exited`/`Error` is
-  "lost connection to the daemon", mirroring the CLI's interpretation.
-- Surface: a `RunAsync(CancellationToken)` pump with callbacks
-  (`OnAttached(snapshot, readOnlyReason)`, `OnOutput(bytes)`, `OnExited(code)`,
-  `OnError(text)`) plus `SendInputAsync(bytes)`, `ResizeAsync(cols, rows)`,
+  stream until `Exited(code)`, `Error`, or EOF (whose meaning depends on who
+  initiated it — see termination semantics below).
+- Surface: `RunAsync(initialCols, initialRows, CancellationToken)` — the initial
+  surface size is a run argument, because the client itself owes the daemon the
+  post-attach repaint nudge and has no other source for it. Events are **awaited
+  async callbacks** (`OnAttachedAsync(snapshot, readOnlyReason)`,
+  `OnOutputAsync(bytes)`, `OnExitedAsync(code)`, `OnErrorAsync(text)`): the pump
+  awaits each before reading the next frame, so delivery is serial and ordered
+  (snapshot strictly before any output), and the daemon's slow-client overflow
+  protection stays meaningful — a slow UI backs the socket up rather than
+  ballooning an unbounded dispatcher queue. A callback exception faults the run
+  (surfaces out of `RunAsync`); no callback is ever invoked after a terminal
+  result or dispose.
+- Outbound methods: `SendInputAsync(bytes)`, `ResizeAsync(cols, rows)`,
   `DetachAsync()`. All writes serialize behind one lock (input and resize share
-  the stream — same reason the CLI holds a write semaphore).
-- After a read-write `Attached`, the client sends one `Resize` at the current
-  surface size to nudge a clean repaint (CLI parity). After `AttachedReadOnly`
-  it sends nothing: a read-only viewer must not influence the PTY clamp.
+  the stream — same reason the CLI holds a write semaphore), and **the client —
+  not its caller — owns the semantic invariants**: no input/resize before
+  `Attached`; input/resize silently dropped after `AttachedReadOnly` (explicit
+  calls included, not just the missing nudge); no writes after a terminal
+  result; `DetachAsync` is idempotent and no input is written behind a queued
+  detach. Dimensions are validated to `1..=ushort.MaxValue` per axis; invalid
+  values are rejected locally, never sent.
+- After a read-write `Attached`, the client sends one `Resize` at the initial
+  size to nudge a clean repaint (CLI parity). After `AttachedReadOnly` it sends
+  nothing: a read-only viewer must not influence the PTY clamp.
+- Termination semantics: `DetachAsync` yields exactly one clean `Detached`
+  completion and **suppresses the EOF that follows it** — the daemon sends no
+  detach acknowledgement; it just closes the connection, so a detach-initiated
+  EOF is expected, not an error (the CLI models this with its `detached` flag).
+  Caller cancellation tears down silently. Only an EOF the client did not
+  initiate is "lost connection to the daemon". A detach racing `Exited` or a
+  daemon `Error` resolves to whichever terminal event the pump saw first, once.
 
 The CLI's `LocalAgentClient` stays untouched in this slice; folding it onto the
 new client is an optional follow-up, not part of this change.
@@ -113,42 +147,80 @@ Entry points:
 Follows the settled canvas artboard:
 
 - Header: session title (same `RepoLabel.Leaf(repo) · vendor` shape as the card),
-  repo/branch breadcrumb, vendor + model chip with transport-family dot, and the
-  two existing actions — Open in web and Stop — reused straight from
+  repo label, vendor + model chip with transport-family dot, and the two
+  existing actions — Open in web and Stop — reused straight from
   `AgentActionService` (one code path with tray/grid, force-stop confirmation
   included).
-- Branch: nothing carries it on the wire, so a best-effort local read of
-  `.git/HEAD` under the agent's `RepoPath` (worktree-aware — a `.git` *file* is
-  followed like `GitRepository.ResolveMainRepoRoot` does); empty on any failure.
+- **No branch in this slice.** The canvas breadcrumb shows repo/branch, but the
+  daemon runs owned launches in their own worktree on a `capacitor/agent-*`
+  branch, and the status wire carries only the *requested* `RepoPath` — reading
+  that checkout's `.git/HEAD` would show the user's branch, not the agent's.
+  Rather than display a confidently wrong branch, the breadcrumb shows the repo
+  alone; the execution worktree/branch arrives as an additive status field with
+  AI-2199 (whose rail needs worktree structure anyway).
 - Tab strip: this slice ships Terminal only. A PTY session (`has_terminal` true,
   or vendor-map fallback says pty) shows the Terminal tab; a non-PTY session
-  shows the design's muted note ("No terminal — Gemini runs over ACP") — never a
-  disabled tab. Chat's slot stays empty until AI-2196.
+  shows a muted note — "This session has no terminal", suffixed with the
+  transport family when it is reliably known (e.g. "— runs over ACP") — never a
+  disabled tab, and never a hard-coded vendor name. Chat's slot stays empty
+  until AI-2196.
 - The VM tracks its agent in `IDaemonClientService.Agents` (ObserveOn main-thread
   scheduler before touching bound state, the codified rule) so status/title stay
   live, and shows a "session ended" state when the agent leaves the cache.
 
 ### TerminalTabViewModel (attach lifecycle)
 
-Owns one `AgentAttachClient` behind an app-side interface seam
-(`IAgentAttachClient`-shaped factory) so VM tests script it. States:
+Owns the attach lifecycle behind an app-side factory seam: **the factory creates
+one client per attach attempt** (a client owns one socket and one run), the
+previous run is fully cancelled and disposed before the next starts, and
+reattach is single-flight. VM tests script the factory. States:
 
 `Connecting → Attached (read-write | read-only with reason) → Detached / Exited(code) / Failed(error)`
 
-- Feeds `OnAttached` snapshot then `OnOutput` bytes into the XTerm.NET terminal
-  the `SvcSystems.UI.Terminal` control renders; terminal buffer lives in the VM,
+- Output delivery: the VM awaits each `OnOutputAsync` by decoding through **one
+  incremental `System.Text.Decoder` spanning the snapshot and every live
+  frame** (PTY frames split multibyte UTF-8 at arbitrary byte boundaries, and
+  the terminal control's `Feed(byte[])` does a fresh `GetString` per call —
+  feeding raw frames would render replacement characters), flushed only at
+  terminal completion, then applies the decoded text to the terminal **awaiting
+  the UI thread** — no fire-and-forget dispatcher posts, so socket backpressure
+  reaches the daemon's overflow protection. Terminal buffer lives in the VM,
   never the view (window-rebuild premise).
-- Control input/resize events → `SendInputAsync`/`ResizeAsync`; suppressed
-  entirely in read-only mode, which also shows the daemon's reason banner
-  (canvas: attach banner with Detach button).
+- Input: control input events → `SendInputAsync`; resize → `ResizeAsync`.
+  **Terminal-generated protocol replies** (device-status and similar queries the
+  emulator answers on its own) go through the same ordered input lane in
+  read-write mode and are suppressed in read-only mode — the exact engine
+  surface (XTerm.NET's data-received path; the Avalonia wrapper does not expose
+  it directly) is verified at implementation and is an acceptance item. Read-only
+  mode suppresses all input/resize and shows the daemon's reason banner (canvas:
+  attach banner with Detach button).
 - Launch race: if attach fails with "no such agent" while the agent is not yet
   (or no longer) in the status cache, retry with backoff for up to 10 seconds
   before surfacing the error — this is the `LaunchOutcome.AgentId` path booting.
-- Navigating back or closing the window disposes the VM → `DetachAsync` and
-  socket teardown. Detach never stops the agent; reopening reattaches and the
-  scrollback replay restores history. No app-side buffer persistence.
+  The delay policy is injected (`TimeProvider`) so tests are deterministic.
+- Signal precedence: `Exited(code)` and daemon `Error` are more specific than
+  the agent leaving the status cache; the generic "session ended" state never
+  overwrites an already-terminal exited/failed state (the two signals arrive on
+  independent background pumps).
 - `Exited(code)` renders an exited banner in place; `Error` (including overflow
   force-detach) renders the daemon's message with a reattach affordance.
+
+### Workspace ownership (one owner, every path)
+
+`MainWindowViewModel` is the single owner of `CurrentWorkspace` and disposes the
+outgoing workspace (→ `DetachAsync`, socket teardown) on **every** exit path:
+Back, opening another session, **intercepted close-to-hide** (the coordinator
+cancels every non-quit close and only hides the window — the window and its VMs
+stay alive, so without this an invisible terminal would stay attached and keep
+clamping the PTY for every other viewer), real close, and app shutdown (app
+teardown today disposes `HomeViewModel` explicitly; the workspace joins that
+ownership). Intercepted close also resets navigation to the shell, so reopening
+from the tray lands on Home. Detach never stops the agent; reopening reattaches
+and the scrollback replay restores history. No app-side buffer persistence.
+
+Entry-point guard: `LaunchOutcome.AgentId` is nullable. A `Started` outcome
+without a well-formed 32-hex id does not open a workspace (and cannot call
+`OpenSession(null!)`); it surfaces as a launch-succeeded-but-unopenable error.
 
 Naming note: the app's existing `AttachStatus`/`AttachState` describe the
 *status subscription* to the daemon. New types avoid "attach" bare — they are
@@ -160,26 +232,56 @@ TDD throughout (red-green per test):
 
 - **Core `AgentAttachClient`**: against a scripted in-proc Unix-socket server in
   a `TempDir` (socket path budget: `GetResolvedPath` where needed). Pins: attach
-  handshake for all three first replies; snapshot-before-stream ordering; write
-  serialization; resize nudge after read-write attach and its absence after
-  read-only; detach frame on `DetachAsync`; EOF-without-`Exited` surfaced as
-  connection loss.
+  handshake for all three first replies; snapshot-before-stream ordering and
+  serial awaited callback delivery; write serialization AND semantic ordering
+  (no input/resize before `Attached`; explicit `SendInputAsync`/`ResizeAsync`
+  dropped after `AttachedReadOnly`; no writes after a terminal result; no input
+  behind a queued detach; idempotent `DetachAsync`); dimension validation
+  (zero, negative, > ushort range rejected locally); resize nudge after
+  read-write attach and its absence after read-only; clean `Detached` with the
+  following EOF suppressed; detach racing `Exited`/`Error`; uninitiated EOF
+  surfaced as connection loss; calls made before the run and after termination;
+  no callbacks after terminal result or dispose; a throwing callback faults the
+  run.
+- **Wire**: `StatusIpcJsonTests` — old JSON without `has_terminal` → `null`;
+  `true`/`false`/`null` all serialize with the member present; `false` never
+  omitted.
 - **Daemon**: `has_terminal` stamped true for a PTY runtime, false for ACP and
-  codex app-server runtimes, on the status payloads.
-- **App VMs**: scripted fake attach client — state transitions, read-only
-  suppression, retry-on-boot, session-ended tracking; navigation open/close on
-  `MainWindowViewModel`; card-click and launch-success entry paths.
+  codex app-server runtimes, asserted on the **serialized** status payload.
+- **App VMs**: scripted fake attach factory — state transitions, read-only
+  suppression, retry-on-boot under a test `TimeProvider`, one-client-per-attempt
+  and single-flight reattach, exited/error precedence over session-ended,
+  null/malformed `LaunchOutcome.AgentId` guard; UTF-8 assembly with 2-, 3- and
+  4-byte characters split across every frame boundary including the
+  snapshot/live seam; a terminal query/response sequence forwarded read-write
+  and suppressed read-only; navigation open/close on `MainWindowViewModel`
+  including the **coordinator's actual intercepted-close path proving a Detach
+  frame and socket teardown** (not just a direct `CloseWorkspace()` call);
+  card-click and launch-success entry paths.
+- **Terminal rendering**: a headless recorded-transcript test feeding a captured
+  ANSI/TUI byte stream (colors, cursor addressing, alternate screen) through the
+  decode-and-feed path, with `ReflowOnResize = false` set per upstream's own TUI
+  guidance — that setting is an acceptance criterion, not a suggestion.
 - **Smoke**: headless resolution of the new named controls, per
   `HomeViewSmokeTests` convention.
 
 ## Risks
 
-- **Supply chain**: `SvcSystems.UI.Terminal` + `XTerm.NET` are single-author,
-  small-audience MIT packages rendering untrusted PTY bytes. Pinned versions in
-  `Directory.Packages.props`; accepted by the owner.
-- **Emulation fidelity**: full-screen TUIs are the hard case; the package's own
-  samples cover them, but visual QA against a live claude/codex session is part
-  of acceptance.
+- **Supply chain**: `SvcSystems.UI.Terminal` (1.1.1) + `XTerm.NET` (1.0.16) are
+  single-author, small-audience MIT packages rendering untrusted PTY bytes.
+  Mitigation is concrete: this repo manages only *direct* references centrally
+  and does not enable transitive pinning, so `XTerm.NET` (and its Unicode/width
+  dependencies) get **direct pinned references** in `Directory.Packages.props` +
+  the app csproj — a `PackageVersion` line alone would not pin a transitive.
+  License/vulnerability audit of the full resolved graph is part of the PR.
+  Accepted by the owner.
+- **Emulation fidelity**: full-screen TUIs are the hard case. Gate: the headless
+  recorded-transcript test (§4) plus `ReflowOnResize = false`; visual QA against
+  a live claude/codex session on top, not instead.
+- **Platform coverage**: CI runs Ubuntu and Windows legs only — there is no
+  macOS leg — so CI smoke covers those two and macOS gets a manual QA pass
+  before merge (this machine).
 - **Dimension clamp**: an app viewer at a small window shrinks the PTY for all
   viewers (existing daemon semantics, tmux-style). Accepted; the read-only path
-  never contributes.
+  never contributes, and workspace disposal on every exit path (close-to-hide
+  included) guarantees a hidden window never keeps clamping.
