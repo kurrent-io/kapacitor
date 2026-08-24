@@ -62,6 +62,27 @@ New verb in `DaemonServiceCommands`:
 Document `ensure` in the service command list and help text, noting the macOS/launchd `--verify`
 scope and the plain install on Windows/Linux.
 
+## Established: the Windows answer
+
+AI-2039's open question asked what the daemon actually does on Windows, because the answer changes
+copy on two screens (the install ladder's and the Done detour's). Established while wiring the
+install:
+
+- The daemon itself is **fully cross-platform**: ConPTY (`Pty/Windows/ConPtyProcess`), a Windows
+  Scheduled Task service manager, job objects, a win-x64 npm package, and Windows CI legs. Hosted
+  agents (ACP-over-stdio runtimes + ConPTY for PTY vendors) and the server→daemon SignalR path
+  (agent launches, permission prompts) work there. So the detour's pitch — "reach this machine
+  from anywhere, runs happen here" — holds on Windows.
+- What is Windows-gated: the **local `kcap agent` terminal drive** ("not supported on Windows
+  yet"), and the **verified transaction** (`install/start --verify`) which is **launchd-only** — on
+  Windows/Linux the ladder degrades to plain install/start with no gates, no `start_gate_reason=`,
+  no takeover/reinstall classification, and no rollback.
+
+So the flow shows the detour everywhere; the copy reflects plain install off-macOS (`--json`
+reports `verified:false`). The Avalonia wizard being macOS-only and the MAUI host being
+maccatalyst+windows are both irrelevant to this decision — the browser flow is the first surface
+that can give "which platforms does first run actually support" a single answer.
+
 ## Out of scope
 
 - Flow/screen wiring (AI-2048), the flow's CLI create+poll half (AI-2156), and anything server-side.
