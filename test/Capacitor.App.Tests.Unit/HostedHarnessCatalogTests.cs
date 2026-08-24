@@ -69,4 +69,29 @@ public class HostedHarnessCatalogTests {
         await Assert.That(HostedHarnessCatalog.DescriptionFor(pty)).IsEqualTo("PTY · terminal + chat");
         await Assert.That(HostedHarnessCatalog.DescriptionFor(acp)).IsEqualTo("ACP · chat");
     }
+
+    [Test]
+    public async Task FamilyFor_maps_vendors_and_defaults_unknown_to_rpc() {
+        await Assert.That(HostedHarnessCatalog.FamilyFor("CLAUDE")).IsEqualTo("pty");
+        await Assert.That(HostedHarnessCatalog.FamilyFor("gemini")).IsEqualTo("acp");
+        await Assert.That(HostedHarnessCatalog.FamilyFor("neverheardof")).IsEqualTo("rpc");
+    }
+
+    [Test]
+    public async Task ShowsTerminal_prefers_the_authoritative_flag_and_falls_back_to_family() {
+        await Assert.That(HostedHarnessCatalog.ShowsTerminal(true, "gemini")).IsTrue();
+        await Assert.That(HostedHarnessCatalog.ShowsTerminal(false, "claude")).IsFalse();
+        await Assert.That(HostedHarnessCatalog.ShowsTerminal(null, "claude")).IsTrue();
+        await Assert.That(HostedHarnessCatalog.ShowsTerminal(null, "gemini")).IsFalse();
+    }
+
+    [Test]
+    public async Task EffectiveFamily_overrides_only_a_conflicting_pty_guess() {
+        // codex app-server: vendor map says pty, daemon says no terminal → generic chat family.
+        await Assert.That(HostedHarnessCatalog.EffectiveFamily(false, "codex")).IsEqualTo("rpc");
+        // an already-non-PTY family is preserved, not flattened:
+        await Assert.That(HostedHarnessCatalog.EffectiveFamily(false, "gemini")).IsEqualTo("acp");
+        await Assert.That(HostedHarnessCatalog.EffectiveFamily(null, "claude")).IsEqualTo("pty");
+        await Assert.That(HostedHarnessCatalog.EffectiveFamily(true, "claude")).IsEqualTo("pty");
+    }
 }
