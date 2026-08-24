@@ -183,9 +183,19 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
   app's teardown tracker can never double-log the same exception. The rule is
   scoped precisely: **every actual losing *exception* is observed through the
   sink exactly once** — a losing cause *attempt* with no exception (e.g.
-  callback-fault-first followed by Dispose) logs nothing. The app wires the
-  sink to its logger; tests assert against a recording sink, not stderr
-  capture.
+  callback-fault-first followed by Dispose) logs nothing. **Expected
+  teardown artifacts are excluded**: a cooperative callback
+  `OperationCanceledException` and local-close-induced exceptions are the
+  normal mechanics of every Dispose, not diagnostics — they never reach the
+  sink. The sink has its own contract: invoked **outside all state/write
+  locks**, serialized by the client (callers may pass a non-thread-safe sink),
+  and wrapped — a throwing sink is swallowed and can never alter the winning
+  cause, escape a client method, or wedge `RunAsync`/outbound calls/teardown
+  past their bounds. App wiring is concrete: these diagnostics go to
+  **`Console.Error` only** (the app's existing teardown-diagnostic convention;
+  it has no logging module) — deliberately never `AppNotifier` toasts, which
+  would surface internal race noise as user notifications. Tests assert
+  against a recording sink, not stderr capture.
 - **Losers are observed exactly once and never become a second result:**
   - *callback fault vs `DisposeAsync`* — Dispose claims first: the callback
     exception is consumed and logged once, `RunAsync` settles `Detached`,
@@ -474,8 +484,11 @@ TDD throughout (red-green per test):
   BOTH orderings: the actual `AttachOutcome`/fault, the outbound call and
   `DisposeAsync` completing without rethrow of the losing exception, and every
   actual losing exception observed through the recording diagnostic sink
-  exactly once (a losing cause attempt with no exception logs nothing), never
-  a second result; **the lifetime-token contract** — `DisposeAsync` while the
+  exactly once (a losing cause attempt with no exception logs nothing;
+  cooperative-cancellation and local-close artifacts never reach the sink),
+  never a second result; a **throwing sink** — swallowed, winning cause and
+  method results unchanged; **concurrent losers** — two producers failing
+  together are serialized into the sink; **the lifetime-token contract** — `DisposeAsync` while the
   caller token stays uncancelled (awaited callback exits via the internal
   token, `RunAsync` returns `Detached`, the external token is untouched),
   caller-cancel while inside a callback (`OperationCanceledException`), and
