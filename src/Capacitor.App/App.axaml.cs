@@ -37,6 +37,15 @@ public partial class App : Application {
 
     // The app's one read of KCAP_DAEMONS_DIR.
     readonly DaemonStore _daemonStore = DaemonStore.FromEnvironment();
+
+    // Both are app-lifetime and BOTH exist before any graph does: OnShutdownRequested latches and
+    // drains them whether or not StartAsync ever got as far as building a window (spec §3). The gate
+    // is shared by every MainWindowViewModel the coordinator builds — including one built between
+    // the two shutdown passes, which is the case a per-window latch cannot cover.
+    readonly NavigationGate _navigation = new();
+    readonly WorkspaceTeardownTracker _workspaceTeardown = new(
+        TimeProvider.System,
+        (context, ex) => Console.Error.WriteLine($"kcap app: {context} failed: {ex}"));
     // Constructed FIRST (before any other graph object) in StartAsync and disposed LAST — every
     // daemon mutation in the app runs through it, so nothing that might still call RunAsync can outlive it.
     DaemonMutationLane? _lane;
@@ -164,10 +173,15 @@ public partial class App : Application {
             // when the failure hit, no tray will ever exist to bring it back, so hide-on-close
             // must not intercept anything from here on — every close on this path is a real one.
             if (_coordinator is not null) _coordinator.QuitInProgress = true;
+            // Also before any await, and the same reasoning as the shutdown path's: a workspace the
+            // user opened before the failure landed must release its attach here, not survive into
+            // the error window.
+            LatchNavigation();
             // No orphan wizard beside the error window: it is a dead shell once startup has failed,
             // and its own close path (the handoff) is exactly what did not run.
             if (_wizardWindow is { IsVisible: true } wizard) wizard.Close();
             Console.Error.WriteLine($"kcap app failed to start: {ex}");
+            await _workspaceTeardown.DrainAsync();
             await HandleStartupFailureAsync(
                 desktop, ex, _service, _shutdown, [_tray, _trayVm, _promptCoordinator, _consent, _activity, _home, _pause], _lifecycle, _lane);
             await DisposeLaunchClientAsync(); // after _home above — its only caller
@@ -281,8 +295,20 @@ public partial class App : Application {
         var launch = new ServerLaunchClient();
         _launch = launch;
 
+        // One attach client per attempt, dialed at the daemon's own control socket; 80x24 is a
+        // placeholder only — TerminalControl resizes its model to the real pane the moment it is
+        // attached to the visual tree (WorkspaceView's own header comment).
+        var attachFactory = CoreTerminalAttachClient.Factory(() => _daemonStore.SocketPath(service.DaemonName));
+        WorkspaceViewModel BuildWorkspace(string agentId) => new(
+            agentId, service, actions, attachFactory, () => new XtermTerminalSurface(80, 24), TimeProvider.System);
+
         _coordinator = new MainWindowCoordinator(
-            () => BuildAndShowMainWindow(service, actions, notifier, ticker, _shutdown.Token, activity, lifecycle.StartActionAsync, lifecycleStatus, launch));
+            () => BuildAndShowMainWindow(
+                service, actions, notifier, ticker, _shutdown.Token, activity, lifecycle.StartActionAsync,
+                lifecycleStatus, launch, _navigation, _workspaceTeardown.Track, BuildWorkspace),
+            // Both close paths release the workspace: hide-to-tray keeps the window (and its
+            // attach) alive, a real close discards the window the next Show() would rebuild.
+            releaseWorkspace: window => (window.DataContext as MainWindowViewModel)?.CloseWorkspace());
         // A shutdown that started before this continuation resumed already ran its first
         // pass against a null coordinator, so a window built now must never be
         // close-protected (BeginShutdownPass's rule 1 is the general defense; this is the
@@ -585,7 +611,9 @@ public partial class App : Application {
     internal static MainWindow BuildAndShowMainWindow(
             IDaemonClientService service, AgentActionService actions, IAppNotifier notifier, ITicker ticker,
             CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
-            IObservable<string?>? lifecycleStatus = null, ILaunchClient? launch = null) {
+            IObservable<string?>? lifecycleStatus = null, ILaunchClient? launch = null,
+            NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
+            Func<string, WorkspaceViewModel>? workspaceFactory = null) {
         // Notifier is set on the WINDOW (spec §11 toast overlay), not the ViewModel — the toast
         // is a View-level concern (WindowNotificationManager lives on MainWindow) independent of
         // the VM's WhenActivated-scoped projections.
@@ -597,11 +625,23 @@ public partial class App : Application {
         // `new AppStateStore(PathHelpers.ConfigPath("app-state.json"))` already relies on. The
         // composition root passes its held client so teardown can dispose it; a caller that passes
         // none (a test) gets an unheld one, which owns nothing until a launch is actually made.
+        //
+        // Home's three navigation callbacks close over `vm`, which cannot exist yet (it takes Home
+        // itself) — a captured local, assigned right below, is what ties the knot without a
+        // settable hook on either ViewModel. Every callback runs on the UI thread, after both
+        // objects exist.
+        MainWindowViewModel? vm = null;
         var home = new HomeViewModel(
             service, new AppStateStore(PathHelpers.ConfigPath("app-state.json")),
-            launch ?? new ServerLaunchClient(), RepoPathStore.GetSortedPathsAsync, shutdownToken);
+            launch ?? new ServerLaunchClient(), RepoPathStore.GetSortedPathsAsync, shutdownToken,
+            openSession: agentId => vm?.OpenSession(agentId),
+            navigationGeneration: () => vm?.NavigationGeneration ?? 0,
+            openSessionIfCurrent: (agentId, generation) => vm?.OpenSessionIfCurrent(agentId, generation));
+        vm = new MainWindowViewModel(
+            service, actions, ticker, shutdownToken, activity, startAction, lifecycleStatus, home: home,
+            navigation: navigation, trackWorkspaceTeardown: trackWorkspaceTeardown, workspaceFactory: workspaceFactory);
         var window = new MainWindow {
-            DataContext = new MainWindowViewModel(service, actions, ticker, shutdownToken, activity, startAction, lifecycleStatus, home: home),
+            DataContext = vm,
             Notifier = notifier,
         };
         window.Show();
@@ -985,6 +1025,10 @@ public partial class App : Application {
     // Once that completes, TryShutdown() re-raises this same event; the SECOND pass is let
     // through. This never blocks the UI thread on the async disposal.
     void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e) {
+        // Navigation's twin of BeginShutdownPass rule 1, and for the same reason: applied on EVERY
+        // pass, before the confirmed-pass early return, so a window the coordinator builds BETWEEN
+        // the passes can neither open a workspace nor keep one attached.
+        LatchNavigation();
         if (!BeginShutdownPass(_coordinator, _shutdownConfirmed)) return;
 
         e.Cancel = true;
@@ -1014,7 +1058,25 @@ public partial class App : Application {
         return !shutdownConfirmed;
     }
 
+    // Synchronous, on the ShutdownRequested (UI) thread: the live workspace is unhooked and its
+    // teardown REGISTERED here, so the drain below can only ever seal a set that already contains
+    // it. The gate is latched even with no window ever built — a window built later still sees it.
+    void LatchNavigation() {
+        (_coordinator?.Window?.DataContext as MainWindowViewModel)?.LatchShutdown();
+        _navigation.Latch();
+    }
+
     async Task DisposeAndShutdownAsync() {
+        // FIRST, before quiesce (which can wait a full minute) and before any disposal: a live
+        // workspace holds a terminal attach on the daemon socket, and the clamp it implies must be
+        // released for every other viewer as early as possible. Bounded at 5s and never throws.
+        //
+        // Deliberately NOT ConfigureAwait(false), unlike its neighbours: this is the one await here
+        // that genuinely suspends on the quit-with-a-session-open path, and the UI disposables below
+        // must still be disposed ON the UI thread this was invoked from (see
+        // DisposeUiThenConfirmShutdownAsync's own comment) — a tray icon disposed off it throws.
+        await _workspaceTeardown.DrainAsync();
+
         // spec §3.6 + decision 2: an in-flight sign-in always settles, mutations get a bounded chance
         // to — both while the UI is still up, before teardown.
         if (_wizardAuth is not null || _wizardImport is not null || _lifecycle is not null || _lane is not null)

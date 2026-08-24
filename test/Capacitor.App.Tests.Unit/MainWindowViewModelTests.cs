@@ -322,6 +322,53 @@ public class MainWindowViewModelTests {
         });
     }
 
+    // ---- Navigation (spec §3). The full surface-swap/teardown matrix lives in
+    // WorkspaceNavigationTests; these two pin what the VM's own nullable-default seams promise. ----
+
+    /// Every caller that predates workspaces passes no factory — and must keep landing on the
+    /// tabbed shell rather than a half-built workspace or a throw.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Without_a_workspace_factory_the_window_stays_on_the_tabbed_shell() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+
+            vm.OpenSession("0123456789abcdef0123456789abcdef");
+            vm.OpenSessionIfCurrent("0123456789abcdef0123456789abcdef", vm.NavigationGeneration);
+
+            await Assert.That(vm.CurrentWorkspace).IsNull();
+        });
+    }
+
+    /// The gate is app-lifetime, not per-window: MainWindowCoordinator can build a second window
+    /// over the same composition, and a launch captured in the first must read as stale in the
+    /// second — which only holds while both read ONE generation.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task The_navigation_gate_is_shared_across_the_windows_built_over_it() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var (actions, _) = NewActions(service);
+            var gate = new NavigationGate();
+            MainWindowViewModel Build() => new(
+                service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(), navigation: gate);
+
+            var first = Build();
+            var second = Build();
+            var captured = first.NavigationGeneration;
+
+            first.CloseWorkspace(); // close-to-hide in the first window
+
+            await Assert.That(second.NavigationGeneration).IsEqualTo(first.NavigationGeneration);
+            await Assert.That(second.NavigationGeneration).IsNotEqualTo(captured);
+
+            first.LatchShutdown();
+            await Assert.That(gate.ShutdownLatched).IsTrue();
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Deactivation_disposes_subscriptions() {

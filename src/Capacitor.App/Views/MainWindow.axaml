@@ -9,147 +9,163 @@
                      Title="Kurrent Capacitor Desktop"
                      Icon="avares://Kurrent Capacitor/Assets/kcap-icon.png"
                      Width="840" Height="480">
-    <Grid Margin="20" RowDefinitions="Auto,*">
-        <StackPanel Grid.Row="0" Spacing="20">
-            <StackPanel Spacing="8">
-                <StackPanel Orientation="Horizontal" Spacing="6">
-                    <TextBlock x:Name="DaemonIdentityText" Text="{Binding DaemonName}" FontWeight="Bold" />
-                    <TextBlock Text="·" />
-                    <TextBlock x:Name="DaemonVersionText" Text="{Binding VersionDisplay}" ToolTip.Tip="{Binding DaemonVersion}" />
-                </StackPanel>
-
-                <TextBlock x:Name="ServerUrlText" Text="{Binding ServerUrl}" Opacity="0.7" />
-
-                <StackPanel Orientation="Horizontal" Spacing="6">
-                    <Ellipse Width="8" Height="8" Fill="{Binding StatusDotBrush}" VerticalAlignment="Center" />
-                    <TextBlock x:Name="ConnectionText" Text="{Binding ConnectionDisplay}" VerticalAlignment="Center" />
-                    <TextBlock x:Name="AgentCountText" Text="{Binding AgentCountText, StringFormat='· {0}'}"
-                               IsVisible="{Binding GridEnabled}" VerticalAlignment="Center" />
-                </StackPanel>
-            </StackPanel>
-
-            <StackPanel Spacing="8">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <Button x:Name="StartButton" Content="Start daemon" Command="{Binding StartDaemonCommand}" IsVisible="{Binding StartVisible}" />
-                    <Button x:Name="RetryButton" Content="Retry" Command="{Binding RetryCommand}" IsVisible="{Binding RetryVisible}" />
-                </StackPanel>
-
-                <TextBlock x:Name="StartMessageText" Text="{Binding StartMessage}"
-                           IsVisible="{Binding StartMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                <TextBlock x:Name="ReasonText" Text="{Binding Reason}"
-                           IsVisible="{Binding Reason, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-            </StackPanel>
-        </StackPanel>
-
-        <!-- Tabs (spec §7): Home | Agents | Activity. Home is the default selection.
-             SelectionChanged is wired in code-behind (MainWindow.axaml.cs) so the Activity tab's
-             refresh cadence tracks both tab selection and the window's own on-screen state. -->
-        <TabControl Grid.Row="1" x:Name="MainTabs" Margin="0,8,0,0" SelectionChanged="OnTabSelectionChanged">
-            <TabItem x:Name="HomeTabItem" Header="Home">
-                <views:HomeView DataContext="{Binding Home}" />
-            </TabItem>
-
-            <TabItem Header="Agents">
-                <!-- The ENTIRE pre-existing agents block, unchanged: control names preserved so
-                     the existing smoke tests keep finding them in the window's name scope. -->
-                <Grid RowDefinitions="Auto,*">
-                    <StackPanel Grid.Row="0" Spacing="8">
-                        <Border Height="1" Background="{DynamicResource SystemControlForegroundBaseHighBrush}" Opacity="0.7" />
-                        <TextBlock Text="Agents" FontSize="14" FontWeight="Bold" />
-
-                        <TextBlock x:Name="EmptyStateText" Text="No agents running">
-                            <TextBlock.IsVisible>
-                                <MultiBinding Converter="{x:Static views:EmptyStateVisibleConverter.Instance}">
-                                    <Binding Path="GridEnabled" />
-                                    <Binding Path="Agents.Count" />
-                                </MultiBinding>
-                            </TextBlock.IsVisible>
-                        </TextBlock>
+    <!-- Two surfaces, one window (spec §3): the tabbed shell while CurrentWorkspace is null, that
+         session's workspace while it is not. The workspace side is a ContentControl over a template
+         rather than an always-present WorkspaceView, so the terminal control is CONSTRUCTED only
+         once a session is opened instead of sitting hidden in every window that never opens one. -->
+    <Panel>
+        <Grid Margin="20" RowDefinitions="Auto,*"
+              IsVisible="{Binding CurrentWorkspace, Converter={x:Static ObjectConverters.IsNull}}">
+            <StackPanel Grid.Row="0" Spacing="20">
+                <StackPanel Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBlock x:Name="DaemonIdentityText" Text="{Binding DaemonName}" FontWeight="Bold" />
+                        <TextBlock Text="·" />
+                        <TextBlock x:Name="DaemonVersionText" Text="{Binding VersionDisplay}" ToolTip.Tip="{Binding DaemonVersion}" />
                     </StackPanel>
 
-                    <!-- Row "*" (bounded height, unlike a StackPanel child which Avalonia always
-                         measures with infinite height) is what lets this ScrollViewer's
-                         VerticalScrollBarVisibility actually engage. Fixed column widths total
-                         ~770px — wider than the default window's content area — so both
-                         scrollbars are Auto: horizontal reaches the Actions column when the
-                         window is narrower than the grid, vertical reaches every row when there
-                         are more than fit the window's height. -->
-                    <ScrollViewer Grid.Row="1" Margin="0,8,0,0"
-                                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
-                        <StackPanel x:Name="AgentsGrid" Opacity="{Binding GridEnabled, Converter={x:Static views:GridEnabledOpacityConverter.Instance}}">
-                            <Grid x:Name="AgentsGridHeader" ColumnDefinitions="80,140,140,100,90,70,150" Margin="0,0,0,4"
-                                  IsVisible="{Binding Agents.Count, Converter={x:Static views:HeaderRowVisibleConverter.Instance}}">
-                                <TextBlock Grid.Column="0" Text="Kind" FontWeight="Bold" Opacity="0.7" />
-                                <TextBlock Grid.Column="1" Text="Vendor" FontWeight="Bold" Opacity="0.7" />
-                                <TextBlock Grid.Column="2" Text="Repo" FontWeight="Bold" Opacity="0.7" />
-                                <TextBlock Grid.Column="3" Text="Requester" FontWeight="Bold" Opacity="0.7" />
-                                <TextBlock Grid.Column="4" Text="Status" FontWeight="Bold" Opacity="0.7" />
-                                <TextBlock Grid.Column="5" Text="Uptime" FontWeight="Bold" Opacity="0.7" />
-                                <TextBlock Grid.Column="6" Text="Actions" FontWeight="Bold" Opacity="0.7" />
-                            </Grid>
+                    <TextBlock x:Name="ServerUrlText" Text="{Binding ServerUrl}" Opacity="0.7" />
 
-                            <ItemsControl x:Name="AgentsItems" ItemsSource="{Binding Agents}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate x:DataType="vm:AgentRowViewModel">
-                                        <Grid ColumnDefinitions="80,140,140,100,90,70,150" Margin="0,2">
-                                            <TextBlock Grid.Column="0" Text="{Binding Kind}" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="1" Text="{Binding VendorDisplay}" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="2" Text="{Binding RepoLeaf}" ToolTip.Tip="{Binding RepoFull}" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="3" Text="{Binding Requester}" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="4" Text="{Binding StatusText}" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="5" Text="{Binding Uptime}" TextTrimming="CharacterEllipsis" />
-                                            <StackPanel Grid.Column="6" Orientation="Horizontal" Spacing="4">
-                                                <Button Content="Stop" Command="{Binding StopCommand}" IsEnabled="{Binding ActionsEnabled}" Padding="8,2" FontSize="12" />
-                                                <Button Content="Open in web" Command="{Binding OpenInWebCommand}" IsEnabled="{Binding ActionsEnabled}" Padding="8,2" FontSize="12" />
-                                            </StackPanel>
-                                        </Grid>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Ellipse Width="8" Height="8" Fill="{Binding StatusDotBrush}" VerticalAlignment="Center" />
+                        <TextBlock x:Name="ConnectionText" Text="{Binding ConnectionDisplay}" VerticalAlignment="Center" />
+                        <TextBlock x:Name="AgentCountText" Text="{Binding AgentCountText, StringFormat='· {0}'}"
+                                   IsVisible="{Binding GridEnabled}" VerticalAlignment="Center" />
+                    </StackPanel>
+                </StackPanel>
+
+                <StackPanel Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="StartButton" Content="Start daemon" Command="{Binding StartDaemonCommand}" IsVisible="{Binding StartVisible}" />
+                        <Button x:Name="RetryButton" Content="Retry" Command="{Binding RetryCommand}" IsVisible="{Binding RetryVisible}" />
+                    </StackPanel>
+
+                    <TextBlock x:Name="StartMessageText" Text="{Binding StartMessage}"
+                               IsVisible="{Binding StartMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    <TextBlock x:Name="ReasonText" Text="{Binding Reason}"
+                               IsVisible="{Binding Reason, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Tabs (spec §7): Home | Agents | Activity. Home is the default selection.
+                 SelectionChanged is wired in code-behind (MainWindow.axaml.cs) so the Activity tab's
+                 refresh cadence tracks both tab selection and the window's own on-screen state. -->
+            <TabControl Grid.Row="1" x:Name="MainTabs" Margin="0,8,0,0" SelectionChanged="OnTabSelectionChanged">
+                <TabItem x:Name="HomeTabItem" Header="Home">
+                    <views:HomeView DataContext="{Binding Home}" />
+                </TabItem>
+
+                <TabItem Header="Agents">
+                    <!-- The ENTIRE pre-existing agents block, unchanged: control names preserved so
+                         the existing smoke tests keep finding them in the window's name scope. -->
+                    <Grid RowDefinitions="Auto,*">
+                        <StackPanel Grid.Row="0" Spacing="8">
+                            <Border Height="1" Background="{DynamicResource SystemControlForegroundBaseHighBrush}" Opacity="0.7" />
+                            <TextBlock Text="Agents" FontSize="14" FontWeight="Bold" />
+
+                            <TextBlock x:Name="EmptyStateText" Text="No agents running">
+                                <TextBlock.IsVisible>
+                                    <MultiBinding Converter="{x:Static views:EmptyStateVisibleConverter.Instance}">
+                                        <Binding Path="GridEnabled" />
+                                        <Binding Path="Agents.Count" />
+                                    </MultiBinding>
+                                </TextBlock.IsVisible>
+                            </TextBlock>
                         </StackPanel>
-                    </ScrollViewer>
-                </Grid>
-            </TabItem>
 
-            <TabItem x:Name="ActivityTabItem" Header="Activity">
-                <Grid RowDefinitions="Auto,*">
-                    <TextBlock x:Name="ActivityEmptyText" Text="No decisions yet"
-                               IsVisible="{Binding Activity.IsEmpty}" HorizontalAlignment="Center" Margin="0,24,0,0" />
+                        <!-- Row "*" (bounded height, unlike a StackPanel child which Avalonia always
+                             measures with infinite height) is what lets this ScrollViewer's
+                             VerticalScrollBarVisibility actually engage. Fixed column widths total
+                             ~770px — wider than the default window's content area — so both
+                             scrollbars are Auto: horizontal reaches the Actions column when the
+                             window is narrower than the grid, vertical reaches every row when there
+                             are more than fit the window's height. -->
+                        <ScrollViewer Grid.Row="1" Margin="0,8,0,0"
+                                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="AgentsGrid" Opacity="{Binding GridEnabled, Converter={x:Static views:GridEnabledOpacityConverter.Instance}}">
+                                <Grid x:Name="AgentsGridHeader" ColumnDefinitions="80,140,140,100,90,70,150" Margin="0,0,0,4"
+                                      IsVisible="{Binding Agents.Count, Converter={x:Static views:HeaderRowVisibleConverter.Instance}}">
+                                    <TextBlock Grid.Column="0" Text="Kind" FontWeight="Bold" Opacity="0.7" />
+                                    <TextBlock Grid.Column="1" Text="Vendor" FontWeight="Bold" Opacity="0.7" />
+                                    <TextBlock Grid.Column="2" Text="Repo" FontWeight="Bold" Opacity="0.7" />
+                                    <TextBlock Grid.Column="3" Text="Requester" FontWeight="Bold" Opacity="0.7" />
+                                    <TextBlock Grid.Column="4" Text="Status" FontWeight="Bold" Opacity="0.7" />
+                                    <TextBlock Grid.Column="5" Text="Uptime" FontWeight="Bold" Opacity="0.7" />
+                                    <TextBlock Grid.Column="6" Text="Actions" FontWeight="Bold" Opacity="0.7" />
+                                </Grid>
 
-                    <ScrollViewer Grid.Row="1" Margin="0,8,0,0"
-                                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
-                        <StackPanel>
-                            <Grid x:Name="ActivityHeader" ColumnDefinitions="150,70,120,90,140,90,110" Margin="0,0,0,4"
-                                  IsVisible="{Binding !Activity.IsEmpty}">
-                                <TextBlock Grid.Column="0" Text="Time" FontWeight="Bold" Opacity="0.7" />
-                                <TextBlock Grid.Column="1" Text="Outcome" FontWeight="Bold" Opacity="0.7" />
-                                <TextBlock Grid.Column="2" Text="Requester" FontWeight="Bold" Opacity="0.7" />
-                                <TextBlock Grid.Column="3" Text="Kind" FontWeight="Bold" Opacity="0.7" />
-                                <TextBlock Grid.Column="4" Text="Repo" FontWeight="Bold" Opacity="0.7" />
-                                <TextBlock Grid.Column="5" Text="Vendor" FontWeight="Bold" Opacity="0.7" />
-                                <TextBlock Grid.Column="6" Text="Source" FontWeight="Bold" Opacity="0.7" />
-                            </Grid>
+                                <ItemsControl x:Name="AgentsItems" ItemsSource="{Binding Agents}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:AgentRowViewModel">
+                                            <Grid ColumnDefinitions="80,140,140,100,90,70,150" Margin="0,2">
+                                                <TextBlock Grid.Column="0" Text="{Binding Kind}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="1" Text="{Binding VendorDisplay}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="2" Text="{Binding RepoLeaf}" ToolTip.Tip="{Binding RepoFull}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="3" Text="{Binding Requester}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="4" Text="{Binding StatusText}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="5" Text="{Binding Uptime}" TextTrimming="CharacterEllipsis" />
+                                                <StackPanel Grid.Column="6" Orientation="Horizontal" Spacing="4">
+                                                    <Button Content="Stop" Command="{Binding StopCommand}" IsEnabled="{Binding ActionsEnabled}" Padding="8,2" FontSize="12" />
+                                                    <Button Content="Open in web" Command="{Binding OpenInWebCommand}" IsEnabled="{Binding ActionsEnabled}" Padding="8,2" FontSize="12" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </TabItem>
 
-                            <ItemsControl x:Name="ActivityItems" ItemsSource="{Binding Activity.Rows}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate x:DataType="vm:ActivityRow">
-                                        <Grid ColumnDefinitions="150,70,120,90,140,90,110" Margin="0,2">
-                                            <TextBlock Grid.Column="0" Text="{Binding Time}" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="1" Text="{Binding Outcome}" TextTrimming="CharacterEllipsis"
-                                                       Foreground="{Binding IsAllowed, Converter={x:Static views:OutcomeBrushConverter.Instance}}" />
-                                            <TextBlock Grid.Column="2" Text="{Binding Requester}" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="3" Text="{Binding KindLabel}" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="4" Text="{Binding RepoLeaf}" ToolTip.Tip="{Binding RepoFull}" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="5" Text="{Binding Vendor}" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="6" Text="{Binding SourceLabel}" TextTrimming="CharacterEllipsis" />
-                                        </Grid>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </StackPanel>
-                    </ScrollViewer>
-                </Grid>
-            </TabItem>
-        </TabControl>
-    </Grid>
+                <TabItem x:Name="ActivityTabItem" Header="Activity">
+                    <Grid RowDefinitions="Auto,*">
+                        <TextBlock x:Name="ActivityEmptyText" Text="No decisions yet"
+                                   IsVisible="{Binding Activity.IsEmpty}" HorizontalAlignment="Center" Margin="0,24,0,0" />
+
+                        <ScrollViewer Grid.Row="1" Margin="0,8,0,0"
+                                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                            <StackPanel>
+                                <Grid x:Name="ActivityHeader" ColumnDefinitions="150,70,120,90,140,90,110" Margin="0,0,0,4"
+                                      IsVisible="{Binding !Activity.IsEmpty}">
+                                    <TextBlock Grid.Column="0" Text="Time" FontWeight="Bold" Opacity="0.7" />
+                                    <TextBlock Grid.Column="1" Text="Outcome" FontWeight="Bold" Opacity="0.7" />
+                                    <TextBlock Grid.Column="2" Text="Requester" FontWeight="Bold" Opacity="0.7" />
+                                    <TextBlock Grid.Column="3" Text="Kind" FontWeight="Bold" Opacity="0.7" />
+                                    <TextBlock Grid.Column="4" Text="Repo" FontWeight="Bold" Opacity="0.7" />
+                                    <TextBlock Grid.Column="5" Text="Vendor" FontWeight="Bold" Opacity="0.7" />
+                                    <TextBlock Grid.Column="6" Text="Source" FontWeight="Bold" Opacity="0.7" />
+                                </Grid>
+
+                                <ItemsControl x:Name="ActivityItems" ItemsSource="{Binding Activity.Rows}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:ActivityRow">
+                                            <Grid ColumnDefinitions="150,70,120,90,140,90,110" Margin="0,2">
+                                                <TextBlock Grid.Column="0" Text="{Binding Time}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="1" Text="{Binding Outcome}" TextTrimming="CharacterEllipsis"
+                                                           Foreground="{Binding IsAllowed, Converter={x:Static views:OutcomeBrushConverter.Instance}}" />
+                                                <TextBlock Grid.Column="2" Text="{Binding Requester}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="3" Text="{Binding KindLabel}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="4" Text="{Binding RepoLeaf}" ToolTip.Tip="{Binding RepoFull}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="5" Text="{Binding Vendor}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="6" Text="{Binding SourceLabel}" TextTrimming="CharacterEllipsis" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </TabItem>
+            </TabControl>
+        </Grid>
+
+        <ContentControl x:Name="WorkspaceHost" Content="{Binding CurrentWorkspace}"
+                        IsVisible="{Binding CurrentWorkspace, Converter={x:Static ObjectConverters.IsNotNull}}">
+            <ContentControl.ContentTemplate>
+                <DataTemplate x:DataType="vm:WorkspaceViewModel">
+                    <views:WorkspaceView />
+                </DataTemplate>
+            </ContentControl.ContentTemplate>
+        </ContentControl>
+    </Panel>
 </rxui:ReactiveWindow>

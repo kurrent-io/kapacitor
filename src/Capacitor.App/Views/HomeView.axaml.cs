@@ -18,6 +18,13 @@ public partial class HomeView : UserControl {
 
     void OnNewSessionClick(object? sender, RoutedEventArgs e) => GoalInput.Focus();
 
+    // The card's own DataContext (the item), not this view's: the click has to carry WHICH session
+    // was clicked, and the button lives inside the ItemsControl's item template.
+    void OnSessionCardClick(object? sender, RoutedEventArgs e) {
+        if (DataContext is HomeViewModel vm && (sender as Control)?.DataContext is SessionCardViewModel card)
+            vm.OpenSessionRequested(card.Id);
+    }
+
     // Repository picker: one flyout item per ListRepositoriesAsync entry — leaf name over full
     // path, remembered-harness pill on the right, per the settled design. The scratch entry and
     // the folder-picker affordance sit last, each behind a separator.
