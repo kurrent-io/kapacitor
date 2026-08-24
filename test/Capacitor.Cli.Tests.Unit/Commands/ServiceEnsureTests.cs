@@ -155,10 +155,10 @@ public class EnsureFailureMapTests {
     }
 
     [Test]
-    public async Task Drift_is_never_auto_retried_always_attention() {
+    public async Task Drift_is_the_gates_toctou_refusal_attention_with_its_token() {
         var (r, reason) = EnsureFailureMap.Map(VerifyExit.StartGateDrift, null, verified: true);
         await Assert.That(r).IsEqualTo("attention");
-        await Assert.That(reason).IsNull();
+        await Assert.That(reason).IsEqualTo("verify_start_gate_drift");
     }
 
     [Test]

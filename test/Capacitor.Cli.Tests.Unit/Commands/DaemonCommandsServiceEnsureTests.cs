@@ -9,6 +9,9 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// arms on launchd run the ServiceVerify transaction — covered by the engine's own suites; the
 /// plain arms need the daemon binary present, which a unit test host does not have.)
 /// </summary>
+/// <remarks>Bare <c>[NotInParallel]</c>: <c>Ensure</c> writes to the process-global
+/// <c>Console.Out</c>, so these cannot run beside a test capturing console streams.</remarks>
+[NotInParallel]
 public class DaemonCommandsServiceEnsureTests {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 

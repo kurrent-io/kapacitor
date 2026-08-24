@@ -86,9 +86,10 @@ public static class RecoverySurfaceTokens {
 /// Pure: the wire fields for an ensure failure — <c>recovery</c> (gate refusals only) and
 /// <c>reason</c>. Kept separate from I/O so the JSON contract is testable without a real service
 /// manager. A gate refusal maps its <c>start_gate_reason=</c> token through <see cref="ReasonRouting"/>
-/// (takeover/reinstall/attention); drift is never auto-retried (attention); every other exit on a
-/// verified run carries its <c>verify_*</c> token; a plain (non-launchd) failure carries a plain
-/// token, never a <c>verify_*</c> one — the verify prefix must not claim a transaction that never ran.
+/// (takeover/reinstall/attention); drift is the gate's TOCTOU re-check refusing, surfaced as the
+/// attention row with its token, never auto-retried; every other exit on a verified run carries its
+/// <c>verify_*</c> token; a plain (non-launchd) failure carries a plain token, never a <c>verify_*</c>
+/// one — the verify prefix must not claim a transaction that never ran.
 /// </summary>
 internal static class EnsureFailureMap {
     public static (string? Recovery, string? Reason) Map(
@@ -102,7 +103,10 @@ internal static class EnsureFailureMap {
         }
 
         if (exit == VerifyExit.StartGateDrift)
-            return (RecoverySurfaceTokens.Token(RecoverySurface.Attention), null);
+            // Drift is the gate's TOCTOU re-check refusing — a gate failure, so it surfaces the
+            // attention row, never auto-retried (same rule as the app's own table); the reason token
+            // keeps the JSON and the human line from reading empty.
+            return (RecoverySurfaceTokens.Token(RecoverySurface.Attention), VerifyExitToken(exit));
 
         // Not a gate refusal. Verified runs carry their verify_* token; plain runs never wear the
         // verify prefix (exit 1 is lock contention or a manager error, not a verify outcome).

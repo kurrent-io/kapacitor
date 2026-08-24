@@ -299,7 +299,9 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
     /// </summary>
     internal async Task<int> Ensure(string[] args) {
         var json        = args.Contains("--json");
-        var profileName = DaemonCommands.ExtractFlagValue(args, "--profile");
+        // Same explicit-flag-wins-then-resolved default as Install: the gate's identity half needs a
+        // non-empty KCAP_PROFILE, so a bare `ensure` on launchd must still carry the resolved name.
+        var profileName = DaemonCommands.ExtractFlagValue(args, "--profile") ?? AppConfig.ResolvedProfile?.ProfileName;
 
         var query     = manager.Query(id);
         var daemonPid = DaemonPidProbe.ValidatedPid(store, id);
