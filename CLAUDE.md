@@ -158,7 +158,7 @@ Squash-merge concatenates the branch's messages verbatim, and the merge is usual
 This is a public repository — we develop in the open.
 
 - **Open issues in GitHub Issues**, not Linear. Linear auto-imports GitHub issues, so there is no need to create the issue in Linear by hand.
-- **PRs must reference both the Linear issue and the GitHub issue.** Put these references in the PR *description*, not the title. Reference the GitHub issue with a closing keyword (e.g. `Closes #123`) and include the Linear issue (e.g. `AI-774`) so Linear links the PR back to the imported issue.
+- **PRs must reference both the Linear issue and the GitHub issue.** Both go on the reference line in the PR *description*: the GitHub issue with a closing keyword (e.g. `Closes #123`) and the Linear issue (e.g. `AI-774`), so Linear links the PR back to the imported issue. The title's `[AI-123]` prefix is the commit-subject convention, not that reference — it does not stand in for either half.
 
 Title: commit-subject rules — `[AI-123] Show "Copied" tooltip on clipboard copy`.
 

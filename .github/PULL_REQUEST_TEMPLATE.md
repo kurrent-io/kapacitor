@@ -5,8 +5,9 @@ prose: values in cells, not sentences. Exactly the three headings below — no o
 no renames. Delete every section you cannot fill concretely, all three for a trivial
 change. The diff holds the detail; this box holds what a reviewer cannot get from it.
 
-Keep the reference line above the first heading — it is what links the PR to both
-trackers, and it is not part of the character target.
+Fill in the reference line above the first heading — it is what links the PR to both
+trackers, and it is not part of the character target. Left with its placeholders,
+it links nothing.
 
 Never:
 - spec/plan coordinates ("§4", "Task 12", "Phase 2")
@@ -20,9 +21,11 @@ Agents: when the template is not rendered for you (`gh pr create --body`), repro
 these headings yourself and keep to this comment's rules.
 -->
 
-<!-- Reference line: the GitHub issue with a closing keyword (`Closes #123`) and the Linear
-issue id (`AI-123`), so Linear links the PR back to the imported issue. Drop either half only
-when it does not exist, and say so. -->
+Closes #<issue> — AI-<id>
+
+<!-- The line above is the reference line: a closing keyword for the GitHub issue, and the
+Linear id so Linear links the PR back to the imported issue. Replace both placeholders. Drop
+either half only when it does not exist, and say which. -->
 
 ## What & why
 
