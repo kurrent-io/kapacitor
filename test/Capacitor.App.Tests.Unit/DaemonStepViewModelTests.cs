@@ -9,6 +9,7 @@ using Capacitor.App.Views.Onboarding;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.LocalIpc;
 using Microsoft.Extensions.Time.Testing;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.App.Tests.Unit;
 

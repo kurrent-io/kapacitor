@@ -17,8 +17,20 @@ public sealed record ServiceStatusJson(
     string? UnitProfile = null, string? UnitServerUrl = null,
     string? UnitExpectedServer = null, string? UnitConsentSeed = null);
 
+/// <summary>Machine-readable outcome for <c>kcap daemon service ensure</c> — what the ladder did, and
+/// (on a refusal) which recovery surface the flow should offer. <see cref="Recovery"/> is non-null only
+/// on a gate refusal (takeover/reinstall/attention); <see cref="Reason"/> is the <c>start_gate_reason=</c>
+/// token for a gate refusal, the <c>verify_*</c> token for any other verified-transaction failure, or
+/// <c>plain_failure</c> for a degraded (non-launchd) failure. <see cref="Verified"/> reports whether THIS
+/// run performed the launchd verified transaction — false on plain install/start and on no-op rows;
+/// the flow's copy must key off <see cref="Outcome"/>, not off <c>verified</c>.</summary>
+public sealed record ServiceEnsureJson(
+    string ServiceId, string State, string Action, string Outcome,
+    string? Recovery = null, string? Reason = null, bool Verified = false);
+
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(ServiceStatusJson))]
+[JsonSerializable(typeof(ServiceEnsureJson))]
 public partial class ServiceJsonContext : JsonSerializerContext;
 
 /// <summary>Pure renderer for the status JSON — kept separate from I/O so it's directly testable.</summary>

@@ -741,12 +741,15 @@ kcap daemon service status --json          # machine-readable status (pids, bina
 kcap daemon service stop                   # stop the running service (stays installed)
 kcap daemon service start                  # start it again
 kcap daemon service start --verify         # start, then verify readiness/ownership before exiting 0
+kcap daemon service ensure                 # install-or-start from a fresh status read (flow-driven)
 kcap daemon service uninstall              # stop and remove the service
 ```
 
 `install` pins the active profile via `KCAP_PROFILE` and captures your current `PATH` into the unit, so the supervised daemon resolves the same server URL, `claude`/`codex` binaries, and profile settings it would from your shell. Pass `--profile P` to pin a different profile, `--max-agents N` to bake an override, or `--no-start` to register without starting (`--no-start` cannot be combined with `--verify`, whose whole job is to prove the *started* daemon is ready). The service restarts the daemon on crash/`SIGKILL` but **not** on a clean stop. `stop` unloads it from the OS supervisor (launchd `bootout` / equivalent; the unit file is retained) rather than merely signaling the process.
 
 `status --json` prints a machine-readable snapshot (service/job/daemon pids, binary paths, and transaction-marker state) instead of the human summary, and exits non-zero if the underlying service state can't be determined — for scripts that need to decide whether to attach, start, or repair a service without parsing human-readable text.
+
+`ensure` is the flow-driven ladder: from a fresh status read it installs when there is no unit (baking the born-`prompt` consent directive — the daemon is installed `prompt`, so nothing runs unattended on someone else's say-so) or starts when the unit is present but stopped, and reports "already enabled" when the daemon is running. On macOS/launchd both arms run the verified transaction exactly as an app-managed start does, so a gate refusal exits with the coded verify exit plus one `start_gate_reason=<token>` line, and `ensure` maps the token to a machine-readable `recovery_surface=takeover|reinstall|attention` (never guessed from prose) — the flow can then offer the right next step. On Windows/Linux the ladder degrades to plain install/start (no gates, no rollback), and `ensure --json` reports `"verified":false` so the flow's copy can say so. `ensure` never mutates into an ambiguous state: an unreadable probe, an active transaction, an orphaned label or a stale marker all fail closed to attention with a coded reason.
 
 `start --verify` polls the started service until it answers a well-formed local-socket hello **and** the OS-reported job pid matches the daemon's own validated pid, rolling back (stopping the service again, plist retained) and exiting non-zero with a coded stderr token (e.g. `verify_readiness_timeout`) if that never happens within the poll budget — useful for scripted installs that need to know the daemon is actually up before proceeding. **`--verify` is macOS/launchd only in this release** — `start --verify` is rejected on Linux/Windows, same as `install --verify` below.
 

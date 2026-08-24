@@ -167,6 +167,13 @@ sealed class ServiceVerify(
     /// fail-closed placeholder in dev/test builds.</summary>
     readonly Func<string, bool> _digestMatches = digestMatches ?? DaemonDigest.Matches;
 
+    /// <summary>The gate reason of the LAST Phase-A refusal, for an in-process caller (the ensure
+    /// ladder) that must map <see cref="VerifyExit.StartGate"/> to a recovery surface without
+    /// re-parsing its own stderr. Null after a passing start, a non-gate exit, or a fresh engine.
+    /// The app shells out and reads the token from child stderr instead; this is the in-process
+    /// twin of the same <c>start_gate_reason=</c> contract.</summary>
+    internal StartGateReason? LastGateReason { get; private set; }
+
     const string ConsentSeedVar = "KCAP_CONSENT_SEED_DEFAULT";
     const string ProfileVar     = "KCAP_PROFILE";
     const string UrlVar         = "KCAP_URL";
@@ -240,6 +247,7 @@ sealed class ServiceVerify(
             }
 
             if (reason is { } r) {
+                LastGateReason = r;
                 Say($"start_gate_reason={GateReasonToken(r)}");
                 Say(VerifyExit.StartGateToken);
                 return VerifyExit.StartGate;
@@ -578,7 +586,7 @@ sealed class ServiceVerify(
         return config.Profiles.TryGetValue(profile, out var p) ? p.ServerUrl : null;
     }
 
-    static string GateReasonToken(StartGateReason reason) => reason switch {
+    internal static string GateReasonToken(StartGateReason reason) => reason switch {
         StartGateReason.DirectiveMissing     => "directive_missing",
         StartGateReason.DirectiveInvalid     => "directive_invalid",
         StartGateReason.IdentityMismatch     => "identity_mismatch",

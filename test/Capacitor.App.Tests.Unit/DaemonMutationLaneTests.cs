@@ -1,6 +1,7 @@
 using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
 using Microsoft.Extensions.Time.Testing;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.App.Tests.Unit;
 
