@@ -312,7 +312,10 @@ public class TerminalTabViewModelTests {
 
             await vm.ReattachCommand.Execute(); // retires attempt 1: cancels + await-disposes client1
 
-            client1.Result.SetException(new OperationCanceledException());
+            // TrySetException, not SetException: DisposeAsync's own Result.TrySetResult(Detached)
+            // (I4's fake-fidelity fix) may already have claimed Result as part of that retire --
+            // this call's outcome doesn't matter either way, only that attempt 1 settles silently.
+            client1.Result.TrySetException(new OperationCanceledException());
             await run1; // attempt 1's own run settles silently
 
             await Assert.That(vm.State.Phase).IsEqualTo(TerminalSessionPhase.Connecting);
@@ -429,7 +432,10 @@ public class TerminalTabViewModelTests {
             time.Advance(TimeSpan.FromSeconds(1));
             await WaitUntilAsync(() => client.DisposeCalls == 1, what: "DisposeAsync called at the 1s detach bound");
 
-            time.Advance(TimeSpan.FromSeconds(2)); // total 3s -- forces the run-task budget too
+            // A safety margin, not strictly required any more: DisposeAsync's own
+            // Result.TrySetResult(Detached) (I4) settles the run step through ordinary Task
+            // scheduling once DisposeCalls confirms it ran, but this covers a slow CI box too.
+            time.Advance(TimeSpan.FromSeconds(2));
             await teardown;
 
             await Assert.That(client.DetachCalls).IsEqualTo(1);
@@ -462,6 +468,165 @@ public class TerminalTabViewModelTests {
             GC.Collect();
 
             await Assert.That(surfaceRef.IsAlive).IsFalse();
+        });
+    }
+
+    // ---- review fixes: C1/I1-I6 ----
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Reattach_after_teardown_creates_no_client() {
+        await RunOnUiAsync(async () => {
+            var (_, factory, _, vm, _) = await BuildConnectingAsync();
+
+            await vm.TeardownAsync();
+
+            var before = factory.Created.Count;
+            await vm.ReattachCommand.Execute();
+
+            // Disposal wins permanently: a post-teardown Reattach must build nothing -- the
+            // straggler client C1 reproduced (nothing would ever dispose it; TeardownAsync is
+            // idempotent) never gets created at all.
+            await Assert.That(factory.Created.Count).IsEqualTo(before);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Teardown_racing_a_straddling_reattach_neither_throws_nor_leaks_a_client() {
+        await RunOnUiAsync(async () => {
+            var (_, factory, _, vm, client1) = await BuildConnectingAsync();
+
+            // Gate client1's DisposeAsync open so Reattach's retire step is still suspended
+            // (straddling the swap) when TeardownAsync lands -- the class of race C1 reproduced:
+            // a resumed cts.Token read/Register throwing ObjectDisposedException, and a second
+            // live client nothing could ever dispose.
+            client1.DisposeGate = new TaskCompletionSource();
+
+            var reattach = Task.Run(() => vm.ReattachCommand.Execute().ToTask());
+            await WaitUntilAsync(() => client1.DisposeCalls > 0, what: "reattach to start retiring client1");
+
+            // Called directly, NOT via Task.Run: an async method's synchronous prefix always runs
+            // on the calling thread up to its own first suspension point, so by the time this
+            // call RETURNS (a pending Task), TeardownAsync has already set _resolveState =
+            // Disposed and cancelled the attempt's cts -- deterministically, before the gate
+            // below is released (both TeardownAsync's own client-handling and Reattach's retire
+            // step independently captured the same `_client` = client1 before either nulled it,
+            // so both may end up awaiting this same gate too; either way the ordering that
+            // matters -- Disposed set before Reattach's re-check ever runs -- is guaranteed).
+            var teardownTask = vm.TeardownAsync();
+
+            client1.DisposeGate.SetResult();
+
+            Exception? thrown = null;
+            try { await teardownTask; } catch (Exception ex) { thrown = ex; }
+            await reattach;
+
+            await Assert.That(thrown).IsNull();
+            // TeardownAsync's own resolveState re-check caught the race before Reattach ever
+            // reached the factory call -- no second client. client1 was disposed (never left
+            // live) -- possibly by both racing callers, since the real client's DisposeAsync is
+            // itself idempotent for exactly that.
+            await Assert.That(factory.Created.Count).IsEqualTo(1);
+            await Assert.That(client1.DisposeCalls).IsGreaterThanOrEqualTo(1);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Retry_is_a_no_op_unless_the_gate_is_timed_out() {
+        await RunOnUiAsync(async () => {
+            var (_, factory, _, vm, _) = await BuildConnectingAsync(); // resolves normally -> dto-won, Connecting
+
+            await vm.RetryResolveCommand.Execute();
+
+            // The CAS only accepts a transition FROM timeout-won: a gate already resolved via a
+            // normal DTO must never layer a second attach attempt on top of one that succeeded
+            // (the old read-then-write let this through).
+            await Assert.That(vm.State.Phase).IsEqualTo(TerminalSessionPhase.Connecting);
+            await Assert.That(factory.Created.Count).IsEqualTo(1);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_never_completing_dispose_is_abandoned_within_the_teardown_budget() {
+        await RunOnUiAsync(async () => {
+            var (_, _, time, vm, client) = await BuildConnectingAsync(configureNext: c => c.DisposeGate = new TaskCompletionSource());
+
+            var teardown = vm.TeardownAsync();
+            await WaitUntilAsync(() => client.DisposeCalls == 1, what: "DisposeAsync entered");
+
+            // DisposeAsync itself never completes on its own (the gate is never released) --
+            // mirrors the real client, whose DisposeAsync awaits its own pump to fully unwind.
+            // The remainder of the 3s budget must still force TeardownAsync to return.
+            time.Advance(TimeSpan.FromSeconds(3));
+            await teardown;
+
+            await Assert.That(client.DisposeCalls).IsEqualTo(1);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_throwing_surface_factory_renders_failed_instead_of_hanging_in_resolving() {
+        await RunOnUiAsync(async () => {
+            var daemon = new FakeDaemonClientService();
+            var factory = new FakeTerminalAttachClientFactory();
+            var vm = new TerminalTabViewModel(
+                "a1", daemon, factory.Factory,
+                () => throw new InvalidOperationException("boom"),
+                new FakeTimeProvider());
+
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true));
+            await (vm.PendingResolveWorkForTesting ?? Task.CompletedTask);
+
+            // A throw inside the swap must not leave the tab stuck in Resolving with an
+            // unobserved task fault -- it renders as a local Failed instead.
+            await Assert.That(vm.State.Phase).IsEqualTo(TerminalSessionPhase.Failed);
+            await Assert.That(factory.Created.Count).IsEqualTo(0);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_trailing_partial_code_point_is_flushed_to_the_surface_on_exit() {
+        await RunOnUiAsync(async () => {
+            var (_, _, _, vm, client) = await BuildConnectingAsync();
+            var euro = "€"u8.ToArray(); // E2 82 AC
+
+            await client.TriggerAttached([]);
+            await client.TriggerOutput(euro[..2]); // genuinely incomplete at exit -- missing the last byte
+
+            client.Result.SetResult(new AttachOutcome.Exited(0));
+            await vm.CurrentRunForTesting!;
+
+            var surface = (FakeTerminalSurface)vm.Surface!;
+            // The decoder's own carry-over state buffered the incomplete sequence; Flush() at
+            // terminal completion must still surface SOMETHING for it -- a genuinely truncated
+            // stream can't recover the missing byte, so this proves Flush ran (U+FFFD), not that
+            // the byte was magically recovered.
+            await Assert.That(string.Concat(surface.Fed)).Contains("�");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Has_terminal_false_over_rpc_renders_a_bare_note_with_no_family_token() {
+        await RunOnUiAsync(async () => {
+            var daemon = new FakeDaemonClientService();
+            var factory = new FakeTerminalAttachClientFactory();
+            var vm = Build(daemon, factory, new FakeTimeProvider(), agentId: "a1");
+
+            // "pi" is mapped to rpc; hasTerminal:false leaves EffectiveFamily at "rpc" unchanged
+            // (no pty guess to correct), so this must render bare -- never "runs over RPC", an
+            // internal transport token, not a user-facing concept.
+            daemon.Agents.AddOrUpdate(Agent("a1", "pi", hasTerminal: false));
+            await (vm.PendingResolveWorkForTesting ?? Task.CompletedTask);
+
+            await Assert.That(vm.State.Phase).IsEqualTo(TerminalSessionPhase.NoTerminal);
+            await Assert.That(vm.State.Detail).IsEqualTo("This session has no terminal.");
+            await Assert.That(factory.Created.Count).IsEqualTo(0);
         });
     }
 }

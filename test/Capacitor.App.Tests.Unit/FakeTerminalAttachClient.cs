@@ -51,6 +51,12 @@ sealed class FakeTerminalAttachClient : ITerminalAttachClient {
     public readonly TaskCompletionSource DetachGate =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    /// When set, DisposeAsync awaits this gate before RETURNING -- letting a test hold "dispose in
+    /// flight" open deterministically, the same way a real client's DisposeAsync awaits its own
+    /// pump. Null (default) means DisposeAsync returns immediately once this class's own cleanup
+    /// runs, preserving every test written before this existed.
+    public TaskCompletionSource? DisposeGate { get; set; }
+
     public FakeTerminalAttachClient(
             Func<byte[], string?, CancellationToken, Task> onAttached,
             Func<byte[], CancellationToken, Task> onOutput) {
@@ -100,12 +106,16 @@ sealed class FakeTerminalAttachClient : ITerminalAttachClient {
         if (HangDetachForever) await DetachGate.Task.ConfigureAwait(false);
     }
 
-    public ValueTask DisposeAsync() {
+    public async ValueTask DisposeAsync() {
         DisposeCalls++;
         _lifetime?.Cancel();
         _onAttached = null;
         _onOutput = null;
-        return ValueTask.CompletedTask;
+        // Mirrors AgentAttachClient.DisposeAsync's "one eager local terminalizer" (TryClaim a
+        // Detached outcome) -- a TRY, so it's a silent no-op if the test (or an earlier caller)
+        // already completed Result with something else.
+        Result.TrySetResult(new AttachOutcome.Detached());
+        if (DisposeGate is not null) await DisposeGate.Task.ConfigureAwait(false);
     }
 }
 

@@ -139,7 +139,28 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         _resolveTimer?.Dispose();
         _resolveTimer = null;
 
-        PendingResolveWorkForTesting = ApplyResolvedDtoAsync(dto);
+        PendingResolveWorkForTesting = RunResolveWorkAsync(dto);
+    }
+
+    /// Fault-observing wrapper around ApplyResolvedDtoAsync: this Task is fire-and-forget from
+    /// HandleDtoObserved in production (nothing else awaits it there), so an unhandled fault
+    /// (e.g. the surface factory throwing inside the swap) would otherwise be an unobserved task
+    /// exception AND leave the tab stuck in Resolving forever. A non-OCE fault renders as a local
+    /// Failed instead -- but only if nothing else has since moved the tab past Resolving (a
+    /// concurrent attempt that legitimately succeeded must never be clobbered by a stale fault).
+    async Task RunResolveWorkAsync(AgentStatusDto dto) {
+        try {
+            await ApplyResolvedDtoAsync(dto).ConfigureAwait(false);
+        } catch (OperationCanceledException) {
+            // Retired/torn down mid-resolve -- expected, not an error.
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: terminal resolve failed: {ex.Message}");
+            await Dispatcher.UIThread.InvokeAsync(() => {
+                if (Volatile.Read(ref _resolveState) == ResolveDisposed) return;
+                if (State.Phase != TerminalSessionPhase.Resolving) return;
+                State = TerminalSessionState.Failed($"couldn't open the terminal: {ex.Message}");
+            });
+        }
     }
 
     void HandleAgentRemoved() {
@@ -165,41 +186,77 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         RxSchedulers.MainThreadScheduler.Schedule(() => State = TerminalSessionState.NotFound);
     }
 
+    /// CAS (not read-then-write): only a timed-out gate is eligible for retry, and only if
+    /// nothing else -- least of all a concurrent TeardownAsync -- has since claimed the slot. A
+    /// plain Volatile.Write here would resurrect a gate TeardownAsync already disposed (setting
+    /// it back to dto-won and re-arming a subscription teardown already tore down), and Retry is
+    /// also meaningless from an already-resolved (dto-won) gate -- it must never layer a second
+    /// attach attempt on top of one that already succeeded.
     async Task RetryResolveAsync() {
-        if (Volatile.Read(ref _resolveState) == ResolveDisposed) return;
+        if (Interlocked.CompareExchange(ref _resolveState, ResolveDtoWon, ResolveTimeoutWon) != ResolveTimeoutWon) return;
 
         var lookup = _daemon.Agents.Lookup(_agentId);
-        if (!lookup.HasValue) return;
+        if (!lookup.HasValue) {
+            // Nothing to resolve against yet -- restore timeout-won (CAS, so a concurrent
+            // TeardownAsync's Disposed still wins permanently over this restore) so a later
+            // retry can try again.
+            Interlocked.CompareExchange(ref _resolveState, ResolveTimeoutWon, ResolveDtoWon);
+            return;
+        }
 
-        Volatile.Write(ref _resolveState, ResolveDtoWon);
-        // A prior timeout disposed this; retrying re-arms live removal-watching too.
+        // Re-check right before touching the subscription: a concurrent TeardownAsync may have
+        // disposed it already (it always wins the CAS above too, since Disposed != TimeoutWon --
+        // this only guards a teardown landing in the tiny window between the CAS and here).
+        if (Volatile.Read(ref _resolveState) == ResolveDisposed) return;
         _agentsSub ??= _daemon.Agents.Connect()
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .Subscribe(OnAgentsChanged);
 
-        await ApplyResolvedDtoAsync(lookup.Value).ConfigureAwait(false);
+        await RunResolveWorkAsync(lookup.Value).ConfigureAwait(false);
     }
 
     async Task ApplyResolvedDtoAsync(AgentStatusDto dto) {
         if (!HostedHarnessCatalog.ShowsTerminal(dto.HasTerminal, dto.Vendor)) {
-            await Dispatcher.UIThread.InvokeAsync(() => State = TerminalSessionState.NoTerminal(NoteFor(dto)));
+            await Dispatcher.UIThread.InvokeAsync(() => {
+                // Disposal wins permanently: never render a note for a tab TeardownAsync already
+                // tore down (a concurrent teardown could land while this hop is in flight).
+                if (Volatile.Read(ref _resolveState) == ResolveDisposed) return;
+                State = TerminalSessionState.NoTerminal(NoteFor(dto));
+            });
             return;
         }
 
         await TryStartAttemptAsync().ConfigureAwait(false);
     }
 
+    /// Suffixed only when the family is reliably known: ACP is ("This session runs over ACP");
+    /// the rpc/"chat" bucket also covers claude/codex/any unmapped vendor whose has_terminal came
+    /// back false for a reason this build can't classify further, so it gets no family token at
+    /// all rather than leaking "RPC" (an internal transport name, not a user-facing concept).
     static string NoteFor(AgentStatusDto dto) {
-        var family = HostedHarnessCatalog.EffectiveFamily(dto.HasTerminal, dto.Vendor).ToUpperInvariant();
-        return $"This session runs over {family} — no terminal to attach to.";
+        const string bare = "This session has no terminal.";
+        var family = HostedHarnessCatalog.EffectiveFamily(dto.HasTerminal, dto.Vendor);
+        return family == "acp" ? "This session runs over ACP — no terminal to attach to." : bare;
     }
 
     /// Attach or reattach: retires whatever attempt is current (cancel + await-dispose its
     /// client), then swaps in a fresh surface/decoder and starts a new one. Try-entered only --
     /// see the class doc comment for why a losing call is a silent no-op, not a queued retry.
+    ///
+    /// Disposal wins permanently, which this method has TWO suspension points to prove against
+    /// (the previous client's await-dispose, and the UI swap): a TeardownAsync landing in either
+    /// window must neither leak a live, undisposed client (nothing would ever dispose it again --
+    /// TeardownAsync is idempotent) nor let this attempt publish over what teardown already tore
+    /// down. Every suspension point is followed by a re-check of BOTH `_resolveState ==
+    /// ResolveDisposed` (teardown ran, at any point, regardless of generation ordering) and
+    /// `generation != _attemptGeneration` (a DIFFERENT concurrent attempt retired this one, the
+    /// pre-existing non-teardown case) -- disposing anything this attempt already built before
+    /// bailing.
     async Task TryStartAttemptAsync() {
         if (!_attachLane.Wait(0)) return;
         try {
+            if (Retired(0)) return; // teardown may have already run before this call got the lane
+
             var prevClient = _client;
             var prevCts = _attemptCts;
             prevCts?.Cancel();
@@ -208,29 +265,56 @@ public sealed class TerminalTabViewModel : ReactiveObject {
                 catch { /* contained -- teardown diagnostic only, never VM state */ }
             }
 
+            // Suspension point 1: TeardownAsync may have landed while the previous client's
+            // dispose was in flight.
+            if (Retired(0)) return;
+
             var generation = Interlocked.Increment(ref _attemptGeneration);
             var cts = new CancellationTokenSource();
+            // Hoisted once: TeardownAsync never disposes an attempt's CTS (a disposed
+            // CancellationTokenSource's .Token getter, and Register on any token sourced from
+            // it, both throw ObjectDisposedException regardless of when the token was captured),
+            // so this single read stays valid for the rest of the attempt's life.
+            var token = cts.Token;
             _attemptCts = cts;
 
-            // Construction happens INSIDE the dispatch, not just the property assignment: the
-            // surface factory wraps an Avalonia-affine control model (Task 11/12), so even
-            // building it off the UI thread would be unsafe -- not only assigning it.
-            var (surface, decoder) = await Dispatcher.UIThread.InvokeAsync(() => {
-                var s = _surfaceFactory();
-                var d = new Utf8StreamDecoder();
-                Surface = s;
-                State = TerminalSessionState.Connecting;
-                return (s, d);
-            }, DispatcherPriority.Default, cts.Token);
+            ITerminalSurface surface;
+            Utf8StreamDecoder decoder;
+            try {
+                // Construction happens INSIDE the dispatch, not just the property assignment: the
+                // surface factory wraps an Avalonia-affine control model (Task 11/12), so even
+                // building it off the UI thread would be unsafe -- not only assigning it.
+                (surface, decoder) = await Dispatcher.UIThread.InvokeAsync(() => {
+                    var s = _surfaceFactory();
+                    var d = new Utf8StreamDecoder();
+                    Surface = s;
+                    State = TerminalSessionState.Connecting;
+                    return (s, d);
+                }, DispatcherPriority.Default, token);
+            } catch (OperationCanceledException) {
+                return; // retired before the swap even finished
+            }
+
+            // Suspension point 2 (the one most likely to straddle a concurrent TeardownAsync):
+            // never call the factory for a retired attempt.
+            if (Retired(generation)) return;
 
             var client = _factory(
                 _agentId,
                 (snapshot, reason, ct) => OnAttachedAsync(generation, surface, decoder, snapshot, reason, ct),
                 (bytes, ct) => OnOutputAsync(generation, surface, decoder, bytes, ct));
+
+            // One more check right before publishing: a retirement landing exactly between the
+            // (synchronous) factory call above and here must still not leak the client it built.
+            if (Retired(generation)) {
+                try { await client.DisposeAsync().ConfigureAwait(false); }
+                catch { /* contained */ }
+                return;
+            }
+
             _client = client;
             WireSurface(surface, client, generation);
-
-            _runTask = RunAttemptAsync(generation, client, cts.Token);
+            _runTask = RunAttemptAsync(generation, client, surface, decoder, token);
         } catch (OperationCanceledException) {
             // Retired before the swap even finished (e.g. TeardownAsync raced this call) --
             // expected, not an error.
@@ -238,6 +322,12 @@ public sealed class TerminalTabViewModel : ReactiveObject {
             _attachLane.Release();
         }
     }
+
+    /// True once TeardownAsync has run (permanently), or once a DIFFERENT concurrent attempt has
+    /// retired the one identified by `generation` (0 means "no attempt identity yet" -- only the
+    /// disposal half applies). See TryStartAttemptAsync's doc comment for why both are checked.
+    bool Retired(int generation) =>
+        Volatile.Read(ref _resolveState) == ResolveDisposed || (generation != 0 && generation != _attemptGeneration);
 
     void WireSurface(ITerminalSurface surface, ITerminalAttachClient client, int generation) {
         // Read-only is belt and braces: the client itself also guards SendInputAsync/ResizeAsync,
@@ -269,17 +359,17 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         }, DispatcherPriority.Default, ct);
     }
 
-    async Task RunAttemptAsync(int generation, ITerminalAttachClient client, CancellationToken ct) {
+    async Task RunAttemptAsync(int generation, ITerminalAttachClient client, ITerminalSurface surface, Utf8StreamDecoder decoder, CancellationToken ct) {
         AttachOutcome outcome;
         try {
             outcome = await client.RunAsync(DefaultCols, DefaultRows, ct).ConfigureAwait(false);
         } catch (OperationCanceledException) {
             return; // retired attempt's own cancellation -- silent, never an error
         } catch (AttachCallbackException ex) {
-            await ApplyOutcomeStateAsync(generation, TerminalSessionState.Failed(Describe(ex))).ConfigureAwait(false);
+            await FinishAttemptAsync(generation, surface, decoder, TerminalSessionState.Failed(Describe(ex))).ConfigureAwait(false);
             return;
         } catch (Exception ex) {
-            await ApplyOutcomeStateAsync(generation, TerminalSessionState.Failed(ex.Message)).ConfigureAwait(false);
+            await FinishAttemptAsync(generation, surface, decoder, TerminalSessionState.Failed(ex.Message)).ConfigureAwait(false);
             return;
         }
 
@@ -290,7 +380,7 @@ public sealed class TerminalTabViewModel : ReactiveObject {
             AttachOutcome.ConnectionLost    => TerminalSessionState.Failed("the terminal lost connection to the daemon"),
             _                                => TerminalSessionState.Failed("unknown attach outcome"),
         };
-        await ApplyOutcomeStateAsync(generation, mapped).ConfigureAwait(false);
+        await FinishAttemptAsync(generation, surface, decoder, mapped).ConfigureAwait(false);
     }
 
     static string Describe(AttachCallbackException ex) => ex.InnerException?.Message ?? ex.Message;
@@ -299,9 +389,18 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     // dispatched action) already guards correctness, and the outcome must still apply when the
     // attempt's own token is cancelled but the generation is still current (e.g. a graceful
     // Detached racing TeardownAsync's early cts.Cancel()).
-    Task ApplyOutcomeStateAsync(int generation, TerminalSessionState state) =>
+    //
+    // Flushes the decoder here too, not just on every live frame: a terminal completion (Exited,
+    // ConnectionLost, a mapped Failed) can land with a multibyte code point still buffered inside
+    // the decoder's own carry-over state (Utf8StreamDecoder.Decode never flushes on its own), and
+    // nothing else in this VM ever calls Flush -- without it, that trailing partial sequence is
+    // silently dropped instead of rendering (typically as U+FFFD, same as any other genuinely
+    // truncated stream).
+    Task FinishAttemptAsync(int generation, ITerminalSurface surface, Utf8StreamDecoder decoder, TerminalSessionState state) =>
         Dispatcher.UIThread.InvokeAsync(() => {
             if (generation != _attemptGeneration) return;
+            var remainder = decoder.Flush();
+            if (remainder.Length > 0) surface.Feed(remainder);
             State = state;
         }, DispatcherPriority.Default, CancellationToken.None).GetTask();
 
@@ -313,10 +412,20 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     }
 
     /// Bounded teardown (Task 13's tracker calls this when the tab closes): generation bump so any
-    /// still-in-flight completion becomes silently retired, detach bounded to 1s, DisposeAsync
-    /// immediately after regardless of whether the detach write landed, then the REMAINDER of a
-    /// 3s total budget awaiting the run task. Either bound abandons rather than blocks: an
-    /// abandoned task's later fault is observed once (Console.Error) and never re-enters VM state.
+    /// still-in-flight completion becomes silently retired, then detach/dispose/the run task each
+    /// draw from a SINGLE 3s-total budget in turn (detach itself additionally capped at 1s) --
+    /// every step abandons rather than blocks once its share is exhausted: an abandoned task's
+    /// later fault is observed once (Console.Error) and never re-enters VM state. DisposeAsync
+    /// specifically MUST share this budget, not run unbounded inside it -- the real client's
+    /// DisposeAsync awaits its own pump to fully unwind, which is exactly the thing the budget
+    /// exists to bound.
+    ///
+    /// Deliberately never disposes `cts`: TryStartAttemptAsync may still be straddling this same
+    /// attempt (reading its hoisted token) when teardown lands, and a disposed
+    /// CancellationTokenSource throws ObjectDisposedException from BOTH re-reading .Token and
+    /// registering a callback on any token sourced from it, regardless of when that token was
+    /// captured -- cancelling it is enough; a small leaked CTS (no timer, no WaitHandle ever
+    /// touched) is the acceptable trade against a straddling attempt crashing the app.
     public async Task TeardownAsync() {
         if (Interlocked.Exchange(ref _resolveState, ResolveDisposed) == ResolveDisposed) return; // idempotent
 
@@ -336,27 +445,40 @@ public sealed class TerminalTabViewModel : ReactiveObject {
         cts?.Cancel();
 
         var start = _time.GetUtcNow();
+        TimeSpan Remaining() {
+            var left = TeardownBudget - (_time.GetUtcNow() - start);
+            return left < TimeSpan.Zero ? TimeSpan.Zero : left;
+        }
+
         if (client is not null) {
             var detach = client.DetachAsync();
             var detachWinner = await Task.WhenAny(detach, Task.Delay(DetachBound, _time)).ConfigureAwait(false);
             if (!ReferenceEquals(detachWinner, detach)) ObserveAbandoned(detach, "detach");
 
-            try { await client.DisposeAsync().ConfigureAwait(false); }
-            catch { /* contained -- teardown diagnostic only */ }
+            var dispose = client.DisposeAsync().AsTask();
+            var disposeWinner = await Task.WhenAny(dispose, Task.Delay(Remaining(), _time)).ConfigureAwait(false);
+            if (ReferenceEquals(disposeWinner, dispose)) {
+                // Completed within budget -- still observe (never re-throw) a fault the same way
+                // the old direct-await's containment did.
+                if (dispose.IsFaulted) _ = dispose.Exception;
+            } else {
+                ObserveAbandoned(dispose, "dispose");
+            }
         }
-        cts?.Dispose();
 
         if (runTask is not null) {
-            var elapsed = _time.GetUtcNow() - start;
-            var remaining = TeardownBudget - elapsed;
-            if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
-
-            var runWinner = await Task.WhenAny(runTask, Task.Delay(remaining, _time)).ConfigureAwait(false);
+            var runWinner = await Task.WhenAny(runTask, Task.Delay(Remaining(), _time)).ConfigureAwait(false);
             if (!ReferenceEquals(runWinner, runTask)) ObserveAbandoned(runTask, "run");
         }
         _runTask = null;
 
-        await Dispatcher.UIThread.InvokeAsync(() => { Surface = null; });
+        // Bounded, not fire-and-forget: a test proving the surface reference is released depends
+        // on this having actually landed by the time TeardownAsync returns, and an unbounded
+        // await here would defeat the whole point of a bounded teardown if the dispatcher were
+        // ever wedged. Not carved from the (possibly already-exhausted) 3s above -- this is a
+        // trivial property set, not something that should ever race the run/dispose budget.
+        var clear = Dispatcher.UIThread.InvokeAsync(() => { Surface = null; }).GetTask();
+        await Task.WhenAny(clear, Task.Delay(DetachBound, _time)).ConfigureAwait(false);
     }
 
     static void ObserveAbandoned(Task task, string label) =>
