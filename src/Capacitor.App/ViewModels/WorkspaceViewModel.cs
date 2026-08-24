@@ -65,8 +65,8 @@ public sealed class WorkspaceViewModel : ReactiveObject {
     public ReactiveCommand<Unit, Unit> OpenInWebCommand { get; }
     public ReactiveCommand<Unit, Unit> StopCommand { get; }
 
-    // Task 14 injects this once the window owns navigation between Home and a workspace; null
-    // (button hidden/disabled) until then, so THIS view never has to be re-touched to wire it.
+    // Null (button hidden/disabled) until the window wires navigation externally -- kept settable
+    // so this view never has to be re-touched to wire it.
     ReactiveCommand<Unit, Unit>? _backCommand;
     public ReactiveCommand<Unit, Unit>? BackCommand {
         get => _backCommand;
@@ -110,11 +110,11 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         _showsTerminalTab = presence.Select(p => p.Dto is not null && HostedHarnessCatalog.ShowsTerminal(p.Dto.HasTerminal, p.Dto.Vendor))
             .ToProperty(this, x => x.ShowsTerminalTab, initialValue: false)
             .DisposeWith(_disposables);
-        // TerminalTabViewModel.NoteFor is the one source for this wording (post-review rule: bare
-        // for a non-ACP family, " — runs over ACP" suffix only when the family is reliably known
-        // to be ACP, never a vendor name) -- reused verbatim rather than re-derived here. Blank
-        // whenever ShowsTerminalTab is true (or the dto isn't resolved yet): the note replaces the
-        // Terminal tab button in the tab strip, so it must never render alongside it.
+        // TerminalTabViewModel.NoteFor is the one source for this wording (bare for a non-ACP
+        // family, " — runs over ACP" suffix only when the family is reliably known to be ACP,
+        // never a vendor name) -- reused verbatim rather than re-derived here. Blank whenever
+        // ShowsTerminalTab is true (or the dto isn't resolved yet): the note replaces the Terminal
+        // tab button in the tab strip, so it must never render alongside it.
         _noTerminalNote = presence
             .Select(p => p.Dto is null || HostedHarnessCatalog.ShowsTerminal(p.Dto.HasTerminal, p.Dto.Vendor) ? "" : TerminalTabViewModel.NoteFor(p.Dto))
             .ToProperty(this, x => x.NoTerminalNote, "")

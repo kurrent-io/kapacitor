@@ -59,13 +59,20 @@ public sealed class AgentAttachClient : IAsyncDisposable {
     }
 
     async Task<AttachOutcome> RunCoreAsync(int cols, int rows, CancellationToken ct) {
+        // A ushort nudge must carry something sane rather than silently wrap -- ResizeAsync
+        // already validates its own inputs; RunAsync's caller-supplied initial size does not.
+        cols = Math.Clamp(cols, 1, ushort.MaxValue);
+        rows = Math.Clamp(rows, 1, ushort.MaxValue);
         _lifetime = new CancellationTokenSource();
         using var reg = ct.Register(() => { if (TryClaim(CancelledSentinel)) _lifetime.Cancel(); });
         try {
             _socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            await _socket.ConnectAsync(new UnixDomainSocketEndPoint(_socketPath), ct).ConfigureAwait(false);
+            // The internal token, not the caller's: DetachAsync's no-stream-yet path cancels
+            // _lifetime to abort an in-flight dial, and the ct.Register above already routes
+            // external cancellation through _lifetime too -- one token aborts the connect either way.
+            await _socket.ConnectAsync(new UnixDomainSocketEndPoint(_socketPath), _lifetime.Token).ConfigureAwait(false);
             _stream = new NetworkStream(_socket, ownsSocket: false);
-            await FrameCodec.WriteAsync(_stream, new LocalFrame(FrameType.Attach) { Text = _agentId }, ct).ConfigureAwait(false);
+            if (!await TryWriteAttachAsync().ConfigureAwait(false)) return Project();
 
             while (true) {
                 // The internal token, not the caller's: a caller cancellation and an
@@ -182,6 +189,20 @@ public sealed class AgentAttachClient : IAsyncDisposable {
         finally { _writeLock.Release(); }
     }
 
+    // The opening write: routed through _writeLock like every other outbound frame, so it can
+    // never interleave on the wire with a concurrently written Detach frame, and re-checked under
+    // that same lock so a detach intent recorded before this runs takes priority outright -- the
+    // daemon must never see an Attach the caller already detached from. False means the run
+    // settles as Detached without ever entering the read loop.
+    async Task<bool> TryWriteAttachAsync() {
+        await _writeLock.WaitAsync().ConfigureAwait(false);
+        try {
+            if (_detachRequested) { TryClaim(new AttachOutcome.Detached()); return false; }
+            await FrameCodec.WriteAsync(_stream!, new LocalFrame(FrameType.Attach) { Text = _agentId }, CancellationToken.None).ConfigureAwait(false);
+            return true;
+        } finally { _writeLock.Release(); }
+    }
+
     void CloseTransport() { try { _stream?.Dispose(); } catch { } try { _socket?.Dispose(); } catch { } }
 
     public async Task SendInputAsync(byte[] bytes) {
@@ -218,10 +239,13 @@ public sealed class AgentAttachClient : IAsyncDisposable {
     /// except when there is no stream, or the write fails — both mean the connection is
     /// already effectively gone locally, so that IS a local close. Idempotent. A terminal
     /// frame the pump reads after this still wins the race (Exited/Failed beat Detached).
+    /// No-stream-yet also cancels _lifetime, aborting a dial still in flight — belt-and-
+    /// suspenders with TryWriteAttachAsync's own re-check, which is what actually holds when
+    /// the dial wins that race anyway (a completed connect isn't undone by cancelling after).
     public async Task DetachAsync() {
         if (_detachRequested) return;
         _detachRequested = true;
-        if (_stream is null) { TryClaim(new AttachOutcome.Detached()); return; }
+        if (_stream is null) { TryClaim(new AttachOutcome.Detached()); _lifetime?.Cancel(); return; }
         try { await WriteLockedAsync(LocalFrame.Detach()).ConfigureAwait(false); }
         catch { TryClaim(new AttachOutcome.Detached()); CloseTransport(); }   // detach write failure = local close
     }

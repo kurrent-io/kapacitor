@@ -336,6 +336,66 @@ public class AgentAttachClientTests {
     }
 
     [Test]
+    public async Task Out_of_range_initial_size_is_clamped_not_dropped_from_the_opening_nudge() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        await using var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+
+        var run = client.RunAsync(70000, -5, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await server.SendExitedAsync(0);
+        await run;
+
+        await server.WaitForReceivedAsync(FrameType.Resize);
+        var resize = server.SnapshotReceived().Single(f => f.Type == FrameType.Resize);
+        await Assert.That(resize.Cols).IsEqualTo((ushort)65535);
+        await Assert.That(resize.Rows).IsEqualTo((ushort)1);
+    }
+
+    /// The dial itself never blocks a local Unix socket connect on every platform this suite
+    /// runs on -- it resolves (success or refusal) within microseconds. So "detach before the
+    /// server accepts" is forced by scheduling asymmetry, not by an OS-level pending connect:
+    /// RunAsync is queued onto the pool (a real dial + _writeLock acquisition, real work), while
+    /// DetachAsync fires immediately after on the calling thread (a flag write, no I/O) -- it
+    /// reliably records intent before TryWriteAttachAsync's under-lock re-check runs, whether or
+    /// not the dial itself ever gets cancelled. Repeated because it is still a genuine race, not
+    /// a guaranteed ordering; the vacuous-test guard below proves it actually lands.
+    [Test]
+    public async Task Detach_racing_the_dial_prevents_the_daemon_from_ever_seeing_an_attach() {
+        const int attempts = 20;
+        var sawNoAttach = false;
+        for (var attempt = 0; attempt < attempts; attempt++) {
+            var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+            var rec = new Recorder();
+            await using var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+
+            var runTask = Task.Run(() => client.RunAsync(80, 24, CancellationToken.None));
+            await client.DetachAsync();
+
+            var outcome = await runTask.WaitAsync(TimeSpan.FromSeconds(5));   // must settle promptly, never hang
+
+            // Best-effort: when the dial itself got aborted before completing, nothing ever
+            // reached the listener's backlog, so an unbounded Accept() would hang forever waiting
+            // for a connection that will never arrive -- bound it and treat a timeout as "no
+            // attach possible", which is exactly the outcome under test.
+            using var acceptCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+            try {
+                await server.AcceptAndPumpInboundAsync(acceptCts.Token);
+                await server.WaitForReceivedAsync(FrameType.Attach, acceptCts.Token);
+            } catch (OperationCanceledException) { }
+            var receivedAttach = server.SnapshotReceived().Any(f => f.Type == FrameType.Attach);
+
+            if (!receivedAttach) {
+                sawNoAttach = true;
+                await Assert.That(outcome).IsEqualTo(new AttachOutcome.Detached());
+            }
+        }
+
+        await Assert.That(sawNoAttach).IsTrue();   // otherwise this race never actually landed -- test would be vacuous
+    }
+
+    [Test]
     [Arguments(0, 24)]
     [Arguments(-1, 24)]
     [Arguments(80, 0)]

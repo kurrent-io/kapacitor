@@ -28,9 +28,9 @@ namespace Capacitor.App.ViewModels;
 ///   nothing (silent, not an error). _attachLane (SemaphoreSlim(1,1), TRY-entered via Wait(0) --
 ///   never awaited) single-flights the swap: two ReattachCommand.Execute() calls issued before the
 ///   first has reached its own await point collapse to exactly one new client, because
-///   ReactiveCommand.Execute() invokes its Func&lt;Task&gt; eagerly and unconditionally (verified
-///   against the installed ReactiveUI 23.2.28 IL -- Execute() does NOT consult CanExecute/
-///   IsExecuting), so a queueing WaitAsync() here would let a double-click spawn two real clients.
+///   ReactiveCommand.Execute() invokes its Func&lt;Task&gt; eagerly, without consulting
+///   CanExecute/IsExecuting, so a queueing WaitAsync() here would let a double-click spawn two
+///   real clients.
 ///   A call that loses the try-enter is a clean no-op, not a queued retry.
 ///
 /// UI affinity: the resolve gate mutates State after ObserveOn(RxSchedulers.MainThreadScheduler)
