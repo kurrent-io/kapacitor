@@ -189,9 +189,13 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
   normal mechanics of every Dispose, not diagnostics — they never reach the
   sink. The sink has its own contract: invoked **outside all state/write
   locks**, serialized by the client (callers may pass a non-thread-safe sink),
-  and wrapped — a throwing sink is swallowed and can never alter the winning
-  cause, escape a client method, or wedge `RunAsync`/outbound calls/teardown
-  past their bounds. App wiring is concrete: these diagnostics go to
+  and wrapped — a throwing sink is swallowed and never alters the winning
+  cause or escapes a client method. The guarantee is deliberately narrowed to
+  **exception containment**: the delegate runs inline, so being fast and
+  non-blocking is a **caller obligation**, documented on the parameter — an
+  arbitrary blocking sink stalls its producer, and no queue machinery hides
+  that here, because the only real consumer is a `Console.Error` write, which
+  satisfies the obligation trivially. App wiring is concrete: these diagnostics go to
   **`Console.Error` only** (the app's existing teardown-diagnostic convention;
   it has no logging module) — deliberately never `AppNotifier` toasts, which
   would surface internal race noise as user notifications. Tests assert
