@@ -12,6 +12,7 @@ Subcommands:
   logs                    Show recent daemon log output
   doctor [--clean]        Diagnose lock-file state, optionally clean stale entries
   service <action>        Manage the OS service (launchd/systemd/Scheduled Task)
+  shim <action>           Manage the command-line tool (kcap on your terminal PATH)
   consent <verb>          Manage the launch-consent policy (see "Consent" below)
 
 Options for start:
@@ -80,6 +81,21 @@ Subcommands for service (per-user; auto-restarts on crash/SIGKILL, starts at log
                           binary paths, transaction-marker state) and exits
                           non-zero if the underlying service state can't be
                           determined.
+
+Subcommands for shim (the command-line tool — kcap on your terminal PATH):
+  ensure [--json]         Probe the login shell. If kcap already resolves
+                          from the terminal, report already_on_path and exit
+                          0. If it is absent, link /usr/local/bin/kcap to this
+                          CLI (macOS only; prompts once for your admin
+                          password, then re-probes so success is never
+                          reported on the symlink alone). Every ambiguous row
+                          fails closed with a coded reason: an unknown probe
+                          (probe_unknown), a different filesystem entry at the
+                          destination (conflict), or an unsupported platform
+                          (unsupported_platform) — nothing is ever guessed or
+                          overwritten. --json emits the outcome + coded reason
+                          the flow keys off (e.g. installed, refused).
+                          Exit 0 only when the terminal now resolves kcap.
 
 Consent:
   Every SERVER-driven launch (a coding agent, PR review, or review-flow

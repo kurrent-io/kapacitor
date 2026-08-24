@@ -744,6 +744,17 @@ kcap daemon service start --verify         # start, then verify readiness/owners
 kcap daemon service uninstall              # stop and remove the service
 ```
 
+#### The command-line tool (`kcap` on your terminal PATH)
+
+If your login shell cannot find `kcap` — hooks then run and record nothing, silently — the Agents screen offers to fix it for you. The fix is a CLI verb, driven by name from the flow (the server→CLI lane carries values, never paths or commands):
+
+```bash
+kcap daemon shim ensure                    # probe; link /usr/local/bin/kcap to this CLI if absent
+kcap daemon shim ensure --json             # machine-readable outcome for the flow
+```
+
+`ensure` probes the *interactive login* shell (`$SHELL -lic`, falling back to `-lc`; `/bin/zsh` when `$SHELL` is unset) and acts on a positive finding only: kcap already resolving → `already_on_path`, exit 0. Positively absent → link `/usr/local/bin/kcap` to this CLI (macOS only; prompts once for your admin password, non-forcing symlink, then **re-probes** so success is never reported on the symlink alone). An unknown probe (`probe_unknown`), a different filesystem entry already at the destination (`conflict` — never overwritten), or a non-macOS platform (`unsupported_platform`, where the osascript-based install does not exist) all fail closed with the coded reason, exit non-zero, and mutate nothing. `--json` emits the outcome plus coded reason (and the actionable `detail`/`sudo_fallback` on `installed_not_on_path`/`failed`); the flow's copy keys off `outcome`, not the exit code. Exit 0 only when the terminal now resolves `kcap`.
+
 `install` pins the active profile via `KCAP_PROFILE` and captures your current `PATH` into the unit, so the supervised daemon resolves the same server URL, `claude`/`codex` binaries, and profile settings it would from your shell. Pass `--profile P` to pin a different profile, `--max-agents N` to bake an override, or `--no-start` to register without starting (`--no-start` cannot be combined with `--verify`, whose whole job is to prove the *started* daemon is ready). The service restarts the daemon on crash/`SIGKILL` but **not** on a clean stop. `stop` unloads it from the OS supervisor (launchd `bootout` / equivalent; the unit file is retained) rather than merely signaling the process.
 
 `status --json` prints a machine-readable snapshot (service/job/daemon pids, binary paths, and transaction-marker state) instead of the human summary, and exits non-zero if the underlying service state can't be determined — for scripts that need to decide whether to attach, start, or repair a service without parsing human-readable text.
