@@ -24,6 +24,7 @@ public sealed class AgentAttachClient : IAsyncDisposable {
     CancellationTokenSource? _lifetime;
     volatile bool _detachRequested;       // intent, never a cause
     volatile bool _attachedAny;           // true after either Attached reply
+    volatile bool _attachedReadWrite;     // true only after a read-write Attached (not AttachedReadOnly)
     int _disposed;                        // guards DisposeAsync re-entrancy
     Task<AttachOutcome>? _run;
 
@@ -79,6 +80,7 @@ public sealed class AgentAttachClient : IAsyncDisposable {
                     case FrameType.Attached: {
                         var (_, snapshot) = FrameCodec.Attached(frame);
                         _attachedAny = true;
+                        _attachedReadWrite = true;
                         if (!await InvokeCallbackAsync(() => _onAttached(snapshot, null, _lifetime.Token))) goto done;
                         await WriteLockedAsync(SizeFrame(cols, rows)).ConfigureAwait(false);  // repaint nudge
                         break;
@@ -86,6 +88,7 @@ public sealed class AgentAttachClient : IAsyncDisposable {
                     case FrameType.AttachedReadOnly: {
                         var (_, reason, snapshot) = FrameCodec.AttachedReadOnly(frame);
                         _attachedAny = true;
+                        _attachedReadWrite = false;
                         if (!await InvokeCallbackAsync(() => _onAttached(snapshot, reason, _lifetime.Token))) goto done;
                         break;                                            // no nudge: never influence the clamp
                     }
@@ -158,10 +161,32 @@ public sealed class AgentAttachClient : IAsyncDisposable {
 
     void CloseTransport() { try { _stream?.Dispose(); } catch { } try { _socket?.Dispose(); } catch { } }
 
-    // Task 6 implements these fully; Task 4 ships minimal versions that keep
-    // the signatures compiling.
-    public Task SendInputAsync(byte[] bytes) => throw new NotImplementedException("Task 6");
-    public Task ResizeAsync(int cols, int rows) => throw new NotImplementedException("Task 6");
+    public async Task SendInputAsync(byte[] bytes) {
+        if (!_attachedReadWrite || _detachRequested || _cause is not null) return;
+        await WriteOutboundAsync(LocalFrame.Stdin(bytes)).ConfigureAwait(false);
+    }
+
+    public async Task ResizeAsync(int cols, int rows) {
+        if (!_attachedReadWrite || _detachRequested || _cause is not null) return;
+        if (cols is < 1 or > ushort.MaxValue || rows is < 1 or > ushort.MaxValue) return;
+        await WriteOutboundAsync(SizeFrame(cols, rows)).ConfigureAwait(false);
+    }
+
+    // Outbound writers claim the slot themselves on transport failure — the read
+    // side may be blocked; closing the socket completes it and the pump projects.
+    async Task WriteOutboundAsync(LocalFrame frame) {
+        try {
+            await _writeLock.WaitAsync().ConfigureAwait(false);
+            try {
+                if (_detachRequested || _cause is not null) return;   // re-check under the lock: nothing behind a queued detach
+                await FrameCodec.WriteAsync(_stream!, frame, CancellationToken.None).ConfigureAwait(false);
+            } finally { _writeLock.Release(); }
+        } catch (Exception ex) {
+            if (TryClaim(new AttachOutcome.ConnectionLost())) Report("outbound write", ex);
+            else if (_cause is AttachOutcome.Detached || ReferenceEquals(_cause, CancelledSentinel)) Report("outbound write", ex);
+            CloseTransport();
+        }
+    }
 
     /// Records intent and sends the Detach frame; never itself claims the cause slot
     /// except when there is no stream, or the write fails — both mean the connection is

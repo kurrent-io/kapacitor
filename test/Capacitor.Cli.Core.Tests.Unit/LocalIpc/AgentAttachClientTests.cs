@@ -252,4 +252,103 @@ public class AgentAttachClientTests {
         await client.DisposeAsync();                    // dispose after a completed run: must not throw
         await client.DisposeAsync();                    // second dispose: must not throw
     }
+
+    [Test]
+    public async Task Input_and_resize_before_attached_are_dropped() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        await using var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.FirstFrame.Task;
+
+        await client.SendInputAsync([1]);
+        await client.ResizeAsync(100, 30);
+        await server.SendAttachedAsync(AgentId, []);
+        await server.SendExitedAsync(0);
+        await run;
+
+        await Assert.That(server.Received.Count(f => f.Type == FrameType.Stdin)).IsEqualTo(0);
+        // the only Resize is the post-attach nudge at the run's initial size:
+        await Assert.That(server.Received.Count(f => f.Type == FrameType.Resize)).IsEqualTo(1);
+        await Assert.That(server.Received.Single(f => f.Type == FrameType.Resize).Cols).IsEqualTo((ushort)80);
+    }
+
+    [Test]
+    public async Task Explicit_input_and_resize_after_read_only_attach_are_dropped() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        await using var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedReadOnlyAsync(AgentId, "review", []);
+        await Task.Delay(50);
+
+        await client.SendInputAsync([1]);
+        await client.ResizeAsync(100, 30);
+        await server.SendExitedAsync(0);
+        await run;
+
+        await Assert.That(server.Received.Any(f => f.Type is FrameType.Stdin or FrameType.Resize)).IsFalse();
+    }
+
+    [Test]
+    public async Task No_input_is_written_behind_a_queued_detach() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        await using var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await Task.Delay(50);
+
+        await client.DetachAsync();
+        await server.WaitForReceivedAsync(FrameType.Detach);   // deterministic: pump has drained it
+        await client.SendInputAsync([9]);
+        server.CloseConnection();
+        await run;
+
+        var detachIndex = server.Received.FindIndex(f => f.Type == FrameType.Detach);
+        await Assert.That(detachIndex).IsGreaterThanOrEqualTo(0);
+        await Assert.That(server.Received.Skip(detachIndex + 1).Any(f => f.Type == FrameType.Stdin)).IsFalse();
+    }
+
+    [Test]
+    [Arguments(0, 24)]
+    [Arguments(-1, 24)]
+    [Arguments(80, 0)]
+    [Arguments(70000, 24)]
+    public async Task Invalid_dimensions_are_rejected_locally(int cols, int rows) {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        await using var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await Task.Delay(50);
+        var before = server.Received.Count(f => f.Type == FrameType.Resize);
+
+        await client.ResizeAsync(cols, rows);
+        await server.SendExitedAsync(0);
+        await run;
+
+        await Assert.That(server.Received.Count(f => f.Type == FrameType.Resize)).IsEqualTo(before);
+    }
+
+    /// Read side held open: the write failure alone must settle the run.
+    [Test]
+    public async Task Input_write_failure_settles_connection_lost_without_rethrow_or_hung_pump() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var rec = new Recorder();
+        await using var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await Task.Delay(50);
+
+        server.CloseConnection();                                  // break the transport under the writer
+        await client.SendInputAsync([1, 2, 3]);                    // must not throw
+
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.ConnectionLost());
+    }
 }
