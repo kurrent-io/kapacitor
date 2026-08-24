@@ -291,4 +291,58 @@ public class TerminalTranscriptTests {
     static IEnumerable<byte[]> Chunk(byte[] data, int size) {
         for (var i = 0; i < data.Length; i += size) yield return data[i..Math.Min(i + size, data.Length)];
     }
+
+    // ── Task 11: XtermTerminalSurface wiring ─────────────────────────────────────────────────
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_device_status_query_produces_a_terminal_reply_through_InputProduced() {
+        // The engine answers a DSR (Device Status Report / cursor-position query) on its own,
+        // via Terminal.Engine.DataReceived -- reachable only through XtermTerminalSurface
+        // subscribing on the raw engine object (Task 8 discovery), not the wrapper or model.
+        var replyContainsCursorPositionReport = await AvaloniaSession.DispatchAsync(() => {
+            var surface = new XtermTerminalSurface(cols: 80, rows: 24);
+            var replies = new List<byte[]>();
+            surface.InputProduced += replies.Add;
+
+            surface.Feed("\x1b[6n"); // DSR: report cursor position
+
+            return replies.Any(r => System.Text.Encoding.ASCII.GetString(r).Contains(";1R"));
+        });
+
+        await Assert.That(replyContainsCursorPositionReport).IsTrue();
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Programmatic_input_on_the_model_raises_InputProduced() {
+        // TerminalControlModel has no headless-testable keyboard event of its own (TerminalControl,
+        // the Avalonia visual that turns real keypresses into Send(...) calls via
+        // GenerateKeyInput/GenerateCharInput, is explicitly excluded from headless tests per Task 8
+        // discovery). Model.Send(...) is the same UserInput event a real keypress handler raises,
+        // so it's the correct headless-testable proxy for "keyboard input reaches InputProduced".
+        var sawTypedByte = await AvaloniaSession.DispatchAsync(() => {
+            var surface = new XtermTerminalSurface(cols: 80, rows: 24);
+            var replies = new List<byte[]>();
+            surface.InputProduced += replies.Add;
+
+            surface.Model.Send("a");
+
+            return replies.Any(r => System.Text.Encoding.UTF8.GetString(r) == "a");
+        });
+
+        await Assert.That(sawTypedByte).IsTrue();
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Feed_renders_text_into_the_model() {
+        var line0 = await AvaloniaSession.DispatchAsync(() => {
+            var surface = new XtermTerminalSurface(cols: 80, rows: 24);
+            surface.Feed("hello");
+            return surface.Model.Terminal.Engine.GetLine(0);
+        });
+
+        await Assert.That(line0).IsEqualTo("hello");
+    }
 }
