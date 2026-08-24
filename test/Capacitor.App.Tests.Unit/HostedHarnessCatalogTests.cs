@@ -53,6 +53,15 @@ public class HostedHarnessCatalogTests {
     }
 
     [Test]
+    public async Task LabelFor_resolves_a_vendor_token_case_insensitively_and_falls_back_to_the_token() {
+        var options = HostedHarnessCatalog.Build(null);
+
+        await Assert.That(HostedHarnessCatalog.LabelFor(options, "CLAUDE"))
+            .IsEqualTo(options.Single(o => o.Vendor == "claude").Label);
+        await Assert.That(HostedHarnessCatalog.LabelFor(options, "neverheardof")).IsEqualTo("neverheardof");
+    }
+
+    [Test]
     public async Task Description_names_the_transport_and_the_surface() {
         var pty = HostedHarnessCatalog.Build(null).Single(o => o.Vendor == "claude");
         var acp = HostedHarnessCatalog.Build(null).Single(o => o.Vendor == "gemini");

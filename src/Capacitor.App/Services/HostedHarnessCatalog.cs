@@ -53,6 +53,12 @@ public static class HostedHarnessCatalog {
         return options;
     }
 
+    /// Display label for a vendor token: the option's Label when the list carries one, the raw
+    /// token otherwise (before the first daemon snapshot, or a token this build has never heard
+    /// of). Shared by the harness chip and the repository menu's remembered-harness pill.
+    public static string LabelFor(IReadOnlyList<HarnessOption> options, string vendor) =>
+        options.FirstOrDefault(o => string.Equals(o.Vendor, vendor, StringComparison.OrdinalIgnoreCase))?.Label ?? vendor;
+
     public static string DescriptionFor(HarnessOption option) => option.TransportFamily switch {
         "pty" => "PTY · terminal + chat",
         "acp" => "ACP · chat",

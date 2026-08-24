@@ -1,7 +1,9 @@
 using System.Globalization;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Data.Converters;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
@@ -16,11 +18,66 @@ public partial class HomeView : UserControl {
 
     void OnNewSessionClick(object? sender, RoutedEventArgs e) => GoalInput.Focus();
 
-    // Repository picker: this slice has no repository registry, so
-    // the only affordance is "add one" via a native folder picker — SelectRepositoryAsync persists
-    // the choice through AppState.HarnessByRepo like any other repository.
+    // Repository picker: one flyout item per ListRepositoriesAsync entry — leaf name over full
+    // path, remembered-harness pill on the right, per the settled design. The scratch entry and
+    // the folder-picker affordance sit last, each behind a separator.
     async void OnRepositoryChipClick(object? sender, RoutedEventArgs e) {
-        if (DataContext is not HomeViewModel vm) return;
+        if (DataContext is not HomeViewModel vm || sender is not Control anchor) return;
+
+        var flyout = new MenuFlyout();
+        foreach (var option in await vm.ListRepositoriesAsync()) {
+            if (option.RepoPath.Length == 0) flyout.Items.Add(new Separator());
+            flyout.Items.Add(RepositoryItem(vm, option));
+        }
+        flyout.Items.Add(new Separator());
+
+        var add = new MenuItem { Header = "Add repository…" };
+        add.Click += async (_, _) => await AddRepositoryAsync(vm);
+        flyout.Items.Add(add);
+
+        flyout.ShowAt(anchor);
+    }
+
+    MenuItem RepositoryItem(HomeViewModel vm, RepositoryOption option) {
+        var isScratch = option.RepoPath.Length == 0;
+        var muted = (IBrush)this.FindResource("KcapMutedBrush")!;
+
+        var left = new StackPanel { Spacing = 2, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
+        left.Children.Add(new TextBlock {
+            Text = isScratch ? "No repository" : RepoLabel.Leaf(option.RepoPath),
+            FontWeight = Avalonia.Media.FontWeight.SemiBold,
+        });
+        if (!isScratch)
+            left.Children.Add(new TextBlock { Text = option.RepoPath, FontSize = 10.5, Foreground = muted });
+
+        var pill = new Border {
+            Background = (IBrush)this.FindResource("KcapSurfaceRaisedBrush")!,
+            CornerRadius = new CornerRadius(999), Padding = new Thickness(7, 2),
+            Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+            Child = new TextBlock {
+                Text = HostedHarnessCatalog.LabelFor(vm.Harnesses, option.Vendor),
+                FontSize = 10, Foreground = muted,
+            },
+        };
+
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), MinWidth = 260 };
+        header.Children.Add(left);
+        Grid.SetColumn(pill, 1);
+        header.Children.Add(pill);
+
+        var item = new MenuItem {
+            Header = header,
+            ToggleType = MenuItemToggleType.Radio,
+            IsChecked = option.Selected,
+        };
+        var path = option.RepoPath;
+        item.Click += async (_, _) => await vm.SelectRepositoryAsync(path);
+        return item;
+    }
+
+    // "Add one" via a native folder picker — SelectRepositoryAsync then treats the choice like
+    // any other repository, so it shows up in the menu from the next open on.
+    async Task AddRepositoryAsync(HomeViewModel vm) {
         if (TopLevel.GetTopLevel(this)?.StorageProvider is not { } storage) return;
 
         var folders = await storage.OpenFolderPickerAsync(new FolderPickerOpenOptions {
@@ -65,18 +122,15 @@ public sealed class RepositoryLabelConverter : IValueConverter {
         throw new NotSupportedException();
 }
 
-/// HarnessChip's label: SelectedVendor's own HarnessOption.Label when the current Harnesses list
-/// carries one, falling back to the raw vendor token otherwise (e.g. before the first daemon
-/// snapshot narrows the list, or a vendor token this build has never heard of).
+/// HarnessChip's label: SelectedVendor resolved through HostedHarnessCatalog.LabelFor (see its
+/// fallback rules).
 public sealed class HarnessChipTextConverter : IMultiValueConverter {
     public static readonly HarnessChipTextConverter Instance = new();
 
-    public object? Convert(IList<object?> values, Type targetType, object? parameter, CultureInfo culture) {
-        if (values is not [IReadOnlyList<HarnessOption> options, string vendor]) return "";
-
-        var match = options.FirstOrDefault(o => string.Equals(o.Vendor, vendor, StringComparison.OrdinalIgnoreCase));
-        return match?.Label ?? vendor;
-    }
+    public object? Convert(IList<object?> values, Type targetType, object? parameter, CultureInfo culture) =>
+        values is [IReadOnlyList<HarnessOption> options, string vendor]
+            ? HostedHarnessCatalog.LabelFor(options, vendor)
+            : "";
 }
 
 /// Single-purpose converter, not a general int-to-bool one — mirrors Views/Converters.cs's
