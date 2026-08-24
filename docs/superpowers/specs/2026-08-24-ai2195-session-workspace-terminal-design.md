@@ -88,13 +88,17 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
   (uninitiated EOF) — observable identically by a Core caller and the VM.
   Caller cancellation surfaces as the standard `OperationCanceledException`.
   Streaming events are two **awaited async callbacks** only —
-  `OnAttachedAsync(snapshot, readOnlyReason)` and `OnOutputAsync(bytes)` — the
-  pump awaits each before reading the next frame, so delivery is serial and
-  ordered (snapshot strictly before any output), and the daemon's slow-client
-  overflow protection stays meaningful: a slow UI backs the socket up rather
-  than ballooning an unbounded dispatcher queue. A callback exception faults the
-  run (surfaces out of `RunAsync`). With termination folded into the result,
-  "no events after termination" is structural, not a rule to police.
+  `OnAttachedAsync(snapshot, readOnlyReason, ct)` and `OnOutputAsync(bytes, ct)`
+  — the pump awaits each before reading the next frame, so delivery is serial
+  and ordered (snapshot strictly before any output), and the daemon's
+  slow-client overflow protection stays meaningful: a slow UI backs the socket
+  up rather than ballooning an unbounded dispatcher queue. **Callbacks receive
+  the run's cancellation token**, which disposal/retirement cancels — the app's
+  UI-thread dispatch awaits honor it — so a stuck callback releases rather than
+  retaining the disposed VM/model (see teardown). A callback exception faults
+  the run *when it claims the cause slot* (below). With termination folded into
+  the result, "no events after termination" is structural, not a rule to
+  police.
 - Outbound methods: `SendInputAsync(bytes)`, `ResizeAsync(cols, rows)`,
   `DetachAsync()`. All writes serialize behind one lock (input and resize share
   the stream — same reason the CLI holds a write semaphore), and **the client —
@@ -107,7 +111,7 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
 - After a read-write `Attached`, the client sends one `Resize` at the initial
   size to nudge a clean repaint (CLI parity). After `AttachedReadOnly` it sends
   nothing: a read-only viewer must not influence the PTY clamp.
-- Termination semantics, linearized in one place (the pump): `DetachAsync`
+- Termination semantics, linearized through the cause slot below: `DetachAsync`
   records detach intent and sends the frame — it does not itself produce the
   outcome. The daemon sends no detach acknowledgement; it just closes the
   connection, and it can still emit `Exited` after receiving a `Detach` when the
@@ -158,18 +162,33 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
 
   Compare-exchange guarantees exactly one winner; actual event ordering
   determines *which* cause wins — the slot removes double-results, not
-  nondeterminism. The app retires an attempt by cancelling *and* disposing;
-  whichever claims first decides. `DisposeAsync` never rethrows the retired
-  run's cancellation (or any expected-teardown exception).
-- **Outbound write failures route to the pump, which stays the single
-  linearization point.** `SendInputAsync`/`ResizeAsync`/`DetachAsync` write from
-  caller tasks while the pump can be blocked in a read (the CLI being ported
-  has the same shape). A transport failure in an input/resize write atomically
-  terminalizes the client and closes the socket, so the blocked read completes
-  and `RunAsync` settles `ConnectionLost`; the initiating outbound call
-  **completes without rethrowing** — the failure is the run's to report, so
-  there is never a second result or a hung pump. A `Detach` write failure with
-  intent recorded resolves the same way every local close does: `Detached`.
+  nondeterminism. **The slot is the linearization point** — the pump and the
+  outbound writers are all just producers, and the pump projects/completes the
+  winning cause into `RunAsync`'s result (earlier "linearized in the pump"
+  phrasing is superseded by this rule). The app retires an attempt by
+  cancelling *and* disposing; whichever claims first decides. `DisposeAsync`
+  never rethrows the retired run's cancellation (or any expected-teardown
+  exception).
+- **Losers are observed exactly once and never become a second result:**
+  - *callback fault vs `DisposeAsync`* — Dispose claims first: the callback
+    exception is consumed and logged once, `RunAsync` settles `Detached`,
+    `DisposeAsync` completes normally, no UI mutation. Callback fault claims
+    first: `RunAsync` faults with it; `DisposeAsync` still awaits the pump and
+    **does not rethrow the already-reported fault** — it completes normally.
+  - *input-write failure vs detach intent* — whichever cause claims first
+    decides the `AttachOutcome` (`ConnectionLost` for the write failure,
+    `Detached` for the intent-pending close); the initiating outbound call
+    completes without rethrow in both orderings, and the losing exception is
+    logged once.
+- **Outbound write failures claim the cause slot like any other producer.**
+  `SendInputAsync`/`ResizeAsync`/`DetachAsync` write from caller tasks while
+  the pump can be blocked in a read (the CLI being ported has the same shape).
+  A transport failure in an input/resize write claims `ConnectionLost` and
+  closes the socket, so the blocked read completes and the pump projects the
+  winner into `RunAsync`; the initiating outbound call **completes without
+  rethrowing** — the failure is the run's to report, so there is never a second
+  result or a hung pump. A `Detach` write failure with intent recorded resolves
+  the same way every local close does: `Detached`.
 - Disposal: the client is **`IAsyncDisposable`**. `DisposeAsync` records detach
   intent, closes the socket, and awaits the pump's completion — so "dispose"
   anywhere in this spec means an awaited async teardown, never a synchronous
@@ -310,6 +329,11 @@ state after its replacement begins.
   independent background pumps).
 - `Exited(code)` renders an exited banner in place; `Error` (including overflow
   force-detach) renders the daemon's message with a reattach affordance.
+- **An explicit Detach stays in place**: the `Detached` state renders an
+  in-place detached banner with a single-flight Reattach affordance — it does
+  not navigate Back. The socket is closed, the agent is never stopped, input is
+  gone until reattach; pinned in the VM tests and the smoke test alongside the
+  other terminal presentations.
 
 ### Workspace ownership (one owner, every path)
 
@@ -334,8 +358,14 @@ wait for graceful detach frames and pump observation, not whether the clamp
 releases. **A timed-out pump is abandoned by the await, never left
 unobserved**: the wrapper attaches a continuation that consumes and logs its
 eventual completion or fault (the callback/rendering fault is a real
-possibility) without re-entering VM state — so a late fault cannot go
-unobserved, and cannot retain the disposed VM/model past its logging. All three
+possibility) without re-entering VM state. A continuation alone cannot free a
+pump stuck *inside* an awaited callback, which is why the callbacks carry the
+run's cancellation token (§2): disposal/retirement cancels the token, the
+app's UI-dispatch awaits honor it, and the stuck callback completes — so the
+disposed VM/model is released rather than retained. The residual acceptance:
+a callback stuck in **synchronous** third-party code (inside the terminal
+engine's feed itself) cannot be cancelled cooperatively and is retained until
+it returns — documented, socket/clamp already released either way. All three
 durations flow through an injected `TimeProvider` so the
 never-completing-write tests are deterministic, not real-time. The tracker
 isolates per-teardown exceptions: one failed teardown logs and completes,
@@ -422,10 +452,13 @@ TDD throughout (red-green per test):
   rethrow, the pump settles `ConnectionLost` (or `Detached` for a failed
   Detach write), exactly one result, no hung pump; `DisposeAsync` closing a
   blocked read settles `Detached` and rethrows nothing; **cause-slot
-  cross-races** — an input-write failure racing `DetachAsync`, and a callback
-  fault racing `DisposeAsync`, each produce exactly one recorded cause; calls
-  made before the run and after termination; a throwing callback faults the
-  run after the client turns terminal (subsequent writes rejected).
+  cross-races with loser behavior pinned** — an input-write failure racing
+  `DetachAsync`, and a callback fault racing `DisposeAsync`, each asserted in
+  BOTH orderings: the actual `AttachOutcome`/fault, the outbound call and
+  `DisposeAsync` completing without rethrow of the losing exception, and the
+  loser logged exactly once, never a second result; calls made before the run
+  and after termination; a throwing callback faults the run after the client
+  turns terminal (subsequent writes rejected).
 - **Wire**: `StatusIpcJsonTests` — old JSON without `has_terminal` → `null`;
   `true`/`false`/`null` all serialize with the member present; `false` never
   omitted.
@@ -462,7 +495,11 @@ TDD throughout (red-green per test):
   before service disposal; a **never-completing Detach write on intercepted
   close** — the socket is force-closed within the teardown bound under a test
   `TimeProvider`; a **pump faulting after the 3-second teardown budget** — the
-  fault is observed and logged exactly once with no late UI mutation; an
+  fault is observed and logged exactly once with no late UI mutation; a
+  **never-completing awaited callback on teardown** (distinct from the
+  late-fault case) — run-token cancellation completes it and the VM/model is
+  released; an **explicit Detach** — in-place detached banner, single-flight
+  Reattach, socket closed, agent untouched; an
   **explicit `OpenSession` after the first shutdown pass/seal** and a **window
   constructed after shutdown began** — neither creates a client or socket; a
   **scheduler assertion** driving retry/reattach completion from a background
