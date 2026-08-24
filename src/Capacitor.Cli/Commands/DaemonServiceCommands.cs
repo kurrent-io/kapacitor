@@ -323,8 +323,7 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
         // unit baked without one can never be gated-started — installing it bakes a dead end. Fail
         // closed with a coded reason rather than letting the install report success. (A URL-only
         // unit is only coherent off-macOS, where there is no gate; there the plain arms stand.)
-        if (manager is LaunchdServiceManager && string.IsNullOrEmpty(profileName)
-            && decision.Action is EnsureAction.Install or EnsureAction.Start) {
+        if (LaunchdProfileRefusal(manager is LaunchdServiceManager, profileName, decision.Action)) {
             var refusedAction = decision.Action == EnsureAction.Install ? "install" : "start";
             return await Report(new ServiceEnsureJson(id, state, refusedAction, "refused", null, "no_profile_configured"), 1, json);
         }
@@ -439,6 +438,14 @@ sealed class DaemonServiceCommands(DaemonStore store, IServiceManager manager, s
         if (exit != 0) return await EnsureFailure(exit, gateReason, state, "install", json, viabilityReason, bootRefusalToken);
         return await Report(new ServiceEnsureJson(id, state, "install", "installed", Verified: manager is LaunchdServiceManager), 0, json);
     }
+
+    /// <summary>Pure: whether a launchd ensure run must refuse for want of a profile name. The start
+    /// gate's identity half demands a non-empty invoking <c>KCAP_PROFILE</c>, so a unit baked without
+    /// one can never be gated-started — installing it would bake a dead end. Only launchd gates at
+    /// all, so URL-only installs stay coherent off-macOS (no gate); the predicate takes
+    /// <c>isLaunchd</c> rather than the manager so it is testable without a real launchd manager.</summary>
+    internal static bool LaunchdProfileRefusal(bool isLaunchd, string? profileName, EnsureAction action) =>
+        isLaunchd && string.IsNullOrEmpty(profileName) && action is EnsureAction.Install or EnsureAction.Start;
 
     /// <summary>Pure: the unit env for an ensure install — the ambient capture, overlaid with the
     /// born-<c>prompt</c> directive and the expected-server pin, so both are deliberate unit content
