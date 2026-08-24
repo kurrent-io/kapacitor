@@ -146,6 +146,75 @@ public class FirstRunFlowClientTests {
     }
 
     [Test]
+    public async Task CreateAsync_reads_a_retry_after_sent_as_an_http_date() {
+        // Not what this tenant sends, but a proxy in front of it may rewrite the header, and reading
+        // only the delta form would report that as no Retry-After at all. Kestrel stamps the response
+        // Date header itself, so the date is pinned to now rather than scripted.
+        var retryAt = DateTimeOffset.UtcNow.AddMinutes(10);
+
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(CreatePath).UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(429)
+                .WithHeader("Retry-After", retryAt.ToString("r")));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http)
+            .CreateAsync(server.Urls[0], FlowId, null, CancellationToken.None);
+
+        await Assert.That(outcome.RetryAfter).IsNotNull();
+        await Assert.That(outcome.RetryAfter!.Value).IsGreaterThanOrEqualTo(TimeSpan.FromMinutes(9.5));
+        await Assert.That(outcome.RetryAfter!.Value).IsLessThanOrEqualTo(TimeSpan.FromMinutes(10.5));
+    }
+
+    [Test]
+    public async Task CreateAsync_floors_a_retry_after_date_already_in_the_past_at_zero() {
+        var retryAt = DateTimeOffset.UtcNow.AddMinutes(-10);
+
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(CreatePath).UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(429)
+                .WithHeader("Retry-After", retryAt.ToString("r")));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http)
+            .CreateAsync(server.Urls[0], FlowId, null, CancellationToken.None);
+
+        await Assert.That(outcome.RetryAfter).IsEqualTo(TimeSpan.Zero);
+    }
+
+    // A caller's cancel reported as status 0 reads as a transport failure, and the poll loop would
+    // keep going to its 30-minute budget rather than stopping on Ctrl-C or a host shutdown.
+    [Test]
+    public async Task PollAsync_does_not_swallow_the_callers_cancellation() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(PollPath).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithDelay(TimeSpan.FromSeconds(30)));
+
+        using var http = new HttpClient();
+        using var cts  = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        await Assert.That(async () => await new FirstRunFlowClient(http).PollAsync(server.Urls[0], FlowId, cts.Token))
+                    .Throws<OperationCanceledException>();
+    }
+
+    // The same exception type, from HttpClient's own timeout with the token unsignalled. That one IS
+    // a blip, and the loop's next tick is the right answer to it.
+    [Test]
+    public async Task PollAsync_still_degrades_its_own_timeout_to_status_0() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(PollPath).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithDelay(TimeSpan.FromSeconds(5)));
+
+        using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(200) };
+
+        var outcome = await new FirstRunFlowClient(http).PollAsync(server.Urls[0], FlowId, CancellationToken.None);
+
+        await Assert.That(outcome.StatusCode).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Degrades_to_status_0_when_the_server_is_unreachable() {
         using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(250) };
 

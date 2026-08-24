@@ -49,11 +49,10 @@ public sealed class FirstRunFlowClient(HttpClient http) : IFirstRunFlowChannel {
 
             using var resp = await http.SendAsync(req, ct);
 
-            if (!resp.IsSuccessStatusCode)
-                return new((int)resp.StatusCode, null, resp.Headers.RetryAfter?.Delta);
+            if (!resp.IsSuccessStatusCode) return new((int)resp.StatusCode, null, RetryAfter(resp));
 
             return new((int)resp.StatusCode, await ReadAsync(resp, ct));
-        } catch (Exception e) when (IsTransient(e)) {
+        } catch (Exception e) when (IsTransient(e, ct)) {
             return new(0, null);
         }
     }
@@ -68,23 +67,40 @@ public sealed class FirstRunFlowClient(HttpClient http) : IFirstRunFlowChannel {
             if (!resp.IsSuccessStatusCode) return new((int)resp.StatusCode, null);
 
             return new((int)resp.StatusCode, await ReadAsync(resp, ct));
-        } catch (Exception e) when (IsTransient(e)) {
+        } catch (Exception e) when (IsTransient(e, ct)) {
             return new(0, null);
         }
     }
+
+    /// <summary>How long the server asked us to wait, in either header form — a proxy may rewrite
+    /// delta-seconds as an HTTP date, and reading only the delta would report that as no header at
+    /// all. A date is measured against the response's own Date header, so server clock skew cannot
+    /// turn the wait negative.</summary>
+    static TimeSpan? RetryAfter(HttpResponseMessage resp) => resp.Headers.RetryAfter switch {
+        { Delta: { } delta } => delta,
+        { Date:  { } date  } => Max(date - (resp.Headers.Date ?? DateTimeOffset.UtcNow), TimeSpan.Zero),
+        _                    => null
+    };
+
+    static TimeSpan Max(TimeSpan a, TimeSpan b) => a > b ? a : b;
 
     /// <summary>Guarded separately from the send: an unreadable body must not collapse to status 0,
     /// which the loop reports as "could not reach the server" about a server that just answered.</summary>
     static async Task<FirstRunFlowResponse?> ReadAsync(HttpResponseMessage resp, CancellationToken ct) {
         try {
             return await resp.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.FirstRunFlowResponse, ct);
-        } catch (Exception e) when (IsTransient(e)) {
+        } catch (Exception e) when (IsTransient(e, ct)) {
             return null;
         }
     }
 
     static string Base(string serverUrl) => serverUrl.TrimEnd('/');
 
-    static bool IsTransient(Exception e) =>
-        e is HttpRequestException or OperationCanceledException or JsonException or NotSupportedException;
+    /// <summary>A cancel from the caller is not a blip: reported as status 0 it reads as a transport
+    /// failure, and the poll loop would run to its budget instead of stopping. HttpClient's own
+    /// timeout is the same exception type with the token unsignalled, and that one genuinely is a blip.</summary>
+    static bool IsTransient(Exception e, CancellationToken ct) =>
+        e is OperationCanceledException
+            ? !ct.IsCancellationRequested
+            : e is HttpRequestException or JsonException or NotSupportedException;
 }

@@ -2,20 +2,10 @@ using Capacitor.Cli.Core.Auth;
 
 namespace Capacitor.Cli.Core.FirstRun;
 
-/// <summary>
-/// Creates the flow, opens the browser on it, and polls it as itself.
-///
-/// <para><b>Create-then-redirect, and that order is the whole point.</b> The browser then arrives at a
-/// flow that already has an owner, so the server's ownership check has something to check from the
-/// first request rather than from whenever a browser happens to turn up. Reversed, the first browser
-/// to open the link owns the flow — which is where it sat under the retired pairing, and is the one
-/// property of the design the server half could not realise alone. Retirement spec §6.1.</para>
-///
-/// <para><b>The URL is composed here, never taken from the server.</b> It goes to a shell-executed
-/// open, and the retired pairing needed a whole origin check because the mint response told it where
-/// to go. Nothing does now: the id is this process's and the origin is the server it has already
-/// probed and signed in to, so there is no server-supplied URL to validate.</para>
-/// </summary>
+/// <summary>Creates the flow, opens the browser on it, and polls it as itself. The create runs before
+/// the browser is opened so the flow has an owner from its first request, and the URL is composed
+/// here rather than taken from the server — nothing server-supplied reaches the shell-executed open
+/// to validate.</summary>
 public sealed class BrowserFirstRunFlow(
         IFirstRunFlowChannel     channel,
         IFirstRunFlowProgress    progress,

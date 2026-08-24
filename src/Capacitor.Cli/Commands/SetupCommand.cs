@@ -56,14 +56,8 @@ sealed class SetupAuthProgress(IAuthProgress inner) : IAuthProgress {
         string.IsNullOrWhiteSpace(message) || message.StartsWith(' ') ? message : $"  {message}";
 }
 
-/// <summary>
-/// The browser leg's rendering, at setup's two-space indent.
-///
-/// <para>The URL is printed whether or not a browser opened, and that is the whole design on the
-/// device path: a machine with no browser of its own has a human at a different one, and the
-/// retirement spec settles that they read the link here rather than being designed out of the
-/// screens. There is no code to compare — that went with the pairing.</para>
-/// </summary>
+/// <summary>The browser leg's rendering, at setup's two-space indent. The URL is printed whether
+/// or not a browser opened: a machine with no browser of its own has a human at a different one.</summary>
 sealed class SpectreFirstRunFlowProgress : IFirstRunFlowProgress {
     bool _waiting;
 
@@ -917,20 +911,10 @@ public static class SetupCommand {
     /// <summary>Per request, not per leg: the poll below runs for as long as a human takes.</summary>
     static readonly TimeSpan BrowserFlowHttpTimeout = TimeSpan.FromSeconds(15);
 
-    /// <summary>
-    /// Creates the first-run flow, opens the browser on it, and polls it as itself.
-    ///
-    /// <para><b>Reports, and configures nothing.</b> The flow's payload is outcomes rather than
-    /// instructions — <c>kcap setup</c> writes Claude Code hooks and a hook entry is a command string
-    /// Claude Code runs — so what the browser settles is composed locally or not at all. Today it is
-    /// not at all: the screens that would push configuration are their own tickets, and the steps
-    /// below remain what actually wires this machine up. Which of the two renders a given step is a
-    /// decision that belongs to neither this leg nor those screens, and is its own ticket.</para>
-    ///
-    /// <para>Skipped rather than failed wherever it cannot help, and every outcome leaves setup
-    /// running: sign-in has already happened by the time this is called, so nothing here can strand a
-    /// machine.</para>
-    /// </summary>
+    /// <summary>Creates the first-run flow, opens the browser on it, and polls it as itself.
+    /// Reports, and configures nothing: <c>kcap setup</c> writes Claude Code hooks and a hook entry is a
+    /// command string Claude Code runs, so nothing the browser settles is executed here. Every outcome
+    /// leaves setup running — sign-in has already happened, so nothing in this leg can strand a machine.</summary>
     static async Task RunBrowserFlowStepAsync(string serverUrl, string provider, string profile, bool noPrompt) {
         // --no-prompt is a scripted run and this waits on a human. None has no identity for a flow to
         // be owned by, and its routes are authenticated. Headless is deliberately NOT a skip: a

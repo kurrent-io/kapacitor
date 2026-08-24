@@ -1,12 +1,7 @@
 namespace Capacitor.Cli.Core.FirstRun;
 
-/// <summary>
-/// What the browser leg shows a human.
-///
-/// <para>There is no code to compare and none to enter: that was the retired pairing's defence, and
-/// it went with the channel. The CLI authenticates itself, so the flow has no second party for a code
-/// to disambiguate — what this renders is a URL and a wait.</para>
-/// </summary>
+/// <summary>What the browser leg shows a human: a URL and a wait. There is no code to compare or
+/// enter — the CLI authenticates itself, so the flow has no second party for one.</summary>
 public interface IFirstRunFlowProgress {
     /// <summary>The browser is being handed <paramref name="setupUrl"/>. Printed as well as opened,
     /// because a machine that cannot open one is exactly the machine whose user needs to read it.</summary>

@@ -23,12 +23,9 @@ public enum FirstRunPollVerdict {
     Wait
 }
 
-/// <summary>
-/// The pure decision behind the flow poll, extracted so every branch is unit-tested without a server.
-/// On the same reasoning the retired pairing's was: a poll treating every unexpected response as
-/// "keep waiting" spins silently until timeout, which is indistinguishable to the user from a flow
-/// that was never going to finish.
-/// </summary>
+/// <summary>The pure decision behind the flow poll, extracted so every branch is unit-tested without
+/// a server: a poll treating every unexpected response as "keep waiting" spins silently until
+/// timeout, which is indistinguishable to the user from a flow that was never going to finish.</summary>
 public static class FirstRunFlowPoll {
     /// <summary>What to do about one response. <paramref name="statusCode"/> 0 is a transport failure;
     /// <paramref name="bodyRead"/> is false when a 200 arrived with a body this build could not
