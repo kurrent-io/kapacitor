@@ -1,4 +1,4 @@
-namespace Capacitor.App.Services;
+namespace Capacitor.Cli.Core.Setup;
 
 /// What users mean by "the terminal" is an *interactive login* shell: `-lic` reads both
 /// `.zprofile` (login) and `.zshrc` (interactive — where nvm/npm/agent paths live), unlike the

@@ -1,5 +1,7 @@
 using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
+using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Setup;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.App.Tests.Unit;
@@ -1431,21 +1433,16 @@ sealed class FakeKcapCli : IKcapCli {
 }
 
 /// Scripted ILoginShellProbe — the controller only ever calls TerminalPathAsync (the install
-/// precondition); KcapOnPathAsync is used by PathShimInstaller/ShimOfferCoordinator tests.
-/// KcapOnPathFreshBehavior, when set, answers a forceRefresh=true call distinctly from the cached
-/// KcapOnPathBehavior — otherwise a forced call just falls back to KcapOnPathBehavior too.
+/// precondition); KcapOnPathAsync is used by ShimOfferCoordinator tests (the fresh-answer seam
+/// for the post-install probe lives in Core's own fake, alongside PathShimInstaller's tests).
 sealed class FakeLoginShellProbe : ILoginShellProbe {
     public Func<CancellationToken, Task<string?>> TerminalPathBehavior = _ => Task.FromResult<string?>("/usr/bin:/bin");
     public Task<string?> TerminalPathAsync(CancellationToken ct) => TerminalPathBehavior(ct);
 
     public Func<CancellationToken, Task<bool?>> KcapOnPathBehavior = _ => Task.FromResult<bool?>(true);
-    public Func<CancellationToken, Task<bool?>>? KcapOnPathFreshBehavior;
     public int KcapOnPathForceRefreshCallCount;
     public Task<bool?> KcapOnPathAsync(CancellationToken ct, bool forceRefresh = false) {
-        if (forceRefresh) {
-            KcapOnPathForceRefreshCallCount++;
-            return (KcapOnPathFreshBehavior ?? KcapOnPathBehavior)(ct);
-        }
+        if (forceRefresh) KcapOnPathForceRefreshCallCount++;
         return KcapOnPathBehavior(ct);
     }
 

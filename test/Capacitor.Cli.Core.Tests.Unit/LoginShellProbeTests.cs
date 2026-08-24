@@ -1,6 +1,6 @@
-using Capacitor.App.Services;
+using Capacitor.Cli.Core.Setup;
 
-namespace Capacitor.App.Tests.Unit;
+namespace Capacitor.Cli.Core.Tests.Unit;
 
 public class LoginShellProbeTests {
     sealed class FakeProcessRunner : IProcessRunner {

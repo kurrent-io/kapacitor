@@ -1,8 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
-using Capacitor.App.Services;
 
-namespace Capacitor.App.Tests.Unit;
+namespace Capacitor.Cli.Core.Tests.Unit;
 
 /// Drives the REAL ProcessRunner's RunStreamingAsync (real child processes) — same rationale as ProcessRunnerTests.
 public class StreamingRunnerTests {
@@ -24,7 +23,7 @@ public class StreamingRunnerTests {
     public async Task RunStreamingAsync_tags_interleaved_lines_with_the_right_stream_kind() {
         Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
 
-        var runner = new DaemonClientService.ProcessRunner();
+        var runner = new ProcessRunner();
         var lines = new List<StreamedLine>();
         var gate = new object();
 
@@ -45,7 +44,7 @@ public class StreamingRunnerTests {
     public async Task RunStreamingAsync_more_than_TailLimit_lines_callback_sees_all_tail_holds_last_500() {
         Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
 
-        var runner = new DaemonClientService.ProcessRunner();
+        var runner = new ProcessRunner();
         var callbackCount = 0;
 
         var result = await runner.RunStreamingAsync(
@@ -64,7 +63,7 @@ public class StreamingRunnerTests {
     public async Task RunStreamingAsync_throwing_callback_does_not_kill_the_pump_and_exit_code_is_captured() {
         Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
 
-        var runner = new DaemonClientService.ProcessRunner();
+        var runner = new ProcessRunner();
         var seen = new List<string>();
         var gate = new object();
 
@@ -88,7 +87,7 @@ public class StreamingRunnerTests {
         Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
 
         using var tmp = new TempDir();
-        var runner = new DaemonClientService.ProcessRunner();
+        var runner = new ProcessRunner();
         var startedMarker = tmp.PathTo("marker");
         using var cts = new CancellationTokenSource();
         int grandchildPid = -1;
@@ -117,7 +116,7 @@ public class StreamingRunnerTests {
         Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
 
         using var tmp = new TempDir();
-        var runner = new DaemonClientService.ProcessRunner();
+        var runner = new ProcessRunner();
         var startedMarker = tmp.PathTo("marker");
         using var cts = new CancellationTokenSource();
         int grandchildPid = -1;
@@ -146,7 +145,7 @@ public class StreamingRunnerTests {
     public async Task RunStreamingAsync_timeout_kills_the_tree_and_reports_TimedOut() {
         Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
 
-        var runner = new DaemonClientService.ProcessRunner();
+        var runner = new ProcessRunner();
         var sw = Stopwatch.StartNew();
 
         var result = await runner.RunStreamingAsync(
@@ -163,7 +162,7 @@ public class StreamingRunnerTests {
     public async Task RunStreamingAsync_ct_cancel_awaits_the_pumps_before_throwing_no_late_callbacks() {
         Skip.When(OperatingSystem.IsWindows(), "execs a POSIX binary");
 
-        var runner = new DaemonClientService.ProcessRunner();
+        var runner = new ProcessRunner();
         using var cts = new CancellationTokenSource();
         var callbackCount = 0;
 

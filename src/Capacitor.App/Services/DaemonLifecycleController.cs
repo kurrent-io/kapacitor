@@ -1,5 +1,6 @@
 using Capacitor.App.Services.Mutation;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.App.Services;
 

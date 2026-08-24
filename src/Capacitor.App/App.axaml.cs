@@ -17,6 +17,7 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.App;
 
@@ -122,7 +123,7 @@ public partial class App : Application {
     async Task StartAsync(IClassicDesktopStyleApplicationLifetime desktop) {
         try {
             // The lane is constructed first — every daemon mutation routes through this one instance, and its dependencies need neither a resolved profile nor a live service.
-            var laneRunner = new DaemonClientService.ProcessRunner();
+            var laneRunner = new ProcessRunner();
             var laneProbe  = new LoginShellProbe(laneRunner, Environment.GetEnvironmentVariable);
             var channel    = new OutcomeChannel();
             var lane = new DaemonMutationLane(
@@ -615,7 +616,7 @@ public partial class App : Application {
             Action<string> setLifecycleStatus, Action<string> setLifecycleAttention,
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
         var cliPath = CliResolver.ResolvePath(Environment.GetEnvironmentVariable, File.Exists);
-        var runner  = new DaemonClientService.ProcessRunner();
+        var runner  = new ProcessRunner();
         var profile = AppConfig.ResolvedProfile; // the ONE resolution the gate was evaluated on
         var probe   = new LoginShellProbe(runner, Environment.GetEnvironmentVariable);
         var canonicalServer = ServerIdentity.Canonicalize(profile?.ServerUrl);

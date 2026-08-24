@@ -1,4 +1,4 @@
-namespace Capacitor.App.Services;
+namespace Capacitor.Cli.Core.Setup;
 
 public enum ShimPreflight { Installable, AlreadyInstalled, Conflict }
 
@@ -19,7 +19,7 @@ public sealed class PathShimInstaller(IProcessRunner runner, ILoginShellProbe pr
 
     // Destination is a parameter (not the Destination constant) so tests drive real filesystem
     // taxonomy against a temp path instead of the actual /usr/local/bin/kcap.
-    internal async Task<ShimResult> InstallAsync(string target, string destination, CancellationToken ct) {
+    public async Task<ShimResult> InstallAsync(string target, string destination, CancellationToken ct) {
         if (!LooksLikeTarget(target))
             return new ShimResult(ShimOutcome.Failed, "CLI path contains a newline or carriage return and cannot be used.", null);
 
@@ -70,7 +70,7 @@ public sealed class PathShimInstaller(IProcessRunner runner, ILoginShellProbe pr
     /// LinkTarget/ResolveLinkTarget never follow past the top-level lstat on their own, so a
     /// regular file's LinkTarget is null (not "not a link" vs "absent" — both null) and only
     /// FileInfo.Exists/Directory.Exists distinguish those two afterwards.
-    internal static ShimPreflight Preflight(string destination, string target) {
+    public static ShimPreflight Preflight(string destination, string target) {
         var info = new FileInfo(destination);
 
         if (info.LinkTarget is not null) {
