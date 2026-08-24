@@ -183,4 +183,76 @@ public class WorkspaceViewSmokeTests {
             await vm.TeardownAsync();
         });
     }
+
+    /// Run-and-observe: a NORMAL read-write attach (TriggerAttached with no reason) must still
+    /// show the attach banner and its DetachButton -- the design canvas's whole point is that
+    /// Detach is reachable from the primary (read-write) flow, not only the read-only one. Before
+    /// the fix, the banner's Border bound to TerminalReadOnlyBannerVisibleConverter, which is
+    /// false here (ReadOnly stays false), so DetachButton was IsEffectivelyVisible: false and
+    /// this test failed against the pre-fix view.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Read_write_attached_state_shows_the_attach_banner_and_detach_button() {
+        await RunOnUiAsync(async () => {
+            var (view, vm, daemon, attach) = Build();
+            var window = new Window { Content = view };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            var detachButton = Find<Control>(window, "DetachButton")!;
+            var bannerText = Find<TextBlock>(window, "AttachBannerText")!;
+
+            daemon.Agents.AddOrUpdate(Agent(AgentId, hasTerminal: true));
+            await (vm.Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
+            Dispatcher.UIThread.RunJobs();
+
+            var client = attach.Created[^1];
+            await client.TriggerAttached([], reason: null);
+            Dispatcher.UIThread.RunJobs();
+
+            await Assert.That(vm.Terminal.State.Phase).IsEqualTo(TerminalSessionPhase.Attached);
+            await Assert.That(vm.Terminal.State.ReadOnly).IsFalse();
+            await Assert.That(detachButton.IsEffectivelyVisible).IsTrue();
+            await Assert.That(bannerText.Text)
+                .IsEqualTo("Attached to the live PTY — keystrokes go straight to the process.");
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            await vm.TeardownAsync();
+        });
+    }
+
+    /// Companion to the read-write test above: a read-only attach (TriggerAttached with a reason)
+    /// still shows the same banner/DetachButton, now with the warning copy and the reason baked
+    /// into the text -- both modes share one banner per the design canvas.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Read_only_attached_state_shows_the_warning_banner_and_detach_button() {
+        await RunOnUiAsync(async () => {
+            var (view, vm, daemon, attach) = Build();
+            var window = new Window { Content = view };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            var detachButton = Find<Control>(window, "DetachButton")!;
+            var bannerText = Find<TextBlock>(window, "AttachBannerText")!;
+
+            daemon.Agents.AddOrUpdate(Agent(AgentId, hasTerminal: true));
+            await (vm.Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
+            Dispatcher.UIThread.RunJobs();
+
+            var client = attach.Created[^1];
+            await client.TriggerAttached([], reason: "review");
+            Dispatcher.UIThread.RunJobs();
+
+            await Assert.That(vm.Terminal.State.Phase).IsEqualTo(TerminalSessionPhase.Attached);
+            await Assert.That(vm.Terminal.State.ReadOnly).IsTrue();
+            await Assert.That(detachButton.IsEffectivelyVisible).IsTrue();
+            await Assert.That(bannerText.Text).IsEqualTo("Read-only: review");
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            await vm.TeardownAsync();
+        });
+    }
 }

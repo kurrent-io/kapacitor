@@ -66,12 +66,15 @@
                 <TextBlock Text="Connecting…" Foreground="{StaticResource KcapMutedBrush}" />
             </Border>
 
-            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalReadOnlyBannerVisibleConverter.Instance}}"
-                    Background="{StaticResource KcapWarningDimBrush}" BorderBrush="{StaticResource KcapWarningBrush}" BorderThickness="1"
-                    CornerRadius="8" Padding="12,7" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,14,0,0">
+            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=Attached}"
+                    Background="{Binding Terminal.State, Converter={x:Static views:TerminalAttachBannerBackgroundBrushConverter.Instance}}"
+                    BorderBrush="{Binding Terminal.State, Converter={x:Static views:TerminalAttachBannerBorderBrushConverter.Instance}}"
+                    BorderThickness="1" CornerRadius="8" Padding="12,7" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,14,0,0">
                 <StackPanel Orientation="Horizontal" Spacing="10">
-                    <TextBlock Text="{Binding Terminal.State.Detail, StringFormat='Read-only: {0}'}"
-                               Foreground="{StaticResource KcapWarningBrush}" VerticalAlignment="Center" />
+                    <TextBlock x:Name="AttachBannerText"
+                               Text="{Binding Terminal.State, Converter={x:Static views:TerminalAttachBannerTextConverter.Instance}}"
+                               Foreground="{Binding Terminal.State, Converter={x:Static views:TerminalAttachBannerForegroundBrushConverter.Instance}}"
+                               VerticalAlignment="Center" />
                     <Button x:Name="DetachButton" Content="Detach" Command="{Binding Terminal.DetachCommand}" Padding="10,3" FontSize="12" />
                 </StackPanel>
             </Border>
