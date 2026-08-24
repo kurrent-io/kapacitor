@@ -211,6 +211,43 @@ public class WorkspaceNavigationTests {
         });
     }
 
+    /// The OTHER close (spec §3, real close): nothing intercepts it, the coordinator DISCARDS the
+    /// window, and the next ShowMainWindow builds a fresh one — so the discarded VM's workspace
+    /// teardown has to start as part of this close, or the attach outlives the window that owned it.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task A_real_close_releases_the_discarded_windows_workspace() {
+        await RunOnUiAsync(async () => {
+            var nav = NewNav();
+            var coordinator = new MainWindowCoordinator(
+                () => {
+                    var window = new MainWindow { DataContext = nav.Vm };
+                    window.Show();
+                    return window;
+                },
+                releaseWorkspace: window => (window.DataContext as MainWindowViewModel)?.CloseWorkspace());
+
+            coordinator.ShowMainWindow();
+            Dispatcher.UIThread.RunJobs();
+
+            var client = await OpenAttachedAsync(nav, Id1);
+            Dispatcher.UIThread.RunJobs();
+
+            // QuitInProgress is what a quit sets, and it is exactly what makes the close REAL: the
+            // interceptor stands down, Closing is not cancelled, and Closed fires.
+            coordinator.QuitInProgress = true;
+            coordinator.Window!.Close();
+            Dispatcher.UIThread.RunJobs();
+            await nav.Tracker.StartedTeardowns();
+
+            await Assert.That(coordinator.Window).IsNull(); // discarded; the next Show builds afresh
+            await Assert.That(nav.Vm.CurrentWorkspace).IsNull();
+            await Assert.That(nav.Tracker.Registered.Count).IsEqualTo(1);
+            await Assert.That(client.DetachCalls).IsEqualTo(1);
+            await Assert.That(client.DisposeCalls).IsGreaterThanOrEqualTo(1);
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task A_stale_generation_launch_success_opens_nothing() {

@@ -1072,9 +1072,9 @@ public partial class App : Application {
         // released for every other viewer as early as possible. Bounded at 5s and never throws.
         //
         // Deliberately NOT ConfigureAwait(false), unlike its neighbours: this is the one await here
-        // that genuinely suspends on the quit-with-a-session-open path, and the UI disposables below
-        // must still be disposed ON the UI thread this was invoked from (see
-        // DisposeUiThenConfirmShutdownAsync's own comment) — a tray icon disposed off it throws.
+        // that routinely suspends (a live workspace's teardown), and its continuation belongs back on
+        // the UI thread this was invoked from. That is all it buys — the quiesce below still resumes
+        // wherever ConfigureAwait(false) leaves it whenever IT suspends.
         await _workspaceTeardown.DrainAsync();
 
         // spec §3.6 + decision 2: an in-flight sign-in always settles, mutations get a bounded chance
