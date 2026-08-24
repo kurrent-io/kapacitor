@@ -45,7 +45,6 @@ public partial class HomeView : UserControl {
         var left = new StackPanel { Spacing = 2, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
         left.Children.Add(new TextBlock {
             Text = isScratch ? "No repository" : RepoLabel.Leaf(option.RepoPath),
-            FontWeight = Avalonia.Media.FontWeight.SemiBold,
         });
         if (!isScratch)
             left.Children.Add(new TextBlock { Text = option.RepoPath, FontSize = 10.5, Foreground = muted });
