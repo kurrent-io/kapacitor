@@ -147,7 +147,13 @@ public sealed class AgentAttachClient : IAsyncDisposable {
             if (!TryClaim(new AttachOutcome.Failed(ex.Message))) ReportIfLost("pre-attach", ex);
             return;
         }
-        if (!TryClaim(new AttachOutcome.ConnectionLost())) ReportIfLost("transport", ex);
+        // ConnectionLost carries no detail, so winners and losers of a transport
+        // failure both report once — the sink is the only place the exception ever
+        // surfaces (mirrors WriteOutboundAsync's writer-side transport failure).
+        // Without this, the most common real failure — the daemon dying, detected
+        // by the reader here — would yield no errno anywhere.
+        if (TryClaim(new AttachOutcome.ConnectionLost())) Report("transport", ex);
+        else ReportIfLost("transport", ex);
     }
 
     // Called only once the caller already knows this attempt LOST the cause-slot
@@ -199,8 +205,9 @@ public sealed class AgentAttachClient : IAsyncDisposable {
                 await FrameCodec.WriteAsync(_stream!, frame, CancellationToken.None).ConfigureAwait(false);
             } finally { _writeLock.Release(); }
         } catch (Exception ex) {
-            // ConnectionLost carries no detail, so a won claim is reported too — unlike a
-            // callback fault, the sink is the only place this exception ever surfaces.
+            // ConnectionLost carries no detail, so winners and losers of a transport
+            // failure both report once — the sink is the only place the exception ever
+            // surfaces (unlike a callback fault, which the caller observes directly).
             if (TryClaim(new AttachOutcome.ConnectionLost())) Report("outbound write", ex);
             else ReportIfLost("outbound write", ex);
             CloseTransport();

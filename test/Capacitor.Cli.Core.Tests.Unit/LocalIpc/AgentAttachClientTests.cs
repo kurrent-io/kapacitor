@@ -446,79 +446,205 @@ public class AgentAttachClientTests {
         await client.DisposeAsync();                               // still clean
     }
 
-    /// A second, independent throwing-sink drive: unlike the sink above, this one
-    /// counts its own invocations, so the test can assert it was actually called
-    /// (not merely that nothing escaped) while pinning the same "no rethrow, no
-    /// altered outcome" contract on a fresh write-failure path.
+    /// A second, independent throwing-sink drive. The output callback parks on the
+    /// internal token (`Task.Delay(Timeout.Infinite, ct)`), so `DisposeAsync`
+    /// unblocks it cleanly via cooperative cancellation and, crucially, the pump
+    /// can never independently race the write for the cause slot — the write is
+    /// the ONLY producer that can possibly reach the sink here, so the call count
+    /// and context are asserted exactly, not just "at least one call".
     [Test]
     public async Task Throwing_sink_is_invoked_and_swallowed_without_altering_the_outcome() {
         var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
-        var rec = new Recorder();
         var sinkCalls = 0;
-        var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput,
-            (_, _) => { Interlocked.Increment(ref sinkCalls); throw new InvalidOperationException("sink bug"); });
+        var contexts = new List<string>();
+        var client = new AgentAttachClient(server.Path, AgentId,
+            (_, _, _) => Task.CompletedTask,
+            async (_, ct) => await Task.Delay(Timeout.Infinite, ct),   // parks the pump; only Dispose unblocks it
+            (c, _) => { Interlocked.Increment(ref sinkCalls); lock (contexts) contexts.Add(c); throw new InvalidOperationException("sink bug"); });
         var run = client.RunAsync(80, 24, CancellationToken.None);
         await server.AcceptAndPumpInboundAsync();
         await server.SendAttachedAsync(AgentId, []);
-        await Task.Delay(50);
+        await server.SendStdoutAsync([1]);
+        await Task.Delay(50);                                       // pump is now parked inside the callback
 
         server.CloseConnection();
-        await client.SendInputAsync([1, 2, 3]);                    // must not throw despite the sink throwing
+        await client.SendInputAsync([1, 2, 3]);                     // the only producer that can possibly fail right now
 
-        await Assert.That(await run).IsEqualTo(new AttachOutcome.ConnectionLost());
-        await Assert.That(sinkCalls).IsGreaterThanOrEqualTo(1);    // the throwing sink was actually invoked
-        await client.DisposeAsync();                               // still clean
-        await client.DisposeAsync();                               // idempotent even after a throwing sink
+        await client.DisposeAsync();                                 // unblocks the parked callback via the internal token
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.ConnectionLost());  // the already-claimed cause wins
+
+        await Assert.That(sinkCalls).IsEqualTo(1);
+        await Assert.That(contexts).IsEquivalentTo(["outbound write"]);
+        await client.DisposeAsync();                                 // idempotent even after a throwing sink
     }
 
-    /// Two real producers fail around the same moment — an input-write failure and
-    /// an output-callback fault — and race for the one cause slot. Whichever wins
-    /// decides `RunAsync`'s result; the loser rule then pins exactly which
-    /// exception(s) reach the sink, and `MaxConcurrent == 1` proves `_sinkLock`
-    /// actually serializes the two producers rather than merely happening not to
-    /// overlap.
+    /// A deterministic pump-side LOSS (review finding C1): the pump is parked
+    /// inside `onOutput` (armed, not yet released), so nothing on the read side
+    /// can claim anything while an input-write failure independently claims
+    /// `ConnectionLost` and tears down the local transport. Releasing the
+    /// callback then lets the pump's own next read hit the now-disposed stream —
+    /// its exception LOSES the already-claimed slot, and since it lost to
+    /// `ConnectionLost` (not `Detached`), the socket-close exclusion does not
+    /// apply: it must be observed through the sink exactly once, alongside the
+    /// writer's own report.
     [Test]
-    public async Task Concurrent_losers_are_serialized_into_the_sink() {
+    public async Task Pump_exception_losing_to_writer_connection_lost_is_reported_once() {
         var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
         var sink = new RecordingSink();
-        var boom = new InvalidOperationException("callback exploded");
-        var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new AgentAttachClient(server.Path, AgentId,
             (_, _, _) => Task.CompletedTask,
-            async (_, _) => { await proceed.Task; throw boom; },    // stdout callback: armed, not yet fired
+            async (_, _) => { await gate.Task; },        // blocks the pump, then returns normally (no fault)
             sink.Callback);
         var run = client.RunAsync(80, 24, CancellationToken.None);
         await server.AcceptAndPumpInboundAsync();
         await server.SendAttachedAsync(AgentId, []);
         await server.SendStdoutAsync([1]);
-        await Task.Delay(50);                                      // pump is now blocked inside the callback
+        await Task.Delay(50);                             // pump is now blocked inside the callback, gate not yet open
 
-        server.CloseConnection();                                  // break the transport under the writer
-        var write = client.SendInputAsync([9]);                    // races the callback fault for the cause slot
-        proceed.SetResult();                                       // let the callback fault fire concurrently
+        server.CloseConnection();
+        await client.SendInputAsync([9]);                 // the writer claims ConnectionLost, closes the local transport
 
-        await write;                                               // must not throw either way
+        gate.SetResult();                                  // release the pump: its next read hits the disposed stream
 
-        AttachOutcome? outcome = null;
-        AttachCallbackException? thrown = null;
-        try { outcome = await run; }
-        catch (AttachCallbackException ex) { thrown = ex; }
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.ConnectionLost());
         await client.DisposeAsync();
 
-        await Assert.That(sink.MaxConcurrent).IsEqualTo(1);        // serialized despite the race
+        await Assert.That(sink.Entries.Count(e => e.Context == "transport")).IsEqualTo(1);
+        await Assert.That(sink.Entries.Count(e => e.Context == "outbound write")).IsEqualTo(1);
+        await Assert.That(sink.Entries.Count).IsEqualTo(2);
+    }
 
-        if (thrown is not null) {
-            // the callback fault won the slot: it IS the run's result, not a diagnostic;
-            // the write failure lost and is observed exactly once.
-            await Assert.That(thrown.InnerException).IsSameReferenceAs(boom);
-            await Assert.That(sink.Entries.Any(e => ReferenceEquals(e.Ex, boom))).IsFalse();
-            await Assert.That(sink.Entries.Count(e => e.Context == "outbound write")).IsEqualTo(1);
-        } else {
-            // the write failure won the slot: ConnectionLost carries no detail, so it is
-            // reported even as the winner; the callback fault lost and is observed once.
-            await Assert.That(outcome).IsEqualTo(new AttachOutcome.ConnectionLost());
-            await Assert.That(sink.Entries.Count(e => e.Context == "outbound write")).IsEqualTo(1);
-            await Assert.That(sink.Entries.Count(e => ReferenceEquals(e.Ex, boom))).IsEqualTo(1);
+    /// A deterministic pump-side WIN (review finding C4): nothing else races this
+    /// exception — the pump's own truncated-frame read is the first and only
+    /// cause-slot claim. Per the ruling, a winning transport exception is now
+    /// ALSO reported: `ConnectionLost` carries no detail, so the sink is the only
+    /// place it ever surfaces — the most common real failure (the daemon dying,
+    /// detected by the reader) must yield an errno somewhere, not silence.
+    [Test]
+    public async Task Pump_exception_winning_the_slot_is_reported_once() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var sink = new RecordingSink();
+        var rec = new Recorder();
+        var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput, sink.Callback);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await server.SendRawThenCloseAsync([0x41, 0x00]);   // stdout type byte + half a length: mid-header truncation
+
+        await Assert.That(await run).IsEqualTo(new AttachOutcome.ConnectionLost());
+        await client.DisposeAsync();
+
+        await Assert.That(sink.Entries.Count).IsEqualTo(1);
+        await Assert.That(sink.Entries.Single().Context).IsEqualTo("transport");
+    }
+
+    /// The other half of the input-write-failure-vs-detach-intent ordering (review
+    /// finding I2 — the brief's "both orderings" requirement's second half): here
+    /// `DisposeAsync`'s `Detached` claim wins first, and an outbound write —
+    /// already past its own guard check and genuinely in flight — faults when
+    /// `DisposeAsync`'s teardown lands underneath it. `ReportIfLost`'s
+    /// socket-close exclusion must swallow that fault: the sink stays empty. This
+    /// is a genuine, unforced race (see the loop comment below for why and how it
+    /// is repeated rather than hit in one shot) — not a claim of proven
+    /// concurrency, only of repeated, honest attempts at it.
+    [Test]
+    public async Task Write_losing_to_an_already_claimed_detach_is_excluded_from_the_sink() {
+        // No test-side hook exists into the write's actual I/O (frozen API), so the
+        // desired interleaving — a write already past its guard check and genuinely
+        // in flight (either still inside FrameCodec.WriteAsync, or in its own
+        // finally releasing _writeLock) when DisposeAsync's Detached claim and
+        // teardown land — cannot be forced deterministically in one shot. Confirmed
+        // empirically: a single attempt hits it about half the time (observed both
+        // an IOException from the disposed stream and an ObjectDisposedException
+        // from _writeLock.Release() racing _writeLock.Dispose()). So this forces
+        // the ordering across repeats instead of a single race hoped to land: every
+        // attempt must stay silent regardless of whether that specific interleaving
+        // landed on it, and 25 attempts make it near-certain at least one did.
+        // Verified by mutation: deleting ReportIfLost's exclusion turns this red.
+        for (var attempt = 0; attempt < 25; attempt++) {
+            var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+            var sink = new RecordingSink();
+            var rec = new Recorder();
+            var client = new AgentAttachClient(server.Path, AgentId, rec.OnAttached, rec.OnOutput, sink.Callback);
+            var run = client.RunAsync(80, 24, CancellationToken.None);
+            await server.AcceptAndPumpInboundAsync();
+            await server.SendAttachedAsync(AgentId, []);
+            await Task.Delay(10);
+
+            var huge = new byte[8 * 1024 * 1024 - 64];      // near FrameCodec's payload cap: real in-flight time on write
+            var writeTask = Task.Run(() => client.SendInputAsync(huge));
+            await Task.Yield();                              // give the write a chance past its guard, into real I/O
+            await client.DisposeAsync();                     // claims Detached first, then tears down the local transport
+            await writeTask;                                 // must not throw regardless of the race's outcome
+
+            await Assert.That(await run).IsEqualTo(new AttachOutcome.Detached());
+            await Assert.That(sink.Entries).IsEmpty();
         }
+    }
+
+    /// Two real producers race for the one cause slot and for `_sinkLock`: an
+    /// input write failure and an output-callback fault. The write's own sink
+    /// call is made to PARK — holding `_sinkLock` — until the test has
+    /// independently confirmed the callback fault is genuinely in flight and
+    /// blocked trying to acquire that same lock (a real 50ms window, not a race
+    /// hoped to land). This forces the write to claim the slot first (the
+    /// callback is gated until after the write's report call has already
+    /// parked), so the loser rule is pinned deterministically under PROVEN
+    /// contention rather than a coincidental absence of overlap: `MaxConcurrent
+    /// == 1` is evidence, not a tautology, because the second producer had a
+    /// real, confirmed opportunity to run concurrently and was made to wait for
+    /// the lock instead.
+    [Test]
+    public async Task Concurrent_losers_are_serialized_into_the_sink() {
+        var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
+        var boom = new InvalidOperationException("callback exploded");
+        var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var entries = new List<(string Context, Exception Ex)>();
+        var entriesGate = new object();
+        var current = 0;
+        var maxConcurrent = 0;
+        var sinkCallCount = 0;
+        var firstInSink = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Sink(string c, Exception e) {
+            var now = Interlocked.Increment(ref current);
+            maxConcurrent = Math.Max(maxConcurrent, now);
+            if (Interlocked.Increment(ref sinkCallCount) == 1) {
+                firstInSink.TrySetResult();                    // tell the test: parked inside Report, holding _sinkLock
+                releaseFirst.Task.GetAwaiter().GetResult();     // block synchronously until the test says go
+            }
+            lock (entriesGate) entries.Add((c, e));
+            Interlocked.Decrement(ref current);
+        }
+
+        var client = new AgentAttachClient(server.Path, AgentId,
+            (_, _, _) => Task.CompletedTask,
+            async (_, _) => { await proceed.Task; throw boom; },    // stdout callback: armed, not yet fired
+            Sink);
+        var run = client.RunAsync(80, 24, CancellationToken.None);
+        await server.AcceptAndPumpInboundAsync();
+        await server.SendAttachedAsync(AgentId, []);
+        await server.SendStdoutAsync([1]);
+        await Task.Delay(50);                                      // pump is blocked inside the callback, gated on `proceed`
+
+        server.CloseConnection();                                  // break the transport under the writer
+        var writeTask = Task.Run(async () => await client.SendInputAsync([9]).ConfigureAwait(false));
+
+        await firstInSink.Task;             // the write's own report has entered the sink and parked, holding _sinkLock
+        proceed.SetResult();                // now let the callback fault fire — it must lose the already-claimed slot
+        await Task.Delay(50);               // real wall-clock time for it to reach Report and block on the held lock
+        releaseFirst.SetResult();           // release the write's parked call; the blocked callback call can now proceed
+
+        await writeTask;                    // must not throw
+        var outcome = await run;            // the write already won the slot: no callback fault is ever thrown here
+        await client.DisposeAsync();
+
+        await Assert.That(maxConcurrent).IsEqualTo(1);                          // serialized under proven contention
+        await Assert.That(outcome).IsEqualTo(new AttachOutcome.ConnectionLost());
+        await Assert.That(entries.Count(e => e.Context == "outbound write")).IsEqualTo(1);
+        await Assert.That(entries.Count(e => ReferenceEquals(e.Ex, boom))).IsEqualTo(1);
+        await Assert.That(entries.Count).IsEqualTo(2);
     }
 }
