@@ -1315,7 +1315,9 @@ Resolve budget: **10 s** via the injected `TimeProvider`.
 - [ ] **Step 5: Green on the VM test file, then full app suite.**
 - [ ] **Step 6: Commit** — `App: TerminalTabViewModel — resolve gate, attempt lifecycle, outcome mapping`.
 
----### Task 11: Terminal surface adapter + input/replies wiring (`ITerminalSurface` production impl)
+---
+
+### Task 11: Terminal surface adapter + input/replies wiring (`ITerminalSurface` production impl)
 
 **Files:**
 - Create: `src/Capacitor.App/Services/XtermTerminalSurface.cs`
