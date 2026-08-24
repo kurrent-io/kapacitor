@@ -1,0 +1,114 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:Capacitor.App.ViewModels"
+             xmlns:views="clr-namespace:Capacitor.App.Views"
+             xmlns:terminal="clr-namespace:SvcSystems.UI.Terminal;assembly=SvcSystems.UI.Terminal"
+             x:Class="Capacitor.App.Views.WorkspaceView"
+             x:DataType="vm:WorkspaceViewModel"
+             Background="{StaticResource KcapCanvasBrush}">
+    <Grid RowDefinitions="56,42,*">
+        <!-- Header: Back (Task 14 injects BackCommand later — hidden until then) · title over
+             repo leaf · spacer · vendor chip with its family badge · Open-in-web/Stop. -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto" Margin="16,0" VerticalAlignment="Center">
+            <Button x:Name="BackButton" Grid.Column="0" Content="← Back" Command="{Binding BackCommand}"
+                    IsVisible="{Binding BackCommand, Converter={x:Static ObjectConverters.IsNotNull}}"
+                    Background="Transparent" BorderThickness="0" Foreground="{StaticResource KcapTextBrush}"
+                    Padding="0,0,12,0" />
+
+            <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+                <TextBlock x:Name="WorkspaceTitle" Text="{Binding Title}" FontWeight="Bold" FontSize="15"
+                           Foreground="{StaticResource KcapTextBrush}" TextTrimming="CharacterEllipsis" />
+                <TextBlock x:Name="WorkspaceRepo" Text="{Binding RepoLabelText}" FontSize="11"
+                           Foreground="{StaticResource KcapMutedBrush}" TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+
+            <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Margin="0,0,12,0">
+                <Border Background="{StaticResource KcapSurfaceRaisedBrush}" CornerRadius="999" Padding="6,1"
+                        IsVisible="{Binding FamilyDot, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                    <TextBlock Text="{Binding FamilyDot}" FontSize="9" Foreground="{StaticResource KcapMutedBrush}" />
+                </Border>
+                <TextBlock x:Name="WorkspaceVendorChip" Text="{Binding VendorChip}" FontSize="12"
+                           Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
+            </StackPanel>
+
+            <Button Grid.Column="4" Content="Open in web" Command="{Binding OpenInWebCommand}"
+                    Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                    Foreground="{StaticResource KcapTextBrush}" Padding="10,4" FontSize="12" Margin="0,0,6,0" />
+            <Button Grid.Column="5" Content="Stop" Command="{Binding StopCommand}"
+                    Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                    Foreground="{StaticResource KcapDangerBrush}" Padding="10,4" FontSize="12" />
+        </Grid>
+
+        <!-- Tab strip: one Terminal tab when the daemon reports this session has one; the muted
+             family-aware note in its place otherwise (spec: never names a vendor). -->
+        <Border Grid.Row="1" Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                BorderThickness="0,1,0,1">
+            <Grid>
+                <Button x:Name="TerminalTabButton" Content="Terminal" IsVisible="{Binding ShowsTerminalTab}"
+                        HorizontalAlignment="Left" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                        Background="Transparent" BorderBrush="{StaticResource KcapAccentBrush}" BorderThickness="0,0,0,2"
+                        CornerRadius="0" Foreground="{StaticResource KcapTextBrush}" Padding="16,0" Height="41" />
+                <TextBlock x:Name="NoTerminalNote" Text="{Binding NoTerminalNote}" IsVisible="{Binding !ShowsTerminalTab}"
+                           Foreground="{StaticResource KcapMutedBrush}" FontSize="12" Margin="16,0" VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+
+        <!-- Content: the terminal control (real resize wiring lives inside TerminalControl itself,
+             see WorkspaceView.axaml.cs header comment) plus one state banner at a time, layered
+             over it. -->
+        <Grid Grid.Row="2">
+            <terminal:TerminalControl x:Name="TerminalHost" IsVisible="{Binding ShowsTerminalTab}"
+                                       Model="{Binding Terminal.Surface, Converter={x:Static views:TerminalSurfaceModelConverter.Instance}}" />
+
+            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=Connecting}"
+                    Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
+                    CornerRadius="8" Padding="14,8" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,14,0,0">
+                <TextBlock Text="Connecting…" Foreground="{StaticResource KcapMutedBrush}" />
+            </Border>
+
+            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalReadOnlyBannerVisibleConverter.Instance}}"
+                    Background="{StaticResource KcapWarningDimBrush}" BorderBrush="{StaticResource KcapWarningBrush}" BorderThickness="1"
+                    CornerRadius="8" Padding="12,7" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,14,0,0">
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <TextBlock Text="{Binding Terminal.State.Detail, StringFormat='Read-only: {0}'}"
+                               Foreground="{StaticResource KcapWarningBrush}" VerticalAlignment="Center" />
+                    <Button x:Name="DetachButton" Content="Detach" Command="{Binding Terminal.DetachCommand}" Padding="10,3" FontSize="12" />
+                </StackPanel>
+            </Border>
+
+            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalDetachedOrFailedVisibleConverter.Instance}}"
+                    Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
+                    CornerRadius="8" Padding="16,12" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel Spacing="10" HorizontalAlignment="Center">
+                    <TextBlock Text="{Binding Terminal.State, Converter={x:Static views:TerminalDetachedOrFailedMessageConverter.Instance}}"
+                               Foreground="{StaticResource KcapTextBrush}" HorizontalAlignment="Center" TextWrapping="Wrap" MaxWidth="380" />
+                    <Button x:Name="ReattachButton" Content="Reattach" Command="{Binding Terminal.ReattachCommand}"
+                            HorizontalAlignment="Center" Background="{StaticResource KcapAccentBrush}" Foreground="#07120E"
+                            FontWeight="SemiBold" Padding="16,5" />
+                </StackPanel>
+            </Border>
+
+            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=Exited}"
+                    Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
+                    CornerRadius="8" Padding="16,12" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock Text="{Binding Terminal.State.ExitCode, StringFormat='Session exited (code {0})'}"
+                           Foreground="{StaticResource KcapTextBrush}" />
+            </Border>
+
+            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=NotFound}"
+                    Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
+                    CornerRadius="8" Padding="16,12" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel Spacing="10" HorizontalAlignment="Center">
+                    <TextBlock Text="{Binding Terminal.State.Detail}" Foreground="{StaticResource KcapTextBrush}" />
+                    <Button Content="Retry" Command="{Binding Terminal.RetryResolveCommand}" HorizontalAlignment="Center" Padding="14,4" />
+                </StackPanel>
+            </Border>
+
+            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=SessionEnded}"
+                    Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1"
+                    CornerRadius="8" Padding="16,12" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock Text="This session has ended." Foreground="{StaticResource KcapMutedBrush}" />
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

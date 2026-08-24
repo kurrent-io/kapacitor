@@ -233,7 +233,9 @@ public sealed class TerminalTabViewModel : ReactiveObject {
     /// the rpc/"chat" bucket also covers claude/codex/any unmapped vendor whose has_terminal came
     /// back false for a reason this build can't classify further, so it gets no family token at
     /// all rather than leaking "RPC" (an internal transport name, not a user-facing concept).
-    static string NoteFor(AgentStatusDto dto) {
+    /// Internal (not private): WorkspaceViewModel's NoTerminalNote reuses this verbatim rather
+    /// than re-deriving the same wording from a second copy.
+    internal static string NoteFor(AgentStatusDto dto) {
         const string bare = "This session has no terminal.";
         var family = HostedHarnessCatalog.EffectiveFamily(dto.HasTerminal, dto.Vendor);
         return family == "acp" ? "This session runs over ACP — no terminal to attach to." : bare;
