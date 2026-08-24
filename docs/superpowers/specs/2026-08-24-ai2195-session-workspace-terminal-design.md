@@ -79,17 +79,22 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
   `AttachedReadOnly(reason, snapshot)`, or `Error(text)`; then `Stdout` frames
   stream until `Exited(code)`, `Error`, or EOF (whose meaning depends on who
   initiated it — see termination semantics below).
-- Surface: `RunAsync(initialCols, initialRows, CancellationToken)` — the initial
-  surface size is a run argument, because the client itself owes the daemon the
-  post-attach repaint nudge and has no other source for it. Events are **awaited
-  async callbacks** (`OnAttachedAsync(snapshot, readOnlyReason)`,
-  `OnOutputAsync(bytes)`, `OnExitedAsync(code)`, `OnErrorAsync(text)`): the pump
-  awaits each before reading the next frame, so delivery is serial and ordered
-  (snapshot strictly before any output), and the daemon's slow-client overflow
-  protection stays meaningful — a slow UI backs the socket up rather than
-  ballooning an unbounded dispatcher queue. A callback exception faults the run
-  (surfaces out of `RunAsync`); no callback is ever invoked after a terminal
-  result or dispose.
+- Surface: `Task<AttachOutcome> RunAsync(initialCols, initialRows,
+  CancellationToken)` — the initial surface size is a run argument, because the
+  client itself owes the daemon the post-attach repaint nudge and has no other
+  source for it. **Termination is the result, not a callback**:
+  `AttachOutcome` is exactly one of `Detached`, `Exited(code)`,
+  `Failed(message)` (daemon `Error`, refusal included), or `ConnectionLost`
+  (uninitiated EOF) — observable identically by a Core caller and the VM.
+  Caller cancellation surfaces as the standard `OperationCanceledException`.
+  Streaming events are two **awaited async callbacks** only —
+  `OnAttachedAsync(snapshot, readOnlyReason)` and `OnOutputAsync(bytes)` — the
+  pump awaits each before reading the next frame, so delivery is serial and
+  ordered (snapshot strictly before any output), and the daemon's slow-client
+  overflow protection stays meaningful: a slow UI backs the socket up rather
+  than ballooning an unbounded dispatcher queue. A callback exception faults the
+  run (surfaces out of `RunAsync`). With termination folded into the result,
+  "no events after termination" is structural, not a rule to police.
 - Outbound methods: `SendInputAsync(bytes)`, `ResizeAsync(cols, rows)`,
   `DetachAsync()`. All writes serialize behind one lock (input and resize share
   the stream — same reason the CLI holds a write semaphore), and **the client —
@@ -102,13 +107,18 @@ CLI's `LocalAgentClient.RunAsync` with the raw-tty plumbing removed:
 - After a read-write `Attached`, the client sends one `Resize` at the initial
   size to nudge a clean repaint (CLI parity). After `AttachedReadOnly` it sends
   nothing: a read-only viewer must not influence the PTY clamp.
-- Termination semantics: `DetachAsync` yields exactly one clean `Detached`
-  completion and **suppresses the EOF that follows it** — the daemon sends no
-  detach acknowledgement; it just closes the connection, so a detach-initiated
-  EOF is expected, not an error (the CLI models this with its `detached` flag).
-  Caller cancellation tears down silently. Only an EOF the client did not
-  initiate is "lost connection to the daemon". A detach racing `Exited` or a
-  daemon `Error` resolves to whichever terminal event the pump saw first, once.
+- Termination semantics, linearized in one place (the pump): `DetachAsync`
+  records detach intent and sends the frame — it does not itself produce the
+  outcome. The daemon sends no detach acknowledgement; it just closes the
+  connection, and it can still emit `Exited` after receiving a `Detach` when the
+  runtime exited concurrently. So the pump resolves the single `AttachOutcome`
+  as: the first terminal frame read (`Exited`/`Error`) wins even when detach
+  intent is pending; EOF with detach intent pending → `Detached`; EOF without it
+  → `ConnectionLost`. Exactly one outcome, assigned at exactly one point.
+- Disposal: the client is **`IAsyncDisposable`**. `DisposeAsync` records detach
+  intent, closes the socket, and awaits the pump's completion — so "dispose"
+  anywhere in this spec means an awaited async teardown, never a synchronous
+  best-effort.
 
 The CLI's `LocalAgentClient` stays untouched in this slice; folding it onto the
 new client is an optional follow-up, not part of this change.
@@ -172,10 +182,20 @@ Follows the settled canvas artboard:
 
 Owns the attach lifecycle behind an app-side factory seam: **the factory creates
 one client per attach attempt** (a client owns one socket and one run), the
-previous run is fully cancelled and disposed before the next starts, and
-reattach is single-flight. VM tests script the factory. States:
+previous run is fully cancelled and awaited-disposed before the next starts, and
+reattach is single-flight. **Each attempt also gets a fresh terminal model and a
+fresh incremental decoder, swapped in before its `Attached` snapshot is
+accepted** — the daemon replays the full scrollback on every connection
+(overflow recovery included), so feeding a replay into an emulator that already
+consumed the pre-error live stream would duplicate history and smear cursor /
+alternate-screen state; the view stays bound to the VM-owned property and just
+sees the replacement. VM tests script the factory. States:
 
 `Connecting → Attached (read-write | read-only with reason) → Detached / Exited(code) / Failed(error)`
+
+The terminal states map one-to-one from the client's `AttachOutcome`;
+`ConnectionLost` maps to `Failed` with a lost-connection message and the
+reattach affordance.
 
 - Output delivery: the VM awaits each `OnOutputAsync` by decoding through **one
   incremental `System.Text.Decoder` spanning the snapshot and every live
@@ -207,20 +227,41 @@ reattach is single-flight. VM tests script the factory. States:
 
 ### Workspace ownership (one owner, every path)
 
-`MainWindowViewModel` is the single owner of `CurrentWorkspace` and disposes the
-outgoing workspace (→ `DetachAsync`, socket teardown) on **every** exit path:
-Back, opening another session, **intercepted close-to-hide** (the coordinator
-cancels every non-quit close and only hides the window — the window and its VMs
-stay alive, so without this an invisible terminal would stay attached and keep
-clamping the PTY for every other viewer), real close, and app shutdown (app
-teardown today disposes `HomeViewModel` explicitly; the workspace joins that
-ownership). Intercepted close also resets navigation to the shell, so reopening
-from the tray lands on Home. Detach never stops the agent; reopening reattaches
-and the scrollback replay restores history. No app-side buffer persistence.
+Each `MainWindowViewModel` owns its `CurrentWorkspace`, and workspace teardown
+is **asynchronous by nature** (`DetachAsync` + socket close + pump completion),
+which the app's existing synchronous disposal pass cannot express. So the
+composition root gains one small app-lifetime piece: a **workspace teardown
+tracker** that every teardown registers with. Exit paths:
 
-Entry-point guard: `LaunchOutcome.AgentId` is nullable. A `Started` outcome
-without a well-formed 32-hex id does not open a workspace (and cannot call
-`OpenSession(null!)`); it surfaces as a launch-succeeded-but-unopenable error.
+- **Back / opening another session**: the VM starts the outgoing workspace's
+  async teardown (tracked) and swaps `CurrentWorkspace`.
+- **Intercepted close-to-hide**: the coordinator cancels every non-quit close
+  and only hides the window — the window and its VMs stay alive, so without
+  this an invisible terminal would stay attached and keep clamping the PTY for
+  every other viewer. The close handler *starts* the tracked teardown and
+  resets navigation to the shell; reopening from the tray lands on Home.
+- **Real close**: the coordinator discards the window and builds a fresh
+  window + VM on next show; the discarded VM's workspace teardown is started
+  (tracked) as part of that close, so a rebuilt window never inherits or leaks
+  an attach.
+- **App shutdown**: the teardown seam **awaits** the tracker's pending
+  teardowns (bounded — a few seconds) before the process exits, so a detach
+  frame is not abandoned mid-write.
+
+Detach never stops the agent; reopening reattaches and the scrollback replay
+restores history. No app-side buffer persistence.
+
+Entry-point guards:
+
+- `LaunchOutcome.AgentId` is nullable. A `Started` outcome without a
+  well-formed 32-hex id does not open a workspace (and cannot call
+  `OpenSession(null!)`); it surfaces as a launch-succeeded-but-unopenable error.
+- **Auto-open carries a navigation generation.** A launch captures the current
+  generation at Start; close-to-hide, workspace disposal, and every explicit
+  navigation bump it. A launch success arriving with a stale generation opens
+  nothing — otherwise a delayed completion would attach an invisible terminal
+  after close-to-hide (defeating the clamp mitigation) or silently replace a
+  session the user opened while the launch was in flight.
 
 Naming note: the app's existing `AttachStatus`/`AttachState` describe the
 *status subscription* to the daemon. New types avoid "attach" bare — they are
@@ -238,11 +279,12 @@ TDD throughout (red-green per test):
   dropped after `AttachedReadOnly`; no writes after a terminal result; no input
   behind a queued detach; idempotent `DetachAsync`); dimension validation
   (zero, negative, > ushort range rejected locally); resize nudge after
-  read-write attach and its absence after read-only; clean `Detached` with the
-  following EOF suppressed; detach racing `Exited`/`Error`; uninitiated EOF
-  surfaced as connection loss; calls made before the run and after termination;
-  no callbacks after terminal result or dispose; a throwing callback faults the
-  run.
+  read-write attach and its absence after read-only; **`AttachOutcome`
+  linearization** — detach intent + EOF → `Detached`; a terminal frame read
+  after detach intent wins (`Exited`/`Failed`, exactly one outcome); uninitiated
+  EOF → `ConnectionLost`; the outcome observable by an ordinary awaiting caller;
+  `DisposeAsync` awaits pump completion; calls made before the run and after
+  termination; a throwing callback faults the run.
 - **Wire**: `StatusIpcJsonTests` — old JSON without `has_terminal` → `null`;
   `true`/`false`/`null` all serialize with the member present; `false` never
   omitted.
@@ -254,10 +296,17 @@ TDD throughout (red-green per test):
   null/malformed `LaunchOutcome.AgentId` guard; UTF-8 assembly with 2-, 3- and
   4-byte characters split across every frame boundary including the
   snapshot/live seam; a terminal query/response sequence forwarded read-write
-  and suppressed read-only; navigation open/close on `MainWindowViewModel`
-  including the **coordinator's actual intercepted-close path proving a Detach
-  frame and socket teardown** (not just a direct `CloseWorkspace()` call);
-  card-click and launch-success entry paths.
+  and suppressed read-only; **reattach freshness** — consume output, receive
+  `Failed`, reattach with a snapshot containing that history, assert the final
+  buffer reflects the snapshot exactly once (no old-buffer-plus-replay);
+  navigation open/close on `MainWindowViewModel` including the **coordinator's
+  actual intercepted-close path proving a Detach frame and socket teardown**
+  (not just a direct `CloseWorkspace()` call), plus the **real-close /
+  rebuilt-window path** (a fresh window inherits no attach) and **shutdown
+  awaiting pending teardowns** via the tracker; **stale-generation launches** —
+  a delayed launch success after intercepted close, and after the user opened a
+  different session, opens/replaces nothing; card-click and launch-success
+  entry paths.
 - **Terminal rendering**: a headless recorded-transcript test feeding a captured
   ANSI/TUI byte stream (colors, cursor addressing, alternate screen) through the
   decode-and-feed path, with `ReflowOnResize = false` set per upstream's own TUI
