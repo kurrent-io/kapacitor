@@ -62,6 +62,15 @@ public class DaemonShimCommandsTests {
         await Assert.That(d.Reason).IsEqualTo("unsupported_platform");
     }
 
+    // Platform beats probe: on non-macOS the refusal is unsupported_platform even when the probe
+    // is unknown — the flow expects a stable platform row, not a probe-dependent one.
+    [Test]
+    public async Task Classify_off_macos_with_unknown_probe_is_unsupported_platform_not_probe_unknown() {
+        var d = ShimEnsureClassifier.Classify(onPath: null, isMacOs: false);
+        await Assert.That(d.Action).IsEqualTo(ShimEnsureAction.Refuse);
+        await Assert.That(d.Reason).IsEqualTo("unsupported_platform");
+    }
+
     [Test]
     public async Task Classify_already_on_path_is_terminal_off_macos_too() {
         var d = ShimEnsureClassifier.Classify(onPath: true, isMacOs: false);
@@ -83,7 +92,7 @@ public class DaemonShimCommandsTests {
 
     [Test]
     public async Task Ensure_probe_unknown_fails_closed_with_coded_reason() {
-        var (exit, json, _) = await Run(["--json"], onPath: null);
+        var (exit, json, _) = await Run(["--json"], onPath: null, isMacOs: true);
 
         await Assert.That(exit).IsEqualTo(1);
         await Assert.That(json).IsNotNull();
@@ -203,7 +212,7 @@ public class DaemonShimCommandsTests {
 
     [Test]
     public async Task Ensure_human_refusal_prints_the_coded_reason_line() {
-        var (exit, _, text) = await Run([], onPath: null);
+        var (exit, _, text) = await Run([], onPath: null, isMacOs: true);
         await Assert.That(exit).IsEqualTo(1);
         await Assert.That(text).Contains("Could not determine whether kcap is on your terminal PATH");
     }

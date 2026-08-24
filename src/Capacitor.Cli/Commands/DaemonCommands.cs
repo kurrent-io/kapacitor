@@ -905,7 +905,7 @@ public sealed class DaemonCommands(DaemonStore store) {
         $"kcap-daemon binary not found next to {AppContext.BaseDirectory}. Reinstall the kcap package.";
 
     static int PrintUsage() {
-        Console.Error.WriteLine("Usage: kcap daemon <start|stop|restart|status|logs|doctor|service|shim|consent>");
+        Console.Error.WriteLine("Usage: kcap daemon <start|stop|restart|status|logs|doctor|service|shim|consent|reviewer>");
         Console.Error.WriteLine();
         Console.Error.WriteLine("  start [-d] [--name <n>]    Start the daemon (foreground, or -d for background)");
         Console.Error.WriteLine("  stop [--name <n>] [--yes]  Stop a running daemon (prompts on multi unless --yes)");

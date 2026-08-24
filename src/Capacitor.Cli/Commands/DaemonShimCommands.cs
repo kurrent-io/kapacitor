@@ -27,15 +27,16 @@ internal readonly record struct ShimEnsureDecision(ShimEnsureAction Action, stri
 
 /// <summary>
 /// Pure ladder classifier for the PATH shim (spec §5): only a POSITIVE probe finding no
-/// <c>kcap</c> on the terminal PATH, on macOS, is installable. An unknown probe and a positive
-/// "already on PATH" are both terminal rows; off-macOS there is no shim to install (the
-/// osascript-based writer is macOS-only), so the flow reflects plain "show me the line" there.
+/// <c>kcap</c> on the terminal PATH, on macOS, is installable. A positive "already on PATH" is
+/// terminal on any platform; off-macOS there is no shim to install (the osascript-based writer is
+/// macOS-only), so the platform refusal beats an unknown probe — the flow expects non-macOS to be
+/// a stable <c>unsupported_platform</c> row, not a probe-dependent one.
 /// </summary>
 internal static class ShimEnsureClassifier {
     public static ShimEnsureDecision Classify(bool? onPath, bool isMacOs) {
         if (onPath == true)  return new ShimEnsureDecision(ShimEnsureAction.AlreadyOnPath);
-        if (onPath is null)  return new ShimEnsureDecision(ShimEnsureAction.Refuse, "probe_unknown");
         if (!isMacOs)        return new ShimEnsureDecision(ShimEnsureAction.Refuse, "unsupported_platform");
+        if (onPath is null)  return new ShimEnsureDecision(ShimEnsureAction.Refuse, "probe_unknown");
         return new ShimEnsureDecision(ShimEnsureAction.Install);
     }
 }
