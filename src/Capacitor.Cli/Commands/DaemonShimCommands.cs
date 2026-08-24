@@ -61,8 +61,9 @@ public static class DaemonShimCommands {
         };
     }
 
-    /// <param name="resolveTarget">Test seam: the running CLI's own path. Production resolves
-    /// <c>Environment.ProcessPath</c> — the CLI knows where it is; the server never supplies one.</param>
+    /// <param name="resolveTarget">Test seam: the shim link target. Production resolves via
+    /// <see cref="ResolveLinkTarget"/> — the npm launcher when this CLI is part of an npm-global
+    /// install, else the running binary. The server never supplies one.</param>
     /// <param name="probe">Test seam for the login-shell probe (the production probe spawns the
     /// real <c>$SHELL</c>).</param>
     /// <param name="install">Test seam for the shim install (the production installer prompts via
@@ -86,7 +87,7 @@ public static class DaemonShimCommands {
         var json = args.Contains("--json");
         isMacOs ??= OperatingSystem.IsMacOS();
 
-        var target = (resolveTarget ?? (() => Environment.ProcessPath))();
+        var target = (resolveTarget ?? (() => ResolveLinkTarget(() => Environment.ProcessPath, File.Exists)))();
         if (string.IsNullOrEmpty(target)) {
             return await Report(new ShimEnsureJson(Capability, null, null, null, "none", "refused", "no_cli_path"), 1, json);
         }
@@ -106,6 +107,34 @@ public static class DaemonShimCommands {
         };
     }
 
+    /// <summary>
+    /// The shim's link target: the npm launcher when this CLI is part of an npm-global install,
+    /// else the running binary itself.
+    ///
+    /// <para>In the npm topology the process running this code is the platform NativeAOT binary
+    /// that <c>npm/kcap/bin/kcap.js</c> spawned, so <see cref="Environment.ProcessPath"/> resolves
+    /// to that binary — but linking <c>/usr/local/bin/kcap</c> to it would bypass the launcher for
+    /// every subsequent command. <c>kcap.js</c> is the component that intercepts <c>kcap update</c>
+    /// and runs npm; the native binary's own update path only prints "Run kcap update" when invoked
+    /// directly. The launcher is a sibling package (<c>@kurrent/kcap</c> vs the platform package
+    /// <c>@kurrent/kcap-&lt;platform&gt;</c>), so its path is derivable from the running binary's
+    /// own location with no environment lookup. When the derived launcher is absent (dev build,
+    /// standalone binary), the running image is the target.</para>
+    /// </summary>
+    internal static string? ResolveLinkTarget(Func<string?> processPath, Func<string, bool> fileExists) {
+        var native = processPath();
+        if (string.IsNullOrEmpty(native)) return null;
+
+        // .../node_modules/@kurrent/kcap-<platform>/bin/kcap  →  launcher:
+        // .../node_modules/@kurrent/kcap/bin/kcap.js
+        // From the platform package's bin dir: up 3 (bin → <platform> → @kurrent → node_modules),
+        // then the wrapper package's launcher.
+        var launcher = Path.GetFullPath(Path.Combine(
+            Path.GetDirectoryName(native) ?? string.Empty,
+            "..", "..", "..", "@kurrent", "kcap", "bin", "kcap.js"));
+        return fileExists(launcher) ? launcher : native;
+    }
+
     static async Task<int> Install(string target, bool json, ILoginShellProbe probe,
             Func<string, CancellationToken, Task<ShimResult>>? install, Func<string, ShimPreflight>? preflight) {
         // Preflight is checked here (before the admin prompt) so a conflict is a coded refusal
@@ -113,15 +142,21 @@ public static class DaemonShimCommands {
         // both flow into InstallAsync, which re-probes fresh and maps the same way. The preflight
         // seam is independent of the install seam so the conflict row is stubbable in tests.
         preflight ??= target => PathShimInstaller.Preflight(PathShimInstaller.Destination, target);
-        if (preflight(target) == ShimPreflight.Conflict) {
-            var conflict = $"a different filesystem entry already exists at {PathShimInstaller.Destination} and was left untouched";
-            return await Report(new ShimEnsureJson(Capability, target, true, false, "install", "refused", "conflict", conflict), 1, json);
-        }
+        if (preflight(target) == ShimPreflight.Conflict)
+            return await ConflictRefusal(target, json);
 
         var result = install is not null
             ? await install(target, CancellationToken.None).ConfigureAwait(false)
             : await new PathShimInstaller(new ProcessRunner(), probe)
                 .InstallAsync(target, CancellationToken.None).ConfigureAwait(false);
+
+        // The outer preflight and the installer's own checks are not atomic: an entry can appear
+        // between them, or the non-forcing `ln -s` can lose the race against one. Re-preflight
+        // now — a foreign entry present after a failed install is the coded conflict row the flow
+        // was promised, not a generic failure.
+        if (result.Outcome == ShimOutcome.Failed && preflight(target) == ShimPreflight.Conflict)
+            return await ConflictRefusal(target, json);
+
         return result.Outcome switch {
             ShimOutcome.Installed =>
                 await Report(new ShimEnsureJson(Capability, target, true, true, "install", "installed"), 0, json),
@@ -137,6 +172,11 @@ public static class DaemonShimCommands {
                 await Report(new ShimEnsureJson(Capability, target, true, null, "install", "failed",
                     Detail: result.Detail, SudoFallback: result.SudoFallback), 1, json),
         };
+    }
+
+    static Task<int> ConflictRefusal(string target, bool json) {
+        var conflict = $"a different filesystem entry already exists at {PathShimInstaller.Destination} and was left untouched";
+        return Report(new ShimEnsureJson(Capability, target, true, false, "install", "refused", "conflict", conflict), 1, json);
     }
 
     static async Task<int> Report(ShimEnsureJson dto, int exit, bool json) {

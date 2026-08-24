@@ -33,6 +33,33 @@ public class DaemonShimCommandsTests {
         return (exit, json, text);
     }
 
+    // --- Link-target resolution (npm launcher vs standalone binary) ---
+
+    [Test]
+    public async Task ResolveLinkTarget_uses_the_npm_launcher_when_this_is_an_npm_install() {
+        // .../node_modules/@kurrent/kcap-linux-x64/bin/kcap  →  launcher:
+        // .../node_modules/@kurrent/kcap/bin/kcap.js
+        var native = "/usr/local/lib/node_modules/@kurrent/kcap-linux-x64/bin/kcap";
+        var launcher = "/usr/local/lib/node_modules/@kurrent/kcap/bin/kcap.js";
+
+        var target = DaemonShimCommands.ResolveLinkTarget(() => native, p => p == launcher);
+
+        await Assert.That(target).IsEqualTo(launcher);
+    }
+
+    [Test]
+    public async Task ResolveLinkTarget_falls_back_to_the_running_binary_when_no_launcher_sibling_exists() {
+        var native = "/opt/kcap/bin/kcap";
+        var target = DaemonShimCommands.ResolveLinkTarget(() => native, _ => false);
+        await Assert.That(target).IsEqualTo(native);
+    }
+
+    [Test]
+    public async Task ResolveLinkTarget_null_process_path_is_null() {
+        var target = DaemonShimCommands.ResolveLinkTarget(() => null, _ => true);
+        await Assert.That(target).IsNull();
+    }
+
     // --- Classifier rows ---
 
     [Test]
@@ -191,6 +218,35 @@ public class DaemonShimCommandsTests {
         await Assert.That(json!.Outcome).IsEqualTo("refused");
         await Assert.That(json.Reason).IsEqualTo("conflict");
         await Assert.That(json.Detail).Contains("left untouched");
+    }
+
+    // The outer preflight and the installer's checks are not atomic — an entry can appear between
+    // them, or the non-forcing ln -s can lose the race. A failed install whose fresh preflight now
+    // sees a foreign entry is the coded conflict row the flow was promised, not a generic failure.
+    [Test]
+    public async Task Ensure_failed_install_with_conflict_now_is_still_the_coded_conflict_row() {
+        var (exit, json, _) = await Run(["--json"], onPath: false, isMacOs: true,
+            install: (_, _) => Task.FromResult(new ShimResult(ShimOutcome.Failed, "ln: /usr/local/bin/kcap: File exists", null)),
+            preflight: _ => ShimPreflight.Conflict);
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(json).IsNotNull();
+        await Assert.That(json!.Outcome).IsEqualTo("refused");
+        await Assert.That(json.Reason).IsEqualTo("conflict");
+        await Assert.That(json.Detail).Contains("left untouched");
+    }
+
+    // A failed install with NO foreign entry at the destination stays a plain failure.
+    [Test]
+    public async Task Ensure_failed_install_with_installable_preflight_stays_failed() {
+        var (exit, json, _) = await Run(["--json"], onPath: false, isMacOs: true,
+            install: (_, _) => Task.FromResult(new ShimResult(ShimOutcome.Failed, "osascript failed", null)),
+            preflight: _ => ShimPreflight.Installable);
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(json).IsNotNull();
+        await Assert.That(json!.Outcome).IsEqualTo("failed");
+        await Assert.That(json.Reason).IsNull();
     }
 
     [Test]

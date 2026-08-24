@@ -63,15 +63,18 @@ shared by app and CLI (the same one-copy rule as `ReasonRouting`):
 New verb in the `kcap daemon` group (the same group as `service`, where the flow's other
 machine-setup ladder verb lives; the shim is the CLI-visibility half of the same story):
 
-- **Resolves the target itself**: the running CLI's own binary path (`Environment.ProcessPath`) —
-  never a server-supplied path. No target → coded refusal.
+- **Resolves the target itself**: the shim link target, never a server-supplied path. For an
+  npm-global install the target is the npm **launcher** (`kcap.js`), so `kcap update` keeps its
+  launcher-driven npm upgrade; a standalone binary links to itself. No target → coded refusal.
 - **Probes**: fresh `LoginShellProbe` against the real login shell → `KcapOnPathAsync`.
 - **Decides** (pure classifier, mirroring the wizard's step matrix):
   - probe positive → **already_on_path** — nothing to do (the flow's done state).
   - probe unknown → **fail closed** — `probe_unknown`, never guessed, nothing touched.
   - probe negative → macOS only: preflight (installable → install; already-installed → re-probe;
     conflict → coded refusal); off-macOS → `unsupported_platform` refusal (the shim is
-    osascript-based; copy reflects plain "show me the line" off-macOS).
+    osascript-based; copy reflects plain "show me the line" off-macOS). A failed install is
+    re-preflighted: an entry that appeared mid-flight (the outer preflight and the installer's
+    checks are not atomic) still gets the coded `conflict` row, never a generic failure.
   - a **null re-probe after install** fails closed to `failed` ("could not re-verify") — the link
     exists, but the PATH's contents were never positively re-read, so they are not asserted.
 - **Reports machine-readably**: `--json` payload (outcome token, never prose; refusal rows carry a
