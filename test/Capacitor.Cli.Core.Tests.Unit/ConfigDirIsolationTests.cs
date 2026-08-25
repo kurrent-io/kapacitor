@@ -1,39 +1,28 @@
-using Capacitor.Tests.Helpers.Guards;
-
 namespace Capacitor.Cli.Core.Tests.Unit;
 
 /// <summary>
-/// Regression test for the config-dir isolation failure mode: <c>PathHelpers.ConfigDir</c>
-/// is <c>static readonly</c>, captured once per process. If anything in this assembly
-/// touches <see cref="PathHelpers"/> before <see cref="RepoPathStoreGlobalSetup"/>'s
-/// <c>[ModuleInitializer]</c> has pinned <c>KCAP_CONFIG_DIR</c> to an isolated temp
-/// directory, the whole test process silently reads and writes the developer's real
-/// <c>~/.config/kcap</c> for its entire lifetime instead.
+/// Regression guard: a test run must NEVER be able to resolve the developer's REAL
+/// <c>~/.config/kcap/</c>.
 ///
-/// This assertion is the load-bearing safety net: it fails whenever isolation is set
-/// up too late (e.g. reverted to a TUnit <c>[Before(Assembly)]</c> hook, which runs
-/// after Main starts and is not guaranteed to beat every other static touch), and
-/// passes whenever it is pinned via a module initializer, which the CLR guarantees
-/// runs before any type in the module is used.
+/// <para>A token left there by a real <c>kcap login</c> reads as this run's own, and the failure
+/// surfaces two layers down as a request-count assertion that never mentions auth. In-process the
+/// compiler forces a <see cref="ConfigRoot"/> to be passed; what is left to guard is a spawned
+/// <c>kcap</c>, covered by the assembly-wide pin — see <c>ConfigDirGlobalSetup</c>.</para>
 /// </summary>
 public class ConfigDirIsolationTests {
-    [Test]
-    public async Task ConfigPath_DoesNotResolveUnderTheRealUserConfigDirectory() {
-        var realConfigDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".config",
-            "kcap"
-        );
+    /// <summary>A spawn that bypasses <c>KcapProcess</c> inherits this, and must break loudly rather
+    /// than resolve somewhere writable.</summary>
+    [Test, NotInParallel]
+    public async Task The_inherited_pin_is_a_directory_that_cannot_be_created() {
+        var pinned = Environment.GetEnvironmentVariable(ConfigRoot.ConfigDirEnvVar);
+        await Assert.That(pinned).IsNotNullOrEmpty();
 
-        var resolved = PathHelpers.ConfigPath("config.json");
+        var realHomeConfig = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "kcap");
 
-        await Assert.That(Path.GetDirectoryName(resolved)).IsNotEqualTo(realConfigDir);
-    }
-
-    [Test]
-    public async Task ConfigPath_ResolvesUnderTheSharedTestConfigDirectory() {
-        var resolved = PathHelpers.ConfigPath("config.json");
-
-        await Assert.That(Path.GetDirectoryName(resolved)).IsEqualTo(RepoPathStoreGlobalSetup.SharedConfigDir);
+        var root = ConfigRoot.FromEnvironment();
+        await Assert.That(root.Directory.StartsWith(realHomeConfig, StringComparison.Ordinal)).IsFalse();
+        // ENOTDIR, because the parent is a regular file — the one failure root cannot ignore.
+        await Assert.That(() => Directory.CreateDirectory(root.Directory)).Throws<IOException>();
     }
 }

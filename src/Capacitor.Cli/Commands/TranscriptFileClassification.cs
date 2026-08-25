@@ -13,6 +13,7 @@ namespace Capacitor.Cli.Commands;
 /// </summary>
 internal static class TranscriptFileClassification {
     public static async Task<List<ImportCommand.SessionClassification>> ClassifyAsync(
+            ConfigRoot                                                   config,
             HttpClient                                                   httpClient,
             string                                                       baseUrl,
             List<(string SessionId, string FilePath, string EncodedCwd)> transcripts,
@@ -27,7 +28,7 @@ internal static class TranscriptFileClassification {
         var       tasks     = new List<Task<ImportCommand.SessionClassification>>(transcripts.Count);
 
         foreach (var (sessionId, filePath, encodedCwd) in transcripts) {
-            tasks.Add(ClassifyOneAsync(httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, excludedPaths, probeGate, vendor, onProbed, ct));
+            tasks.Add(ClassifyOneAsync(config, httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, excludedPaths, probeGate, vendor, onProbed, ct));
         }
 
         var results = await Task.WhenAll(tasks);
@@ -36,6 +37,7 @@ internal static class TranscriptFileClassification {
     }
 
     static async Task<ImportCommand.SessionClassification> ClassifyOneAsync(
+            ConfigRoot        config,
             HttpClient        httpClient,
             string            baseUrl,
             string            sessionId,
@@ -50,13 +52,14 @@ internal static class TranscriptFileClassification {
             CancellationToken ct
         ) {
         try {
-            return await ClassifyOneCoreAsync(httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, excludedPaths, probeGate, vendor, ct);
+            return await ClassifyOneCoreAsync(config, httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, excludedPaths, probeGate, vendor, ct);
         } finally {
             onProbed?.Invoke();
         }
     }
 
     static async Task<ImportCommand.SessionClassification> ClassifyOneCoreAsync(
+            ConfigRoot        config,
             HttpClient        httpClient,
             string            baseUrl,
             string            sessionId,
@@ -194,7 +197,7 @@ internal static class TranscriptFileClassification {
             if (cwd is not null) {
                 if (excludedRepos is { Length: > 0 }) {
                     // Classification only needs owner/repo for the exclusion key — skip PR detection.
-                    var repo = await RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false);
+                    var repo = await RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false);
 
                     if (repo?.Owner is not null && repo.RepoName is not null) {
                         var key = $"{repo.Owner}/{repo.RepoName}";

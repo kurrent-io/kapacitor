@@ -2,15 +2,17 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 
 // ReSharper disable MethodHasAsyncOverload
 
 namespace Capacitor.Cli.Commands;
 
-static class RecapCommand {
-    public static async Task<int> HandleRepoRecap(string baseUrl, int limit = 10) {
+class RecapCommand(ConfigRoot config, ProfileContext profiles) {
+    public async Task<int> HandleRepoRecap(int limit = 10) {
+        var baseUrl = profiles.Resolution.ServerUrl!;
         var cwd  = Directory.GetCurrentDirectory();
-        var repo = await RepositoryDetection.DetectRepositoryAsync(cwd);
+        var repo = await RepositoryDetection.DetectRepositoryAsync(config, cwd);
 
         if (repo?.Owner is null || repo.RepoName is null) {
             Console.Error.WriteLine("Not in a git repository with a remote origin.");
@@ -20,7 +22,7 @@ static class RecapCommand {
 
         var hash = ComputeRepoHash(repo.Owner, repo.RepoName);
 
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
         HttpResponseMessage resp;
 
@@ -78,8 +80,9 @@ static class RecapCommand {
         return Convert.ToHexStringLower(hash)[..16];
     }
 
-    public static async Task<int> HandleRecap(string baseUrl, string sessionId, bool chain, bool full = false) {
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+    public async Task<int> HandleRecap(string sessionId, bool chain, bool full = false) {
+        var baseUrl = profiles.Resolution.ServerUrl!;
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
         var       query      = chain ? "?chain=true" : "";
 
         HttpResponseMessage resp;
@@ -334,8 +337,9 @@ static class RecapCommand {
     /// one block per turn. Parses the server's snake_case JSON with JsonDocument
     /// (the CLI has no TurnClosed DTO and JsonDocument is AOT-safe).
     /// </summary>
-    public static async Task<int> HandlePerTurnRecap(string baseUrl, string sessionId) {
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+    public async Task<int> HandlePerTurnRecap(string sessionId) {
+        var baseUrl = profiles.Resolution.ServerUrl!;
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
         HttpResponseMessage resp;
 
@@ -405,8 +409,9 @@ static class RecapCommand {
     /// single turn (user prompt, tool calls, assistant text). The turn number is the flag's value;
     /// the session id is the usual positional (or comes from the current session).
     /// </summary>
-    public static async Task<int> HandleGetTurn(string baseUrl, string sessionId, int turnIndex) {
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+    public async Task<int> HandleGetTurn(string sessionId, int turnIndex) {
+        var baseUrl = profiles.Resolution.ServerUrl!;
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
         HttpResponseMessage resp;
 

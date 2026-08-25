@@ -4,26 +4,11 @@ using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
-[NotInParallel([
-    nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
-    nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
-])]
-public class ConfigTelemetryKeyTests : IDisposable {
-    readonly TempDir _tmp = new();
-
-    public void Dispose() {
-        TelemetryState.PathOverride    = null;
-        TelemetryDeviceId.PathOverride = null;
-        _tmp.Dispose();
-    }
-
-    // Also points TelemetryDeviceId at a fresh, colocated file: TryApplyTelemetry("telemetry",
-    // "off") -> TelemetryState.SetEnabled(false) deletes the device id file as a side effect, so
-    // leaving that static unset here would reach outside this test's own temp dir.
-    void FreshState() {
-        TelemetryState.PathOverride    = _tmp.PathTo("telemetry.json");
-        TelemetryDeviceId.PathOverride = _tmp.PathTo("telemetry-device.json");
-    }
+// TryApplyTelemetry reaches CliTelemetry.DiscardAndDisable, whose statics are process-global.
+[NotInParallel(nameof(CliTelemetry) + "." + nameof(CliTelemetry.TestSink))]
+public class ConfigTelemetryKeyTests {
+    // One root per case covers both files: SetEnabled(false) deletes the device id as a side effect.
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     [Test]
     [Arguments("off")]
@@ -31,10 +16,8 @@ public class ConfigTelemetryKeyTests : IDisposable {
     [Arguments("0")]
     [Arguments("no")]
     public async Task Telemetry_off_persists_disabled(string value) {
-        FreshState();
-
-        await Assert.That(ConfigCommand.TryApplyTelemetry("telemetry", value)).IsTrue();
-        await Assert.That(TelemetryState.PersistedEnabled()).IsFalse();
+        await Assert.That(new ConfigCommand(Config.Root).TryApplyTelemetry("telemetry", value)).IsTrue();
+        await Assert.That(TelemetryState.PersistedEnabled(Config.Root)).IsFalse();
     }
 
     [Test]
@@ -43,24 +26,18 @@ public class ConfigTelemetryKeyTests : IDisposable {
     [Arguments("1")]
     [Arguments("yes")]
     public async Task Telemetry_on_persists_enabled(string value) {
-        FreshState();
-
-        await Assert.That(ConfigCommand.TryApplyTelemetry("telemetry", value)).IsTrue();
-        await Assert.That(TelemetryState.PersistedEnabled()).IsTrue();
+        await Assert.That(new ConfigCommand(Config.Root).TryApplyTelemetry("telemetry", value)).IsTrue();
+        await Assert.That(TelemetryState.PersistedEnabled(Config.Root)).IsTrue();
     }
 
     [Test]
     public async Task Other_keys_are_not_claimed() {
-        FreshState();
-
-        await Assert.That(ConfigCommand.TryApplyTelemetry("server_url", "https://acme.kcap.ai")).IsFalse();
+        await Assert.That(new ConfigCommand(Config.Root).TryApplyTelemetry("server_url", "https://acme.kcap.ai")).IsFalse();
     }
 
     [Test]
     public async Task Invalid_telemetry_value_throws_with_an_actionable_message() {
-        FreshState();
-
-        var ex = Assert.Throws<ArgumentException>(() => ConfigCommand.TryApplyTelemetry("telemetry", "banana"));
+        var ex = Assert.Throws<ArgumentException>(() => new ConfigCommand(Config.Root).TryApplyTelemetry("telemetry", "banana"));
 
         await Assert.That(ex!.Message.Contains("on")).IsTrue();
         await Assert.That(ex.Message.Contains("off")).IsTrue();

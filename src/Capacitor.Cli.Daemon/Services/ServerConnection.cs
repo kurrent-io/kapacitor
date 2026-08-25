@@ -200,7 +200,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                 $"{config.ServerUrl.TrimEnd('/')}/hubs/sessions",
                 options => {
                     options.AccessTokenProvider = async () => {
-                        var resolution = await TokenStore.GetValidTokensForServerAsync(config.ServerUrl);
+                        var resolution = await new TokenStore(config.ConfigRoot).GetValidTokensForServerAsync(config.Profiles.Name, config.ServerUrl);
 
                         return resolution.Tokens?.AccessToken;
                     };
@@ -642,7 +642,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                 "DaemonConnect",
                 new DaemonConnect(
                     _config.Name, platform, repoPaths, _config.MaxConcurrentAgents, liveIds,
-                    _config.InstanceId, _config.Version, _config.SupportedVendors, MachineId.Get(), liveAgents,
+                    _config.InstanceId, _config.Version, _config.SupportedVendors, new MachineId(_config.ConfigRoot).Get(), liveAgents,
                     _config.UnattendedVendors,
                     // Phase B2-b (sequenced-settlement design §4.2.3/§4.2.4): advertise the durable
                     // coverage boot-chain verdict plus the un-acked resolved-candidates ledger snapshot,
@@ -713,7 +713,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     internal Func<Task>? OnRegisteredHook { get; set; }
 
     async Task<string[]> MergeRepoPathsAsync() {
-        var persisted = await RepoPathStore.GetSortedPathsAsync();
+        var persisted = await new RepoPathStore(_config.ConfigRoot).GetSortedPathsAsync();
 
         if (_config.AllowedRepoPaths.Length == 0)
             return persisted;
@@ -1465,7 +1465,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                 while (!ct.IsCancellationRequested) {
                     try {
                         _httpClient ??= new();
-                        var resolution = await TokenStore.GetValidTokensForServerAsync(_config.ServerUrl, ct);
+                        var resolution = await new TokenStore(_config.ConfigRoot).GetValidTokensForServerAsync(_config.Profiles.Name, _config.ServerUrl, ct);
 
                         if (resolution.Tokens?.AccessToken is not null) {
                             _httpClient.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);

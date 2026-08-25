@@ -24,7 +24,7 @@ namespace Capacitor.Cli.Commands.Harness;
 /// are no-ops here (the watcher already tails the transcript continuously).
 ///
 /// Fail-open throughout — a kcap/server problem must never disrupt the Antigravity IDE. The
-/// session-start POST goes through <see cref="AgentHookPoster.PostOrSpoolAsync(string, string, string, string, HookSpool, string, string)"/> (Task
+/// session-start POST goes through <see cref="AgentHookPoster.PostOrSpoolAsync(string, string, string, HookSpool, string, string)"/> (Task
 /// 6): a lapsed/outage POST is durably spooled for a later drain, and the watcher still spawns
 /// (<see cref="SpawnGateForTest"/>) — capture must not depend on lifecycle-POST delivery.
 /// Antigravity conversation ids are dashed UUIDs; kcap canonicalizes them to the DASHLESS form
@@ -32,24 +32,24 @@ namespace Capacitor.Cli.Commands.Harness;
 /// dashed id lives on only in the transcript file path). Historical import canonicalizes the
 /// same way, so a conversation captured live and later re-imported dedupes to one stream.
 /// </summary>
-static class AntigravityHookCommand {
-    public static Task<int> Handle(string baseUrl, string[] args, long processStart = 0) =>
-        Handle(baseUrl, args, Console.In, Console.Out, processStart);
+sealed class AntigravityHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+    readonly WatcherManager  _watchers = new(config, profiles);
+    readonly AgentHookPoster _poster   = new(config, profiles);
 
-    internal static Task<int> Handle(string baseUrl, string[] args, TextReader stdin, TextWriter stdout,
-            long processStart = 0,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null,
-            Func<string?>?                                      workspaceFallback   = null) =>
-        HandleCore(baseUrl, args, stdin, stdout,
-            processStart == 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : processStart,
-            memoryClientFactory, memoryStoreFactory, workspaceFallback);
+    string Url => profiles.Resolution.ServerUrl!;
 
-    static async Task<int> HandleCore(string baseUrl, string[] args, TextReader stdin, TextWriter stdout,
-            long processStart,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory,
-            Func<string?>?                                      workspaceFallback) {
+    /// <summary>Well inside the 15s <c>AntigravityHooks</c> writes into the vendor's hooks.json, which
+    /// kills the hook outright: PreInvocation blocks the turn, and that firing never retries.</summary>
+    static readonly TimeSpan Ceiling = TimeSpan.FromSeconds(5);
+
+    public Task<int> Handle(string[] args) => Handle(args, Console.In, Console.Out);
+
+    internal async Task<int> Handle(
+            string[]       args,
+            TextReader     stdin,
+            TextWriter     stdout,
+            Func<string?>? workspaceFallback = null
+        ) {
         var eventName = EventArg(args);
         if (string.IsNullOrWhiteSpace(eventName)) {
             // Control hooks must always exit 0 (a non-zero exit makes Antigravity treat the
@@ -87,18 +87,17 @@ static class AntigravityHookCommand {
 
         // Mirror the disabled-session fast path: `kcap disable` must stop every POST
         // and watcher restart for the session.
-        if (DisabledSessions.IsDisabled(sessionId)) return 0;
+        if (DisabledSessions.IsDisabled(sessionId, config)) return 0;
 
-        var activeProfile = await AppConfig.GetActiveProfileAsync();
+        var activeProfile = profiles.Effective;
 
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
          && PathExclusion.IsExcluded(cwd, excludedPaths)) {
             return 0;
         }
 
-        return await HandleSessionStart(
-            baseUrl, sessionId, transcriptPath!, cwd, payload, activeProfile,
-            stdout, processStart, memoryClientFactory, memoryStoreFactory);
+        var hookBudget = clock.Budget(Ceiling);
+        return await HandleSessionStart(sessionId, transcriptPath!, cwd, payload, activeProfile, stdout, hookBudget);
     }
 
     /// <summary>
@@ -131,17 +130,14 @@ static class AntigravityHookCommand {
         writer.Write(payload);
     }
 
-    static async Task<int> HandleSessionStart(
-            string      baseUrl,
+    async Task<int> HandleSessionStart(
             string      sessionId,
             string      transcriptPath,
             string?     cwd,
             JsonObject  payload,
             Profile?    activeProfile,
             TextWriter  stdout,
-            long        processStart,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory
+            HookBudget  budget
         ) {
         var forwarded = new JsonObject {
             ["hook_event_name"] = "sessionStart",
@@ -168,12 +164,12 @@ static class AntigravityHookCommand {
         if (activeProfile?.DefaultVisibility is { } visibility)
             forwarded["default_visibility"] = visibility;
 
-        SessionStartInventory.Stamp(forwarded);
-        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(forwarded.ToJsonString());
+        SessionStartInventory.Stamp(forwarded, config);
+        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
-         && await RepoExclusion.IsExcludedAsync(enriched, excludedRepos)) {
-            DisabledSessions.Mark(sessionId);
+         && await RepoExclusion.IsExcludedAsync(config, enriched, excludedRepos)) {
+            DisabledSessions.Mark(sessionId, config);
             return 0;
         }
 
@@ -185,12 +181,10 @@ static class AntigravityHookCommand {
 
         // Start the memory fetch so it OVERLAPS the lifecycle POST. Never before it, and never
         // awaited before it — the POST is what capture depends on.
-        var memoryTask = StartMemoryIndexTask(
-            baseUrl, sessionId, scopeRoot,
+        var memoryTask = StartMemoryIndexTask(sessionId, scopeRoot,
             activeProfile?.DisableMemoryIndex is true,
             activeProfile?.DisableSessionGuidelines is true,
-            HookBudget.Remaining(processStart, "session-start"),
-            memoryClientFactory, memoryStoreFactory);
+            budget.Remaining);
 
         // Task 6: spawn-before-post. Route through the shared spool-aware poster (which
         // replaced this dispatcher's former bespoke poster) — a lapse/outage durably spools the
@@ -202,9 +196,8 @@ static class AntigravityHookCommand {
         // unreachable server must never leave the once-per-conversation lease committed while the
         // fragment it paid for is still stuck behind the POST — the vendor kills the hook at its own
         // timeout, and that firing never retries.
-        var spool    = new HookSpool(PathHelpers.ConfigPath("spool"));
-        var postTask = AgentHookPoster.PostOrSpoolAsync(
-            baseUrl, "session-start/antigravity", enriched, "antigravity-hook",
+        var spool    = new HookSpool(config);
+        var postTask = _poster.PostOrSpoolAsync("session-start/antigravity", enriched, "antigravity-hook",
             spool, sessionId, route: "session-start/antigravity");
 
         // The fragment reaches stdout as soon as the bounded fetch resolves — before the POST is
@@ -212,10 +205,10 @@ static class AntigravityHookCommand {
         // EnsureWatcherRunning stall can strand an already-committed injection. AwaitBounded already
         // subtracts HookBudget.Safety — do NOT subtract it again. Written even when the watcher-spawn
         // gate below returns early — a withheld watcher must not suppress injection.
-        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
+        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = HarnessNudgeEmitter.Combine(
             WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Antigravity, sessionId, activeProfile?.DisableWorkItemsNudge is true),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true));
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config));
         WritePreInvocationOutput(stdout, fragment, workItemsNudge);
         await stdout.FlushAsync();
 
@@ -226,7 +219,7 @@ static class AntigravityHookCommand {
         HookPostOutcome outcome;
 
         try {
-            outcome = await postTask.WaitAsync(HookBudget.Remaining(processStart, "session-start"));
+            outcome = await postTask.WaitAsync(budget.Remaining);
         } catch (TimeoutException) {
             outcome = spool.Append(sessionId, "session-start/antigravity", enriched)
                 ? HookPostOutcome.Spooled
@@ -235,7 +228,7 @@ static class AntigravityHookCommand {
 
         // Fail-open: a non-zero exit would surface as a failed hook; skip the watcher
         // this firing and let the next PreInvocation retry.
-        if (!SpawnGateForTest(outcome, baseUrl)) return 0;
+        if (!SpawnGateForTest(outcome, Url)) return 0;
 
         // Watcher key = the dashless session id (kcap watch strips dashes too, so the pid
         // file + the spawned watcher's stream all agree). The dashed conversation id lives on
@@ -245,11 +238,10 @@ static class AntigravityHookCommand {
         // injection and the zero exit — a stall here would discard an already-written fragment. The
         // stale-watcher path can wait up to 5s for a graceful kill.
         try {
-            await WatcherManager.EnsureWatcherRunning(
-                baseUrl, sessionId, transcriptPath,
+            await _watchers.EnsureWatcherRunning(sessionId, transcriptPath,
                 agentId: null, sessionIdOverride: null, cwd: cwd,
                 skipTitle: false, vendor: "antigravity"
-            ).WaitAsync(HookBudget.Remaining(processStart, "session-start"));
+            ).WaitAsync(budget.Remaining);
         } catch (TimeoutException) {
             // Budget exhausted. The next PreInvocation ensures the watcher.
         }
@@ -259,8 +251,8 @@ static class AntigravityHookCommand {
 
     /// <summary>Test seam mirroring <see cref="AgentHookPoster.ShouldSpawnAfter"/> — capture must
     /// start on <c>Posted</c> OR <c>Spooled</c>, never gated behind lifecycle-POST delivery.</summary>
-    internal static bool SpawnGateForTest(HookPostOutcome o, string? baseUrl)
-        => AgentHookPoster.ShouldSpawnAfter(o, baseUrl);
+    internal static bool SpawnGateForTest(HookPostOutcome o, string? Url)
+        => AgentHookPoster.ShouldSpawnAfter(o, Url);
 
     /// <summary>
     /// The lifecycle this adapter reports. PreInvocation fires ONCE PER INVOCATION within a
@@ -290,29 +282,27 @@ static class AntigravityHookCommand {
     /// factory's EnsureAbsolute calls Environment.Exit(2) on an unusable base url — which would kill
     /// the hook before it can write its output.</para>
     /// </summary>
-    internal static Task<string?> StartMemoryIndexTask(
-            string     baseUrl,
+    internal Task<string?> StartMemoryIndexTask(
             string     sessionId,
             string?    scopeRoot,
             bool       disabled,
             bool       guidelinesDisabled,
-            TimeSpan   budget,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+            TimeSpan   budget) {
         if ((disabled && guidelinesDisabled) || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
          || budget <= TimeSpan.Zero
-         || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
+         || !SessionStartMemoryHookSupport.CanAttempt(Url))
             return Task.FromResult<string?>(null);
 
         try {
-            var store    = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var store    = SessionStartMemoryLeaseStore.Create(config, clock.Time);
             var provider = SessionStartMemoryHookSupport.CompositeProvider(
-                memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
-                disposeClients: memoryClientFactory is null);
+                config,
+                SessionStartMemoryHookSupport.ClientFactory(config, profiles, Url),
+                disposeClients: true);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
                 LifecycleFor(sessionId),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None,
+                new SessionStartMemoryContextRequest(Url, scopeRoot, disabled, budget, CancellationToken.None,
                     GuidelinesDisabled: guidelinesDisabled));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);

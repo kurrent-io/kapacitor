@@ -11,19 +11,9 @@ public class WorkOSFlowLadderTests {
     const string Device = """{"device_code":"dc","user_code":"WXYZ-1234","verification_uri":"https://signin.example/device","interval":0,"expires_in":900}""";
 
     /// <summary>
-    /// Every device-rung test needs one. The static SystemBrowser.TryOpen is the default, so a fixture
+    /// Every device-rung test needs one. Nothing defaults to the system browser any more, so a fixture
     /// carrying a real https verification_uri opens actual tabs on a developer's machine.
     /// </summary>
-    sealed class RecordingOpener {
-        public List<string> Opened { get; } = [];
-
-        public bool Open(string url) {
-            Opened.Add(url);
-
-            return false;
-        }
-    }
-
     static WireMockServer DeviceGrantServer(string authenticate = """{"access_token":"acc","refresh_token":"rt","organization_id":"org_a"}""") {
         var server = WireMockServer.Start();
         server.Given(Request.Create().WithPath("/user_management/authorize/device").UsingPost())
@@ -70,7 +60,7 @@ public class WorkOSFlowLadderTests {
     public async Task The_browser_offers_the_hint_only_when_one_is_supplied(bool withHint, int expectedNotices) {
         var progress = new RecordingAuthProgress();
         var browser  = new LoopbackBrowser(
-            openBrowser: _ => true, progress: progress,
+            launcher: new RecordingBrowser(), progress: progress,
             hint: withHint ? OAuthLoginFlow.WorkOSBrowserHint() : null);
 
         var       port = OAuthLoginFlow.GetAvailablePort();
@@ -97,16 +87,15 @@ public class WorkOSFlowLadderTests {
         using var http    = new HttpClient();
         var       browser = new FakeBrowser(_ => throw new InvalidOperationException("the browser must not be invoked"));
 
-        var opener = new RecordingOpener();
+        var opener = new RecordingBrowser(opens: false);
 
         var result = await OAuthLoginFlow.AcquireWorkOSAsync(
-            http, "client_d", organizationId: null, forceDevice: true, browser,
-            server.Urls[0], progress: new RecordingAuthProgress(), keys: ScriptedKeyWatcher.Blind(),
-            openBrowser: opener.Open);
+            http, "client_d", organizationId: null, forceDevice: true, opener, browser,
+            server.Urls[0], progress: new RecordingAuthProgress(), keys: ScriptedKeyWatcher.Blind());
 
         await Assert.That(result!.AccessToken).IsEqualTo("acc");
         // The device page, never the authorize URL: "opens no browser" means no LOOPBACK browser.
-        await Assert.That(opener.Opened).IsEquivalentTo(["https://signin.example/device"]);
+        await Assert.That(opener.Urls).IsEquivalentTo(["https://signin.example/device"]);
     }
 
     [Test]
@@ -117,8 +106,8 @@ public class WorkOSFlowLadderTests {
         var       progress = new RecordingAuthProgress();
 
         var result = await OAuthLoginFlow.AcquireWorkOSAsync(
-            http, "client_d", organizationId: null, forceDevice: false, new HangingBrowser(),
-            server.Urls[0], progress: progress, keys: keys, openBrowser: _ => false);
+            http, "client_d", organizationId: null, forceDevice: false, new RecordingBrowser(opens: false), new HangingBrowser(),
+            server.Urls[0], progress: progress, keys: keys);
 
         await Assert.That(result!.AccessToken).IsEqualTo("acc");
         await Assert.That(progress.DeviceCodes).Count().IsEqualTo(1);
@@ -140,8 +129,8 @@ public class WorkOSFlowLadderTests {
         var       keys   = new ScriptedKeyWatcher('d', '\r', '\n');
 
         await OAuthLoginFlow.AcquireWorkOSAsync(
-            http, "client_d", organizationId: null, forceDevice: false, new HangingBrowser(),
-            server.Urls[0], progress: new RecordingAuthProgress(), keys: keys, openBrowser: _ => false);
+            http, "client_d", organizationId: null, forceDevice: false, new RecordingBrowser(opens: false), new HangingBrowser(),
+            server.Urls[0], progress: new RecordingAuthProgress(), keys: keys);
 
         await Assert.That(keys.Drained).IsEqualTo(2);
         await Assert.That(keys.KeyAvailable).IsFalse();
@@ -155,7 +144,7 @@ public class WorkOSFlowLadderTests {
         using var http   = new HttpClient();
 
         var result = await OAuthLoginFlow.AcquireWorkOSAsync(
-            http, "client_d", organizationId: null, forceDevice: false,
+            http, "client_d", organizationId: null, forceDevice: false, new RecordingBrowser(),
             FakeBrowser.NonSuccess(Duende.IdentityModel.OidcClient.Browser.BrowserResultType.UserCancel),
             server.Urls[0], progress: new RecordingAuthProgress(), keys: ScriptedKeyWatcher.Blind());
 
@@ -172,9 +161,9 @@ public class WorkOSFlowLadderTests {
         var       progress = new RecordingAuthProgress();
 
         var result = await OAuthLoginFlow.AcquireWorkOSAsync(
-            http, "client_d", organizationId: null, forceDevice: false,
+            http, "client_d", organizationId: null, forceDevice: false, new RecordingBrowser(opens: false),
             new FakeBrowser(_ => throw new HttpListenerException(5, "Access is denied")),
-            server.Urls[0], progress: progress, keys: ScriptedKeyWatcher.Blind(), openBrowser: _ => false);
+            server.Urls[0], progress: progress, keys: ScriptedKeyWatcher.Blind());
 
         await Assert.That(result!.AccessToken).IsEqualTo("acc");
         await Assert.That(string.Join("\n", progress.Errors)).Contains("Could not bind loopback listener");
@@ -194,8 +183,8 @@ public class WorkOSFlowLadderTests {
 
         var result = await OAuthLoginFlow.AcquireWorkOSAsync(
             http, "client_d", organizationId: null, forceDevice: false,
-            new FakeBrowser(_ => throw new BrowserLaunchException()),
-            server.Urls[0], progress: progress, keys: ScriptedKeyWatcher.Blind(), openBrowser: _ => false);
+            new RecordingBrowser(opens: false), new FakeBrowser(_ => throw new BrowserLaunchException()),
+            server.Urls[0], progress: progress, keys: ScriptedKeyWatcher.Blind());
 
         await Assert.That(result!.AccessToken).IsEqualTo("acc");
         await Assert.That(string.Join("\n", progress.Notices)).Contains("use anywhere");
@@ -211,7 +200,7 @@ public class WorkOSFlowLadderTests {
     [Test]
     public async Task The_loopback_browser_gives_up_silently_when_it_cannot_launch() {
         var progress = new RecordingAuthProgress();
-        var browser  = new LoopbackBrowser(openBrowser: _ => false, progress: progress);
+        var browser  = new LoopbackBrowser(new RecordingBrowser(opens: false), progress);
         var port     = OAuthLoginFlow.GetAvailablePort();
 
         await Assert.That(async () => await browser.InvokeAsync(
@@ -234,7 +223,8 @@ public class WorkOSFlowLadderTests {
         await cts.CancelAsync();
 
         await Assert.That(async () => await OAuthLoginFlow.AcquireWorkOSAsync(
-                  http, "client_d", organizationId: null, forceDevice: false, new HangingBrowser(),
+                  http, "client_d", organizationId: null, forceDevice: false,
+                  new RecordingBrowser(), new HangingBrowser(),
                   server.Urls[0], cts.Token, new RecordingAuthProgress(), ScriptedKeyWatcher.Blind()))
             .Throws<OperationCanceledException>();
     }

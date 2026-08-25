@@ -21,6 +21,15 @@ public class WatcherHeartbeatStalenessTests {
     static readonly TempDir Transcripts = new();
     static string TempDir => Tmp.Path;
 
+    // KCAP_WATCHER_DIR is pinned below and wins over the root, so nothing here reads it — it points
+    // at the same temp directory anyway, so a lapse in that precedence cannot escape into the
+    // developer's own config.
+    static readonly ConfigRoot Root = new(Tmp.Path);
+
+    // One manager over that root and the URL these spawns target — the two values production hands
+    // it, so a watcher here can never point at a second server.
+    static readonly WatcherManager Watchers = new(Root, Resolutions.At("http://localhost:0", Root));
+
     static string? _previousWatcherDir;
 
     [Before(Class)]
@@ -67,7 +76,7 @@ public class WatcherHeartbeatStalenessTests {
         var longAgo = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(5);
         File.WriteAllText(pidFile, pid.ToString(CultureInfo.InvariantCulture));
         WatcherHeartbeat.Touch(Path.Combine(TempDir, $"{key}.started"), longAgo);
-        WatcherHeartbeat.Touch(Cli.WatcherManager.GetHeartbeatFilePath(key), longAgo);
+        WatcherHeartbeat.Touch(Watchers.GetHeartbeatFilePath(key), longAgo);
     }
 
     [Test]
@@ -78,7 +87,7 @@ public class WatcherHeartbeatStalenessTests {
         try {
             WriteStaleWatcherFiles(key, pidFile, dummy.Id);
 
-            await Assert.That(Cli.WatcherManager.IsWatcherAlive(key)).IsFalse();
+            await Assert.That(Watchers.IsWatcherAlive(key)).IsFalse();
         } finally {
             try { dummy.Kill(entireProcessTree: true); } catch { /* best effort */ }
         }
@@ -93,9 +102,9 @@ public class WatcherHeartbeatStalenessTests {
             File.WriteAllText(pidFile, dummy.Id.ToString(CultureInfo.InvariantCulture));
             var now = DateTimeOffset.UtcNow;
             WatcherHeartbeat.Touch(Path.Combine(TempDir, $"{key}.started"), now - TimeSpan.FromMinutes(5));
-            WatcherHeartbeat.Touch(Cli.WatcherManager.GetHeartbeatFilePath(key), now);
+            WatcherHeartbeat.Touch(Watchers.GetHeartbeatFilePath(key), now);
 
-            await Assert.That(Cli.WatcherManager.IsWatcherAlive(key)).IsTrue();
+            await Assert.That(Watchers.IsWatcherAlive(key)).IsTrue();
         } finally {
             try { dummy.Kill(entireProcessTree: true); } catch { /* best effort */ }
         }
@@ -111,7 +120,7 @@ public class WatcherHeartbeatStalenessTests {
             File.WriteAllText(pidFile, dummy.Id.ToString(CultureInfo.InvariantCulture));
             WatcherHeartbeat.Touch(Path.Combine(TempDir, $"{key}.started"), DateTimeOffset.UtcNow);
 
-            await Assert.That(Cli.WatcherManager.IsWatcherAlive(key)).IsTrue();
+            await Assert.That(Watchers.IsWatcherAlive(key)).IsTrue();
         } finally {
             try { dummy.Kill(entireProcessTree: true); } catch { /* best effort */ }
         }
@@ -137,7 +146,7 @@ public class WatcherHeartbeatStalenessTests {
             File.WriteAllText(Path.Combine(TempDir, $"{spawnedKey}.pid"), Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
             var now = DateTimeOffset.UtcNow;
             WatcherHeartbeat.Touch(Path.Combine(TempDir, $"{spawnedKey}.started"), now);
-            WatcherHeartbeat.Touch(Cli.WatcherManager.GetHeartbeatFilePath(spawnedKey), now);
+            WatcherHeartbeat.Touch(Watchers.GetHeartbeatFilePath(spawnedKey), now);
         };
 
         try {
@@ -145,12 +154,12 @@ public class WatcherHeartbeatStalenessTests {
 
             // First caller acquires the spawn lock, kills the dummy, and blocks inside the
             // fake spawn until we release it — holding the lock open for the whole window.
-            var first = Cli.WatcherManager.EnsureWatcherRunning("http://localhost:0", key, transcriptPath, agentId: null);
+            var first = Watchers.EnsureWatcherRunning(key, transcriptPath, agentId: null);
             await firstEntered.Task;
 
             // Second caller races the SAME stale key while the first still holds the lock:
             // it must find the lock contended and return without spawning.
-            var second = Cli.WatcherManager.EnsureWatcherRunning("http://localhost:0", key, transcriptPath, agentId: null);
+            var second = Watchers.EnsureWatcherRunning(key, transcriptPath, agentId: null);
             await second;
 
             await Assert.That(spawnCount).IsEqualTo(1);
@@ -159,7 +168,7 @@ public class WatcherHeartbeatStalenessTests {
             await first;
 
             await Assert.That(spawnCount).IsEqualTo(1);
-            await Assert.That(Cli.WatcherManager.IsWatcherAlive(key)).IsTrue();
+            await Assert.That(Watchers.IsWatcherAlive(key)).IsTrue();
         } finally {
             release.TrySetResult();
             try { dummy.Kill(entireProcessTree: true); } catch { /* best effort — likely already dead */ }
@@ -173,7 +182,7 @@ public class WatcherHeartbeatStalenessTests {
         var (key, _, pidFile) = NewKey("kill-cleanup");
         using var dummy = StartDummyProcess();
 
-        var heartbeat = Cli.WatcherManager.GetHeartbeatFilePath(key);
+        var heartbeat = Watchers.GetHeartbeatFilePath(key);
         var started   = Path.Combine(TempDir, $"{key}.started");
 
         try {
@@ -181,7 +190,7 @@ public class WatcherHeartbeatStalenessTests {
             WatcherHeartbeat.Touch(started, DateTimeOffset.UtcNow);
             WatcherHeartbeat.Touch(heartbeat, DateTimeOffset.UtcNow);
 
-            await Cli.WatcherManager.KillWatcher(key);
+            await Watchers.KillWatcher(key);
 
             await Assert.That(File.Exists(pidFile)).IsFalse();
             await Assert.That(File.Exists(heartbeat)).IsFalse();
@@ -196,7 +205,7 @@ public class WatcherHeartbeatStalenessTests {
         // Cleanup is the one place spawn locks are swept (KillWatcher intentionally leaves them
         // to avoid the unlink-race). Verify all three auxiliary kinds are removed, including orphans.
         var key       = $"purge-{Guid.NewGuid():N}";
-        var heartbeat = Cli.WatcherManager.GetHeartbeatFilePath(key);
+        var heartbeat = Watchers.GetHeartbeatFilePath(key);
         var started   = Path.Combine(TempDir, $"{key}.started");
         var spawnlock = Path.Combine(TempDir, $"{key}.spawnlock");
 
@@ -204,7 +213,7 @@ public class WatcherHeartbeatStalenessTests {
         WatcherHeartbeat.Touch(started, DateTimeOffset.UtcNow);
         File.WriteAllText(spawnlock, "");
 
-        var removed = Cli.WatcherManager.PurgeAuxiliaryFiles();
+        var removed = Watchers.PurgeAuxiliaryFiles();
 
         await Assert.That(removed).IsGreaterThanOrEqualTo(3);
         await Assert.That(File.Exists(heartbeat)).IsFalse();
@@ -224,9 +233,9 @@ public class WatcherHeartbeatStalenessTests {
             File.WriteAllText(pidFile, dummy.Id.ToString(CultureInfo.InvariantCulture));
             var now = DateTimeOffset.UtcNow;
             WatcherHeartbeat.Touch(Path.Combine(TempDir, $"{key}.started"), now - TimeSpan.FromMinutes(5));
-            WatcherHeartbeat.Touch(Cli.WatcherManager.GetHeartbeatFilePath(key), now);
+            WatcherHeartbeat.Touch(Watchers.GetHeartbeatFilePath(key), now);
 
-            await Cli.WatcherManager.EnsureWatcherRunning("http://localhost:0", key, transcriptPath, agentId: null);
+            await Watchers.EnsureWatcherRunning(key, transcriptPath, agentId: null);
 
             await Assert.That(spawned).IsFalse();
             await Assert.That(dummy.HasExited).IsFalse();

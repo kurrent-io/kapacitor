@@ -5,16 +5,13 @@ using TUnit.Assertions.Enums;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Telemetry;
 
-// Shares the TelemetryState.PathOverride and TelemetryDeviceId.PathOverride lock keys with
-// TelemetryStateTests/CliTelemetryTests/TelemetryDeviceIdTests (Task 2's convention, extended for
-// the device-id split): keying on the resource, not the class, so any test class touching either
-// shared static serialises against every other one.
+// CliTelemetry's statics (TestSink, the Initialize-set state) stay process-global; the
+// telemetry files live under this test's own root.
 [NotInParallel([
-    nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
-    nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
+    nameof(CliTelemetry) + "." + nameof(CliTelemetry.TestSink)
 ])]
 public class SetupFunnelTests {
-    [TempDir] public required TempDir Tmp { get; init; }
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     // CliTelemetry holds process-global static state (Enabled, TestSink, ...). A prior test
     // elsewhere in the suite (e.g. one that persists `telemetry off`) can leave Enabled=false
@@ -24,13 +21,11 @@ public class SetupFunnelTests {
     public void ResetTelemetry() => CliTelemetry.Reset();
 
     List<TelemetryEvent> StartCapturing() {
-        TelemetryState.PathOverride    = Tmp.PathTo("telemetry.json");
-        TelemetryDeviceId.PathOverride = Tmp.PathTo("telemetry-device.json");
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
-        CliTelemetry.Initialize("setup", null, loggedIn: false);
+        CliTelemetry.Initialize("setup", null, loggedIn: false, Config.Root);
 
-        TelemetryTestGuards.AssertEnabled("setup");
+        TelemetryTestGuards.AssertEnabled("setup", Config.Root);
 
         sink.Clear();   // drop cli_first_run
 

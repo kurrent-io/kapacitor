@@ -1,11 +1,13 @@
 using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Commands;
 
-static class ErrorsCommand {
-    public static async Task<int> HandleErrors(string baseUrl, string sessionId, bool chain) {
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+class ErrorsCommand(ConfigRoot config, ProfileContext profiles) {
+    public async Task<int> HandleErrors(string sessionId, bool chain) {
+        var       baseUrl    = profiles.Resolution.ServerUrl!;
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
         var       query      = chain ? "?chain=true" : "";
 
         HttpResponseMessage resp;

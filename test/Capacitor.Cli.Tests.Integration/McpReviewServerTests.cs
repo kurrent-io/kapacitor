@@ -14,18 +14,14 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class McpReviewServerTests : IDisposable {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+    [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
+    [TempDir]         public required TempDir         Tmp     { get; init; }
 
     readonly WireMockServer _server           = WireMockServer.Start();
-    readonly TempDir        _tmp              = new();
-    readonly string         _cfgDir;
-    readonly string         _cwdDir;
     readonly List<Process>  _spawnedProcesses = [];
 
-    public McpReviewServerTests() {
-        _cfgDir = _tmp.CreateDir("cfg");
-        _cwdDir = _tmp.CreateDir("cwd");
-        InitGitRepo(_cwdDir);
-    }
+    [Before(Test)]
+    public void InitWorkspaceRepo() => InitGitRepo(Tmp.Path);
 
     public void Dispose() {
         foreach (var p in _spawnedProcesses) {
@@ -38,7 +34,6 @@ public class McpReviewServerTests : IDisposable {
         }
 
         _server.Stop();
-        _tmp.Dispose();
     }
 
     static void InitGitRepo(string dir) {
@@ -65,10 +60,9 @@ public class McpReviewServerTests : IDisposable {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "review");
-        psi.WorkingDirectory = _cwdDir;
+        var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "mcp", "review");
+        psi.WorkingDirectory = Tmp.Path;
         psi.Environment["KCAP_URL"] = urlOverride ?? _server.Url!;
-        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap process");
         _spawnedProcesses.Add(process);

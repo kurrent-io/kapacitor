@@ -6,8 +6,10 @@ using System.Text;
 namespace Capacitor.Cli.Core;
 
 /// <summary>
-/// Cross-process mutual exclusion among kcap writers of one shared config file (Claude's
-/// <c>~/.claude.json</c>, Codex's <c>config.toml</c>). EVERY kcap writer of such a file must
+/// Cross-process mutual exclusion among kcap writers of one shared config file. For a file under a
+/// <see cref="ConfigRoot"/>, go through <see cref="ConfigRoot.AcquireLock"/> instead — this entry
+/// point is for the foreign paths that have no root (Claude's <c>~/.claude.json</c>, Codex's
+/// <c>config.toml</c>). EVERY kcap writer of such a file must
 /// acquire this lock for its read-modify-write — an in-process <c>lock</c> serializes only one
 /// process, and a writer outside the lock can commit between another writer's re-read and
 /// rename, losing its update.

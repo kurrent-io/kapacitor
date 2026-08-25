@@ -18,7 +18,8 @@ sealed record CommitRequest(
 /// <summary>The ordered commit boundary: the before-commit hook is the last cancellable await, after which every publication is uncancellable.</summary>
 static class CommitBoundary {
     internal static async Task<AuthResult> CommitAsync(
-            CommitRequest                                              request,
+            ConfigRoot                                                  root,
+            CommitRequest                                               request,
             Func<IReadOnlyList<AuthIdentity>, CancellationToken, Task>? beforeCommit,
             IAuthProgress                                               progress,
             CancellationToken                                           ct) {
@@ -42,8 +43,8 @@ static class CommitBoundary {
         if (configPublished) {
             try {
                 // Profile write and stamp are deliberately ONE mutation: no window where a profile exists unstamped.
-                await ConfigMutator.MutateAsync(config => Stamp(request.ConfigMutation?.Invoke(config) ?? config, request),
-                    CancellationToken.None);
+                await ConfigMutator.MutateAsync(root,
+                    config => Stamp(request.ConfigMutation?.Invoke(config) ?? config, request), CancellationToken.None);
             } catch (Exception ex) {
                 // The config commit is the boundary's first durable step: if it threw, nothing was published.
                 progress.Error($"Error: sign-in could not be saved: {ex.Message}");
@@ -121,6 +122,11 @@ sealed record LoginTarget(string Profile, string CanonicalServer, string ServerU
 /// discover and join a tenant. Every step up to the commit boundary is cancellable and renders
 /// through <paramref name="progress"/> — nothing here touches the console.
 /// </summary>
+/// <param name="launcher">
+/// Opens the sign-in page for the device grant and the loopback flow. Required rather than
+/// defaulted to the system browser: the flows below reach it on every interactive route, so a
+/// caller that says nothing would open a page — under test, on the developer's machine.
+/// </param>
 /// <param name="beforeCommit">
 /// Runs with every identity the boundary is about to publish, before anything durable exists;
 /// throwing aborts the operation with nothing written (the caller may retry).
@@ -130,7 +136,9 @@ sealed record LoginTarget(string Profile, string CanonicalServer, string ServerU
 /// supplied factory owns its clients' lifetime; the default creates and disposes one per operation.
 /// </param>
 public sealed class OnboardingFacade(
+        ConfigRoot                                                  root,
         IAuthProgress                                               progress,
+        IBrowserLauncher                                            launcher,
         ITenantPicker                                               picker,
         ITenantProvisioner?                                         provisioner,
         Func<IReadOnlyList<AuthIdentity>, CancellationToken, Task>? beforeCommit,
@@ -155,7 +163,7 @@ public sealed class OnboardingFacade(
     /// provider stamp, false leaves config untouched (a <c>None</c> server then has nothing to sign in with).
     /// </param>
     public async Task<AuthResult> LoginAsync(
-            string serverUrl, bool forceDevice, string? profile, CancellationToken ct, bool adoptServer = false) {
+            string serverUrl, bool forceDevice, string profile, CancellationToken ct, bool adoptServer = false) {
         var http = httpFactory?.Invoke() ?? new HttpClient();
 
         try {
@@ -177,20 +185,18 @@ public sealed class OnboardingFacade(
     }
 
     async Task<AuthResult> LoginCoreAsync(
-            HttpClient http, string serverUrl, bool forceDevice, string? profile, bool adoptServer, CancellationToken ct) {
+            HttpClient http, string serverUrl, bool forceDevice, string profile, bool adoptServer, CancellationToken ct) {
         var config = await OAuthLoginFlow.FetchAuthConfigAsync(http, serverUrl, ct, progress);
 
         if (config is null) return Stop($"Failed to fetch auth config from {serverUrl}/auth/config", ct);
-
-        var targetProfile = profile ?? await TokenStore.ResolveActiveProfileAsync(ct);
 
         if (!ServerIdentity.TryCanonicalizeForStamping(serverUrl, out var canonical, out var identityError)) {
             return Fail($"Error: {identityError}", identityError, ct);
         }
 
-        var configured = (await AppConfig.LoadProfileConfig(ct)).Profiles.GetValueOrDefault(targetProfile);
+        var configured = (await AppConfig.LoadProfileConfig(root, ct)).Profiles.GetValueOrDefault(profile);
         var target     = new LoginTarget(
-            targetProfile, canonical, serverUrl,
+            profile, canonical, serverUrl,
             PointsAtServer: ServerIdentity.SameServer(configured?.ServerUrl, serverUrl),
             AdoptServer: adoptServer);
 
@@ -215,7 +221,7 @@ public sealed class OnboardingFacade(
             ConfigMutation: target.ConfigMutation,
             PublishTokens: null);
 
-        var result = await CommitBoundary.CommitAsync(request, beforeCommit, progress, ct);
+        var result = await CommitBoundary.CommitAsync(root, request, beforeCommit, progress, ct);
 
         if (result is AuthResult.Committed) {
             progress.Notice("Server has no authentication configured — login not required.");
@@ -227,7 +233,7 @@ public sealed class OnboardingFacade(
     async Task<AuthResult> LoginGitHubAsync(
             HttpClient http, AuthDiscoveryResponse config, bool forceDevice, LoginTarget target, CancellationToken ct) {
         var accessToken = await OAuthLoginFlow.AcquireGitHubTokenAsync(
-            http, config.GithubClientId!, config.GithubCodeExchangeUrl, forceDevice, ct, progress);
+            http, config.GithubClientId!, config.GithubCodeExchangeUrl, forceDevice, launcher, ct, progress);
 
         if (accessToken is null) return Stop("GitHub sign-in did not complete.", ct, AuthFailureReason.SigninDenied);
 
@@ -242,7 +248,7 @@ public sealed class OnboardingFacade(
     async Task<AuthResult> LoginWorkOSAsync(
             HttpClient http, AuthDiscoveryResponse config, bool forceDevice, LoginTarget target, CancellationToken ct) {
         var authenticated = await OAuthLoginFlow.WorkOSTokensForServerAsync(
-            http, target.ServerUrl, config.ClientId!, config.OrganizationId, forceDevice,
+            http, target.ServerUrl, config.ClientId!, config.OrganizationId, forceDevice, launcher,
             WorkOSBrowser, ct, progress,
             WorkOSApiBaseOverride ?? OAuthLoginFlow.WorkOSApiBase, KeyWatcher);
 
@@ -258,14 +264,14 @@ public sealed class OnboardingFacade(
             [new AuthIdentity(target.Profile, target.CanonicalServer)], provider, target.Profile, target.CanonicalServer,
             ConfigMutation: target.ConfigMutation,
             PublishTokens: async saved => {
-                await TokenStore.SaveAsync(target.Profile, tokens, CancellationToken.None);
+                await new TokenStore(root).SaveAsync(target.Profile, tokens, CancellationToken.None);
                 saved();
 
                 return username;
             },
             WriteStamp: target.WriteStamp);
 
-        var result = await CommitBoundary.CommitAsync(request, beforeCommit, progress, ct);
+        var result = await CommitBoundary.CommitAsync(root, request, beforeCommit, progress, ct);
 
         if (result is AuthResult.Committed) progress.Notice($"Logged in as {username}");
 
@@ -297,7 +303,7 @@ public sealed class OnboardingFacade(
                 ? WorkOSOrglessLogin(ct)
                 // Org-less: the sign-in picks the organization, and discovery reconciles it afterwards.
                 : OAuthLoginFlow.AcquireWorkOSAsync(
-                    http, clientId, organizationId: null, forceDevice, browser: null,
+                    http, clientId, organizationId: null, forceDevice, launcher, browser: null,
                     apiBase: WorkOSApiBaseOverride ?? OAuthLoginFlow.WorkOSApiBase,
                     ct: ct, progress: progress, keys: KeyWatcher),
             orgSwitch: (refreshToken, organizationId) => OAuthLoginFlow.SwitchWorkOSOrgAsync(
@@ -309,7 +315,7 @@ public sealed class OnboardingFacade(
             progress: progress);
 
         return flow switch {
-            WorkOSDiscoveryFlow.Ready ready       => await WorkOSDiscovery.PublishAsync(ready, progress, beforeCommit, ct),
+            WorkOSDiscoveryFlow.Ready ready       => await WorkOSDiscovery.PublishAsync(root, ready, progress, beforeCommit, ct),
             WorkOSDiscoveryFlow.Retarget retarget => new AuthResult.Retarget(retarget.ServerInput),
             WorkOSDiscoveryFlow.Failed failed     => Stop(failed.Message, ct, failed.Reason),
             _                                     => Stop("No Capacitor tenants are linked to your account.", ct,
@@ -324,7 +330,8 @@ public sealed class OnboardingFacade(
         }
 
         var accessToken = await OAuthLoginFlow.AcquireGitHubTokenAsync(
-            http, proxyConfig.GitHubClientId, proxyConfig.GitHubCodeExchangeUrl, forceDevice, ct, progress);
+            http, proxyConfig.GitHubClientId, proxyConfig.GitHubCodeExchangeUrl, forceDevice, launcher,
+            ct, progress);
 
         if (accessToken is null) return Stop("GitHub sign-in did not complete.", ct, AuthFailureReason.SigninDenied);
 
@@ -353,7 +360,7 @@ public sealed class OnboardingFacade(
             ConfigMutation: config => TenantDiscovery.MergeProfiles(config, outcome.Tenants, picked),
             PublishTokens: saved => ExchangeEveryTenantAsync(http, outcome.Tenants, picked, accessToken, saved));
 
-        return await CommitBoundary.CommitAsync(request, beforeCommit, progress, ct);
+        return await CommitBoundary.CommitAsync(root, request, beforeCommit, progress, ct);
     }
 
     // Inside the boundary: each tenant's exchange is network-then-save, and ANY failure — mapped or
@@ -374,7 +381,7 @@ public sealed class OnboardingFacade(
                     continue;
                 }
 
-                await TokenStore.SaveAsync(tenant.ProfileName, exchanged.Value.Tokens, CancellationToken.None);
+                await new TokenStore(root).SaveAsync(tenant.ProfileName, exchanged.Value.Tokens, CancellationToken.None);
                 saved();
 
                 if (tenant.ProfileName == picked.ProfileName) pickedUsername = exchanged.Value.Username;

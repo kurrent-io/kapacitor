@@ -18,6 +18,7 @@ public class ClaudeSessionEndHandoffTests : IDisposable {
 
     [TempDir]         public required TempDir         Tmp     { get; init; }
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+    [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
 
     readonly WireMockServer _server = WireMockServer.Start();
 
@@ -27,17 +28,15 @@ public class ClaudeSessionEndHandoffTests : IDisposable {
     public async Task Hook_returns_at_once_and_the_detached_continuation_posts_session_end() {
         var sid        = Guid.NewGuid().ToString("N");
         var transcript = Tmp.CreateFile("t.jsonl", """{"type":"user","uuid":"u1","message":{"role":"user","content":"hi"}}""" + "\n");
-        var configDir  = Tmp.CreateDir("cfg");
 
         _server.Given(Request.Create().WithPath("/hooks/session-end").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}").WithDelay(ServerStall));
         _server.Given(Request.Create().WithPath("/hooks/transcript").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"processed":0}"""));
 
-        var psi = KcapProcess.StartInfo(Daemons.Store, "hook", "--claude", "--no-update-check");
-        psi.WorkingDirectory                  = Tmp.Path;
-        psi.Environment["KCAP_CONFIG_DIR"]    = configDir;
-        psi.Environment["KCAP_URL"]           = _server.Url!;
+        var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "hook", "--claude", "--no-update-check");
+        psi.WorkingDirectory        = Tmp.Path;
+        psi.Environment["KCAP_URL"] = _server.Url!;
 
         var payload = new JsonObject {
             ["hook_event_name"] = "SessionEnd",
@@ -70,7 +69,7 @@ public class ClaudeSessionEndHandoffTests : IDisposable {
         await Assert.That(posted["ended_at"]?.GetValue<string>()).IsNotNull();
 
         // The continuation's output lands in the session log, where the watcher's already goes.
-        var log = Path.Combine(configDir, "logs", $"{sid}.log");
+        var log = Config.PathTo("logs", $"{sid}.log");
         await Assert.That(File.Exists(log)).IsTrue();
         await Assert.That(SharedFileText.ReadAllText(log)).Contains($"Inline drain for {sid}");
     }

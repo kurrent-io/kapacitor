@@ -27,7 +27,7 @@ public class UpdateNoticeDeliveryTests : IDisposable {
 
     const string NewerVersion = "999.0.0"; // deterministically newer than any real build's version.
 
-    readonly List<(TempDir CfgDir, Process Process)> _spawned = [];
+    readonly List<(TempConfigRoot CfgDir, Process Process)> _spawned = [];
 
     public void Dispose() {
         foreach (var (cfgDir, p) in _spawned) {
@@ -213,8 +213,8 @@ public class UpdateNoticeDeliveryTests : IDisposable {
     /// <c>UpdateCommand.UpdateCacheRecord.ToJson()</c> writes — so the child process's check
     /// resolves from the cache-fresh path (a local file read) without any network round-trip.
     /// </summary>
-    static TempDir SeedFreshNewerCache() {
-        var cfgDir = new TempDir();
+    static TempConfigRoot SeedFreshNewerCache() {
+        var cfgDir = new TempConfigRoot();
 
         var checkedAt = DateTimeOffset.UtcNow.ToString("O");
         cfgDir.CreateFile("update-check-latest.json",
@@ -223,11 +223,10 @@ public class UpdateNoticeDeliveryTests : IDisposable {
         return cfgDir;
     }
 
-    async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(string[] args, TempDir cfgDir) {
-        var psi = KcapProcess.StartInfo(Daemons.Store, args);
-        psi.WorkingDirectory = cfgDir.Path;
+    async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(string[] args, TempConfigRoot cfgDir) {
+        var psi = KcapProcess.StartInfo(Daemons.Store, cfgDir.Root, args);
+        psi.WorkingDirectory = cfgDir.Directory;
         psi.Environment["KCAP_URL"] = "";
-        psi.Environment["KCAP_CONFIG_DIR"] = cfgDir.Path;
         psi.Environment["KCAP_SESSION_ID"] = "";
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("failed to start kcap");

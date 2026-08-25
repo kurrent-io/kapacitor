@@ -27,6 +27,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// </para>
 /// </summary>
 public class ReplayChildContentCapabilityTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     /// <summary>
     /// The three sources whose child-import pass is reachable when the root is already fully
     /// ingested — the shape that can add content to a session that already exists.
@@ -81,17 +83,17 @@ public class ReplayChildContentCapabilityTests {
 
     // Constructed with throwaway paths: only the capability/vendor properties are read, and no
     // source touches disk in its constructor.
-    static IImportSource MakeSource(string vendor) {
+    IImportSource MakeSource(string vendor) {
         var scratch = Path.Combine(Path.GetTempPath(), "kcap-capability-probe");
 
         return vendor switch {
-            "claude"      => new ClaudeImportSource(scratch),
-            "codex"       => new CodexImportSource(scratch),
-            "copilot"     => new CopilotImportSource(),
-            "cursor"      => new CursorImportSource(scratch, scratch),
+            "claude"      => new ClaudeImportSource(Config.Root, scratch),
+            "codex"       => new CodexImportSource(Config.Root, scratch),
+            "copilot"     => new CopilotImportSource(Config.Root),
+            "cursor"      => new CursorImportSource(Config.Root, scratch, scratch),
             "gemini"      => new GeminiImportSource(tmpDirOverride: scratch),
-            "kiro"        => new KiroImportSource(),
-            "pi"          => new PiImportSource(),
+            "kiro"        => new KiroImportSource(Config.Root),
+            "pi"          => new PiImportSource(Config.Root),
             "opencode"    => new OpenCodeImportSource(Path.Combine(scratch, "db"), Path.Combine(scratch, "ledger")),
             "antigravity" => new AntigravityImportSource(home: scratch, geminiCliHome: ""),
             _             => throw new ArgumentOutOfRangeException(nameof(vendor), vendor, "unclassified import source"),

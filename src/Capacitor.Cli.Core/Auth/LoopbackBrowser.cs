@@ -17,9 +17,11 @@ namespace Capacitor.Cli.Core.Auth;
 /// above, it reads as an alternative to signing in at all instead of an alternative to that URL.
 /// </param>
 public sealed class LoopbackBrowser(
-        Func<string, bool>? openBrowser = null, IAuthProgress? progress = null, string? hint = null) : IBrowser {
-    readonly Func<string, bool> _openBrowser = openBrowser ?? SystemBrowser.TryOpen;
-    readonly IAuthProgress  _progress    = progress ?? ConsoleAuthProgress.Instance;
+        IBrowserLauncher launcher,
+        IAuthProgress?   progress = null,
+        string?          hint     = null
+    ) : IBrowser {
+    readonly IAuthProgress _progress = progress ?? ConsoleAuthProgress.Instance;
 
     public async Task<BrowserResult> InvokeAsync(BrowserOptions options, CancellationToken ct = default) {
         var port = new Uri(options.EndUrl).Port;
@@ -36,7 +38,7 @@ public sealed class LoopbackBrowser(
         // Thrown rather than waited out: with no browser here, the callback can only be reached from a
         // browser on this machine, and there isn't one. Five minutes of listening ends in the same
         // place, having offered a URL that leads to a connection refused.
-        if (!_openBrowser(options.StartUrl)) throw new BrowserLaunchException();
+        if (!launcher.TryOpen(options.StartUrl)) throw new BrowserLaunchException();
 
         _progress.BrowserOpening(options.StartUrl);
         if (hint is not null) _progress.Notice(hint);

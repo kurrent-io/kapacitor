@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.Antigravity;
@@ -214,7 +215,7 @@ public class FlowsDriverSchemaConformanceTests {
     internal const string InjectedBinaryPath = "/opt/conformance/bin/kcap";
 
     static PluginEnvironment TestEnv(string home, string? pluginRoot = null) =>
-        new(HomeDirectory: home, ResolvePluginPath: () => pluginRoot,
+        new(HomeDirectory: home, Profiles: new ProfileConfig(), ResolvePluginPath: () => pluginRoot,
             Stdout: TextWriter.Null, Stderr: TextWriter.Null) {
             ResolveMcpBinaryPath = () => InjectedBinaryPath
         };
@@ -325,7 +326,7 @@ public class FlowsDriverSchemaConformanceTests {
             // rewriting the profile's network-access config.
             ? ["plugin", "install", arm.Flag, "--skip-codex-network-access"]
             : ["plugin", "install", arm.Flag, "--if-installed"];
-        var exit = await PluginCommand.HandleAsync(argv, env);
+        var exit = await new PluginCommand(env).HandleAsync(argv);
         if (exit != 0) throw new InvalidOperationException($"{arm.Name}: installer exited {exit}");
 
         var path = arm.ConfigPath(env);

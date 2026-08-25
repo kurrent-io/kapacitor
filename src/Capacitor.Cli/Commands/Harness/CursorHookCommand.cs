@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -19,16 +18,26 @@ namespace Capacitor.Cli.Commands.Harness;
 /// shared 2-second wall-clock budget, a per-session canonical-event
 /// spool, and a watermark-driven transcript-line backfill.
 /// </summary>
-public static class CursorHookCommand {
-    static readonly TimeSpan DispatcherBudget = TimeSpan.FromSeconds(2);
-    static readonly TimeSpan HookPostTimeout  = TimeSpan.FromSeconds(1);
+public sealed class CursorHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+    readonly WatcherManager _watchers = new(config, profiles);
+    readonly CursorMarkers  _markers  = new(config);
+
+    string Url => profiles.Resolution.ServerUrl!;
+
+    /// <summary>2s of work is what kcap promises Cursor per hook so it never blocks the agent loop
+    /// — its own promise, not a Cursor timeout, which is why it is written as the
+    /// work plus the reserve <see cref="HookBudget.Remaining"/> takes back off it. One ceiling for
+    /// every Cursor event: the budget is armed before the payload is parsed.</summary>
+    internal static readonly TimeSpan Ceiling = TimeSpan.FromSeconds(2) + HookBudget.Safety;
+
+    static readonly TimeSpan HookPostTimeout = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// Production entry point. Delegates straight to <see cref="HandleInternal"/> with
     /// production factories — see that method's doc for how the single hard-cap deadline
     /// (review finding 1) covers client/auth setup through dispatch.
     /// </summary>
-    public static Task<int> Handle(string baseUrl, TextReader stdin) => HandleInternal(baseUrl, stdin);
+    public Task<int> Handle(TextReader stdin) => HandleInternal(stdin);
 
     /// <summary>
     /// Test seam for a bare hard-cap race over an arbitrary <see cref="Task{TResult}"/>. Kept
@@ -51,7 +60,7 @@ public static class CursorHookCommand {
     /// The single hard-cap deadline for the ENTIRE dispatch — client/auth setup through the
     /// bounded async stdin read, recording-critical work, and memory (review finding 1).
     /// There is exactly one race here: client/auth creation is bounded by its own
-    /// <see cref="Task.WhenAny(Task, Task)"/> against the full <see cref="DispatcherBudget"/> (some
+    /// <see cref="Task.WhenAny(Task, Task)"/> against what this hook's budget has left (some
     /// <c>TokenStore</c> paths don't honour a <see cref="CancellationToken"/> and would
     /// otherwise sit on the default 100 s <see cref="HttpClient"/> timeout — this is the ONE
     /// place that step can be abandoned), and — ONLY once that step has resolved within
@@ -63,38 +72,40 @@ public static class CursorHookCommand {
     /// eliminating the pre-fix "two nested 2s caps that don't order" bug. On EITHER branch
     /// timing out, the abandoned task never gets a chance to write (this method never invokes
     /// HandleCore for a still-pending auth attempt, and disposes/observes it in the background).
-    /// <paramref name="clientFactory"/>/<paramref name="spoolFactory"/> default to real
-    /// construction; tests inject fakes so the guarantee can be exercised hermetically without a
-    /// real network call (mirrors <c>ClaudeHookCommand.HandleWithDeps</c>'s injectable
-    /// <c>clientFactory</c>).
     /// </summary>
-    internal static async Task<int> HandleInternal(
-            string     baseUrl,
-            TextReader stdin,
-            TimeSpan?  budget = null,
-            Func<CancellationToken, Task<(HttpClient Client, AuthStatus Status)>>? clientFactory = null,
-            Func<HookSpool>? spoolFactory = null
-        ) {
-        var dispatcherBudget = budget ?? DispatcherBudget;
-        clientFactory ??= ct => HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl, ct);
-        spoolFactory  ??= () => {
-            var s = new HookSpool(PathHelpers.ConfigPath("spool"));
-            MigrateLegacyCursorSpool(s, CursorPaths.SpoolDir());
-            s.ReapOlderThan(TimeSpan.FromDays(30));
-            return s;
-        };
+    internal Task<int> HandleInternal(TextReader stdin) =>
+        HandleWithDeps(stdin,
+            ct => HttpClientExtensions.CreateClientWithAuthStatusAsync(config, profiles, Url, ct),
+            () => {
+                var s = new HookSpool(config);
+                MigrateLegacyCursorSpool(s, CursorPaths.SpoolDir());
+                s.ReapOlderThan(TimeSpan.FromDays(30));
+                return s;
+            });
 
+    /// <summary>
+    /// The dispatch itself, with its deadline and its two factories handed in. Separate from
+    /// <see cref="HandleInternal"/> so the guard below can be proven to run BEFORE a client is ever
+    /// built — a factory that throws is the only way to show non-entry, since every effect of the
+    /// guard is indistinguishable from the fail-open catch that would otherwise swallow it.
+    /// </summary>
+    internal async Task<int> HandleWithDeps(
+            TextReader stdin,
+            Func<CancellationToken, Task<(HttpClient Client, AuthStatus Status)>> clientFactory,
+            Func<HookSpool> spoolFactory
+        ) {
         // At this point the event kind and session id are not yet parsed, so there is nothing to spool
         // and no way to know which stdout contract to write. Match Cursor's own auth-abandon arm: no
         // spool, no stdout, exit 0 — but still write the diagnostic, which needs only the URL.
-        if (!HookHttp.IsPostable(baseUrl)) {
+        if (!HookHttp.IsPostable(Url)) {
             await Console.Error.WriteLineAsync(
-                UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, "cursor hook skipped"));
+                UnusableUrlDiagnostic.Build(profiles.Resolution.Source, Url, "cursor hook skipped"));
             return 0;
         }
 
-        var sw = Stopwatch.StartNew();
-        using var cts = new CancellationTokenSource(dispatcherBudget);
+        var budget = clock.Budget(Ceiling);
+
+        using var cts = budget.CancelAtCeiling();
         HttpClient? client = null;
         try {
             // Status-returning variant so a lapse doesn't write the per-turn "expired" stderr
@@ -109,10 +120,8 @@ public static class CursorHookCommand {
             // abandoned if some TokenStore path ignores cancellation. HandleCore is only ever
             // reached once this resolves, so its own internal race never has a stale competing
             // timer left over from this step.
-            var authBudget = dispatcherBudget - sw.Elapsed;
-            if (authBudget < TimeSpan.Zero) authBudget = TimeSpan.Zero;
             var authTask   = clientFactory(cts.Token);
-            var authWinner = await Task.WhenAny(authTask, Task.Delay(authBudget));
+            var authWinner = await Task.WhenAny(authTask, budget.CeilingReached());
             if (authWinner != authTask) {
                 // Abandoned: observe the eventual terminal state so a late fault/dispose
                 // doesn't leak a client or surface as an UnobservedTaskException. No output is
@@ -130,9 +139,10 @@ public static class CursorHookCommand {
             if (AgentHookPoster.IsAuthLapsed(status)) return 0;
 
             var spool = spoolFactory();
-            var remaining = dispatcherBudget - sw.Elapsed;
-            if (remaining <= TimeSpan.Zero) return 0;
-            return await HandleCore(client, baseUrl, stdin, spool, remaining);
+            // No entry guard on the budget: the ceiling is measured from process entry, so a slow
+            // resolve or spool drain can spend it before dispatch, and returning here would drop
+            // the event outright. HandleCore's own per-step gates spool it instead of posting.
+            return await HandleCore(client, stdin, spool);
         } catch {
             // Fail-open contract: never crash Cursor. Covers auth timeout,
             // unreachable server, malformed config, etc.
@@ -144,35 +154,28 @@ public static class CursorHookCommand {
 
     /// <summary>
     /// Test-friendly core. Caller owns the <see cref="HttpClient"/> and
-    /// <see cref="HookSpool"/>. Races the entire inner phase against one absolute
-    /// <paramref name="budgetTotal"/> deadline (§2) and is the SOLE writer of
+    /// <see cref="HookSpool"/>. Races the entire inner phase against this hook's one
+    /// budget and is the SOLE writer of
     /// Cursor's stdout — the inner phase (<see cref="HandleCoreInner"/>) never touches
     /// <see cref="Console.Out"/>, it only computes and returns the response. Exactly one
     /// write happens per resolved <c>sessionStart</c>; every other resolved event, and any
     /// unresolved/malformed input, writes nothing — byte-for-byte unchanged from before
     /// this feature landed.
     /// </summary>
-    internal static async Task<int> HandleCore(
+    internal async Task<int> HandleCore(
             HttpClient client,
-            string     baseUrl,
             TextReader stdin,
-            HookSpool  spool,
-            TimeSpan   budgetTotal,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
-            Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory = null,
-            TimeSpan?                                         memoryBudgetOverride = null,
-            ISessionStartMemoryScopeResolver?                 memoryScopeResolver = null,
-            // Testability seam: drives the memory-budget timer so a test can fire it deterministically
-            // after the request has entered its handler. Production leaves it null (system clock).
-            TimeProvider?                                    memoryBudgetClock = null
+            HookSpool  spool
         ) {
-        using var cts = new CancellationTokenSource(budgetTotal);
+        // Its own budget rather than the caller's: this is an entry point in its own right, and a
+        // budget is nothing but a ceiling read off the shared clock, so both name the same deadline.
+        var budget = clock.Budget(Ceiling);
+
+        using var cts = budget.CancelAtCeiling();
         var kindSignal = new ResolvedEventKindSignal();
 
-        var inner    = HandleCoreInner(client, baseUrl, stdin, spool, budgetTotal, cts.Token, kindSignal,
-                           memoryClientFactory, memoryStoreFactory, memoryBudgetOverride, memoryScopeResolver,
-                           memoryBudgetClock);
-        var deadline = Task.Delay(budgetTotal);
+        var inner    = HandleCoreInner(client, stdin, spool, cts.Token, kindSignal, budget);
+        var deadline = budget.CeilingReached();
         var winner   = await Task.WhenAny(inner, deadline);
 
         // On the deadline branch the inner is ABANDONED — never cancelled/awaited BY this
@@ -219,22 +222,15 @@ public static class CursorHookCommand {
     /// memory envelope, or <c>{}</c> for every other fail-open path) or <c>null</c> for a
     /// resolved non-<c>sessionStart</c> event / unresolved or malformed input.
     /// </summary>
-    static async Task<string?> HandleCoreInner(
+    async Task<string?> HandleCoreInner(
             HttpClient client,
-            string     baseUrl,
             TextReader stdin,
             HookSpool  spool,
-            TimeSpan   budgetTotal,
             CancellationToken ct,
             ResolvedEventKindSignal kindSignal,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory,
-            TimeSpan?                                         memoryBudgetOverride,
-            ISessionStartMemoryScopeResolver?                 memoryScopeResolver,
-            TimeProvider?                                    memoryBudgetClock
+            HookBudget budget
         ) {
-        var sw = Stopwatch.StartNew();
-        bool BudgetExpired() => sw.Elapsed >= budgetTotal;
+        bool BudgetExpired() => budget.Remaining <= TimeSpan.Zero;
 
         try {
             var body = await stdin.ReadToEndAsync(ct);
@@ -260,7 +256,7 @@ public static class CursorHookCommand {
             if (agentHostId is not null) node["agent_host_id"] = agentHostId;
 
             // Surface 3: attach this machine's harness inventory, session-start only.
-            if (eventName == "sessionStart") SessionStartInventory.Stamp(node.AsObject());
+            if (eventName == "sessionStart") SessionStartInventory.Stamp(node.AsObject(), config);
 
             if (eventName == "afterAgentThought") {
                 var sid = TryGetString(node, "session_id") ?? "";
@@ -276,16 +272,16 @@ public static class CursorHookCommand {
                 // Touch the hook heartbeat on every invocation carrying a session id — including
                 // telemetry-only hooks — so it reflects "Cursor is still firing hooks" independent
                 // of the tailing watcher's own liveness.
-                CursorMarkers.TouchHeartbeat(sessionId, DateTimeOffset.UtcNow);
+                _markers.TouchHeartbeat(sessionId, DateTimeOffset.UtcNow);
 
                 // beforeSubmitPrompt is ordering-sensitive: its server-side effect (queuing an
                 // attachment onto the per-session FIFO) must land before transcript-line
                 // normalization can consume it. Create the barrier before anything below posts or
                 // spools it; cleared on a 2xx from the live POST or a later spool-drain delivery.
-                if (eventName == "beforeSubmitPrompt") CursorMarkers.CreateBarrier(sessionId, DateTimeOffset.UtcNow);
+                if (eventName == "beforeSubmitPrompt") _markers.CreateBarrier(sessionId, DateTimeOffset.UtcNow);
             }
 
-            if (sessionId is not null && DisabledSessions.IsDisabled(sessionId)) return EmptyOrNull();
+            if (sessionId is not null && DisabledSessions.IsDisabled(sessionId, config)) return EmptyOrNull();
 
             // Subagent classification. Built to bring CursorSubagentCorrelator into the live
             // hook path (Cursor is NOT watcher-backed, so it would have to run right here in the
@@ -306,7 +302,7 @@ public static class CursorHookCommand {
             string? subagentParentId  = null;
             string? subagentAgentType = null;
             if (sessionId is not null) {
-                var marker = CursorLiveSubagentLinker.TryLoadLink(sessionId);
+                var marker = CursorLiveSubagentLinker.TryLoadLink(config, sessionId);
                 if (marker is { } m) {
                     (subagentParentId, subagentAgentType) = (m.ParentSessionId, m.SubagentType);
                 // NO PRODUCER on the measured cursor-agent contract: a sessionStart payload
@@ -323,7 +319,7 @@ public static class CursorHookCommand {
                         if (link is { } l) {
                             subagentParentId  = l.ParentSessionId;
                             subagentAgentType = string.IsNullOrEmpty(l.SubagentType) ? "task" : l.SubagentType;
-                            CursorLiveSubagentLinker.SaveLink(sessionId, subagentParentId, subagentAgentType);
+                            CursorLiveSubagentLinker.SaveLink(config, sessionId, subagentParentId, subagentAgentType);
                         }
                     } catch {
                         // Fail-open: a locked/unreadable sibling transcript must never abort the
@@ -357,7 +353,7 @@ public static class CursorHookCommand {
                 // hook must never block the agent loop (the import path stamps this separately).
                 try {
                     if (!BudgetExpired()
-                     && (await AppConfig.GetActiveProfileAsync(ct))?.DefaultVisibility is { } defaultVisibility)
+                     && (profiles.Effective)?.DefaultVisibility is { } defaultVisibility)
                         node["default_visibility"] = defaultVisibility;
                 } catch {
                     // fail-open — visibility is best-effort, never fatal to the hook.
@@ -373,14 +369,14 @@ public static class CursorHookCommand {
                 // live transcript capture must never be lost even if the repo-enrichment call
                 // below (or the eventual POST) is slow or fails. Idempotent; a no-op once alive.
                 if (sessionId is not null && !string.IsNullOrEmpty(transcriptPath)) {
-                    await MaybeSpawnWatcherAsync(baseUrl, sessionId, transcriptPath, workspaceRoot, eventName, isSubagentChild);
+                    await MaybeSpawnWatcherAsync(sessionId, transcriptPath, workspaceRoot, eventName, isSubagentChild);
                 }
 
                 if (!string.IsNullOrEmpty(workspaceRoot)) {
-                    var remaining = budgetTotal - sw.Elapsed;
+                    var remaining = budget.Remaining;
                     if (remaining > TimeSpan.Zero) {
                         node = JsonNode.Parse(
-                            await RepositoryDetection.EnrichWithRepositoryInfoFromCwd(node.ToJsonString(), workspaceRoot, remaining)
+                            await RepositoryDetection.EnrichWithRepositoryInfoFromCwd(config, node.ToJsonString(), workspaceRoot, remaining)
                         ) ?? node;
                     }
                 }
@@ -393,23 +389,23 @@ public static class CursorHookCommand {
                     if (BudgetExpired()) return DrainOutcome.TransientStop;
                     try {
                         using var content = new StringContent(entryBody, Encoding.UTF8, "application/json");
-                        using var resp    = await client.PostOnceAsync($"{baseUrl}/hooks/{route}", content, HookPostTimeout, ct);
+                        using var resp    = await client.PostOnceAsync($"{Url}/hooks/{route}", content, HookPostTimeout, ct);
                         if (resp.IsSuccessStatusCode) {
                             // Task 8: a spooled beforeSubmitPrompt (user-prompt/cursor)
                             // finally being delivered here means the side-effect barrier this
                             // session may be holding on can now be cleared.
-                            if (route == "user-prompt/cursor") CursorMarkers.ClearBarrier(sessionId);
+                            if (route == "user-prompt/cursor") _markers.ClearBarrier(sessionId);
                             // Task 12: this IS "a later invocation whose spool drain
                             // delivers the start" — a subagent-start that failed its first live
                             // POST (see HandleSubagentChildEventAsync) just got acknowledged here
                             // instead. Perform the deferred child-watcher spawn now.
-                            if (route == "subagent-start") await MaybeSpawnChildWatcherFromPayloadAsync(baseUrl, entryBody);
+                            if (route == "subagent-start") await MaybeSpawnChildWatcherFromPayloadAsync(entryBody);
                             return DrainOutcome.Delivered;
                         }
                         var code = (int)resp.StatusCode;
                         return code is >= 500 or 408 or 429 ? DrainOutcome.TransientStop : DrainOutcome.Drop;
                     } catch { return DrainOutcome.TransientStop; }
-                }, budgetTotal, ct);
+                }, budget.Remaining, ct);
             }
 
             // capture whether this session STILL has spool backlog after
@@ -430,7 +426,7 @@ public static class CursorHookCommand {
                 // §4/§5: a linked child short-circuits to {} (sessionStart) / nothing
                 // (everything else) before any orchestrator work — never entered for a child.
                 await HandleSubagentChildEventAsync(
-                    client, baseUrl, spool, sessionId!, eventName, transcriptPath,
+                    client, spool, sessionId!, eventName, transcriptPath,
                     subagentParentId!, subagentAgentType!, BudgetExpired, ct);
                 return EmptyOrNull();
             }
@@ -469,7 +465,8 @@ public static class CursorHookCommand {
                 // last component that will ever observe this transcript, so a valid
                 // newline-less final record must be consumed rather than held forever.
                 await CursorTranscriptBackfill.RunAsync(
-                    client, baseUrl, sessionId!, transcriptPath,
+                    _markers,
+                    client, Url, sessionId!, transcriptPath,
                     budget: BudgetExpired, ct, finalDrain: true);
             }
 
@@ -482,14 +479,14 @@ public static class CursorHookCommand {
                 return EmptyOrNull();
             }
 
-            var posted = await TryPostHookAsync(client, baseUrl, mapping.RouteSegment, normalized, ct);
+            var posted = await TryPostHookAsync(client, mapping.RouteSegment, normalized, ct);
             if (!posted && mapping.SpoolOnFailure && sessionId is not null) {
                 spool.Append(sessionId, mapping.RouteSegment, normalized);
             }
             // Task 8: the ordering-sensitive beforeSubmitPrompt's own live POST just
             // succeeded — clear the barrier it created above.
             if (posted && eventName == "beforeSubmitPrompt" && sessionId is not null) {
-                CursorMarkers.ClearBarrier(sessionId);
+                _markers.ClearBarrier(sessionId);
             }
 
             // Task 9: recovery spawn from a non-start hook — ONLY once this
@@ -502,12 +499,13 @@ public static class CursorHookCommand {
             // session is still stuck undelivered (hasRemainingSpoolBacklog, captured above).
             if (posted && eventName != "sessionStart" && sessionId is not null && !string.IsNullOrEmpty(transcriptPath)
              && !hasRemainingSpoolBacklog) {
-                await MaybeSpawnWatcherAsync(baseUrl, sessionId, transcriptPath, cwd: null, eventName, isSubagentChild);
+                await MaybeSpawnWatcherAsync(sessionId, transcriptPath, cwd: null, eventName, isSubagentChild);
             }
 
             if (!drainBeforePost && !BudgetExpired() && sessionId is not null && !string.IsNullOrEmpty(transcriptPath)) {
                 await CursorTranscriptBackfill.RunAsync(
-                    client, baseUrl, sessionId, transcriptPath,
+                    _markers,
+                    client, Url, sessionId, transcriptPath,
                     budget: BudgetExpired, ct);
             }
 
@@ -516,16 +514,14 @@ public static class CursorHookCommand {
             // top-level (isSubagentChild already diverted above at line ~309) sessionStart.
             if (eventName != "sessionStart") return null;
             var fragment = await RunMemoryOrchestrationAsync(
-                client, baseUrl, sessionId, workspaceRoot, sw, budgetTotal, ct,
-                memoryClientFactory, memoryStoreFactory, memoryBudgetOverride, memoryScopeResolver,
-                memoryBudgetClock);
+                client, sessionId, workspaceRoot, ct, budget);
             // The static work-items nudge, isolated from the lease-driven fragment above and
             // merged only at render. The opt-out flag is not in scope here (it lives inside the
             // orchestration), so re-read it; sessionStart fires once per session and the read is
             // fail-open under the surrounding catch.
-            var nudgeProfile   = await AppConfig.GetActiveProfileAsync(ct);
+            var nudgeProfile   = profiles.Effective;
             var workItemsNudge = WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Cursor, sessionId, nudgeProfile?.DisableWorkItemsNudge is true);
-            var harnessNudge   = HarnessNudgeEmitter.ResolveFragmentForHook(nudgeProfile?.DisableHarnessNudge is true);
+            var harnessNudge   = HarnessNudgeEmitter.ResolveFragmentForHook(nudgeProfile?.DisableHarnessNudge is true, config);
             return SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, fragment,
                 HarnessNudgeEmitter.Combine(workItemsNudge, harnessNudge));
         } catch {
@@ -540,29 +536,22 @@ public static class CursorHookCommand {
 
     /// <summary>
     /// §3–§6: fetches the shared SessionStart memory index for a top-level
-    /// (non-child — <paramref name="sw"/>'s caller only reaches this once
-    /// <c>isSubagentChild</c> has already diverted) Cursor <c>sessionStart</c>, mirroring
+    /// (non-child — this is reached only once <c>isSubagentChild</c> has already diverted) Cursor
+    /// <c>sessionStart</c>, mirroring
     /// <c>ClaudeHookCommand.StartMemoryIndexTask</c>: same shared store/provider/orchestrator,
     /// no second auth/scope/HTTP path. Runs strictly AFTER recording-critical work — never
-    /// concurrently, never before — and only on whatever's left of <paramref name="budgetTotal"/>
-    /// (minus <see cref="HookBudget.Safety"/>); a cancelled fetch leaves the lease uncommitted
+    /// concurrently, never before — and only on what <see cref="HookBudget.Remaining"/> has left;
+    /// a cancelled fetch leaves the lease uncommitted
     /// (retryable on a later hook) because the request's own <see cref="CancellationToken"/> is
     /// bound to that SAME leftover budget via a linked <see cref="CancellationTokenSource"/> —
     /// not a <c>WaitAsync</c> wrapper around an unbounded call.
     /// </summary>
-    static async Task<string?> RunMemoryOrchestrationAsync(
+    async Task<string?> RunMemoryOrchestrationAsync(
             HttpClient client,
-            string     baseUrl,
             string?    sessionId,
             string?    workspaceRoot,
-            Stopwatch  sw,
-            TimeSpan   budgetTotal,
             CancellationToken dispatcherCt,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory,
-            TimeSpan?                                         memoryBudgetOverride,
-            ISessionStartMemoryScopeResolver?                 memoryScopeResolver,
-            TimeProvider?                                    memoryBudgetClock
+            HookBudget budget
         ) {
         if (sessionId is null) return null;
 
@@ -572,31 +561,32 @@ public static class CursorHookCommand {
         // With no authoritative workspace root there is no safe scope, so skip injection entirely.
         if (string.IsNullOrWhiteSpace(workspaceRoot)) return null;
 
-        // Overridable so a test picks its side of the guard below, not the runner's load.
-        var memBudget = memoryBudgetOverride ?? (budgetTotal - sw.Elapsed - HookBudget.Safety);
+        // Whatever the one budget has left — already net of the spool-and-exit reserve, so it is NOT
+        // subtracted again here (the same rule the Codex and Antigravity adapters state). On the
+        // hook's own clock, so a test advancing it picks its side of the guard below.
+        var memBudget = budget.Remaining;
         if (memBudget <= TimeSpan.Zero) return null;
 
         // Effective profile (ResolvedProfile.Profile is null under --server-url/KCAP_URL). ct-bound to
         // the dispatcher deadline so the config read cancels rather than lingering when abandoned.
-        var activeProfile      = await AppConfig.GetActiveProfileAsync(dispatcherCt);
+        var activeProfile      = profiles.Effective;
         var disabled           = activeProfile?.DisableMemoryIndex is true;
         var guidelinesDisabled = activeProfile?.DisableSessionGuidelines is true;
         if (disabled && guidelinesDisabled) return null;
 
         try {
-            // The budget timer runs on memoryBudgetClock (system clock in production); a test can
-            // pass a fake clock and advance it to fire this deadline deterministically.
-            using var budgetCts = new CancellationTokenSource(memBudget, memoryBudgetClock ?? TimeProvider.System);
+            // The injected clock, the same one the lease store below runs on: a hook run has exactly
+            // one clock, so a test advancing it fires this deadline and ages the lease together.
+            using var budgetCts = new CancellationTokenSource(memBudget, clock.Time);
             using var memCts    = CancellationTokenSource.CreateLinkedTokenSource(dispatcherCt, budgetCts.Token);
 
-            var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
-            // Both lanes share the one factory (the shared hook client by default). disposeClients is
-            // INVERTED from the other adapters: the default factory hands back the caller-owned shared
-            // client, which must NOT be disposed; an injected test factory's clients are disposed.
+            var store = SessionStartMemoryLeaseStore.Create(config, clock.Time);
+            // Both lanes share the hook's own client, which is caller-owned — hence disposeClients
+            // false, the inverse of the adapters that mint one of their own.
             var provider = SessionStartMemoryHookSupport.CompositeProvider(
-                memoryClientFactory ?? ((_, _) => Task.FromResult(client)),
-                disposeClients: memoryClientFactory is not null,
-                memoryScopeResolver);
+                config,
+                (_, _) => Task.FromResult(client),
+                disposeClients: false);
 
             return await new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
                 // ClassificationAuthoritative is hardcoded true, and this is VALID UNDER THE
@@ -618,7 +608,7 @@ public static class CursorHookCommand {
                 new SessionMemoryLifecycle(SessionStartHarness.Cursor, sessionId, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true, SessionLifecycleReason.New,
                     CallbackMayRepeat: false),
-                new SessionStartMemoryContextRequest(baseUrl, workspaceRoot, disabled, memBudget, memCts.Token,
+                new SessionStartMemoryContextRequest(Url, workspaceRoot, disabled, memBudget, memCts.Token,
                     GuidelinesDisabled: guidelinesDisabled));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return null;
@@ -660,9 +650,8 @@ public static class CursorHookCommand {
     /// docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
     /// </para>
     /// </summary>
-    internal static async Task<int> HandleSubagentChildEventAsync(
+    internal async Task<int> HandleSubagentChildEventAsync(
             HttpClient        client,
-            string            baseUrl,
             HookSpool         spool,
             string            childSessionId,
             string?           eventName,
@@ -712,7 +701,7 @@ public static class CursorHookCommand {
         // start-before-content ordering; the child's live capture is recovered only by
         // `kcap import --cursor` plus the server-side adoption sweep. The full state table is in
         // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md (D2a).
-        if (!isStart && !CursorMarkers.HasSubagentStartAck(childSessionId)) {
+        if (!isStart && !_markers.HasSubagentStartAck(childSessionId)) {
             return 0;
         }
 
@@ -734,10 +723,11 @@ public static class CursorHookCommand {
                 // calling it here on every nonterminal hook is a cheap no-op once the watcher is
                 // alive and a real recovery when it's not; the terminal (sessionEnd) branch below
                 // still never spawns.
-                await MaybeSpawnChildWatcherAsync(baseUrl, parentSessionId, childSessionId, transcriptPath);
+                await MaybeSpawnChildWatcherAsync(parentSessionId, childSessionId, transcriptPath);
 
                 await CursorTranscriptBackfill.RunAsync(
-                    client, baseUrl, parentSessionId, transcriptPath,
+                    _markers,
+                    client, Url, parentSessionId, transcriptPath,
                     budget: budgetExpired, ct, agentId: childSessionId);
             }
             return 0;
@@ -752,7 +742,8 @@ public static class CursorHookCommand {
         // for a marker-driven invocation that supplies the event some other way.
         if (isStop && !string.IsNullOrEmpty(transcriptPath) && !budgetExpired()) {
             await CursorTranscriptBackfill.RunAsync(
-                client, baseUrl, parentSessionId, transcriptPath,
+                _markers,
+                client, Url, parentSessionId, transcriptPath,
                 budget: budgetExpired, ct, agentId: childSessionId, finalDrain: true);
         }
 
@@ -761,7 +752,7 @@ public static class CursorHookCommand {
             return 0;
         }
 
-        var posted = await TryPostHookAsync(client, baseUrl, route, body!, ct);
+        var posted = await TryPostHookAsync(client, route, body!, ct);
         if (!posted) {
             // Task 12 — subagent-start POST failed (spooled): the child watcher must
             // NOT spawn here. Spawning now would let the watcher's own poll deliver child
@@ -778,20 +769,21 @@ public static class CursorHookCommand {
         // persist the positive ack so HandleSubagentChildEventAsync's
         // no-ack gate (above) is satisfied for every subsequent hook invocation for this child
         // (a fresh process each time, so nothing survives in memory).
-        if (isStart) CursorMarkers.MarkSubagentStartAcked(childSessionId);
+        if (isStart) _markers.MarkSubagentStartAcked(childSessionId);
 
         // Task 12 — subagent-start is ACKNOWLEDGED (2xx) via this live POST. Only now
         // may the child's own tailing watcher be spawned — the invariant this task exists for
         // is that no child transcript line ever reaches the server before SubagentStarted.
         if (isStart && !string.IsNullOrEmpty(transcriptPath)) {
-            await MaybeSpawnChildWatcherAsync(baseUrl, parentSessionId, childSessionId, transcriptPath);
+            await MaybeSpawnChildWatcherAsync(parentSessionId, childSessionId, transcriptPath);
         }
 
         // sessionStart: post subagent-start THEN backfill, so the AgentSubsession stream is
         // opened before its first transcript batch (mirrors SendSubagentLifecycleAsync).
         if (isStart && !string.IsNullOrEmpty(transcriptPath) && !budgetExpired()) {
             await CursorTranscriptBackfill.RunAsync(
-                client, baseUrl, parentSessionId, transcriptPath,
+                _markers,
+                client, Url, parentSessionId, transcriptPath,
                 budget: budgetExpired, ct, agentId: childSessionId);
         }
 
@@ -813,21 +805,19 @@ public static class CursorHookCommand {
     /// construct their guard/quarantine identity from the watcher process's own
     /// <c>sessionId</c> argument, which — for a child watcher spawned with
     /// <c>sessionIdOverride: parentSessionId</c> — resolves to the PARENT id
-    /// (<c>WatcherManager.BuildSpawnArgs</c>: <c>sessionId = sessionIdOverride ?? key</c>). A
+    /// (<c>_watchers.BuildSpawnArgs</c>: <c>sessionId = sessionIdOverride ?? key</c>). A
     /// parent session already given up on by the guard must not keep spawning fresh child
     /// watchers either.
     /// </summary>
-    internal static Task MaybeSpawnChildWatcherAsync(
-            string baseUrl,
+    internal Task MaybeSpawnChildWatcherAsync(
             string parentSessionId,
             string childSessionId,
             string transcriptPath
         ) {
-        if (CursorMarkers.IsQuarantined(parentSessionId)) return Task.CompletedTask;
+        if (_markers.IsQuarantined(parentSessionId)) return Task.CompletedTask;
         if (string.IsNullOrEmpty(transcriptPath)) return Task.CompletedTask;
 
-        return WatcherManager.EnsureWatcherRunning(
-            baseUrl, key: $"{parentSessionId}-{childSessionId}", transcriptPath,
+        return _watchers.EnsureWatcherRunning(key: $"{parentSessionId}-{childSessionId}", transcriptPath,
             agentId: childSessionId, sessionIdOverride: parentSessionId, vendor: "cursor");
     }
 
@@ -842,7 +832,7 @@ public static class CursorHookCommand {
     /// happen — this method only ever spools its own generated JSON) just skips the spawn rather
     /// than risking the drain loop itself.
     /// </summary>
-    static Task MaybeSpawnChildWatcherFromPayloadAsync(string baseUrl, string subagentStartBody) {
+    Task MaybeSpawnChildWatcherFromPayloadAsync(string subagentStartBody) {
         try {
             var payload         = JsonNode.Parse(subagentStartBody);
             var parentSessionId = TryGetString(payload, "session_id");
@@ -854,8 +844,8 @@ public static class CursorHookCommand {
             // this delivery IS the 2xx ack for a previously-spooled
             // subagent-start; persist it so the no-ack gate in HandleSubagentChildEventAsync is
             // satisfied for this child from here on.
-            CursorMarkers.MarkSubagentStartAcked(childSessionId);
-            return MaybeSpawnChildWatcherAsync(baseUrl, parentSessionId, childSessionId, transcriptPath);
+            _markers.MarkSubagentStartAcked(childSessionId);
+            return MaybeSpawnChildWatcherAsync(parentSessionId, childSessionId, transcriptPath);
         } catch { return Task.CompletedTask; }
     }
 
@@ -885,20 +875,18 @@ public static class CursorHookCommand {
     /// Always vendor <c>"cursor"</c>, keyed on the bare session id (top-level only — a linked
     /// child's watcher is a distinct, gated key from a later task).
     /// </summary>
-    internal static Task MaybeSpawnWatcherAsync(
-            string  baseUrl,
+    internal Task MaybeSpawnWatcherAsync(
             string  sessionId,
             string  transcriptPath,
             string? cwd,
             string  eventName,
             bool    isSubagentChild
         ) {
-        if (CursorMarkers.IsQuarantined(sessionId)) return Task.CompletedTask;
+        if (_markers.IsQuarantined(sessionId)) return Task.CompletedTask;
         if (!ShouldSpawnWatcher(eventName, isSubagentChild)) return Task.CompletedTask;
         if (string.IsNullOrEmpty(transcriptPath)) return Task.CompletedTask;
 
-        return WatcherManager.EnsureWatcherRunning(
-            baseUrl, key: sessionId, transcriptPath,
+        return _watchers.EnsureWatcherRunning(key: sessionId, transcriptPath,
             agentId: null, cwd: cwd, vendor: "cursor");
     }
 
@@ -931,9 +919,8 @@ public static class CursorHookCommand {
         } catch { }
     }
 
-    static async Task<bool> TryPostHookAsync(
+    async Task<bool> TryPostHookAsync(
             HttpClient        client,
-            string            baseUrl,
             string            routeSegment,
             string            bodyJson,
             CancellationToken ct
@@ -941,7 +928,7 @@ public static class CursorHookCommand {
         try {
             using var content = new StringContent(bodyJson, Encoding.UTF8, "application/json");
             using var resp = await client.PostOnceAsync(
-                $"{baseUrl}/hooks/{routeSegment}", content, HookPostTimeout, ct);
+                $"{Url}/hooks/{routeSegment}", content, HookPostTimeout, ct);
 
             // Cursor posts directly instead of through AgentHookPoster, so the rejected-credential
             // nudge has to be repeated here — otherwise Cursor is the one vendor left with no

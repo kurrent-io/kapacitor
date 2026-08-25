@@ -61,13 +61,13 @@ public static class CliTelemetry {
         return true;
     }
 
-    public static void Initialize(string command, string? serverUrl, bool loggedIn, bool suppressed = false) {
+    public static void Initialize(string command, string? serverUrl, bool loggedIn, ConfigRoot config, bool suppressed = false) {
         try {
             if (suppressed) {
                 _suppressedSticky = true;
             }
             if (_suppressedSticky) return; // app-spawned child: no notice, no device id, no events, _client stays null
-            Enabled = TelemetrySettings.Resolve(TelemetryState.PersistedEnabled()).Enabled
+            Enabled = TelemetrySettings.Resolve(TelemetryState.PersistedEnabled(config)).Enabled
                    && CommandEvents.IsReportable(command);
             if (!Enabled) return;
 
@@ -77,7 +77,7 @@ public static class CliTelemetry {
             // process, rather than disabling telemetry outright: silently going dark on a disk
             // hiccup costs more in data quality than a marginally inflated unique-device count in
             // this rare fallback case.
-            _deviceId = TelemetryDeviceId.GetOrCreate() ?? Guid.NewGuid().ToString("N");
+            _deviceId = TelemetryDeviceId.GetOrCreate(config) ?? Guid.NewGuid().ToString("N");
 
             var version = Version();
 
@@ -95,7 +95,7 @@ public static class CliTelemetry {
             };
 
             if (TestSink is null)
-                _client = new TelemetryClient(new HttpClientHandler(), Spool(), Token, Endpoint);
+                _client = new TelemetryClient(new HttpClientHandler(), Spool(config), Token, Endpoint);
 
             // "mcp-server" is the re-initialise long-lived MCP servers perform on top of the
             // denylisted "mcp" (see McpTelemetry) — an agent-spawned, non-interactive process
@@ -108,7 +108,7 @@ public static class CliTelemetry {
             // marker, and the cli_first_run event for this pseudo-command; the first
             // human-invoked (reportable, non-"mcp-server") command still shows it as designed.
             if (command != "mcp-server")
-                NoticeAndFirstRun();
+                NoticeAndFirstRun(config);
         } catch {
             Enabled = false;
         }
@@ -202,8 +202,8 @@ public static class CliTelemetry {
         } catch { }
     }
 
-    static void NoticeAndFirstRun() {
-        if (TelemetryState.Read().NoticeShown) return;
+    static void NoticeAndFirstRun(ConfigRoot config) {
+        if (TelemetryState.Read(config).NoticeShown) return;
 
         Console.Error.WriteLine(
             "kcap collects anonymous usage data — command and flag names only, never argument values,");
@@ -211,11 +211,11 @@ public static class CliTelemetry {
             "file paths, or transcript content. Opt out: kcap config set telemetry off (or DO_NOT_TRACK=1).");
         Console.Error.WriteLine("https://capacitor.kurrent.io/privacy");
 
-        TelemetryState.MarkNoticeShown();
+        TelemetryState.MarkNoticeShown(config);
         Capture("cli_first_run", new JsonObject());
     }
 
-    static TelemetrySpool Spool() => new(PathHelpers.ConfigPath("telemetry-spool.jsonl"));
+    static TelemetrySpool Spool(ConfigRoot config) => new(config.Path("telemetry-spool.jsonl"));
 
     static string Version() =>
         typeof(CliTelemetry).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()

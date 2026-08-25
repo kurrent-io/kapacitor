@@ -5,6 +5,8 @@ using Capacitor.Cli.Core;
 namespace Capacitor.Cli.Tests.Unit;
 
 public class RepositoryDetectionCacheTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     [Test]
     public async Task GitCacheEntry_without_schema_version_deserializes_as_stale() {
         // A pre-upgrade entry (no schema_version, no host) must be treated as stale.
@@ -30,7 +32,7 @@ public class RepositoryDetectionCacheTests {
     public async Task Detects_nested_gitlab_repo_base_info() {
         using var tmp = new TempDir();
         var repo = MakeTempRepo(tmp, "git@gitlab.com:group/sub/project.git");
-        var payload = await RepositoryDetection.DetectRepositoryAsync(repo);
+        var payload = await RepositoryDetection.DetectRepositoryAsync(Config.Root, repo);
 
         await Assert.That(payload).IsNotNull();
         await Assert.That(payload!.Owner).IsEqualTo("group/sub");
@@ -58,7 +60,7 @@ public class RepositoryDetectionCacheTests {
     public async Task Detects_gitlab_repo_base_info() {
         using var tmp = new TempDir();
         var repo = MakeTempRepo(tmp, "git@gitlab.com:group/project.git");
-        var payload = await RepositoryDetection.DetectRepositoryAsync(repo);
+        var payload = await RepositoryDetection.DetectRepositoryAsync(Config.Root, repo);
 
         await Assert.That(payload).IsNotNull();
         await Assert.That(payload!.Owner).IsEqualTo("group");

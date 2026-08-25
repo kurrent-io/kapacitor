@@ -4,7 +4,7 @@ using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Commands;
 
-public static class UpdateCommand {
+public sealed class UpdateCommand(ConfigRoot root, ProfileContext profiles) {
     /// <summary>
     /// npm registry base URL. Overridable seam so integration tests can point
     /// the CLI at a fake registry (e.g. WireMock) instead of the real npm registry.
@@ -41,8 +41,8 @@ public static class UpdateCommand {
         return channel is not null && KnownChannels.Contains(channel) ? channel : "latest";
     }
 
-    public static async Task<int> HandleAsync(string[] args) {
-        var profile   = await AppConfig.GetActiveProfileAsync();
+    public async Task<int> HandleAsync(string[] args) {
+        var profile   = profiles.Effective;
         var channel   = ResolveChannel(args, profile?.UpdateChannel);
         var checkOnly = args.Contains("--check");
 
@@ -51,17 +51,15 @@ public static class UpdateCommand {
         // the whole v2 config via ConfigMutator — NEVER write a flat
         // LegacyV1Config, which would overwrite the user's v2 profile config.
         if (args.Contains("--beta") || args.Contains("--stable")) {
-            var pc = await AppConfig.LoadProfileConfig();
+            // The startup snapshot: ConfigMutator below re-reads under its own lock.
+            var pc = profiles.Snapshot;
 
-            // Must match the profile GetActiveProfileAsync() resolved above (the
-            // read side): when a profile was resolved (env var, .kcap.json, git
-            // remote match, or `kcap use` binding), persist to THAT profile —
-            // not blindly to the on-disk active_profile — so the switch sticks
-            // for the profile the user is actually on.
-            var targetName = AppConfig.ResolvedProfile?.ProfileName ?? pc.ActiveProfile;
+            // The profile whose channel we read above, so the switch sticks for the profile the
+            // user is actually on rather than blindly on active_profile.
+            var targetName = profiles.Name;
             if (pc.Profiles.TryGetValue(targetName, out var active)
              && active.UpdateChannel != channel) {
-                await ConfigMutator.MutateAsync(c => {
+                await ConfigMutator.MutateAsync(root, c => {
                     if (!c.Profiles.TryGetValue(targetName, out var current))
                         return c;
 
@@ -74,7 +72,7 @@ public static class UpdateCommand {
             }
         }
 
-        var checkResult       = await CheckForUpdateAsync(forceCheck: true, channel);
+        var checkResult       = await CheckForUpdateAsync(forceCheck: true, channel, root);
         var (latest, current) = (checkResult.Latest, checkResult.Current);
 
         if (checkOnly) {
@@ -132,31 +130,6 @@ public static class UpdateCommand {
     }
 
     /// <summary>
-    /// Print an update hint to stderr if a newer version is available. Budget-aware
-    /// (<see cref="CheckForUpdateWithBudgetAsync"/>) so a slow/unreachable registry can't stall
-    /// the caller. Retained as a standalone, no-args entry point; the actual exit-time call site
-    /// is <see cref="Capacitor.Cli.UpdateNotice.FlushAsync"/>, which additionally applies the
-    /// human-facing suppression predicate and a cross-surface "already reported" gate so this
-    /// text is never printed twice for one invocation.
-    /// </summary>
-    public static async Task PrintUpdateHintIfAvailable() {
-        try {
-            var profile = await AppConfig.GetActiveProfileAsync();
-            if (profile?.UpdateCheck == false) return;
-            var channel     = ResolveChannel([], profile?.UpdateChannel);
-            var checkResult = await CheckForUpdateWithBudgetAsync(channel);
-
-            if (checkResult is { Newer: true, Latest: not null, Current: not null }) {
-                await Console.Error.WriteLineAsync();
-                await Console.Error.WriteLineAsync($"Update available: {checkResult.Current} {Arrow} {checkResult.Latest}");
-                await Console.Error.WriteLineAsync("Run `kcap update` to update");
-            }
-        } catch {
-            // Best effort — never break the CLI for update checks
-        }
-    }
-
-    /// <summary>
     /// Two-tier budget over <see cref="CheckForUpdateAsync"/> for a passive, exit-time caller
     /// (<see cref="Capacitor.Cli.UpdateNotice"/>): the common cache-fresh case (a local file
     /// read, no network — see <see cref="UpdateCacheRecord.IsFresh"/>) is bound by a defensive
@@ -173,6 +146,7 @@ public static class UpdateCommand {
     /// finishes and observes any fault so it can't surface as an unobserved task exception.
     /// </returns>
     internal static async Task<UpdateCheckResult?> CheckForUpdateWithBudgetAsync(
+            ConfigRoot root,
             string channel,
             TimeSpan? cacheFreshBudget = null,
             TimeSpan? networkCancelAfter = null,
@@ -182,7 +156,7 @@ public static class UpdateCommand {
         var cleanupGraceVal       = cleanupGrace ?? TimeSpan.FromMilliseconds(500);
 
         var cts       = new CancellationTokenSource(networkCancelAfterVal);
-        var checkTask = CheckForUpdateAsync(forceCheck: false, channel, cts.Token);
+        var checkTask = CheckForUpdateAsync(forceCheck: false, channel, root, cts.Token);
 
         // Dispose only once the task reaches a terminal state — never synchronously here, since
         // an abandoned check (either tier below giving up) may still be running past this method's
@@ -211,8 +185,8 @@ public static class UpdateCommand {
     /// Per-channel cache path so a <c>beta</c> check doesn't clobber the
     /// cached <c>latest</c> result (and vice versa).
     /// </summary>
-    static string CachePathFor(string channel) =>
-        PathHelpers.ConfigPath($"update-check-{channel}.json");
+    static string CachePathFor(string channel, ConfigRoot root) =>
+        root.Path($"update-check-{channel}.json");
 
     /// <summary>
     /// On-disk shape of a per-channel update-check cache file. Two kinds of
@@ -303,9 +277,10 @@ public static class UpdateCommand {
     /// invocation. Never used for the cache write itself — see
     /// <see cref="WriteCacheRecordAsync"/>.
     /// </param>
-    internal static async Task<UpdateCheckResult> CheckForUpdateAsync(bool forceCheck, string channel, CancellationToken ct = default) {
+    internal static async Task<UpdateCheckResult> CheckForUpdateAsync(
+            bool forceCheck, string channel, ConfigRoot root, CancellationToken ct = default) {
         var current   = GetCurrentVersion();
-        var cachePath = CachePathFor(channel);
+        var cachePath = CachePathFor(channel, root);
         var now       = DateTimeOffset.UtcNow;
 
         UpdateCacheRecord? cached = null;

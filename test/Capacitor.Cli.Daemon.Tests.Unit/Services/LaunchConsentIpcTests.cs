@@ -18,6 +18,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// orchestrator only needs to exist to satisfy LocalControlServer's constructor.
 /// </summary>
 public class LaunchConsentIpcTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
         public CancellationToken ApplicationStopping => CancellationToken.None;
@@ -44,7 +46,7 @@ public class LaunchConsentIpcTests {
         TempDaemonStore Daemons, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection,
         LaunchConsentStore Store, LaunchConsentBroker Broker, LaunchConsentGate Gate, string SockPath);
 
-    static async Task<Harness> StartAsync(
+    async Task<Harness> StartAsync(
             string daemonName, LaunchConsentDefault def, int promptTimeoutSeconds, CancellationToken ct
         ) {
         var daemons = new TempDaemonStore();
@@ -69,7 +71,8 @@ public class LaunchConsentIpcTests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, connection, worktreeManager, repoMatcher, new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
+            config, Config.Root, connection, worktreeManager, repoMatcher,
+            new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate);
@@ -98,7 +101,7 @@ public class LaunchConsentIpcTests {
     /// AgentOrchestratorLocalAttachTests's real-socket tests. The harness owns its own daemons
     /// directory, so no test here shares state with another; each [Test] still carries its own
     /// Windows guard, which must be visible on the test method itself.
-    static async Task RunAsync(
+    async Task RunAsync(
             string daemonName, LaunchConsentDefault def, int promptTimeoutSeconds,
             Func<Harness, CancellationToken, Task> body
         ) {

@@ -29,7 +29,7 @@ public class ServiceVerifyInstallProductionPathTests {
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(false, null, null, null));
 
-        var sut = new ServiceVerify(fx.Store, fx.Manager, _ => 4242, Hello, TimeProvider.System);
+        var sut = new ServiceVerify(fx.Store, fx.Config, fx.Manager, _ => 4242, Hello, TimeProvider.System);
 
         var exit = await sut.InstallVerifiedAsync(Spec(fx.DaemonPath), replace: false, expectedVersion: null);
 

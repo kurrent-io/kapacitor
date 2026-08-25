@@ -11,6 +11,8 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Copilot;
 /// the --session / --cwd / --since filters.
 /// </summary>
 public class CopilotImportSourceTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     const string Sid1 = "1053bee4-574f-40e3-84ca-463bd7a82dc2";
     const string Sid2 = "4ae28a73-dd66-46ac-81d2-be94b5e87079";
 
@@ -22,7 +24,7 @@ public class CopilotImportSourceTests {
         tmp.CreateDir(Sid2);
         tmp.CreateFile([Sid2, "workspace.yaml"], $"id: {Sid2}\ncwd: /work/b\n");
 
-        var source   = new CopilotImportSource(tmp.Path, legacyDirOverride: tmp.PathTo("none"));
+        var source   = new CopilotImportSource(Config.Root, tmp.Path, legacyDirOverride: tmp.PathTo("none"));
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
 
         await Assert.That(sessions.Count).IsEqualTo(1);
@@ -39,7 +41,7 @@ public class CopilotImportSourceTests {
             name: "Create a file hello.txt containing 'hello world'",
             createdAt: "2026-06-10T20:23:25.556Z");
 
-        var source   = new CopilotImportSource(tmp.Path, legacyDirOverride: tmp.PathTo("none"));
+        var source   = new CopilotImportSource(Config.Root, tmp.Path, legacyDirOverride: tmp.PathTo("none"));
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
 
         await Assert.That(sessions.Count).IsEqualTo(1);
@@ -58,7 +60,7 @@ public class CopilotImportSourceTests {
         WriteSession(legacy, Sid1, cwd: "/work/legacy");
         WriteSession(legacy, Sid2, cwd: "/work/legacy-only");
 
-        var source   = new CopilotImportSource(current, legacy);
+        var source   = new CopilotImportSource(Config.Root, current, legacy);
         var sessions = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
 
         await Assert.That(sessions.Count).IsEqualTo(2);
@@ -74,7 +76,7 @@ public class CopilotImportSourceTests {
         WriteSession(tmp.Path, Sid1, cwd: "/work/a");
         WriteSession(tmp.Path, Sid2, cwd: "/work/b");
 
-        var source = new CopilotImportSource(tmp.Path, legacyDirOverride: tmp.PathTo("none"));
+        var source = new CopilotImportSource(Config.Root, tmp.Path, legacyDirOverride: tmp.PathTo("none"));
 
         var byDashed = await source.DiscoverAsync(new DiscoveryFilters(null, Sid1, null, 0), CancellationToken.None);
         await Assert.That(byDashed.Count).IsEqualTo(1);
@@ -91,7 +93,7 @@ public class CopilotImportSourceTests {
         WriteSession(tmp.Path, Sid1, cwd: "/work/a");
         WriteSession(tmp.Path, Sid2, cwd: null);   // no workspace.yaml cwd
 
-        var source  = new CopilotImportSource(tmp.Path, legacyDirOverride: tmp.PathTo("none"));
+        var source  = new CopilotImportSource(Config.Root, tmp.Path, legacyDirOverride: tmp.PathTo("none"));
         var matched = await source.DiscoverAsync(new DiscoveryFilters("/work/a", null, null, 0), CancellationToken.None);
 
         await Assert.That(matched.Count).IsEqualTo(1);
@@ -104,7 +106,7 @@ public class CopilotImportSourceTests {
         WriteSession(tmp.Path, Sid1, cwd: "/work/a", createdAt: "2026-06-01T10:00:00Z");
         WriteSession(tmp.Path, Sid2, cwd: "/work/b", createdAt: "2026-06-09T10:00:00Z");
 
-        var source  = new CopilotImportSource(tmp.Path, legacyDirOverride: tmp.PathTo("none"));
+        var source  = new CopilotImportSource(Config.Root, tmp.Path, legacyDirOverride: tmp.PathTo("none"));
         var matched = await source.DiscoverAsync(
             new DiscoveryFilters(null, null, new DateOnly(2026, 6, 5), 0), CancellationToken.None);
 

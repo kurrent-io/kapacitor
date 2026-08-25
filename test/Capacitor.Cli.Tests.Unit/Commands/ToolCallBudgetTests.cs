@@ -17,6 +17,13 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// passes under every wrong composition of these two deadlines.</para>
 /// </summary>
 public class ToolCallBudgetTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // The dispatch is profile-scoped: its token refresh resolves a profile. These tests exercise
+    // routing, not profile selection.
+    McpFlowsServer Server() =>
+        new(Config.Root, Resolutions.None(Config.Root));
+
     static JsonObject StartArguments() => new() {
         ["kind"]         = "code-review",
         ["target_kind"]  = "pr",
@@ -71,13 +78,13 @@ public class ToolCallBudgetTests {
         }
     }
 
-    static async Task<(VirtualFlowRetryClock Clock, HoldThenPollHandler Handler, string Response)> RunAsync(TimeSpan settlementHold) {
+    async Task<(VirtualFlowRetryClock Clock, HoldThenPollHandler Handler, string Response)> RunAsync(TimeSpan settlementHold) {
         var clock   = new VirtualFlowRetryClock();
         var handler = new HoldThenPollHandler(clock, settlementHold);
 
         using var client = new HttpClient(handler) { BaseAddress = new Uri("http://budget.test") };
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest(), client, "http://budget.test",
             cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             clock: clock, backoff: SettlementBackoff.Seeded(7));

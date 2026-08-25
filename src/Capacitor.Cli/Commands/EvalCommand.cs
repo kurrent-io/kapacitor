@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Eval;
 
 namespace Capacitor.Cli.Commands;
@@ -9,9 +10,8 @@ namespace Capacitor.Cli.Commands;
 /// terminal report. The eval pipeline itself lives in the Eval library so
 /// the daemon (DEV-1440 milestone 2) can reuse it.
 /// </summary>
-static class EvalCommand {
-    public static async Task<int> HandleEval(
-            string  baseUrl,
+class EvalCommand(ConfigRoot config, ProfileContext profiles) {
+    public async Task<int> HandleEval(
             string  sessionId,
             string  model,
             bool    chain,
@@ -19,7 +19,8 @@ static class EvalCommand {
             string? questionsCsv,
             string? skipCsv
         ) {
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+        var       baseUrl    = profiles.Resolution.ServerUrl!;
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
         // Fetch taxonomy once up-front so --list and --questions/--skip share
         // the same source of truth; the server controls it (PR 1), not the CLI.
@@ -43,7 +44,7 @@ static class EvalCommand {
         }
 
         var result = await EvalService.RunAsync(
-            baseUrl, httpClient, sessionId, model, chain, thresholdBytes,
+            baseUrl, httpClient, profiles.Resolution.Profile, sessionId, model, chain, thresholdBytes,
             observer, questions: questions
         );
 
@@ -53,8 +54,9 @@ static class EvalCommand {
         return 0;
     }
 
-    public static async Task<int> HandleListQuestions(string baseUrl) {
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+    public async Task<int> HandleListQuestions() {
+        var       baseUrl    = profiles.Resolution.ServerUrl!;
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
         var observer = new ConsoleEvalObserver(sessionId: "");
         var catalog  = await EvalQuestionCatalogClient.FetchAsync(baseUrl, httpClient, observer, CancellationToken.None);
         if (catalog is null) return 1;

@@ -25,6 +25,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// </summary>
 [ParallelLimiter<SubprocessLimit>]
 public class DaemonStatusIpcTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
         public CancellationToken ApplicationStopping => CancellationToken.None;
@@ -90,7 +92,7 @@ public class DaemonStatusIpcTests {
     /// mirrors <c>AgentStatusSnapshotTests.Build</c> — for the pure write-path exception test
     /// below, which drives <see cref="DaemonStatusIpc.HandleSubscribeAsync"/> directly against a
     /// fake stream instead of a real connection.</summary>
-    static (AgentOrchestrator Orchestrator, DaemonStatusIpc StatusIpc, TempDaemonStore Daemons) BuildBareStatusIpc(string name) {
+    (AgentOrchestrator Orchestrator, DaemonStatusIpc StatusIpc, TempDaemonStore Daemons) BuildBareStatusIpc(string name) {
         var daemons   = new TempDaemonStore();
         var stateRoot = daemons.Store.StateDirectory(name);
         var store       = new LaunchConsentStore(stateRoot, NullLogger.Instance);
@@ -112,7 +114,8 @@ public class DaemonStatusIpcTests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, connection, worktreeManager, repoMatcher, new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
+            config, Config.Root, connection, worktreeManager, repoMatcher,
+            new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate, statusNotifier: notifier);
@@ -139,7 +142,7 @@ public class DaemonStatusIpcTests {
         }
     }
 
-    static async Task<Harness> StartAsync(string daemonName, CancellationToken ct) {
+    async Task<Harness> StartAsync(string daemonName, CancellationToken ct) {
         var daemons   = new TempDaemonStore();
         var stateRoot = daemons.Store.StateDirectory(daemonName);
         var store       = new LaunchConsentStore(stateRoot, NullLogger.Instance);
@@ -163,7 +166,8 @@ public class DaemonStatusIpcTests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, connection, worktreeManager, repoMatcher, new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
+            config, Config.Root, connection, worktreeManager, repoMatcher,
+            new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate, statusNotifier: notifier);
@@ -194,7 +198,7 @@ public class DaemonStatusIpcTests {
     /// Wraps a test body with the harness lifecycle, mirroring LocalControlHelloTests's RunAsync. The harness owns
     /// its own daemons directory, so nothing here is shared between tests; each [Test] still
     /// carries its own Windows guard, which must be visible on the test method itself.
-    static async Task RunAsync(string daemonName, Func<Harness, CancellationToken, Task> body) {
+    async Task RunAsync(string daemonName, Func<Harness, CancellationToken, Task> body) {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         Harness? h = null;

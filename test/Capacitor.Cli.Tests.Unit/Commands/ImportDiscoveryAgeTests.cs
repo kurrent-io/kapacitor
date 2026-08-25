@@ -22,6 +22,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// windows for exactly the long-running sessions people have most of.
 /// </remarks>
 internal sealed class ImportDiscoveryAgeTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     static DiscoveredSession Session(
             string vendor, DateTimeOffset? first, string? filePath = null, string pathKey = "FilePath") =>
         new(SessionId: "s1",
@@ -38,7 +40,7 @@ internal sealed class ImportDiscoveryAgeTests {
         var       day  = tmp.CreateDir("sessions", "2026", "01", "05");
         var       roll = day.CreateFile("rollout-abc.jsonl", "{}");
 
-        var age = new CodexImportSource().DiscoveryAge(Session("codex", null, roll));
+        var age = new CodexImportSource(Config.Root).DiscoveryAge(Session("codex", null, roll));
 
         // Not the file's mtime, which is now: --since prunes Codex on the directory alone.
         await Assert.That(age!.Value.UtcDateTime.Date).IsEqualTo(new DateTime(2026, 1, 5));
@@ -52,7 +54,7 @@ internal sealed class ImportDiscoveryAgeTests {
             /*lang=json*/ "{\"type\":\"user\",\"timestamp\":\"2026-08-01T10:00:00Z\",\"message\":{\"content\":\"later\"}}",
         ]);
 
-        var age = new ClaudeImportSource().DiscoveryAge(Session("claude", null, path));
+        var age = new ClaudeImportSource(Config.Root).DiscoveryAge(Session("claude", null, path));
 
         // A session started in January and appended to today belongs to January, which is the window
         // --since places it in. Taking mtime would count it inside a 30-day window it is not in.
@@ -72,7 +74,7 @@ internal sealed class ImportDiscoveryAgeTests {
 
         var path = tmp.CreateFile("session.jsonl", [.. lines]);
 
-        var age = new ClaudeImportSource().DiscoveryAge(Session("claude", null, path));
+        var age = new ClaudeImportSource(Config.Root).DiscoveryAge(Session("claude", null, path));
 
         await Assert.That(age!.Value.UtcDateTime.Date).IsEqualTo(new DateTime(2026, 1, 5));
     }
@@ -82,7 +84,7 @@ internal sealed class ImportDiscoveryAgeTests {
         using var tmp  = new TempDir();
         var       path = tmp.CreateFile("garbage.jsonl", "not json at all");
 
-        var age = new ClaudeImportSource().DiscoveryAge(Session("claude", null, path));
+        var age = new ClaudeImportSource(Config.Root).DiscoveryAge(Session("claude", null, path));
 
         // Same fallback the --since filter takes when the metadata carries no timestamp.
         await Assert.That(age).IsNotNull();
@@ -112,14 +114,14 @@ internal sealed class ImportDiscoveryAgeTests {
     }
 
     /// <summary>Every source but Claude and Codex, which resolve no timestamp during discovery.</summary>
-    static IImportSource SourceFor(string vendor) => vendor switch {
+    IImportSource SourceFor(string vendor) => vendor switch {
         "gemini"      => new GeminiImportSource(),
-        "kiro"        => new KiroImportSource(),
-        "pi"          => new PiImportSource(),
-        "copilot"     => new CopilotImportSource(),
+        "kiro"        => new KiroImportSource(Config.Root),
+        "pi"          => new PiImportSource(Config.Root),
+        "copilot"     => new CopilotImportSource(Config.Root),
         "antigravity" => new AntigravityImportSource(),
         "opencode"    => new OpenCodeImportSource(),
-        "cursor"      => new CursorImportSource(),
+        "cursor"      => new CursorImportSource(Config.Root),
         _             => throw new ArgumentOutOfRangeException(nameof(vendor), vendor, null),
     };
 

@@ -16,6 +16,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// append — the CLI must keep sending the hook regardless. Models on <see cref="CursorImportPrTests"/>.
 /// </summary>
 public class CursorSuppressedRepoImportTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server  = WireMockServer.Start();
     readonly TempDir        _tmp     = new();
 
@@ -58,7 +60,7 @@ public class CursorSuppressedRepoImportTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-end/cursor").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        var source = new CursorImportSource(
+        var source = new CursorImportSource(Config.Root, 
             WriteOneCursorSessionWithWorkspace(),
             WorkspaceStorageDir,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(

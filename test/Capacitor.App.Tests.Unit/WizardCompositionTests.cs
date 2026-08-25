@@ -10,6 +10,7 @@ using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.LocalIpc;
 using AppUnderTest = Capacitor.App.App;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -37,17 +38,10 @@ static class WizardCompositionFixtures {
         }
     }
 
-    internal static string ConfigPath => AppConfig.GetConfigPath();
+    internal static string ConfigPath(ConfigRoot root) => AppConfig.GetConfigPath(root);
 
-    internal static void ResetConfig() {
-        if (File.Exists(ConfigPath)) File.Delete(ConfigPath);
-        AppConfig.ResetResolvedStateForTesting();
-        Environment.SetEnvironmentVariable("KCAP_URL", null);
-        Environment.SetEnvironmentVariable("KCAP_PROFILE", null);
-    }
-
-    internal static void WriteConfig(ProfileConfig config) =>
-        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config, ProfileConfigJsonContext.Default.ProfileConfig));
+    internal static void WriteConfig(ConfigRoot root, ProfileConfig config) =>
+        File.WriteAllText(ConfigPath(root), JsonSerializer.Serialize(config, ProfileConfigJsonContext.Default.ProfileConfig));
 }
 
 /// (a) Fresh-machine happy path: a None-provider Paste sign-in through the REAL façade (the only
@@ -55,33 +49,33 @@ static class WizardCompositionFixtures {
 /// REAL OnboardingViewModel all the way to the Done summary — with no kcap CLI resolved anywhere
 /// in the composition, the fresh-machine shape spec §9 documents.
 ///
-/// [NotInParallel]: shares OnboardingGateTests' one real config.json (OnboardingGateGlobalSetup)
-/// and the process-global headless session, since composing the wizard constructs ReactiveUI VMs.
-[NotInParallel([nameof(OnboardingGateTests), "AvaloniaSession"])]
+/// [NotInParallel]: the process-global headless session, since composing the wizard constructs
+/// ReactiveUI VMs.
+[NotInParallel("AvaloniaSession")]
 public class WizardCompositionHappyPathTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     const string ProfileName = "acme";
     const string ServerUrl   = "https://acme.example";
 
-    [Before(Test)]
-    public void Cleanup() => WizardCompositionFixtures.ResetConfig();
-
     [Test]
     public async Task Fresh_machine_paste_sign_in_reaches_a_correct_done_summary() {
-        WizardCompositionFixtures.WriteConfig(
+        WizardCompositionFixtures.WriteConfig(Config.Root,
             new ProfileConfig { ActiveProfile = ProfileName, Profiles = new() { [ProfileName] = new Profile() } });
 
-        using var harness = new WizardFixtures.GraphHarness();
+        using var harness = new WizardFixtures.GraphHarness(Config.Root);
         harness.CliPath        = null; // no kcap CLI resolved anywhere on this fresh machine
         harness.Cli.CliPath    = null;
         harness.ShimTarget     = null;
         harness.ShimApplicable = false;
         harness.Identity       = (ProfileName, ServerUrl, "daemon-a");
+        harness.Profile        = ProfileName;
         using var authHandler = new WizardCompositionFixtures.NoneProviderAuthHandler();
 
         var options = harness.Options() with {
             Operation = spec => WizardSignInOperation.For(new OnboardingFacade(
-                spec.Progress, spec.Picker, spec.Provisioner, spec.BeforeCommit,
-                () => new HttpClient(authHandler, false))),
+                spec.Root, spec.Progress, new RecordingBrowser(), spec.Picker, spec.Provisioner, spec.BeforeCommit,
+                () => new HttpClient(authHandler, false)), spec.Profile),
         };
 
         var summary = await AvaloniaSession.DispatchAsync(async () => {
@@ -140,7 +134,7 @@ public class WizardCompositionHappyPathTests {
         // The dominant CLI-missing note, never the stale "requires sign-in" — sign-in DID commit.
         await Assert.That(byTitle["Enable the daemon"].Note).IsEqualTo(WizardComposition.CliMissingNote);
 
-        var config = await AppConfig.LoadProfileConfig();
+        var config = await AppConfig.LoadProfileConfig(Config.Root);
         await Assert.That(config.Profiles[ProfileName].ServerUrl).IsEqualTo(ServerUrl);
         await Assert.That(config.Profiles[ProfileName].AuthProvider?.Provider).IsEqualTo(AuthProvider.None);
         await Assert.That(config.Profiles[ProfileName].DefaultVisibility).IsEqualTo("org_public");
@@ -157,25 +151,24 @@ public class WizardCompositionHappyPathTests {
 }
 
 /// (b) Abandon before sign-in: staging a valid Connect intent and closing WITHOUT ever calling
-/// Begin must leave nothing durable — no claim, no lane traffic, no CLI spawn, and the one real
-/// config file this suite shares untouched.
+/// Begin must leave nothing durable — no claim, no lane traffic, no CLI spawn, and the config
+/// file untouched.
 ///
 /// [NotInParallel]: same shared resources as WizardCompositionHappyPathTests, for the same reason.
-[NotInParallel([nameof(OnboardingGateTests), "AvaloniaSession"])]
+[NotInParallel("AvaloniaSession")]
 public class WizardCompositionAbandonTests {
-    const string ProfileName = "acme";
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
-    [Before(Test)]
-    public void Cleanup() => WizardCompositionFixtures.ResetConfig();
+    const string ProfileName = "acme";
 
     [Test]
     public async Task Staging_connect_input_and_closing_without_signing_in_writes_nothing() {
-        WizardCompositionFixtures.WriteConfig(
+        WizardCompositionFixtures.WriteConfig(Config.Root,
             new ProfileConfig { ActiveProfile = ProfileName, Profiles = new() { [ProfileName] = new Profile() } });
-        var configBefore = await File.ReadAllTextAsync(WizardCompositionFixtures.ConfigPath);
+        var configBefore = await File.ReadAllTextAsync(WizardCompositionFixtures.ConfigPath(Config.Root));
 
         await AvaloniaSession.DispatchAsync(async () => {
-            using var harness = new WizardFixtures.GraphHarness();
+            using var harness = new WizardFixtures.GraphHarness(Config.Root);
             var graph = WizardComposition.BuildGraph(harness.Options());
             await graph.ViewModel.PendingEnterForTesting;
 
@@ -202,7 +195,7 @@ public class WizardCompositionAbandonTests {
             return true;
         }).WaitAsync(TimeSpan.FromSeconds(30));
 
-        await Assert.That(await File.ReadAllTextAsync(WizardCompositionFixtures.ConfigPath)).IsEqualTo(configBefore);
+        await Assert.That(await File.ReadAllTextAsync(WizardCompositionFixtures.ConfigPath(Config.Root))).IsEqualTo(configBefore);
     }
 }
 
@@ -212,9 +205,11 @@ public class WizardCompositionAbandonTests {
 /// modelling a wizard session followed by the normal app's next startup, never a shared in-memory instance.
 [NotInParallel("AvaloniaSession")]
 public class WizardCompositionRelaunchTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     [Test]
     public async Task A_claim_armed_during_the_wizard_is_applied_by_a_relaunched_coordinator() {
-        using var harness = new WizardFixtures.GraphHarness();
+        using var harness = new WizardFixtures.GraphHarness(Config.Root);
         var canonicalServer = ServerIdentity.Canonicalize("https://acme.example")!;
         const string profileName = "acme";
         const string daemonName  = "daemon-a";
@@ -238,8 +233,7 @@ public class WizardCompositionRelaunchTests {
 
         // The relaunch: a fresh ConsentFlipClaims instance over the SAME file, and a fresh
         // coordinator — never the wizard's own claims object or WizardAuthService.
-        var relaunchClaims = new ConsentFlipClaims(
-            Path.Combine(harness.Dir, "claims.json"), Path.Combine(harness.Dir, "config.json"));
+        var relaunchClaims = new ConsentFlipClaims(harness.ClaimsRoot);
         var client   = new FakeDaemonClientService();
         var ops      = new ScriptedLocalControlOps();
         var surface  = new FakeLifecycleSurface();

@@ -3,9 +3,12 @@ using System.Text.Json;
 
 namespace Capacitor.Cli.Core.Config;
 
-public static class RepoPathStore {
-    static readonly string StorePath = PathHelpers.ConfigPath("repos.json");
+/// <summary>The persisted list of repo paths (<c>repos.json</c>) under the <see cref="ConfigRoot"/>
+/// it is handed. Writes are atomic (temp + rename) so a reader never observes a partial file.</summary>
+public sealed class RepoPathStore(ConfigRoot config) {
+    string StorePath { get; } = config.Path("repos.json");
 
+    // Static: serialises the read-modify-write for the whole process however many instances exist.
     static readonly SemaphoreSlim Lock = new(1, 1);
 
     public static readonly StringComparison PathComparison =
@@ -16,7 +19,7 @@ public static class RepoPathStore {
     static string NormalizePath(string path) =>
         Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
-    public static async Task<RepoEntry[]> LoadAsync() {
+    public async Task<RepoEntry[]> LoadAsync() {
         if (!File.Exists(StorePath))
             return [];
 
@@ -47,7 +50,7 @@ public static class RepoPathStore {
         return [..byRepo.Values];
     }
 
-    public static async Task AddAsync(string path) {
+    public async Task AddAsync(string path) {
         // A linked worktree registers as its main repository: user-facing repo lists show actual
         // repositories, and review flows launching into a requester's worktree must not mint a
         // "known repo" out of it (GH #655).
@@ -71,7 +74,7 @@ public static class RepoPathStore {
         }
     }
 
-    public static async Task<bool> RemoveAsync(string path) {
+    public async Task<bool> RemoveAsync(string path) {
         var normalized = NormalizePath(path);
 
         await Lock.WaitAsync();
@@ -89,7 +92,7 @@ public static class RepoPathStore {
         }
     }
 
-    static async Task SaveAsync(List<RepoEntry> entries) {
+    async Task SaveAsync(List<RepoEntry> entries) {
         var dir = Path.GetDirectoryName(StorePath)!;
         Directory.CreateDirectory(dir);
         var tempPath = Path.Combine(dir, $"repos.{Environment.ProcessId}.tmp");
@@ -101,7 +104,7 @@ public static class RepoPathStore {
     /// <summary>
     /// Returns all persisted repo paths sorted by last_used descending.
     /// </summary>
-    public static async Task<string[]> GetSortedPathsAsync() {
+    public async Task<string[]> GetSortedPathsAsync() {
         var entries = await LoadAsync();
         return entries.OrderByDescending(e => e.LastUsed).Select(e => e.Path).ToArray();
     }

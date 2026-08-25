@@ -1,5 +1,7 @@
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.SessionStartMemory;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Copilot;
 
@@ -102,19 +104,27 @@ public class CopilotSessionStartMemoryTests {
         await Assert.That(SessionStartMemoryHookSupport.CanAttempt(baseUrl)).IsTrue();
     }
 
-    // HookBudget.Remaining() ALREADY reserves Safety. Reserving it a second time (as the first cut of
+    /// <summary>The budget of a Copilot hook that has been running for <paramref name="elapsed"/>.
+    /// The wait itself still runs on the real timer — only the budget arithmetic is taken off the wall
+    /// clock. The adapter's own ceiling, so the numbers below stay tied to what it really allows.</summary>
+    static HookBudget Aged(TimeSpan elapsed) {
+        var time  = new FakeTimeProvider();
+        var clock = new HookClock(time);
+        time.Advance(elapsed);
+        return clock.Budget(CopilotHookCommand.Ceiling);
+    }
+
+    // HookBudget.Remaining ALREADY reserves Safety. Reserving it a second time (as the first cut of
     // both this adapter and the Codex one did) collapses the usable window and silently discards a
-    // healthy response. Pinned with a stamp where the two differ decisively: with a 5s ceiling and a
-    // 1.5s safety, 2s elapsed leaves Remaining = 1.5s, whereas the double-reserved budget is exactly
-    // zero — so a fragment arriving 300ms from now is returned only if the budget is computed once.
+    // healthy response. Pinned at the elapsed time where the two differ decisively: with a 5s ceiling
+    // and a 1.5s safety, 2s elapsed leaves Remaining = 1.5s, whereas the double-reserved budget is
+    // exactly zero — so a fragment arriving 300ms from now is returned only if Safety is reserved once.
     [Test]
     public async Task a_fragment_arriving_inside_the_remaining_budget_is_not_discarded() {
-        var twoSecondsAgo = System.Diagnostics.Stopwatch.GetTimestamp()
-                          - (long)(2.0 * System.Diagnostics.Stopwatch.Frequency);
-
         var slow = Task.Run(async () => { await Task.Delay(300); return (string?)"## Team memory"; });
 
-        await Assert.That(await SessionStartMemoryHookSupport.AwaitBounded(slow, twoSecondsAgo, "session-start"))
+        await Assert.That(await SessionStartMemoryHookSupport.AwaitBounded(
+                slow, Aged(TimeSpan.FromSeconds(2))))
             .IsEqualTo("## Team memory");
     }
 
@@ -122,13 +132,17 @@ public class CopilotSessionStartMemoryTests {
     // leaves nothing once Safety is reserved.
     [Test]
     public async Task an_exhausted_budget_degrades_to_no_memory_without_waiting() {
-        var wayBack = System.Diagnostics.Stopwatch.GetTimestamp()
-                    - (long)(4.9 * System.Diagnostics.Stopwatch.Frequency);
-
         var slow = Task.Run(async () => { await Task.Delay(5_000); return (string?)"## Team memory"; });
 
-        await Assert.That(await SessionStartMemoryHookSupport.AwaitBounded(slow, wayBack, "session-start"))
-            .IsNull();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(
+            slow, Aged(TimeSpan.FromSeconds(4.9)));
+        sw.Stop();
+
+        await Assert.That(fragment).IsNull();
+        // Not just "null" — null WITHOUT waiting. A budget that ignored the elapsed time would
+        // still yield null here, by timing out the 5s task against a full ceiling.
+        await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(1));
     }
 
     /// <summary>Walks up from this file's compile-time path to the repo root.</summary>
@@ -142,11 +156,11 @@ public class CopilotSessionStartMemoryTests {
     }
 
     // `disable_memory_index` must be read from the EFFECTIVE profile. ProfileResolver returns a null
-    // Profile whenever --server-url or KCAP_URL wins, so reading AppConfig.ResolvedProfile?.Profile
+    // Profile whenever --server-url or KCAP_URL wins, so reading the resolution's own profile
     // silently ignored the user's opt-out on every KCAP_URL deployment — the configuration most
     // hosted users run. Asserted at the source level because reaching this branch through Handle
-    // needs KCAP_CONFIG_DIR bound before PathHelpers' static init, which a parallel shared test
-    // assembly cannot guarantee.
+    // needs a resolution whose profile is null while the effective one is not, which the hook's own
+    // entry point will not produce.
     [Test]
     public async Task the_memory_opt_out_is_read_from_the_effective_profile_not_the_resolved_one() {
         var source = await File.ReadAllTextAsync(

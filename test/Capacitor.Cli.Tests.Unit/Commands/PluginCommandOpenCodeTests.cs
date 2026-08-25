@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.OpenCode;
@@ -27,9 +28,8 @@ public class PluginCommandOpenCodeTests {
         using var tmp = new TempDir();
         var pluginPath = tmp.PathTo("plugins", "kcap.ts");
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--opencode", "--opencode-plugin-path", pluginPath, "--if-installed"],
-            TestEnv(tmp.Path));
+        var exit = await new PluginCommand(TestEnv(tmp.Path)).HandleAsync(
+            ["plugin", "install", "--opencode", "--opencode-plugin-path", pluginPath, "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // kcap.ts must NOT exist — the npm refresh must never force-install the
@@ -48,10 +48,9 @@ public class PluginCommandOpenCodeTests {
 
         // Plugin-only: skip MCP/instructions so this stays isolated to the plugin file
         // (their config path derives from ambient OPENCODE_CONFIG_DIR/XDG, not this TempDir).
-        var exit = await PluginCommand.HandleAsync(
+        var exit = await new PluginCommand(TestEnv(tmp.Path)).HandleAsync(
             ["plugin", "install", "--opencode", "--opencode-plugin-path", pluginPath, "--if-installed",
-             "--skip-opencode-mcp", "--skip-opencode-instructions"],
-            TestEnv(tmp.Path));
+             "--skip-opencode-mcp", "--skip-opencode-instructions"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var body = await File.ReadAllTextAsync(pluginPath);
@@ -69,10 +68,9 @@ public class PluginCommandOpenCodeTests {
         // via the marker, so --if-installed must still RECREATE the missing plugin, not skip it.
         dir.CreateFile(".kcap-extension-version", CapacitorVersion.Current());
 
-        var exit = await PluginCommand.HandleAsync(
+        var exit = await new PluginCommand(TestEnv(tmp.Path)).HandleAsync(
             ["plugin", "install", "--opencode", "--opencode-plugin-path", pluginPath, "--if-installed",
-             "--skip-opencode-mcp", "--skip-opencode-instructions"],
-            TestEnv(tmp.Path));
+             "--skip-opencode-mcp", "--skip-opencode-instructions"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(pluginPath)).IsTrue();  // recreated despite the current marker
@@ -92,9 +90,8 @@ public class PluginCommandOpenCodeTests {
         await File.WriteAllTextAsync(pluginPath, "export const KcapPlugin = async () => ({})");
         await File.WriteAllTextAsync(marker, "1.0.0");
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "remove", "--opencode", "--opencode-plugin-path", pluginPath],
-            TestEnv(tmp.Path));
+        var exit = await new PluginCommand(TestEnv(tmp.Path)).HandleAsync(
+            ["plugin", "remove", "--opencode", "--opencode-plugin-path", pluginPath]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(pluginPath)).IsFalse();
@@ -121,7 +118,7 @@ public class PluginCommandOpenCodeTests {
             {"$schema":"https://opencode.ai/config.json","mcp":{"my-tool":{"type":"local","command":["my-tool","serve"],"enabled":true}}}
             """);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--opencode", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--opencode", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var root = JsonNode.Parse(await File.ReadAllTextAsync(env.OpenCodeMcpConfigJson))!.AsObject();
@@ -149,8 +146,8 @@ public class PluginCommandOpenCodeTests {
         var env = TestEnv(home.Path);
         SeedPlugin(env);
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--opencode", "--if-installed", "--skip-opencode-mcp"], env);
+        var exit = await new PluginCommand(env).HandleAsync(
+            ["plugin", "install", "--opencode", "--if-installed", "--skip-opencode-mcp"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(env.OpenCodeMcpConfigJson)).IsFalse();
@@ -167,7 +164,7 @@ public class PluginCommandOpenCodeTests {
         Directory.CreateDirectory(Path.GetDirectoryName(env.OpenCodeAgentsMd)!);
         await File.WriteAllTextAsync(env.OpenCodeAgentsMd, "# My rules\n\nAlways use tabs.\n");
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--opencode", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--opencode", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var content = await File.ReadAllTextAsync(env.OpenCodeAgentsMd);
@@ -184,8 +181,8 @@ public class PluginCommandOpenCodeTests {
         var env = TestEnv(home.Path);
         SeedPlugin(env);
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--opencode", "--if-installed", "--skip-opencode-instructions"], env);
+        var exit = await new PluginCommand(env).HandleAsync(
+            ["plugin", "install", "--opencode", "--if-installed", "--skip-opencode-instructions"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(env.OpenCodeAgentsMd)).IsFalse();
@@ -208,7 +205,7 @@ public class PluginCommandOpenCodeTests {
         await File.WriteAllTextAsync(env.OpenCodeAgentsMd, "# My rules\n\nAlways use tabs.\n");
         AgentInstructionsWriter.Write(env.OpenCodeAgentsMd, KcapAgentInstructions.Body);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "remove", "--opencode"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--opencode"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var mcp  = JsonNode.Parse(await File.ReadAllTextAsync(env.OpenCodeMcpConfigJson))!.AsObject()["mcp"]!.AsObject();
@@ -221,19 +218,6 @@ public class PluginCommandOpenCodeTests {
         await Assert.That(content).DoesNotContain(AgentInstructionsWriter.BeginMarker);
     }
 
-    // Sets an env var for the test's lifetime and restores it on Dispose. Used to clear
-    // OPENCODE_CONFIG_DIR + XDG_CONFIG_HOME so OpenCodePaths resolves under the fake home.
-    sealed class EnvScope : IDisposable {
-        readonly string  _key;
-        readonly string? _prev;
-        public EnvScope(string key, string? value) {
-            _key  = key;
-            _prev = Environment.GetEnvironmentVariable(key);
-            Environment.SetEnvironmentVariable(key, value);
-        }
-        public void Dispose() => Environment.SetEnvironmentVariable(_key, _prev);
-    }
-
     // Deterministic native-binary path: registration writes the resolved binary as the command
     // (default: the running process), so tests inject their own value and assert that,
     // never blessing whatever executable happens to run the suite.
@@ -241,6 +225,7 @@ public class PluginCommandOpenCodeTests {
 
     static PluginEnvironment TestEnv(string fakeHome) => new(
         HomeDirectory:     fakeHome,
+        Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null

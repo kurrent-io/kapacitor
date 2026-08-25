@@ -153,27 +153,27 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
     /// from that same resolution, so the gate verdict and the daemon identity can never diverge on
     /// a concurrently-changing profile.
     /// </summary>
-    public static DaemonClientService CreateResolved(DaemonStore store, Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
-        var name = DaemonNameResolver.Resolve([], AppConfig.ResolvedProfile?.Profile?.Daemon?.Name);
+    public static DaemonClientService CreateResolved(
+            DaemonStore store, ResolvedProfile? profile,
+            Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
+        var name = DaemonNameResolver.Resolve([], profile?.Profile?.Daemon?.Name);
 
         return new DaemonClientService(
             name,
             ct => new LocalControlClient(store, name).RunAsync(ct),
-            BuildStartDaemon(name, () => AppConfig.ResolvedProfile, runMutation)
+            BuildStartDaemon(name, profile, runMutation)
         );
     }
 
-    /// The main-window Start/Retry delegate: builds a DetachedStart MutationRequest at the
-    /// CURRENTLY resolved profile/server (re-read on every call, never captured once — a profile
-    /// resolved after this service was constructed must still be honored) and hands it to
+    /// The main-window Start/Retry delegate: builds a DetachedStart MutationRequest at the profile
+    /// this service was resolved for — the one the gate was evaluated on — and hands it to
     /// `runMutation`; a caller that cannot bind a canonical server never reaches it (binding
-    /// ruling 1). Extracted from CreateResolved — whose daemon-name resolution reads real config —
-    /// so this request-building logic stays unit-testable on its own.
+    /// ruling 1). A profile written after startup reaches it through a graph rebuild, which is the
+    /// only thing that re-evaluates the gate too.
     internal static Func<CancellationToken, Task<MutationOutcome>> BuildStartDaemon(
-            string daemonName, Func<ResolvedProfile?> resolveProfile,
+            string daemonName, ResolvedProfile? profile,
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) =>
         ct => {
-            var profile = resolveProfile();
             var refusal = MutationRequestFactory.TryBuild(
                 MutationVerb.DetachedStart, profile?.ProfileName, profile?.ServerUrl, daemonName, out var request);
             return refusal is not null ? Task.FromResult(refusal) : runMutation(request!, ct);

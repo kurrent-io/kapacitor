@@ -16,21 +16,14 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class McpFlowsServerTests : IDisposable {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+    [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
+    [TempDir]         public required TempDir         Tmp     { get; init; }
 
     readonly WireMockServer _server           = WireMockServer.Start();
-    readonly TempDir        _tmp              = new();
-    readonly string         _cfgDir;
-    readonly string         _cwdDir;
     readonly List<Process>  _spawnedProcesses = [];
 
-    public McpFlowsServerTests() {
-        _cfgDir = _tmp.CreateDir("cfg");
-        _cwdDir = _tmp.CreateDir("cwd");
-
-        // Initialize a git repo in _cwdDir so GitRepository.FindRoot returns a path,
-        // and create a subdirectory to verify requesting_cwd vs requesting_repo_root.
-        InitGitRepo(_cwdDir);
-    }
+    [Before(Test)]
+    public void InitWorkspaceRepo() => InitGitRepo(Tmp.Path);
 
     public void Dispose() {
         foreach (var p in _spawnedProcesses) {
@@ -43,7 +36,6 @@ public class McpFlowsServerTests : IDisposable {
         }
 
         _server.Stop();
-        _tmp.Dispose();
     }
 
     /// <summary>
@@ -75,10 +67,9 @@ public class McpFlowsServerTests : IDisposable {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "flows");
-        psi.WorkingDirectory = workingDirectory ?? _cwdDir;
+        var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "mcp", "flows");
+        psi.WorkingDirectory = workingDirectory ?? Tmp.Path;
         psi.Environment["KCAP_URL"] = urlOverride ?? _server.Url!;
-        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
 
         ApplyHarnessSignals(psi, harnessSessionId: null, harnessProjectDir: null);
 
@@ -102,10 +93,9 @@ public class McpFlowsServerTests : IDisposable {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "flows");
-        psi.WorkingDirectory = workingDirectory ?? _cwdDir;
+        var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "mcp", "flows");
+        psi.WorkingDirectory = workingDirectory ?? Tmp.Path;
         psi.Environment["KCAP_URL"] = _server.Url!;
-        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
         psi.Environment["KCAP_SESSION_ID"] = sessionId;
 
         ApplyHarnessSignals(psi, harnessSessionId, harnessProjectDir);
@@ -808,10 +798,10 @@ public class McpFlowsServerTests : IDisposable {
                 .WithBody(stubbedResponse)
         );
 
-        // Create a subdirectory inside _cwdDir so the server starts there — we can then
-        // verify requesting_repo_root points to _cwdDir (the git root) while requesting_cwd
+        // Create a subdirectory inside Tmp.Path so the server starts there — we can then
+        // verify requesting_repo_root points to Tmp.Path (the git root) while requesting_cwd
         // points to the subdirectory.
-        var subdir = Path.Combine(_cwdDir, "src", "feature");
+        var subdir = Path.Combine(Tmp.Path, "src", "feature");
         Directory.CreateDirectory(subdir);
 
         using var proc = SpawnMcpServerWithSession(sessionId, workingDirectory: subdir);
@@ -867,7 +857,7 @@ public class McpFlowsServerTests : IDisposable {
                 reqCwd.Equals(subdir, StringComparison.OrdinalIgnoreCase)
             ).IsTrue();
 
-            // requesting_repo_root: the git root (= _cwdDir, where git init was run).
+            // requesting_repo_root: the git root (= Tmp.Path, where git init was run).
             // On macOS directory paths can differ between what the test creates
             // (Path.GetTempPath() / Guid) and what the spawned process sees via
             // Directory.GetCurrentDirectory() (which resolves symlinks on some platforms).
@@ -875,9 +865,9 @@ public class McpFlowsServerTests : IDisposable {
             // contains the unique test-directory name so it can't be an arbitrary system dir.
             var reqRepoRoot = bodyNode["requesting_repo_root"]?.GetValue<string>();
             await Assert.That(reqRepoRoot).IsNotNull();
-            // The unique GUID portion of _cwdDir must appear somewhere in the repo root path
+            // The unique GUID portion of Tmp.Path must appear somewhere in the repo root path
             // (both paths point to the same directory, just possibly via different symlink chains).
-            var cwdDirName = Path.GetFileName(_cwdDir.TrimEnd(Path.DirectorySeparatorChar));
+            var cwdDirName = Path.GetFileName(Tmp.Path.TrimEnd(Path.DirectorySeparatorChar));
             await Assert.That(reqRepoRoot!.Contains(cwdDirName, StringComparison.OrdinalIgnoreCase)).IsTrue();
 
             // kind: matches what we passed
@@ -920,7 +910,7 @@ public class McpFlowsServerTests : IDisposable {
 
         using var proc = SpawnMcpServerWithSession(
             inheritedParentSession,
-            workingDirectory:  _cwdDir,      // the launching (parent) checkout — inherited, wrong
+            workingDirectory:  Tmp.Path,      // the launching (parent) checkout — inherited, wrong
             harnessSessionId:  runningDriverSession,
             harnessProjectDir: driverRepo);  // the driver's own checkout — correct
 
@@ -951,7 +941,7 @@ public class McpFlowsServerTests : IDisposable {
             // The driver's checkout, not the directory the process was launched in. Compared by
             // the unique directory name because macOS resolves the temp path through a symlink.
             var driverRepoName = Path.GetFileName(driverRepo);
-            var parentRepoName = Path.GetFileName(_cwdDir);
+            var parentRepoName = Path.GetFileName(Tmp.Path);
             foreach (var field in (string[])["requesting_cwd", "requesting_repo_root", "repo_path"]) {
                 var value = body[field]?.GetValue<string>();
                 await Assert.That(value).IsNotNull();
@@ -1479,7 +1469,7 @@ public class McpFlowsServerTests : IDisposable {
     /// single HttpClient for the agent's whole session).
     /// </summary>
     void SeedToken(string accessToken = "seed-token") {
-        var tokensDir = Path.Combine(_cfgDir, "tokens");
+        var tokensDir = Config.Root.Path("tokens");
         Directory.CreateDirectory(tokensDir);
         var tokenJson = $$"""
             {

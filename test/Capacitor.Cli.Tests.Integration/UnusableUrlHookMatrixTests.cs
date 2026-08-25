@@ -21,6 +21,7 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class UnusableUrlHookMatrixTests : IDisposable {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+    [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
 
     // Every class IsAcceptableUrl rejects. Deliberately NOT the empty string: ProfileResolver ignores
     // an exactly-empty KCAP_URL and falls back to the active profile, so it would test the wrong thing.
@@ -34,15 +35,10 @@ public class UnusableUrlHookMatrixTests : IDisposable {
 
     const string Sid = "0123456789abcdef0123456789abcdef";
 
-    readonly TempDir       _tmp = new();
-    readonly string        _cfgDir;
     readonly List<Process> _spawned = [];
-
-    public UnusableUrlHookMatrixTests() => _cfgDir = _tmp.Path;
 
     public void Dispose() {
         foreach (var p in _spawned) { try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { } p.Dispose(); }
-        _tmp.Dispose();
     }
 
     [Test]
@@ -51,7 +47,7 @@ public class UnusableUrlHookMatrixTests : IDisposable {
         var payload = new JsonObject {
             ["hook_event_name"] = "SessionStart",
             ["session_id"]      = Guid.NewGuid().ToString(),
-            ["cwd"]             = _cfgDir,
+            ["cwd"]             = Config.Directory,
         }.ToJsonString();
 
         var r = await RunAsync(["hook", "--codex"], url, payload);
@@ -87,7 +83,7 @@ public class UnusableUrlHookMatrixTests : IDisposable {
         var payload = new JsonObject {
             ["hook_event_name"] = "SessionStart",
             ["session_id"]      = Guid.NewGuid().ToString(),
-            ["cwd"]             = _cfgDir,
+            ["cwd"]             = Config.Directory,
         }.ToJsonString();
 
         var r = await RunAsync(["hook", "--claude"], url, payload);
@@ -142,8 +138,7 @@ public class UnusableUrlHookMatrixTests : IDisposable {
     /// <summary><c>kcap watch</c> run by hand: the actionable hint, not an opaque exit 1.</summary>
     [Test]
     public async Task Hand_run_watch_exits_2_with_the_hint() {
-        var transcript = Path.Combine(_cfgDir, "t.jsonl");
-        Directory.CreateDirectory(_cfgDir);
+        var transcript = Config.PathTo("t.jsonl");
         await File.WriteAllTextAsync(transcript, "");
 
         var r = await RunAsync(["watch", Guid.NewGuid().ToString("N"), transcript], "localhost:5108", stdin: "");
@@ -153,12 +148,9 @@ public class UnusableUrlHookMatrixTests : IDisposable {
     }
 
     async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(string[] args, string url, string stdin) {
-        Directory.CreateDirectory(_cfgDir);
-
-        var psi = KcapProcess.StartInfo(Daemons.Store, args);
-        psi.WorkingDirectory = _cfgDir;
+        var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, args);
+        psi.WorkingDirectory = Config.Directory;
         psi.Environment["KCAP_URL"] = url;
-        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
         psi.Environment["KCAP_NO_UPDATE_CHECK"] = "1";
         psi.Environment["KCAP_SESSION_ID"] = ""; // ambient session state must not decide these cases
 
@@ -192,12 +184,9 @@ public class UnusableUrlHookMatrixTests : IDisposable {
     [Test]
     [MethodDataSource(nameof(UnusableUrls))]
     public async Task Mcp_judge_completes_the_handshake_and_returns_a_tool_error(string url) {
-        Directory.CreateDirectory(_cfgDir);
-
-        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "judge", "--session", Sid);
-        psi.WorkingDirectory = _cfgDir;
+        var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "mcp", "judge", "--session", Sid);
+        psi.WorkingDirectory = Config.Directory;
         psi.Environment["KCAP_URL"] = url;
-        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
         psi.Environment["KCAP_NO_UPDATE_CHECK"] = "1";
         psi.Environment["KCAP_SESSION_ID"] = "";
 

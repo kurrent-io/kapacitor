@@ -2,6 +2,7 @@ using Capacitor.App.Services.Mutation;
 using Capacitor.App.ViewModels.Onboarding;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.App.Services.Onboarding;
@@ -9,6 +10,8 @@ namespace Capacitor.App.Services.Onboarding;
 /// The façade's constructor arguments as data, so the composition root's choices — which sink,
 /// which picker, whether a provisioner is armed, which before-commit hook — are inspectable.
 internal sealed record WizardFacadeSpec(
+    ConfigRoot                                                 Root,
+    string                                                     Profile,
     IAuthProgress                                              Progress,
     ITenantPicker                                              Picker,
     ITenantProvisioner?                                        Provisioner,
@@ -24,6 +27,8 @@ internal sealed record WizardGraph(
 
 /// <summary>Everything wizard-first mode is composed from; the daemon-facing entries are factories so a call never lands on a stale daemon.</summary>
 internal sealed record WizardGraphOptions(
+    ConfigRoot                                                                   Root,
+    string                                                                       Profile,
     ConsentFlipClaims                                                            Claims,
     WizardBridges                                                                Bridges,
     Func<WizardFacadeSpec, Func<ConnectIntent, CancellationToken, Task<AuthResult>>> Operation,
@@ -65,27 +70,28 @@ internal static class WizardComposition {
     /// Production operation: the spec IS the façade's arguments, and WizardSignInOperation owns
     /// the intent→call map (paste adopts the server; create/discover run WorkOS discovery).
     internal static Func<ConnectIntent, CancellationToken, Task<AuthResult>> NewOperation(WizardFacadeSpec spec) =>
-        WizardSignInOperation.For(new OnboardingFacade(spec.Progress, spec.Picker, spec.Provisioner, spec.BeforeCommit));
+        WizardSignInOperation.For(new OnboardingFacade(
+            spec.Root, spec.Progress, SystemBrowser.Instance, spec.Picker, spec.Provisioner, spec.BeforeCommit), spec.Profile);
 
     /// The ONE façade a wizard run signs in through — provisioner armed (a provisioner-less façade
     /// dead-ends "Create a workspace" at "ask your admin") and the decision-7 arming hook wired as
     /// before-commit, so a claim exists before anything durable is published.
     internal static Func<ConnectIntent, CancellationToken, Task<AuthResult>> BuildOperation(
-            WizardBridges bridges, ConsentFlipClaims claims,
+            ConfigRoot root, string profile, WizardBridges bridges, ConsentFlipClaims claims,
             Func<WizardFacadeSpec, Func<ConnectIntent, CancellationToken, Task<AuthResult>>> operation) =>
         operation(new WizardFacadeSpec(
-            bridges.Progress, bridges.Picker, bridges.Provisioner, WizardAuthService.ArmingHook(claims)));
+            root, profile, bridges.Progress, bridges.Picker, bridges.Provisioner, WizardAuthService.ArmingHook(claims)));
 
     internal static WizardGraph BuildGraph(WizardGraphOptions options) {
         var claims = options.Claims;
         var cli    = new LateBoundKcapCli(options.ResolveCli, options.CliPath);
-        var auth   = new WizardAuthService(BuildOperation(options.Bridges, claims, options.Operation));
+        var auth   = new WizardAuthService(BuildOperation(options.Root, options.Profile, options.Bridges, claims, options.Operation));
 
         var connect  = new ConnectStepViewModel();
         var signIn   = new SignInStepViewModel(auth, connect, options.Bridges, claims, options.AppState, options.UrlOpener);
         var shim     = new ShimStepViewModel(options.ShimApplicable, options.ShimInstaller, options.AppState, options.ShimTarget);
         // Defaults persists to the same fresh identity the daemon step gates on, falling back to ActiveProfile.
-        var defaults = new DefaultsStepViewModel(options.DefaultDaemonName, () => options.ResolveIdentity()?.Profile);
+        var defaults = new DefaultsStepViewModel(options.Root, options.DefaultDaemonName, () => options.ResolveIdentity()?.Profile);
         // ONE detection feed for both vendor steps: two would probe the login shell twice for the
         // same answer, and the two steps' vendor lists could then disagree.
         var detect = options.DetectionFeed(options.Probe);

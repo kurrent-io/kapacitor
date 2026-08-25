@@ -15,6 +15,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// so it doesn't double-count on top of the classify-time AlreadyLoaded bucket.
 /// </summary>
 public class KiroImportSourceImportTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
     readonly string         _tempDir;
@@ -51,7 +53,7 @@ public class KiroImportSourceImportTests : IDisposable {
         }
 
         using var client = new HttpClient();
-        var source = new KiroImportSource(
+        var source = new KiroImportSource(Config.Root, 
             sessionsDirOverride: root,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(null));
 

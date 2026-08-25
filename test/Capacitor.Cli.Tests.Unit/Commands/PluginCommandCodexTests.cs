@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.Codex;
@@ -373,9 +374,8 @@ public class PluginCommandCodexTests {
     public async Task Install_codex_with_if_installed_is_noop_when_no_marker_and_no_existing_entries() {
         using var fakeHome = new TempDir();
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--codex", "--if-installed"],
-            TestEnv(fakeHome.GetResolvedPath()));
+        var exit = await new PluginCommand(TestEnv(fakeHome.GetResolvedPath())).HandleAsync(
+            ["plugin", "install", "--codex", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // hooks.json must NOT exist — user never opted in.
@@ -401,9 +401,8 @@ public class PluginCommandCodexTests {
             }
             """);
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--codex", "--if-installed"],
-            TestEnv(fakeHome.GetResolvedPath()));
+        var exit = await new PluginCommand(TestEnv(fakeHome.GetResolvedPath())).HandleAsync(
+            ["plugin", "install", "--codex", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // PermissionRequest timeout must have been refreshed to 86400.
@@ -432,9 +431,8 @@ public class PluginCommandCodexTests {
             codexDir.PathTo(CodexHooksInstaller.MarkerFileName),
             CapacitorVersion.Current());
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--codex", "--if-installed"],
-            TestEnv(fakeHome.GetResolvedPath()));
+        var exit = await new PluginCommand(TestEnv(fakeHome.GetResolvedPath())).HandleAsync(
+            ["plugin", "install", "--codex", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // Sentinel intact → installer short-circuited.
@@ -477,6 +475,7 @@ public class PluginCommandCodexTests {
         TextWriter? stderr     = null
     ) => new(
         HomeDirectory:     fakeHome,
+        Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => pluginPath,
         Stdout:            stdout ?? TextWriter.Null,
         Stderr:            stderr ?? TextWriter.Null
@@ -499,7 +498,7 @@ public class PluginCommandCodexInstallIntegrationTests {
         var capturedOut = new StringWriter();
         var env         = TestEnv(fakeHome.GetResolvedPath(), pluginRoot.Path, stdout: capturedOut);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--codex"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--codex"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var stdout = capturedOut.ToString();
@@ -528,7 +527,7 @@ public class PluginCommandCodexInstallIntegrationTests {
         var capturedErr = new StringWriter();
         var env         = TestEnv(fakeHome.GetResolvedPath(), pluginRoot.Path, stderr: capturedErr);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--codex"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--codex"]);
         await Assert.That(exit).IsEqualTo(1);
 
         // Atomicity contract: hooks.json must NOT exist after a failed install.
@@ -552,7 +551,7 @@ public class PluginCommandCodexInstallIntegrationTests {
         // PluginPath = null signals ResolvePluginPath returned no plugin.
         var env = TestEnv(fakeHome.GetResolvedPath(), pluginPath: null, stderr: capturedErr);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--codex"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--codex"]);
         await Assert.That(exit).IsEqualTo(1);
 
         // The atomic-install contract: NO hooks.json may exist in the
@@ -570,8 +569,8 @@ public class PluginCommandCodexInstallIntegrationTests {
         using var pluginRoot = new TempDir();
         PlantFakePlugin(pluginRoot.Path);
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--codex"], TestEnv(fakeHome.GetResolvedPath(), pluginRoot.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.GetResolvedPath(), pluginRoot.Path)).HandleAsync(
+            ["plugin", "install", "--codex"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var configPath = fakeHome.PathTo(".codex", "config.toml");
@@ -586,8 +585,8 @@ public class PluginCommandCodexInstallIntegrationTests {
         using var fakeHome = new TempDir();
         var configPath = SeedCodexConfigWithKcapServers(fakeHome.GetResolvedPath());
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "remove", "--codex"], TestEnv(fakeHome.GetResolvedPath()));
+        var exit = await new PluginCommand(TestEnv(fakeHome.GetResolvedPath())).HandleAsync(
+            ["plugin", "remove", "--codex"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var toml = await File.ReadAllTextAsync(configPath);
@@ -605,8 +604,8 @@ public class PluginCommandCodexInstallIntegrationTests {
         var configPath = SeedCodexConfigWithKcapServers(fakeHome.GetResolvedPath());
         var before     = await File.ReadAllTextAsync(configPath);
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "remove", "--codex", "--project"], TestEnv(fakeHome.GetResolvedPath()));
+        var exit = await new PluginCommand(TestEnv(fakeHome.GetResolvedPath())).HandleAsync(
+            ["plugin", "remove", "--codex", "--project"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // config.toml is untouched — the user-global servers survive.
@@ -656,6 +655,7 @@ public class PluginCommandCodexInstallIntegrationTests {
         TextWriter? stderr     = null
     ) => new(
         HomeDirectory:     fakeHome,
+        Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => pluginPath,
         Stdout:            stdout ?? TextWriter.Null,
         Stderr:            stderr ?? TextWriter.Null

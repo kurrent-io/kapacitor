@@ -140,13 +140,13 @@ public class BrowserFirstRunFlowTests {
         var clock    = new FakeTimeProvider(ClockBase);
         var channel  = new FakeChannel(log, clock);
         var progress = new RecordingProgress(log);
-        var opened   = new List<string>();
+        var browser  = new RecordingBrowser();
 
         keys ??= new FakeKeys(canWatch: false);
 
         return new(
-            new BrowserFirstRunFlow(channel, progress, clock, url => { opened.Add(url); return true; }, keys),
-            channel, progress, clock, log, opened, keys);
+            new BrowserFirstRunFlow(channel, progress, browser, clock, keys),
+            channel, progress, clock, log, browser.Urls, keys);
     }
 
     /// <summary>

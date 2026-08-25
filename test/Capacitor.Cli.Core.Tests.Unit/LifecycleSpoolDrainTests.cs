@@ -4,6 +4,10 @@ using Capacitor.Cli.Core.Harness.Cursor;
 namespace Capacitor.Cli.Core.Tests.Unit;
 
 public class LifecycleSpoolDrainTests {
+    CursorMarkers Markers => new(Config.Root);
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     const string Sid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     // review fix #1/#8 — the HttpClient-backed RunAsync overload's transcript poster
@@ -18,7 +22,7 @@ public class LifecycleSpoolDrainTests {
         var life = new HookSpool(tmp.Path);
         var tx   = new TranscriptSpool(tmp.PathTo("tx"));
         tx.Append(sid, $$"""{"session_id":"{{sid}}","vendor":"cursor","lines":["x"],"line_numbers":[0]}""");
-        CursorMarkers.Quarantine(sid, "rewrite detected");
+        Markers.Quarantine(sid, "rewrite detected");
 
         var posted = new List<string>();
         using var handler = new StubHandler((req, _) => {
@@ -27,7 +31,7 @@ public class LifecycleSpoolDrainTests {
         });
         using var client = new HttpClient(handler);
 
-        await LifecycleSpoolDrain.RunAsync(client, "http://s", life, tx, currentSessionId: null,
+        await LifecycleSpoolDrain.RunAsync(Markers, client, "http://s", life, tx, currentSessionId: null,
             budget: TimeSpan.FromSeconds(5), ct: CancellationToken.None);
 
         await Assert.That(posted).DoesNotContain("/hooks/transcript");
@@ -52,7 +56,7 @@ public class LifecycleSpoolDrainTests {
         });
         using var client = new HttpClient(handler);
 
-        await LifecycleSpoolDrain.RunAsync(client, "http://s", life, tx, currentSessionId: null,
+        await LifecycleSpoolDrain.RunAsync(Markers, client, "http://s", life, tx, currentSessionId: null,
             budget: TimeSpan.FromSeconds(5), ct: CancellationToken.None);
 
         await Assert.That(posted).Contains("/hooks/transcript");

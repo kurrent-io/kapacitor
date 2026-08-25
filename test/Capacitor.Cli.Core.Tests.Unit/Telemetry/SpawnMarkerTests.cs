@@ -2,11 +2,10 @@ using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Telemetry;
 
-[NotInParallel([
-    nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
-    nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
-])]
+[NotInParallel(nameof(CliTelemetry) + "." + nameof(CliTelemetry.TestSink))]
 public class SpawnMarkerTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     [Test]
     public async Task Consume_removes_marker_and_reports_presence() {
         CliTelemetry.Reset();
@@ -43,7 +42,7 @@ public class SpawnMarkerTests {
         CliTelemetry.Reset();
         CliTelemetry.TestSink = new();
 
-        CliTelemetry.Initialize("login", null, false, suppressed: true);
+        CliTelemetry.Initialize("login", null, false, Config.Root, suppressed: true);
 
         await Assert.That(CliTelemetry.Enabled).IsFalse();
         await Assert.That(CliTelemetry.TestSink).Count().IsEqualTo(0);
@@ -60,12 +59,12 @@ public class SpawnMarkerTests {
         await Assert.That(consumed).IsTrue();
 
         // First initialize call with suppression
-        CliTelemetry.Initialize("mcp", null, false, suppressed: true);
+        CliTelemetry.Initialize("mcp", null, false, Config.Root, suppressed: true);
         await Assert.That(CliTelemetry.Enabled).IsFalse();
 
         // Second initialize call WITHOUT suppressed parameter (like MCP handlers do)
         // This mimics McpWorkItemsServer.cs:34 calling Initialize("mcp-server", baseUrl, loggedIn)
-        CliTelemetry.Initialize("mcp-server", null, false);
+        CliTelemetry.Initialize("mcp-server", null, false, Config.Root);
 
         // Telemetry must still be suppressed (sticky suppression prevents re-enabling)
         await Assert.That(CliTelemetry.Enabled).IsFalse();

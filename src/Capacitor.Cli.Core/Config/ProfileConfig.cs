@@ -6,8 +6,12 @@ public record ProfileConfig {
     [JsonPropertyName("version")]
     public int Version { get; init; } = 2;
 
+    /// <summary>The profile every fallback lands on. Also the name <see cref="ActiveProfile"/>
+    /// defaults to, so the two can never disagree.</summary>
+    public const string DefaultName = "default";
+
     [JsonPropertyName("active_profile")]
-    public string ActiveProfile { get; init; } = "default";
+    public string ActiveProfile { get; init; } = DefaultName;
 
     [JsonPropertyName("profiles")]
     public Dictionary<string, Profile> Profiles { get; init; } = new();
@@ -30,6 +34,22 @@ public record ProfileConfig {
     // MachineIdProvider; never rotated (rotation orphans previously tagged memories).
     [JsonPropertyName("machine_id")]
     public string? MachineId { get; init; }
+
+    /// <summary>What a config with nothing configured looks like: one empty <see cref="DefaultName"/>
+    /// profile. This is what a missing or unreadable config.json degrades to, so a machine that has
+    /// never run <c>kcap setup</c> still has a profile to read settings off.</summary>
+    public static ProfileConfig Fresh() => new() { Profiles = new() { [DefaultName] = new() } };
+
+    /// <summary>The active profile's NAME, with a blank <c>active_profile</c> normalised back to
+    /// <see cref="DefaultName"/> — a hand-edited or half-migrated file can carry one, and every
+    /// caller that reads the raw field has to make the same correction.</summary>
+    [JsonIgnore]
+    public string ActiveName => string.IsNullOrWhiteSpace(ActiveProfile) ? DefaultName : ActiveProfile;
+
+    /// <summary>The profile <see cref="ActiveName"/> names — null when it names one this config has
+    /// no entry for.</summary>
+    [JsonIgnore]
+    public Profile? Active => Profiles.GetValueOrDefault(ActiveName);
 }
 
 public record CwdRemap {

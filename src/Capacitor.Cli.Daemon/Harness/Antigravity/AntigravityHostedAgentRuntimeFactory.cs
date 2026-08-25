@@ -560,6 +560,10 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
         psi.Environment["HOME"]   = home;
         psi.Environment["TMPDIR"] = TempDirIn(home);
 
+        // The home is only where a nested kcap would DERIVE its root, so an operator with
+        // KCAP_CONFIG_DIR exported had agy's own hooks reading the real profile by inheritance.
+        psi.Environment[ConfigRoot.ConfigDirEnvVar] = ConfigRoot.UnderHome(home).Directory;
+
         if (!string.IsNullOrEmpty(ctx.ServerUrl)) psi.Environment["KCAP_URL"] = ctx.ServerUrl;
 
         // Without these a surviving turn child is invisible to OrphanReaper's env-marker pass — and

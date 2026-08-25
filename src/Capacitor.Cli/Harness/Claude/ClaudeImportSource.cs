@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.Claude;
 
 namespace Capacitor.Cli.Harness.Claude;
@@ -11,7 +12,7 @@ namespace Capacitor.Cli.Harness.Claude;
 /// with <c>vendor = "claude"</c>. <see cref="ImportSessionAsync"/> is a stub —
 /// the orchestrator will wire chain workers in E2.
 /// </summary>
-internal sealed class ClaudeImportSource(string? rootOverride = null) : IImportSource {
+internal sealed class ClaudeImportSource(ConfigRoot config, string? rootOverride = null) : IImportSource {
     readonly string _projectsDir = rootOverride ?? ClaudePaths.Projects;
 
     public string Vendor => "claude";
@@ -86,6 +87,7 @@ internal sealed class ClaudeImportSource(string? rootOverride = null) : IImportS
         }
 
         return await TranscriptFileClassification.ClassifyAsync(
+            config,
             ctx.HttpClient,
             ctx.BaseUrl,
             transcripts,

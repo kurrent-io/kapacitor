@@ -53,12 +53,12 @@ internal static class CrashReporter {
     /// and write a single stderr line. Never throws — it runs while the process is
     /// already failing, possibly with a closed stderr pipe (detached process).
     /// </summary>
-    public static void Record(string? command, Exception ex) {
+    public static void Record(ConfigRoot config, string? command, Exception ex) {
         string? writtenPath = null;
         try {
-            var path = PathHelpers.ConfigPath("crash.log");
+            var path = config.Path("crash.log");
             // Ensure the config dir exists — on a fresh install it may not yet, and
-            // PathHelpers.ConfigPath only combines paths (doesn't create them).
+            // ConfigRoot.Path only combines paths (doesn't create them).
             var dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
             TrimIfLarge(path);

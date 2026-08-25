@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Avalonia.Controls;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -9,7 +10,6 @@ using Capacitor.App.Views.Onboarding;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.LocalIpc;
 using Microsoft.Extensions.Time.Testing;
-using Capacitor.Cli.Core;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -71,7 +71,7 @@ public class DaemonStepViewModelTests {
     }
 
     sealed class Harness : IDisposable {
-        readonly TempDir _dir = new();
+        readonly TempConfigRoot _config = new();
 
         public readonly FakeKcapCli Cli = new();
         public readonly RecordingLane Lane = new();
@@ -89,8 +89,7 @@ public class DaemonStepViewModelTests {
 
         public Harness() {
             Time   = new TimerCountingTimeProvider(Clock);
-            Claims = new ConsentFlipClaims(
-                _dir.PathTo("consent-flip-claims.json"), _dir.PathTo("config.json"));
+            Claims = new ConsentFlipClaims(_config.Root);
             Vm = new DaemonStepViewModel(
                 Cli, Lane.RunAsync, () => Identity, Observation, Ops, Claims, () => UnderConfigLock, Surface,
                 _ => Task.FromResult<string?>(TerminalPath), Time);
@@ -104,7 +103,7 @@ public class DaemonStepViewModelTests {
 
         public Task Act() => Vm.RunActionAsync();
 
-        public void Dispose() => _dir.Dispose();
+        public void Dispose() => _config.Dispose();
     }
 
     static async Task WaitUntilAsync(Func<bool> condition, string what) {
@@ -902,13 +901,13 @@ public class DaemonStepTemplateTests {
     }
 
     sealed class TempClaims : IDisposable {
-        readonly TempDir _dir = new();
+        readonly TempConfigRoot _config = new();
 
         public readonly ConsentFlipClaims Claims;
 
         public TempClaims() =>
-            Claims = new ConsentFlipClaims(_dir.PathTo("claims.json"), _dir.PathTo("config.json"));
+            Claims = new ConsentFlipClaims(_config.Root);
 
-        public void Dispose() => _dir.Dispose();
+        public void Dispose() => _config.Dispose();
     }
 }

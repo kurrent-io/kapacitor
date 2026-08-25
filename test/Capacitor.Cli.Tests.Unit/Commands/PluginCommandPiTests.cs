@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Pi;
 using Capacitor.Cli.Core.Instructions;
 
@@ -19,9 +20,8 @@ public class PluginCommandPiTests {
     public async Task Install_pi_with_if_installed_is_noop_when_not_installed() {
         using var fakeHome = new TempDir();
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--pi", "--if-installed"],
-            TestEnv(fakeHome.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path)).HandleAsync(
+            ["plugin", "install", "--pi", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // kcap.ts must NOT exist — the npm refresh must never force-install the
@@ -40,9 +40,8 @@ public class PluginCommandPiTests {
         var extPath = extDir.PathTo("kcap.ts");
         await File.WriteAllTextAsync(extPath, "// stale extension body");
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--pi", "--if-installed"],
-            TestEnv(fakeHome.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path)).HandleAsync(
+            ["plugin", "install", "--pi", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var body = await File.ReadAllTextAsync(extPath);
@@ -60,9 +59,8 @@ public class PluginCommandPiTests {
         await File.WriteAllTextAsync(extPath, "export default function(pi){}");
         await File.WriteAllTextAsync(marker, "1.0.0");
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "remove", "--pi"],
-            TestEnv(fakeHome.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path)).HandleAsync(
+            ["plugin", "remove", "--pi"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(extPath)).IsFalse();
@@ -79,8 +77,8 @@ public class PluginCommandPiTests {
         var extDir = fakeHome.CreateDir(".pi", "agent", "extensions");
         extDir.CreateFile("kcap.ts", "// stale ingest");
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--pi", "--if-installed"], TestEnv(fakeHome.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path)).HandleAsync(
+            ["plugin", "install", "--pi", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(extDir.PathTo("kcap-mcp.ts"))).IsTrue();
@@ -101,8 +99,8 @@ public class PluginCommandPiTests {
         PiMcpExtensionInstaller.WriteMarker(mcpPath);
         await Assert.That(File.Exists(mcpPath)).IsFalse();
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--pi", "--if-installed"], TestEnv(fakeHome.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path)).HandleAsync(
+            ["plugin", "install", "--pi", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(mcpPath)).IsTrue();  // healed despite the current marker
@@ -114,8 +112,8 @@ public class PluginCommandPiTests {
         var extDir = fakeHome.CreateDir(".pi", "agent", "extensions");
         extDir.CreateFile("kcap.ts", "// stale ingest");
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--pi", "--if-installed", "--skip-pi-mcp"], TestEnv(fakeHome.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path)).HandleAsync(
+            ["plugin", "install", "--pi", "--if-installed", "--skip-pi-mcp"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(extDir.PathTo("kcap-mcp.ts"))).IsFalse();
@@ -128,8 +126,8 @@ public class PluginCommandPiTests {
         var extDir = fakeHome.CreateDir(".pi", "agent", "extensions");
         extDir.CreateFile("kcap.ts", "// stale ingest");
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--pi", "--if-installed", "--skip-pi-instructions"], TestEnv(fakeHome.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path)).HandleAsync(
+            ["plugin", "install", "--pi", "--if-installed", "--skip-pi-instructions"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(extDir.PathTo("kcap-mcp.ts"))).IsTrue();
@@ -146,8 +144,8 @@ public class PluginCommandPiTests {
         var agents = Path.Combine(agentDir, "AGENTS.md");
         await File.WriteAllTextAsync(agents, "# My Pi instructions\nKeep this line.\n");
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--pi", "--if-installed"], TestEnv(fakeHome.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path)).HandleAsync(
+            ["plugin", "install", "--pi", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var body = await File.ReadAllTextAsync(agents);
@@ -167,8 +165,8 @@ public class PluginCommandPiTests {
         await File.WriteAllTextAsync(agents, "# Mine\n");
         AgentInstructionsWriter.Write(agents, "kcap steering body");
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "remove", "--pi"], TestEnv(fakeHome.Path));
+        var exit = await new PluginCommand(TestEnv(fakeHome.Path)).HandleAsync(
+            ["plugin", "remove", "--pi"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(Path.Combine(extDir, "kcap-mcp.ts"))).IsFalse();
@@ -179,6 +177,7 @@ public class PluginCommandPiTests {
 
     static PluginEnvironment TestEnv(string fakeHome) => new(
         HomeDirectory:     fakeHome,
+        Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null

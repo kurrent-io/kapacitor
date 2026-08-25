@@ -9,25 +9,26 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Commands;
 using Capacitor.Cli.Core.Telemetry;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Commands;
 
-static class McpReviewServer {
+sealed class McpReviewServer(ConfigRoot config, ProfileContext profiles) {
     /// <summary>
     /// Run with an explicit session-default PR (used by <c>kcap review &lt;pr&gt;</c>).
     /// Tool calls may still override the default by passing a <c>pr</c> argument.
     /// </summary>
-    public static Task<int> RunAsync(string baseUrl, string owner, string repo, int prNumber)
-        => RunCoreAsync(baseUrl, new PrIdentity(owner, repo, prNumber));
+    public Task<int> RunAsync(string owner, string repo, int prNumber)
+        => RunCoreAsync(profiles.Resolution.ServerUrl!, new PrIdentity(owner, repo, prNumber));
 
     /// <summary>
     /// Run without an explicit session default (used by the plugin's argless MCP
     /// registration). PR identity comes from each tool call's <c>pr</c> argument,
     /// or as a fallback from git auto-detection against the current branch.
     /// </summary>
-    public static Task<int> RunAutoAsync(string baseUrl) => RunCoreAsync(baseUrl, null);
+    public Task<int> RunAutoAsync() => RunCoreAsync(profiles.Resolution.ServerUrl!, null);
 
-    static async Task<int> RunCoreAsync(string baseUrl, PrIdentity? startupDefault) {
+    async Task<int> RunCoreAsync(string baseUrl, PrIdentity? startupDefault) {
         // Compute the session default once: explicit startup args win; otherwise
         // try git auto-detect (local). Result is cached for the lifetime of the server
         // and used as the fallback when a tool call doesn't carry an explicit `pr`.
@@ -40,8 +41,8 @@ static class McpReviewServer {
         // "mcp-server" so per-tool-call events actually leave. Best-effort: a stale token on
         // disk must never block the server from starting.
         var loggedIn = false;
-        try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
-        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn);
+        try { loggedIn = await new TokenStore(config).LoadForProfileAsync(profiles.Name) is not null; } catch { }
+        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn, config);
 
         // Validate the server_url shape once, locally (pure string check — no network, token,
         // or stderr). Used to fail gracefully instead of hard-exiting mid-request (below).
@@ -66,7 +67,7 @@ static class McpReviewServer {
                 return BuildToolResult(callId, HttpClientExtensions.SchemeMissingHint, isError: true);
 
             try {
-                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
                 return await HandleToolCallAsync(callId, callRequest, client, baseUrl, sessionDefault);
             } catch (Exception ex) {
                 // Unexpected: log the detail to stderr (not to the client, which could leak local
@@ -139,10 +140,10 @@ static class McpReviewServer {
         return 0;
     }
 
-    static async Task<PrIdentity?> DetectPrFromGitAsync() {
+    async Task<PrIdentity?> DetectPrFromGitAsync() {
         try {
             var cwd      = Directory.GetCurrentDirectory();
-            var repoInfo = await RepositoryDetection.DetectRepositoryAsync(cwd);
+            var repoInfo = await RepositoryDetection.DetectRepositoryAsync(config, cwd);
 
             if (repoInfo?.Owner is not null && repoInfo.RepoName is not null && repoInfo.PrNumber is not null) {
                 return new PrIdentity(repoInfo.Owner, repoInfo.RepoName, repoInfo.PrNumber.Value);

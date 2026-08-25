@@ -14,8 +14,9 @@ using Capacitor.Cli.Core.Harness.Pi;
 
 namespace Capacitor.Cli.Commands;
 
-public static class StatusCommand {
-    public static async Task<int> HandleAsync(DaemonStore store, string? baseUrl, string[] args) {
+public sealed class StatusCommand(DaemonStore store, ProfileContext profiles, ConfigRoot config) {
+    public async Task<int> HandleAsync(string[] args) {
+        var baseUrl = profiles.Resolution.ServerUrl;
         // Version line reuses UpdateNotice's shared check and marks-reported so the exit footer
         // doesn't double-print; respects the same opt-outs.
         await WriteVersionLineAsync(args);
@@ -53,7 +54,7 @@ public static class StatusCommand {
             Console.WriteLine($"  Auth:    {machineLine}");
         } else {
             Console.Write("  Auth:    ");
-            var tokens = await TokenStore.GetValidTokensAsync();
+            var tokens = await new TokenStore(config).GetValidTokensForProfileAsync(profiles.Name);
 
             if (tokens is not null) {
                 var remaining = tokens.ExpiresAt - DateTimeOffset.UtcNow;
@@ -63,7 +64,7 @@ public static class StatusCommand {
                     : $"expires in {remaining.TotalMinutes:F0}m";
                 await Console.Out.WriteLineAsync($"{tokens.GitHubUsername} ({tokens.Provider}) ✓ token valid ({expiryText})");
             } else {
-                var rawTokens = await TokenStore.LoadAsync();
+                var rawTokens = await new TokenStore(config).LoadForProfileAsync(profiles.Name);
 
                 await Console.Out.WriteLineAsync(
                     rawTokens is not null
@@ -114,7 +115,7 @@ public static class StatusCommand {
         return 0;
     }
 
-    static async Task WriteVersionLineAsync(string[] args) {
+    async Task WriteVersionLineAsync(string[] args) {
         Console.Write("  Version: ");
 
         var current = CapacitorVersion.CurrentDisplay();
@@ -128,7 +129,7 @@ public static class StatusCommand {
             return;
         }
 
-        var profile = await AppConfig.GetActiveProfileAsync();
+        var profile = profiles.Effective;
 
         if (profile?.UpdateCheck == false) {
             await Console.Out.WriteLineAsync(FormatVersionLine(current, default));
@@ -137,10 +138,10 @@ public static class StatusCommand {
         }
 
         var channel  = UpdateCommand.ResolveChannel(args, profile?.UpdateChannel);
-        var result   = await UpdateNotice.GetSharedCheckAsync(channel);
+        var result   = await UpdateNotice.GetSharedCheckAsync(channel, config);
 
         // Cap the recommendation at the connected server's version (min(npm latest, server)).
-        var advisory = UpdateAdvisoryResolver.Resolve(result, channel);
+        var advisory = UpdateAdvisoryResolver.Resolve(result, channel, profiles.Resolution.ServerUrl, config);
 
         await Console.Out.WriteLineAsync(FormatVersionLine(current, advisory));
 

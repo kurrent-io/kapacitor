@@ -5,35 +5,37 @@ using Capacitor.Cli.Harness.Codex;
 namespace Capacitor.Cli.Tests.Unit.Harness.Codex;
 
 public class CodexImportSourceTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     [Test]
     public async Task vendor_is_codex() {
-        var src = new CodexImportSource();
+        var src = new CodexImportSource(Config.Root);
         await Assert.That(src.Vendor).IsEqualTo("codex");
     }
 
     [Test]
     public async Task supports_title_generation() {
-        var src = new CodexImportSource();
+        var src = new CodexImportSource(Config.Root);
         await Assert.That(src.SupportsTitleGeneration).IsTrue();
     }
 
     [Test]
     public async Task is_available_when_sessions_dir_exists() {
         using var tmp = new TempDir();
-        var src = new CodexImportSource(tmp.Path);
+        var src = new CodexImportSource(Config.Root, tmp.Path);
         await Assert.That(src.IsAvailable).IsTrue();
     }
 
     [Test]
     public async Task is_unavailable_when_sessions_dir_missing() {
         var missing = Path.Combine(Path.GetTempPath(), "kcap-codex-source-missing-" + Guid.NewGuid().ToString("N"));
-        var src     = new CodexImportSource(missing);
+        var src     = new CodexImportSource(Config.Root, missing);
         await Assert.That(src.IsAvailable).IsFalse();
     }
 
     [Test]
     public async Task import_session_async_throws_not_implemented() {
-        var src = new CodexImportSource();
+        var src = new CodexImportSource(Config.Root);
         var classification = new ImportCommand.SessionClassification {
             SessionId  = "abc",
             FilePath   = "/tmp/none",

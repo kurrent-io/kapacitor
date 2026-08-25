@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands.Harness;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Pi;
@@ -11,6 +12,16 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Pi;
 /// proves model receipt.
 /// </summary>
 public class PiSessionStartMemoryTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+
+    // Instance, not static: the hook writes under the config dir (the repo-detection cache,
+    // the lease store), so it must be handed this test's own root — which a static helper
+    // cannot see, TUnit injecting it after construction.
+    // The server URL is the resolution's, so a test proving the url guard fires hands in the bad one
+    // here rather than as an argument.
+    PiHookCommand Hook(string serverUrl = "http://localhost:5100") =>
+        new(Config.Root, Resolutions.At(serverUrl, Config.Root), new HookClock(TimeProvider.System));
     static string Render(string? fragment) => PiHookCommand.RenderMemoryOutput(fragment);
 
     // Byte-identical to pre-feature behaviour on every no-index path (opt-out, failure, spent lease):
@@ -98,17 +109,14 @@ public class PiSessionStartMemoryTests {
     public async Task Memory_task_short_circuits_without_prerequisites() {
         // The url / scope / budget guards suppress even with guidelines ENABLED; disabled alone
         // does not (a single lane off still fetches the other) — both off is required.
-        await Assert.That(await PiHookCommand.StartMemoryIndexTask(
-            "not a url", "/abs/file.jsonl", "/scope", disabled: false, guidelinesDisabled: false,
-            TimeSpan.FromSeconds(2), null, null)).IsNull();
-        await Assert.That(await PiHookCommand.StartMemoryIndexTask(
-            "http://localhost:5100", "/abs/file.jsonl", scopeRoot: null, disabled: false, guidelinesDisabled: false,
-            TimeSpan.FromSeconds(2), null, null)).IsNull();
-        await Assert.That(await PiHookCommand.StartMemoryIndexTask(
-            "http://localhost:5100", "/abs/file.jsonl", "/scope", disabled: true, guidelinesDisabled: true,
-            TimeSpan.FromSeconds(2), null, null)).IsNull();
-        await Assert.That(await PiHookCommand.StartMemoryIndexTask(
-            "http://localhost:5100", "/abs/file.jsonl", "/scope", disabled: false, guidelinesDisabled: false,
-            TimeSpan.Zero, null, null)).IsNull();
+        await Assert.That(await Hook("not a url").StartMemoryIndexTask(
+            "/abs/file.jsonl", "/scope", disabled: false, guidelinesDisabled: false,
+            TimeSpan.FromSeconds(2), null)).IsNull();
+        await Assert.That(await Hook().StartMemoryIndexTask("/abs/file.jsonl", scopeRoot: null, disabled: false, guidelinesDisabled: false,
+            TimeSpan.FromSeconds(2), null)).IsNull();
+        await Assert.That(await Hook().StartMemoryIndexTask("/abs/file.jsonl", "/scope", disabled: true, guidelinesDisabled: true,
+            TimeSpan.FromSeconds(2), null)).IsNull();
+        await Assert.That(await Hook().StartMemoryIndexTask("/abs/file.jsonl", "/scope", disabled: false, guidelinesDisabled: false,
+            TimeSpan.Zero, null)).IsNull();
     }
 }

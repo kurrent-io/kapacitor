@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Kiro;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
@@ -30,7 +31,7 @@ public sealed class PluginCommandStaleAgentTests {
         var env = Env(home.Path, pipe, found: [Running]);
         SeedAgent(env, installed: false);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--kiro"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro"]);
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(pipe.ToString()).Contains("4821");
@@ -45,7 +46,7 @@ public sealed class PluginCommandStaleAgentTests {
         var env = Env(home.Path, pipe, found: [Running]);
         SeedAgent(env, installed: true);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--kiro"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro"]);
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(pipe.ToString())
@@ -64,7 +65,7 @@ public sealed class PluginCommandStaleAgentTests {
         var env = Env(home.Path, pipe, found: []);
         SeedAgent(env, installed: false);
 
-        await PluginCommand.HandleAsync(["plugin", "install", "--kiro"], env);
+        await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro"]);
 
         await Assert.That(pipe.ToString()).DoesNotContain("already running");
     }
@@ -82,7 +83,7 @@ public sealed class PluginCommandStaleAgentTests {
         // captured" would be true but useless, and blaming this install for it would be a lie.
         Directory.CreateDirectory(env.KiroKcapAgentJson);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--kiro"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro"]);
 
         await Assert.That(exit).IsEqualTo(1);
         await Assert.That(pipe.ToString()).DoesNotContain("4821");
@@ -121,6 +122,7 @@ public sealed class PluginCommandStaleAgentTests {
 
     static PluginEnvironment Env(string home, TextWriter stdout, StaleAgentProcess[] found) => new(
         HomeDirectory:     home,
+        Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => null,
         Stdout:            stdout,
         Stderr:            TextWriter.Null

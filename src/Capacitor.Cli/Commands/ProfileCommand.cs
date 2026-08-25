@@ -1,27 +1,26 @@
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Commands;
 
-public static class ProfileCommand {
-    public static async Task<int> HandleAsync(string[] args) {
+public sealed class ProfileCommand(ConfigRoot config) {
+    public async Task<int> HandleAsync(string[] args) {
         if (args.Length < 2) {
             await PrintUsage();
 
             return 1;
         }
 
-        var configPath = AppConfig.GetConfigPath();
-
         return args[1] switch {
-            "add"                          => await HandleAdd(configPath, args),
-            "list"                         => await HandleList(configPath),
-            "remove" when args.Length >= 3 => await RemoveProfile(configPath, args[2]),
-            "show"                         => await HandleShow(configPath, args),
+            "add"                          => await HandleAdd(args),
+            "list"                         => await HandleList(),
+            "remove" when args.Length >= 3 => await RemoveProfile(args[2]),
+            "show"                         => await HandleShow(args),
             _                              => await PrintUsage()
         };
     }
 
-    static async Task<int> HandleAdd(string configPath, string[] args) {
+    async Task<int> HandleAdd(string[] args) {
         if (args.Length < 3) {
             await Console.Error.WriteLineAsync(
                 "Usage: kcap profile add <name> --server-url <url> [--remote <pattern>]... [--no-probe]");
@@ -46,13 +45,13 @@ public static class ProfileCommand {
                 remotes.Add(args[++i]);
         }
 
-        return await AddProfile(configPath, name, serverUrl, remotes.ToArray(), skipProbe);
+        return await AddProfile(name, serverUrl, remotes.ToArray(), skipProbe);
     }
 
-    internal static async Task<int> AddProfile(string configPath, string name, string serverUrl, string[] remotes, bool skipProbe = true) {
-        var config = await LoadConfig(configPath);
+    internal async Task<int> AddProfile(string name, string serverUrl, string[] remotes, bool skipProbe = true) {
+        var stored = await LoadConfig();
 
-        if (config.Profiles.ContainsKey(name)) {
+        if (stored.Profiles.ContainsKey(name)) {
             await Console.Error.WriteLineAsync($"Profile '{name}' already exists. Remove it first.");
 
             return 1;
@@ -64,7 +63,7 @@ public static class ProfileCommand {
         if (normalized.Warning is not null)
             await Console.Error.WriteLineAsync($"Warning: {normalized.Warning}");
 
-        await ConfigMutator.MutateAsync(c => c with {
+        await ConfigMutator.MutateAsync(config, c => c with {
             Profiles = new Dictionary<string, Profile>(c.Profiles) {
                 [name] = new() {
                     ServerUrl = normalized.Url,
@@ -78,11 +77,11 @@ public static class ProfileCommand {
         return 0;
     }
 
-    static async Task<int> HandleList(string configPath) {
-        var config = await LoadConfig(configPath);
+    async Task<int> HandleList() {
+        var stored = await LoadConfig();
 
-        foreach (var (name, profile) in config.Profiles) {
-            var active = name == config.ActiveProfile ? " (active)" : "";
+        foreach (var (name, profile) in stored.Profiles) {
+            var active = name == stored.ActiveProfile ? " (active)" : "";
             var url    = profile.ServerUrl ?? "(no server URL)";
             await Console.Out.WriteLineAsync($"  {name}{active} — {url}");
 
@@ -95,22 +94,22 @@ public static class ProfileCommand {
         return 0;
     }
 
-    internal static async Task<int> RemoveProfile(string configPath, string name) {
+    internal async Task<int> RemoveProfile(string name) {
         if (name == "default") {
             await Console.Error.WriteLineAsync("Cannot remove the default profile.");
 
             return 1;
         }
 
-        var config = await LoadConfig(configPath);
+        var stored = await LoadConfig();
 
-        if (!config.Profiles.ContainsKey(name)) {
+        if (!stored.Profiles.ContainsKey(name)) {
             await Console.Error.WriteLineAsync($"Profile '{name}' not found.");
 
             return 1;
         }
 
-        await ConfigMutator.MutateAsync(c => {
+        await ConfigMutator.MutateAsync(config, c => {
             var profiles = new Dictionary<string, Profile>(c.Profiles);
             profiles.Remove(name);
 
@@ -130,11 +129,11 @@ public static class ProfileCommand {
         return 0;
     }
 
-    static async Task<int> HandleShow(string configPath, string[] args) {
-        var config = await LoadConfig(configPath);
-        var name   = args.Length >= 3 ? args[2] : config.ActiveProfile;
+    async Task<int> HandleShow(string[] args) {
+        var stored = await LoadConfig();
+        var name   = args.Length >= 3 ? args[2] : stored.ActiveProfile;
 
-        if (!config.Profiles.TryGetValue(name, out var profile)) {
+        if (!stored.Profiles.TryGetValue(name, out var profile)) {
             await Console.Error.WriteLineAsync($"Profile '{name}' not found.");
 
             return 1;
@@ -168,7 +167,9 @@ public static class ProfileCommand {
         return 0;
     }
 
-    static async Task<ProfileConfig> LoadConfig(string configPath) {
+    async Task<ProfileConfig> LoadConfig() {
+        var configPath = AppConfig.GetConfigPath(config);
+
         if (!File.Exists(configPath))
             return new ProfileConfig { Profiles = new Dictionary<string, Profile> { ["default"] = new() } };
 

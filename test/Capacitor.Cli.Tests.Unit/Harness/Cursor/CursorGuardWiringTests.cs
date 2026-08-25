@@ -16,6 +16,13 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 /// already states for this project).
 /// </summary>
 public class CursorGuardWiringTests {
+    WatchCommand? _watch;
+    WatchCommand Watch => _watch ??= new(Config.Root, Resolutions.None(Config.Root));
+
+    CursorMarkers Markers => new(Config.Root);
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     static string NewSessionId() => Guid.NewGuid().ToString("N");
 
     static HubConnection UnconnectedHub() =>
@@ -32,18 +39,18 @@ public class CursorGuardWiringTests {
         var transcriptPath = tmp.PathTo("t.jsonl");
         await File.WriteAllTextAsync(transcriptPath, "abc\n"); // 4 bytes — far shorter than the checkpoint below
 
-        var guard = new CursorRewriteGuard(sid);
+        var guard = new CursorRewriteGuard(Config.Root, sid);
         var state = new WatchState { CursorByteOffset = 100 }; // a checkpoint from a much longer prior file
 
         var tripped = false;
         await using var hub = UnconnectedHub();
 
-        var result = await WatchCommand.DrainNewLines(
+        var result = await Watch.DrainNewLines(
             hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
             cursorGuard: guard, onCursorRewriteDetected: () => tripped = true);
 
         await Assert.That(tripped).IsTrue();
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsTrue();
+        await Assert.That(Markers.IsQuarantined(sid)).IsTrue();
         await Assert.That(result).IsEmpty();
         // The batch was discarded, not delivered — the byte checkpoint must be untouched.
         await Assert.That(state.CursorByteOffset).IsEqualTo(100L);
@@ -61,7 +68,7 @@ public class CursorGuardWiringTests {
         var transcriptPath = tmp.PathTo("t.jsonl");
         await File.WriteAllTextAsync(transcriptPath, "line1\nline2\nline3\n");
 
-        var guard = new CursorRewriteGuard(sid);
+        var guard = new CursorRewriteGuard(Config.Root, sid);
         // Seed with a WRONG hash for the first 6 bytes — the seed call never validates
         // against `laterBytes` (nothing to compare against yet), so this is accepted as-is.
         var wrongSeed = new CursorAppendOnlyProbe.Sample(6, CursorAppendOnlyProbe.Sha256Hex("WRONGX"u8));
@@ -74,12 +81,12 @@ public class CursorGuardWiringTests {
         var tripped = false;
         await using var hub = UnconnectedHub();
 
-        var result = await WatchCommand.DrainNewLines(
+        var result = await Watch.DrainNewLines(
             hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
             cursorGuard: guard, onCursorRewriteDetected: () => tripped = true);
 
         await Assert.That(tripped).IsTrue();
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsTrue();
+        await Assert.That(Markers.IsQuarantined(sid)).IsTrue();
         await Assert.That(result).IsEmpty();
     }
 
@@ -93,7 +100,7 @@ public class CursorGuardWiringTests {
         var transcriptPath = tmp.PathTo("t.jsonl");
         await File.WriteAllTextAsync(transcriptPath, "line1\nline2\nline3\n");
 
-        var guard = new CursorRewriteGuard(sid);
+        var guard = new CursorRewriteGuard(Config.Root, sid);
         var wrongSeed = new CursorAppendOnlyProbe.Sample(6, CursorAppendOnlyProbe.Sha256Hex("WRONGX"u8));
         await Assert.That(guard.VerifyFullPrefix(wrongSeed, "WRONGX"u8)).IsTrue();
 
@@ -106,12 +113,12 @@ public class CursorGuardWiringTests {
 
         // Below threshold (only 3 lines, all buffered) — the call returns without ever
         // reaching the hub regardless, so this stays offline-safe.
-        await WatchCommand.DrainNewLines(
+        await Watch.DrainNewLines(
             hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
             cursorGuard: guard, onCursorRewriteDetected: () => tripped = true);
 
         await Assert.That(tripped).IsFalse();
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsFalse();
+        await Assert.That(Markers.IsQuarantined(sid)).IsFalse();
     }
 
     // VerifyFullPrefix's only production call site (the periodic cadence
@@ -134,20 +141,20 @@ public class CursorGuardWiringTests {
         // touching the unconnected hub.
         await File.WriteAllTextAsync(transcriptPath, "line1\nline2\nline3\n");
 
-        var guard = new CursorRewriteGuard(sid);
+        var guard = new CursorRewriteGuard(Config.Root, sid);
         var state = new WatchState();
 
         var trippedOnFirstPoll = false;
         await using var hub = UnconnectedHub();
 
         // Poll 1 — the REAL production seed (no manual guard.VerifyFullPrefix call anywhere).
-        await WatchCommand.DrainNewLines(
+        await Watch.DrainNewLines(
             hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
             cursorGuard: guard, onCursorRewriteDetected: () => trippedOnFirstPoll = true);
 
         await Assert.That(trippedOnFirstPoll).IsFalse();
         await Assert.That(state.CursorGuardPollCount).IsEqualTo(1);
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsFalse();
+        await Assert.That(Markers.IsQuarantined(sid)).IsFalse();
 
         // Rewrite an already-"seen" MIDDLE region — same total length, first line changed —
         // entirely outside the two-zone tail (nothing has ever been acked/checkpointed here;
@@ -160,12 +167,12 @@ public class CursorGuardWiringTests {
         state.CursorGuardPollCount = WatchCommand.CursorFullPrefixVerifyEveryNPolls - 1;
 
         var tripped = false;
-        var result = await WatchCommand.DrainNewLines(
+        var result = await Watch.DrainNewLines(
             hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
             cursorGuard: guard, onCursorRewriteDetected: () => tripped = true);
 
         await Assert.That(tripped).IsTrue();
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsTrue();
+        await Assert.That(Markers.IsQuarantined(sid)).IsTrue();
         await Assert.That(result).IsEmpty();
     }
 
@@ -188,7 +195,7 @@ public class CursorGuardWiringTests {
         var keptLineByteLength    = "kept\n".Length;
         var checkpointOffset      = (long)(paddingLineByteLength + keptLineByteLength); // right before "new\n"
 
-        var guard = new CursorRewriteGuard(sid) { TrailingBytes = keptLineByteLength }; // exactly "kept\n"
+        var guard = new CursorRewriteGuard(Config.Root, sid) { TrailingBytes = keptLineByteLength }; // exactly "kept\n"
         guard.Checkpoint(checkpointOffset, CursorAppendOnlyProbe.Sha256Hex("kept\n"u8));
 
         var state = new WatchState {
@@ -209,12 +216,12 @@ public class CursorGuardWiringTests {
         var tripped = false;
         await using var hub = UnconnectedHub();
 
-        var result = await WatchCommand.DrainNewLines(
+        var result = await Watch.DrainNewLines(
             hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
             cursorGuard: guard, onCursorRewriteDetected: () => tripped = true);
 
         await Assert.That(tripped).IsTrue();
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsTrue();
+        await Assert.That(Markers.IsQuarantined(sid)).IsTrue();
         await Assert.That(result).IsEmpty();
         // The batch was discarded, not delivered.
         await Assert.That(state.CursorByteOffset).IsEqualTo(checkpointOffset);
@@ -234,7 +241,7 @@ public class CursorGuardWiringTests {
         var paddingLineByteLength = padding.Length + 1;
         var checkpointOffset      = (long)(paddingLineByteLength + "kept\n".Length);
 
-        var guard = new CursorRewriteGuard(sid) { TrailingBytes = "kept\n".Length };
+        var guard = new CursorRewriteGuard(Config.Root, sid) { TrailingBytes = "kept\n".Length };
         guard.Checkpoint(checkpointOffset, CursorAppendOnlyProbe.Sha256Hex("kept\n"u8));
 
         var state = new WatchState {
@@ -250,12 +257,12 @@ public class CursorGuardWiringTests {
         // unconnected hub makes SendTranscriptBatchAcked fail, which DrainNewLines treats as a
         // retryable send failure (logs, doesn't advance state) rather than a crash. The lines
         // returned are what matters here: correctness of the bounded decode.
-        var result = await WatchCommand.DrainNewLines(
+        var result = await Watch.DrainNewLines(
             hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
             cursorGuard: guard, onCursorRewriteDetected: () => { });
 
         await Assert.That(result).IsEquivalentTo(new[] { "new" });
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsFalse();
+        await Assert.That(Markers.IsQuarantined(sid)).IsFalse();
     }
 
     // a poll that reads ONLY blank/whitespace lines
@@ -276,7 +283,7 @@ public class CursorGuardWiringTests {
         // without needing a live hub round trip.
         await File.WriteAllTextAsync(transcriptPath, "a\nb\n");
 
-        var guard = new CursorRewriteGuard(sid);
+        var guard = new CursorRewriteGuard(Config.Root, sid);
         guard.Checkpoint(offset: 4, trailingSha: CursorAppendOnlyProbe.Sha256Hex("a\nb\n"u8));
         var state = new WatchState {
             LinesProcessed   = 2,
@@ -290,12 +297,12 @@ public class CursorGuardWiringTests {
         // decoder must consume them, but nothing a real agent would ever emit as content.
         await File.AppendAllTextAsync(transcriptPath, "\n   \n"); // 5 bytes: "\n" then "   \n"
 
-        var pollA = await WatchCommand.DrainNewLines(
+        var pollA = await Watch.DrainNewLines(
             hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
             cursorGuard: guard, onCursorRewriteDetected: () => { });
 
         await Assert.That(pollA).IsEmpty(); // both new lines are blank — nothing to send
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsFalse();
+        await Assert.That(Markers.IsQuarantined(sid)).IsFalse();
 
         // THE FIX: the byte frontier must land at the TRUE end of the two blank lines (offset
         // 9), in lockstep with the line frontier (4) — not stuck at the old offset (4) while
@@ -309,14 +316,14 @@ public class CursorGuardWiringTests {
         // now-inflated LinesProcessed (4) and pushing it to 6 — repeating forever on every
         // subsequent idle poll. With the fix, CursorByteOffset already sits at the TRUE EOF (9),
         // so there is nothing left to decode — neither frontier moves again.
-        var pollB = await WatchCommand.DrainNewLines(
+        var pollB = await Watch.DrainNewLines(
             hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
             cursorGuard: guard, onCursorRewriteDetected: () => { });
 
         await Assert.That(pollB).IsEmpty();
         await Assert.That(state.LinesProcessed).IsEqualTo(4);    // unchanged — nothing new to find
         await Assert.That(state.CursorByteOffset).IsEqualTo(9L); // unchanged — already at true EOF
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsFalse();
+        await Assert.That(Markers.IsQuarantined(sid)).IsFalse();
     }
 
     // CursorGuardPollCount (the full-prefix cadence counter)
@@ -333,7 +340,7 @@ public class CursorGuardWiringTests {
         var transcriptPath = tmp.PathTo("t.jsonl");
         await File.WriteAllTextAsync(transcriptPath, "line1\nline2\nline3\n");
 
-        var guard = new CursorRewriteGuard(sid);
+        var guard = new CursorRewriteGuard(Config.Root, sid);
         var state = new WatchState(); // CursorGuardPollCount starts at 0 — this poll is poll 1 (full-prefix-due)
 
         await using var hub = UnconnectedHub();
@@ -342,7 +349,7 @@ public class CursorGuardWiringTests {
         // by holding an exclusive lock (FileShare.None denies DrainNewLines's own
         // FileShare.ReadWrite open — verified to throw System.IO.IOException on this platform).
         await using (new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.None)) {
-            var failedResult = await WatchCommand.DrainNewLines(
+            var failedResult = await Watch.DrainNewLines(
                 hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
                 cursorGuard: guard, onCursorRewriteDetected: () => { });
 
@@ -355,12 +362,12 @@ public class CursorGuardWiringTests {
         // The NEXT (successful) poll must still be treated as poll 1 — i.e. it must still be
         // the one that performs the full-prefix baseline seed, not skip it as if some earlier
         // poll (the failed one) had already used up that slot.
-        await WatchCommand.DrainNewLines(
+        await Watch.DrainNewLines(
             hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
             cursorGuard: guard, onCursorRewriteDetected: () => { });
 
         await Assert.That(state.CursorGuardPollCount).IsEqualTo(1);
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsFalse();
+        await Assert.That(Markers.IsQuarantined(sid)).IsFalse();
     }
 
     // the SAME byte/line-lockstep the
@@ -381,7 +388,7 @@ public class CursorGuardWiringTests {
         // technique as the finding-#1 test).
         await File.WriteAllTextAsync(transcriptPath, "a\nb\n");
 
-        var guard = new CursorRewriteGuard(sid);
+        var guard = new CursorRewriteGuard(Config.Root, sid);
         guard.Checkpoint(offset: 4, trailingSha: CursorAppendOnlyProbe.Sha256Hex("a\nb\n"u8));
         var state = new WatchState {
             LinesProcessed   = 2,
@@ -398,12 +405,12 @@ public class CursorGuardWiringTests {
         // Append TWO blank/whitespace-only lines.
         await File.AppendAllTextAsync(transcriptPath, "\n   \n"); // 5 bytes → EOF at 9
 
-        var pollA = await WatchCommand.DrainNewLines(
+        var pollA = await Watch.DrainNewLines(
             hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
             cursorGuard: guard, onCursorRewriteDetected: () => { });
 
         await Assert.That(pollA).IsEmpty(); // both new lines blank — nothing sent; the repo-only RPC threw
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsFalse();
+        await Assert.That(Markers.IsQuarantined(sid)).IsFalse();
 
         // THE FIX: even though the send failed, the byte frontier must land at the true end of
         // the two blank lines (9), in lockstep with the line frontier (4) — not stay stuck at 4.
@@ -418,13 +425,13 @@ public class CursorGuardWiringTests {
         // frontier already at the true EOF (9), there is nothing left to decode, so neither
         // frontier moves again. Before the fix, CursorByteOffset stuck at 4 would have re-read
         // the same two blank lines and pushed LinesProcessed to 6.
-        var pollB = await WatchCommand.DrainNewLines(
+        var pollB = await Watch.DrainNewLines(
             hub, sid, transcriptPath, agentId: null, state, vendor: "cursor", CancellationToken.None,
             cursorGuard: guard, onCursorRewriteDetected: () => { });
 
         await Assert.That(pollB).IsEmpty();
         await Assert.That(state.LinesProcessed).IsEqualTo(4);    // unchanged — nothing new to find
         await Assert.That(state.CursorByteOffset).IsEqualTo(9L); // unchanged — already at true EOF
-        await Assert.That(CursorMarkers.IsQuarantined(sid)).IsFalse();
+        await Assert.That(Markers.IsQuarantined(sid)).IsFalse();
     }
 }

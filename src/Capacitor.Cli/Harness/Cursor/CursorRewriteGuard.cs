@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands.Harness;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.Cursor;
 
 namespace Capacitor.Cli.Harness.Cursor;
@@ -30,7 +31,9 @@ namespace Capacitor.Cli.Harness.Cursor;
 /// periodic full-prefix re-hash (every N polls, wired by the watcher), reusing
 /// <see cref="CursorAppendOnlyProbe"/> — the same pure core the phase-0 harness uses.
 /// </summary>
-public sealed class CursorRewriteGuard(string sessionId) {
+public sealed class CursorRewriteGuard(ConfigRoot config, string sessionId) {
+    readonly CursorMarkers _markers = new(config);
+
     public int TrailingBytes { get; init; } = 4096;
 
     (long Offset, string TrailingSha)?                _checkpoint;
@@ -205,7 +208,7 @@ public sealed class CursorRewriteGuard(string sessionId) {
     void Reject(string zone, string detail) {
         var message = $"cursor_transcript_rewrite_detected: session {sessionId} zone={zone} — {detail}";
         Console.Error.WriteLine(message);
-        CursorMarkers.Quarantine(sessionId, message);
+        _markers.Quarantine(sessionId, message);
     }
 
     static int ReadFully(FileStream stream, byte[] buffer) {

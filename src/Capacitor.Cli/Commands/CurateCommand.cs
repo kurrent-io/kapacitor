@@ -1,12 +1,14 @@
 using System.Net;
 using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Curation;
 
 namespace Capacitor.Cli.Commands;
 
-static class CurateCommand {
-    public static async Task<int> HandleApply(string baseUrl, bool dryRun, bool yes) {
+class CurateCommand(ConfigRoot config, ProfileContext profiles) {
+    public async Task<int> HandleApply(bool dryRun, bool yes) {
+        var baseUrl = profiles.Resolution.ServerUrl!;
         var cwd = Environment.CurrentDirectory;
 
         // 1. Authoritative repo-root gate (never AppConfig.RepoRoot).
@@ -17,7 +19,7 @@ static class CurateCommand {
         }
 
         // 2. Identify the repo for the server key.
-        var repo = await RepositoryDetection.DetectRepositoryAsync(cwd);
+        var repo = await RepositoryDetection.DetectRepositoryAsync(config, cwd);
         if (repo?.Owner is null || repo.RepoName is null) {
             await Console.Error.WriteLineAsync("Could not determine the repo's owner/name from its git remote.");
             return 1;
@@ -25,7 +27,7 @@ static class CurateCommand {
         var hash = RepoHashHelper.ComputeRepoHash(repo.Owner, repo.RepoName);
 
         // 3. Fetch promoted curation decisions.
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
         HttpResponseMessage resp;
         try {
             resp = await client.GetWithRetryAsync(

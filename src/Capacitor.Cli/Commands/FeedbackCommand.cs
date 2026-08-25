@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Commands;
 
 namespace Capacitor.Cli.Commands;
@@ -17,7 +18,7 @@ namespace Capacitor.Cli.Commands;
 /// <c>HandleCore</c> takes an already-built <see cref="HttpClient"/> so tests can drive it against a
 /// fake server without touching the token store.</para>
 /// </summary>
-public static class FeedbackCommand {
+public sealed class FeedbackCommand(ConfigRoot config, ProfileContext profiles) {
     /// <summary>
     /// The pinned success line (post-spike variant: promises email replies). Printed to stdout so
     /// <c>kcap feedback ... | ...</c> can capture it; everything else in this command writes to stderr.
@@ -29,8 +30,8 @@ public static class FeedbackCommand {
 
     const string InteractivePrompt = "What's going on? (end with an empty line)";
 
-    public static Task<int> HandleAsync(string baseUrl, string[] args) =>
-        HandleAsync(baseUrl, args, Console.IsInputRedirected, Console.ReadLine);
+    public Task<int> HandleAsync(string[] args) =>
+        HandleAsync(args, Console.IsInputRedirected, Console.ReadLine);
 
     /// <summary>
     /// Test-friendly entry point: <paramref name="stdinIsRedirected"/> and <paramref name="readLine"/>
@@ -38,8 +39,8 @@ public static class FeedbackCommand {
     /// TTY-vs-piped branch and the interactive prompt's line collection are exercised without a real
     /// terminal or process stdin.
     /// </summary>
-    internal static async Task<int> HandleAsync(
-            string baseUrl, string[] args, bool stdinIsRedirected, Func<string?> readLine) {
+    internal async Task<int> HandleAsync(string[] args, bool stdinIsRedirected, Func<string?> readLine) {
+        var baseUrl = profiles.Resolution.ServerUrl!;
         var isBug      = args.Contains(BugFlag);
         var isFeedback = args.Contains(FeedbackFlag);
 
@@ -75,7 +76,7 @@ public static class FeedbackCommand {
             return 1;
         }
 
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
         return await HandleCore(httpClient, baseUrl, category, message);
     }

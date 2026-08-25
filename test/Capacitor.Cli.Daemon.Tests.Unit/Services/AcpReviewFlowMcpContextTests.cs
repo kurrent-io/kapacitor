@@ -52,7 +52,7 @@ public class AcpReviewFlowMcpContextTests {
     /// <summary>
     /// The reviewer this broadening exists for: it borrows nothing (its workspace is a daemon-owned
     /// worktree) and yet its HOME is a per-launch isolated directory, so its result channel resolves
-    /// PathHelpers.ConfigDir at an empty tree and cannot authenticate. Keying delivery on
+    /// the config root stamped alongside that home, an empty tree, and cannot authenticate. Keying delivery on
     /// borrowed-ness left this launch on the KCAP_URL path, which fails at the delivery step with
     /// "Not logged in" after the reviewer has already done its work.
     ///

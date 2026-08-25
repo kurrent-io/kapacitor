@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -26,23 +26,11 @@ namespace Capacitor.Cli.Tests.Integration;
 /// so no watcher spawns and no memory-index GET fires.
 /// </summary>
 public class SessionStartCoordinationNoticesTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server     = WireMockServer.Start();
-    readonly string         _configPath = PathHelpers.ConfigPath("config.json");
-    readonly string?        _previousConfig;
 
-    public SessionStartCoordinationNoticesTests() {
-        _previousConfig = File.Exists(_configPath) ? File.ReadAllText(_configPath) : null;
-    }
-
-    public void Dispose() {
-        _server.Stop();
-
-        if (_previousConfig is null) {
-            if (File.Exists(_configPath)) File.Delete(_configPath);
-        } else {
-            File.WriteAllText(_configPath, _previousConfig);
-        }
-    }
+    public void Dispose() => _server.Stop();
 
     static string Payload() =>
         // No transcript_path / session_id → WatcherManager spawn AND memory-index GET are skipped.
@@ -65,7 +53,7 @@ public class SessionStartCoordinationNoticesTests : IDisposable {
                 }
             }
         };
-        await ConfigMutator.MutateAsync(_ => config);
+        await ConfigMutator.MutateAsync(Config.Root, _ => config);
     }
 
     void GivenServerReturns(string bodyJson) =>
@@ -78,7 +66,7 @@ public class SessionStartCoordinationNoticesTests : IDisposable {
         return JsonNode.Parse(requests.Single().RequestMessage.Body!)!;
     }
 
-    [Test, NotInParallel("AppConfig_FileState")]
+    [Test]
     public async Task Advertises_the_capability_and_renders_returned_notices() {
         await ConfigureProfileAsync(disableCoordinationNotices: null);
         GivenServerReturns(
@@ -92,7 +80,7 @@ public class SessionStartCoordinationNoticesTests : IDisposable {
             """);
 
         var stdout = new StringWriter();
-        await ClaudeHookCommand.Handle(_server.Url!, new StringReader(Payload()), stdout: stdout);
+        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(Payload()), stdout: stdout);
 
         // Capability advertised on the request.
         await Assert.That(PostedBody()["coordination_notices"]?.GetValue<string>()).IsEqualTo("v1");
@@ -105,27 +93,27 @@ public class SessionStartCoordinationNoticesTests : IDisposable {
         await Assert.That(ctx).Contains("- +1 more in the notification centre");
     }
 
-    [Test, NotInParallel("AppConfig_FileState")]
+    [Test]
     public async Task Opt_out_suppresses_capability_and_render() {
         await ConfigureProfileAsync(disableCoordinationNotices: true);
         GivenServerReturns("""{ "coordination_notices": [ { "text": "someone else is on this bug" } ] }""");
 
         var stdout = new StringWriter();
-        await ClaudeHookCommand.Handle(_server.Url!, new StringReader(Payload()), stdout: stdout);
+        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(Payload()), stdout: stdout);
 
         await Assert.That(PostedBody()["coordination_notices"]).IsNull();
         await Assert.That(stdout.ToString()).DoesNotContain("## Coordination notices");
         await Assert.That(stdout.ToString()).DoesNotContain("someone else is on this bug");
     }
 
-    [Test, NotInParallel("AppConfig_FileState")]
+    [Test]
     public async Task Malformed_notices_field_does_not_fail_the_hook() {
         await ConfigureProfileAsync(disableCoordinationNotices: null);
         // Server echoes the capability token back as a bare string instead of the {text}[] array.
         GivenServerReturns("""{ "coordination_notices": "v1" }""");
 
         var stdout = new StringWriter();
-        await ClaudeHookCommand.Handle(_server.Url!, new StringReader(Payload()), stdout: stdout);
+        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(Payload()), stdout: stdout);
 
         // Capability still advertised; render silently emits nothing (fail-open, no crash).
         await Assert.That(PostedBody()["coordination_notices"]?.GetValue<string>()).IsEqualTo("v1");

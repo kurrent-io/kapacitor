@@ -1,5 +1,4 @@
 using Capacitor.Cli.Commands;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Telemetry;
 
@@ -16,54 +15,16 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// telemetry flag had already been persisted. A user would see a confusing crash right after
 /// their opt-out silently took effect, and every existing test would stay green.
 ///
-/// <c>AppConfig</c>'s config path (like <c>PathHelpers.ConfigDir</c>) is <c>static readonly</c>,
-/// captured once per process — see <c>ConfigDirIsolationTests</c> — so, unlike
-/// <see cref="ConfigTelemetryKeyTests"/>, this cannot point at a private scratch directory;
-/// there is no <c>PathOverride</c>-equivalent seam for the profile config path. Instead it
-/// follows the existing shared-directory convention used by
-/// <c>TokenStoreProfileTests</c>/<c>MachineIdFileTests</c>/<c>LoginDiscoverTests</c>: touch the
-/// one real <c>config.json</c> under the assembly-wide <c>KCAP_CONFIG_DIR</c> that
-/// <c>RepoPathStoreGlobalSetup</c>'s <c>[ModuleInitializer]</c> pins for the whole process, and
-/// share that class's <see cref="NotInParallelAttribute"/> key so nothing else deletes or
-/// rewrites <c>config.json</c> underneath this test.
-///
-/// Deliberately does NOT set <see cref="TelemetryState.PathOverride"/> or
-/// <see cref="TelemetryDeviceId.PathOverride"/> — the point of this class is the DEFAULT path
-/// resolution under the pinned <c>KCAP_CONFIG_DIR</c>. It must still HOLD both telemetry lock keys
-/// (alongside <c>TokenStoreProfileTests</c> for the config dir it shares), because the production
-/// path it drives — <c>TryApplyTelemetry("telemetry", "off")</c> →
-/// <see cref="TelemetryState.SetEnabled"/> → <see cref="TelemetryDeviceId.Delete"/> plus
-/// <see cref="CliTelemetry.DiscardAndDisable"/> — dereferences whatever those statics point at the
-/// instant it runs. TUnit schedules [NotInParallel] tests with disjoint key sets CONCURRENTLY, and
-/// its constraint-key scheduler does not consult <c>--maximum-parallel-tests</c>, so CI's serial
-/// flag never prevented the overlap: without these keys, this class's side effects landed inside
-/// concurrently-running telemetry tests — deleting the device-id file a test had just created
-/// under its own <c>PathOverride</c> (the #524 timestamp flake) and clearing the live
-/// <c>CliTelemetry.TestSink</c> mid-test (the empty-sink funnel flakes). Both files are cleaned up
-/// in <c>[After(Test)]</c> so neither can leak into a later test that reads persisted telemetry
-/// state without an override.
+/// <para>Holds the <see cref="CliTelemetry.TestSink"/> key: the path it drives reaches
+/// <see cref="CliTelemetry.DiscardAndDisable"/>, which clears whatever sink is live — including a
+/// concurrently-running funnel test's. The on-disk state needs no key: config.json, telemetry.json
+/// and the device id all live under this test's own root.</para>
 /// </summary>
-[NotInParallel([
-    "TokenStoreProfileTests",
-    nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
-    nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
-])]
+[NotInParallel(nameof(CliTelemetry) + "." + nameof(CliTelemetry.TestSink))]
 public class ConfigSetTelemetryCompositionTests {
-    static string ConfigPath    => AppConfig.GetConfigPath();
-    static string TelemetryPath => PathHelpers.ConfigPath("telemetry.json");
-    static string DeviceIdPath  => PathHelpers.ConfigPath("telemetry-device.json");
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
-    [Before(Test)]
-    public void Cleanup() {
-        SharedConfigDirCleanup.ClearWithRetry("config.json", () => File.Delete(ConfigPath));
-        AppConfig.ResetResolvedStateForTesting();
-    }
-
-    [After(Test)]
-    public void CleanupTelemetryState() {
-        SharedConfigDirCleanup.ClearWithRetry("telemetry.json", () => File.Delete(TelemetryPath));
-        SharedConfigDirCleanup.ClearWithRetry("telemetry-device.json", () => File.Delete(DeviceIdPath));
-    }
+    string ConfigPath => AppConfig.GetConfigPath(Config.Root);
 
     [Test]
     public async Task Set_telemetry_off_returns_zero_and_leaves_an_existing_profile_on_disk_byte_for_byte_unchanged() {
@@ -74,10 +35,10 @@ public class ConfigSetTelemetryCompositionTests {
                 ["default"] = new Profile { ServerUrl = "https://sentinel.invalid" }
             }
         };
-        await ConfigMutator.MutateAsync(_ => seeded);
+        await ConfigMutator.MutateAsync(Config.Root, _ => seeded);
         var before = await File.ReadAllTextAsync(ConfigPath);
 
-        var exit = await ConfigCommand.HandleAsync(["config", "set", "telemetry", "off"]);
+        var exit = await new ConfigCommand(Config.Root).HandleAsync(["config", "set", "telemetry", "off"]);
 
         await Assert.That(exit).IsEqualTo(0);
         var after = await File.ReadAllTextAsync(ConfigPath);
@@ -90,7 +51,7 @@ public class ConfigSetTelemetryCompositionTests {
         // LoadProfileConfig/SaveProfileConfig, not merely that it round-trips one unchanged.
         await Assert.That(File.Exists(ConfigPath)).IsFalse();
 
-        var exit = await ConfigCommand.HandleAsync(["config", "set", "telemetry", "off"]);
+        var exit = await new ConfigCommand(Config.Root).HandleAsync(["config", "set", "telemetry", "off"]);
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(File.Exists(ConfigPath)).IsFalse();

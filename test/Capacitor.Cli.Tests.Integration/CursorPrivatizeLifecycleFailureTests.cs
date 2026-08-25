@@ -36,6 +36,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </para>
 /// </summary>
 public class CursorPrivatizeLifecycleFailureTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
 
@@ -95,10 +97,9 @@ public class CursorPrivatizeLifecycleFailureTests : IDisposable {
         _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        var source = new CursorImportSource(WriteOneCursorSession(), WorkspaceStorageDir);
+        var source = new CursorImportSource(Config.Root, WriteOneCursorSession(), WorkspaceStorageDir);
 
-        var exitCode = await ImportCommand.HandleImport(
-            baseUrl: _server.Url!,
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
             filterCwd: null,
             minLines: 0,
             sources: [source],
@@ -135,10 +136,9 @@ public class CursorPrivatizeLifecycleFailureTests : IDisposable {
         _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        var source = new CursorImportSource(WriteOneCursorSession(), WorkspaceStorageDir);
+        var source = new CursorImportSource(Config.Root, WriteOneCursorSession(), WorkspaceStorageDir);
 
-        var exitCode = await ImportCommand.HandleImport(
-            baseUrl: _server.Url!,
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
             filterCwd: null,
             minLines: 0,
             sources: [source],
@@ -172,10 +172,9 @@ public class CursorPrivatizeLifecycleFailureTests : IDisposable {
         _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        var source = new CursorImportSource(WriteOneCursorSession(), WorkspaceStorageDir);
+        var source = new CursorImportSource(Config.Root, WriteOneCursorSession(), WorkspaceStorageDir);
 
-        var exitCode = await ImportCommand.HandleImport(
-            baseUrl: _server.Url!,
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
             filterCwd: null,
             minLines: 0,
             sources: [source],
@@ -264,10 +263,9 @@ public class CursorPrivatizeLifecycleFailureTests : IDisposable {
         _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
             .RespondWith(Response.Create().WithStatusCode(200));
 
-        var source = new CursorImportSource(WriteParentWithCorrelatedChild(), WorkspaceStorageDir);
+        var source = new CursorImportSource(Config.Root, WriteParentWithCorrelatedChild(), WorkspaceStorageDir);
 
-        var exitCode = await ImportCommand.HandleImport(
-            baseUrl: _server.Url!,
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
             filterCwd: null,
             minLines: 0,
             sources: [source],
