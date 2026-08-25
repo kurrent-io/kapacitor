@@ -9,42 +9,49 @@
     <Grid RowDefinitions="56,42,*">
         <!-- Header: title over repo leaf · spacer · vendor chip with its family badge ·
              Open-in-web/Stop. Leaving the workspace is the rail's job, not a Back button's. -->
-        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto,Auto,Auto" Margin="16,0" VerticalAlignment="Center">
-            <StackPanel Grid.Column="0" Spacing="1" VerticalAlignment="Center">
-                <TextBlock x:Name="WorkspaceTitle" Text="{Binding Title}" FontWeight="Bold" FontSize="15"
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto,Auto,Auto" Margin="20,0,16,0"
+              Background="Transparent" PointerPressed="OnHeaderPointerPressed">
+            <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+                <TextBlock x:Name="WorkspaceTitle" Text="{Binding Title}" FontWeight="SemiBold" FontSize="13.5"
                            Foreground="{StaticResource KcapTextBrush}" TextTrimming="CharacterEllipsis" />
-                <TextBlock x:Name="WorkspaceRepo" Text="{Binding RepoLabelText}" FontSize="11"
-                           Foreground="{StaticResource KcapMutedBrush}" TextTrimming="CharacterEllipsis" />
+                <TextBlock x:Name="WorkspaceRepo" Text="{Binding RepoLabelText}" FontSize="10.5"
+                           Foreground="{StaticResource KcapPurpleBrush}" TextTrimming="CharacterEllipsis" />
             </StackPanel>
 
-            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Margin="0,0,12,0">
-                <Border Background="{StaticResource KcapSurfaceRaisedBrush}" CornerRadius="999" Padding="6,1"
-                        IsVisible="{Binding FamilyDot, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
-                    <TextBlock Text="{Binding FamilyDot}" FontSize="9" Foreground="{StaticResource KcapMutedBrush}" />
-                </Border>
-                <TextBlock x:Name="WorkspaceVendorChip" Text="{Binding VendorChip}" FontSize="12"
-                           Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
-            </StackPanel>
+            <Border Grid.Column="2" Background="{StaticResource KcapSurfaceRaisedBrush}"
+                    BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="1" CornerRadius="7"
+                    Padding="10,5" Margin="0,0,10,0" VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal" Spacing="7">
+                    <Border Background="{StaticResource KcapCanvasBrush}" CornerRadius="999" Padding="6,1"
+                            VerticalAlignment="Center"
+                            IsVisible="{Binding FamilyDot, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                        <TextBlock Text="{Binding FamilyDot}" FontSize="9" Foreground="{StaticResource KcapMutedBrush}" />
+                    </Border>
+                    <TextBlock x:Name="WorkspaceVendorChip" Text="{Binding VendorChip}" FontSize="11.5" FontWeight="SemiBold"
+                               Foreground="{StaticResource KcapTextBrush}" VerticalAlignment="Center" />
+                </StackPanel>
+            </Border>
 
             <Button Grid.Column="3" Content="Open in web" Command="{Binding OpenInWebCommand}"
-                    Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                    Foreground="{StaticResource KcapTextBrush}" Padding="10,4" FontSize="12" Margin="0,0,6,0" />
+                    Background="Transparent" BorderBrush="Transparent" CornerRadius="7"
+                    Foreground="{StaticResource KcapMutedBrush}" Padding="10,5" FontSize="12" Margin="0,0,4,0" />
             <Button Grid.Column="4" Content="Stop" Command="{Binding StopCommand}"
-                    Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                    Foreground="{StaticResource KcapDangerBrush}" Padding="10,4" FontSize="12" />
+                    Background="Transparent" BorderBrush="Transparent" CornerRadius="7"
+                    Foreground="{StaticResource KcapDangerBrush}" Padding="10,5" FontSize="12" />
         </Grid>
 
         <!-- Tab strip: one Terminal tab when the daemon reports this session has one; the muted
              family-aware note in its place otherwise (spec: never names a vendor). -->
-        <Border Grid.Row="1" Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                BorderThickness="0,1,0,1">
-            <Grid>
+        <Border Grid.Row="1" BorderBrush="{StaticResource KcapBorderBrush}" BorderThickness="0,1,0,1">
+            <Grid Margin="20,0">
+                <!-- Pill tab, active (design canvas): the strip gains Chat beside it with AI-2196. -->
                 <Button x:Name="TerminalTabButton" Content="Terminal" IsVisible="{Binding ShowsTerminalTab}"
-                        HorizontalAlignment="Left" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
-                        Background="Transparent" BorderBrush="{StaticResource KcapAccentBrush}" BorderThickness="0,0,0,2"
-                        CornerRadius="0" Foreground="{StaticResource KcapTextBrush}" Padding="16,0" Height="41" />
+                        HorizontalAlignment="Left" VerticalAlignment="Center"
+                        Background="{StaticResource KcapSurfaceRaisedBrush}" BorderThickness="0"
+                        CornerRadius="7" Foreground="{StaticResource KcapTextBrush}" FontWeight="SemiBold"
+                        FontSize="12" Padding="12,5" />
                 <TextBlock x:Name="NoTerminalNote" Text="{Binding NoTerminalNote}" IsVisible="{Binding !ShowsTerminalTab}"
-                           Foreground="{StaticResource KcapMutedBrush}" FontSize="12" Margin="16,0" VerticalAlignment="Center" />
+                           Foreground="{StaticResource KcapMutedBrush}" FontSize="12" VerticalAlignment="Center" />
             </Grid>
         </Border>
 

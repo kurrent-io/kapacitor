@@ -13,6 +13,7 @@
             <SolidColorBrush x:Key="KcapBorderBrush" Color="#2A3040" />
             <SolidColorBrush x:Key="KcapTextBrush" Color="#F1F3F7" />
             <SolidColorBrush x:Key="KcapMutedBrush" Color="#9299AA" />
+            <SolidColorBrush x:Key="KcapFaintBrush" Color="#6F7687" />
             <SolidColorBrush x:Key="KcapAccentBrush" Color="#5BE0B3" />
             <SolidColorBrush x:Key="KcapAccentDimBrush" Color="#173F36" />
             <SolidColorBrush x:Key="KcapWarningBrush" Color="#F4B860" />

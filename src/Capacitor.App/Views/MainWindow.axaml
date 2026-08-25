@@ -8,49 +8,79 @@
                      x:DataType="vm:MainWindowViewModel"
                      Title="Kurrent Capacitor Desktop"
                      Icon="avares://Kurrent Capacitor/Assets/kcap-icon.png"
-                     Width="1200" Height="760">
+                     Width="1200" Height="760"
+                     Background="{StaticResource KcapCanvasBrush}"
+                     ExtendClientAreaToDecorationsHint="True">
     <!-- Two surfaces, one window (spec §3): Home (daemon status + launcher/cards + Activity) and
          Sessions (rail | workspace). CurrentWorkspace only means anything inside Sessions, and the
          workspace side is a ContentControl over a template rather than an always-present
          WorkspaceView, so the terminal control is CONSTRUCTED only once a session is opened
-         instead of sitting hidden in every window that never opens one. -->
+         instead of sitting hidden in every window that never opens one.
+
+         The client area extends into the title bar (design canvas: the dark surfaces reach the
+         top, the native caption buttons sit over the content — Avalonia 12 keeps system chrome
+         itself; the ChromeHints knob no longer exists). The strip below is the
+         bottom-most child, so it only receives presses where no surface content is hit-testable —
+         which is exactly the empty title-bar stretch on the Home view; the rail and workspace
+         headers carry their own drag handlers. -->
     <Panel>
-        <Grid x:Name="HomeSurface" Margin="20" RowDefinitions="Auto,*"
+        <Border Height="40" VerticalAlignment="Top" Background="Transparent"
+                PointerPressed="OnChromePointerPressed" />
+        <Grid x:Name="HomeSurface" Margin="24,40,24,0" RowDefinitions="Auto,*"
               IsVisible="{Binding IsHomeView}">
-            <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
-                <StackPanel Spacing="20">
-                    <StackPanel Spacing="8">
+            <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Background="Transparent"
+                  PointerPressed="OnChromePointerPressed">
+                <StackPanel Spacing="14">
+                    <StackPanel Spacing="6">
                         <StackPanel Orientation="Horizontal" Spacing="6">
-                            <TextBlock x:Name="DaemonIdentityText" Text="{Binding DaemonName}" FontWeight="Bold" />
-                            <TextBlock Text="·" />
-                            <TextBlock x:Name="DaemonVersionText" Text="{Binding VersionDisplay}" ToolTip.Tip="{Binding DaemonVersion}" />
+                            <TextBlock x:Name="DaemonIdentityText" Text="{Binding DaemonName}" FontWeight="Bold"
+                                       FontSize="15" Foreground="{StaticResource KcapTextBrush}" />
+                            <TextBlock Text="·" Foreground="{StaticResource KcapFaintBrush}" />
+                            <TextBlock x:Name="DaemonVersionText" Text="{Binding VersionDisplay}" ToolTip.Tip="{Binding DaemonVersion}"
+                                       Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
                         </StackPanel>
 
-                        <TextBlock x:Name="ServerUrlText" Text="{Binding ServerUrl}" Opacity="0.7" />
+                        <TextBlock x:Name="ServerUrlText" Text="{Binding ServerUrl}" FontSize="12"
+                                   Foreground="{StaticResource KcapFaintBrush}" />
 
-                        <StackPanel Orientation="Horizontal" Spacing="6">
-                            <Ellipse Width="8" Height="8" Fill="{Binding StatusDotBrush}" VerticalAlignment="Center" />
-                            <TextBlock x:Name="ConnectionText" Text="{Binding ConnectionDisplay}" VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal" Spacing="7">
+                            <Ellipse Width="7" Height="7" Fill="{Binding StatusDotBrush}" VerticalAlignment="Center" />
+                            <TextBlock x:Name="ConnectionText" Text="{Binding ConnectionDisplay}" FontSize="12"
+                                       Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
                             <TextBlock x:Name="AgentCountText" Text="{Binding AgentCountText, StringFormat='· {0}'}"
-                                       IsVisible="{Binding GridEnabled}" VerticalAlignment="Center" />
+                                       IsVisible="{Binding GridEnabled}" FontSize="12"
+                                       Foreground="{StaticResource KcapFaintBrush}" VerticalAlignment="Center" />
                         </StackPanel>
                     </StackPanel>
 
                     <StackPanel Spacing="8">
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button x:Name="StartButton" Content="Start daemon" Command="{Binding StartDaemonCommand}" IsVisible="{Binding StartVisible}" />
-                            <Button x:Name="RetryButton" Content="Retry" Command="{Binding RetryCommand}" IsVisible="{Binding RetryVisible}" />
+                            <Button x:Name="StartButton" Content="Start daemon" Command="{Binding StartDaemonCommand}" IsVisible="{Binding StartVisible}"
+                                    Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" FontWeight="SemiBold"
+                                    CornerRadius="7" Padding="13,6" />
+                            <Button x:Name="RetryButton" Content="Retry" Command="{Binding RetryCommand}" IsVisible="{Binding RetryVisible}"
+                                    Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                                    Foreground="{StaticResource KcapTextBrush}" CornerRadius="7" Padding="13,6" />
                         </StackPanel>
 
                         <TextBlock x:Name="StartMessageText" Text="{Binding StartMessage}"
+                                   Foreground="{StaticResource KcapDangerBrush}" FontSize="12"
                                    IsVisible="{Binding StartMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                         <TextBlock x:Name="ReasonText" Text="{Binding Reason}"
+                                   Foreground="{StaticResource KcapWarningBrush}" FontSize="12"
                                    IsVisible="{Binding Reason, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                     </StackPanel>
                 </StackPanel>
 
-                <Button Grid.Column="1" x:Name="HomeSessionsButton" Content="Sessions ›"
-                        Command="{Binding ShowSessionsCommand}" VerticalAlignment="Top" />
+                <Button Grid.Column="1" x:Name="HomeSessionsButton" Command="{Binding ShowSessionsCommand}"
+                        VerticalAlignment="Top" Background="{StaticResource KcapSurfaceRaisedBrush}"
+                        BorderBrush="{StaticResource KcapBorderBrush}" CornerRadius="7" Padding="12,6">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <TextBlock Text="Sessions" FontSize="12" FontWeight="SemiBold"
+                                   Foreground="{StaticResource KcapTextBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="›" FontSize="12" Foreground="{StaticResource KcapFaintBrush}" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
             </Grid>
 
             <ScrollViewer Grid.Row="1" Margin="0,8,0,0" VerticalScrollBarVisibility="Auto">
@@ -61,9 +91,12 @@
                          Activity feed's refresh cadence tracks this section's expansion, the Home
                          surface being the one on screen, and the window's own visibility. -->
                     <Expander x:Name="ActivityExpander" Header="Activity" IsExpanded="False"
-                              Expanded="OnActivityExpandChanged" Collapsed="OnActivityExpandChanged">
+                              Expanded="OnActivityExpandChanged" Collapsed="OnActivityExpandChanged"
+                              Foreground="{StaticResource KcapTextBrush}" Background="{StaticResource KcapSurfaceBrush}"
+                              BorderBrush="{StaticResource KcapBorderBrush}" CornerRadius="10" Margin="0,0,0,20">
                         <Grid RowDefinitions="Auto,*">
                             <TextBlock x:Name="ActivityEmptyText" Text="No decisions yet"
+                                       Foreground="{StaticResource KcapFaintBrush}"
                                        IsVisible="{Binding Activity.IsEmpty}" HorizontalAlignment="Center" Margin="0,24,0,0" />
 
                             <ScrollViewer Grid.Row="1" Margin="0,8,0,0"
@@ -109,7 +142,7 @@
             <views:SessionRailView x:Name="SessionRail" Grid.Column="0" />
             <Panel Grid.Column="1">
                 <TextBlock x:Name="WorkspacePlaceholder" Text="Select a session"
-                           Opacity="0.6" HorizontalAlignment="Center" VerticalAlignment="Center"
+                           Foreground="{StaticResource KcapFaintBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"
                            IsVisible="{Binding CurrentWorkspace, Converter={x:Static ObjectConverters.IsNull}}" />
                 <ContentControl x:Name="WorkspaceHost" Content="{Binding CurrentWorkspace}"
                                 IsVisible="{Binding CurrentWorkspace, Converter={x:Static ObjectConverters.IsNotNull}}">

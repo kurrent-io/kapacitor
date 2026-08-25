@@ -74,6 +74,13 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
     void ShowToast(string message) =>
         _notifications?.Show(new Notification("Kurrent Capacitor", message, NotificationType.Warning, TimeSpan.FromSeconds(4)));
 
+    // The client area extends into the title bar, so the Home surface's header strip (and the
+    // bottom-most drag strip) must move the window the way the system bar used to. Buttons in the
+    // strip mark their presses handled, so this only fires on empty space.
+    void OnChromePointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e) {
+        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) BeginMoveDrag(e);
+    }
+
     // Wired from MainWindow.axaml's ActivityExpander (spec §7).
     void OnActivityExpandChanged(object? sender, RoutedEventArgs e) {
         _activityExpanded = ActivityExpander.IsExpanded;

@@ -19,6 +19,14 @@ namespace Capacitor.App.Views;
 /// Resize with worse (font-metric-unaware) width/height than TerminalControl's own
 /// _consoleTextSize-based computation.
 public partial class WorkspaceView : UserControl {
+    // The window's client area extends into the title bar, so the workspace header doubles as the
+    // draggable chrome on its side of the split (SessionRailView's chrome row is the other).
+    // Buttons in the header mark their presses handled, so this only fires on empty space.
+    void OnHeaderPointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e) {
+        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed && TopLevel.GetTopLevel(this) is Window window)
+            window.BeginMoveDrag(e);
+    }
+
     public WorkspaceView() {
         InitializeComponent();
         // Keyboard focus is a view concern: the control draws its filled caret (and receives
