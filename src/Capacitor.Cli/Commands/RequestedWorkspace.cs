@@ -1,3 +1,5 @@
+using Capacitor.Cli.Core.Auth;
+
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
@@ -6,5 +8,6 @@ namespace Capacitor.Cli.Commands;
 /// fill it from, and the other host driving that interface prompts through its own UI.
 /// </summary>
 public sealed record RequestedWorkspace(string OrgName, string Slug) {
-    public string Origin => $"https://{Slug}.kcap.ai";
+    /// <summary>Expanded the same way `kcap setup &lt;tenant&gt;` expands a bare label.</summary>
+    public string Origin => ServerInput.ResolveTenantArg(Slug);
 }

@@ -28,7 +28,10 @@ public class SpectreTenantPicker(Func<bool>? isInteractive = null) : ITenantPick
             Console.Error.WriteLine("Choosing between workspaces needs an interactive terminal, and this session is non-interactive.");
             Console.Error.WriteLine("Name the one you want instead:");
 
-            foreach (var tenant in tenants) Console.Error.WriteLine($"  • kcap setup --server-url {tenant.Origin} --no-prompt");
+            // Canonicalized, not printed raw: these origins are proxy-supplied, and a control character
+            // in one would forge lines in the log this is written for.
+            foreach (var tenant in tenants)
+                Console.Error.WriteLine($"  • kcap setup --server-url {ServerIdentity.Canonicalize(tenant.Origin) ?? tenant.Slug} --no-prompt");
 
             return Task.FromResult<DiscoveredTenant?>(null);
         }

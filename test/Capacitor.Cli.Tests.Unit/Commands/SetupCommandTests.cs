@@ -1119,6 +1119,35 @@ public class SetupCommandTests {
         await Assert.That(Parse("setup", "--org", "Acme", "--slug", "   ").Error!).Contains("--slug needs a value");
     }
 
+    // Not this CLI's spelling, so an exact-token search cannot see it - and the flags would be
+    // dropped in silence, which is the one outcome this parse refuses.
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_the_equals_spelling() {
+        await Assert.That(Parse("setup", "--org=Acme", "--slug=acme").Error!).Contains("--org needs a value");
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_an_empty_value() {
+        await Assert.That(Parse("setup", "--org", "", "--slug", "acme").Error!).Contains("--org needs a value");
+    }
+
+    // Caught here rather than only on the path that reaches the provisioner, so one message describes
+    // a malformed slug wherever the run happens to notice it.
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_a_slug_that_could_never_be_a_hostname() {
+        await Assert.That(Parse("setup", "--org", "Acme", "--slug", "Acme Corp").Error!).Contains("not a valid slug");
+        await Assert.That(Parse("setup", "--org", "Acme", "--slug", "api").Error!).Contains("reserved");
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_to_create_and_point_at_a_positional_tenant_at_once() {
+        var (workspace, error) = SetupCommand.ParseRequestedWorkspace(
+            ["setup", "acme", "--org", "Acme", "--slug", "acme"], haveServerUrl: true);
+
+        await Assert.That(workspace).IsNull();
+        await Assert.That(error!).Contains("kcap setup <tenant>");
+    }
+
     [Test]
     public async Task ParseRequestedWorkspace_refuses_to_create_and_point_at_a_server_at_once() {
         var (workspace, error) = SetupCommand.ParseRequestedWorkspace(
@@ -1128,34 +1157,38 @@ public class SetupCommandTests {
         await Assert.That(error!).Contains("--server-url");
     }
 
-    // Discovery only offers to create when the account has no workspace at all, so with one already
-    // the answers are never read and the run would otherwise configure a workspace nobody named.
     [Test]
     public async Task WrongWorkspaceError_stops_a_run_that_landed_on_someone_elses_workspace() {
         var error = SetupCommand.WrongWorkspaceError(
-            new RequestedWorkspace("Acme", "acme"), "https://globex.kcap.ai");
+            new RequestedWorkspace("Acme", "acme"), "globex", "https://globex.kcap.ai");
 
         await Assert.That(error).IsNotNull();
         await Assert.That(error!).Contains("acme");
         await Assert.That(error).Contains("https://globex.kcap.ai");
     }
 
-    // A re-run of the same command once the workspace exists lands on it, which is the asked-for
-    // outcome rather than a collision.
+    // A re-run once the workspace exists lands on it, which is the asked-for outcome.
     [Test]
     public async Task WrongWorkspaceError_passes_the_workspace_that_was_asked_for() {
         await Assert.That(SetupCommand.WrongWorkspaceError(
-            new RequestedWorkspace("Acme", "acme"), "https://acme.kcap.ai")).IsNull();
+            new RequestedWorkspace("Acme", "acme"), "acme", "https://acme.kcap.ai")).IsNull();
+    }
+
+    // The profile name is the comparison, not the URL: the server names the workspace it creates, so
+    // a url in any other shape must not read as landing somewhere else.
+    [Test]
+    public async Task WrongWorkspaceError_passes_a_workspace_the_server_named_differently() {
+        await Assert.That(SetupCommand.WrongWorkspaceError(
+            new RequestedWorkspace("Acme", "acme"), "acme", "https://acme.eu.kcap.ai")).IsNull();
     }
 
     [Test]
     public async Task WrongWorkspaceError_has_nothing_to_say_when_no_workspace_was_asked_for() {
-        await Assert.That(SetupCommand.WrongWorkspaceError(null, "https://globex.kcap.ai")).IsNull();
+        await Assert.That(SetupCommand.WrongWorkspaceError(null, "globex", "https://globex.kcap.ai")).IsNull();
     }
 
-    // The parse tests above call the function directly, so they stay green if HandleAsync stops
-    // calling it. These drive argv. All three rejections return before any config read, network call
-    // or console rule, so they need none of the E2E fixture below.
+    // These drive argv. The three rejections return before any config read, network call or console
+    // rule, so they need none of the E2E fixture below.
     [Test]
     [NotInParallel]
     public async Task HandleAsync_rejects_half_a_pair_before_doing_anything() {
@@ -1190,7 +1223,6 @@ public class SetupCommandTests {
         await Assert.That(capture.GetCapturedError()).Contains("--github");
     }
 
-    // The relaxed --no-prompt gate still holds for a run that supplied neither route.
     [Test]
     [NotInParallel]
     public async Task HandleAsync_still_requires_a_server_url_with_no_prompt_and_no_answers() {

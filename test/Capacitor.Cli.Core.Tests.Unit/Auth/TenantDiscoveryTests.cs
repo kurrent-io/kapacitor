@@ -121,6 +121,22 @@ public class TenantDiscoveryTests {
         await Assert.That(outcome.Picked).IsNull();
         await Assert.That(outcome.ErrorMessage).IsEqualTo("No tenant selected.");
         await Assert.That(outcome.Tenants.Length).IsEqualTo(2);
+
+        // The picker has already said why; the message travels for the caller, unrendered.
+        await Assert.That(outcome.AlreadyReported).IsTrue();
+    }
+
+    // Every other error here IS discovery's to announce, so the flag must not leak onto them.
+    [Test]
+    public async Task RunAsync_owns_the_message_for_a_failure_the_picker_had_no_part_in() {
+        var proxy = Substitute.For<IAuthProxyClient>();
+        proxy.DiscoverTenantsAsync(Arg.Any<string>(), Arg.Any<string>())
+             .Returns(Task.FromResult(new Cli.Core.Auth.DiscoveryResult([], DiscoveryError.ProxyUnreachable)));
+
+        var outcome = await new TenantDiscovery(proxy, Substitute.For<ITenantPicker>()).RunAsync("https://proxy", "gh");
+
+        await Assert.That(outcome.ErrorMessage).IsNotNull();
+        await Assert.That(outcome.AlreadyReported).IsFalse();
     }
 
     [Test]

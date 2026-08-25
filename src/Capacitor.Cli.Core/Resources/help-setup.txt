@@ -128,8 +128,12 @@ or URL — same as `kcap setup <tenant>`), or cancel. Pass --org and --slug to a
 the creation questions up front and skip that fork entirely, which is what a script
 or a session with redirected input needs, alongside --no-prompt for the steps after
 it. The two flags go together: the slug becomes a permanent public hostname, so kcap
-will not derive one from the name, and they only apply to an account that has no
-workspace yet — with one already, setup stops rather than quietly configuring it.
+will not derive one from the name. They also need --no-prompt on a session that
+cannot be prompted, since only the creation questions are answered by flags. Only
+an account with no workspace yet can create one: if yours already has a different
+one, setup signs in, stops and says so rather than going on to configure that one.
+They cannot be combined with --server-url (or `kcap setup <tenant>`), which points
+at a workspace that exists, or with --github, whose lane never provisions.
 
 SSO discovery only lists
 workspaces that use org SSO, so a workspace whose members sign in with the GitHub

@@ -190,6 +190,45 @@ public class SetupFacadeParityTests {
         await Assert.That(console.GetCapturedError()).Contains(SetupAuthProgress.UnreachableGuidance);
     }
 
+    // Both halves of the --org/--slug wiring: the flags must reach the provisioner discovery is given,
+    // and the landed workspace must be checked against them once discovery commits. Each is a single
+    // argument in RunDiscoveryAsync, invisible to every test that drives the pieces directly.
+
+    [Test]
+    [NotInParallel]
+    public async Task RunDiscoveryAsync_hands_the_requested_workspace_to_the_provisioner() {
+        using var handler = AuthHttp.Script(); // no /config route — discovery fails after construction
+
+        ITenantProvisioner? captured = null;
+        SetupCommand.FacadeOverride = provisioner => {
+            captured = provisioner;
+            return NewFacade(new RecordingAuthProgress(), handler);
+        };
+
+        await SetupCommand.RunDiscoveryAsync([], forceDevice: true, new RequestedWorkspace("Acme", "acme"));
+
+        await Assert.That(captured).IsTypeOf<SpectreTenantProvisioner>();
+        await Assert.That(((SpectreTenantProvisioner)captured!).Scripted).IsTrue();
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task RunDiscoveryAsync_stops_when_it_lands_on_a_workspace_the_flags_did_not_name() {
+        using var handler = AuthHttp.Script(
+            proxyConfig: """{"github_client_id":"cid"}""",
+            tenants: TwoGitHubTenants);
+
+        SetupCommand.FacadeOverride = _ => NewFacade(new RecordingAuthProgress(), handler, PickerReturningFirst());
+
+        using var console = ConsoleOutput.StartErrorCapture("\n");
+
+        var discovered = await SetupCommand.RunDiscoveryAsync(
+            ["--github"], forceDevice: true, new RequestedWorkspace("Globex", "globex"));
+
+        await Assert.That(discovered).IsNull();
+        await Assert.That(console.GetCapturedError()).Contains("globex");
+    }
+
     // ── the setup-scoped progress sink ───────────────────────────────────────
 
     [Test]

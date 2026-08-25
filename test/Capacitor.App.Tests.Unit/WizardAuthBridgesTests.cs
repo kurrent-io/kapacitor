@@ -88,8 +88,7 @@ public class WizardAuthBridgesTests {
         await Assert.That(await pick.WaitAsync(TimeSpan.FromSeconds(5))).IsNull();
     }
 
-    // Returning null carries the promise that the user has been told why, since discovery no longer
-    // adds a line of its own — the CLI picker's reason and this one's are not the same reason.
+    // Returning null carries the promise that the user has been told why: discovery adds no line.
     [Test]
     public async Task Backing_out_is_reported_by_the_picker_itself() {
         var progress = new RecordingAuthProgress();

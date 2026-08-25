@@ -303,8 +303,6 @@ public class WorkOSDiscoveryTests {
             provisioner: provisioner);
     }
 
-    // The picker owns its null messaging, so discovery must not add a line: the CLI picker has just
-    // explained that the session cannot prompt, and "no tenant selected" would contradict it.
     [Test]
     public async Task A_picker_that_chose_nothing_gets_no_second_message_from_discovery() {
         var proxyConfig = new ProxyConfigResponse { WorkOSClientId = "client_x" };

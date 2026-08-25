@@ -11,6 +11,11 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// is nothing to ask and the run has to say so. The façade tests substitute ITenantProvisioner, so
 /// the prompts these cover never run there.
 /// </summary>
+/// <remarks>
+/// Bare rather than keyed: these write SetupFunnel events into the process-global telemetry sink,
+/// which the facade-parity suites read back as an exact ordered set, and they capture Console.
+/// </remarks>
+[NotInParallel]
 public class TenantProvisionerHeadlessTests {
     const string BaseUrl = "https://signup.example";
 
@@ -20,7 +25,6 @@ public class TenantProvisionerHeadlessTests {
     /// <summary>Interactivity is injected, not read: the ambient value belongs to whatever host the
     /// suite is running under, so reading it would pass in CI and fail in a developer's terminal.</summary>
     [Test]
-    [NotInParallel]
     public async Task Declines_instead_of_throwing_when_there_is_no_terminal_to_prompt_on() {
         var provisioner = new SpectreTenantProvisioner(
             new TenantProvisioningClient(new HttpClient()), BaseUrl,
@@ -70,10 +74,7 @@ public class TenantProvisionerHeadlessTests {
         await Assert.That(offer.Status).IsEqualTo(ProvisionOfferStatus.Created);
     }
 
-    // The interactive path re-prompts on a collision. With nothing to re-prompt, the run has to end
-    // saying which slug was taken — and end before it asks for a workspace under that name.
     [Test]
-    [NotInParallel]
     public async Task A_taken_slug_ends_the_run_naming_it() {
         using var capture = ConsoleOutput.StartErrorCapture();
         using var handler = new StubHandler { AvailabilityReason = "taken" };
@@ -87,7 +88,6 @@ public class TenantProvisionerHeadlessTests {
     }
 
     [Test]
-    [NotInParallel]
     public async Task A_slug_that_cannot_be_checked_ends_the_run_rather_than_guessing() {
         using var capture = ConsoleOutput.StartErrorCapture();
         using var handler = new StubHandler { AvailabilityStatus = HttpStatusCode.InternalServerError };
@@ -101,7 +101,6 @@ public class TenantProvisionerHeadlessTests {
     }
 
     [Test]
-    [NotInParallel]
     public async Task An_unusable_slug_ends_the_run_before_any_network_call() {
         using var capture = ConsoleOutput.StartErrorCapture();
         using var handler = new StubHandler();
@@ -116,7 +115,6 @@ public class TenantProvisionerHeadlessTests {
 
     // A reserved word fails the same check by a different arm, and the two say different things.
     [Test]
-    [NotInParallel]
     public async Task A_reserved_slug_says_so_rather_than_calling_it_malformed() {
         using var capture = ConsoleOutput.StartErrorCapture();
         using var handler = new StubHandler();
@@ -130,7 +128,6 @@ public class TenantProvisionerHeadlessTests {
     }
 
     [Test]
-    [NotInParallel]
     [Arguments("reserved", "being provisioned by someone else")]
     [Arguments("blocked",  "is reserved")]
     [Arguments(null,       "is unavailable")]
@@ -145,10 +142,8 @@ public class TenantProvisionerHeadlessTests {
         await Assert.That(capture.GetCapturedError()).Contains(expected);
     }
 
-    // The server gets the last word on a slug the availability check waved through, and its refusal
-    // has to land on the same stream as the earlier ones or a script cannot read one log for both.
+    // The refusal has to land on the same stream as the earlier ones, or a script reads two logs.
     [Test]
-    [NotInParallel]
     [Arguments(HttpStatusCode.Conflict, "taken")]
     [Arguments(HttpStatusCode.BadRequest, "Invalid organization name or slug")]
     public async Task A_refusal_from_the_provision_call_ends_the_run_on_stderr(HttpStatusCode status, string expected) {
@@ -162,10 +157,7 @@ public class TenantProvisionerHeadlessTests {
         await Assert.That(capture.GetCapturedError()).Contains(expected);
     }
 
-    // The prompts confirm the name and hostname before committing; nothing can confirm here, so the
-    // log has to carry what was about to be created.
     [Test]
-    [NotInParallel]
     public async Task The_org_and_hostname_are_stated_before_the_workspace_exists() {
         using var capture = ConsoleOutput.StartErrorCapture();
         using var handler = new StubHandler();
@@ -179,9 +171,8 @@ public class TenantProvisionerHeadlessTests {
         await Assert.That(written).Contains("https://acme.kcap.ai");
     }
 
-    // Provisioning usually answers 202 and the run waits. That wait renders through a Spectre live
-    // display, which is the one part of the poll that wants a terminal — so the whole path is walked
-    // here rather than assumed, slow first poll and all.
+    // The wait renders through a Spectre live display, the one part of the poll that wants a
+    // terminal, so the path is walked rather than assumed.
     [Test]
     public async Task Waits_out_a_pending_workspace_with_no_terminal_to_render_on() {
         using var handler = new StubHandler { ProvisionStatus = HttpStatusCode.Accepted, StatusState = "active" };
@@ -193,7 +184,6 @@ public class TenantProvisionerHeadlessTests {
         await Assert.That(handler.Paths).Contains("/api/signup/status");
     }
 
-    // A slug already reserved to this account is a resume, not a collision.
     [Test]
     public async Task A_slug_already_reserved_to_this_account_still_provisions() {
         using var handler = new StubHandler { AvailabilityAvailable = false, AvailabilityReason = "yours" };

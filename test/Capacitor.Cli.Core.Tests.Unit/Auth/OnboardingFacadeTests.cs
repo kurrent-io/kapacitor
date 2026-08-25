@@ -288,6 +288,26 @@ public class OnboardingFacadeTests {
         await Assert.That(cfg.Profiles["contoso"].ServerUrl).IsEqualTo("https://contoso.kcap.ai");
     }
 
+    // The picker owns its null messaging on this lane too, so the facade carries the message without
+    // rendering it - a second line here would land under guidance the picker has just given.
+    [Test]
+    public async Task DiscoverAsync_github_adds_no_message_when_the_picker_chose_nothing() {
+        using var handler = AuthHttp.Script(
+            proxyConfig: """{"github_client_id":"cid"}""",
+            tenants: TwoGitHubTenants);
+
+        var picker = Substitute.For<ITenantPicker>();
+        picker.PickAsync(Arg.Any<DiscoveredTenant[]>(), Arg.Any<CancellationToken>())
+              .Returns(Task.FromResult<DiscoveredTenant?>(null));
+
+        var progress = new RecordingAuthProgress();
+        var result   = await NewFacade(progress, handler, picker)
+            .DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, CancellationToken.None);
+
+        await Assert.That(result).IsTypeOf<AuthResult.Failed>();
+        await Assert.That(progress.Errors).IsEmpty();
+    }
+
     [Test]
     public async Task DiscoverAsync_github_commits_the_rest_when_one_tenant_exchange_fails() {
         using var handler = AuthHttp.Script(

@@ -7,6 +7,7 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// Picking between workspaces is a Spectre prompt, and Spectre throws from inside one rather than
 /// returning. Discovery reaches it whenever an account has more than one, which a scripted setup can.
 /// </summary>
+[NotInParallel]
 public class TenantPickerHeadlessTests {
     static DiscoveredTenant[] Two() => [
         new() { Provider = AuthProvider.WorkOS, OrganizationId = "org_1", Slug = "acme",   DisplayName = "Acme",   Origin = "https://acme.kcap.ai" },
@@ -14,7 +15,6 @@ public class TenantPickerHeadlessTests {
     ];
 
     [Test]
-    [NotInParallel]
     public async Task Returns_nothing_instead_of_throwing_when_there_is_no_terminal_to_prompt_on() {
         using var capture = ConsoleOutput.StartErrorCapture();
         var picker = new SpectreTenantPicker(isInteractive: () => false);
@@ -25,7 +25,6 @@ public class TenantPickerHeadlessTests {
     }
 
     [Test]
-    [NotInParallel]
     public async Task Names_every_workspace_so_the_run_can_be_repeated_against_one() {
         using var capture = ConsoleOutput.StartErrorCapture();
         var picker = new SpectreTenantPicker(isInteractive: () => false);

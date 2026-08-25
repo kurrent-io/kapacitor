@@ -31,8 +31,9 @@ public sealed class SpectreTenantProvisioner(
         // Says what was actually established, not more: single sign-on returned nothing. Claiming
         // "no tenant is linked to your account" is the very falsehood this prompt exists to stop —
         // a GitHub-App workspace IS linked to the user and simply cannot appear in this lane.
-        AnsiConsole.MarkupLine("  [yellow]Single sign-on found no Capacitor workspace for your account.[/]");
-        AnsiConsole.MarkupLine("  [dim]A workspace that signs in with the GitHub App won't appear here.[/]");
+        Note("Single sign-on found no Capacitor workspace for your account.",
+             markup: "[yellow]Single sign-on found no Capacitor workspace for your account.[/]");
+        Note("A workspace that signs in with the GitHub App won't appear here.");
 
         // The answers are already in hand, so nothing is offered and nothing is asked — including on
         // a terminal that could have been asked. Passing the flags IS the choice.
@@ -145,7 +146,7 @@ public sealed class SpectreTenantProvisioner(
     /// serves both. <paramref name="tail"/> is what the reader should do, which differs: the loop is
     /// about to ask again, the scripted run is about to end.
     /// </summary>
-    static string SlugRejection(string slug, string? reason, string tail) => reason switch {
+    internal static string SlugRejection(string slug, string? reason, string tail) => reason switch {
         "invalid"  => $"'{slug}' is not a valid slug. Use lowercase letters, digits and single hyphens (no leading/trailing hyphen), max 40 chars.",
         "reserved" => $"'{slug}' is being provisioned by someone else — {tail}.",
         "blocked"  => $"'{slug}' is reserved — {tail}.",
@@ -156,18 +157,30 @@ public sealed class SpectreTenantProvisioner(
     // Scripted runs render through stderr and plain text: the reader is a log, and a failure that
     // lands on stdout beside the success output is one a script cannot separate. Markup.Escape is
     // for the other arm only - Spectre parses markup, Console does not.
-    bool Scripted => requested is not null;
+    internal bool Scripted => requested is not null;
 
-    void Fail(string plain, string funnelReason) {
+    // What the reader should do about a refused slug, which is where the two modes genuinely differ.
+    string RetryTail => Scripted ? "pass a different --slug" : "pick another and re-run";
+
+    /// <param name="markup">
+    /// Pre-marked-up copy for the terminal, where a plain string would lose styling the escape would
+    /// otherwise have to strip. Supplying it makes escaping the caller's job.
+    /// </param>
+    void Fail(string plain, string funnelReason, string? markup = null) {
         if (Scripted) Console.Error.WriteLine($"  ✗ {plain}");
-        else          AnsiConsole.MarkupLine($"  [red]✗[/] {Markup.Escape(plain)}");
+        else          AnsiConsole.MarkupLine($"  [red]✗[/] {markup ?? Markup.Escape(plain)}");
 
         SetupFunnel.WorkspaceFailed(funnelReason);
     }
 
-    void Note(string plain) {
+    void Note(string plain, string? markup = null) {
         if (Scripted) Console.Error.WriteLine($"  {plain}");
-        else          AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(plain)}[/]");
+        else          AnsiConsole.MarkupLine($"  [dim]{markup ?? Markup.Escape(plain)}[/]");
+    }
+
+    void Retry(string plain, string? markup = null) {
+        if (Scripted) Console.Error.WriteLine($"  ! {plain}");
+        else          AnsiConsole.MarkupLine($"  [yellow]![/] {markup ?? Markup.Escape(plain)}");
     }
 
     async Task<ProvisionOffer> ProvisionAsync(
@@ -181,10 +194,10 @@ public sealed class SpectreTenantProvisioner(
             case 202 or 200:
                 return await PollAsync(tokens, slug, orgName, origin, ct);
             case 400:
-                Fail(Reason400(outcome.Body?.Reason), outcome.Body?.Reason ?? "invalid_request");
+                Fail(Reason400(outcome.Body?.Reason, slug, RetryTail), outcome.Body?.Reason ?? "invalid_request");
                 return ProvisionOffer.Failed;
             case 409:
-                Fail(Reason409(outcome.Body?.Reason, slug), outcome.Body?.Reason ?? "conflict");
+                Fail(Reason409(outcome.Body?.Reason, slug, RetryTail), outcome.Body?.Reason ?? "conflict");
                 return ProvisionOffer.Failed;
             case 0:
                 Fail("Couldn't reach the provisioning service. Check your connection and try again.", "unreachable");
@@ -226,8 +239,17 @@ public sealed class SpectreTenantProvisioner(
     async Task<ProvisionOffer> PollAsync(WorkOSTokenSource tokens, string slug, string orgName, string origin, CancellationToken ct) {
         // Names the flag a scripted re-run needs: this same guidance without it walks into the first
         // prompt after discovery, which throws on the session it was printed to.
-        var retry = Scripted ? $"Re-run kcap setup {slug} --no-prompt" : $"Re-run kcap setup {slug}";
-        return await AnsiConsole.Status().StartAsync($"Provisioning {slug}.kcap.ai — this can take a few minutes…", async ctx => {
+        var retryPlain  = Scripted ? $"Re-run kcap setup {slug} --no-prompt" : $"Re-run kcap setup {slug}";
+        var retryMarkup = $"Re-run [cyan]kcap setup {Markup.Escape(slug)}[/]";
+        // The live display is a terminal affordance; on a scripted run its fallback renderer would put
+        // a hundred-odd progress lines on stdout, which is the stream that run's failures avoid.
+        return Scripted
+            ? await PollLoopAsync(_ => { })
+            : await AnsiConsole.Status().StartAsync(
+                $"Provisioning {slug}.kcap.ai — this can take a few minutes…",
+                async ctx => await PollLoopAsync(text => ctx.Status = text));
+
+        async Task<ProvisionOffer> PollLoopAsync(Action<string> setStatus) {
             for (var i = 0; i < MaxPolls; i++) {
                 await Task.Delay(PollIntervalMs, ct);
                 var status = await client.GetStatusAsync(baseUrl, await tokens.GetAsync(ct), slug, ct);
@@ -240,38 +262,40 @@ public sealed class SpectreTenantProvisioner(
                         Fail($"{slug}.kcap.ai is live but isn't linked to an organization. Contact support.", "active_no_org");
                         return ProvisionOffer.Failed;
                     case PollVerdict.Failed:
-                        Fail($"Provisioning failed. {retry} to retry.", "provisioning_failed");
+                        Fail($"Provisioning failed. {retryPlain} to retry.", "provisioning_failed",
+                             markup: $"Provisioning failed. {retryMarkup} to retry.");
                         return ProvisionOffer.Failed;
                     case PollVerdict.Forbidden:
-                        Fail($"Verify your email address, then {retry.ToLowerInvariant()}.", "forbidden");
+                        Fail($"Verify your email address, then {retryPlain.ToLowerInvariant()}.", "forbidden",
+                             markup: $"Verify your email address, then {retryMarkup.ToLowerInvariant()}.");
                         return ProvisionOffer.Failed;
                     case PollVerdict.NotFound:
-                        Fail($"'{slug}' isn't linked to your account. {retry}.", "not_found");
+                        Fail($"'{slug}' isn't linked to your account. {retryPlain}.", "not_found",
+                             markup: $"'{Markup.Escape(slug)}' isn't linked to your account. {retryMarkup}.");
                         return ProvisionOffer.Failed;
                     case PollVerdict.Wait:
                         // Surface liveness so an elapsed timer never reads as a frozen CLI.
-                        ctx.Status($"Provisioning {slug}.kcap.ai — waiting for it to come online… ({i + 1}/{MaxPolls})");
+                        setStatus($"Provisioning {slug}.kcap.ai — waiting for it to come online… ({i + 1}/{MaxPolls})");
                         break;
                 }
             }
-            if (Scripted) Console.Error.WriteLine($"  ! Still provisioning. {retry} once it's ready.");
-            else          Retry($"Still provisioning. {retry} once it's ready.");
-
+            Retry($"Still provisioning. {retryPlain} once it's ready.",
+                  markup: $"Still provisioning. {retryMarkup} once it's ready.");
             SetupFunnel.WorkspaceFailed("poll_timeout");
             return ProvisionOffer.InProgress(slug);
-        });
+        }
     }
 
-    static void Retry(string plain) => AnsiConsole.MarkupLine($"  [yellow]![/] {Markup.Escape(plain)}");
-
-    static string Reason400(string? reason) => reason switch {
+    // The availability check and the provision call refuse a slug for the same reasons in different
+    // vocabularies; both reach one reader in one run, so both speak through SlugRejection.
+    static string Reason400(string? reason, string slug, string tail) => reason switch {
         "disposable_email" => "Provisioning requires a non-disposable email address.",
-        "blocked"          => "That slug is reserved. Pick another and re-run.",
+        "blocked"          => SlugRejection(slug, "blocked", tail),
         _                  => "Invalid organization name or slug."
     };
 
-    static string Reason409(string? reason, string slug) => reason switch {
-        "owned_by_other" => $"'{slug}' is owned by someone else. Pick another and re-run.",
-        _                => $"'{slug}' is already taken. Pick another and re-run."
+    static string Reason409(string? reason, string slug, string tail) => reason switch {
+        "owned_by_other" => SlugRejection(slug, "reserved", tail),
+        _                => SlugRejection(slug, "taken", tail)
     };
 }

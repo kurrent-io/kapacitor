@@ -144,6 +144,17 @@ public static class SetupCommand {
             return 1;
         }
 
+        // The flags settle the creation questions and nothing after them, so on a session that cannot
+        // be asked anything they buy a created workspace followed by a throw at the first step that
+        // still prompts. Refusing here costs a flag; letting it run costs a workspace.
+        if (requestedWorkspace is not null && !noPrompt && !AnsiConsole.Profile.Capabilities.Interactive) {
+            await Console.Error.WriteLineAsync(
+                "  --org/--slug answer the workspace questions only; the steps after them still prompt, and this session is non-interactive.");
+            await Console.Error.WriteLineAsync("  Add --no-prompt.");
+
+            return 1;
+        }
+
         SetupFunnel.Started(
             hasExistingProfile: AppConfig.HasConfiguredProfile(await AppConfig.LoadProfileConfig()),
             serverUrlProvided:  serverUrlArg is not null,
@@ -1087,17 +1098,15 @@ public static class SetupCommand {
     };
 
     /// <summary>
-    /// Reads <c>--org</c>/<c>--slug</c> into the answers the create-a-workspace prompts would have
-    /// collected, or the error that stops the run. Returns (null, null) when neither was passed.
-    /// Every rejection here is a combination that would otherwise accept the flags and never act on
-    /// them, which on an unattended run reads as a workspace that was created.
-    /// </summary>
-    /// <summary>
     /// A flag's value, and whether the flag was there at all. <see cref="GetArg"/> returns the next
     /// token whatever it is, so <c>--org --slug acme</c> reads "--slug" as the organization name —
-    /// harmless for a flag that resolves to a URL, but here it would name a real workspace.
+    /// survivable for a flag that resolves to a URL, but here it would name a real workspace.
     /// </summary>
     static (bool Present, string? Value) ValuedFlag(string[] args, string name) {
+        // The equals form is not this CLI's spelling, so an exact-token search would not see it at all
+        // and the flags would go unread — the silent drop every other arm of this parse refuses.
+        if (args.Any(a => a.StartsWith($"{name}=", StringComparison.Ordinal))) return (true, null);
+
         var idx = Array.IndexOf(args, name);
 
         if (idx < 0) return (false, null);
@@ -1110,16 +1119,27 @@ public static class SetupCommand {
     /// <summary>
     /// Why the run must stop when it did not land on the workspace <c>--org</c>/<c>--slug</c> asked
     /// for, or null when it did. Only the zero-workspace fork consults the provisioner, so an account
-    /// that already has one never reaches it and the answers go unused — leaving a run that configures
-    /// a workspace the caller never named, and, unattended, says nothing about it.
+    /// that already has one never reaches it and the answers go unused.
     /// </summary>
-    internal static string? WrongWorkspaceError(RequestedWorkspace? requested, string activeServerUrl) {
-        if (requested is null || ServerIdentity.SameServer(activeServerUrl, requested.Origin)) return null;
+    /// <param name="activeProfile">
+    /// Compared against the slug rather than the server URL: the server names the workspace it creates,
+    /// and the profile is stamped from the url it returns, which need not be the origin guessed here. A
+    /// WorkOS profile IS its tenant slug, whether that workspace was just created or already existed.
+    /// </param>
+    internal static string? WrongWorkspaceError(
+            RequestedWorkspace? requested, string activeProfile, string activeServerUrl) {
+        if (requested is null || string.Equals(activeProfile, requested.Slug, StringComparison.Ordinal)) return null;
 
         return $"  ✗ Signed in to {activeServerUrl}, which your account already belongs to, so '{requested.Slug}' was not created.\n"
-             + $"    --org/--slug create a workspace only for an account that has none. Re-run with --server-url {activeServerUrl} to configure that one.";
+             + $"    --org/--slug create a workspace only for an account that has none. Setup stopped rather than"
+             + $" configuring this one — re-run with --server-url {activeServerUrl} to do that.";
     }
 
+    /// <summary>
+    /// Reads <c>--org</c>/<c>--slug</c> into the answers the create-a-workspace prompts would have
+    /// collected, or the error that stops the run; (null, null) when neither was passed. Every
+    /// rejection is a combination that would otherwise take the flags and never act on them.
+    /// </summary>
     internal static (RequestedWorkspace? Workspace, string? Error) ParseRequestedWorkspace(
             string[] args, bool haveServerUrl) {
         const string Usage = "kcap setup --org \"<name>\" --slug <slug> --no-prompt";
@@ -1130,8 +1150,7 @@ public static class SetupCommand {
         if (!orgGiven && !slugGiven) return (null, null);
 
         // Present-but-empty is rejected rather than read as absent: a script whose $ORG expanded to
-        // nothing asked to create a workspace, and silently doing something else is the failure this
-        // whole function exists to prevent.
+        // nothing still asked for a workspace.
         if (orgGiven && orgName is null)   return (null, $"--org needs a value: {Usage}");
         if (slugGiven && slug is null)     return (null, $"--slug needs a value: {Usage}");
 
@@ -1147,9 +1166,15 @@ public static class SetupCommand {
         if (args.Contains("--github"))
             return (null, "--org/--slug need Kurrent's hosted auth, which --github opts out of.");
 
-        // Canonicalized here so the slug this run reports, checks and compares against the workspace
-        // it lands on is one value rather than three.
-        return (new RequestedWorkspace(orgName!.Trim(), SlugValidator.Canonicalize(slug!)), null);
+        // Canonicalized AND validated here, so the slug this run reports, checks and compares against
+        // the workspace it lands on is one value, and a malformed one is named as malformed wherever
+        // it is caught rather than only on the path that reaches the provisioner.
+        var canonical = SlugValidator.Canonicalize(slug!);
+        var check     = SlugValidator.Validate(canonical);
+
+        if (!check.Ok) return (null, SpectreTenantProvisioner.SlugRejection(canonical, check.Reason, "pass a different --slug"));
+
+        return (new RequestedWorkspace(orgName!.Trim(), canonical), null);
     }
 
     internal static async Task<(string ServerUrl, string Provider, bool LoginComplete)?> RunDiscoveryAsync(
@@ -1171,7 +1196,7 @@ public static class SetupCommand {
         // a zero-workspace headless user now completes a sign-in and would otherwise hold a live
         // credential with nowhere to spend it. GitHub never provisions.
         // Resolved once and handed to both, rather than each defaulting its own seam off the same
-        // ambient property: one question, one answer, and the seams stay injectable for tests.
+        // ambient property: one question, one answer.
         var canPrompt = AnsiConsole.Profile.Capabilities.Interactive;
 
         var provisioner = chosen == AuthProvider.WorkOS
@@ -1215,7 +1240,7 @@ public static class SetupCommand {
                     return null;
                 }
 
-                if (WrongWorkspaceError(requested, active.ServerUrl) is { } landedElsewhere) {
+                if (WrongWorkspaceError(requested, cfg.ActiveProfile, active.ServerUrl) is { } landedElsewhere) {
                     await Console.Error.WriteLineAsync(landedElsewhere);
 
                     return null;

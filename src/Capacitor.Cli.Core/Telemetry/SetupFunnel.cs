@@ -19,9 +19,9 @@ namespace Capacitor.Cli.Core.Telemetry;
 ///
 /// <see cref="WorkspaceFailed"/> does NOT imply a preceding <see cref="WorkspaceRequested"/>: the
 /// flag-driven create rejects a bad or taken slug before asking the server for anything. Those
-/// carry the reason the check produced (<c>invalid</c>, <c>blocked</c>, <c>taken</c>,
-/// <c>availability_unreachable</c>), so a funnel query can tell them from a failure that had a
-/// workspace on the way.
+/// carry the reason the check produced (<c>invalid</c>, <c>blocked</c>, <c>reserved</c>,
+/// <c>taken</c>, <c>unavailable</c>, <c>availability_unreachable</c>), so a funnel query can tell
+/// them from a failure that had a workspace on the way.
 ///
 /// Names deliberately avoid `cli_setup_completed`, which the SERVER already emits — a second
 /// producer of that name would double-count across two different persons (the CLI user and

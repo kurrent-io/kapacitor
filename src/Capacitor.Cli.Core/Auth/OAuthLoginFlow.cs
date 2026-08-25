@@ -83,7 +83,7 @@ public static class OAuthLoginFlow {
     internal static string WorkspaceCreationNeedsATerminalMessage() =>
         "Creating a workspace asks for a name and a slug, and this session is non-interactive.\n"
       + "  • Answer up front: kcap setup --org \"<name>\" --slug <slug> --no-prompt\n"
-      + $"  • Or create one at {ProvisioningEndpoint.Url}/signup, then run: kcap setup <slug>\n"
+      + $"  • Or create one at {ProvisioningEndpoint.Url}/signup, then run: kcap setup <slug> --no-prompt\n"
       + "  • Or point at a workspace you already belong to: kcap setup --server-url <url> --no-prompt";
 
     /// <summary>
