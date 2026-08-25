@@ -4,18 +4,6 @@ using Avalonia.Media;
 
 namespace Capacitor.App.Views;
 
-/// The rail worktree row's disclosure glyph. A converter rather than two overlaid TextBlocks so
-/// the chevron and the row's IsExpanded can never disagree.
-public sealed class ExpanderChevronConverter : IValueConverter {
-    public static readonly ExpanderChevronConverter Instance = new();
-
-    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        value is true ? "▾" : "▸";
-
-    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        throw new NotSupportedException();
-}
-
 /// The rail's repo headers render as small caps (design canvas); Avalonia has no text-transform,
 /// so the casing happens here rather than in the VM, keeping Label reusable as-is in tooltips.
 public sealed class UppercaseConverter : IValueConverter {
