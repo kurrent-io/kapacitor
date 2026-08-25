@@ -32,6 +32,8 @@ public class TerminalTabViewModelTests {
         public void RaiseInput(byte[] bytes) => InputProduced?.Invoke(bytes);
         public void RaiseResize(int cols, int rows) => Resized?.Invoke(cols, rows);
         public (int Cols, int Rows) CurrentSize { get; set; } = (80, 24);
+        public int CaretShown;
+        public void EnsureCaretVisible() => CaretShown++;
     }
 
     static AgentStatusDto Agent(string id, string vendor, bool? hasTerminal, string? repoPath = null) => new(
@@ -203,6 +205,22 @@ public class TerminalTabViewModelTests {
 
             await Assert.That(client.SentInput).IsEmpty();
             await Assert.That(client.Resizes).IsEmpty();
+        });
+    }
+
+    /// Claude/codex TUIs hide the hardware cursor once at stream start and draw their own caret
+    /// as an inverse-video cell the control paints invisibly (upstream sentinel bug) — so the VM
+    /// re-shows the engine caret exactly once, AFTER the snapshot replay (which carries the hide).
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Attach_re_shows_the_caret_after_the_snapshot_replay() {
+        await RunOnUiAsync(async () => {
+            var (_, _, _, vm, client) = await BuildConnectingAsync();
+
+            await client.TriggerAttached([], reason: null);
+
+            var surface = (FakeTerminalSurface)vm.Surface!;
+            await Assert.That(surface.CaretShown).IsEqualTo(1);
         });
     }
 

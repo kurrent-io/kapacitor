@@ -39,6 +39,8 @@ public sealed class XtermTerminalSurface : ITerminalSurface {
 
     public void Feed(string text) => Model.Feed(text);
 
+    public void EnsureCaretVisible() => Model.Terminal.Engine.CursorVisible = true;
+
     void OnUserInput(object? sender, TerminalUserInputEventArgs e) =>
         InputProduced?.Invoke(e.Data.ToArray());
 

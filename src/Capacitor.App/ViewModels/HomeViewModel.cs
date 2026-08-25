@@ -244,13 +244,16 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         _openSessionIfCurrent?.Invoke(agentId, generation);
     }
 
-    /// The daemon's status cache keys agents by Guid("N") — 32 hex digits — but the server hub
-    /// returns the launch id as a DASHED Guid, so the shapes must be normalized here or the
-    /// Resolving gate can never match the cache entry. Anything Guid.TryParse rejects cannot
-    /// address a session and never reaches OpenSession (which would otherwise build a workspace
-    /// that can only ever resolve to "session not found").
+    /// Id shapes differ across the stack and across daemon versions: the server hub has returned
+    /// DASHED Guids while a production daemon keys its status cache on SHORT (8-hex) ids — so a
+    /// Guid in any format is normalized to "N" (the Guid-keyed daemons' cache shape), and any
+    /// other non-empty id passes through VERBATIM to match whatever the daemon actually sent.
+    /// Only a null/blank id is unusable; an id that matches nothing degrades gracefully in the
+    /// workspace ("session not found" with retry), which beats a red error under a live card.
     internal static string? NormalizeAgentId(string? agentId) =>
-        Guid.TryParse(agentId, out var parsed) ? parsed.ToString("N") : null;
+        Guid.TryParse(agentId, out var parsed) ? parsed.ToString("N")
+        : string.IsNullOrWhiteSpace(agentId) ? null
+        : agentId;
 
     /// Repo paths compare the way the filesystem underneath them does: case-insensitively on
     /// Windows and macOS, case-sensitively on Linux where two checkouts differing only in case are

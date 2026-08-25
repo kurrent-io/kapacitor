@@ -461,5 +461,7 @@ public class MainWindowSmokeTests {
         public void RaiseInput(byte[] bytes) => InputProduced?.Invoke(bytes);
         public void RaiseResize(int cols, int rows) => Resized?.Invoke(cols, rows);
         public (int Cols, int Rows) CurrentSize { get; set; } = (80, 24);
+        public int CaretShown;
+        public void EnsureCaretVisible() => CaretShown++;
     }
 }

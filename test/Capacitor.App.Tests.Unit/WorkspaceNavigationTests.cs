@@ -34,6 +34,8 @@ public class WorkspaceNavigationTests {
         public void RaiseInput(byte[] bytes) => InputProduced?.Invoke(bytes);
         public void RaiseResize(int cols, int rows) => Resized?.Invoke(cols, rows);
         public (int Cols, int Rows) CurrentSize { get; set; } = (80, 24);
+        public int CaretShown;
+        public void EnsureCaretVisible() => CaretShown++;
     }
 
     /// The tracker as the VM sees it (Action&lt;Func&lt;Task&gt;&gt;): records every registration and
@@ -348,12 +350,14 @@ public class WorkspaceNavigationTests {
         });
     }
 
+    /// Only a null/blank id is unusable. Anything else passes through verbatim (see
+    /// NormalizeAgentId: a production daemon keys its cache on SHORT 8-hex ids, so shape
+    /// validation beyond emptiness rejects real launches).
     [Test]
     [NotInParallel("AvaloniaSession")]
     [Arguments(null)]
     [Arguments("")]
-    [Arguments("agent-2")]                                  // not hex
-    [Arguments("0123456789abcdef0123456789abcde")]          // 31 chars
+    [Arguments("   ")]
     public async Task Malformed_launch_agent_id_surfaces_an_error_and_opens_nothing(string? agentId) {
         await RunOnUiAsync(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
@@ -372,15 +376,18 @@ public class WorkspaceNavigationTests {
         });
     }
 
-    /// The server hub hands back the agent id as a DASHED Guid ("D"), while the daemon's status
-    /// cache keys on the 32-hex "N" form — the launch path must normalize, or every real launch
-    /// reads as unusable (found in manual QA: red error over a perfectly healthy session card).
+    /// Id shapes vary across the stack (found in manual QA, twice): the server hub has returned
+    /// DASHED Guids, and a production daemon keys its status cache on SHORT 8-hex ids. Guids in
+    /// any format normalize to "N"; every other non-blank id passes through VERBATIM so it can
+    /// match whatever the daemon actually sent.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    [Arguments("01234567-89ab-cdef-0123-456789abcdef")]     // "D" — what the server actually sends
-    [Arguments("{01234567-89ab-cdef-0123-456789abcdef}")]   // "B" — tolerate any Guid shape
-    [Arguments("0123456789abcdef0123456789abcdef")]         // "N" — already canonical
-    public async Task A_launch_id_in_any_guid_shape_normalizes_and_opens(string agentId) {
+    [Arguments("01234567-89ab-cdef-0123-456789abcdef", "0123456789abcdef0123456789abcdef")]  // "D" → "N"
+    [Arguments("{01234567-89ab-cdef-0123-456789abcdef}", "0123456789abcdef0123456789abcdef")] // "B" → "N"
+    [Arguments("0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef")]       // "N" → "N"
+    [Arguments("3d53f34d", "3d53f34d")]                     // short daemon id → verbatim
+    [Arguments("agent-2", "agent-2")]                       // unknown shape → verbatim
+    public async Task A_launch_id_in_any_guid_shape_normalizes_and_opens(string agentId, string expected) {
         await RunOnUiAsync(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
             var nav = NewNav();
@@ -392,7 +399,7 @@ public class WorkspaceNavigationTests {
             await home.StartCommand.Execute();
 
             await Assert.That(home.StartError).IsNull();
-            await Assert.That(nav.Opened).IsEquivalentTo(new[] { "0123456789abcdef0123456789abcdef" });
+            await Assert.That(nav.Opened).IsEquivalentTo(new[] { expected });
         });
     }
 

@@ -37,6 +37,8 @@ public class WorkspaceViewSmokeTests {
         public void RaiseInput(byte[] bytes) => InputProduced?.Invoke(bytes);
         public void RaiseResize(int cols, int rows) => Resized?.Invoke(cols, rows);
         public (int Cols, int Rows) CurrentSize { get; set; } = (80, 24);
+        public int CaretShown;
+        public void EnsureCaretVisible() => CaretShown++;
     }
 
     static AgentStatusDto Agent(string id, bool? hasTerminal, string vendor = "claude") => new(
