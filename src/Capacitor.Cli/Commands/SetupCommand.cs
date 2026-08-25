@@ -348,8 +348,15 @@ public static class SetupCommand {
         // proxy; self-hosted servers are added as exact hosts. Derived from the active
         // server URL plus every configured profile so switching profiles still works.
         var profilesForDomains = await AppConfig.LoadProfileConfig();
-        var codexAllowDomains  = CodexConfigToml.BuildAllowDomains(
-            new[] { serverUrl }.Concat(profilesForDomains.Profiles.Values.Select(p => p.ServerUrl)));
+
+        // Every profile's server, EXCEPT on the browser path. The Agents screen discloses this on the
+        // Codex row — "also opens Codex's sandbox network to your server" — and that sentence is about
+        // one server, the one they are setting up. Consent to reach it is not consent to reach every
+        // tenant this machine has ever been pointed at.
+        var codexAllowDomains = CodexConfigToml.BuildAllowDomains(
+            browserAgents is null
+                ? new[] { serverUrl }.Concat(profilesForDomains.Profiles.Values.Select(p => p.ServerUrl))
+                : [serverUrl]);
 
         var stepPaths = new CodingAgentsStep.Paths(
             ClaudeSettingsPath:   claudeSettingsPath,

@@ -750,6 +750,71 @@ public class CodingAgentsStepTests {
         await Assert.That(result.AnyHooksInstalled).IsFalse();
     }
 
+    // The shared ~/.agents/skills tree is read by the non-Claude vendors, so writing it for one the
+    // user turned down on the Agents screen is a write nobody asked for — and the legacy Codex sweep
+    // behind it would then run for a Codex they declined.
+    [Test]
+    public async Task Shared_skills_are_not_written_for_a_vendor_the_browser_declined() {
+        var sink  = new Sink();
+        var calls = new InstallerCalls();
+
+        // Claude only. Codex is on the machine but was not chosen.
+        var options = new Options(
+            SkipClaude: false, SkipCodex: true, SkipCursor: true, SkipCopilot: true, NoPrompt: true,
+            SkipGemini: true, SkipPi: true, SkipOpenCode: true, SkipAntigravity: true,
+            ToolsIndependentOfCapture: true);
+
+        var detected = new DetectedAgents(Claude: true, Codex: true, Cursor: false, Copilot: false);
+
+        var result = await RunAsync(
+            options, detected, TestPaths(), calls.AsInstallers(),
+            prompt: _ => true, writeLine: sink.Write);
+
+        await Assert.That(result.AgentSkillsInstalled).IsFalse();
+        await Assert.That(calls.LegacyCleanupCalled).IsFalse();
+    }
+
+    // The terminal path is unchanged: its single yes/no prompt names skills, so a yes covers every
+    // detected vendor and --skip-codex-hooks does not withdraw the shared tree.
+    [Test]
+    public async Task Shared_skills_still_follow_detection_on_the_terminal_path() {
+        var sink  = new Sink();
+        var calls = new InstallerCalls();
+
+        var options = new Options(
+            SkipClaude: false, SkipCodex: true, SkipCursor: true, SkipCopilot: true, NoPrompt: true,
+            SkipGemini: true, SkipPi: true, SkipOpenCode: true, SkipAntigravity: true);
+
+        var detected = new DetectedAgents(Claude: true, Codex: true, Cursor: false, Copilot: false);
+
+        var result = await RunAsync(
+            options, detected, TestPaths(), calls.AsInstallers(),
+            prompt: _ => true, writeLine: sink.Write);
+
+        await Assert.That(result.AgentSkillsInstalled).IsTrue();
+    }
+
+    // Tools without capture keeps the vendor in the skills audience: the skills are what steer an
+    // agent toward the MCP tools it was just given.
+    [Test]
+    public async Task Shared_skills_are_written_for_a_vendor_kept_for_its_tools_alone() {
+        var sink  = new Sink();
+        var calls = new InstallerCalls();
+
+        var options = new Options(
+            SkipClaude: true, SkipCodex: true, SkipCursor: true, SkipCopilot: true, NoPrompt: true,
+            SkipGemini: true, SkipPi: true, SkipOpenCode: true, SkipAntigravity: true,
+            ToolsIndependentOfCapture: true);
+
+        var detected = new DetectedAgents(Claude: false, Codex: false, Cursor: true, Copilot: false);
+
+        var result = await RunAsync(
+            options, detected, TestPaths(), calls.AsInstallers(),
+            prompt: _ => true, writeLine: sink.Write);
+
+        await Assert.That(result.AgentSkillsInstalled).IsTrue();
+    }
+
     [Test]
     public async Task Cursor_mcp_skipped_by_flag() {
         var sink     = new Sink();

@@ -200,7 +200,15 @@ internal static class CodingAgentsStep {
         // the shared ~/.agents/skills/ install is decoupled from Codex: run it
         // once when any non-Claude agent is detected, independent of that agent's hook
         // install. Placed last so it follows the per-agent steps.
-        var agentSkillsInstalled  = HandleAgentSkills(detected, paths, installers, writeLine);
+        //
+        // Its audience is the vendors the caller actually asked for, which on the terminal path is
+        // every detected one — the single yes/no prompt names skills, so a yes covers them. The
+        // browser asked per vendor and never mentions skills, so a vendor declined there is not an
+        // audience for a tree only it would read, and the legacy Codex sweep behind this must not run
+        // for a Codex the user turned down.
+        var skillsAudience = SkillsAudience(options, detected);
+
+        var agentSkillsInstalled  = HandleAgentSkills(skillsAudience, paths, installers, writeLine);
 
         return Task.FromResult(
             new Result(
@@ -878,6 +886,30 @@ internal static class CodingAgentsStep {
     /// on-disk skills already match this build. The legacy
     /// <c>~/.codex/skills</c> sweep stays Codex-specific.
     /// </summary>
+    /// <summary>
+    /// Which detected vendors count as an audience for the shared <c>~/.agents/skills</c> tree.
+    ///
+    /// <para>The whole set on the terminal path, where one prompt consented to skills for everything
+    /// detected. On the browser path — <see cref="Options.ToolsIndependentOfCapture"/> — a vendor the
+    /// user turned down entirely drops out: the screen asked per vendor, so writing a tree only a
+    /// declined agent reads is a write nobody asked for. A vendor kept for its tools alone stays in,
+    /// since the skills are what steer it toward them.</para>
+    /// </summary>
+    static DetectedAgents SkillsAudience(Options options, DetectedAgents detected) {
+        if (!options.ToolsIndependentOfCapture) return detected;
+
+        static bool Wanted(bool isDetected, bool skipHooks, bool skipMcp) => isDetected && !(skipHooks && skipMcp);
+
+        return detected with {
+            Codex    = Wanted(detected.Codex, options.SkipCodex, options.SkipCodex),
+            Cursor   = Wanted(detected.Cursor, options.SkipCursor, options.SkipCursorMcp),
+            Copilot  = Wanted(detected.Copilot, options.SkipCopilot, options.SkipCopilotMcp),
+            Gemini   = Wanted(detected.Gemini, options.SkipGemini, options.SkipGeminiMcp),
+            Pi       = Wanted(detected.Pi, options.SkipPi, options.SkipPiMcp),
+            OpenCode = Wanted(detected.OpenCode, options.SkipOpenCode, options.SkipOpenCodeMcp)
+        };
+    }
+
     static bool HandleAgentSkills(
             DetectedAgents     detected,
             Paths              paths,
