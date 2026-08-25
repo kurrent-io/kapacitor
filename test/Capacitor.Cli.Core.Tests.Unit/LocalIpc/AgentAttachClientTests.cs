@@ -384,17 +384,29 @@ public class AgentAttachClientTests {
             var runTask = Task.Run(() => client.RunAsync(80, 24, CancellationToken.None));
             await client.DetachAsync();
 
-            var outcome = await runTask.WaitAsync(TimeSpan.FromSeconds(5));   // must settle promptly, never hang
-
-            // Best-effort: when the dial itself got aborted before completing, nothing ever
-            // reached the listener's backlog, so an unbounded Accept() would hang forever waiting
-            // for a connection that will never arrive -- bound it and treat a timeout as "no
-            // attach possible", which is exactly the outcome under test.
+            // Accept CONCURRENTLY with the run, never after it: when the dial wins this race the
+            // client has written a graceful Detach and is parked in its read loop awaiting the peer,
+            // because DetachAsync leaves the transport open so a terminal frame can still beat
+            // Detached. An accept that waits for the run waits for a client that is waiting for it.
+            //
+            // Bounded, because an aborted dial reaches no listener backlog: a timeout here means the
+            // dial never landed, which is the outcome under test.
             using var acceptCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
-            try {
-                await server.AcceptAndPumpInboundAsync(acceptCts.Token);
-                await server.WaitForReceivedAsync(FrameType.Attach, acceptCts.Token);
-            } catch (OperationCanceledException) { }
+            try { await server.AcceptAndPumpInboundAsync(acceptCts.Token); } catch (OperationCanceledException) { }
+
+            // Half-close, so the client sees EOF and settles on the outcome it chose. Closing outright
+            // would settle it too, but would also discard anything not yet drained — and what was
+            // drained is the whole question below.
+            server.ShutdownSend();
+
+            var outcome = await runTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+            // The client writes nothing further once its run has settled, so closing it here ends the
+            // pump at EOF rather than at a deadline. Joining the pump is what makes "no Attach
+            // arrived" a fact about the wire instead of a snapshot taken before it caught up.
+            await client.DisposeAsync();
+            await server.InboundDrained;
+
             var receivedAttach = server.SnapshotReceived().Any(f => f.Type == FrameType.Attach);
 
             if (!receivedAttach) {
