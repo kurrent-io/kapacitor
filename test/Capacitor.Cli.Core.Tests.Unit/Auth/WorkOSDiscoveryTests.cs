@@ -302,4 +302,34 @@ public class WorkOSDiscoveryTests {
             (_, _) => Task.FromResult<WorkOSAuthResponse?>(null),
             provisioner: provisioner);
     }
+
+    // The picker owns its null messaging, so discovery must not add a line: the CLI picker has just
+    // explained that the session cannot prompt, and "no tenant selected" would contradict it.
+    [Test]
+    public async Task A_picker_that_chose_nothing_gets_no_second_message_from_discovery() {
+        var proxyConfig = new ProxyConfigResponse { WorkOSClientId = "client_x" };
+        var proxy       = Substitute.For<IAuthProxyClient>();
+
+        DiscoveredTenant[] tenants = [
+            new() { Provider = "WorkOS", OrganizationId = "org_a", Slug = "acme",   Origin = "https://acme.kcap.ai" },
+            new() { Provider = "WorkOS", OrganizationId = "org_b", Slug = "globex", Origin = "https://globex.kcap.ai" }
+        ];
+        proxy.DiscoverWorkOSTenantsAsync(Arg.Any<string>(), Arg.Any<string>())
+             .Returns(Task.FromResult(new Cli.Core.Auth.DiscoveryResult(tenants, DiscoveryError.None)));
+
+        var picker = Substitute.For<ITenantPicker>();
+        picker.PickAsync(tenants, Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(null));
+
+        var progress = new RecordingAuthProgress();
+        var orgless  = new WorkOSAuthResponse { User = new() { Id = "user_x" }, AccessToken = "acc", RefreshToken = "rt" };
+
+        var flow = await WorkOSDiscovery.DiscoverAsync(
+            "https://auth.kcap.ai", proxyConfig, proxy, picker,
+            orglessLogin: ()     => Task.FromResult<WorkOSAuthResponse?>(orgless),
+            orgSwitch:    (_, _) => Task.FromResult<WorkOSAuthResponse?>(null),
+            progress:     progress);
+
+        await Assert.That(flow).IsTypeOf<WorkOSDiscoveryFlow.Failed>();
+        await Assert.That(progress.Errors).IsEmpty();
+    }
 }

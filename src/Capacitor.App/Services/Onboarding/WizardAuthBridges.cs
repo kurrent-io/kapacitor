@@ -32,10 +32,10 @@ public sealed class UiAuthProgress(Action<Action> post) : IAuthProgress {
 
 /// <summary>
 /// The tenant pick as a UI round trip: <see cref="PickAsync"/> publishes the tenants and parks on
-/// a completion source the view resolves. A null selection is the user backing out — Core renders
-/// that as "No tenant selected."
+/// a completion source the view resolves. A null selection is the user backing out, which this
+/// reports itself — per <see cref="ITenantPicker"/>, discovery adds no line of its own.
 /// </summary>
-public sealed class WizardTenantPicker : ITenantPicker {
+public sealed class WizardTenantPicker(IAuthProgress progress) : ITenantPicker {
     readonly Lock _gate = new();
 
     TaskCompletionSource<DiscoveredTenant?>? _pending;
@@ -64,7 +64,11 @@ public sealed class WizardTenantPicker : ITenantPicker {
         SelectionRequested?.Invoke(tenants);
 
         try {
-            return await pending.Task.ConfigureAwait(false);
+            var picked = await pending.Task.ConfigureAwait(false);
+
+            if (picked is null) progress.Error("No tenant selected.");
+
+            return picked;
         } finally {
             lock (_gate) {
                 if (ReferenceEquals(_pending, pending)) _pending = null;
@@ -291,7 +295,7 @@ public sealed class WizardBridges {
     public WizardBridges(Action<Action> post, Func<IAuthProgress, WizardTenantProvisioner> provisioner) {
         Post        = post;
         Progress    = new UiAuthProgress(post);
-        Picker      = new WizardTenantPicker();
+        Picker      = new WizardTenantPicker(Progress);
         Provisioner = provisioner(Progress);
     }
 

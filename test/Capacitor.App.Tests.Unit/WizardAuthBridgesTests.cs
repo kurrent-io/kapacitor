@@ -67,7 +67,7 @@ public class WizardAuthBridgesTests {
 
     [Test]
     public async Task PickAsync_publishes_the_tenants_and_completes_on_the_selection() {
-        var picker = new WizardTenantPicker();
+        var picker = new WizardTenantPicker(new RecordingAuthProgress());
         DiscoveredTenant[]? offered = null;
         picker.SelectionRequested += tenants => offered = tenants;
 
@@ -80,7 +80,7 @@ public class WizardAuthBridgesTests {
 
     [Test]
     public async Task Selecting_nothing_completes_the_await_with_no_tenant() {
-        var picker = new WizardTenantPicker();
+        var picker = new WizardTenantPicker(new RecordingAuthProgress());
 
         var pick = picker.PickAsync([Tenant("acme")], CancellationToken.None);
         picker.Select(null);
@@ -88,9 +88,23 @@ public class WizardAuthBridgesTests {
         await Assert.That(await pick.WaitAsync(TimeSpan.FromSeconds(5))).IsNull();
     }
 
+    // Returning null carries the promise that the user has been told why, since discovery no longer
+    // adds a line of its own — the CLI picker's reason and this one's are not the same reason.
+    [Test]
+    public async Task Backing_out_is_reported_by_the_picker_itself() {
+        var progress = new RecordingAuthProgress();
+        var picker   = new WizardTenantPicker(progress);
+
+        var pick = picker.PickAsync([Tenant("acme"), Tenant("globex")], CancellationToken.None);
+        picker.Select(null);
+        await pick.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(progress.Errors).Contains("No tenant selected.");
+    }
+
     [Test]
     public async Task Cancelling_releases_a_pending_pick() {
-        var picker = new WizardTenantPicker();
+        var picker = new WizardTenantPicker(new RecordingAuthProgress());
         using var cts = new CancellationTokenSource();
 
         var pick = picker.PickAsync([Tenant("acme")], cts.Token);
@@ -101,7 +115,7 @@ public class WizardAuthBridgesTests {
 
     [Test]
     public void The_synchronous_pick_is_not_supported() {
-        var picker = new WizardTenantPicker();
+        var picker = new WizardTenantPicker(new RecordingAuthProgress());
 
         Assert.Throws<NotSupportedException>(() => picker.Pick([Tenant("acme")]));
     }
@@ -138,7 +152,7 @@ public class WizardAuthBridgesTests {
 
     [Test]
     public async Task A_second_pick_cancels_the_one_it_displaces() {
-        var picker = new WizardTenantPicker();
+        var picker = new WizardTenantPicker(new RecordingAuthProgress());
 
         var first  = picker.PickAsync([Tenant("acme")], CancellationToken.None);
         var second = picker.PickAsync([Tenant("globex")], CancellationToken.None);

@@ -83,9 +83,9 @@ public static class WorkOSDiscovery {
         }
 
         var picked = result.Tenants.Length == 1 ? result.Tenants[0] : await picker.PickAsync(result.Tenants, ct);
-        if (picked is null) {
-            return Failed(progress, "No tenant selected.");
-        }
+        // Not through Failed: the picker has already said why, and a second line here would be the
+        // one that contradicts it — "no tenant selected" reads as a choice on a session that had none.
+        if (picked is null) return new WorkOSDiscoveryFlow.Failed("No tenant selected.");
 
         return await SwitchAsync(picked, result.Tenants, auth, proxyConfig.WorkOSClientId!, orgSwitch, progress);
     }

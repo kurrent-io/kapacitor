@@ -15,11 +15,20 @@ public sealed record DiscoveryOutcome(
     DiscoveredTenant[] Tenants,
     DiscoveredTenant?  Picked,
     string?            ErrorMessage,
-    bool               NoTenantsFound = false
+    bool               NoTenantsFound = false,
+    // The picker owns its own null messaging, so the caller carries this message without rendering it.
+    bool               AlreadyReported = false
 );
 
 public interface ITenantPicker {
     DiscoveredTenant?       Pick(DiscoveredTenant[] tenants);
+
+    /// <summary>
+    /// Null means no tenant was chosen AND the picker has already told the user why — discovery adds
+    /// no line of its own. The two reasons need different follow-ups (a user backing out has nothing
+    /// left to do; a session that cannot prompt needs to be told how to name one), and only the
+    /// picker knows which happened.
+    /// </summary>
     Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, CancellationToken ct);
 }
 
@@ -47,7 +56,7 @@ public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
             : await picker.PickAsync(result.Tenants, ct);
 
         if (picked is null) {
-            return new(result.Tenants, null, "No tenant selected.");
+            return new(result.Tenants, null, "No tenant selected.", AlreadyReported: true);
         }
 
         return new(result.Tenants, picked, null);

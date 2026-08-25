@@ -331,8 +331,11 @@ public sealed class OnboardingFacade(
         var outcome = await new TenantDiscovery(proxy, picker).RunAsync(AuthProxyEndpoint.Url, accessToken, ct);
 
         if (outcome.ErrorMessage is not null) {
-            return Fail(outcome.ErrorMessage, ct,
-                outcome.NoTenantsFound ? AuthFailureReason.NoTenantsFound : AuthFailureReason.Other);
+            var reason = outcome.NoTenantsFound ? AuthFailureReason.NoTenantsFound : AuthFailureReason.Other;
+
+            return outcome.AlreadyReported
+                ? Stop(outcome.ErrorMessage, ct, reason)
+                : Fail(outcome.ErrorMessage, ct, reason);
         }
 
         var identities = new List<AuthIdentity>();

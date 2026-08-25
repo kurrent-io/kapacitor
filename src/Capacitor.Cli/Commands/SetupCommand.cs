@@ -909,9 +909,9 @@ public static class SetupCommand {
 
     internal static readonly SetupAuthProgress StepProgress = new(ConsoleAuthProgress.Instance);
 
-    static OnboardingFacade NewFacade(ITenantProvisioner? provisioner) =>
+    static OnboardingFacade NewFacade(ITenantProvisioner? provisioner, ITenantPicker? picker = null) =>
         FacadeOverride?.Invoke(provisioner)
-            ?? new OnboardingFacade(StepProgress, new SpectreTenantPicker(), provisioner, beforeCommit: null) {
+            ?? new OnboardingFacade(StepProgress, picker ?? new SpectreTenantPicker(), provisioner, beforeCommit: null) {
                 KeyWatcher = ConsoleKeyWatcher.Instance
             };
 
@@ -1170,12 +1170,18 @@ public static class SetupCommand {
         // Armed for every WorkOS session, headless included: that path has a device grant now, so
         // a zero-workspace headless user now completes a sign-in and would otherwise hold a live
         // credential with nowhere to spend it. GitHub never provisions.
+        // Resolved once and handed to both, rather than each defaulting its own seam off the same
+        // ambient property: one question, one answer, and the seams stay injectable for tests.
+        var canPrompt = AnsiConsole.Profile.Capabilities.Interactive;
+
         var provisioner = chosen == AuthProvider.WorkOS
             ? new SpectreTenantProvisioner(
-                new TenantProvisioningClient(new HttpClient()), ProvisioningEndpoint.Url, requested: requested)
+                new TenantProvisioningClient(new HttpClient()), ProvisioningEndpoint.Url,
+                isInteractive: () => canPrompt, requested: requested)
             : null;
 
-        var result = await NewFacade(provisioner).DiscoverAsync(chosen, forceDevice, CancellationToken.None);
+        var result = await NewFacade(provisioner, new SpectreTenantPicker(() => canPrompt))
+            .DiscoverAsync(chosen, forceDevice, CancellationToken.None);
 
         // WorkOS's own signin_completed/tenant_none fire from inside Core — only GitHub is derived here.
         if (chosen == AuthProvider.GitHubApp) {
