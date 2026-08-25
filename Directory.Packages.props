@@ -22,8 +22,8 @@
     <PackageVersion Include="Spectre.Console" Version="0.55.2" />
     <PackageVersion Include="SvcSystems.UI.Terminal" Version="1.1.1" />
     <PackageVersion Include="Tomlyn" Version="2.4.0" />
-    <PackageVersion Include="TUnit" Version="1.65.31" />
-    <PackageVersion Include="TUnit.Core" Version="1.65.31" />
+    <PackageVersion Include="TUnit" Version="1.65.38" />
+    <PackageVersion Include="TUnit.Core" Version="1.65.38" />
     <PackageVersion Include="WireMock.Net" Version="2.15.0" />
     <PackageVersion Include="XTerm.NET" Version="1.0.16" />
   </ItemGroup>
