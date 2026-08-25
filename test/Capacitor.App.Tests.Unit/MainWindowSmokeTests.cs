@@ -1,5 +1,6 @@
 using System.Reactive.Threading.Tasks;
 using Avalonia.Controls;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Capacitor.App.Services;
@@ -397,9 +398,16 @@ public class MainWindowSmokeTests {
 
     /// The rail's own click path (spec §3): a session row rendered by SessionRailView carries the
     /// VM's OpenCommand, and executing it opens that agent's workspace on the Sessions surface.
+    ///
+    /// Also pins the selection highlight as RENDERED state, not just as a bound class. A row's
+    /// resting Background must come from the `railRow` class style: a local `Background` attribute
+    /// on the Button would be a LocalValue, outrank the `.selected`/`.holdsSelected` style
+    /// triggers, and leave the highlight permanently invisible while still passing any
+    /// class-membership assertion. Comparing the opened row's alpha against its sibling's is what
+    /// fails if a future local value defeats the style again.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Rail_click_opens_the_workspace_in_sessions_view() {
+    public async Task Rail_click_opens_the_workspace_and_highlights_the_open_row() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var opened = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
@@ -408,6 +416,9 @@ public class MainWindowSmokeTests {
                 service.Agents.AddOrUpdate(new AgentStatusDto(
                     "a1", "agent", "claude", "/dev/alpha/wt/feature-x", "Running",
                     null, null, null, DateTime.UtcNow, null, null, Title: "Fix the flaky test"));
+                service.Agents.AddOrUpdate(new AgentStatusDto(
+                    "a2", "agent", "claude", "/dev/alpha/wt/feature-x", "Running",
+                    null, null, null, DateTime.UtcNow, null, null, Title: "Leave this one alone"));
 
                 var (actions, _) = NewActions(service);
                 MainWindowViewModel? vm = null;
@@ -424,18 +435,29 @@ public class MainWindowSmokeTests {
                 vm.ShowSessionsCommand.Execute().Subscribe();
                 Dispatcher.UIThread.RunJobs();
 
-                var row = window.GetVisualDescendants().OfType<Button>()
-                    .First(b => b.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "Fix the flaky test"));
-                row.Command!.Execute(null);
+                Button Row(string text) => window.GetVisualDescendants().OfType<Button>()
+                    .First(b => b.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == text));
+                byte Alpha(Button b) => (b.Background as ISolidColorBrush)?.Color.A ?? 0;
+
+                Row("Fix the flaky test").Command!.Execute(null);
                 Dispatcher.UIThread.RunJobs();
 
-                var result = (vm.IsSessionsView, vm.CurrentWorkspace?.AgentId);
+                var result = (vm.IsSessionsView, vm.CurrentWorkspace?.AgentId,
+                    SelectedClass: Row("Fix the flaky test").Classes.Contains("selected"),
+                    SelectedAlpha: Alpha(Row("Fix the flaky test")),
+                    SiblingAlpha: Alpha(Row("Leave this one alone")),
+                    // The worktree header row carries the same hazard through holdsSelected.
+                    WorktreeAlpha: Alpha(Row("feature-x")));
                 window.Close();
                 Dispatcher.UIThread.RunJobs();
                 return result;
             });
             await Assert.That(opened.Item1).IsTrue();
             await Assert.That(opened.Item2).IsEqualTo("a1");
+            await Assert.That(opened.SelectedClass).IsTrue();
+            await Assert.That(opened.SelectedAlpha).IsGreaterThan((byte)0); // the highlight actually paints
+            await Assert.That(opened.SiblingAlpha).IsEqualTo((byte)0); // an unopened row stays transparent
+            await Assert.That(opened.WorktreeAlpha).IsGreaterThan((byte)0);
         });
     }
 

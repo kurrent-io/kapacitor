@@ -7,6 +7,15 @@
     <!-- DataContext is INHERITED from the window (never assigned here), so Rail is null on any
          window built without one — every Rail.* binding below carries a fallback for that. -->
     <UserControl.Styles>
+        <!-- A row's resting Background MUST come from this class style, never a local attribute on
+             the Button: a local value outranks a style trigger, which would leave the two
+             highlight styles below permanently inert (and suppress the theme's hover/pressed
+             feedback). Same reason HomeView's Button.sessionCard neutralizes its chrome in a
+             style. Order matters — Avalonia has no CSS specificity, so the highlights must be
+             declared AFTER this base to win the tie. -->
+        <Style Selector="Button.railRow">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
         <Style Selector="Button.selected">
             <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}" />
         </Style>
@@ -58,9 +67,9 @@
                                                 <StackPanel>
                                                     <Button Command="{Binding ToggleCommand}" IsVisible="{Binding ShowHeader}"
                                                             HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
-                                                            Background="Transparent" BorderThickness="0" Padding="4,3"
+                                                            BorderThickness="0" Padding="4,3"
                                                             ToolTip.Tip="{Binding Path}"
-                                                            Classes.holdsSelected="{Binding HoldsSelected}">
+                                                            Classes="railRow" Classes.holdsSelected="{Binding HoldsSelected}">
                                                         <DockPanel>
                                                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
                                                                 <TextBlock Text="{Binding CountText}" FontSize="10" Opacity="0.6" VerticalAlignment="Center" />
@@ -78,10 +87,10 @@
                                                         <ItemsControl.ItemTemplate>
                                                             <DataTemplate x:DataType="vm:RailSessionViewModel">
                                                                 <Button Command="{Binding OpenCommand}" HorizontalAlignment="Stretch"
-                                                                        HorizontalContentAlignment="Stretch" Background="Transparent"
+                                                                        HorizontalContentAlignment="Stretch"
                                                                         BorderThickness="0" Padding="6,4"
                                                                         ToolTip.Tip="{Binding Tooltip}"
-                                                                        Classes.selected="{Binding IsSelected}">
+                                                                        Classes="railRow" Classes.selected="{Binding IsSelected}">
                                                                     <DockPanel>
                                                                         <TextBlock DockPanel.Dock="Right" Text="!" FontSize="10" FontWeight="Bold"
                                                                                    Foreground="Orange" IsVisible="{Binding NeedsYou}" />
