@@ -19,7 +19,16 @@ namespace Capacitor.App.Views;
 /// Resize with worse (font-metric-unaware) width/height than TerminalControl's own
 /// _consoleTextSize-based computation.
 public partial class WorkspaceView : UserControl {
-    public WorkspaceView() => InitializeComponent();
+    public WorkspaceView() {
+        InitializeComponent();
+        // Keyboard focus is a view concern: the control draws its filled caret (and receives
+        // keystrokes) only while focused, and nothing else focuses it when a session opens or
+        // reattaches — Model assignment is exactly the "terminal became live" moment.
+        TerminalHost.PropertyChanged += (_, e) => {
+            if (e.Property == SvcSystems.UI.Terminal.TerminalControl.ModelProperty && TerminalHost.Model is not null)
+                TerminalHost.Focus();
+        };
+    }
 }
 
 /// ITerminalSurface -&gt; TerminalControlModel? bridge for TerminalHost's Model binding.

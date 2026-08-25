@@ -60,8 +60,12 @@
             <!-- FontFamily MUST be set: the control's default is "Cascadia Mono", which only
                  exists on Windows — elsewhere it silently falls back to ESTIMATED cell metrics
                  while drawing with a real typeface, smearing every styled run off its column. -->
+            <!-- CaretBrush: without it the unfocused caret is a hairline in the default brush,
+                 invisible on this palette. Focus itself is wired in code-behind on Model
+                 assignment — the control only draws the filled caret while focused. -->
             <terminal:TerminalControl x:Name="TerminalHost" IsVisible="{Binding ShowsTerminalTab}"
                                        FontFamily="Menlo,Monaco,Consolas,Cascadia Mono,DejaVu Sans Mono,monospace"
+                                       CaretBrush="{StaticResource KcapAccentBrush}"
                                        Model="{Binding Terminal.Surface, Converter={x:Static views:TerminalSurfaceModelConverter.Instance}}" />
 
             <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=Connecting}"
