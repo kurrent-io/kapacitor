@@ -14,7 +14,11 @@ public class AgentAttachClientTests {
     sealed class Recorder {
         public readonly List<(byte[] Snapshot, string? Reason)> Attached = [];
         public readonly List<byte[]> Output = [];
-        public Func<byte[], string?, CancellationToken, Task> OnAttached => (s, r, _) => { Attached.Add((s, r)); return Task.CompletedTask; };
+        // Completed inside OnAttached so a test can await having actually observed the
+        // Attached frame before severing the connection — see the barrier comment at its
+        // first use below.
+        public readonly TaskCompletionSource AttachedObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Func<byte[], string?, CancellationToken, Task> OnAttached => (s, r, _) => { Attached.Add((s, r)); AttachedObserved.TrySetResult(); return Task.CompletedTask; };
         public Func<byte[], CancellationToken, Task> OnOutput => (b, _) => { Output.Add(b); return Task.CompletedTask; };
     }
 
@@ -166,6 +170,12 @@ public class AgentAttachClientTests {
         var run = client.RunAsync(80, 24, CancellationToken.None);
         await server.AcceptAndPumpInboundAsync();
         await server.SendAttachedAsync(AgentId, []);
+        // Windows: an abortive close (socket dispose without a graceful shutdown) sends RST,
+        // and RST discards whatever the peer hasn't read yet — unlike Unix's FIN, which is
+        // only delivered after buffered data. Without this wait, CloseConnection() can beat
+        // the client's read of Attached, so it never observes attach and the run settles
+        // Failed instead of ConnectionLost.
+        await rec.AttachedObserved.Task;
         server.CloseConnection();
 
         await Assert.That(await run).IsEqualTo(new AttachOutcome.ConnectionLost());
@@ -179,6 +189,7 @@ public class AgentAttachClientTests {
         var run = client.RunAsync(80, 24, CancellationToken.None);
         await server.AcceptAndPumpInboundAsync();
         await server.SendAttachedAsync(AgentId, []);
+        await rec.AttachedObserved.Task;              // Windows RST guard — see comment above
         await server.SendRawThenCloseAsync([0x41, 0x00]);          // stdout type byte + half a length
 
         await Assert.That(await run).IsEqualTo(new AttachOutcome.ConnectionLost());
@@ -426,7 +437,7 @@ public class AgentAttachClientTests {
         var run = client.RunAsync(80, 24, CancellationToken.None);
         await server.AcceptAndPumpInboundAsync();
         await server.SendAttachedAsync(AgentId, []);
-        await Task.Delay(50);
+        await rec.AttachedObserved.Task;              // Windows RST guard — see comment above
 
         server.CloseConnection();                                  // break the transport under the writer
         await client.SendInputAsync([1, 2, 3]);                    // must not throw
@@ -507,7 +518,7 @@ public class AgentAttachClientTests {
         var run = client.RunAsync(80, 24, CancellationToken.None);
         await server.AcceptAndPumpInboundAsync();
         await server.SendAttachedAsync(AgentId, []);
-        await Task.Delay(50);
+        await rec.AttachedObserved.Task;              // Windows RST guard — see comment above
 
         server.CloseConnection();
         await client.SendInputAsync([1]);                          // write failure → loser or winner, sink throws either way
@@ -527,13 +538,15 @@ public class AgentAttachClientTests {
         var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
         var sinkCalls = 0;
         var contexts = new List<string>();
+        var attachedObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new AgentAttachClient(server.Path, AgentId,
-            (_, _, _) => Task.CompletedTask,
+            (_, _, _) => { attachedObserved.TrySetResult(); return Task.CompletedTask; },
             async (_, ct) => await Task.Delay(Timeout.Infinite, ct),   // parks the pump; only Dispose unblocks it
             (c, _) => { Interlocked.Increment(ref sinkCalls); lock (contexts) contexts.Add(c); throw new InvalidOperationException("sink bug"); });
         var run = client.RunAsync(80, 24, CancellationToken.None);
         await server.AcceptAndPumpInboundAsync();
         await server.SendAttachedAsync(AgentId, []);
+        await attachedObserved.Task;                  // Windows RST guard — see comment above
         await server.SendStdoutAsync([1]);
         await Task.Delay(50);                                       // pump is now parked inside the callback
 
@@ -562,13 +575,15 @@ public class AgentAttachClientTests {
         var (server, tmp) = NewServer(); await using var _s = server; using var _t = tmp;
         var sink = new RecordingSink();
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attachedObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new AgentAttachClient(server.Path, AgentId,
-            (_, _, _) => Task.CompletedTask,
+            (_, _, _) => { attachedObserved.TrySetResult(); return Task.CompletedTask; },
             async (_, _) => { await gate.Task; },        // blocks the pump, then returns normally (no fault)
             sink.Callback);
         var run = client.RunAsync(80, 24, CancellationToken.None);
         await server.AcceptAndPumpInboundAsync();
         await server.SendAttachedAsync(AgentId, []);
+        await attachedObserved.Task;                      // Windows RST guard — see comment above
         await server.SendStdoutAsync([1]);
         await Task.Delay(50);                             // pump is now blocked inside the callback, gate not yet open
 
@@ -600,6 +615,7 @@ public class AgentAttachClientTests {
         var run = client.RunAsync(80, 24, CancellationToken.None);
         await server.AcceptAndPumpInboundAsync();
         await server.SendAttachedAsync(AgentId, []);
+        await rec.AttachedObserved.Task;              // Windows RST guard — see comment above
         await server.SendRawThenCloseAsync([0x41, 0x00]);   // stdout type byte + half a length: mid-header truncation
 
         await Assert.That(await run).IsEqualTo(new AttachOutcome.ConnectionLost());
@@ -678,6 +694,7 @@ public class AgentAttachClientTests {
         var sinkCallCount = 0;
         var firstInSink = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attachedObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         void Sink(string c, Exception e) {
             var now = Interlocked.Increment(ref current);
             maxConcurrent = Math.Max(maxConcurrent, now);
@@ -690,12 +707,13 @@ public class AgentAttachClientTests {
         }
 
         var client = new AgentAttachClient(server.Path, AgentId,
-            (_, _, _) => Task.CompletedTask,
+            (_, _, _) => { attachedObserved.TrySetResult(); return Task.CompletedTask; },
             async (_, _) => { await proceed.Task; throw boom; },    // stdout callback: armed, not yet fired
             Sink);
         var run = client.RunAsync(80, 24, CancellationToken.None);
         await server.AcceptAndPumpInboundAsync();
         await server.SendAttachedAsync(AgentId, []);
+        await attachedObserved.Task;                               // Windows RST guard — see comment above
         await server.SendStdoutAsync([1]);
         await Task.Delay(50);                                      // pump is blocked inside the callback, gated on `proceed`
 
