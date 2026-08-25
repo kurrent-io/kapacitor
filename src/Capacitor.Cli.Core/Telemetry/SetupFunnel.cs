@@ -14,8 +14,8 @@ namespace Capacitor.Cli.Core.Telemetry;
 /// so both arrive at the process's normal exit flush. They use the batched
 /// <see cref="CliTelemetry.Capture"/> path instead — they don't need the eager flush, and eager
 /// flushing would block synchronously inside SpectreTenantProvisioner's interactive prompts and
-/// (for the poll outcomes) inside a Spectre live-display callback, which this codebase has prior
-/// form for garbling when work blocks there.
+/// (for the poll outcomes) inside a Spectre live-display callback, neither of which tolerates
+/// blocking work without garbling what it is drawing.
 ///
 /// <see cref="WorkspaceFailed"/> does NOT imply a preceding <see cref="WorkspaceRequested"/>: the
 /// flag-driven create rejects a bad or taken slug before asking the server for anything. Those

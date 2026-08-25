@@ -190,9 +190,8 @@ public class SetupFacadeParityTests {
         await Assert.That(console.GetCapturedError()).Contains(SetupAuthProgress.UnreachableGuidance);
     }
 
-    // Both halves of the --org/--slug wiring: the flags must reach the provisioner discovery is given,
-    // and the landed workspace must be checked against them once discovery commits. Each is a single
-    // argument in RunDiscoveryAsync, invisible to every test that drives the pieces directly.
+    // The flags must reach the provisioner discovery is given, and the workspace it lands on must be
+    // checked against them once it commits.
 
     [Test]
     [NotInParallel]

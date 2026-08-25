@@ -237,10 +237,16 @@ public sealed class SpectreTenantProvisioner(
     }
 
     async Task<ProvisionOffer> PollAsync(WorkOSTokenSource tokens, string slug, string orgName, string origin, CancellationToken ct) {
-        // Names the flag a scripted re-run needs: this same guidance without it walks into the first
-        // prompt after discovery, which throws on the session it was printed to.
-        var retryPlain  = Scripted ? $"Re-run kcap setup {slug} --no-prompt" : $"Re-run kcap setup {slug}";
-        var retryMarkup = $"Re-run [cyan]kcap setup {Markup.Escape(slug)}[/]";
+        // Two different re-runs. A workspace still being built will exist, so naming it is right; one
+        // that failed does not, and `kcap setup <slug>` treats a positional as an existing server and
+        // never reaches creation at all. The scripted forms name --no-prompt, without which the first
+        // prompt after discovery throws on the session the guidance was printed to.
+        var waitPlain    = Scripted ? $"Re-run kcap setup {slug} --no-prompt" : $"Re-run kcap setup {slug}";
+        var waitMarkup   = $"Re-run [cyan]kcap setup {Markup.Escape(slug)}[/]";
+        var createPlain  = requested is { } r
+            ? $"Re-run kcap setup --org \"{r.OrgName}\" --slug {slug} --no-prompt"
+            : "Re-run kcap setup";
+        var createMarkup = "Re-run [cyan]kcap setup[/]";
         // The live display is a terminal affordance; on a scripted run its fallback renderer would put
         // a hundred-odd progress lines on stdout, which is the stream that run's failures avoid.
         return Scripted
@@ -262,16 +268,16 @@ public sealed class SpectreTenantProvisioner(
                         Fail($"{slug}.kcap.ai is live but isn't linked to an organization. Contact support.", "active_no_org");
                         return ProvisionOffer.Failed;
                     case PollVerdict.Failed:
-                        Fail($"Provisioning failed. {retryPlain} to retry.", "provisioning_failed",
-                             markup: $"Provisioning failed. {retryMarkup} to retry.");
+                        Fail($"Provisioning failed. {createPlain} to retry.", "provisioning_failed",
+                             markup: $"Provisioning failed. {createMarkup} to retry.");
                         return ProvisionOffer.Failed;
                     case PollVerdict.Forbidden:
-                        Fail($"Verify your email address, then {retryPlain.ToLowerInvariant()}.", "forbidden",
-                             markup: $"Verify your email address, then {retryMarkup.ToLowerInvariant()}.");
+                        Fail($"Verify your email address, then {createPlain.ToLowerInvariant()}.", "forbidden",
+                             markup: $"Verify your email address, then {createMarkup.ToLowerInvariant()}.");
                         return ProvisionOffer.Failed;
                     case PollVerdict.NotFound:
-                        Fail($"'{slug}' isn't linked to your account. {retryPlain}.", "not_found",
-                             markup: $"'{Markup.Escape(slug)}' isn't linked to your account. {retryMarkup}.");
+                        Fail($"'{slug}' isn't linked to your account. {createPlain}.", "not_found",
+                             markup: $"'{Markup.Escape(slug)}' isn't linked to your account. {createMarkup}.");
                         return ProvisionOffer.Failed;
                     case PollVerdict.Wait:
                         // Surface liveness so an elapsed timer never reads as a frozen CLI.
@@ -279,8 +285,8 @@ public sealed class SpectreTenantProvisioner(
                         break;
                 }
             }
-            Retry($"Still provisioning. {retryPlain} once it's ready.",
-                  markup: $"Still provisioning. {retryMarkup} once it's ready.");
+            Retry($"Still provisioning. {waitPlain} once it's ready.",
+                  markup: $"Still provisioning. {waitMarkup} once it's ready.");
             SetupFunnel.WorkspaceFailed("poll_timeout");
             return ProvisionOffer.InProgress(slug);
         }

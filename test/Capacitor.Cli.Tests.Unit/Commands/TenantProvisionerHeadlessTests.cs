@@ -8,8 +8,7 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// <summary>
 /// A non-interactive session reaches the create-a-workspace fork, where every way out is a Spectre
 /// prompt and Spectre throws rather than returning. Either the two answers arrive as flags, or there
-/// is nothing to ask and the run has to say so. The façade tests substitute ITenantProvisioner, so
-/// the prompts these cover never run there.
+/// is nothing to ask and the run has to say so.
 /// </summary>
 /// <remarks>
 /// Bare rather than keyed: these write SetupFunnel events into the process-global telemetry sink,
@@ -182,6 +181,23 @@ public class TenantProvisionerHeadlessTests {
 
         await Assert.That(offer.Status).IsEqualTo(ProvisionOfferStatus.Created);
         await Assert.That(handler.Paths).Contains("/api/signup/status");
+    }
+
+    // A workspace that failed to build does not exist, and `kcap setup <slug>` reads a positional as
+    // an existing server — so the way back has to be the command that creates, not the one that points.
+    [Test]
+    public async Task A_failed_build_points_back_at_the_command_that_creates() {
+        using var capture = ConsoleOutput.StartErrorCapture();
+        using var handler = new StubHandler { ProvisionStatus = HttpStatusCode.Accepted, StatusState = "failed" };
+        var provisioner   = Provisioner(handler, () => false, new RequestedWorkspace("Acme", "acme"));
+
+        var offer = await provisioner.OfferCreateAsync(Tokens());
+
+        var written = capture.GetCapturedError();
+
+        await Assert.That(offer.Status).IsEqualTo(ProvisionOfferStatus.Failed);
+        await Assert.That(written).Contains("--org \"Acme\" --slug acme");
+        await Assert.That(written).DoesNotContain("kcap setup acme");
     }
 
     [Test]
