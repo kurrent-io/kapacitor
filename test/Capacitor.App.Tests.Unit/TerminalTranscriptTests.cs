@@ -6,8 +6,11 @@ namespace Capacitor.App.Tests.Unit;
 
 // API DISCOVERY (Task 8) — decompiled via ilspycmd against the NuGet cache copies of
 // SvcSystems.UI.Terminal 1.1.1 (net10.0 lib) and XTerm.NET 1.0.16 (net6.0 lib), cross-checked
-// against both packages' README.md. Recorded verbatim for Tasks 10–12 to build on; do not
-// rely on the README alone, it undersells a few things confirmed only in IL (marked below).
+// against both packages' README.md. The pins have since moved to 1.1.2 / 1.1.0 (upstream
+// caret-rendering fix, GH #662); the claims below are from the 1.1.1-era IL and stay proven on
+// the new pins by these tests exercising the real control — not by re-decompilation. Recorded
+// verbatim for Tasks 10–12 to build on; do not rely on the README alone, it undersells a few
+// things confirmed only in IL (marked below).
 //
 // ── SvcSystems.UI.Terminal.TerminalControlModel : Avalonia.AvaloniaObject ──────────────────
 //   ctor TerminalControlModel(TerminalOptions? options = null)
