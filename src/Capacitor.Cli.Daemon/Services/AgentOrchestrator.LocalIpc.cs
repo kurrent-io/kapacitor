@@ -35,6 +35,18 @@ internal partial class AgentOrchestrator {
         _                     => kind.ToString(),
     };
 
+    /// First non-blank line of the launch prompt, trimmed, capped at 80 chars (ellipsis when
+    /// cut) — the status payload is re-sent on every revision, so the full prompt never rides it.
+    internal static string? TitleFromPrompt(string? prompt) {
+        if (prompt is null) return null;
+        foreach (var raw in prompt.Split('\n')) {
+            var line = raw.Trim();
+            if (line.Length == 0) continue;
+            return line.Length <= 80 ? line : line[..79] + "…";
+        }
+        return null;
+    }
+
     /// <summary>
     /// The supervision payload's agent rows: every entry in _agents (all statuses — same
     /// visibility as `kcap agent ls`; quarantined-but-removed children are gone from _agents
@@ -54,7 +66,7 @@ internal partial class AgentOrchestrator {
                 // unchanged) — but the wire contract pins absent = null. Normalize here, at the
                 // wire boundary, rather than changing what AgentInstance stores.
                 string.IsNullOrWhiteSpace(a.Model) ? null : a.Model, a.RequesterDisplay,
-                HasTerminal: a.Runtime.EmitsTerminalOutput))];
+                HasTerminal: a.Runtime.EmitsTerminalOutput, Title: TitleFromPrompt(a.Prompt)))];
 
     /// <summary>
     /// Serves the legacy <c>Stop</c> frame from older clients that predate --force. That frame

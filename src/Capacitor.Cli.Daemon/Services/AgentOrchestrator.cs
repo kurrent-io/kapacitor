@@ -1516,6 +1516,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             DateTime? createdAt = null, DateTime? lastOutputAt = null, bool isPrivate = false,
             IPtyProcess? pty = null, string? startIdentity = null, string? requester = null,
             string? requesterDisplay = null, string? model = "default", int? inactivityBoundSeconds = null,
+            string? prompt = null,
             // Task 12 (unified reviewer reaping): a test that needs to control the agent's monotonic
             // age/idle (rather than the wall-clock CreatedAt/LastOutputAt above, which the new
             // FindReviewersToReap no longer reads) constructs its own AgentActivityClock over a
@@ -1523,7 +1524,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // real launch, just with a controllable time source.
             AgentActivityClock? activityClock = null) {
         var agent = new AgentInstance(
-            id, null, model, null, "/repo", "codex",
+            id, prompt, model, null, "/repo", "codex",
             new PtyHostedAgentRuntime("codex", pty ?? NoopPtyProcess.Instance),
             new WorktreeInfo("/repo", "b", "/repo"),
             new CancellationTokenSource()) {

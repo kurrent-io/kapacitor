@@ -181,6 +181,33 @@ public class AgentStatusSnapshotTests {
     }
 
     [Test]
+    public async Task Snapshot_title_is_first_line_truncated_or_null() {
+        var fx = Build();
+        try {
+            fx.Orchestrator.SeedAgentForTest("t-short", prompt: "Fix the flaky test");
+            fx.Orchestrator.SeedAgentForTest("t-multi", prompt: "\n  First real line  \nsecond line");
+            fx.Orchestrator.SeedAgentForTest("t-long",  prompt: new string('x', 200));
+            fx.Orchestrator.SeedAgentForTest("t-blank", prompt: "   \n  ");
+            fx.Orchestrator.SeedAgentForTest("t-none");
+
+            var byId = fx.Orchestrator.SnapshotAgentsForStatus().ToDictionary(a => a.Id);
+
+            await Assert.That(byId["t-short"].Title).IsEqualTo("Fix the flaky test");
+            await Assert.That(byId["t-multi"].Title).IsEqualTo("First real line");
+            await Assert.That(byId["t-long"].Title!.Length).IsEqualTo(80);
+            await Assert.That(byId["t-long"].Title).EndsWith("…");
+            await Assert.That(byId["t-blank"].Title).IsNull();
+            await Assert.That(byId["t-none"].Title).IsNull();
+
+            // The wire boundary, not just the in-memory DTO (spec §1).
+            var json = JsonSerializer.Serialize(byId["t-short"], StatusIpcJsonContext.Default.AgentStatusDto);
+            await Assert.That(json).Contains("\"title\":\"Fix the flaky test\"");
+            var jsonNone = JsonSerializer.Serialize(byId["t-none"], StatusIpcJsonContext.Default.AgentStatusDto);
+            await Assert.That(jsonNone).Contains("\"title\":null");
+        } finally { await fx.CleanupAsync(); }
+    }
+
+    [Test]
     public async Task Publish_status_change_and_unpublish_each_advance_the_generation() {
         var fixture = Build();
         var orch     = fixture.Orchestrator;
