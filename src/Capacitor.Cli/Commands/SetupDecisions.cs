@@ -63,11 +63,7 @@ internal static class SetupDecisions {
 
         bool Skip(string vendorId, bool flag) => flag || !answer.Records(vendorId);
 
-        // The hooks flag counts against TOOLS as well. `--skip-<vendor>-hooks` is a whole-vendor
-        // opt-out, and the browser's separate tools axis must not re-enable the half of it the caller
-        // never mentioned: a script that excluded a vendor gets no writes for it, screen or no screen.
-        bool Tools(string vendorId, bool hooksFlag, bool mcpFlag) =>
-            hooksFlag || mcpFlag || !answer.Tools(vendorId);
+        bool Tools(string vendorId, bool blockedByFlag) => blockedByFlag || !answer.Tools(vendorId);
 
         return options with {
             SkipClaude      = Skip("claude", options.SkipClaude),
@@ -80,13 +76,21 @@ internal static class SetupDecisions {
             SkipOpenCode    = Skip("opencode", options.SkipOpenCode),
             SkipAntigravity = Skip("antigravity", options.SkipAntigravity),
 
-            SkipCursorMcp      = Tools("cursor", options.SkipCursor, options.SkipCursorMcp),
-            SkipCopilotMcp     = Tools("copilot", options.SkipCopilot, options.SkipCopilotMcp),
-            SkipGeminiMcp      = Tools("gemini", options.SkipGemini, options.SkipGeminiMcp),
-            SkipKiroMcp        = Tools("kiro", options.SkipKiro, options.SkipKiroMcp),
-            SkipPiMcp          = Tools("pi", options.SkipPi, options.SkipPiMcp),
-            SkipOpenCodeMcp    = Tools("opencode", options.SkipOpenCode, options.SkipOpenCodeMcp),
-            SkipAntigravityMcp = Tools("antigravity", options.SkipAntigravity, options.SkipAntigravityMcp),
+            // The hooks flag counts against TOOLS as well. `--skip-<vendor>-hooks` is a whole-vendor
+            // opt-out, and the browser's separate tools axis must not re-enable the half of it the
+            // caller never mentioned: a script that excluded a vendor gets no writes for it.
+            SkipCursorMcp      = Tools("cursor", options.SkipCursor || options.SkipCursorMcp),
+            SkipCopilotMcp     = Tools("copilot", options.SkipCopilot || options.SkipCopilotMcp),
+            SkipGeminiMcp      = Tools("gemini", options.SkipGemini || options.SkipGeminiMcp),
+            SkipPiMcp          = Tools("pi", options.SkipPi || options.SkipPiMcp),
+            SkipOpenCodeMcp    = Tools("opencode", options.SkipOpenCode || options.SkipOpenCodeMcp),
+            SkipAntigravityMcp = Tools("antigravity", options.SkipAntigravity || options.SkipAntigravityMcp),
+
+            // Kiro is the exception, and stays one. `--skip-kiro-hooks` opts out of only the invasive
+            // agent clone; the terminal path registers Kiro's MCP under it and says so. Carrying it
+            // across here would make the same flag mean two things depending on whether a browser
+            // answered, and drop tools that browser selected.
+            SkipKiroMcp        = Tools("kiro", options.SkipKiroMcp),
 
             // The browser answered every prompt this step would raise, so it must not raise one.
             NoPrompt = true,

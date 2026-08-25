@@ -124,9 +124,11 @@ public class SetupDecisionsTests {
 
     // --- Applying the browser's Agents answer (WithBrowserAnswer) ---
 
-    static CodingAgentsStep.Options Flags(bool skipCursor = false, bool skipCursorMcp = false) => new(
+    static CodingAgentsStep.Options Flags(
+            bool skipCursor = false, bool skipCursorMcp = false,
+            bool skipKiro = false, bool skipKiroMcp = false) => new(
         SkipClaude: false, SkipCodex: false, SkipCursor: skipCursor, SkipCopilot: false,
-        NoPrompt: false, SkipCursorMcp: skipCursorMcp);
+        NoPrompt: false, SkipKiro: skipKiro, SkipCursorMcp: skipCursorMcp, SkipKiroMcp: skipKiroMcp);
 
     static FirstRunAgentsAnswer Answer(params FirstRunAgentsChoice[] choices) =>
         new(choices, new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero), Unrecognised: 0);
@@ -182,6 +184,28 @@ public class SetupDecisionsTests {
 
         await Assert.That(options.SkipCursor).IsTrue();
         await Assert.That(options.SkipCursorMcp).IsTrue();
+    }
+
+    // Kiro is the one vendor whose hooks flag is not a whole-vendor opt-out: the terminal path
+    // registers its MCP under --skip-kiro-hooks and prints a line saying so. The browser path has
+    // to agree, or one flag means two things depending on whether a browser answered.
+    [Test]
+    public async Task WithBrowserAnswer_TheKiroHooksFlagLeavesItsToolsAlone() {
+        var options = SetupDecisions.WithBrowserAnswer(
+            Flags(skipKiro: true),
+            Answer(new FirstRunAgentsChoice("kiro", Record: true, Tools: true)));
+
+        await Assert.That(options.SkipKiro).IsTrue();
+        await Assert.That(options.SkipKiroMcp).IsFalse();
+    }
+
+    [Test]
+    public async Task WithBrowserAnswer_TheKiroMcpFlagStillBlocksItsTools() {
+        var options = SetupDecisions.WithBrowserAnswer(
+            Flags(skipKiroMcp: true),
+            Answer(new FirstRunAgentsChoice("kiro", Record: true, Tools: true)));
+
+        await Assert.That(options.SkipKiroMcp).IsTrue();
     }
 
     [Test]
