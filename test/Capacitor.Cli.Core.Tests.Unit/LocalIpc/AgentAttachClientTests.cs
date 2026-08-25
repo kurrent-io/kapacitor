@@ -384,17 +384,13 @@ public class AgentAttachClientTests {
             var runTask = Task.Run(() => client.RunAsync(80, 24, CancellationToken.None));
             await client.DetachAsync();
 
-            // Accepted CONCURRENTLY with the run, and never after it. When the DIAL wins this race
-            // the client has written a graceful Detach and is parked in its read loop waiting for the
-            // peer to answer -- which is correct: DetachAsync deliberately leaves the transport open
-            // so a terminal frame can still beat Detached. Accepting only once the run had finished
-            // therefore waited for a client that was waiting for us, and the attempt deadlocked
-            // against its own fixture until the timeout below fired. Rare on a fast machine, where
-            // the detach almost always wins; reliable enough under CI contention to redden the leg.
+            // Accept CONCURRENTLY with the run, never after it: when the dial wins this race the
+            // client has written a graceful Detach and is parked in its read loop awaiting the peer,
+            // because DetachAsync leaves the transport open so a terminal frame can still beat
+            // Detached. An accept that waits for the run waits for a client that is waiting for it.
             //
-            // Best-effort still: when the dial WAS aborted before completing, nothing ever reached
-            // the listener's backlog, so bound the accept and read a timeout as "no attach possible"
-            // -- which is the outcome under test.
+            // Bounded, because an aborted dial reaches no listener backlog: a timeout here means no
+            // attach was possible, which is the outcome under test.
             using var acceptCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
             try {
                 await server.AcceptAndPumpInboundAsync(acceptCts.Token);
@@ -402,11 +398,10 @@ public class AgentAttachClientTests {
             } catch (OperationCanceledException) { }
             var receivedAttach = server.SnapshotReceived().Any(f => f.Type == FrameType.Attach);
 
-            // EOF is what ends a graceful detach — the daemon closes once it holds the frame. Without
-            // it the dial-wins attempts have nothing to settle on.
+            // The EOF that settles a graceful detach: a daemon closes once it holds the frame.
             server.CloseConnection();
 
-            var outcome = await runTask.WaitAsync(TimeSpan.FromSeconds(5));   // backstop, not the mechanism
+            var outcome = await runTask.WaitAsync(TimeSpan.FromSeconds(5));
 
             if (!receivedAttach) {
                 sawNoAttach = true;
