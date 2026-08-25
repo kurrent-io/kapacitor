@@ -44,7 +44,10 @@ public sealed record AgentStatusDto(
     // existing positional construction stays valid; null = older daemon,
     // unknown — the app falls back to its vendor heuristic. Always emitted:
     // false is a real value, not an absence.
-    bool? HasTerminal = null);
+    bool? HasTerminal = null,
+    // The launch prompt's first non-blank line, truncated by the daemon (TitleFromPrompt) —
+    // display text for session rows. Trailing + nullable: null = older daemon or no goal text.
+    string? Title = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(DaemonStatusDto))]

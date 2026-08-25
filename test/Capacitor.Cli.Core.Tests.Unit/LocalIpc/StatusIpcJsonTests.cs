@@ -18,7 +18,7 @@ public class StatusIpcJsonTests {
                     "agent-abc123", "review-flow", "codex", "/Users/x/dev/repo", "Live",
                     "flow_1", "reviewer", "github:12345",
                     new DateTime(2026, 8, 1, 12, 34, 56, 789, DateTimeKind.Utc), "gpt-5-codex",
-                    "Ada Lovelace"),
+                    "Ada Lovelace", Title: "Fix the flaky test"),
                 new AgentStatusDto(
                     "agent-b", "agent", "claude", null, "Starting",
                     null, null, null,
@@ -29,7 +29,7 @@ public class StatusIpcJsonTests {
         var json = JsonSerializer.Serialize(dto, StatusIpcJsonContext.Default.DaemonStatusDto);
 
         await Assert.That(json).IsEqualTo(
-            """{"daemon":{"name":"main","version":"0.12.3","server_url":"https://tenant.example.com","connection":"connected","max_agents":5,"active_agents":1,"pid":4242,"instance_id":"inst-abc","supported_vendors":null},"agents":[{"id":"agent-abc123","kind":"review-flow","vendor":"codex","repo_path":"/Users/x/dev/repo","status":"Live","flow_run_id":"flow_1","flow_role":"reviewer","requester":"github:12345","created_at":"2026-08-01T12:34:56.789Z","model":"gpt-5-codex","requester_display":"Ada Lovelace","has_terminal":null},{"id":"agent-b","kind":"agent","vendor":"claude","repo_path":null,"status":"Starting","flow_run_id":null,"flow_role":null,"requester":null,"created_at":"2026-08-01T12:35:00Z","model":null,"requester_display":null,"has_terminal":null}]}""");
+            """{"daemon":{"name":"main","version":"0.12.3","server_url":"https://tenant.example.com","connection":"connected","max_agents":5,"active_agents":1,"pid":4242,"instance_id":"inst-abc","supported_vendors":null},"agents":[{"id":"agent-abc123","kind":"review-flow","vendor":"codex","repo_path":"/Users/x/dev/repo","status":"Live","flow_run_id":"flow_1","flow_role":"reviewer","requester":"github:12345","created_at":"2026-08-01T12:34:56.789Z","model":"gpt-5-codex","requester_display":"Ada Lovelace","has_terminal":null,"title":"Fix the flaky test"},{"id":"agent-b","kind":"agent","vendor":"claude","repo_path":null,"status":"Starting","flow_run_id":null,"flow_role":null,"requester":null,"created_at":"2026-08-01T12:35:00Z","model":null,"requester_display":null,"has_terminal":null,"title":null}]}""");
     }
 
     [Test]
@@ -57,6 +57,19 @@ public class StatusIpcJsonTests {
         var back = JsonSerializer.Deserialize(stripped, StatusIpcJsonContext.Default.AgentStatusDto);
 
         await Assert.That(back!.HasTerminal).IsNull();
+    }
+
+    [Test]
+    public async Task Old_agent_json_without_title_deserializes_to_null() {
+        var dto = new AgentStatusDto(
+            "a1", "agent", "claude", "/repo", "Running",
+            null, null, null, DateTime.UtcNow, null, null);
+        var json = JsonSerializer.Serialize(dto, StatusIpcJsonContext.Default.AgentStatusDto);
+        var stripped = System.Text.RegularExpressions.Regex.Replace(json, ",\"title\":[^,}]+", "");
+
+        var back = JsonSerializer.Deserialize(stripped, StatusIpcJsonContext.Default.AgentStatusDto);
+
+        await Assert.That(back!.Title).IsNull();
     }
 
     [Test]
