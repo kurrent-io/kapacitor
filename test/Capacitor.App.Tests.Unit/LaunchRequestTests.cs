@@ -30,6 +30,20 @@ public class LaunchRequestTests {
     }
 
     [Test]
+    public async Task Model_and_effort_are_carried_when_chosen() {
+        var json = Payload(new LaunchRequest("kcap-dev", "/repo", "claude", "go", Model: " claude-fable-5 ", Effort: "high"));
+
+        await Assert.That(json.GetProperty("model").GetString()).IsEqualTo("claude-fable-5"); // trimmed
+        await Assert.That(json.GetProperty("effort").GetString()).IsEqualTo("high");
+    }
+
+    [Test]
+    public async Task Blank_effort_is_sent_as_null() {
+        var json = Payload(new LaunchRequest("kcap-dev", "/repo", "claude", "go", Effort: "  "));
+        await Assert.That(json.GetProperty("effort").IsNull).IsTrue();
+    }
+
+    [Test]
     public async Task Vendor_is_always_sent_explicitly() {
         var json = Payload(new LaunchRequest("kcap-dev", "/repo", "gemini", null));
 

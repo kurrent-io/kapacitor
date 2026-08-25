@@ -70,6 +70,22 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         set => this.RaiseAndSetIfChanged(ref _rememberHarness, value);
     }
 
+    string _selectedModel = "";
+    /// "" = vendor default (the wire convention). Session-scoped, not persisted; reset whenever
+    /// the vendor changes — model ids are vendor-specific, so a stale one would misfire.
+    public string SelectedModel {
+        get => _selectedModel;
+        set => this.RaiseAndSetIfChanged(ref _selectedModel, value);
+    }
+
+    string? _selectedEffort;
+    /// null = vendor default. Survives vendor changes — the effort vocabulary is shared enough
+    /// (low/medium/high/xhigh) that the choice usually still means what the user meant.
+    public string? SelectedEffort {
+        get => _selectedEffort;
+        set => this.RaiseAndSetIfChanged(ref _selectedEffort, value);
+    }
+
     string _goal = "";
     public string Goal {
         get => _goal;
@@ -162,6 +178,7 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// Sets the selection and, when RememberHarness, persists it for SelectedRepoPath.
     /// RememberHarness = false skips the write only — it must never erase an existing choice.
     public async Task ChooseHarnessAsync(string vendor) {
+        if (vendor != SelectedVendor) SelectedModel = "";
         SelectedVendor = vendor;
         if (!RememberHarness) return;
 
@@ -215,7 +232,9 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     public async Task SelectRepositoryAsync(string repoPath) {
         SelectedRepoPath = repoPath;
         var saved = await _state.LoadAsync();
-        SelectedVendor = Lookup(saved.HarnessByRepo, repoPath) ?? DefaultVendor;
+        var vendor = Lookup(saved.HarnessByRepo, repoPath) ?? DefaultVendor;
+        if (vendor != SelectedVendor) SelectedModel = "";
+        SelectedVendor = vendor;
     }
 
     /// A session card's click (HomeView routes it here). No generation is involved — the click IS
@@ -223,7 +242,8 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     public void OpenSessionRequested(string agentId) => _openSession?.Invoke(agentId);
 
     async Task StartAsync() {
-        var request = new LaunchRequest(_daemon.DaemonName, SelectedRepoPath, SelectedVendor, Goal);
+        var request = new LaunchRequest(
+            _daemon.DaemonName, SelectedRepoPath, SelectedVendor, Goal, SelectedModel, SelectedEffort);
         // Captured BEFORE the call, never after (spec §3): the whole point is to notice a navigation
         // that happened WHILE the launch was in flight.
         var generation = _navigationGeneration?.Invoke() ?? 0;

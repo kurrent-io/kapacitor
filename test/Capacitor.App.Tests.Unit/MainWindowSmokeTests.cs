@@ -36,7 +36,7 @@ public class MainWindowSmokeTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task MainWindow_renders_daemon_identity_server_url_and_agent_count() {
+    public async Task MainWindow_renders_the_connection_word_and_tenant_not_the_identity_block() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var rendered = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
@@ -46,7 +46,8 @@ public class MainWindowSmokeTests {
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
                 var (actions, _) = NewActions(service);
-                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(),
+                    tenantName: "kurrent");
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 // Control.Loaded is POSTED at DispatcherPriority.Loaded (Avalonia defers it, it
@@ -65,10 +66,13 @@ public class MainWindowSmokeTests {
                 return texts;
             });
 
-            await Assert.That(rendered).Contains("daemon-a");
-            await Assert.That(rendered).Contains("1.2.3");
-            await Assert.That(rendered).Contains("http://localhost:9999");
-            await Assert.That(rendered).Contains("1 of 5 agents");
+            // The rail footer is the one daemon indicator: word + tenant on screen, the identity
+            // block (name/version/URL) demoted to its hover tooltip — rendered text must NOT
+            // carry it.
+            await Assert.That(rendered).Contains("Connected");
+            await Assert.That(rendered).Contains("kurrent");
+            await Assert.That(rendered).DoesNotContain("daemon-a");
+            await Assert.That(rendered).DoesNotContain("http://localhost:9999");
         });
     }
 

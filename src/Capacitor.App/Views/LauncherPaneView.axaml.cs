@@ -86,6 +86,32 @@ public partial class LauncherPaneView : UserControl {
         await vm.SelectRepositoryAsync(path);
     }
 
+    // Effort picker: the shared low→xhigh ladder the daemon passes through (codex maps max→xhigh
+    // itself); Default hands the choice back to the harness. A wrong value for a given vendor
+    // surfaces as that session's own launch error, same as the CLI's --effort.
+    static readonly string[] EffortLadder = ["low", "medium", "high", "xhigh"];
+
+    void OnEffortChipClick(object? sender, RoutedEventArgs e) {
+        if (DataContext is not HomeViewModel vm || sender is not Control anchor) return;
+
+        var flyout = new MenuFlyout();
+        var byDefault = new MenuItem {
+            Header = "Default", ToggleType = MenuItemToggleType.Radio, IsChecked = vm.SelectedEffort is null,
+        };
+        byDefault.Click += (_, _) => vm.SelectedEffort = null;
+        flyout.Items.Add(byDefault);
+        flyout.Items.Add(new Separator());
+        foreach (var effort in EffortLadder) {
+            var item = new MenuItem {
+                Header = effort, ToggleType = MenuItemToggleType.Radio, IsChecked = vm.SelectedEffort == effort,
+            };
+            var value = effort;
+            item.Click += (_, _) => vm.SelectedEffort = value;
+            flyout.Items.Add(item);
+        }
+        flyout.ShowAt(anchor);
+    }
+
     // Harness picker: one flyout item per HostedHarnessCatalog option, disabled (never denied
     // outright) when the daemon hasn't advertised it — same "always offered, never withdrawn
     // silently" rule HostedHarnessCatalog's own doc comment states.
@@ -104,6 +130,29 @@ public partial class LauncherPaneView : UserControl {
         }
         flyout.ShowAt(anchor);
     }
+}
+
+/// ModelChip's label: the chosen id verbatim, or the default wording for "" — the wire's own
+/// "blank = vendor default" convention rendered as words.
+public sealed class ModelChipTextConverter : IValueConverter {
+    public static readonly ModelChipTextConverter Instance = new();
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is string { Length: > 0 } model && !string.IsNullOrWhiteSpace(model) ? model : "Default model";
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}
+
+/// EffortChip's label: the chosen rung, or the default wording for null.
+public sealed class EffortChipTextConverter : IValueConverter {
+    public static readonly EffortChipTextConverter Instance = new();
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is string { Length: > 0 } effort ? $"Effort: {effort}" : "Default effort";
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
 }
 
 /// The pane's headline names the selected repository the way T3's new-thread screen does; the

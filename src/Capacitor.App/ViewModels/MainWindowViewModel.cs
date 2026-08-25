@@ -137,6 +137,10 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// that predates it, same nullable-seam shape as Home/workspaceFactory above.
     public SessionRailViewModel? Rail { get; }
 
+    /// The active profile's name — the tenant slug (profiles are named after it at sign-in).
+    /// "" for a caller without one (tests, pre-onboarding); the footer binding tolerates it.
+    public string TenantName { get; }
+
     /// The launch auto-open's staleness token — see NavigationGate. Read from the SHARED gate, not
     /// a per-window counter, so a window built after shutdown began sees the latch too.
     public int NavigationGeneration => _navigation.Generation;
@@ -217,7 +221,8 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
             CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
             IObservable<string?>? lifecycleStatus = null, TimeProvider? time = null, HomeViewModel? home = null,
             NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
-            Func<string, WorkspaceViewModel>? workspaceFactory = null, SessionRailViewModel? rail = null) {
+            Func<string, WorkspaceViewModel>? workspaceFactory = null, SessionRailViewModel? rail = null,
+            string? tenantName = null) {
         _service = service;
         _time = time ?? TimeProvider.System;
         Activity = activity;
@@ -226,6 +231,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         _trackTeardown = trackWorkspaceTeardown ?? RunUntracked;
         _workspaceFactory = workspaceFactory;
         Rail = rail;
+        TenantName = tenantName ?? "";
         CloseWorkspaceCommand = ReactiveCommand.Create(CloseWorkspace);
         ShowHomeCommand = ReactiveCommand.Create(() => { CurrentView = ShellView.Home; });
         ShowSessionsCommand = ReactiveCommand.Create(() => { CurrentView = ShellView.Sessions; });

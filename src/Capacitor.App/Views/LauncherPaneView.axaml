@@ -40,6 +40,31 @@
                         </Button.Content>
                     </Button>
 
+                    <Button x:Name="ModelChip"
+                            Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                            Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                            Content="{Binding SelectedModel, Converter={x:Static views:ModelChipTextConverter.Instance}}"
+                            ToolTip.Tip="Model — blank means the harness default">
+                        <Button.Flyout>
+                            <Flyout Placement="Bottom">
+                                <StackPanel Width="280" Spacing="6">
+                                    <TextBlock Text="Model" FontSize="11" FontWeight="SemiBold"
+                                               Foreground="{StaticResource KcapMutedBrush}" />
+                                    <TextBox Text="{Binding SelectedModel}" PlaceholderText="vendor default"
+                                             FontSize="12.5" />
+                                    <TextBlock Text="The exact id or alias the selected harness accepts; blank keeps its default. Resets when the harness changes."
+                                               FontSize="10.5" Foreground="{StaticResource KcapFaintBrush}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Flyout>
+                        </Button.Flyout>
+                    </Button>
+
+                    <Button x:Name="EffortChip" Click="OnEffortChipClick"
+                            Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
+                            Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
+                            Content="{Binding SelectedEffort, Converter={x:Static views:EffortChipTextConverter.Instance}}"
+                            ToolTip.Tip="Reasoning effort — Default lets the harness decide" />
+
                     <CheckBox x:Name="RememberToggle" Content="Remember" IsChecked="{Binding RememberHarness}"
                               Foreground="{StaticResource KcapMutedBrush}" />
 

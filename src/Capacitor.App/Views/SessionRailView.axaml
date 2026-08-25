@@ -53,14 +53,31 @@
                 </Button>
             </StackPanel>
 
+            <!-- The one daemon indicator: dot + word + tenant, with the full identity (daemon,
+                 version, server, agent count) one hover away rather than a block of chrome. -->
             <Border DockPanel.Dock="Bottom" BorderThickness="0,1,0,0" BorderBrush="{StaticResource KcapBorderBrush}">
-                <DockPanel Margin="16,10,16,14">
+                <ToolTip.Tip>
+                    <StackPanel Spacing="3">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="{Binding DaemonName}" FontWeight="Bold" />
+                            <TextBlock Text="{Binding VersionDisplay}" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding ServerUrl}" />
+                        <TextBlock Text="{Binding AgentCountText}" />
+                    </StackPanel>
+                </ToolTip.Tip>
+                <DockPanel Margin="16,10,16,14" Background="Transparent">
                     <TextBlock DockPanel.Dock="Right" Text="{Binding Rail.HostedText, FallbackValue=''}"
                                FontSize="11.5" Foreground="{StaticResource KcapFaintBrush}" VerticalAlignment="Center" />
                     <StackPanel Orientation="Horizontal" Spacing="7">
                         <Ellipse Width="7" Height="7" Fill="{Binding StatusDotBrush}" VerticalAlignment="Center" />
                         <TextBlock Text="{Binding ConnectionDisplay}" FontSize="11.5"
                                    Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="·" FontSize="11.5" Foreground="{StaticResource KcapFaintBrush}"
+                                   IsVisible="{Binding TenantName, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                        <TextBlock x:Name="RailTenantText" Text="{Binding TenantName}" FontSize="11.5"
+                                   Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center"
+                                   IsVisible="{Binding TenantName, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                     </StackPanel>
                 </DockPanel>
             </Border>

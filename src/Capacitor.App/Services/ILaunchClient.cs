@@ -2,7 +2,11 @@ using System.Text.Json.Serialization;
 
 namespace Capacitor.App.Services;
 
-public sealed record LaunchRequest(string DaemonName, string RepoPath, string Vendor, string? Prompt);
+/// Model "" and Effort null both mean "vendor default" — the wire's own conventions (the server
+/// rejects a null model; the daemon treats whitespace as no request).
+public sealed record LaunchRequest(
+    string DaemonName, string RepoPath, string Vendor, string? Prompt,
+    string Model = "", string? Effort = null);
 
 public sealed record LaunchOutcome(bool Started, string? AgentId, string? Error);
 
@@ -46,7 +50,8 @@ public static class LaunchPayload {
     public static LaunchAgentRequestV2Payload For(LaunchRequest r) => new() {
         DaemonName = r.DaemonName,
         Prompt     = string.IsNullOrWhiteSpace(r.Prompt) ? null : r.Prompt,
-        Model      = "",   // vendor default; the server rejects null
+        Model      = r.Model.Trim(),   // "" = vendor default; the server rejects null
+        Effort     = string.IsNullOrWhiteSpace(r.Effort) ? null : r.Effort,
         RepoPath   = r.RepoPath,
         Vendor     = r.Vendor,
     };

@@ -149,6 +149,31 @@ public class HomeViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
+    public async Task Start_carries_the_chosen_model_and_effort_and_a_vendor_change_resets_the_model() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var vm = Build(out var launch, out _, path);
+
+            await vm.SelectRepositoryAsync("/repo/a");
+            vm.SelectedModel = "claude-fable-5";
+            vm.SelectedEffort = "high";
+            await vm.StartCommand.Execute();
+
+            await Assert.That(launch.Last!.Model).IsEqualTo("claude-fable-5");
+            await Assert.That(launch.Last!.Effort).IsEqualTo("high");
+
+            // Model ids are vendor-specific; effort's ladder is shared and survives.
+            await vm.ChooseHarnessAsync("codex");
+            await Assert.That(vm.SelectedModel).IsEqualTo("");
+            await Assert.That(vm.SelectedEffort).IsEqualTo("high");
+
+            await vm.StartCommand.Execute();
+            await Assert.That(launch.Last!.Model).IsEqualTo("");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
     public async Task A_failed_start_surfaces_the_servers_reason() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             using var tmp = TempDir.WithPathTo("app-state.json", out var path);
