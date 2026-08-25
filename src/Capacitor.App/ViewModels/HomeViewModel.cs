@@ -36,10 +36,18 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// a storage key only.
     public const string ScratchRepoPath = "";
 
+    /// A launch that started but handed back an id nothing can open. The session is real and running
+    /// — it just has to be reached from the session list, so this is a launch-succeeded wording, not
+    /// a failure one (spec §3, entry-point guards).
+    public const string UnusableIdMessage = "Launched, but the session id was unusable — open it from the session list.";
+
     readonly IDaemonClientService _daemon;
     readonly IAppStateStore _state;
     readonly ILaunchClient _launch;
     readonly Func<Task<string[]>> _knownRepos;
+    readonly Action<string>? _openSession;
+    readonly Func<int>? _navigationGeneration;
+    readonly Action<string, int>? _openSessionIfCurrent;
     readonly CompositeDisposable _disposables = new();
 
     string _selectedRepoPath = ScratchRepoPath;
@@ -94,14 +102,31 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// knownRepos is RepoPathStore.GetSortedPathsAsync in production — the same persisted list
     /// DaemonConnect.RepoPaths feeds the server's launch dialog. Required (no defaulted overload)
     /// so a test can never silently read the developer's own ~/.config/kcap/repos.json.
+    /// <param name="openSession">
+    /// A session card's click (MainWindowViewModel.OpenSession). Null leaves the cards inert — a
+    /// HomeViewModel with no window to navigate.
+    /// </param>
+    /// <param name="navigationGeneration">
+    /// Read BEFORE the launch call, never after: the captured value is what makes a success that
+    /// lands after the user navigated away open nothing (spec §3).
+    /// </param>
+    /// <param name="openSessionIfCurrent">
+    /// The launch auto-open (MainWindowViewModel.OpenSessionIfCurrent), carrying that captured
+    /// generation.
+    /// </param>
     public HomeViewModel(
             IDaemonClientService daemon, IAppStateStore state, ILaunchClient launch,
-            Func<Task<string[]>> knownRepos, CancellationToken shutdown = default) {
+            Func<Task<string[]>> knownRepos, CancellationToken shutdown = default,
+            Action<string>? openSession = null, Func<int>? navigationGeneration = null,
+            Action<string, int>? openSessionIfCurrent = null) {
         _daemon = daemon;
         _state = state;
         _launch = launch;
         _knownRepos = knownRepos;
         _shutdown = shutdown;
+        _openSession = openSession;
+        _navigationGeneration = navigationGeneration;
+        _openSessionIfCurrent = openSessionIfCurrent;
 
         // Never starts empty: a null SupportedVendors means "daemon
         // capability unknown", not "hosts nothing" — Build(null) offers everything until the first
@@ -193,16 +218,42 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         SelectedVendor = Lookup(saved.HarnessByRepo, repoPath) ?? DefaultVendor;
     }
 
+    /// A session card's click (HomeView routes it here). No generation is involved — the click IS
+    /// the current navigation, unlike the launch auto-open below.
+    public void OpenSessionRequested(string agentId) => _openSession?.Invoke(agentId);
+
     async Task StartAsync() {
         var request = new LaunchRequest(_daemon.DaemonName, SelectedRepoPath, SelectedVendor, Goal);
+        // Captured BEFORE the call, never after (spec §3): the whole point is to notice a navigation
+        // that happened WHILE the launch was in flight.
+        var generation = _navigationGeneration?.Invoke() ?? 0;
+
         var outcome = await _launch.StartAsync(request, _shutdown);
-        if (outcome.Started) {
-            StartError = null;
-            Goal = "";
-        } else {
+        if (!outcome.Started) {
             StartError = outcome.Error;
+            return;
         }
+
+        StartError = null;
+        Goal = ""; // the launch really did start — the goal is spent either way
+        if (NormalizeAgentId(outcome.AgentId) is not { } agentId) {
+            StartError = UnusableIdMessage;
+            return;
+        }
+
+        _openSessionIfCurrent?.Invoke(agentId, generation);
     }
+
+    /// Id shapes differ across the stack and across daemon versions: the server hub has returned
+    /// DASHED Guids while a production daemon keys its status cache on SHORT (8-hex) ids — so a
+    /// Guid in any format is normalized to "N" (the Guid-keyed daemons' cache shape), and any
+    /// other non-empty id passes through VERBATIM to match whatever the daemon actually sent.
+    /// Only a null/blank id is unusable; an id that matches nothing degrades gracefully in the
+    /// workspace ("session not found" with retry), which beats a red error under a live card.
+    internal static string? NormalizeAgentId(string? agentId) =>
+        Guid.TryParse(agentId, out var parsed) ? parsed.ToString("N")
+        : string.IsNullOrWhiteSpace(agentId) ? null
+        : agentId;
 
     /// Repo paths compare the way the filesystem underneath them does: case-insensitively on
     /// Windows and macOS, case-sensitively on Linux where two checkouts differing only in case are

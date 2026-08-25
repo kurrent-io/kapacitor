@@ -7,6 +7,7 @@ using Capacitor.App.ViewModels;
 using Capacitor.App.Views;
 using Capacitor.Cli.Core.LocalIpc;
 using DynamicData;
+using Microsoft.Extensions.Time.Testing;
 using static Capacitor.App.Tests.Unit.FakeDaemonClientService;
 
 namespace Capacitor.App.Tests.Unit;
@@ -394,5 +395,60 @@ public class MainWindowSmokeTests {
         await Assert.That(afterActivity).IsEqualTo(1); // selecting Activity: one immediate read
         await Assert.That(afterHide).IsEqualTo(1); // hiding is a FALSE transition — no read
         await Assert.That(afterReshow).IsEqualTo(2); // re-showing: another TRUE transition
+    }
+
+    /// The surface swap itself (spec §3) — the XAML side of what WorkspaceNavigationTests pins on
+    /// the ViewModel. WorkspaceView is materialized from a template rather than always present, so
+    /// this also proves the terminal control is CONSTRUCTED only once a workspace exists.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Opening_a_session_swaps_the_window_from_the_tabbed_shell_to_the_workspace() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var swap = await AvaloniaSession.DispatchAsync(() => {
+                var service = new FakeDaemonClientService();
+                var (actions, _) = NewActions(service);
+                var attach = new FakeTerminalAttachClientFactory();
+                var vm = new MainWindowViewModel(
+                    service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(),
+                    workspaceFactory: agentId => new WorkspaceViewModel(
+                        agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider()));
+                var window = new MainWindow { DataContext = vm };
+                window.Show();
+                Dispatcher.UIThread.RunJobs();
+
+                // IsEffectivelyVisible, not IsVisible: the swap hides the tab strip's whole ANCESTOR
+                // (the shell Grid), and a control's own IsVisible says nothing about that.
+                var tabs = window.GetVisualDescendants().OfType<TabControl>().First(t => t.Name == "MainTabs");
+                var shellVisible = tabs.IsEffectivelyVisible;
+                var workspacesBefore = window.GetVisualDescendants().OfType<WorkspaceView>().Count();
+
+                vm.OpenSession("0123456789abcdef0123456789abcdef");
+                Dispatcher.UIThread.RunJobs();
+                var shellHidden = tabs.IsEffectivelyVisible;
+                var opened = window.GetVisualDescendants().OfType<WorkspaceView>().ToList();
+                // Read NOW, not in the return tuple: closing below detaches the view and clears the
+                // very DataContext this is asserting on.
+                var boundToWorkspace = opened.FirstOrDefault()?.DataContext is WorkspaceViewModel;
+
+                vm.CloseWorkspace();
+                Dispatcher.UIThread.RunJobs();
+                var shellBack = tabs.IsEffectivelyVisible;
+                var workspacesAfter = window.GetVisualDescendants().OfType<WorkspaceView>().Count();
+
+                window.Close();
+                Dispatcher.UIThread.RunJobs();
+
+                return (shellVisible, workspacesBefore, shellHidden, OpenedCount: opened.Count,
+                    boundToWorkspace, shellBack, workspacesAfter);
+            });
+
+            await Assert.That(swap.shellVisible).IsTrue();
+            await Assert.That(swap.workspacesBefore).IsEqualTo(0); // nothing terminal-shaped until a session is opened
+            await Assert.That(swap.shellHidden).IsFalse();
+            await Assert.That(swap.OpenedCount).IsEqualTo(1);
+            await Assert.That(swap.boundToWorkspace).IsTrue();
+            await Assert.That(swap.shellBack).IsTrue();
+            await Assert.That(swap.workspacesAfter).IsEqualTo(0);
+        });
     }
 }

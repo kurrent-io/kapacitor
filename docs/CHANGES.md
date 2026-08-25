@@ -138,6 +138,28 @@ daemon graph, no tray) and hands the outcome channel to the normal graph's consu
 permanently past the quiesce cap (decision 2/§6a). The §7 streaming `IProcessRunner` backs the
 Import step's live, bounded-tail log pane.
 
+## Session workspace terminal
+
+**AI-2195** (spec: `docs/superpowers/specs/2026-08-24-ai2195-session-workspace-terminal-design.md`)
+attaches a live terminal to the session workspace. `TerminalTabViewModel` opens every workspace in
+`Resolving` and **never constructs an attach client until the session's first matching
+`AgentStatusDto` arrives**: attaching optimistically would race the has_terminal gate and show a
+spurious "no such agent" flash before a genuinely no-terminal session's note could render. `has_terminal`
+is authoritative when the daemon sends it; `HostedHarnessCatalog`'s vendor-transport map is only the
+fallback for an older daemon that sent null. `AgentAttachClient` linearizes every termination race
+through one atomic cause slot, and **detach intent is recorded, never itself a cause**: a terminal
+frame the pump already read wins even with a detach pending, so a daemon `Exited` racing a client
+`Detach` still resolves `Exited`, not `Detached`; only EOF with detach intent pending settles
+`Detached`. Teardown spends at most its first second on the (best-effort, unacknowledged) `Detach`
+write, then force-closes the socket regardless of whether that write landed — the tmux-style PTY
+dimension clamp is guaranteed to release by roughly that one-second mark on every exit path, not
+contingent on graceful pump completion. `WorkspaceTeardownTracker` seals atomically at the shutdown
+drain (registration and seal cannot race past the final snapshot); a post-seal `Track` is executed
+and observed rather than refused, so a workspace a coordinator builds between the two shutdown passes
+still cannot hold a socket open past the drain. The companion guard lives in `NavigationGate`: its
+first shutdown pass latches (which also bumps the generation), so `OpenSession` — card click or launch
+auto-open alike — rejects from then on in every window, current or later-built.
+
 ## Launch and stop command routing
 
 The receive pump no longer awaits launch/stop EXECUTION for either command format: arrival order is

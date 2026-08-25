@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Specialized;
 using System.Reactive.Linq;
 using Avalonia.Controls;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Capacitor.App.Services;
@@ -17,8 +18,13 @@ namespace Capacitor.App.Tests.Unit;
 /// headless something to Show(); session setup and control lookup otherwise copy
 /// MainWindowSmokeTests exactly (see that file's own header comment).
 public class HomeViewSmokeTests {
+    /// Real-shaped agent ids (Guid("N"), 32 hex digits): a Started outcome carrying anything else
+    /// is HomeViewModel's "launched but unopenable" error, which would keep StartErrorText visible.
+    const string LaunchedId = "0123456789abcdef0123456789abcdef";
+    const string SecondLaunchedId = "fedcba9876543210fedcba9876543210";
+
     sealed class RecordingLaunchClient : ILaunchClient {
-        public LaunchOutcome Next = new(true, "agent-1", null);
+        public LaunchOutcome Next = new(true, LaunchedId, null);
 
         public Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) =>
             Task.FromResult(Next);
@@ -114,7 +120,7 @@ public class HomeViewSmokeTests {
             var afterFailure = errorText.IsVisible;
             var message = errorText.Text;
 
-            launch.Next = new LaunchOutcome(true, "agent-2", null);
+            launch.Next = new LaunchOutcome(true, SecondLaunchedId, null);
             await vm.StartCommand.Execute();
             Dispatcher.UIThread.RunJobs();
             var afterSuccess = errorText.IsVisible;
@@ -178,6 +184,39 @@ public class HomeViewSmokeTests {
         await Assert.That(failure).IsNull();
         await Assert.That(mutatedOnUiThread).IsTrue();
         await Assert.That(realizedCount).IsEqualTo(1);
+    }
+
+    /// The card's click plumbing (spec §3, entry points): the whole card is a Button whose Click
+    /// carries the card's OWN id to the window. Realized-visual-dependent by necessity — the
+    /// handler lives in the item template, so only a rendered card can raise it.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Clicking_a_session_card_asks_to_open_that_session() {
+        var requested = await AvaloniaSession.DispatchAsync(() => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var service = new FakeDaemonClientService();
+            var opened = new List<string>();
+            var vm = new HomeViewModel(
+                service, new AppStateStore(path), new RecordingLaunchClient(),
+                () => Task.FromResult(Array.Empty<string>()), openSession: opened.Add);
+            var window = new Window { Content = new HomeView { DataContext = vm } };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            service.Agents.AddOrUpdate(new AgentStatusDto(
+                SecondLaunchedId, "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null, null));
+            Dispatcher.UIThread.RunJobs();
+
+            var card = window.GetVisualDescendants().OfType<Button>().First(b => b.Classes.Contains("sessionCard"));
+            card.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            vm.Dispose();
+            return opened.ToList();
+        });
+
+        await Assert.That(requested).IsEquivalentTo([SecondLaunchedId]);
     }
 
     [Test]

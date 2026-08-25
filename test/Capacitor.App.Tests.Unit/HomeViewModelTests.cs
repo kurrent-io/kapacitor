@@ -11,9 +11,15 @@ namespace Capacitor.App.Tests.Unit;
 /// here runs inside AvaloniaSession.WithImmediateRxScheduler and carries
 /// [NotInParallel("AvaloniaSession")] — see MainWindowViewModelTests' identical header comment.
 public class HomeViewModelTests {
+    /// The daemon mints agent ids as Guid("N") — 32 hex digits — and a Started outcome carrying
+    /// anything else is the "launched but unopenable" case (spec §3), so every launch fixture here
+    /// uses real-shaped ids.
+    const string LaunchedId = "0123456789abcdef0123456789abcdef";
+    const string SecondLaunchedId = "fedcba9876543210fedcba9876543210";
+
     sealed class RecordingLaunchClient : ILaunchClient {
         public LaunchRequest? Last;
-        public LaunchOutcome Next = new(true, "agent-1", null);
+        public LaunchOutcome Next = new(true, LaunchedId, null);
 
         public Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) {
             Last = request;
@@ -403,7 +409,7 @@ public class HomeViewModelTests {
             await vm.SelectRepositoryAsync("/repo/a");
             await vm.StartCommand.Execute();
 
-            launch.Next = new LaunchOutcome(true, "agent-2", null);
+            launch.Next = new LaunchOutcome(true, SecondLaunchedId, null);
             vm.Goal = "next thing";
             await vm.StartCommand.Execute();
 

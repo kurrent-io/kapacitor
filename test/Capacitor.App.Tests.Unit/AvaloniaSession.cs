@@ -73,4 +73,16 @@ internal static class AvaloniaSession {
         RxSchedulers.MainThreadScheduler = ImmediateScheduler.Instance;
         try { await body(); } finally { RxSchedulers.MainThreadScheduler = prior; }
     }
+
+    /// The standard wrapper for tests that need BOTH pieces at once: WithImmediateRxScheduler
+    /// nested INSIDE DispatchAsync. ObserveOn(RxSchedulers.MainThreadScheduler) projections need
+    /// the immediate scheduler to apply synchronously, while any Dispatcher.UIThread.InvokeAsync
+    /// hop needs the live pumped dispatcher loop DispatchAsync provides -- outside a Dispatch
+    /// frame the headless session's worker thread is blocked and a queued InvokeAsync never runs
+    /// (see TerminalTabViewModelTests' header comment for the full account).
+    public static Task RunOnUiAsync(Func<Task> body) =>
+        DispatchAsync(async () => {
+            await WithImmediateRxScheduler(body);
+            return true;
+        });
 }

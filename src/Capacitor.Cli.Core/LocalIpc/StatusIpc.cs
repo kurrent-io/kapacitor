@@ -38,7 +38,13 @@ public sealed record DaemonInfoDto(
 public sealed record AgentStatusDto(
     string Id, string Kind, string Vendor, string? RepoPath, string Status,
     string? FlowRunId, string? FlowRole, string? Requester, DateTime CreatedAt, string? Model,
-    string? RequesterDisplay);
+    string? RequesterDisplay,
+    // Whether the agent's runtime emits a PTY the app can attach to
+    // (IHostedAgentRuntime.EmitsTerminalOutput). Trailing + nullable so every
+    // existing positional construction stays valid; null = older daemon,
+    // unknown — the app falls back to its vendor heuristic. Always emitted:
+    // false is a real value, not an absence.
+    bool? HasTerminal = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(DaemonStatusDto))]
