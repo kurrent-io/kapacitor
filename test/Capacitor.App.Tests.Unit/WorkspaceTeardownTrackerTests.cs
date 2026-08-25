@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Capacitor.App.Services;
 using Microsoft.Extensions.Time.Testing;
+using static Capacitor.App.Tests.Unit.WorkspaceFixtures;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -10,14 +11,6 @@ namespace Capacitor.App.Tests.Unit;
 /// first would leave the timer scheduled into a future that already passed.
 public class WorkspaceTeardownTrackerTests {
     static readonly DateTimeOffset T0 = new(2026, 8, 8, 10, 0, 0, TimeSpan.Zero);
-
-    static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null, string what = "condition") {
-        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
-        while (!condition()) {
-            if (DateTime.UtcNow > deadline) throw new TimeoutException($"Timed out waiting for: {what}");
-            await Task.Delay(10);
-        }
-    }
 
     [Test]
     public async Task Track_runs_and_observes_a_normal_teardown() {

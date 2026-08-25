@@ -411,7 +411,7 @@ public class MainWindowSmokeTests {
                 var vm = new MainWindowViewModel(
                     service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(),
                     workspaceFactory: agentId => new WorkspaceViewModel(
-                        agentId, service, actions, attach.Factory, () => new SilentTerminalSurface(), new FakeTimeProvider()));
+                        agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider()));
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 Dispatcher.UIThread.RunJobs();
@@ -450,18 +450,5 @@ public class MainWindowSmokeTests {
             await Assert.That(swap.shellBack).IsTrue();
             await Assert.That(swap.workspacesAfter).IsEqualTo(0);
         });
-    }
-
-    /// Feeds nowhere and raises nothing: this suite is about the window's surfaces, not the
-    /// terminal's own behavior (TerminalTabViewModelTests owns that).
-    sealed class SilentTerminalSurface : ITerminalSurface {
-        public void Feed(string text) { }
-        public event Action<byte[]>? InputProduced;
-        public event Action<int, int>? Resized;
-        public void RaiseInput(byte[] bytes) => InputProduced?.Invoke(bytes);
-        public void RaiseResize(int cols, int rows) => Resized?.Invoke(cols, rows);
-        public (int Cols, int Rows) CurrentSize { get; set; } = (80, 24);
-        public int CaretShown;
-        public void EnsureCaretVisible() => CaretShown++;
     }
 }

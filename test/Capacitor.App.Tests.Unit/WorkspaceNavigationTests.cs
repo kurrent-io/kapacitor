@@ -1,5 +1,4 @@
 using System.Reactive.Linq;
-using System.Reactive.Subjects;
 using System.Reactive.Threading.Tasks;
 using Avalonia.Threading;
 using Capacitor.App.Services;
@@ -8,6 +7,8 @@ using Capacitor.App.Views;
 using Capacitor.Cli.Core.LocalIpc;
 using DynamicData;
 using Microsoft.Extensions.Time.Testing;
+using static Capacitor.App.Tests.Unit.AvaloniaSession;
+using static Capacitor.App.Tests.Unit.WorkspaceFixtures;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -26,17 +27,6 @@ public class WorkspaceNavigationTests {
     const string Id1 = "0123456789abcdef0123456789abcdef";
     const string Id2 = "fedcba9876543210fedcba9876543210";
     const string UnusableId = "Launched, but the session id was unusable — open it from the session list.";
-
-    sealed class FakeTerminalSurface : ITerminalSurface {
-        public void Feed(string text) { }
-        public event Action<byte[]>? InputProduced;
-        public event Action<int, int>? Resized;
-        public void RaiseInput(byte[] bytes) => InputProduced?.Invoke(bytes);
-        public void RaiseResize(int cols, int rows) => Resized?.Invoke(cols, rows);
-        public (int Cols, int Rows) CurrentSize { get; set; } = (80, 24);
-        public int CaretShown;
-        public void EnsureCaretVisible() => CaretShown++;
-    }
 
     /// The tracker as the VM sees it (Action&lt;Func&lt;Task&gt;&gt;): records every registration and
     /// starts it immediately, exactly like WorkspaceTeardownTracker.Track — so a test can count
@@ -65,14 +55,8 @@ public class WorkspaceNavigationTests {
         public Task<LaunchOutcome> StartAsync(LaunchRequest request, CancellationToken ct) => Gate.Task;
     }
 
-    static AgentStatusDto Agent(string id, bool? hasTerminal = true, string vendor = "claude") => new(
-        id, "agent", vendor, "/repo/myproj", "Running",
-        FlowRunId: null, FlowRole: null, Requester: null, CreatedAt: DateTime.UtcNow, Model: null,
-        RequesterDisplay: null, HasTerminal: hasTerminal);
-
-    static AgentActionService NewActions() =>
-        new(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener(),
-            new ReplaySubject<DaemonStatusDto>(1), CancellationToken.None, NeverConfirm.Confirm);
+    static AgentStatusDto Agent(string id, bool? hasTerminal = true, string vendor = "claude") =>
+        WorkspaceFixtures.Agent(id, vendor, hasTerminal, "/repo/myproj");
 
     /// The composition root's shape with its three navigation seams faked: a SHARED navigation gate
     /// (a window the coordinator rebuilds gets the same one), the tracker as a delegate, and a
@@ -124,14 +108,6 @@ public class WorkspaceNavigationTests {
             openSession: nav.Vm.OpenSession,
             navigationGeneration: () => nav.Vm.NavigationGeneration,
             openSessionIfCurrent: nav.Vm.OpenSessionIfCurrent);
-
-    // See the class doc comment: WithImmediateRxScheduler alone never pumps Dispatcher.UIThread,
-    // which every workspace open and every teardown reaches.
-    static Task RunOnUiAsync(Func<Task> body) =>
-        AvaloniaSession.DispatchAsync(async () => {
-            await AvaloniaSession.WithImmediateRxScheduler(body);
-            return true;
-        });
 
     [Test]
     [NotInParallel("AvaloniaSession")]

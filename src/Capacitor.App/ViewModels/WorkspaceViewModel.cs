@@ -110,13 +110,10 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         _showsTerminalTab = presence.Select(p => p.Dto is not null && HostedHarnessCatalog.ShowsTerminal(p.Dto.HasTerminal, p.Dto.Vendor))
             .ToProperty(this, x => x.ShowsTerminalTab, initialValue: false)
             .DisposeWith(_disposables);
-        // TerminalTabViewModel.NoteFor is the one source for this wording (bare for a non-ACP
-        // family, " — runs over ACP" suffix only when the family is reliably known to be ACP,
-        // never a vendor name) -- reused verbatim rather than re-derived here. Blank whenever
-        // ShowsTerminalTab is true (or the dto isn't resolved yet): the note replaces the Terminal
-        // tab button in the tab strip, so it must never render alongside it.
+        // Blank whenever ShowsTerminalTab is true (or the dto isn't resolved yet): the note
+        // replaces the Terminal tab button in the tab strip, so it must never render alongside it.
         _noTerminalNote = presence
-            .Select(p => p.Dto is null || HostedHarnessCatalog.ShowsTerminal(p.Dto.HasTerminal, p.Dto.Vendor) ? "" : TerminalTabViewModel.NoteFor(p.Dto))
+            .Select(p => p.Dto is null || HostedHarnessCatalog.ShowsTerminal(p.Dto.HasTerminal, p.Dto.Vendor) ? "" : HostedHarnessCatalog.NoTerminalNote(p.Dto.HasTerminal, p.Dto.Vendor))
             .ToProperty(this, x => x.NoTerminalNote, "")
             .DisposeWith(_disposables);
         _sessionEnded = presence.Select(p => p.SessionEnded)

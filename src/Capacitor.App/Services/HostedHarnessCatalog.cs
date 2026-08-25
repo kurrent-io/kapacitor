@@ -82,4 +82,14 @@ public static class HostedHarnessCatalog {
         var family = FamilyFor(vendor);
         return hasTerminal == false && family == "pty" ? "rpc" : family;
     }
+
+    /// The one source of the no-terminal wording (terminal tab and workspace tab strip alike).
+    /// Suffixed only when the family is reliably known: ACP is; the rpc/"chat" bucket also covers
+    /// claude/codex/any unmapped vendor whose has_terminal came back false for a reason this build
+    /// can't classify further, so it gets no family token at all rather than leaking "RPC" (an
+    /// internal transport name, not a user-facing concept).
+    public static string NoTerminalNote(bool? hasTerminal, string vendor) =>
+        EffectiveFamily(hasTerminal, vendor) == "acp"
+            ? "This session runs over ACP — no terminal to attach to."
+            : "This session has no terminal.";
 }

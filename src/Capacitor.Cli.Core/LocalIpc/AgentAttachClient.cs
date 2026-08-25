@@ -100,7 +100,7 @@ public sealed class AgentAttachClient : IAsyncDisposable {
                         break;                                            // no nudge: never influence the clamp
                     }
                     case FrameType.Stdout:
-                        if (!await InvokeCallbackAsync(() => _onOutput(frame.Bytes, _lifetime.Token))) goto done;
+                        if (!await InvokeOutputAsync(frame.Bytes)) goto done;
                         break;
                     case FrameType.Exited:
                         TryClaim(new AttachOutcome.Exited(frame.ExitCode));
@@ -133,6 +133,17 @@ public sealed class AgentAttachClient : IAsyncDisposable {
         catch (Exception ex) {
             // A won claim IS the run's result (Project rethrows it) — not a diagnostic;
             // only a loss (Dispose or another producer already claimed) is reported.
+            if (!TryClaim(ex)) ReportIfLost("callback", ex);
+            return false;
+        }
+    }
+
+    // Stdout's own lane: identical containment to InvokeCallbackAsync, but taking the
+    // bytes directly — a closure per frame is a heap allocation on the hottest path.
+    async Task<bool> InvokeOutputAsync(byte[] bytes) {
+        try { await _onOutput(bytes, _lifetime!.Token).ConfigureAwait(false); return true; }
+        catch (OperationCanceledException) when (_lifetime!.IsCancellationRequested) { throw; }
+        catch (Exception ex) {
             if (!TryClaim(ex)) ReportIfLost("callback", ex);
             return false;
         }

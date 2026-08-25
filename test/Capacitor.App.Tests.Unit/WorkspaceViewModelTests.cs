@@ -6,6 +6,8 @@ using Capacitor.Cli.Core.LocalIpc;
 using DynamicData;
 using Microsoft.Extensions.Time.Testing;
 using TUnit.Assertions.Enums;
+using static Capacitor.App.Tests.Unit.AvaloniaSession;
+using static Capacitor.App.Tests.Unit.WorkspaceFixtures;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -19,24 +21,6 @@ namespace Capacitor.App.Tests.Unit;
 /// so ObserveOn(RxSchedulers.MainThreadScheduler) applies synchronously) and carries
 /// [NotInParallel("AvaloniaSession")] -- see that class's identical header comment.
 public class WorkspaceViewModelTests {
-    sealed class FakeTerminalSurface : ITerminalSurface {
-        public void Feed(string text) { }
-        public event Action<byte[]>? InputProduced;
-        public event Action<int, int>? Resized;
-        public void RaiseInput(byte[] bytes) => InputProduced?.Invoke(bytes);
-        public void RaiseResize(int cols, int rows) => Resized?.Invoke(cols, rows);
-        public (int Cols, int Rows) CurrentSize { get; set; } = (80, 24);
-        public int CaretShown;
-        public void EnsureCaretVisible() => CaretShown++;
-    }
-
-    static AgentStatusDto Agent(
-            string id, string vendor, bool? hasTerminal, string? repoPath = null,
-            string kind = "agent", string? model = null) => new(
-        id, kind, vendor, repoPath, "Running",
-        FlowRunId: null, FlowRole: null, Requester: null, CreatedAt: DateTime.UtcNow, Model: model,
-        RequesterDisplay: null, HasTerminal: hasTerminal);
-
     static WorkspaceViewModel Build(
             FakeDaemonClientService daemon, AgentActionService actions, FakeTerminalAttachClientFactory factory,
             FakeTimeProvider time, string agentId = "a1") =>
@@ -47,22 +31,6 @@ public class WorkspaceViewModelTests {
             Func<string, Task<bool>>? confirmForceStop = null) =>
         new(ops, notifier, opener, new ReplaySubject<DaemonStatusDto>(1), CancellationToken.None,
             confirmForceStop ?? NeverConfirm.Confirm);
-
-    static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null, string what = "condition") {
-        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
-        while (!condition()) {
-            if (DateTime.UtcNow > deadline) throw new TimeoutException($"Timed out waiting for: {what}");
-            await Task.Delay(10);
-        }
-    }
-
-    // See the class doc comment: WithImmediateRxScheduler alone never pumps Dispatcher.UIThread,
-    // which the internal TerminalTabViewModel's resolve gate reaches on every dto push.
-    static Task RunOnUiAsync(Func<Task> body) =>
-        AvaloniaSession.DispatchAsync(async () => {
-            await AvaloniaSession.WithImmediateRxScheduler(body);
-            return true;
-        });
 
     [Test]
     [NotInParallel("AvaloniaSession")]

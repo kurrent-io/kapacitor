@@ -6,6 +6,8 @@ using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core.LocalIpc;
 using DynamicData;
 using Microsoft.Extensions.Time.Testing;
+using static Capacitor.App.Tests.Unit.AvaloniaSession;
+using static Capacitor.App.Tests.Unit.WorkspaceFixtures;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -24,49 +26,10 @@ namespace Capacitor.App.Tests.Unit;
 /// comment documents the identical fix for its Dispatcher.UIThread.InvokeAsync hop. RunOnUiAsync
 /// nests WithImmediateRxScheduler INSIDE DispatchAsync so both are satisfied at once.
 public class TerminalTabViewModelTests {
-    sealed class FakeTerminalSurface : ITerminalSurface {
-        public List<string> Fed { get; } = [];
-        public void Feed(string text) => Fed.Add(text);
-        public event Action<byte[]>? InputProduced;
-        public event Action<int, int>? Resized;
-        public void RaiseInput(byte[] bytes) => InputProduced?.Invoke(bytes);
-        public void RaiseResize(int cols, int rows) => Resized?.Invoke(cols, rows);
-        public (int Cols, int Rows) CurrentSize { get; set; } = (80, 24);
-        public int CaretShown;
-        public void EnsureCaretVisible() => CaretShown++;
-    }
-
-    static AgentStatusDto Agent(string id, string vendor, bool? hasTerminal, string? repoPath = null) => new(
-        id, "agent", vendor, repoPath, "Running",
-        FlowRunId: null, FlowRole: null, Requester: null, CreatedAt: DateTime.UtcNow, Model: null,
-        RequesterDisplay: null, HasTerminal: hasTerminal);
-
     static TerminalTabViewModel Build(
             FakeDaemonClientService daemon, FakeTerminalAttachClientFactory factory, FakeTimeProvider time,
             string agentId = "a1", Func<ITerminalSurface>? surfaceFactory = null) =>
         new(agentId, daemon, factory.Factory, surfaceFactory ?? (() => new FakeTerminalSurface()), time);
-
-    // Real-time poll for a condition an async continuation settles OUTSIDE the test's own await
-    // chain (e.g. a Task.ContinueWith observer attached to an abandoned task) -- never used to
-    // gate FakeTimeProvider-driven logic itself, only to let its already-fired continuations
-    // flush. Same idiom as ConsentServiceTests/PauseControllerTests etc.
-    static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null, string what = "condition") {
-        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
-        while (!condition()) {
-            if (DateTime.UtcNow > deadline) throw new TimeoutException($"Timed out waiting for: {what}");
-            await Task.Delay(10);
-        }
-    }
-
-    // See the class doc comment: WithImmediateRxScheduler alone never pumps Dispatcher.UIThread,
-    // so a test that reaches TryStartAttemptAsync/OnAttached/OnOutput (any Dispatcher.UIThread.
-    // InvokeAsync hop) needs the real, live dispatcher loop DispatchAsync provides. Nested rather
-    // than either alone.
-    static Task RunOnUiAsync(Func<Task> body) =>
-        AvaloniaSession.DispatchAsync(async () => {
-            await AvaloniaSession.WithImmediateRxScheduler(body);
-            return true;
-        });
 
     static async Task<(FakeDaemonClientService Daemon, FakeTerminalAttachClientFactory Factory, FakeTimeProvider Time, TerminalTabViewModel Vm, FakeTerminalAttachClient Client)>
             BuildConnectingAsync(string vendor = "claude", bool? hasTerminal = true, string agentId = "a1",

@@ -221,24 +221,12 @@ public sealed class TerminalTabViewModel : ReactiveObject {
                 // Disposal wins permanently: never render a note for a tab TeardownAsync already
                 // tore down (a concurrent teardown could land while this hop is in flight).
                 if (Volatile.Read(ref _resolveState) == ResolveDisposed) return;
-                State = TerminalSessionState.NoTerminal(NoteFor(dto));
+                State = TerminalSessionState.NoTerminal(HostedHarnessCatalog.NoTerminalNote(dto.HasTerminal, dto.Vendor));
             });
             return;
         }
 
         await TryStartAttemptAsync().ConfigureAwait(false);
-    }
-
-    /// Suffixed only when the family is reliably known: ACP is ("This session runs over ACP");
-    /// the rpc/"chat" bucket also covers claude/codex/any unmapped vendor whose has_terminal came
-    /// back false for a reason this build can't classify further, so it gets no family token at
-    /// all rather than leaking "RPC" (an internal transport name, not a user-facing concept).
-    /// Internal (not private): WorkspaceViewModel's NoTerminalNote reuses this verbatim rather
-    /// than re-deriving the same wording from a second copy.
-    internal static string NoteFor(AgentStatusDto dto) {
-        const string bare = "This session has no terminal.";
-        var family = HostedHarnessCatalog.EffectiveFamily(dto.HasTerminal, dto.Vendor);
-        return family == "acp" ? "This session runs over ACP — no terminal to attach to." : bare;
     }
 
     /// Attach or reattach: retires whatever attempt is current (cancel + await-dispose its

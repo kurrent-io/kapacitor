@@ -1,4 +1,3 @@
-using System.Reactive.Subjects;
 using Avalonia.Controls;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -8,6 +7,8 @@ using Capacitor.App.Views;
 using Capacitor.Cli.Core.LocalIpc;
 using DynamicData;
 using Microsoft.Extensions.Time.Testing;
+using static Capacitor.App.Tests.Unit.AvaloniaSession;
+using static Capacitor.App.Tests.Unit.WorkspaceFixtures;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -24,31 +25,12 @@ namespace Capacitor.App.Tests.Unit;
 /// the NoTerminal and the attach branches dispatch) -- so every test here runs through the same
 /// RunOnUiAsync nesting WorkspaceViewModelTests/WorkspaceNavigationTests use (DispatchAsync for a
 /// live pumped dispatcher, WithImmediateRxScheduler so ObserveOn(RxSchedulers.MainThreadScheduler)
-/// applies synchronously) and carries [NotInParallel("AvaloniaSession")]. Fixture pieces (the fake
-/// terminal surface, FakeTerminalAttachClientFactory, the AgentActionService scripted deps) are
-/// copied from WorkspaceNavigationTests/WorkspaceViewModelTests rather than re-derived.
+/// applies synchronously) and carries [NotInParallel("AvaloniaSession")].
 public class WorkspaceViewSmokeTests {
     const string AgentId = "0123456789abcdef0123456789abcdef";
 
-    sealed class FakeTerminalSurface : ITerminalSurface {
-        public void Feed(string text) { }
-        public event Action<byte[]>? InputProduced;
-        public event Action<int, int>? Resized;
-        public void RaiseInput(byte[] bytes) => InputProduced?.Invoke(bytes);
-        public void RaiseResize(int cols, int rows) => Resized?.Invoke(cols, rows);
-        public (int Cols, int Rows) CurrentSize { get; set; } = (80, 24);
-        public int CaretShown;
-        public void EnsureCaretVisible() => CaretShown++;
-    }
-
-    static AgentStatusDto Agent(string id, bool? hasTerminal, string vendor = "claude") => new(
-        id, "agent", vendor, "/repo/myproj", "Running",
-        FlowRunId: null, FlowRole: null, Requester: null, CreatedAt: DateTime.UtcNow, Model: null,
-        RequesterDisplay: null, HasTerminal: hasTerminal);
-
-    static AgentActionService NewActions() =>
-        new(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener(),
-            new ReplaySubject<DaemonStatusDto>(1), CancellationToken.None, NeverConfirm.Confirm);
+    static AgentStatusDto Agent(string id, bool? hasTerminal, string vendor = "claude") =>
+        WorkspaceFixtures.Agent(id, vendor, hasTerminal, "/repo/myproj");
 
     static (WorkspaceView View, WorkspaceViewModel Vm, FakeDaemonClientService Daemon, FakeTerminalAttachClientFactory Attach) Build(
             string agentId = AgentId) {
@@ -61,14 +43,6 @@ public class WorkspaceViewSmokeTests {
 
     static T? Find<T>(Window window, string name) where T : Control =>
         window.GetVisualDescendants().OfType<T>().FirstOrDefault(c => c.Name == name);
-
-    // See the class doc comment: WithImmediateRxScheduler alone never pumps Dispatcher.UIThread,
-    // which the internal TerminalTabViewModel's resolve gate and attempt lifecycle both reach.
-    static Task RunOnUiAsync(Func<Task> body) =>
-        AvaloniaSession.DispatchAsync(async () => {
-            await AvaloniaSession.WithImmediateRxScheduler(body);
-            return true;
-        });
 
     /// Run-and-observe: hosts the view with a plainly-Resolving VM (no dto ever pushed) and looks
     /// every named control up by x:Name. Every control is statically declared in the XAML (no

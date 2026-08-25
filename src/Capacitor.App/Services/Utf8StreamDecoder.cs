@@ -8,12 +8,16 @@ using System.Text;
 /// and every live frame, flushed only at terminal completion.
 public sealed class Utf8StreamDecoder {
     readonly Decoder _decoder = Encoding.UTF8.GetDecoder();
+    // Grow-only scratch, safe because delivery is strictly sequential (one reader pump):
+    // without it every frame pays a second allocation beyond the result string.
+    char[] _scratch = new char[256];
 
     public string Decode(ReadOnlySpan<byte> bytes) {
         if (bytes.IsEmpty) return "";
-        var chars = new char[Encoding.UTF8.GetMaxCharCount(bytes.Length)];
-        var n = _decoder.GetChars(bytes, chars, flush: false);
-        return new string(chars, 0, n);
+        var need = Encoding.UTF8.GetMaxCharCount(bytes.Length);
+        if (_scratch.Length < need) _scratch = new char[need];
+        var n = _decoder.GetChars(bytes, _scratch, flush: false);
+        return new string(_scratch, 0, n);
     }
 
     public string Flush() {
