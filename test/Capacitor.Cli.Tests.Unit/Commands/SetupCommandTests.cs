@@ -1070,4 +1070,61 @@ public class SetupCommandTests {
             }
         }
     }
+
+    // --- --org / --slug, the create-a-workspace prompts answered up front ---
+
+    static (RequestedWorkspace? Workspace, string? Error) Parse(
+            string? org, string? slug, bool haveServerUrl = false, bool gitHubProvider = false) =>
+        SetupCommand.ParseRequestedWorkspace(org, slug, haveServerUrl, gitHubProvider);
+
+    [Test]
+    public async Task ParseRequestedWorkspace_asks_for_nothing_when_neither_flag_is_passed() {
+        var (workspace, error) = Parse(null, null);
+
+        await Assert.That(workspace).IsNull();
+        await Assert.That(error).IsNull();
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_carries_both_answers_through() {
+        var (workspace, error) = Parse("  Acme  ", "  acme  ");
+
+        await Assert.That(error).IsNull();
+        await Assert.That(workspace!.OrgName).IsEqualTo("Acme");
+        await Assert.That(workspace.Slug).IsEqualTo("acme");
+    }
+
+    // The slug is a permanent public hostname. Deriving one from the name would pick it on the
+    // user's behalf in the one run nobody is watching, so half a pair is an error, not a default.
+    [Test]
+    [Arguments("Acme", null)]
+    [Arguments(null, "acme")]
+    [Arguments("Acme", "   ")]
+    [Arguments("   ", "acme")]
+    public async Task ParseRequestedWorkspace_refuses_half_a_pair(string? org, string? slug) {
+        var (workspace, error) = Parse(org, slug);
+
+        await Assert.That(workspace).IsNull();
+        await Assert.That(error).IsNotNull();
+        await Assert.That(error!).Contains("--org");
+        await Assert.That(error).Contains("--slug");
+    }
+
+    // Accepting the flags where nothing can act on them is worse than refusing: an unattended run
+    // that prints no complaint reads as a workspace that was created.
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_to_create_and_point_at_a_server_at_once() {
+        var (workspace, error) = Parse("Acme", "acme", haveServerUrl: true);
+
+        await Assert.That(workspace).IsNull();
+        await Assert.That(error!).Contains("--server-url");
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_a_provider_that_cannot_create() {
+        var (workspace, error) = Parse("Acme", "acme", gitHubProvider: true);
+
+        await Assert.That(workspace).IsNull();
+        await Assert.That(error!).Contains("--github");
+    }
 }

@@ -156,6 +156,12 @@ For non-interactive environments:
 kcap setup --server-url https://my-tenant.kcap.ai --default-visibility org_public --no-prompt
 ```
 
+`--no-prompt` requires `--server-url`, unless you are creating the workspace as part of the run — `--org "<name>" --slug <slug>` supply the two answers the creation prompts would have collected, so those replace it:
+
+```bash
+kcap setup --org "Acme" --slug acme --default-visibility org_public --no-prompt
+```
+
 In `--no-prompt` mode, the wizard installs hooks for every detected agent by default. Opt out per agent with `--skip-claude-hooks`, `--skip-codex-hooks`, `--skip-cursor-hooks`, `--skip-copilot-hooks`, `--skip-gemini-hooks`, `--skip-kiro-hooks`, `--skip-pi-hooks`, `--skip-opencode-hooks`, and/or `--skip-antigravity-hooks`. When Codex hooks are installed, the wizard also enables Codex sandbox network access for your server(s) by default; pass `--skip-codex-network-access` to leave `~/.codex/config.toml` untouched.
 
 > **Behavior change: `--no-prompt` now also imports this repo's history.** The Step 6 import (above) defaults to yes like every other prompt in the wizard, so `kcap setup --no-prompt` now uploads this repository's past sessions too — when run inside a git repo with an origin remote and authentication requirements are satisfied (including no-auth/provider-`None` servers). Existing unattended/scripted `kcap setup --no-prompt` invocations will start uploading current-repo session history unless you add `--skip-import`.
@@ -297,6 +303,7 @@ At a glance — each links to its section below:
 kcap setup                                   # interactive wizard (discovers your tenant)
 kcap setup <tenant>                          # shorthand: https://<tenant>.kcap.ai
 kcap setup --server-url <url> --no-prompt    # CI / scripted
+kcap setup --org "Acme" --slug acme          # create a workspace without prompting
 ```
 
 With no server argument, setup (and `kcap login`) runs **tenant discovery**: it signs you in with your organization's single sign-on, then lets you pick from the tenants you belong to. Pass `--github` to sign in with GitHub instead; `--discover` forces discovery even when a server is configured.
@@ -307,7 +314,7 @@ Once you are signed in, on a server that offers browser setup kcap creates a set
 
 The setup wizard detects every supported coding agent, asks **one** yes/no prompt to install kcap (hooks, skills, instructions, MCP) for all of them, configures the daemon, and finishes with an offer to import this repository's past sessions. Claude Code and Codex CLI are detected via `PATH`; Cursor is detected by user-dir presence (`~/.cursor/`), so IDE users without the `cursor` shell command are covered; GitHub Copilot CLI is detected via `~/.copilot/` or `copilot` on `PATH`; Google Gemini CLI via `~/.gemini/` or `gemini` on `PATH`; AWS Kiro CLI via `~/.kiro/` or `kiro`/`kiro-cli` on `PATH`; Pi via `~/.pi/agent/` or `pi` on `PATH`; SST OpenCode via `~/.config/opencode/` (or `~/.local/share/opencode/`) or `opencode` on `PATH`; and Google Antigravity via `~/.gemini/antigravity/` (GUI) or `~/.gemini/antigravity-cli/` (the `agy` CLI) or `antigravity`/`agy` on `PATH` (Pi, OpenCode, and Antigravity have no shell hooks, so for those the wizard installs a live-ingest plugin rather than hook config). Re-run any time to update the configuration.
 
-- **New tenant:** when signing in via Kurrent's hosted auth and you have no tenant yet, `setup` prompts to create one (organization name + `<slug>.kcap.ai` workspace URL) and waits for it to come online. Non-interactive runs (`--no-prompt`) skip this and exit with guidance.
+- **New tenant:** when signing in via Kurrent's hosted auth and you have no tenant yet, `setup` prompts to create one (organization name + `<slug>.kcap.ai` workspace URL) and waits for it to come online. Pass `--org "<name>" --slug <slug>` to answer both up front — no prompt is raised, so this is the route for a script or a session with redirected input. The two are both-or-neither: the slug becomes a permanent public hostname, so kcap will not derive one for you. A slug that is taken or malformed ends the run naming it, rather than asking for another. Without the flags, a non-interactive run exits with guidance.
 - **Import past sessions:** the final step offers (default yes) to import this repository's past sessions across every detected agent — equivalent to `kcap import --repo .`. It only appears when the current directory is a git repo with a resolvable origin remote and your authentication requirements are satisfied — which includes no-auth servers (auth provider `None`); otherwise it's skipped with the usual `kcap import` hint. Opt out with `--skip-import`.
 
 In `--no-prompt` mode, hooks install for every detected agent by default. Opt out per agent:

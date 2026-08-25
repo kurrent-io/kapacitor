@@ -104,6 +104,8 @@ public static class SetupCommand {
         if (serverUrlArg is null && args.Length > 1 && !args[1].StartsWith('-'))
             serverUrlArg = ServerInput.ResolveTenantArg(args[1]);
         var noPrompt         = args.Contains("--no-prompt");
+        var orgNameArg       = GetArg(args, "--org");
+        var slugArg          = GetArg(args, "--slug");
         // Also when there is no keyboard: a redirected stdin cannot press the escape-hatch key, so a
         // loopback wait there can only end in the listener timeout. Not a headless guess - an
         // interactive SSH session has a keyboard and keeps the browser.
@@ -136,6 +138,14 @@ public static class SetupCommand {
         var legacyPluginScope = GetArg(args, "--plugin-scope"); // "user" | "project" | "skip" | null
         var skipClaude       = skipClaudeFlag || legacyPluginScope == "skip";
         var legacyProjectScope = legacyPluginScope == "project";
+
+        var (requestedWorkspace, workspaceArgError) = ParseRequestedWorkspace(
+            orgNameArg, slugArg, serverUrlArg is not null, args.Contains("--github"));
+
+        if (workspaceArgError is not null) {
+            await Console.Error.WriteLineAsync($"  {workspaceArgError}");
+            return 1;
+        }
 
         SetupFunnel.Started(
             hasExistingProfile: AppConfig.HasConfiguredProfile(await AppConfig.LoadProfileConfig()),
@@ -189,11 +199,12 @@ public static class SetupCommand {
             if (resolved is null) return 1;
 
             (serverUrl, provider) = resolved.Value;
-        } else if (noPrompt) {
+        } else if (noPrompt && requestedWorkspace is null) {
             await Console.Error.WriteLineAsync("  --server-url is required with --no-prompt");
+            await Console.Error.WriteLineAsync("  (or --org \"<name>\" --slug <slug> to create a workspace)");
             return 1;
         } else {
-            var discovered = await RunDiscoveryAsync(args, forceDevice);
+            var discovered = await RunDiscoveryAsync(args, forceDevice, requestedWorkspace);
             if (discovered is null) return 1;
             (serverUrl, provider, loginComplete) = discovered.Value;
 
@@ -1078,8 +1089,38 @@ public static class SetupCommand {
         _ => "  [yellow]![/] Browser setup did not finish."
     };
 
+    /// <summary>
+    /// Reads <c>--org</c>/<c>--slug</c> into the answers the create-a-workspace prompts would have
+    /// collected, or the error that stops the run. Returns (null, null) when neither was passed.
+    /// Every rejection here is a combination that would otherwise accept the flags and never act on
+    /// them, which on an unattended run reads as a workspace that was created.
+    /// </summary>
+    internal static (RequestedWorkspace? Workspace, string? Error) ParseRequestedWorkspace(
+            string? orgName, string? slug, bool haveServerUrl, bool gitHubProvider) {
+        const string Usage = "kcap setup --org \"<name>\" --slug <slug>";
+
+        var haveOrg  = !string.IsNullOrWhiteSpace(orgName);
+        var haveSlug = !string.IsNullOrWhiteSpace(slug);
+
+        // Both or neither. The slug becomes a permanent public hostname, so deriving one from the
+        // name would pick it on the user's behalf in the one run nobody is watching.
+        if (haveOrg != haveSlug)
+            return (null, $"{(haveOrg ? "--org needs --slug" : "--slug needs --org")}: {Usage}");
+
+        if (!haveOrg) return (null, null);
+
+        if (haveServerUrl)
+            return (null, "--org/--slug create a workspace; --server-url points at one that exists. Pass one or the other.");
+
+        // Only the hosted-auth lane provisions; GitHub-App discovery has nothing to create with.
+        if (gitHubProvider)
+            return (null, "--org/--slug need Kurrent's hosted auth, which --github opts out of.");
+
+        return (new RequestedWorkspace(orgName!.Trim(), slug!.Trim()), null);
+    }
+
     internal static async Task<(string ServerUrl, string Provider, bool LoginComplete)?> RunDiscoveryAsync(
-            string[] args, bool forceDevice) {
+            string[] args, bool forceDevice, RequestedWorkspace? requested = null) {
         var chosen   = OAuthLoginFlow.ChooseDiscoveryProvider(args);
         var headless = HeadlessEnvironment.IsHeadless();
 
@@ -1097,7 +1138,8 @@ public static class SetupCommand {
         // a zero-workspace headless user now completes a sign-in and would otherwise hold a live
         // credential with nowhere to spend it. GitHub never provisions.
         var provisioner = chosen == AuthProvider.WorkOS
-            ? new SpectreTenantProvisioner(new TenantProvisioningClient(new HttpClient()), ProvisioningEndpoint.Url)
+            ? new SpectreTenantProvisioner(
+                new TenantProvisioningClient(new HttpClient()), ProvisioningEndpoint.Url, requested: requested)
             : null;
 
         var result = await NewFacade(provisioner).DiscoverAsync(chosen, forceDevice, CancellationToken.None);

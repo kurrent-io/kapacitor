@@ -4,15 +4,22 @@ using Spectre.Console;
 
 namespace Capacitor.Cli.Commands;
 
-// Interactive create-a-tenant flow for `kcap setup` when WorkOS discovery finds
-// none. Prompts, provisions via kcap-web, polls until live. OWNS all user-facing
-// messaging for its non-Created outcomes.
+// Create-a-tenant flow for `kcap setup` when WorkOS discovery finds none. Prompts (or takes the two
+// answers up front), provisions via kcap-web, polls until live. OWNS all user-facing messaging for
+// its non-Created outcomes.
+/// <param name="requested">
+/// Supplied by <c>--org</c>/<c>--slug</c>. Present means no prompt is raised at all, so this is the
+/// only route through the fork that a session with no terminal can take.
+/// </param>
 /// <param name="isInteractive">
 /// Test seam. The ambient value is a property of the host the suite runs under, so a test that read it
 /// directly would pass in CI and fail in a developer's terminal.
 /// </param>
 public sealed class SpectreTenantProvisioner(
-        TenantProvisioningClient client, string baseUrl, Func<bool>? isInteractive = null) : ITenantProvisioner {
+        TenantProvisioningClient client,
+        string                   baseUrl,
+        Func<bool>?              isInteractive = null,
+        RequestedWorkspace?      requested = null) : ITenantProvisioner {
     const int PollIntervalMs = 4000;
     const int MaxPolls       = 150; // ~10 minutes (server budget is 15)
 
@@ -26,6 +33,10 @@ public sealed class SpectreTenantProvisioner(
         // a GitHub-App workspace IS linked to the user and simply cannot appear in this lane.
         AnsiConsole.MarkupLine("  [yellow]Single sign-on found no Capacitor workspace for your account.[/]");
         AnsiConsole.MarkupLine("  [dim]A workspace that signs in with the GitHub App won't appear here.[/]");
+
+        // The answers are already in hand, so nothing is offered and nothing is asked — including on
+        // a terminal that could have been asked. Passing the flags IS the choice.
+        if (requested is { } want) return await CreateRequestedAsync(want, tokens, ct);
 
         // Every way out of this fork is a prompt, so with no terminal there is nothing to offer, and
         // Spectre throws NotSupportedException from inside a prompt rather than returning. Deliberately
@@ -87,6 +98,56 @@ public sealed class SpectreTenantProvisioner(
             return ProvisionOffer.Declined;
         }
 
+        return await ProvisionAsync(orgName, slug, origin, tokens, ct);
+    }
+
+    /// <summary>
+    /// The scripted counterpart to the prompts: validate, check the slug once, provision. A slug that
+    /// is invalid or taken cannot be re-asked for here, so it ends the run with the slug named rather
+    /// than looping — and on stderr, because the only reader is a script's log.
+    /// </summary>
+    async Task<ProvisionOffer> CreateRequestedAsync(
+            RequestedWorkspace want, WorkOSTokenSource tokens, CancellationToken ct) {
+        var slug  = SlugValidator.Canonicalize(want.Slug);
+        var check = SlugValidator.Validate(slug);
+
+        if (!check.Ok) {
+            await Console.Error.WriteLineAsync(check.Reason == "blocked"
+                ? $"  ✗ '{slug}' is reserved — pass a different --slug."
+                : $"  ✗ '{slug}' is not a valid slug. Use lowercase letters, digits and single hyphens (no leading/trailing hyphen), max 40 chars.");
+            SetupFunnel.WorkspaceFailed(check.Reason ?? "invalid_slug");
+
+            return ProvisionOffer.Failed;
+        }
+
+        var avail = await client.CheckAvailabilityAsync(baseUrl, await tokens.GetAsync(ct), slug, ct);
+
+        if (avail is null) {
+            await Console.Error.WriteLineAsync($"  ✗ Couldn't check whether '{slug}' is available. Try again.");
+            SetupFunnel.WorkspaceFailed("availability_unreachable");
+
+            return ProvisionOffer.Failed;
+        }
+
+        // "yours" is available for this purpose: the slug is already reserved to this account, so
+        // provisioning it is a resume rather than a collision.
+        if (!avail.Available && avail.Reason != "yours") {
+            await Console.Error.WriteLineAsync(avail.Reason switch {
+                "reserved" => $"  ✗ '{slug}' is being provisioned by someone else — pass a different --slug.",
+                "taken"    => $"  ✗ '{slug}' is taken — pass a different --slug.",
+                "blocked"  => $"  ✗ '{slug}' is reserved — pass a different --slug.",
+                _          => $"  ✗ '{slug}' is unavailable — pass a different --slug."
+            });
+            SetupFunnel.WorkspaceFailed(avail.Reason ?? "unavailable");
+
+            return ProvisionOffer.Failed;
+        }
+
+        return await ProvisionAsync(want.OrgName, slug, $"https://{slug}.kcap.ai", tokens, ct);
+    }
+
+    async Task<ProvisionOffer> ProvisionAsync(
+            string orgName, string slug, string origin, WorkOSTokenSource tokens, CancellationToken ct) {
         SetupFunnel.WorkspaceRequested();
         var outcome = await client.ProvisionAsync(baseUrl, await tokens.GetAsync(ct), orgName, slug, ct);
         switch (outcome.StatusCode) {

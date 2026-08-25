@@ -6,7 +6,14 @@ Options:
   --server-url <url>          Server URL (skip prompt)
   --daemon-name <name>        Daemon name (skip prompt)
   --default-visibility <vis>  Default visibility: private, project, org_public, public
-  --no-prompt                 Non-interactive mode (requires --server-url)
+  --org <name>                Organization name for a workspace to create, instead
+                              of being prompted for it. Requires --slug.
+  --slug <slug>               Workspace URL slug (<slug>.kcap.ai) for a workspace to
+                              create, instead of being prompted for it. Requires
+                              --org. A slug that is taken or malformed ends the run
+                              naming it, rather than asking for another.
+  --no-prompt                 Non-interactive mode (requires --server-url, or
+                              --org + --slug to create a workspace as part of the run)
   --github                    Sign in with GitHub instead of org SSO during
                               the login step (default is org SSO when a
                               browser is available)
@@ -117,7 +124,11 @@ is never overridden. Answering "Not now" installs nothing.
 When you sign in with Kurrent's hosted auth and discovery finds no tenant, setup
 asks how to continue: create one for you (organization name + workspace slug) and
 wait for it to go live, point at a workspace you already belong to (enter its slug
-or URL — same as `kcap setup <tenant>`), or cancel. SSO discovery only lists
+or URL — same as `kcap setup <tenant>`), or cancel. Pass --org and --slug to answer
+the creation questions up front and skip that fork entirely, which is what a script
+or a session with redirected input needs — there is nothing to prompt on there. The
+two flags go together: the slug becomes a permanent public hostname, so kcap will
+not derive one from the name. SSO discovery only lists
 workspaces that use org SSO, so a workspace whose members sign in with the GitHub
 App appears here as "no tenant": choose "I already have a workspace", or re-run
 with --github.

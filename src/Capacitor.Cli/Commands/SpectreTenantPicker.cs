@@ -3,7 +3,11 @@ using Spectre.Console;
 
 namespace Capacitor.Cli.Commands;
 
-public class SpectreTenantPicker : ITenantPicker {
+/// <param name="isInteractive">
+/// Test seam. The ambient value is a property of the host the suite runs under, so a test that read it
+/// directly would pass in CI and fail in a developer's terminal.
+/// </param>
+public class SpectreTenantPicker(Func<bool>? isInteractive = null) : ITenantPicker {
     public DiscoveredTenant Pick(DiscoveredTenant[] tenants) {
         PromptHygiene.DiscardTypeAhead();
 
@@ -16,6 +20,22 @@ public class SpectreTenantPicker : ITenantPicker {
     }
 
     // Spectre prompts are not cancellable and the CLI never cancels this path.
-    public Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, CancellationToken ct) =>
-        Task.FromResult<DiscoveredTenant?>(Pick(tenants));
+    public Task<DiscoveredTenant?> PickAsync(DiscoveredTenant[] tenants, CancellationToken ct) {
+        // Spectre throws from inside a prompt rather than returning, so a session with no terminal
+        // has to be turned away before one opens. Naming each tenant is the whole point: the reader
+        // is a log, and the way out is to pass the one they wanted.
+        if (!(isInteractive ?? (() => AnsiConsole.Profile.Capabilities.Interactive))()) {
+            // Console rather than AnsiConsole: Spectre hard-wraps at the profile width, which breaks
+            // the commands below across a line and hands the reader something that will not copy.
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("Choosing between workspaces needs an interactive terminal, and this session is non-interactive.");
+            Console.Error.WriteLine("Name the one you want instead:");
+
+            foreach (var tenant in tenants) Console.Error.WriteLine($"  • kcap setup --server-url {tenant.Origin}");
+
+            return Task.FromResult<DiscoveredTenant?>(null);
+        }
+
+        return Task.FromResult<DiscoveredTenant?>(Pick(tenants));
+    }
 }
