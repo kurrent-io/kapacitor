@@ -217,7 +217,7 @@ public static class SetupCommand {
         // The browser leg, where the tenant serves one. Unnumbered because it is not a step: the
         // steps below run either way, and on every tenant that has not turned the flow on this
         // returns without a word. It has to sit after login — both routes are authenticated.
-        await RunBrowserFlowStepAsync(serverUrl, provider, noPrompt);
+        var browserAgents = await RunBrowserFlowStepAsync(serverUrl, provider, noPrompt);
 
         await Console.Out.WriteLineAsync();
 
@@ -287,11 +287,25 @@ public static class SetupCommand {
         if (detectedSummary is not null)
             await Console.Out.WriteLineAsync($"  Detected coding agents: {detectedSummary}");
 
-        // The single install-consent decision, replacing the nine per-vendor prompts. Made
-        // BEFORE CodingAgentsStep.Options is constructed, so it uses the LOCAL `noPrompt` (there
-        // is no `options` object yet). NoPrompt alone would not imply InstallAgents, so this must
-        // be set explicitly here or `--no-prompt` would silently stop installing agents.
-        var installAgents = SetupDecisions.DecideInstallAgents(detected, noPrompt, PromptYesNo);
+        bool installAgents;
+
+        if (browserAgents is { } answered) {
+            // Asked and answered in the browser minutes ago, so this step applies rather than
+            // re-asks — the flow settles its Agents step on the decision being recorded, not on the
+            // install finishing, which is what leaves the work here.
+            foreach (var line in BrowserAgentsSummary(answered)) AnsiConsole.MarkupLine(line);
+
+            // Nothing understood is not consent. A decline asks for nothing, and an answer whose every
+            // entry named a vendor this build has never heard of asks for nothing this build can do —
+            // and the step's own writes are gated on this, not on the per-vendor skips.
+            installAgents = answered.Choices.Count > 0;
+        } else {
+            // The single install-consent decision, replacing the nine per-vendor prompts. Made
+            // BEFORE CodingAgentsStep.Options is constructed, so it uses the LOCAL `noPrompt` (there
+            // is no `options` object yet). NoPrompt alone would not imply InstallAgents, so this must
+            // be set explicitly here or `--no-prompt` would silently stop installing agents.
+            installAgents = SetupDecisions.DecideInstallAgents(detected, noPrompt, PromptYesNo);
+        }
 
         // gitRoot is guaranteed non-null here when legacyProjectScope is true (the early
         // guard at the top of HandleAsync returns 1 otherwise).
@@ -326,6 +340,8 @@ public static class SetupCommand {
             SkipPiMcp: skipPiMcpFlag,
             SkipPiInstructions: skipPiInstructionsFlag,
             InstallAgents: installAgents);
+
+        stepOptions = SetupDecisions.WithBrowserAnswer(stepOptions, browserAgents);
 
         // allowlist the Capacitor server(s) Codex skills need to reach. A single
         // **.kcap.ai wildcard covers every SaaS tenant (current + future) and the auth
@@ -924,17 +940,23 @@ public static class SetupCommand {
     /// <summary>Per request, not per leg: the poll below runs for as long as a human takes.</summary>
     static readonly TimeSpan BrowserFlowHttpTimeout = TimeSpan.FromSeconds(15);
 
-    /// <summary>Creates the first-run flow, opens the browser on it, and polls it as itself.
-    /// Reports, and configures nothing: <c>kcap setup</c> writes Claude Code hooks and a hook entry is a
-    /// command string Claude Code runs, so nothing the browser settles is executed here. Every outcome
-    /// leaves setup running — sign-in has already happened, so nothing in this leg can strand a machine.</summary>
-    static async Task RunBrowserFlowStepAsync(string serverUrl, string provider, bool noPrompt) {
+    /// <summary>How long the login-shell probe may hold up the create. Two attempts at its own 5s
+    /// timeout, plus room to spawn them; past that the machine reports "not probed", which is not the
+    /// same as "not found" and draws no alarm on the screen.</summary>
+    static readonly TimeSpan LoginShellProbeBudget = TimeSpan.FromSeconds(12);
+
+    /// <summary>Creates the first-run flow, opens the browser on it, and polls it as itself, returning
+    /// the Agents decision for Step 4 to apply. <b>Nothing is configured here</b> — what crosses is
+    /// vendor keys and booleans, and the install runs through the same one place the terminal prompt
+    /// does. Every outcome leaves setup running: sign-in has already happened, so nothing in this leg
+    /// can strand a machine.</summary>
+    static async Task<FirstRunAgentsAnswer?> RunBrowserFlowStepAsync(string serverUrl, string provider, bool noPrompt) {
         // --no-prompt is a scripted run and this waits on a human. None has no identity for a flow to
         // be owned by, and its routes are authenticated. Headless is deliberately NOT a skip: a
         // machine with no browser of its own is exactly the one whose user is sitting at another, and
         // the URL is printed for them to carry across — the device path keeps the screens rather than
         // designing that population out of them.
-        if (noPrompt || provider == AuthProvider.None) return;
+        if (noPrompt || provider == AuthProvider.None) return null;
 
         await Console.Out.WriteLineAsync();
 
@@ -958,22 +980,30 @@ public static class SetupCommand {
                         AnsiConsole.MarkupLine(
                             "  [dim]Skipped browser setup: the stored token is not usable. Run 'kcap login' to re-authenticate.[/]");
 
-                    return;
+                    return null;
                 }
+
+                // Said out loud because it is the one part of this leg that takes noticeable time: the
+                // login-shell probe spawns a shell, and a slow profile would otherwise be dead air
+                // ahead of the only line that explains what is happening.
+                AnsiConsole.MarkupLine("  [dim]Checking this machine for coding agents…[/]");
+
+                var report = FirstRunMachineReport.EvaluateCurrent(
+                    Environment.MachineName, await LoginShellFindsCliAsync());
 
                 result = await new BrowserFirstRunFlow(
                         new FirstRunFlowClient(http), new SpectreFirstRunFlowProgress())
-                    .RunAsync(serverUrl, Environment.MachineName, CancellationToken.None);
+                    .RunAsync(serverUrl, report, CancellationToken.None);
             }
         } catch (Exception ex) when (ex is not OperationCanceledException) {
             AnsiConsole.MarkupLine($"  [yellow]![/] Could not start browser setup: {Markup.Escape(ex.Message)}");
 
-            return;
+            return null;
         }
 
         // Silent: this tenant does not serve the flow, which is every tenant that has not turned it
         // on. Announcing it would report our rollout as though it were the user's problem.
-        if (result is FirstRunFlowResult.Unavailable) return;
+        if (result is FirstRunFlowResult.Unavailable) return null;
 
         AnsiConsole.MarkupLine(BrowserFlowOutcome(result));
 
@@ -981,6 +1011,40 @@ public static class SetupCommand {
         // twice would be the only thing this added.
         if (result is not (FirstRunFlowResult.Finished or FirstRunFlowResult.Dismissed))
             AnsiConsole.MarkupLine("  [dim]Carrying on here.[/]");
+
+        return FirstRunFlowOutcomes.Agents(result);
+    }
+
+    /// <summary>Whether the login shell resolves the CLI — see <see cref="ILoginShellProbe"/> for why
+    /// that differs from this process's PATH. Bounded because it spawns a shell: a probe that did not
+    /// finish reports unknown rather than as a hazard, since only an explicit false draws the alarm.</summary>
+    static async Task<bool?> LoginShellFindsCliAsync() {
+        try {
+            using var cts = new CancellationTokenSource(LoginShellProbeBudget);
+
+            return await new LoginShellProbe(new ProcessRunner(), Environment.GetEnvironmentVariable)
+                .KcapOnPathAsync(cts.Token);
+        } catch (Exception) {
+            return null;
+        }
+    }
+
+    /// <summary>What Step 4 says instead of prompting, when the browser already answered it. Split
+    /// from the write so the copy is testable.</summary>
+    internal static IReadOnlyList<string> BrowserAgentsSummary(FirstRunAgentsAnswer answer) {
+        var lines = new List<string>();
+
+        if (answer.IsDecline)
+            lines.Add("  [dim]· You chose not to set any up in the browser — nothing to install.[/]");
+        else if (answer.Labels.ToList() is { Count: > 0 } labels)
+            lines.Add($"  [dim]Chosen in the browser: {Markup.Escape(string.Join(", ", labels))}[/]");
+
+        if (answer.Unrecognised > 0)
+            lines.Add(
+                $"  [yellow]![/] {answer.Unrecognised} of your choices name an agent this version of kcap "
+              + "does not know. Run 'kcap update' and setup again to finish them.");
+
+        return lines;
     }
 
     /// <summary>The leg's one line about how it ended, split from the write so the copy is testable.

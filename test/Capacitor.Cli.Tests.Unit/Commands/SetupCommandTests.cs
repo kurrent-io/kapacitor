@@ -58,6 +58,43 @@ public class SetupCommandTests {
         await Assert.That(line).Contains("[[thing]]");
     }
 
+    // --- What Step 4 says when the browser already answered it ---
+
+    static FirstRunAgentsAnswer Answer(int unrecognised, params string[] vendors) =>
+        new([.. vendors.Select(v => new FirstRunAgentsChoice(v, true, true))],
+            new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero),
+            unrecognised);
+
+    [Test]
+    public async Task BrowserAgentsSummary_names_what_was_chosen_rather_than_re_asking() {
+        var lines = SetupCommand.BrowserAgentsSummary(Answer(0, "cursor", "claude"));
+
+        await Assert.That(string.Join("\n", lines)).Contains("Claude Code, Cursor");
+    }
+
+    [Test]
+    public async Task BrowserAgentsSummary_says_a_decline_installs_nothing() {
+        var lines = SetupCommand.BrowserAgentsSummary(Answer(0));
+
+        await Assert.That(string.Join("\n", lines)).Contains("nothing to install");
+    }
+
+    // Without this the user turns a harness on, nothing happens, and there is no reason anywhere for
+    // why — the vendor was simply dropped as unreadable by a CLI older than the server.
+    [Test]
+    public async Task BrowserAgentsSummary_says_when_this_build_could_not_read_part_of_the_answer() {
+        var lines = SetupCommand.BrowserAgentsSummary(Answer(2, "claude"));
+
+        await Assert.That(string.Join("\n", lines)).Contains("kcap update");
+    }
+
+    [Test]
+    public async Task BrowserAgentsSummary_says_nothing_extra_when_it_read_the_whole_answer() {
+        var lines = SetupCommand.BrowserAgentsSummary(Answer(0, "claude"));
+
+        await Assert.That(lines.Count).IsEqualTo(1);
+    }
+
     // --- Step 6 import auth-eligibility probe (IsAuthSatisfiedAsync) ---
 
     [Test]

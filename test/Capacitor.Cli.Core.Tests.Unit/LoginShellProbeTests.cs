@@ -488,4 +488,49 @@ public class LoginShellProbeTests {
         await Assert.That(second).IsEqualTo(target);
         await Assert.That(runner.Calls).Count().IsEqualTo(3);
     }
+
+    // --- A -lic that timed out is not an answer ---
+
+    // The failure this guards: -lic times out on a slow interactive profile (nvm, oh-my-zsh), -lc
+    // succeeds but reads a NARROWER path — no .zshrc, which is exactly where nvm and npm prefixes put
+    // kcap — and reports ABSENT. Forwarded as `false` that is the server's only error state, so the
+    // flow draws "your login shell cannot find kcap" for a shell it never successfully asked.
+    [Test]
+    public async Task KcapOnPath_is_unknown_when_the_interactive_login_shell_timed_out() {
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, "", "", TimedOut: true));           // -lic timed out
+        runner.Enqueue(new ProcessResult(0, Wrap("ABSENT"), "", false));        // -lc would have said no
+
+        await Assert.That(await Probe(runner).KcapOnPathAsync(CancellationToken.None)).IsNull();
+
+        // And -lc is not even attempted: its answer would be discarded, and the machine whose
+        // interactive shell just took five seconds is the one that can least afford another spawn.
+        await Assert.That(runner.Calls.Count).IsEqualTo(1);
+        await Assert.That(runner.Calls[0].Args[0]).IsEqualTo("-lic");
+    }
+
+    // Not cached: a slow profile is a transient condition, and pinning "unknown" for the process
+    // lifetime would deny a later caller the answer a warm shell would give.
+    [Test]
+    public async Task A_timed_out_interactive_login_shell_is_retried_rather_than_cached() {
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(0, "", "", TimedOut: true));      // 1st call, -lic: timed out
+        runner.Enqueue(new ProcessResult(0, Wrap("FOUND"), "", false));    // 2nd call, -lic: warm now
+
+        var probe = Probe(runner);
+
+        await Assert.That(await probe.KcapOnPathAsync(CancellationToken.None)).IsNull();
+        await Assert.That(await probe.KcapOnPathAsync(CancellationToken.None)).IsTrue();
+    }
+
+    // A shell that does not support -i exits non-zero immediately, and -lc IS the right answer there —
+    // only a timeout means the question went unanswered.
+    [Test]
+    public async Task A_shell_that_refuses_interactive_still_falls_back_to_the_login_shell() {
+        var runner = new FakeProcessRunner();
+        runner.Enqueue(new ProcessResult(2, "", "-i: invalid option", false));
+        runner.Enqueue(new ProcessResult(0, Wrap("ABSENT"), "", false));
+
+        await Assert.That(await Probe(runner).KcapOnPathAsync(CancellationToken.None)).IsFalse();
+    }
 }

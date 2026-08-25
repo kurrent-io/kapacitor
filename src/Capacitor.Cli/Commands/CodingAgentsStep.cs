@@ -20,7 +20,13 @@ internal static class CodingAgentsStep {
             // see SetupDecisions.DecideInstallAgents). Defaults true so the pre-existing test
             // suite (which never set this) stays source- and behavior-compatible; SetupCommand
             // always sets it explicitly from the single detected-agents prompt.
-            bool InstallAgents = true);
+            bool InstallAgents = true,
+            // Whether capture and tools were answered SEPARATELY, which only the browser's Agents
+            // screen does. Off for the terminal path, and that is the point: `--skip-<vendor>-hooks`
+            // has always meant "leave this vendor alone", scripts pass it expecting no writes, and
+            // `--no-prompt` gives them no consent moment in which to be told otherwise. Turning a
+            // skip flag into something that writes MCP config would be a silent reversal.
+            bool ToolsIndependentOfCapture = false);
 
     internal record DetectedAgents(bool Claude, bool Codex, bool Cursor, bool Copilot, bool Gemini = false, bool Kiro = false, bool Pi = false, bool OpenCode = false, bool Antigravity = false);
 
@@ -155,13 +161,16 @@ internal static class CodingAgentsStep {
         var codexHooksInstalled   = HandleCodexHooks(options, detected, paths, installers, writeLine);
         var codexNetworkApplied   = HandleCodexNetworkAccess(options, paths, installers, prompt, writeLine, codexHooksInstalled);
         var codexMcpRegistered    = HandleCodexMcp(paths, installers, writeLine, codexHooksInstalled);
-        var cursorHooksInstalled  = HandleCursorHooks(options, detected, paths, installers, writeLine);
-        var cursorMcpRegistered   = HandleCursorMcp(options, paths, installers, writeLine, cursorHooksInstalled);
-        var copilotHooksInstalled = HandleCopilotHooks(options, detected, paths, installers, writeLine);
-        var copilotMcpRegistered  = HandleCopilotMcp(options, paths, installers, writeLine, copilotHooksInstalled);
+        // Every MCP registration below is gated on toolsEligible rather than on the hooks having
+        // installed. They are separate decisions — declining capture is not declining the tools — and
+        // the hooks result cannot tell "the user skipped it" from "we could not install it".
+        var cursorHooksInstalled  = HandleCursorHooks(options, detected, paths, installers, writeLine, out var cursorTools);
+        var cursorMcpRegistered   = HandleCursorMcp(options, paths, installers, writeLine, cursorTools);
+        var copilotHooksInstalled = HandleCopilotHooks(options, detected, paths, installers, writeLine, out var copilotTools);
+        var copilotMcpRegistered  = HandleCopilotMcp(options, paths, installers, writeLine, copilotTools);
         var copilotInstructionsInstalled = HandleCopilotInstructions(options, paths, installers, writeLine, copilotHooksInstalled);
-        var geminiHooksInstalled  = HandleGeminiHooks(options, detected, paths, installers, writeLine, out var geminiSelected);
-        var geminiMcpRegistered   = HandleGeminiMcp(options, paths, installers, writeLine, geminiHooksInstalled);
+        var geminiHooksInstalled  = HandleGeminiHooks(options, detected, paths, installers, writeLine, out var geminiSelected, out var geminiTools);
+        var geminiMcpRegistered   = HandleGeminiMcp(options, paths, installers, writeLine, geminiTools);
         // Instructions live in the independent ~/.gemini/GEMINI.md — gate them on the user having
         // SELECTED Gemini (not on hook-write success), so a malformed settings.json that fails the
         // shared hooks/MCP write doesn't also block healing GEMINI.md.
@@ -171,20 +180,20 @@ internal static class CodingAgentsStep {
         // Kiro's skills live in ~/.kiro/skills (Kiro doesn't read ~/.agents/skills) and steer it toward
         // the kcap MCP tools — gate on the user having SELECTED Kiro, like the MCP registration.
         var kiroSkillsInstalled   = HandleKiroSkills(options, paths, installers, writeLine, kiroSelected);
-        var piExtensionInstalled  = HandlePiExtension(options, detected, paths, installers, writeLine, out var piSelected);
+        var piExtensionInstalled  = HandlePiExtension(options, detected, paths, installers, writeLine, out var piSelected, out var piTools);
         // Pi has no JSON MCP config: the "MCP" is a second extension file (kcap-mcp.ts) and the
         // instructions live in the independent ~/.pi/agent/AGENTS.md — gate both on the user having
         // SELECTED Pi (not on the ingest-write result) so a failed ingest write doesn't block them.
-        var piMcpInstalled        = HandlePiMcp(options, paths, installers, writeLine, piSelected);
+        var piMcpInstalled        = HandlePiMcp(options, paths, installers, writeLine, piTools);
         var piInstructionsInstalled = HandlePiInstructions(options, paths, installers, writeLine, piSelected);
-        var openCodeExtensionInstalled = HandleOpenCodeExtension(options, detected, paths, installers, writeLine);
-        var openCodeMcpRegistered      = HandleOpenCodeMcp(options, paths, installers, writeLine, openCodeExtensionInstalled);
+        var openCodeExtensionInstalled = HandleOpenCodeExtension(options, detected, paths, installers, writeLine, out var openCodeTools);
+        var openCodeMcpRegistered      = HandleOpenCodeMcp(options, paths, installers, writeLine, openCodeTools);
         var openCodeInstructionsInstalled = HandleOpenCodeInstructions(options, paths, installers, writeLine, openCodeExtensionInstalled);
-        var antigravityHooksInstalled  = HandleAntigravityHooks(options, detected, paths, installers, writeLine, out var antigravitySelected);
+        var antigravityHooksInstalled  = HandleAntigravityHooks(options, detected, paths, installers, writeLine, out var antigravitySelected, out var antigravityTools);
         // Antigravity's MCP (own mcp_config.json), instructions (shared GEMINI.md) and skills
         // (~/.gemini/skills) live in files SEPARATE from its hooks.json, so gate them on the user
         // having SELECTED Antigravity (opted-in + kcap on PATH), not on the hook-write succeeding.
-        var antigravityMcpRegistered   = HandleAntigravityMcp(options, paths, installers, writeLine, antigravitySelected);
+        var antigravityMcpRegistered   = HandleAntigravityMcp(options, paths, installers, writeLine, antigravityTools);
         var antigravityInstructionsInstalled = HandleAntigravityInstructions(options, paths, installers, writeLine, antigravitySelected);
         var antigravitySkillsInstalled = HandleAntigravitySkills(options, paths, installers, writeLine, antigravitySelected);
 
@@ -366,8 +375,12 @@ internal static class CodingAgentsStep {
             DetectedAgents     detected,
             Paths              paths,
             Installers         installers,
-            Action<string>     writeLine
+            Action<string>     writeLine,
+            out bool           toolsEligible
         ) {
+        // Independent of the hooks — see HandleCursorHooks.
+        toolsEligible = false;
+
         if (!detected.Copilot) {
             writeLine("  [dim]· Copilot CLI not detected — skipping[/]");
 
@@ -376,7 +389,7 @@ internal static class CodingAgentsStep {
 
         writeLine("  [green]✓[/] Copilot CLI detected");
 
-        if (options.SkipCopilot) {
+        if (options.SkipCopilot && (options.SkipCopilotMcp || !options.ToolsIndependentOfCapture)) {
             writeLine("  [dim]· Copilot CLI hooks skipped by flag[/]");
 
             return false;
@@ -387,6 +400,15 @@ internal static class CodingAgentsStep {
         if (!installers.CapacitorOnPath()) {
             writeLine("  [yellow]⚠[/] Copilot hooks not installed — 'kcap' is not on PATH.");
             writeLine("    [dim]Re-install via npm: [/][cyan]npm install -g @kurrent/kcap[/]");
+
+            return false;
+        }
+
+        // kcap.json and mcp-config.json are separate files — see HandleCursorHooks.
+        toolsEligible = true;
+
+        if (options.SkipCopilot) {
+            writeLine("  [dim]· Copilot CLI capture declined — registering the MCP servers only[/]");
 
             return false;
         }
@@ -411,13 +433,18 @@ internal static class CodingAgentsStep {
             Paths              paths,
             Installers         installers,
             Action<string>     writeLine,
-            out bool           selected
+            out bool           selected,
+            out bool           toolsEligible
         ) {
         // `selected` = the user opted into Gemini (detected + not skipped, InstallAgents true) AND
         // kcap is on PATH — i.e. a full Gemini integration was requested. It stays true even when the
         // hook WRITE fails (malformed shared settings.json), so the independent ~/.gemini/GEMINI.md can
         // still be healed; the bool return still reflects only actual hook-write success.
-        selected = false;
+        //
+        // `toolsEligible` is deliberately WIDER: it survives --skip-gemini-hooks, because declining
+        // capture is not declining the MCP servers. See HandleCursorHooks.
+        selected      = false;
+        toolsEligible = false;
 
         if (!detected.Gemini) {
             writeLine("  [dim]· Gemini CLI not detected — skipping[/]");
@@ -427,7 +454,7 @@ internal static class CodingAgentsStep {
 
         writeLine("  [green]✓[/] Gemini CLI detected");
 
-        if (options.SkipGemini) {
+        if (options.SkipGemini && (options.SkipGeminiMcp || !options.ToolsIndependentOfCapture)) {
             writeLine("  [dim]· Gemini CLI hooks skipped by flag[/]");
 
             return false;
@@ -442,6 +469,16 @@ internal static class CodingAgentsStep {
             return false;
         }
 
+        // Only reachable with ToolsIndependentOfCapture: the flag-only opt-out returned above.
+        if (options.SkipGemini) {
+            // Skipped, not failed: declining capture says nothing about the MCP servers.
+            toolsEligible = true;
+
+            writeLine("  [dim]· Gemini CLI capture declined — registering the MCP servers only[/]");
+
+            return false;
+        }
+
         selected = true;  // opted in + kcap on PATH → GEMINI.md may install even if the hook write fails
 
         var ok = installers.InstallGeminiHooks(paths.GeminiSettingsPath);
@@ -451,6 +488,11 @@ internal static class CodingAgentsStep {
 
             return false;
         }
+
+        // Only AFTER the write succeeds, and Gemini is the one vendor where that is right: its hooks
+        // and its MCP servers live in the SAME settings.json, so a write that failed is real evidence
+        // the MCP write would fail too. Everywhere else the two are separate files.
+        toolsEligible = true;
 
         writeLine($"  [green]✓[/] Gemini hooks installed ({Markup.Escape(paths.GeminiSettingsPath)})");
         writeLine("  [dim]  Note: Gemini loads hook config at startup — restart any running gemini session to pick them up.[/]");
@@ -464,13 +506,18 @@ internal static class CodingAgentsStep {
             Paths              paths,
             Installers         installers,
             Action<string>     writeLine,
-            out bool           selected
+            out bool           selected,
+            out bool           toolsEligible
         ) {
         // `selected` = the user opted into Pi (detected + not skipped, InstallAgents true) AND
         // kcap is on PATH — i.e. a full Pi integration was requested. It stays true even when the
         // ingest-extension WRITE fails, so the independent MCP-bridge extension + ~/.pi/agent/AGENTS.md
         // can still be installed; the bool return still reflects only actual ingest-write success.
-        selected = false;
+        //
+        // `toolsEligible` is deliberately WIDER: it survives --skip-pi-hooks, because declining
+        // capture is not declining the MCP bridge. See HandleCursorHooks.
+        selected      = false;
+        toolsEligible = false;
 
         if (!detected.Pi) {
             writeLine("  [dim]· Pi not detected — skipping[/]");
@@ -480,13 +527,11 @@ internal static class CodingAgentsStep {
 
         writeLine("  [green]✓[/] Pi detected");
 
-        if (options.SkipPi) {
+        if (options.SkipPi && (options.SkipPiMcp || !options.ToolsIndependentOfCapture)) {
             writeLine("  [dim]· Pi extension skipped by flag[/]");
 
             return false;
         }
-
-        if (installers.InstallPiExtension is null) return false;
 
         // Pi has no shell hooks — the extensions (kcap.ts / kcap-mcp.ts) shell out to
         // the bare "kcap" command, so pi must find kcap on PATH (same precheck as the
@@ -498,7 +543,20 @@ internal static class CodingAgentsStep {
             return false;
         }
 
-        selected = true;  // opted in + kcap on PATH → MCP bridge + AGENTS.md may install even if the ingest write fails
+        if (options.SkipPi) {
+            toolsEligible = true;   // skipped, not failed — see HandleCursorHooks
+
+            writeLine("  [dim]· Pi capture declined — installing the MCP bridge only[/]");
+
+            return false;
+        }
+
+        if (installers.InstallPiExtension is null) return false;
+
+        // Both set BEFORE the write, unlike the Cursor/Copilot/Gemini/OpenCode branches: Pi's MCP
+        // bridge and AGENTS.md are separate files, so a failed ingest write says nothing about them.
+        selected      = true;
+        toolsEligible = true;
 
         var ok = installers.InstallPiExtension(paths.PiExtensionPath);
 
@@ -517,18 +575,18 @@ internal static class CodingAgentsStep {
     /// <summary>
     /// Installs the kcap MCP-bridge extension (<c>~/.pi/agent/extensions/kcap-mcp.ts</c>). Pi has no
     /// JSON <c>mcpServers</c> config, so the "MCP" for Pi is this extension file — spawning the
-    /// <c>kcap mcp &lt;name&gt;</c> servers and registering their tools. Gated on the user having
-    /// SELECTED Pi (<paramref name="piSelected"/>, not on the ingest-write result — it's a separate
-    /// file) and on <see cref="Options.SkipPiMcp"/>.
+    /// <c>kcap mcp &lt;name&gt;</c> servers and registering their tools. Gated on
+    /// <paramref name="piToolsEligible"/> — Pi is here and kcap is on PATH — rather than on the
+    /// ingest-write result, and on <see cref="Options.SkipPiMcp"/>.
     /// </summary>
     static bool HandlePiMcp(
             Options        options,
             Paths          paths,
             Installers     installers,
             Action<string> writeLine,
-            bool           piSelected
+            bool           piToolsEligible
         ) {
-        if (installers.InstallPiMcp is null || !piSelected || options.SkipPiMcp) return false;
+        if (installers.InstallPiMcp is null || !piToolsEligible || options.SkipPiMcp) return false;
 
         var path = Markup.Escape(paths.PiMcpExtensionPath);
 
@@ -581,8 +639,12 @@ internal static class CodingAgentsStep {
             DetectedAgents     detected,
             Paths              paths,
             Installers         installers,
-            Action<string>     writeLine
+            Action<string>     writeLine,
+            out bool           toolsEligible
         ) {
+        // Independent of the plugin — see HandleCursorHooks.
+        toolsEligible = false;
+
         if (!detected.OpenCode) {
             writeLine("  [dim]· OpenCode not detected — skipping[/]");
 
@@ -591,13 +653,11 @@ internal static class CodingAgentsStep {
 
         writeLine("  [green]✓[/] OpenCode detected");
 
-        if (options.SkipOpenCode) {
+        if (options.SkipOpenCode && (options.SkipOpenCodeMcp || !options.ToolsIndependentOfCapture)) {
             writeLine("  [dim]· OpenCode plugin skipped by flag[/]");
 
             return false;
         }
-
-        if (installers.InstallOpenCodeExtension is null) return false;
 
         // OpenCode has no shell hooks — the plugin (kcap.ts) shells out to the bare
         // "kcap hook --opencode" command, so OpenCode must find kcap on PATH (same
@@ -608,6 +668,17 @@ internal static class CodingAgentsStep {
 
             return false;
         }
+
+        // kcap.ts and opencode.json's mcp block are separate files — see HandleCursorHooks.
+        toolsEligible = true;
+
+        if (options.SkipOpenCode) {
+            writeLine("  [dim]· OpenCode capture declined — registering the MCP servers only[/]");
+
+            return false;
+        }
+
+        if (installers.InstallOpenCodeExtension is null) return false;
 
         var ok = installers.InstallOpenCodeExtension(paths.OpenCodeExtensionPath);
 
@@ -629,12 +700,17 @@ internal static class CodingAgentsStep {
             Paths              paths,
             Installers         installers,
             Action<string>     writeLine,
-            out bool           selected
+            out bool           selected,
+            out bool           toolsEligible
         ) {
         // `selected` = Antigravity opted-in (detected + not skipped, InstallAgents true) AND kcap on
         // PATH; stays true even if the hooks.json write fails, so the SEPARATE mcp_config.json / shared
         // GEMINI.md / ~/.gemini/skills still install. The bool return reflects only hook-write success.
-        selected = false;
+        //
+        // `toolsEligible` is deliberately WIDER: it survives --skip-antigravity-hooks, because
+        // declining capture is not declining the MCP servers. See HandleCursorHooks.
+        selected      = false;
+        toolsEligible = false;
 
         if (!detected.Antigravity) {
             writeLine("  [dim]· Antigravity not detected — skipping[/]");
@@ -644,13 +720,11 @@ internal static class CodingAgentsStep {
 
         writeLine("  [green]✓[/] Antigravity detected");
 
-        if (options.SkipAntigravity) {
+        if (options.SkipAntigravity && (options.SkipAntigravityMcp || !options.ToolsIndependentOfCapture)) {
             writeLine("  [dim]· Antigravity hooks skipped by flag[/]");
 
             return false;
         }
-
-        if (installers.InstallAntigravityHooks is null) return false;
 
         // Antigravity's hooks.json runs the bare "kcap hook --antigravity" command, so
         // Antigravity must find kcap on PATH (same precheck as the OpenCode/Pi branches).
@@ -661,7 +735,20 @@ internal static class CodingAgentsStep {
             return false;
         }
 
-        selected = true;  // opted in + kcap on PATH → MCP/instructions/skills install even if the hook write fails
+        if (options.SkipAntigravity) {
+            toolsEligible = true;   // skipped, not failed — see HandleCursorHooks
+
+            writeLine("  [dim]· Antigravity capture declined — registering the MCP servers only[/]");
+
+            return false;
+        }
+
+        if (installers.InstallAntigravityHooks is null) return false;
+
+        // Both set BEFORE the write, unlike the Cursor/Copilot/Gemini/OpenCode branches: Antigravity's
+        // mcp_config.json, GEMINI.md and skills dir are separate from hooks.json.
+        selected      = true;
+        toolsEligible = true;
 
         var ok = installers.InstallAntigravityHooks(paths.AntigravityHooksPath);
 
@@ -679,7 +766,8 @@ internal static class CodingAgentsStep {
 
     /// <summary>
     /// Registers the kcap MCP servers in Antigravity's own <c>~/.gemini/config/mcp_config.json</c>
-    /// (Standard shape). Gated on the user having SELECTED Antigravity + on
+    /// (Standard shape). Gated on <c>antigravityToolsEligible</c> — Antigravity is here and kcap is
+    /// on PATH — rather than on the hooks having installed, and on
     /// <see cref="Options.SkipAntigravityMcp"/>. No prompt: registration is non-destructive.
     /// </summary>
     static bool HandleAntigravityMcp(
@@ -687,9 +775,9 @@ internal static class CodingAgentsStep {
             Paths          paths,
             Installers     installers,
             Action<string> writeLine,
-            bool           antigravitySelected
+            bool           antigravityToolsEligible
         ) {
-        if (installers.RegisterAntigravityMcp is null || !antigravitySelected || options.SkipAntigravityMcp) return false;
+        if (installers.RegisterAntigravityMcp is null || !antigravityToolsEligible || options.SkipAntigravityMcp) return false;
 
         var configPath = Markup.Escape(paths.AntigravityMcpPath);
 
@@ -985,8 +1073,15 @@ internal static class CodingAgentsStep {
             DetectedAgents     detected,
             Paths              paths,
             Installers         installers,
-            Action<string>     writeLine
+            Action<string>     writeLine,
+            out bool           toolsEligible
         ) {
+        // Registering the MCP servers is a SEPARATE decision from installing the capture hooks:
+        // --skip-cursor-hooks alone opts out of recording, not of the tools, and the browser's Agents
+        // screen offers the two as independent toggles. Both need kcap on PATH, since both write a
+        // config that invokes it — so this is set after that precheck rather than before it.
+        toolsEligible = false;
+
         if (!detected.Cursor) {
             writeLine("  [dim]· Cursor not detected — skipping[/]");
 
@@ -995,7 +1090,11 @@ internal static class CodingAgentsStep {
 
         writeLine("  [green]✓[/] Cursor detected");
 
-        if (options.SkipCursor) {
+        // A whole-vendor opt-out — which is what --skip-cursor-hooks alone is — short-circuits BEFORE
+        // the PATH precheck: nothing will be written either way, so a missing kcap is not this user's
+        // problem to hear about. Only a caller that answered the two axes separately gets past here
+        // with capture declined.
+        if (options.SkipCursor && (options.SkipCursorMcp || !options.ToolsIndependentOfCapture)) {
             writeLine("  [dim]· Cursor hooks skipped by flag[/]");
 
             return false;
@@ -1008,6 +1107,19 @@ internal static class CodingAgentsStep {
         if (!installers.CapacitorOnPath()) {
             writeLine("  [yellow]⚠[/] Cursor hooks not installed — 'kcap' is not on PATH.");
             writeLine("    [dim]Re-install via npm: [/][cyan]npm install -g @kurrent/kcap[/]");
+
+            return false;
+        }
+
+        // Set here, before the write, because hooks.json and mcp.json are DIFFERENT FILES: neither the
+        // user declining capture nor a failed hooks write says anything about whether the MCP servers
+        // can be registered. Gemini is the sole exception — its hooks and MCP share settings.json, so
+        // a failed write there is real evidence about both.
+        toolsEligible = true;
+
+        // Only reachable with ToolsIndependentOfCapture: the flag-only opt-out returned above.
+        if (options.SkipCursor) {
+            writeLine("  [dim]· Cursor capture declined — registering the MCP servers only[/]");
 
             return false;
         }
@@ -1028,8 +1140,8 @@ internal static class CodingAgentsStep {
     /// <summary>
     /// Registers the kcap MCP servers in <c>~/.cursor/mcp.json</c> via
     /// <see cref="Installers.RegisterCursorMcp"/> so Cursor picks them up with no manual
-    /// JSON edit. Gated on Cursor hooks installing — the same "full Cursor integration"
-    /// trigger used by <see cref="HandleCodexMcp"/> — and on <see cref="Options.SkipCursorMcp"/>.
+    /// JSON edit. Gated on <c>cursorToolsEligible</c> — Cursor is here and kcap is on PATH —
+    /// rather than on the hooks having installed, and on <see cref="Options.SkipCursorMcp"/>.
     /// No prompt: registration is non-destructive (only adds missing kcap servers) and
     /// mirrors how the Claude plugin auto-registers its MCP servers.
     /// </summary>
@@ -1038,9 +1150,9 @@ internal static class CodingAgentsStep {
             Paths          paths,
             Installers     installers,
             Action<string> writeLine,
-            bool           cursorHooksInstalled
+            bool           cursorToolsEligible
         ) {
-        if (installers.RegisterCursorMcp is null || !cursorHooksInstalled || options.SkipCursorMcp) return false;
+        if (installers.RegisterCursorMcp is null || !cursorToolsEligible || options.SkipCursorMcp) return false;
 
         var configPath = Markup.Escape(paths.CursorMcpPath);
 
@@ -1063,8 +1175,8 @@ internal static class CodingAgentsStep {
     /// <summary>
     /// Registers the kcap MCP servers in <c>~/.copilot/mcp-config.json</c> via
     /// <see cref="Installers.RegisterCopilotMcp"/> so Copilot picks them up with no manual
-    /// JSON edit. Gated on Copilot hooks installing — the same "full Copilot integration"
-    /// trigger used by <see cref="HandleCursorMcp"/> — and on <see cref="Options.SkipCopilotMcp"/>.
+    /// JSON edit. Gated on <c>copilotToolsEligible</c> — Copilot is here and kcap is on PATH —
+    /// rather than on the hooks having installed, and on <see cref="Options.SkipCopilotMcp"/>.
     /// No prompt: registration is non-destructive (only adds missing kcap servers).
     /// </summary>
     static bool HandleCopilotMcp(
@@ -1072,9 +1184,9 @@ internal static class CodingAgentsStep {
             Paths          paths,
             Installers     installers,
             Action<string> writeLine,
-            bool           copilotHooksInstalled
+            bool           copilotToolsEligible
         ) {
-        if (installers.RegisterCopilotMcp is null || !copilotHooksInstalled || options.SkipCopilotMcp) return false;
+        if (installers.RegisterCopilotMcp is null || !copilotToolsEligible || options.SkipCopilotMcp) return false;
 
         var configPath = Markup.Escape(paths.CopilotMcpPath);
 
@@ -1131,8 +1243,8 @@ internal static class CodingAgentsStep {
     /// <summary>
     /// Registers the kcap MCP servers into Gemini's shared <c>~/.gemini/settings.json</c>
     /// (<c>mcpServers</c> block) via <see cref="Installers.RegisterGeminiMcp"/> so Gemini picks them
-    /// up with no manual JSON edit. Gated on Gemini hooks installing — the same "full Gemini
-    /// integration" trigger used by the Cursor/Copilot MCP handlers — and on
+    /// up with no manual JSON edit. Gated on <c>geminiToolsEligible</c> — which for Gemini alone
+    /// DOES require the hooks write to have succeeded, since both live in settings.json —
     /// <see cref="Options.SkipGeminiMcp"/>. No prompt: registration is non-destructive (only adds
     /// missing kcap servers, preserving the user's other settings).
     /// </summary>
@@ -1141,9 +1253,9 @@ internal static class CodingAgentsStep {
             Paths          paths,
             Installers     installers,
             Action<string> writeLine,
-            bool           geminiHooksInstalled
+            bool           geminiToolsEligible
         ) {
-        if (installers.RegisterGeminiMcp is null || !geminiHooksInstalled || options.SkipGeminiMcp) return false;
+        if (installers.RegisterGeminiMcp is null || !geminiToolsEligible || options.SkipGeminiMcp) return false;
 
         // MCP servers live in the same settings.json as the hooks.
         var configPath = Markup.Escape(paths.GeminiSettingsPath);
@@ -1200,8 +1312,8 @@ internal static class CodingAgentsStep {
 
     /// <summary>
     /// Registers the kcap MCP servers in OpenCode's <c>~/.config/opencode/opencode.json</c> via
-    /// <see cref="Installers.RegisterOpenCodeMcp"/>. Gated on the OpenCode plugin installing — the
-    /// same "full OpenCode integration" trigger as the plugin step — and on
+    /// <see cref="Installers.RegisterOpenCodeMcp"/>. Gated on <c>openCodeToolsEligible</c> — OpenCode
+    /// is here and kcap is on PATH — rather than on the plugin having installed, and on
     /// <see cref="Options.SkipOpenCodeMcp"/>. Non-destructive + idempotent.
     /// </summary>
     static bool HandleOpenCodeMcp(
@@ -1209,9 +1321,9 @@ internal static class CodingAgentsStep {
             Paths          paths,
             Installers     installers,
             Action<string> writeLine,
-            bool           openCodeExtensionInstalled
+            bool           openCodeToolsEligible
         ) {
-        if (installers.RegisterOpenCodeMcp is null || !openCodeExtensionInstalled || options.SkipOpenCodeMcp) return false;
+        if (installers.RegisterOpenCodeMcp is null || !openCodeToolsEligible || options.SkipOpenCodeMcp) return false;
 
         var configPath = Markup.Escape(paths.OpenCodeMcpPath);
 

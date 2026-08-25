@@ -1,3 +1,6 @@
+using Capacitor.Cli.Core.Setup;
+using Capacitor.Cli.Core.FirstRun;
+
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
@@ -39,6 +42,55 @@ internal static class SetupDecisions {
         if (DetectedAgentsSummary(d) is null) return false;
 
         return noPrompt || promptYesNo("Install kcap for these agents (hooks, skills, instructions, MCP)?");
+    }
+
+    /// <summary>
+    /// Folds the browser's Agents answer into options already built from this invocation's flags.
+    ///
+    /// <para><b>The flag still wins.</b> It is an instruction for this run — a script's opt-out, or a
+    /// user who typed it — and a browser answer minutes old does not override one. Everything the
+    /// answer did not turn on is skipped, since a harness left off is absent from it rather than
+    /// present-and-false. A null answer returns the options untouched, which is what an ordinary
+    /// terminal setup has always done.</para>
+    ///
+    /// <para>One function rather than sixteen call sites so the mapping is pinnable: a harness added
+    /// to <see cref="HarnessCatalog"/> and forgotten here would otherwise round-trip through the
+    /// screen, be reported back as chosen, and install nothing.</para>
+    /// </summary>
+    public static CodingAgentsStep.Options WithBrowserAnswer(
+            CodingAgentsStep.Options options, FirstRunAgentsAnswer? answer) {
+        if (answer is null) return options;
+
+        bool Skip(string vendorId, bool flag)  => flag || !answer.Records(vendorId);
+        bool Tools(string vendorId, bool flag) => flag || !answer.Tools(vendorId);
+
+        return options with {
+            SkipClaude      = Skip("claude", options.SkipClaude),
+            SkipCodex       = Skip("codex", options.SkipCodex),
+            SkipCursor      = Skip("cursor", options.SkipCursor),
+            SkipCopilot     = Skip("copilot", options.SkipCopilot),
+            SkipGemini      = Skip("gemini", options.SkipGemini),
+            SkipKiro        = Skip("kiro", options.SkipKiro),
+            SkipPi          = Skip("pi", options.SkipPi),
+            SkipOpenCode    = Skip("opencode", options.SkipOpenCode),
+            SkipAntigravity = Skip("antigravity", options.SkipAntigravity),
+
+            SkipCursorMcp      = Tools("cursor", options.SkipCursorMcp),
+            SkipCopilotMcp     = Tools("copilot", options.SkipCopilotMcp),
+            SkipGeminiMcp      = Tools("gemini", options.SkipGeminiMcp),
+            SkipKiroMcp        = Tools("kiro", options.SkipKiroMcp),
+            SkipPiMcp          = Tools("pi", options.SkipPiMcp),
+            SkipOpenCodeMcp    = Tools("opencode", options.SkipOpenCodeMcp),
+            SkipAntigravityMcp = Tools("antigravity", options.SkipAntigravityMcp),
+
+            // The browser answered every prompt this step would raise, so it must not raise one.
+            NoPrompt = true,
+
+            // The screen asked "record" and "tools" as two questions, so declining the first here
+            // does NOT decline the second — unlike --skip-<vendor>-hooks, which has always meant
+            // "leave this vendor alone" and must keep meaning it for the scripts that pass it.
+            ToolsIndependentOfCapture = true
+        };
     }
 
     /// <summary>Whether Step 6 (import past sessions) ran, or was skipped and why.</summary>

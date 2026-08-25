@@ -37,7 +37,7 @@ public sealed class LoginShellProbe(IProcessRunner runner, Func<string, string?>
     Task<(string? Value, bool Cacheable)>? _kcapPath;
 
     public async Task<string?> TerminalPathAsync(CancellationToken ct) {
-        var task = _terminalPath ??= RunScript($"printf '{Sentinel}%s{Sentinel}' \"$PATH\"");
+        var task = _terminalPath ??= Discard(RunScript($"printf '{Sentinel}%s{Sentinel}' \"$PATH\""));
         var (value, cacheable) = await task.WaitAsync(ct).ConfigureAwait(false);
         if (!cacheable) _terminalPath = null;
         return value;
@@ -52,9 +52,15 @@ public sealed class LoginShellProbe(IProcessRunner runner, Func<string, string?>
     }
 
     async Task<(bool? Value, bool Cacheable)> ProbeKcapOnPath() {
-        var (found, cacheable) = await RunScript(
+        var (found, cacheable, interactiveAnswered) = await RunScript(requireInteractive: true, script:
                 $"command -v kcap >/dev/null 2>&1 && printf '{Sentinel}FOUND{Sentinel}' || printf '{Sentinel}ABSENT{Sentinel}'")
             .ConfigureAwait(false);
+
+        // Unknown, not false: -lc skips .zshrc, which is where nvm and npm prefixes put kcap, so an
+        // ABSENT from it is "we looked in the wrong place". A confident false is the flow's only error
+        // state, and inventing that alarm is worse than saying nothing. Uncacheable, so a slow profile
+        // is retried rather than pinned for the process lifetime.
+        if (!interactiveAnswered) return (null, false);
 
         bool? value = found switch {
             "FOUND" => true,
@@ -76,7 +82,7 @@ public sealed class LoginShellProbe(IProcessRunner runner, Func<string, string?>
         // $(...) captures `command -v kcap` raw (alias line, function body, path, or nothing on
         // a nonzero exit) without letting its own exit code flip the enclosing script's — the
         // trailing printf always exits 0, so "not found" is a determined (cacheable) outcome.
-        var (raw, cacheable) = await RunScript($"out=$(command -v kcap 2>/dev/null); printf '{Sentinel}%s{Sentinel}' \"$out\"")
+        var (raw, cacheable, _) = await RunScript($"out=$(command -v kcap 2>/dev/null); printf '{Sentinel}%s{Sentinel}' \"$out\"")
             .ConfigureAwait(false);
         return (ValidateKcapPath(raw), cacheable);
     }
@@ -96,17 +102,28 @@ public sealed class LoginShellProbe(IProcessRunner runner, Func<string, string?>
     // unset/empty → /bin/zsh (macOS default). Runs on CancellationToken.None — this probe is
     // shared cache-wide (see the two public methods above), so it must not be tied to whichever
     // caller happened to trigger it; a caller's own ct only bounds *their* wait via WaitAsync.
-    async Task<(string? Value, bool Cacheable)> RunScript(string script) {
+    async Task<(string? Value, bool Cacheable, bool InteractiveAnswered)> RunScript(string script, bool requireInteractive = false) {
         var shell = getEnv("SHELL");
         if (string.IsNullOrEmpty(shell)) shell = "/bin/zsh";
 
         var first = await Attempt(shell, "-lic", script).ConfigureAwait(false);
-        if (first.Ran && Succeeded(first.Result!)) return (Parse(first.Result!.Stdout), true);
+        if (first.Ran && Succeeded(first.Result!)) return (Parse(first.Result!.Stdout), true, true);
+
+        // A TIMEOUT is the one failure meaning "never asked" rather than "cannot ask this way", and
+        // only a caller that needs the interactive answer cares: -lc is a fine stand-in for a PATH,
+        // and not for a yes/no about kcap. Returning here also saves the second spawn on exactly the
+        // slow machine that could least afford it.
+        //
+        // The residual, a trade rather than an oversight: a startup file that ABORTS also exits
+        // non-zero and is indistinguishable here from a shell refusing -i, so it still falls through.
+        // Separating them needs the sentinel to have been reached, which would cost fish — where -lc
+        // genuinely is the right answer — an honest result.
+        if (requireInteractive && first is { Ran: true, Result.TimedOut: true }) return (null, false, false);
 
         var second = await Attempt(shell, "-lc", script).ConfigureAwait(false);
-        if (second.Ran && Succeeded(second.Result!)) return (Parse(second.Result!.Stdout), true);
+        if (second.Ran && Succeeded(second.Result!)) return (Parse(second.Result!.Stdout), true, true);
 
-        return (null, first.Ran && second.Ran);
+        return (null, first.Ran && second.Ran, true);
     }
 
     // stdin is not connected by our runner (RedirectStandardInput=false → the child reads
@@ -124,6 +141,12 @@ public sealed class LoginShellProbe(IProcessRunner runner, Func<string, string?>
     }
 
     static bool Succeeded(ProcessResult result) => result.ExitCode == 0 && !result.TimedOut;
+
+    static async Task<(string? Value, bool Cacheable)> Discard(Task<(string? Value, bool Cacheable, bool _)> task) {
+        var (value, cacheable, _) = await task.ConfigureAwait(false);
+
+        return (value, cacheable);
+    }
 
     /// Content between the sentinel PAIR; null if the sentinel is absent, appears only once
     /// (torn output), or the pair is empty of a match — startup chatter ahead of the payload

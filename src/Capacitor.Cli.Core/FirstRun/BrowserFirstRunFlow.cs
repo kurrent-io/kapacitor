@@ -44,14 +44,15 @@ public sealed class BrowserFirstRunFlow(
 
     /// <summary>Runs the leg. Never throws for a reachable failure — every way this ends is a
     /// <see cref="FirstRunFlowResult"/>, because setup carries on either way.</summary>
-    public async Task<FirstRunFlowResult> RunAsync(string serverUrl, string? machine, CancellationToken ct) {
+    public async Task<FirstRunFlowResult> RunAsync(
+            string serverUrl, FirstRunMachineReport report, CancellationToken ct) {
         string flowId;
         var    attempt = 0;
 
         while (true) {
             flowId = FirstRunFlowId.New();
 
-            var created = await channel.CreateAsync(serverUrl, flowId, machine, ct);
+            var created = await channel.CreateAsync(serverUrl, flowId, report, ct);
 
             // Every one of these means "no flow here", and every one has the same remedy: carry on
             // with the setup that already works. The routes are mapped only when the tenant has
