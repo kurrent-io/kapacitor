@@ -10,6 +10,11 @@ using ReactiveUI;
 
 namespace Capacitor.App.ViewModels;
 
+/// Which surface owns the window: Home (status block + launcher + cards + Activity) or
+/// Sessions (rail | workspace). Orthogonal to CurrentWorkspace, which only means anything in
+/// Sessions view.
+public enum ShellView { Home, Sessions }
+
 /// Projects IDaemonClientService.Status/Snapshots into display text and drives Start/Retry.
 /// All display projections are activation-scoped (WhenActivated) — the service outlives this
 /// ViewModel and owns its subjects (spec §5), so nothing here disposes the service itself.
@@ -130,6 +135,25 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         private set => this.RaiseAndSetIfChanged(ref _currentWorkspace, value);
     }
 
+    ShellView _currentView = ShellView.Home;
+    public ShellView CurrentView {
+        get => _currentView;
+        private set {
+            this.RaiseAndSetIfChanged(ref _currentView, value);
+            this.RaisePropertyChanged(nameof(IsHomeView));
+            this.RaisePropertyChanged(nameof(IsSessionsView));
+        }
+    }
+    public bool IsHomeView => CurrentView == ShellView.Home;
+    public bool IsSessionsView => CurrentView == ShellView.Sessions;
+
+    public ReactiveCommand<Unit, Unit> ShowHomeCommand { get; }
+    public ReactiveCommand<Unit, Unit> ShowSessionsCommand { get; }
+
+    /// The Sessions rail (repo → worktree → session over daemon.Agents) — null for any caller
+    /// that predates it, same nullable-seam shape as Home/workspaceFactory above.
+    public SessionRailViewModel? Rail { get; }
+
     /// The launch auto-open's staleness token — see NavigationGate. Read from the SHARED gate, not
     /// a per-window counter, so a window built after shutdown began sees the latch too.
     public int NavigationGeneration => _navigation.Generation;
@@ -199,12 +223,16 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// client and the xterm surface). Null means this window cannot navigate to a workspace at all
     /// — every existing caller that predates workspaces stays on the tabbed shell.
     /// </param>
+    /// <param name="rail">
+    /// The Sessions rail. Null means this window has no rail to keep in sync — every existing
+    /// caller that predates it keeps working the way it always has.
+    /// </param>
     public MainWindowViewModel(
             IDaemonClientService service, AgentActionService actions, ITicker ticker,
             CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
             IObservable<string?>? lifecycleStatus = null, TimeProvider? time = null, HomeViewModel? home = null,
             NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
-            Func<string, WorkspaceViewModel>? workspaceFactory = null) {
+            Func<string, WorkspaceViewModel>? workspaceFactory = null, SessionRailViewModel? rail = null) {
         _service = service;
         _time = time ?? TimeProvider.System;
         Agents = new ReadOnlyObservableCollection<AgentRowViewModel>(_agentsSource);
@@ -213,7 +241,10 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         _navigation = navigation ?? new NavigationGate();
         _trackTeardown = trackWorkspaceTeardown ?? RunUntracked;
         _workspaceFactory = workspaceFactory;
+        Rail = rail;
         CloseWorkspaceCommand = ReactiveCommand.Create(CloseWorkspace);
+        ShowHomeCommand = ReactiveCommand.Create(() => { CurrentView = ShellView.Home; });
+        ShowSessionsCommand = ReactiveCommand.Create(() => { CurrentView = ShellView.Sessions; });
 
         // ReactiveCommand's own CanExecute observable already ANDs the supplied canExecute with
         // "not currently executing" (confirmed against the installed ReactiveUI 23.2.28 API
@@ -356,10 +387,14 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// is a new attach, and quiesce/disposal is already running (spec §3).
     public void OpenSession(string agentId) {
         if (_navigation.ShutdownLatched || _workspaceFactory is null) return;
+        CurrentView = ShellView.Sessions;
+        // Re-clicking the open session must not tear down and rebuild a live attach.
+        if (CurrentWorkspace?.AgentId == agentId) return;
 
         var workspace = _workspaceFactory(agentId);
         workspace.BackCommand = CloseWorkspaceCommand;
         SwapTo(workspace);
+        Rail?.NotifySessionOpened(agentId);
     }
 
     /// The launch auto-open. `generation` is what the launch captured BEFORE its call: a success
@@ -382,6 +417,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     public void LatchShutdown() {
         var live = CurrentWorkspace;
         CurrentWorkspace = null;
+        if (Rail is not null) Rail.SelectedAgentId = null;
         _navigation.Latch();
         if (live is not null) _trackTeardown(live.TeardownAsync);
     }
@@ -389,6 +425,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     void SwapTo(WorkspaceViewModel? next) {
         var outgoing = CurrentWorkspace;
         CurrentWorkspace = next;
+        if (Rail is not null) Rail.SelectedAgentId = next?.AgentId;
         _navigation.Bump();
         if (outgoing is not null) _trackTeardown(outgoing.TeardownAsync);
     }

@@ -3,6 +3,9 @@ using System.Reactive.Threading.Tasks;
 using Avalonia.Media;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
+using Capacitor.Cli.Core.LocalIpc;
+using DynamicData;
+using Microsoft.Extensions.Time.Testing;
 using static Capacitor.App.Tests.Unit.FakeDaemonClientService;
 
 namespace Capacitor.App.Tests.Unit;
@@ -20,6 +23,26 @@ public class MainWindowViewModelTests {
         var notifier = new AppNotifier();
         var actions = new AgentActionService(new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
         return (actions, notifier);
+    }
+
+    /// The view-state/rail-wiring tests' standard construction: a VM over the fake service, with
+    /// an optional workspace factory and rail — mirrors NewActions' shape.
+    static MainWindowViewModel NewVm(
+            FakeDaemonClientService service, Func<string, WorkspaceViewModel>? workspaceFactory = null,
+            SessionRailViewModel? rail = null) {
+        var (actions, _) = NewActions(service);
+        return new MainWindowViewModel(
+            service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(),
+            workspaceFactory: workspaceFactory, rail: rail);
+    }
+
+    /// A real WorkspaceViewModel over the fake service and scripted attach/surface fakes — same
+    /// pieces WorkspaceNavigationTests.NewNav wires, just without its Nav bookkeeping.
+    static WorkspaceViewModel NewWorkspace(FakeDaemonClientService service, string agentId) {
+        var (actions, _) = NewActions(service);
+        var attach = new FakeTerminalAttachClientFactory();
+        return new WorkspaceViewModel(
+            agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider());
     }
 
     [Test]
@@ -396,6 +419,68 @@ public class MainWindowViewModelTests {
             await Assert.That(vm.DaemonName).IsEqualTo(daemonNameAtDeactivation);
             await Assert.That(vm.AgentCountText).IsEqualTo(agentCountAtDeactivation);
             await Assert.That(vm.State).IsEqualTo(stateAtDeactivation);
+        });
+    }
+
+    // ---- Shell view state and rail wiring (spec: Home/Sessions surfaces, orthogonal to
+    // CurrentWorkspace, and the rail's SelectedAgentId tracking the open workspace) ----
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task OpenSession_switches_to_sessions_view_and_reopening_the_same_id_is_a_noop() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var built = 0;
+            var vm = NewVm(service,
+                workspaceFactory: id => { built++; return NewWorkspace(service, id); });
+
+            await Assert.That(vm.IsHomeView).IsTrue();
+            vm.OpenSession("a1");
+            await Assert.That(vm.IsSessionsView).IsTrue();
+            await Assert.That(built).IsEqualTo(1);
+
+            vm.OpenSession("a1"); // same id: no teardown/rebuild of a live attach
+            await Assert.That(built).IsEqualTo(1);
+
+            vm.OpenSession("a2"); // different id still swaps
+            await Assert.That(built).IsEqualTo(2);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task View_commands_swap_surfaces_and_close_keeps_sessions_view() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var vm = NewVm(service, workspaceFactory: id => NewWorkspace(service, id));
+            vm.OpenSession("a1");
+            vm.CloseWorkspace();
+            await Assert.That(vm.CurrentWorkspace).IsNull();
+            await Assert.That(vm.IsSessionsView).IsTrue(); // placeholder pane, not Home
+
+            vm.ShowHomeCommand.Execute().Subscribe();
+            await Assert.That(vm.IsHomeView).IsTrue();
+            vm.ShowSessionsCommand.Execute().Subscribe();
+            await Assert.That(vm.IsSessionsView).IsTrue();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Rail_selection_follows_the_workspace() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            service.Agents.AddOrUpdate(new AgentStatusDto(
+                "a1", "agent", "claude", "/dev/alpha", "Running", null, null, null, DateTime.UtcNow, null, null));
+            var rail = new SessionRailViewModel(service, _ => { }, p => p);
+            var vm = NewVm(service, workspaceFactory: id => NewWorkspace(service, id), rail: rail);
+
+            vm.OpenSession("a1");
+            await Assert.That(rail.SelectedAgentId).IsEqualTo("a1");
+            await Assert.That(rail.Repos[0].Worktrees[0].IsExpanded).IsTrue(); // NotifySessionOpened ran
+
+            vm.CloseWorkspace();
+            await Assert.That(rail.SelectedAgentId).IsNull();
         });
     }
 }
