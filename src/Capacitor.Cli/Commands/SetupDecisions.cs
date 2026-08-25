@@ -61,8 +61,13 @@ internal static class SetupDecisions {
             CodingAgentsStep.Options options, FirstRunAgentsAnswer? answer) {
         if (answer is null) return options;
 
-        bool Skip(string vendorId, bool flag)  => flag || !answer.Records(vendorId);
-        bool Tools(string vendorId, bool flag) => flag || !answer.Tools(vendorId);
+        bool Skip(string vendorId, bool flag) => flag || !answer.Records(vendorId);
+
+        // The hooks flag counts against TOOLS as well. `--skip-<vendor>-hooks` is a whole-vendor
+        // opt-out, and the browser's separate tools axis must not re-enable the half of it the caller
+        // never mentioned: a script that excluded a vendor gets no writes for it, screen or no screen.
+        bool Tools(string vendorId, bool hooksFlag, bool mcpFlag) =>
+            hooksFlag || mcpFlag || !answer.Tools(vendorId);
 
         return options with {
             SkipClaude      = Skip("claude", options.SkipClaude),
@@ -75,13 +80,13 @@ internal static class SetupDecisions {
             SkipOpenCode    = Skip("opencode", options.SkipOpenCode),
             SkipAntigravity = Skip("antigravity", options.SkipAntigravity),
 
-            SkipCursorMcp      = Tools("cursor", options.SkipCursorMcp),
-            SkipCopilotMcp     = Tools("copilot", options.SkipCopilotMcp),
-            SkipGeminiMcp      = Tools("gemini", options.SkipGeminiMcp),
-            SkipKiroMcp        = Tools("kiro", options.SkipKiroMcp),
-            SkipPiMcp          = Tools("pi", options.SkipPiMcp),
-            SkipOpenCodeMcp    = Tools("opencode", options.SkipOpenCodeMcp),
-            SkipAntigravityMcp = Tools("antigravity", options.SkipAntigravityMcp),
+            SkipCursorMcp      = Tools("cursor", options.SkipCursor, options.SkipCursorMcp),
+            SkipCopilotMcp     = Tools("copilot", options.SkipCopilot, options.SkipCopilotMcp),
+            SkipGeminiMcp      = Tools("gemini", options.SkipGemini, options.SkipGeminiMcp),
+            SkipKiroMcp        = Tools("kiro", options.SkipKiro, options.SkipKiroMcp),
+            SkipPiMcp          = Tools("pi", options.SkipPi, options.SkipPiMcp),
+            SkipOpenCodeMcp    = Tools("opencode", options.SkipOpenCode, options.SkipOpenCodeMcp),
+            SkipAntigravityMcp = Tools("antigravity", options.SkipAntigravity, options.SkipAntigravityMcp),
 
             // The browser answered every prompt this step would raise, so it must not raise one.
             NoPrompt = true,

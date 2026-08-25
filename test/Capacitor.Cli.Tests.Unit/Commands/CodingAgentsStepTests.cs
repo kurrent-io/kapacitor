@@ -1,6 +1,8 @@
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.Instructions;
 using Capacitor.Cli.Core.Mcp;
+using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.FirstRun;
 using static Capacitor.Cli.Commands.CodingAgentsStep;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
@@ -813,6 +815,32 @@ public class CodingAgentsStepTests {
             prompt: _ => true, writeLine: sink.Write);
 
         await Assert.That(result.AgentSkillsInstalled).IsTrue();
+    }
+
+    // The same whole-vendor opt-out, but with a browser answer present that ticks the vendor. The
+    // screen's two axes must not reopen the half of the exclusion the caller never named.
+    [Test]
+    public async Task Skip_hooks_flag_survives_a_browser_answer_that_selects_that_vendor() {
+        var sink  = new Sink();
+        var calls = new InstallerCalls();
+
+        var flags = new Options(
+            SkipClaude: true, SkipCodex: true, SkipCursor: true, SkipCopilot: true, NoPrompt: true,
+            SkipGemini: true, SkipPi: true, SkipOpenCode: true, SkipAntigravity: true);
+
+        var answer = new FirstRunAgentsAnswer(
+            [new FirstRunAgentsChoice("cursor", Record: true, Tools: true)],
+            new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero), Unrecognised: 0);
+
+        var detected = new DetectedAgents(Claude: false, Codex: false, Cursor: true, Copilot: false);
+
+        var result = await RunAsync(
+            SetupDecisions.WithBrowserAnswer(flags, answer), detected, TestPaths(), calls.AsInstallers(),
+            prompt: _ => true, writeLine: sink.Write);
+
+        await Assert.That(calls.CursorHooksCalled).IsFalse();
+        await Assert.That(calls.RegisterCursorMcpCalled).IsFalse();
+        await Assert.That(result.CursorMcpRegistered).IsFalse();
     }
 
     [Test]

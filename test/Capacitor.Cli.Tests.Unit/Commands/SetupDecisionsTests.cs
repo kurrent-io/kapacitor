@@ -170,6 +170,20 @@ public class SetupDecisionsTests {
         await Assert.That(options.SkipCursorMcp).IsTrue();
     }
 
+    // --skip-<vendor>-hooks alone is a WHOLE-VENDOR opt-out. Its MCP flag is separate and usually
+    // absent, so without carrying the hooks flag across, a browser answer that ticks the vendor's
+    // tools would reinterpret the exclusion as "capture off, tools on" and write its MCP config —
+    // a write the caller explicitly opted out of, on a path that never asks again.
+    [Test]
+    public async Task WithBrowserAnswer_TheHooksFlagAloneStillBlocksThatVendorsTools() {
+        var options = SetupDecisions.WithBrowserAnswer(
+            Flags(skipCursor: true),
+            Answer(new FirstRunAgentsChoice("cursor", Record: true, Tools: true)));
+
+        await Assert.That(options.SkipCursor).IsTrue();
+        await Assert.That(options.SkipCursorMcp).IsTrue();
+    }
+
     [Test]
     public async Task WithBrowserAnswer_HonoursRecordWithoutToolsForAVendorThatSeparatesThem() {
         var options = SetupDecisions.WithBrowserAnswer(
