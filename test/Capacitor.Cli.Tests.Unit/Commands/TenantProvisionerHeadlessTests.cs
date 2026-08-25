@@ -20,6 +20,7 @@ public class TenantProvisionerHeadlessTests {
     /// <summary>Interactivity is injected, not read: the ambient value belongs to whatever host the
     /// suite is running under, so reading it would pass in CI and fail in a developer's terminal.</summary>
     [Test]
+    [NotInParallel]
     public async Task Declines_instead_of_throwing_when_there_is_no_terminal_to_prompt_on() {
         var provisioner = new SpectreTenantProvisioner(
             new TenantProvisioningClient(new HttpClient()), BaseUrl,
@@ -95,6 +96,7 @@ public class TenantProvisionerHeadlessTests {
         var offer = await provisioner.OfferCreateAsync(Tokens());
 
         await Assert.That(offer.Status).IsEqualTo(ProvisionOfferStatus.Failed);
+        await Assert.That(capture.GetCapturedError()).Contains("acme");
         await Assert.That(handler.Paths).DoesNotContain("/api/signup/provision");
     }
 
@@ -108,7 +110,73 @@ public class TenantProvisionerHeadlessTests {
         var offer = await provisioner.OfferCreateAsync(Tokens());
 
         await Assert.That(offer.Status).IsEqualTo(ProvisionOfferStatus.Failed);
+        await Assert.That(capture.GetCapturedError()).Contains("not a valid slug");
         await Assert.That(handler.Paths).IsEmpty();
+    }
+
+    // A reserved word fails the same check by a different arm, and the two say different things.
+    [Test]
+    [NotInParallel]
+    public async Task A_reserved_slug_says_so_rather_than_calling_it_malformed() {
+        using var capture = ConsoleOutput.StartErrorCapture();
+        using var handler = new StubHandler();
+        var provisioner   = Provisioner(handler, () => false, new RequestedWorkspace("Acme", "api"));
+
+        var offer = await provisioner.OfferCreateAsync(Tokens());
+
+        await Assert.That(offer.Status).IsEqualTo(ProvisionOfferStatus.Failed);
+        await Assert.That(capture.GetCapturedError()).Contains("is reserved");
+        await Assert.That(handler.Paths).IsEmpty();
+    }
+
+    [Test]
+    [NotInParallel]
+    [Arguments("reserved", "being provisioned by someone else")]
+    [Arguments("blocked",  "is reserved")]
+    [Arguments(null,       "is unavailable")]
+    public async Task Every_unavailable_reason_reaches_the_log_with_its_own_wording(string? reason, string expected) {
+        using var capture = ConsoleOutput.StartErrorCapture();
+        using var handler = new StubHandler { AvailabilityAvailable = false, AvailabilityReason = reason };
+        var provisioner   = Provisioner(handler, () => false, new RequestedWorkspace("Acme", "acme"));
+
+        var offer = await provisioner.OfferCreateAsync(Tokens());
+
+        await Assert.That(offer.Status).IsEqualTo(ProvisionOfferStatus.Failed);
+        await Assert.That(capture.GetCapturedError()).Contains(expected);
+    }
+
+    // The server gets the last word on a slug the availability check waved through, and its refusal
+    // has to land on the same stream as the earlier ones or a script cannot read one log for both.
+    [Test]
+    [NotInParallel]
+    [Arguments(HttpStatusCode.Conflict, "taken")]
+    [Arguments(HttpStatusCode.BadRequest, "Invalid organization name or slug")]
+    public async Task A_refusal_from_the_provision_call_ends_the_run_on_stderr(HttpStatusCode status, string expected) {
+        using var capture = ConsoleOutput.StartErrorCapture();
+        using var handler = new StubHandler { ProvisionStatus = status };
+        var provisioner   = Provisioner(handler, () => false, new RequestedWorkspace("Acme", "acme"));
+
+        var offer = await provisioner.OfferCreateAsync(Tokens());
+
+        await Assert.That(offer.Status).IsEqualTo(ProvisionOfferStatus.Failed);
+        await Assert.That(capture.GetCapturedError()).Contains(expected);
+    }
+
+    // The prompts confirm the name and hostname before committing; nothing can confirm here, so the
+    // log has to carry what was about to be created.
+    [Test]
+    [NotInParallel]
+    public async Task The_org_and_hostname_are_stated_before_the_workspace_exists() {
+        using var capture = ConsoleOutput.StartErrorCapture();
+        using var handler = new StubHandler();
+        var provisioner   = Provisioner(handler, () => false, new RequestedWorkspace("Acme", "acme"));
+
+        await provisioner.OfferCreateAsync(Tokens());
+
+        var written = capture.GetCapturedError();
+
+        await Assert.That(written).Contains("Acme");
+        await Assert.That(written).Contains("https://acme.kcap.ai");
     }
 
     // Provisioning usually answers 202 and the run waits. That wait renders through a Spectre live

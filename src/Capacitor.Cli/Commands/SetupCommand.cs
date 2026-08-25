@@ -104,8 +104,6 @@ public static class SetupCommand {
         if (serverUrlArg is null && args.Length > 1 && !args[1].StartsWith('-'))
             serverUrlArg = ServerInput.ResolveTenantArg(args[1]);
         var noPrompt         = args.Contains("--no-prompt");
-        var orgNameArg       = GetArg(args, "--org");
-        var slugArg          = GetArg(args, "--slug");
         // Also when there is no keyboard: a redirected stdin cannot press the escape-hatch key, so a
         // loopback wait there can only end in the listener timeout. Not a headless guess - an
         // interactive SSH session has a keyboard and keeps the browser.
@@ -139,8 +137,7 @@ public static class SetupCommand {
         var skipClaude       = skipClaudeFlag || legacyPluginScope == "skip";
         var legacyProjectScope = legacyPluginScope == "project";
 
-        var (requestedWorkspace, workspaceArgError) = ParseRequestedWorkspace(
-            orgNameArg, slugArg, serverUrlArg is not null, args.Contains("--github"));
+        var (requestedWorkspace, workspaceArgError) = ParseRequestedWorkspace(args, serverUrlArg is not null);
 
         if (workspaceArgError is not null) {
             await Console.Error.WriteLineAsync($"  {workspaceArgError}");
@@ -1095,28 +1092,64 @@ public static class SetupCommand {
     /// Every rejection here is a combination that would otherwise accept the flags and never act on
     /// them, which on an unattended run reads as a workspace that was created.
     /// </summary>
-    internal static (RequestedWorkspace? Workspace, string? Error) ParseRequestedWorkspace(
-            string? orgName, string? slug, bool haveServerUrl, bool gitHubProvider) {
-        const string Usage = "kcap setup --org \"<name>\" --slug <slug>";
+    /// <summary>
+    /// A flag's value, and whether the flag was there at all. <see cref="GetArg"/> returns the next
+    /// token whatever it is, so <c>--org --slug acme</c> reads "--slug" as the organization name —
+    /// harmless for a flag that resolves to a URL, but here it would name a real workspace.
+    /// </summary>
+    static (bool Present, string? Value) ValuedFlag(string[] args, string name) {
+        var idx = Array.IndexOf(args, name);
 
-        var haveOrg  = !string.IsNullOrWhiteSpace(orgName);
-        var haveSlug = !string.IsNullOrWhiteSpace(slug);
+        if (idx < 0) return (false, null);
+
+        var next = idx + 1 < args.Length ? args[idx + 1] : null;
+
+        return (true, next is null || next.StartsWith('-') || string.IsNullOrWhiteSpace(next) ? null : next);
+    }
+
+    /// <summary>
+    /// Why the run must stop when it did not land on the workspace <c>--org</c>/<c>--slug</c> asked
+    /// for, or null when it did. Only the zero-workspace fork consults the provisioner, so an account
+    /// that already has one never reaches it and the answers go unused — leaving a run that configures
+    /// a workspace the caller never named, and, unattended, says nothing about it.
+    /// </summary>
+    internal static string? WrongWorkspaceError(RequestedWorkspace? requested, string activeServerUrl) {
+        if (requested is null || ServerIdentity.SameServer(activeServerUrl, requested.Origin)) return null;
+
+        return $"  ✗ Signed in to {activeServerUrl}, which your account already belongs to, so '{requested.Slug}' was not created.\n"
+             + $"    --org/--slug create a workspace only for an account that has none. Re-run with --server-url {activeServerUrl} to configure that one.";
+    }
+
+    internal static (RequestedWorkspace? Workspace, string? Error) ParseRequestedWorkspace(
+            string[] args, bool haveServerUrl) {
+        const string Usage = "kcap setup --org \"<name>\" --slug <slug> --no-prompt";
+
+        var (orgGiven, orgName) = ValuedFlag(args, "--org");
+        var (slugGiven, slug)   = ValuedFlag(args, "--slug");
+
+        if (!orgGiven && !slugGiven) return (null, null);
+
+        // Present-but-empty is rejected rather than read as absent: a script whose $ORG expanded to
+        // nothing asked to create a workspace, and silently doing something else is the failure this
+        // whole function exists to prevent.
+        if (orgGiven && orgName is null)   return (null, $"--org needs a value: {Usage}");
+        if (slugGiven && slug is null)     return (null, $"--slug needs a value: {Usage}");
 
         // Both or neither. The slug becomes a permanent public hostname, so deriving one from the
         // name would pick it on the user's behalf in the one run nobody is watching.
-        if (haveOrg != haveSlug)
-            return (null, $"{(haveOrg ? "--org needs --slug" : "--slug needs --org")}: {Usage}");
-
-        if (!haveOrg) return (null, null);
+        if (orgGiven != slugGiven)
+            return (null, $"{(orgGiven ? "--org needs --slug" : "--slug needs --org")}: {Usage}");
 
         if (haveServerUrl)
-            return (null, "--org/--slug create a workspace; --server-url points at one that exists. Pass one or the other.");
+            return (null, "--org/--slug create a workspace; --server-url (or `kcap setup <tenant>`) points at one that exists. Pass one or the other.");
 
         // Only the hosted-auth lane provisions; GitHub-App discovery has nothing to create with.
-        if (gitHubProvider)
+        if (args.Contains("--github"))
             return (null, "--org/--slug need Kurrent's hosted auth, which --github opts out of.");
 
-        return (new RequestedWorkspace(orgName!.Trim(), slug!.Trim()), null);
+        // Canonicalized here so the slug this run reports, checks and compares against the workspace
+        // it lands on is one value rather than three.
+        return (new RequestedWorkspace(orgName!.Trim(), SlugValidator.Canonicalize(slug!)), null);
     }
 
     internal static async Task<(string ServerUrl, string Provider, bool LoginComplete)?> RunDiscoveryAsync(
@@ -1172,6 +1205,12 @@ public static class SetupCommand {
 
                 if (active?.ServerUrl is null) {
                     AnsiConsole.MarkupLine("  [red]✗[/] Sign-in did not set an active profile.");
+
+                    return null;
+                }
+
+                if (WrongWorkspaceError(requested, active.ServerUrl) is { } landedElsewhere) {
+                    await Console.Error.WriteLineAsync(landedElsewhere);
 
                     return null;
                 }

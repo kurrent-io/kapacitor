@@ -1073,13 +1073,12 @@ public class SetupCommandTests {
 
     // --- --org / --slug, the create-a-workspace prompts answered up front ---
 
-    static (RequestedWorkspace? Workspace, string? Error) Parse(
-            string? org, string? slug, bool haveServerUrl = false, bool gitHubProvider = false) =>
-        SetupCommand.ParseRequestedWorkspace(org, slug, haveServerUrl, gitHubProvider);
+    static (RequestedWorkspace? Workspace, string? Error) Parse(params string[] args) =>
+        SetupCommand.ParseRequestedWorkspace(args, haveServerUrl: false);
 
     [Test]
     public async Task ParseRequestedWorkspace_asks_for_nothing_when_neither_flag_is_passed() {
-        var (workspace, error) = Parse(null, null);
+        var (workspace, error) = Parse("setup", "--no-prompt");
 
         await Assert.That(workspace).IsNull();
         await Assert.That(error).IsNull();
@@ -1087,42 +1086,126 @@ public class SetupCommandTests {
 
     [Test]
     public async Task ParseRequestedWorkspace_carries_both_answers_through() {
-        var (workspace, error) = Parse("  Acme  ", "  acme  ");
+        var (workspace, error) = Parse("setup", "--org", "  Acme  ", "--slug", "  ACME  ");
 
         await Assert.That(error).IsNull();
         await Assert.That(workspace!.OrgName).IsEqualTo("Acme");
         await Assert.That(workspace.Slug).IsEqualTo("acme");
+        await Assert.That(workspace.Origin).IsEqualTo("https://acme.kcap.ai");
     }
 
-    // The slug is a permanent public hostname. Deriving one from the name would pick it on the
-    // user's behalf in the one run nobody is watching, so half a pair is an error, not a default.
     [Test]
-    [Arguments("Acme", null)]
-    [Arguments(null, "acme")]
-    [Arguments("Acme", "   ")]
-    [Arguments("   ", "acme")]
-    public async Task ParseRequestedWorkspace_refuses_half_a_pair(string? org, string? slug) {
-        var (workspace, error) = Parse(org, slug);
+    public async Task ParseRequestedWorkspace_refuses_half_a_pair() {
+        await Assert.That(Parse("setup", "--org", "Acme").Error).Contains("--slug");
+        await Assert.That(Parse("setup", "--slug", "acme").Error).Contains("--org");
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_a_flag_where_a_value_should_be() {
+        var (workspace, error) = Parse("setup", "--org", "--slug", "acme");
 
         await Assert.That(workspace).IsNull();
-        await Assert.That(error).IsNotNull();
-        await Assert.That(error!).Contains("--org");
-        await Assert.That(error).Contains("--slug");
+        await Assert.That(error!).Contains("--org needs a value");
     }
 
-    // Accepting the flags where nothing can act on them is worse than refusing: an unattended run
-    // that prints no complaint reads as a workspace that was created.
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_a_flag_with_no_value_at_all() {
+        await Assert.That(Parse("setup", "--slug", "acme", "--org").Error!).Contains("--org needs a value");
+    }
+
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_a_blank_value() {
+        await Assert.That(Parse("setup", "--org", "   ", "--slug", "acme").Error!).Contains("--org needs a value");
+        await Assert.That(Parse("setup", "--org", "Acme", "--slug", "   ").Error!).Contains("--slug needs a value");
+    }
+
     [Test]
     public async Task ParseRequestedWorkspace_refuses_to_create_and_point_at_a_server_at_once() {
-        var (workspace, error) = Parse("Acme", "acme", haveServerUrl: true);
+        var (workspace, error) = SetupCommand.ParseRequestedWorkspace(
+            ["setup", "--org", "Acme", "--slug", "acme"], haveServerUrl: true);
 
         await Assert.That(workspace).IsNull();
         await Assert.That(error!).Contains("--server-url");
     }
 
+    // Discovery only offers to create when the account has no workspace at all, so with one already
+    // the answers are never read and the run would otherwise configure a workspace nobody named.
+    [Test]
+    public async Task WrongWorkspaceError_stops_a_run_that_landed_on_someone_elses_workspace() {
+        var error = SetupCommand.WrongWorkspaceError(
+            new RequestedWorkspace("Acme", "acme"), "https://globex.kcap.ai");
+
+        await Assert.That(error).IsNotNull();
+        await Assert.That(error!).Contains("acme");
+        await Assert.That(error).Contains("https://globex.kcap.ai");
+    }
+
+    // A re-run of the same command once the workspace exists lands on it, which is the asked-for
+    // outcome rather than a collision.
+    [Test]
+    public async Task WrongWorkspaceError_passes_the_workspace_that_was_asked_for() {
+        await Assert.That(SetupCommand.WrongWorkspaceError(
+            new RequestedWorkspace("Acme", "acme"), "https://acme.kcap.ai")).IsNull();
+    }
+
+    [Test]
+    public async Task WrongWorkspaceError_has_nothing_to_say_when_no_workspace_was_asked_for() {
+        await Assert.That(SetupCommand.WrongWorkspaceError(null, "https://globex.kcap.ai")).IsNull();
+    }
+
+    // The parse tests above call the function directly, so they stay green if HandleAsync stops
+    // calling it. These drive argv. All three rejections return before any config read, network call
+    // or console rule, so they need none of the E2E fixture below.
+    [Test]
+    [NotInParallel]
+    public async Task HandleAsync_rejects_half_a_pair_before_doing_anything() {
+        using var capture = ConsoleOutput.StartErrorCapture();
+
+        var exit = await SetupCommand.HandleAsync(["setup", "--org", "Acme"]);
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(capture.GetCapturedError()).Contains("--slug");
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task HandleAsync_rejects_creating_and_pointing_at_a_server_at_once() {
+        using var capture = ConsoleOutput.StartErrorCapture();
+
+        var exit = await SetupCommand.HandleAsync(
+            ["setup", "--org", "Acme", "--slug", "acme", "--server-url", "https://other.kcap.ai"]);
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(capture.GetCapturedError()).Contains("--server-url");
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task HandleAsync_rejects_a_provider_that_cannot_create() {
+        using var capture = ConsoleOutput.StartErrorCapture();
+
+        var exit = await SetupCommand.HandleAsync(["setup", "--org", "Acme", "--slug", "acme", "--github"]);
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(capture.GetCapturedError()).Contains("--github");
+    }
+
+    // The relaxed --no-prompt gate still holds for a run that supplied neither route.
+    [Test]
+    [NotInParallel]
+    public async Task HandleAsync_still_requires_a_server_url_with_no_prompt_and_no_answers() {
+        using var capture = ConsoleOutput.StartErrorCapture();
+
+        var exit = await SetupCommand.HandleAsync(["setup", "--no-prompt"]);
+
+        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(capture.GetCapturedError()).Contains("--server-url is required");
+        await Assert.That(capture.GetCapturedError()).Contains("--org");
+    }
+
     [Test]
     public async Task ParseRequestedWorkspace_refuses_a_provider_that_cannot_create() {
-        var (workspace, error) = Parse("Acme", "acme", gitHubProvider: true);
+        var (workspace, error) = Parse("setup", "--org", "Acme", "--slug", "acme", "--github");
 
         await Assert.That(workspace).IsNull();
         await Assert.That(error!).Contains("--github");

@@ -31,9 +31,6 @@ public sealed record ProvisionOffer(
         new(ProvisionOfferStatus.ExistingWorkspace, null, input);
 }
 
-/// <summary>The two answers the create-a-workspace prompts collect, supplied up front instead.</summary>
-public sealed record RequestedWorkspace(string OrgName, string Slug);
-
 public interface ITenantProvisioner {
     // Interactive: prompt -> provision -> poll. Returns Created (with the tenant) on success;
     // Declined/InProgress/Failed otherwise, or ExistingWorkspace when the user would rather
