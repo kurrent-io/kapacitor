@@ -20,11 +20,11 @@
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
     <PackageVersion Include="ReactiveUI.Avalonia" Version="12.0.3" />
     <PackageVersion Include="Spectre.Console" Version="0.55.2" />
-    <PackageVersion Include="SvcSystems.UI.Terminal" Version="1.1.1" />
+    <PackageVersion Include="SvcSystems.UI.Terminal" Version="1.1.2" />
     <PackageVersion Include="Tomlyn" Version="2.4.0" />
     <PackageVersion Include="TUnit" Version="1.65.31" />
     <PackageVersion Include="TUnit.Core" Version="1.65.31" />
     <PackageVersion Include="WireMock.Net" Version="2.15.0" />
-    <PackageVersion Include="XTerm.NET" Version="1.0.16" />
+    <PackageVersion Include="XTerm.NET" Version="1.1.0" />
   </ItemGroup>
 </Project>

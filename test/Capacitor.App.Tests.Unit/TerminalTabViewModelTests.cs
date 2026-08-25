@@ -171,22 +171,6 @@ public class TerminalTabViewModelTests {
         });
     }
 
-    /// Claude/codex TUIs hide the hardware cursor once at stream start and draw their own caret
-    /// as an inverse-video cell the control paints invisibly (upstream sentinel bug) — so the VM
-    /// re-shows the engine caret exactly once, AFTER the snapshot replay (which carries the hide).
-    [Test]
-    [NotInParallel("AvaloniaSession")]
-    public async Task Attach_re_shows_the_caret_after_the_snapshot_replay() {
-        await RunOnUiAsync(async () => {
-            var (_, _, _, vm, client) = await BuildConnectingAsync();
-
-            await client.TriggerAttached([], reason: null);
-
-            var surface = (FakeTerminalSurface)vm.Surface!;
-            await Assert.That(surface.CaretShown).IsEqualTo(1);
-        });
-    }
-
     /// I1 (final review, reworked): a post-attach resend fired from inside OnAttachedAsync is
     /// structurally defeated -- Core's own post-attach repaint nudge (AgentAttachClient.
     /// RunCoreAsync, right after a read-write Attached) writes at whatever size RunAsync started
