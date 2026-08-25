@@ -24,20 +24,10 @@
 
     <ScrollViewer>
         <StackPanel Margin="28" Spacing="20" MaxWidth="960" HorizontalAlignment="Stretch">
-            <!-- Greeting row: Search and New session are decorative placeholders here (spec's own
-                 nav rail + real search land with the session workspace); New session just focuses the goal box. -->
-            <Grid ColumnDefinitions="*,Auto">
-                <StackPanel Spacing="3">
-                    <TextBlock Text="Home" FontSize="22" FontWeight="Bold" Foreground="{StaticResource KcapTextBrush}" />
-                    <TextBlock Text="Here's where your work is moving." FontSize="12" Foreground="{StaticResource KcapMutedBrush}" />
-                </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
-                    <Button Content="Search" Background="{StaticResource KcapSurfaceRaisedBrush}"
-                            BorderBrush="{StaticResource KcapBorderBrush}" Foreground="{StaticResource KcapTextBrush}" />
-                    <Button x:Name="NewSessionButton" Content="New session" Click="OnNewSessionClick"
-                            Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" FontWeight="SemiBold" />
-                </StackPanel>
-            </Grid>
+            <StackPanel Spacing="3">
+                <TextBlock Text="Home" FontSize="22" FontWeight="Bold" Foreground="{StaticResource KcapTextBrush}" />
+                <TextBlock Text="Here's where your work is moving." FontSize="12" Foreground="{StaticResource KcapMutedBrush}" />
+            </StackPanel>
 
             <!-- Launcher card: goal, repository chip, harness chip, remember toggle, Start. -->
             <Border Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"

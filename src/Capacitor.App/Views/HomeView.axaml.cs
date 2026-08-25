@@ -16,8 +16,6 @@ namespace Capacitor.App.Views;
 public partial class HomeView : UserControl {
     public HomeView() => InitializeComponent();
 
-    void OnNewSessionClick(object? sender, RoutedEventArgs e) => GoalInput.Focus();
-
     // The card's own DataContext (the item), not this view's: the click has to carry WHICH session
     // was clicked, and the button lives inside the ItemsControl's item template.
     void OnSessionCardClick(object? sender, RoutedEventArgs e) {

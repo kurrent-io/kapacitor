@@ -30,14 +30,14 @@
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderBrush" Value="Transparent" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="7" />
+            <Setter Property="CornerRadius" Value="8" />
             <Setter Property="Foreground" Value="{StaticResource KcapMutedBrush}" />
-            <Setter Property="Width" Value="30" />
-            <Setter Property="Height" Value="26" />
+            <Setter Property="Width" Value="38" />
+            <Setter Property="Height" Value="32" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="HorizontalContentAlignment" Value="Center" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
-            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontSize" Value="17" />
         </Style>
         <Style Selector="Button.railMode.active">
             <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
