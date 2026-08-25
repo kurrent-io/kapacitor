@@ -12,9 +12,9 @@
         <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto,Auto,Auto" Margin="20,0,16,0"
               Background="Transparent" PointerPressed="OnHeaderPointerPressed">
             <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
-                <TextBlock x:Name="WorkspaceTitle" Text="{Binding Title}" FontWeight="SemiBold" FontSize="13.5"
+                <TextBlock x:Name="WorkspaceTitle" Text="{Binding Title}" FontWeight="SemiBold" FontSize="14.5"
                            Foreground="{StaticResource KcapTextBrush}" TextTrimming="CharacterEllipsis" />
-                <TextBlock x:Name="WorkspaceRepo" Text="{Binding RepoLabelText}" FontSize="10.5"
+                <TextBlock x:Name="WorkspaceRepo" Text="{Binding RepoLabelText}" FontSize="11.5"
                            Foreground="{StaticResource KcapPurpleBrush}" TextTrimming="CharacterEllipsis" />
             </StackPanel>
 
@@ -27,17 +27,17 @@
                             IsVisible="{Binding FamilyDot, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
                         <TextBlock Text="{Binding FamilyDot}" FontSize="9" Foreground="{StaticResource KcapMutedBrush}" />
                     </Border>
-                    <TextBlock x:Name="WorkspaceVendorChip" Text="{Binding VendorChip}" FontSize="11.5" FontWeight="SemiBold"
+                    <TextBlock x:Name="WorkspaceVendorChip" Text="{Binding VendorChip}" FontSize="12" FontWeight="SemiBold"
                                Foreground="{StaticResource KcapTextBrush}" VerticalAlignment="Center" />
                 </StackPanel>
             </Border>
 
             <Button Grid.Column="3" Content="Open in web" Command="{Binding OpenInWebCommand}"
                     Background="Transparent" BorderBrush="Transparent" CornerRadius="7"
-                    Foreground="{StaticResource KcapMutedBrush}" Padding="10,5" FontSize="12" Margin="0,0,4,0" />
+                    Foreground="{StaticResource KcapMutedBrush}" Padding="10,5" FontSize="12.5" Margin="0,0,4,0" />
             <Button Grid.Column="4" Content="Stop" Command="{Binding StopCommand}"
                     Background="Transparent" BorderBrush="Transparent" CornerRadius="7"
-                    Foreground="{StaticResource KcapDangerBrush}" Padding="10,5" FontSize="12" />
+                    Foreground="{StaticResource KcapDangerBrush}" Padding="10,5" FontSize="12.5" />
         </Grid>
 
         <!-- Tab strip: one Terminal tab when the daemon reports this session has one; the muted
@@ -49,9 +49,9 @@
                         HorizontalAlignment="Left" VerticalAlignment="Center"
                         Background="{StaticResource KcapSurfaceRaisedBrush}" BorderThickness="0"
                         CornerRadius="7" Foreground="{StaticResource KcapTextBrush}" FontWeight="SemiBold"
-                        FontSize="12" Padding="12,5" />
+                        FontSize="12.5" Padding="12,5" />
                 <TextBlock x:Name="NoTerminalNote" Text="{Binding NoTerminalNote}" IsVisible="{Binding !ShowsTerminalTab}"
-                           Foreground="{StaticResource KcapMutedBrush}" FontSize="12" VerticalAlignment="Center" />
+                           Foreground="{StaticResource KcapMutedBrush}" FontSize="12.5" VerticalAlignment="Center" />
             </Grid>
         </Border>
 

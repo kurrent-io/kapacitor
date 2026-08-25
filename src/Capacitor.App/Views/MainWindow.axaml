@@ -34,21 +34,21 @@
                     <StackPanel Spacing="6">
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <TextBlock x:Name="DaemonIdentityText" Text="{Binding DaemonName}" FontWeight="Bold"
-                                       FontSize="15" Foreground="{StaticResource KcapTextBrush}" />
+                                       FontSize="16" Foreground="{StaticResource KcapTextBrush}" />
                             <TextBlock Text="·" Foreground="{StaticResource KcapFaintBrush}" />
                             <TextBlock x:Name="DaemonVersionText" Text="{Binding VersionDisplay}" ToolTip.Tip="{Binding DaemonVersion}"
                                        Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
                         </StackPanel>
 
-                        <TextBlock x:Name="ServerUrlText" Text="{Binding ServerUrl}" FontSize="12"
+                        <TextBlock x:Name="ServerUrlText" Text="{Binding ServerUrl}" FontSize="12.5"
                                    Foreground="{StaticResource KcapFaintBrush}" />
 
                         <StackPanel Orientation="Horizontal" Spacing="7">
                             <Ellipse Width="7" Height="7" Fill="{Binding StatusDotBrush}" VerticalAlignment="Center" />
-                            <TextBlock x:Name="ConnectionText" Text="{Binding ConnectionDisplay}" FontSize="12"
+                            <TextBlock x:Name="ConnectionText" Text="{Binding ConnectionDisplay}" FontSize="12.5"
                                        Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
                             <TextBlock x:Name="AgentCountText" Text="{Binding AgentCountText, StringFormat='· {0}'}"
-                                       IsVisible="{Binding GridEnabled}" FontSize="12"
+                                       IsVisible="{Binding GridEnabled}" FontSize="12.5"
                                        Foreground="{StaticResource KcapFaintBrush}" VerticalAlignment="Center" />
                         </StackPanel>
                     </StackPanel>
@@ -72,68 +72,75 @@
                     </StackPanel>
                 </StackPanel>
 
-                <Button Grid.Column="1" x:Name="HomeSessionsButton" Command="{Binding ShowSessionsCommand}"
-                        VerticalAlignment="Top" Background="{StaticResource KcapSurfaceRaisedBrush}"
-                        BorderBrush="{StaticResource KcapBorderBrush}" CornerRadius="7" Padding="12,6">
-                    <StackPanel Orientation="Horizontal" Spacing="7">
-                        <TextBlock Text="Sessions" FontSize="12" FontWeight="SemiBold"
-                                   Foreground="{StaticResource KcapTextBrush}" VerticalAlignment="Center" />
-                        <TextBlock Text="›" FontSize="12" Foreground="{StaticResource KcapFaintBrush}" VerticalAlignment="Center" />
-                    </StackPanel>
-                </Button>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+                    <!-- The consent-decision feed, as a transient panel off this chip rather than a
+                         section in the page flow. Opened/Closed drive the polling gate in
+                         code-behind, and leaving the Home view closes it. -->
+                    <Button x:Name="ActivityButton" Background="{StaticResource KcapSurfaceRaisedBrush}"
+                            BorderBrush="{StaticResource KcapBorderBrush}" CornerRadius="7" Padding="12,6">
+                        <TextBlock Text="Activity" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
+                        <Button.Flyout>
+                            <Flyout Placement="BottomEdgeAlignedRight">
+                                <Border Background="{StaticResource KcapSurfaceBrush}" MinWidth="480" MaxWidth="840"
+                                        MaxHeight="440" Padding="14">
+                                    <Grid RowDefinitions="Auto,*">
+                                        <TextBlock x:Name="ActivityEmptyText" Text="No decisions yet"
+                                                   Foreground="{StaticResource KcapFaintBrush}"
+                                                   IsVisible="{Binding Activity.IsEmpty}" HorizontalAlignment="Center" Margin="0,10" />
+
+                                        <ScrollViewer Grid.Row="1"
+                                                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                                            <StackPanel>
+                                                <Grid x:Name="ActivityHeader" ColumnDefinitions="150,70,120,90,140,90,110" Margin="0,0,0,4"
+                                                      IsVisible="{Binding !Activity.IsEmpty}">
+                                                    <TextBlock Grid.Column="0" Text="Time" FontWeight="Bold" Opacity="0.7" />
+                                                    <TextBlock Grid.Column="1" Text="Outcome" FontWeight="Bold" Opacity="0.7" />
+                                                    <TextBlock Grid.Column="2" Text="Requester" FontWeight="Bold" Opacity="0.7" />
+                                                    <TextBlock Grid.Column="3" Text="Kind" FontWeight="Bold" Opacity="0.7" />
+                                                    <TextBlock Grid.Column="4" Text="Repo" FontWeight="Bold" Opacity="0.7" />
+                                                    <TextBlock Grid.Column="5" Text="Vendor" FontWeight="Bold" Opacity="0.7" />
+                                                    <TextBlock Grid.Column="6" Text="Source" FontWeight="Bold" Opacity="0.7" />
+                                                </Grid>
+
+                                                <ItemsControl x:Name="ActivityItems" ItemsSource="{Binding Activity.Rows}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate x:DataType="vm:ActivityRow">
+                                                            <Grid ColumnDefinitions="150,70,120,90,140,90,110" Margin="0,2">
+                                                                <TextBlock Grid.Column="0" Text="{Binding Time}" TextTrimming="CharacterEllipsis" />
+                                                                <TextBlock Grid.Column="1" Text="{Binding Outcome}" TextTrimming="CharacterEllipsis"
+                                                                           Foreground="{Binding IsAllowed, Converter={x:Static views:OutcomeBrushConverter.Instance}}" />
+                                                                <TextBlock Grid.Column="2" Text="{Binding Requester}" TextTrimming="CharacterEllipsis" />
+                                                                <TextBlock Grid.Column="3" Text="{Binding KindLabel}" TextTrimming="CharacterEllipsis" />
+                                                                <TextBlock Grid.Column="4" Text="{Binding RepoLeaf}" ToolTip.Tip="{Binding RepoFull}" TextTrimming="CharacterEllipsis" />
+                                                                <TextBlock Grid.Column="5" Text="{Binding Vendor}" TextTrimming="CharacterEllipsis" />
+                                                                <TextBlock Grid.Column="6" Text="{Binding SourceLabel}" TextTrimming="CharacterEllipsis" />
+                                                            </Grid>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </StackPanel>
+                                        </ScrollViewer>
+                                    </Grid>
+                                </Border>
+                            </Flyout>
+                        </Button.Flyout>
+                    </Button>
+
+                    <Button x:Name="HomeSessionsButton" Command="{Binding ShowSessionsCommand}"
+                            Background="{StaticResource KcapSurfaceRaisedBrush}"
+                            BorderBrush="{StaticResource KcapBorderBrush}" CornerRadius="7" Padding="12,6">
+                        <StackPanel Orientation="Horizontal" Spacing="7">
+                            <TextBlock Text="Sessions" FontSize="12.5" FontWeight="SemiBold"
+                                       Foreground="{StaticResource KcapTextBrush}" VerticalAlignment="Center" />
+                            <TextBlock Text="›" FontSize="12.5" Foreground="{StaticResource KcapFaintBrush}" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
             </Grid>
 
             <ScrollViewer Grid.Row="1" Margin="0,8,0,0" VerticalScrollBarVisibility="Auto">
-                <StackPanel Spacing="12">
-                    <views:HomeView DataContext="{Binding Home}" />
-
-                    <!-- Expanded/Collapsed are wired in code-behind (MainWindow.axaml.cs): the
-                         Activity feed's refresh cadence tracks this section's expansion, the Home
-                         surface being the one on screen, and the window's own visibility. -->
-                    <Expander x:Name="ActivityExpander" Header="Activity" IsExpanded="False"
-                              Expanded="OnActivityExpandChanged" Collapsed="OnActivityExpandChanged"
-                              Foreground="{StaticResource KcapTextBrush}" Background="{StaticResource KcapSurfaceBrush}"
-                              BorderBrush="{StaticResource KcapBorderBrush}" CornerRadius="10" Margin="0,0,0,20">
-                        <Grid RowDefinitions="Auto,*">
-                            <TextBlock x:Name="ActivityEmptyText" Text="No decisions yet"
-                                       Foreground="{StaticResource KcapFaintBrush}"
-                                       IsVisible="{Binding Activity.IsEmpty}" HorizontalAlignment="Center" Margin="0,24,0,0" />
-
-                            <ScrollViewer Grid.Row="1" Margin="0,8,0,0"
-                                          VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
-                                <StackPanel>
-                                    <Grid x:Name="ActivityHeader" ColumnDefinitions="150,70,120,90,140,90,110" Margin="0,0,0,4"
-                                          IsVisible="{Binding !Activity.IsEmpty}">
-                                        <TextBlock Grid.Column="0" Text="Time" FontWeight="Bold" Opacity="0.7" />
-                                        <TextBlock Grid.Column="1" Text="Outcome" FontWeight="Bold" Opacity="0.7" />
-                                        <TextBlock Grid.Column="2" Text="Requester" FontWeight="Bold" Opacity="0.7" />
-                                        <TextBlock Grid.Column="3" Text="Kind" FontWeight="Bold" Opacity="0.7" />
-                                        <TextBlock Grid.Column="4" Text="Repo" FontWeight="Bold" Opacity="0.7" />
-                                        <TextBlock Grid.Column="5" Text="Vendor" FontWeight="Bold" Opacity="0.7" />
-                                        <TextBlock Grid.Column="6" Text="Source" FontWeight="Bold" Opacity="0.7" />
-                                    </Grid>
-
-                                    <ItemsControl x:Name="ActivityItems" ItemsSource="{Binding Activity.Rows}">
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate x:DataType="vm:ActivityRow">
-                                                <Grid ColumnDefinitions="150,70,120,90,140,90,110" Margin="0,2">
-                                                    <TextBlock Grid.Column="0" Text="{Binding Time}" TextTrimming="CharacterEllipsis" />
-                                                    <TextBlock Grid.Column="1" Text="{Binding Outcome}" TextTrimming="CharacterEllipsis"
-                                                               Foreground="{Binding IsAllowed, Converter={x:Static views:OutcomeBrushConverter.Instance}}" />
-                                                    <TextBlock Grid.Column="2" Text="{Binding Requester}" TextTrimming="CharacterEllipsis" />
-                                                    <TextBlock Grid.Column="3" Text="{Binding KindLabel}" TextTrimming="CharacterEllipsis" />
-                                                    <TextBlock Grid.Column="4" Text="{Binding RepoLeaf}" ToolTip.Tip="{Binding RepoFull}" TextTrimming="CharacterEllipsis" />
-                                                    <TextBlock Grid.Column="5" Text="{Binding Vendor}" TextTrimming="CharacterEllipsis" />
-                                                    <TextBlock Grid.Column="6" Text="{Binding SourceLabel}" TextTrimming="CharacterEllipsis" />
-                                                </Grid>
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                </StackPanel>
-                            </ScrollViewer>
-                        </Grid>
-                    </Expander>
-                </StackPanel>
+                <views:HomeView DataContext="{Binding Home}" />
             </ScrollViewer>
         </Grid>
 

@@ -264,16 +264,18 @@ public class MainWindowSmokeTests {
 
     // ---- Activity gate (spec §4) ----
     //
-    // Proves the real production wiring end to end — the ActivityExpander's expansion, the shell
+    // Proves the real production wiring end to end — the Activity flyout's open state, the shell
     // view, and the window's own IsVisible (Show()/Hide()) all drive
     // ActivityViewModel.OnTabVisibleChanged through the code-behind, not just that the ViewModel
     // reacts correctly in isolation (ActivityViewModelTests already covers that). Each of the three
     // flips the gate off on its own; each TRUE transition issues exactly one more immediate read,
     // and is awaited via PendingRefreshForTesting — the VM's stat+read hops off the UI thread, so
-    // RunJobs() alone no longer guarantees the read has landed.
+    // RunJobs() alone no longer guarantees the read has landed. Leaving Home CLOSES the flyout (a
+    // popup can't survive the surface swap under it), so returning Home does not auto-resume —
+    // the feed reopens by click, which is the backOnHomeClosed step below.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Activity_polls_only_while_expanded_on_home_in_a_visible_window() {
+    public async Task Activity_polls_only_while_open_on_home_in_a_visible_window() {
         var reads = await AvaloniaSession.DispatchAsync(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
@@ -285,13 +287,14 @@ public class MainWindowSmokeTests {
             window.Show();
             Dispatcher.UIThread.RunJobs();
 
-            var expander = window.GetVisualDescendants().OfType<Expander>().First(e => e.Name == "ActivityExpander");
-            var collapsed = reader.ReadCalls; // starts collapsed — no read
+            var button = window.GetVisualDescendants().OfType<Button>().First(b => b.Name == "ActivityButton");
+            var flyout = button.Flyout!;
+            var closed = reader.ReadCalls; // starts closed — no read
 
-            expander.IsExpanded = true;
+            flyout.ShowAt(button);
             Dispatcher.UIThread.RunJobs();
             await activity.PendingRefreshForTesting!;
-            var expanded = reader.ReadCalls;
+            var opened = reader.ReadCalls;
 
             vm.ShowSessionsCommand.Execute().Subscribe();
             Dispatcher.UIThread.RunJobs();
@@ -299,23 +302,32 @@ public class MainWindowSmokeTests {
 
             vm.ShowHomeCommand.Execute().Subscribe();
             Dispatcher.UIThread.RunJobs();
-            await activity.PendingRefreshForTesting!;
-            var backOnHome = reader.ReadCalls;
+            var backOnHomeClosed = reader.ReadCalls; // the swap closed the feed — no auto-resume
 
-            expander.IsExpanded = false;
-            Dispatcher.UIThread.RunJobs();
-            var afterCollapse = reader.ReadCalls;
-
-            expander.IsExpanded = true;
+            flyout.ShowAt(button);
             Dispatcher.UIThread.RunJobs();
             await activity.PendingRefreshForTesting!;
-            var afterReexpand = reader.ReadCalls;
+            var reopenedOnHome = reader.ReadCalls;
+
+            flyout.Hide();
+            Dispatcher.UIThread.RunJobs();
+            var afterClose = reader.ReadCalls;
+
+            flyout.ShowAt(button);
+            Dispatcher.UIThread.RunJobs();
+            await activity.PendingRefreshForTesting!;
+            var afterReopen = reader.ReadCalls;
 
             window.Hide();
             Dispatcher.UIThread.RunJobs();
             var afterHide = reader.ReadCalls;
 
+            // Whether the popup survived the window hide is platform detail: Show() alone resumes
+            // a surviving flyout, ShowAt() reopens a closed one, and a repeated true is not a
+            // transition — either way exactly one more read lands.
             window.Show();
+            Dispatcher.UIThread.RunJobs();
+            flyout.ShowAt(button);
             Dispatcher.UIThread.RunJobs();
             await activity.PendingRefreshForTesting!;
             var afterReshow = reader.ReadCalls;
@@ -323,15 +335,16 @@ public class MainWindowSmokeTests {
             window.Close();
             Dispatcher.UIThread.RunJobs();
 
-            return (collapsed, expanded, onSessions, backOnHome, afterCollapse, afterReexpand, afterHide, afterReshow);
+            return (closed, opened, onSessions, backOnHomeClosed, reopenedOnHome, afterClose, afterReopen, afterHide, afterReshow);
         });
 
-        await Assert.That(reads.collapsed).IsEqualTo(0);
-        await Assert.That(reads.expanded).IsEqualTo(1); // expanding on Home: one immediate read
+        await Assert.That(reads.closed).IsEqualTo(0);
+        await Assert.That(reads.opened).IsEqualTo(1); // opening on Home: one immediate read
         await Assert.That(reads.onSessions).IsEqualTo(1); // leaving Home is a FALSE transition
-        await Assert.That(reads.backOnHome).IsEqualTo(2);
-        await Assert.That(reads.afterCollapse).IsEqualTo(2); // collapsing is a FALSE transition
-        await Assert.That(reads.afterReexpand).IsEqualTo(3);
+        await Assert.That(reads.backOnHomeClosed).IsEqualTo(1); // closed by the swap — still off
+        await Assert.That(reads.reopenedOnHome).IsEqualTo(2);
+        await Assert.That(reads.afterClose).IsEqualTo(2); // closing is a FALSE transition
+        await Assert.That(reads.afterReopen).IsEqualTo(3);
         await Assert.That(reads.afterHide).IsEqualTo(3); // hiding is a FALSE transition
         await Assert.That(reads.afterReshow).IsEqualTo(4);
     }
