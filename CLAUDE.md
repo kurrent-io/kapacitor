@@ -145,9 +145,9 @@ Applies to every file type: source, tests, config and build files, YAML, shell s
 
 ## Commit messages
 
-Subject: `[AI-123] one clause`, imperative, **at most 80 characters including the prefix**. No second clause, no parenthetical.
+Subject: `one clause (#123)`, imperative, **at most 80 characters including the trailing reference**. No second clause, and no parenthetical other than that reference.
 
-The ticket id goes in only when context already gives it. **Never invent one, and never settle a near-match on your own judgement** — offer the candidates and let the user pick, or ask whether one should be created. Leave the prefix off until then.
+The reference is the GitHub issue number — Linear ids stay out of commit messages, as they do out of comments. It goes in only when context already gives it. **Never invent one, and never settle a near-match on your own judgement** — offer the candidates and let the user pick, or ask whether one should be created. Leave the reference off until then.
 
 Body: a line or two naming the constraint that forced this shape, or a consequence easy to miss — something neither the diff nor the issue shows. Nothing to name means no body. **Five lines max.** Comments bans apply, and no inventory of the diff (file lists, per-site counts), however labelled.
 
@@ -158,9 +158,9 @@ Squash-merge concatenates the branch's messages verbatim, and the merge is usual
 This is a public repository — we develop in the open.
 
 - **Open issues in GitHub Issues**, not Linear. Linear auto-imports GitHub issues, so there is no need to create the issue in Linear by hand.
-- **PRs must reference both the Linear issue and the GitHub issue.** Both go on the reference line in the PR *description*: the GitHub issue with a closing keyword (e.g. `Closes #123`) and the Linear issue (e.g. `AI-774`), so Linear links the PR back to the imported issue. The title's `[AI-123]` prefix is the commit-subject convention, not that reference — it does not stand in for either half.
+- **PRs must reference both the Linear issue and the GitHub issue.** Both go on the reference line in the PR *description*: the GitHub issue with a closing keyword (e.g. `Closes #123`) and the Linear issue (e.g. `AI-774`), so Linear links the PR back to the imported issue. The title carries no reference of its own: squash-merge appends the PR number to it, so an issue reference there lands beside that one and reads as a second PR.
 
-Title: commit-subject rules — `[AI-123] Show "Copied" tooltip on clipboard copy`.
+Title: commit-subject rules minus the reference — `Show "Copied" tooltip on clipboard copy`.
 
 Description: **before writing it, open [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) and follow its comment block** — it owns length, headings and the Never list. `gh pr create --body` not rendering the template is not an exemption from it.
 
