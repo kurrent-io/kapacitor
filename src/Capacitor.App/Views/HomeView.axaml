@@ -29,47 +29,8 @@
                 <TextBlock Text="Here's where your work is moving." FontSize="12" Foreground="{StaticResource KcapMutedBrush}" />
             </StackPanel>
 
-            <!-- Launcher card: goal, repository chip, harness chip, remember toggle, Start. -->
-            <Border Background="{StaticResource KcapSurfaceBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                    BorderThickness="1" CornerRadius="10" Padding="16">
-                <StackPanel Spacing="12">
-                    <TextBox x:Name="GoalInput" Text="{Binding Goal}"
-                             PlaceholderText="What should we build? Type a goal or paste an issue, PR, or work-item URL…"
-                             Background="{StaticResource KcapSurfaceRaisedBrush}" Foreground="{StaticResource KcapTextBrush}"
-                             BorderBrush="{StaticResource KcapBorderBrush}" AcceptsReturn="False" />
-
-                    <WrapPanel ItemSpacing="8" LineSpacing="8" VerticalAlignment="Center">
-                        <Button x:Name="RepositoryChip" Click="OnRepositoryChipClick"
-                                Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                                Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="10,5"
-                                Content="{Binding SelectedRepoPath, Converter={x:Static views:RepositoryLabelConverter.Instance}}"
-                                ToolTip.Tip="{Binding SelectedRepoPath}" />
-
-                        <Button x:Name="HarnessChip" Click="OnHarnessChipClick"
-                                Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
-                                Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="10,5">
-                            <Button.Content>
-                                <MultiBinding Converter="{x:Static views:HarnessChipTextConverter.Instance}">
-                                    <Binding Path="Harnesses" />
-                                    <Binding Path="SelectedVendor" />
-                                </MultiBinding>
-                            </Button.Content>
-                        </Button>
-
-                        <CheckBox x:Name="RememberToggle" Content="Remember" IsChecked="{Binding RememberHarness}"
-                                  Foreground="{StaticResource KcapMutedBrush}" />
-
-                        <Button x:Name="StartButton" Content="Start" Command="{Binding StartCommand}"
-                                Background="{StaticResource KcapAccentBrush}" Foreground="#07120E" FontWeight="SemiBold"
-                                CornerRadius="7" Padding="16,7"
-                                IsEnabled="{Binding SelectedRepoPath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                    </WrapPanel>
-
-                    <TextBlock x:Name="StartErrorText" Text="{Binding StartError}" Foreground="{StaticResource KcapDangerBrush}"
-                               TextWrapping="Wrap"
-                               IsVisible="{Binding StartError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                </StackPanel>
-            </Border>
+            <!-- The launcher moved to LauncherPaneView (the Sessions surface's empty state);
+                 this hidden surface keeps only the greeting and the cards. -->
 
             <!-- Active sessions. -->
             <TextBlock Text="Active sessions" FontSize="16" FontWeight="Bold" Foreground="{StaticResource KcapTextBrush}" />

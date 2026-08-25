@@ -264,25 +264,30 @@ public class MainWindowSmokeTests {
 
     // ---- Activity gate (spec §4) ----
     //
-    // Proves the real production wiring end to end — the Activity flyout's open state, the shell
-    // view, and the window's own IsVisible (Show()/Hide()) all drive
-    // ActivityViewModel.OnTabVisibleChanged through the code-behind, not just that the ViewModel
-    // reacts correctly in isolation (ActivityViewModelTests already covers that). Each of the three
-    // flips the gate off on its own; each TRUE transition issues exactly one more immediate read,
-    // and is awaited via PendingRefreshForTesting — the VM's stat+read hops off the UI thread, so
-    // RunJobs() alone no longer guarantees the read has landed. Leaving Home CLOSES the flyout (a
-    // popup can't survive the surface swap under it), so returning Home does not auto-resume —
-    // the feed reopens by click, which is the backOnHomeClosed step below.
+    // Proves the real production wiring end to end — the Activity flyout's open state, the
+    // launcher pane being on screen (Sessions surface with NO workspace open), and the window's
+    // own IsVisible (Show()/Hide()) all drive ActivityViewModel.OnTabVisibleChanged through the
+    // code-behind, not just that the ViewModel reacts correctly in isolation
+    // (ActivityViewModelTests already covers that). Each gate flips the polling off on its own;
+    // each TRUE transition issues exactly one more immediate read, awaited via
+    // PendingRefreshForTesting — the VM's stat+read hops off the UI thread, so RunJobs() alone no
+    // longer guarantees the read has landed. Swapping the pane under the popup (leaving Sessions,
+    // or opening a workspace) CLOSES the flyout, so coming back does not auto-resume — the feed
+    // reopens by click.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Activity_polls_only_while_open_on_home_in_a_visible_window() {
+    public async Task Activity_polls_only_while_open_on_the_launcher_pane_in_a_visible_window() {
         var reads = await AvaloniaSession.DispatchAsync(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
             var reader = new ScriptedReader();
             reader.Set(new ConsentLogReadResult([], true));
             var activity = new ActivityViewModel(reader.Read, () => "k", new FakeTicker());
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, activity);
+            var attach = new FakeTerminalAttachClientFactory();
+            var vm = new MainWindowViewModel(
+                service, actions, new FakeTicker(), CancellationToken.None, activity,
+                workspaceFactory: agentId => new WorkspaceViewModel(
+                    agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider()));
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -296,22 +301,26 @@ public class MainWindowSmokeTests {
             await activity.PendingRefreshForTesting!;
             var opened = reader.ReadCalls;
 
+            vm.ShowHomeCommand.Execute().Subscribe(); // off the Sessions surface (hidden Home)
+            Dispatcher.UIThread.RunJobs();
+            var onHome = reader.ReadCalls;
+
             vm.ShowSessionsCommand.Execute().Subscribe();
             Dispatcher.UIThread.RunJobs();
-            var onSessions = reader.ReadCalls;
-
-            vm.ShowHomeCommand.Execute().Subscribe();
-            Dispatcher.UIThread.RunJobs();
-            var backOnHomeClosed = reader.ReadCalls; // the swap closed the feed — no auto-resume
+            var backClosed = reader.ReadCalls; // the swap closed the feed — no auto-resume
 
             flyout.ShowAt(button);
             Dispatcher.UIThread.RunJobs();
             await activity.PendingRefreshForTesting!;
-            var reopenedOnHome = reader.ReadCalls;
+            var reopened = reader.ReadCalls;
 
-            flyout.Hide();
+            vm.OpenSession("0123456789abcdef0123456789abcdef"); // workspace replaces the launcher
             Dispatcher.UIThread.RunJobs();
-            var afterClose = reader.ReadCalls;
+            var workspaceOpen = reader.ReadCalls;
+
+            vm.CloseWorkspace();
+            Dispatcher.UIThread.RunJobs();
+            var launcherBack = reader.ReadCalls; // closed by the swap — still off
 
             flyout.ShowAt(button);
             Dispatcher.UIThread.RunJobs();
@@ -335,15 +344,16 @@ public class MainWindowSmokeTests {
             window.Close();
             Dispatcher.UIThread.RunJobs();
 
-            return (closed, opened, onSessions, backOnHomeClosed, reopenedOnHome, afterClose, afterReopen, afterHide, afterReshow);
+            return (closed, opened, onHome, backClosed, reopened, workspaceOpen, launcherBack, afterReopen, afterHide, afterReshow);
         });
 
         await Assert.That(reads.closed).IsEqualTo(0);
-        await Assert.That(reads.opened).IsEqualTo(1); // opening on Home: one immediate read
-        await Assert.That(reads.onSessions).IsEqualTo(1); // leaving Home is a FALSE transition
-        await Assert.That(reads.backOnHomeClosed).IsEqualTo(1); // closed by the swap — still off
-        await Assert.That(reads.reopenedOnHome).IsEqualTo(2);
-        await Assert.That(reads.afterClose).IsEqualTo(2); // closing is a FALSE transition
+        await Assert.That(reads.opened).IsEqualTo(1); // opening on the launcher: one immediate read
+        await Assert.That(reads.onHome).IsEqualTo(1); // leaving Sessions is a FALSE transition
+        await Assert.That(reads.backClosed).IsEqualTo(1);
+        await Assert.That(reads.reopened).IsEqualTo(2);
+        await Assert.That(reads.workspaceOpen).IsEqualTo(2); // a workspace opening is a FALSE transition
+        await Assert.That(reads.launcherBack).IsEqualTo(2);
         await Assert.That(reads.afterReopen).IsEqualTo(3);
         await Assert.That(reads.afterHide).IsEqualTo(3); // hiding is a FALSE transition
         await Assert.That(reads.afterReshow).IsEqualTo(4);
@@ -355,7 +365,7 @@ public class MainWindowSmokeTests {
     /// it lands on the Sessions surface's placeholder, never back on Home.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Opening_a_session_swaps_the_window_from_home_to_the_workspace() {
+    public async Task Opening_a_session_swaps_the_launcher_pane_for_the_workspace() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var swap = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
@@ -372,13 +382,14 @@ public class MainWindowSmokeTests {
                 Control Surface(string name) =>
                     window.GetVisualDescendants().OfType<Control>().First(c => c.Name == name);
 
-                var homeVisible = Surface("HomeSurface").IsVisible;
+                var bootsOnSessions = Surface("SessionsSurface").IsVisible;
+                var homeHiddenAtBoot = Surface("HomeSurface").IsVisible;
+                var launcherAtBoot = Surface("LauncherPane").IsVisible;
                 var workspacesBefore = window.GetVisualDescendants().OfType<WorkspaceView>().Count();
 
                 vm.OpenSession("0123456789abcdef0123456789abcdef");
                 Dispatcher.UIThread.RunJobs();
-                var homeHidden = Surface("HomeSurface").IsVisible;
-                var sessionsVisible = Surface("SessionsSurface").IsVisible;
+                var launcherGone = Surface("LauncherPane").IsVisible;
                 var opened = window.GetVisualDescendants().OfType<WorkspaceView>().ToList();
                 // Read NOW, not in the return tuple: closing below detaches the view and clears the
                 // very DataContext this is asserting on.
@@ -387,24 +398,25 @@ public class MainWindowSmokeTests {
                 vm.CloseWorkspace();
                 Dispatcher.UIThread.RunJobs();
                 var stillSessions = Surface("SessionsSurface").IsVisible;
-                var placeholderBack = Surface("WorkspacePlaceholder").IsVisible;
+                var launcherBack = Surface("LauncherPane").IsVisible;
                 var workspacesAfter = window.GetVisualDescendants().OfType<WorkspaceView>().Count();
 
                 window.Close();
                 Dispatcher.UIThread.RunJobs();
 
-                return (homeVisible, workspacesBefore, homeHidden, sessionsVisible, OpenedCount: opened.Count,
-                    boundToWorkspace, stillSessions, placeholderBack, workspacesAfter);
+                return (bootsOnSessions, homeHiddenAtBoot, launcherAtBoot, workspacesBefore, launcherGone,
+                    OpenedCount: opened.Count, boundToWorkspace, stillSessions, launcherBack, workspacesAfter);
             });
 
-            await Assert.That(swap.homeVisible).IsTrue();
+            await Assert.That(swap.bootsOnSessions).IsTrue();
+            await Assert.That(swap.homeHiddenAtBoot).IsFalse(); // Home stays in the tree, hidden
+            await Assert.That(swap.launcherAtBoot).IsTrue(); // the empty state IS the launcher
             await Assert.That(swap.workspacesBefore).IsEqualTo(0); // nothing terminal-shaped until a session is opened
-            await Assert.That(swap.homeHidden).IsFalse();
-            await Assert.That(swap.sessionsVisible).IsTrue();
+            await Assert.That(swap.launcherGone).IsFalse();
             await Assert.That(swap.OpenedCount).IsEqualTo(1);
             await Assert.That(swap.boundToWorkspace).IsTrue();
             await Assert.That(swap.stillSessions).IsTrue();
-            await Assert.That(swap.placeholderBack).IsTrue();
+            await Assert.That(swap.launcherBack).IsTrue();
             await Assert.That(swap.workspacesAfter).IsEqualTo(0);
         });
     }
@@ -474,11 +486,12 @@ public class MainWindowSmokeTests {
         });
     }
 
-    /// The tabless boot (spec §3): the window opens on Home with no TabControl anywhere in its
-    /// visual tree, and the one way across to Sessions is HomeSessionsButton.
+    /// The tabless boot (spec §3, revised): the window opens on the Sessions surface — rail plus
+    /// the launcher pane — with no TabControl anywhere in its visual tree; the rail's New session
+    /// row is the deselect-to-launcher affordance.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Window_boots_tabless_on_home_with_a_sessions_entry() {
+    public async Task Window_boots_tabless_on_the_sessions_surface() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var ok = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
@@ -490,10 +503,11 @@ public class MainWindowSmokeTests {
                 Dispatcher.UIThread.RunJobs();
 
                 var noTabs = !window.GetVisualDescendants().OfType<TabControl>().Any();
-                var sessionsButton = window.GetVisualDescendants().OfType<Button>().Any(b => b.Name == "HomeSessionsButton");
+                var railPresent = window.GetVisualDescendants().OfType<SessionRailView>().Any();
+                var newSessionRow = window.GetVisualDescendants().OfType<Button>().Any(b => b.Name == "RailNewSessionButton");
                 window.Close();
                 Dispatcher.UIThread.RunJobs();
-                return noTabs && sessionsButton;
+                return noTabs && railPresent && newSessionRow;
             });
             await Assert.That(ok).IsTrue();
         });

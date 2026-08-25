@@ -48,15 +48,15 @@ public class HomeViewSmokeTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task HomeView_resolves_all_six_named_controls() {
+    public async Task LauncherPane_resolves_its_named_controls() {
         var found = await AvaloniaSession.DispatchAsync(() => {
-            var (view, vm, _, _, tmp) = Build();
+            var (_, vm, _, _, tmp) = Build();
             using var _tmp = tmp;
-            var window = new Window { Content = view };
+            var window = new Window { Content = new LauncherPaneView { DataContext = vm } };
             window.Show();
             Dispatcher.UIThread.RunJobs();
 
-            var names = new[] { "GoalInput", "RepositoryChip", "HarnessChip", "StartButton", "StartErrorText", "SessionCards" };
+            var names = new[] { "GoalInput", "RepositoryChip", "HarnessChip", "StartButton", "StartErrorText" };
             var resolved = names.ToDictionary(name => name, name => Find<Control>(window, name) is not null);
 
             window.Close();
@@ -70,16 +70,15 @@ public class HomeViewSmokeTests {
         await Assert.That(found["HarnessChip"]).IsTrue();
         await Assert.That(found["StartButton"]).IsTrue();
         await Assert.That(found["StartErrorText"]).IsTrue();
-        await Assert.That(found["SessionCards"]).IsTrue();
     }
 
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task StartButton_is_enabled_only_once_a_repository_is_selected() {
         var (enabledBefore, enabledAfter) = await AvaloniaSession.DispatchAsync(async () => {
-            var (view, vm, _, _, tmp) = Build();
+            var (_, vm, _, _, tmp) = Build();
             using var _tmp = tmp;
-            var window = new Window { Content = view };
+            var window = new Window { Content = new LauncherPaneView { DataContext = vm } };
             window.Show();
             Dispatcher.UIThread.RunJobs();
 
@@ -104,9 +103,9 @@ public class HomeViewSmokeTests {
     [NotInParallel("AvaloniaSession")]
     public async Task StartErrorText_visibility_follows_StartError() {
         var (visibleBefore, visibleAfterFailure, errorMessage, visibleAfterSuccess) = await AvaloniaSession.DispatchAsync(async () => {
-            var (view, vm, _, launch, tmp) = Build();
+            var (_, vm, _, launch, tmp) = Build();
             using var _tmp = tmp;
-            var window = new Window { Content = view };
+            var window = new Window { Content = new LauncherPaneView { DataContext = vm } };
             window.Show();
             Dispatcher.UIThread.RunJobs();
 

@@ -116,7 +116,9 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         private set => this.RaiseAndSetIfChanged(ref _currentWorkspace, value);
     }
 
-    ShellView _currentView = ShellView.Home;
+    // Sessions is the app's home for now: the right pane's empty state IS the launcher, and the
+    // Home surface stays in the tree but hidden (nothing navigates to it) until it earns its keep.
+    ShellView _currentView = ShellView.Sessions;
     public ShellView CurrentView {
         get => _currentView;
         private set {

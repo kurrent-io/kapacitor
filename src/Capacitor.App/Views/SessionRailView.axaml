@@ -24,47 +24,20 @@
             <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
         </Style>
 
-        <!-- The header's two mode buttons: quiet icons, the active surface raised — the mockup's
-             top-right pair. -->
-        <Style Selector="Button.railMode">
-            <Setter Property="Background" Value="Transparent" />
-            <Setter Property="BorderBrush" Value="Transparent" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="8" />
-            <Setter Property="Foreground" Value="{StaticResource KcapMutedBrush}" />
-            <Setter Property="Width" Value="38" />
-            <Setter Property="Height" Value="32" />
-            <Setter Property="Padding" Value="0" />
-            <Setter Property="HorizontalContentAlignment" Value="Center" />
-            <Setter Property="VerticalContentAlignment" Value="Center" />
-            <Setter Property="FontSize" Value="17" />
-        </Style>
-        <Style Selector="Button.railMode.active">
-            <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource KcapBorderBrush}" />
-            <Setter Property="Foreground" Value="{StaticResource KcapTextBrush}" />
-        </Style>
     </UserControl.Styles>
 
     <Border Background="{StaticResource KcapSurfaceBrush}"
             BorderThickness="0,0,1,0" BorderBrush="{StaticResource KcapBorderBrush}">
         <DockPanel Margin="0">
             <StackPanel DockPanel.Dock="Top">
-                <!-- 48px chrome row: the macOS traffic lights overlay its left end (the window
-                     extends the client area into the title bar), the view switcher sits right.
-                     Empty space here drags the window — wired in code-behind. -->
-                <Grid Height="48" Background="Transparent" PointerPressed="OnChromePointerPressed">
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"
-                                Spacing="3" Margin="0,0,10,0">
-                        <Button x:Name="RailHomeButton" Content="⌂" Command="{Binding ShowHomeCommand}"
-                                Classes="railMode" ToolTip.Tip="Home" />
-                        <Button x:Name="RailSessionsButton" Content="‹›" Command="{Binding ShowSessionsCommand}"
-                                Classes="railMode" Classes.active="{Binding IsSessionsView}" ToolTip.Tip="Sessions" />
-                    </StackPanel>
-                </Grid>
+                <!-- 44px chrome row: the macOS traffic lights overlay its left end (the window
+                     extends the client area into the title bar). Empty space here drags the
+                     window — wired in code-behind. -->
+                <Grid Height="44" Background="Transparent" PointerPressed="OnChromePointerPressed" />
 
+                <!-- Deselects the workspace: the pane's empty state IS the launcher. -->
                 <Button x:Name="RailNewSessionButton" HorizontalAlignment="Stretch" Margin="10,0,10,10"
-                        Command="{Binding ShowHomeCommand}"
+                        Command="{Binding CloseWorkspaceCommand}"
                         Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
                         BorderThickness="1" CornerRadius="7" Padding="11,7">
                     <DockPanel>

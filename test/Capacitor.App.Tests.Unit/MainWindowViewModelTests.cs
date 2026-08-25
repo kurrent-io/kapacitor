@@ -453,7 +453,7 @@ public class MainWindowViewModelTests {
             var vm = NewVm(service,
                 workspaceFactory: id => { built++; return NewWorkspace(service, id); });
 
-            await Assert.That(vm.IsHomeView).IsTrue();
+            await Assert.That(vm.IsSessionsView).IsTrue(); // Sessions is the boot surface now
             vm.OpenSession("a1");
             await Assert.That(vm.IsSessionsView).IsTrue();
             await Assert.That(built).IsEqualTo(1);

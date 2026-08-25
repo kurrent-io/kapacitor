@@ -67,11 +67,12 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
         }
 
         this.WhenActivated(disposables => {
-            ViewModel?.WhenAnyValue(x => x.IsHomeView)
-                .Subscribe(isHome => {
-                    // A popup can't meaningfully survive the surface swap under it — leaving Home
-                    // closes the feed (its Closed handler then turns the gate off).
-                    if (!isHome) ActivityButton.Flyout?.Hide();
+            ViewModel?.WhenAnyValue(x => x.IsSessionsView, x => x.CurrentWorkspace)
+                .Subscribe(state => {
+                    // A popup can't meaningfully survive the pane swapping under it — opening a
+                    // workspace (or leaving the Sessions surface) closes the feed; its Closed
+                    // handler then turns the gate off.
+                    if (!state.Item1 || state.Item2 is not null) ActivityButton.Flyout?.Hide();
                     UpdateActivityVisibility();
                 })
                 .DisposeWith(disposables);
@@ -105,10 +106,11 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
         if (change.Property == IsVisibleProperty || change.Property == DataContextProperty) UpdateActivityVisibility();
     }
 
-    // Activity polls only when it is ACTUALLY on screen: window visible AND Home surface AND the
-    // flyout open — the same contract the Activity tab's selection used to carry.
+    // Activity polls only when it is ACTUALLY on screen: window visible AND the launcher pane
+    // showing (Sessions surface, no workspace open) AND the flyout open — the same contract the
+    // Activity tab's selection used to carry.
     void UpdateActivityVisibility() {
         if (DataContext is MainWindowViewModel vm)
-            vm.Activity.OnTabVisibleChanged(_activityOpen && IsVisible && vm.IsHomeView);
+            vm.Activity.OnTabVisibleChanged(_activityOpen && IsVisible && vm.IsSessionsView && vm.CurrentWorkspace is null);
     }
 }
