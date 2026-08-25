@@ -24,8 +24,8 @@ public sealed class UiTicker : ITicker {
     // forces the subscription — and therefore Interval's first Schedule call — onto the real UI
     // dispatcher via AvaloniaScheduler's zero-dueTime Dispatcher.UIThread.Post path.
     //
-    // No StartWith: a row's immediate first value is the OAPH's initialUptime argument
-    // (AgentRowViewModel), so a StartWith would only re-emit the identical string. The scheduler is
+    // No StartWith: a consuming row's immediate first value is its own OAPH's initialUptime
+    // argument, so a StartWith would only re-emit the identical string. The scheduler is
     // captured NOW (Rx operators take a scheduler by value, not a live reference to
     // RxSchedulers.MainThreadScheduler) and RefCount defers the connection until a row subscribes —
     // which is what lets a test construct this ticker inside AvaloniaSession.WithImmediateRxScheduler

@@ -140,7 +140,7 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
 
         Sessions = new ReadOnlyObservableCollection<SessionCardViewModel>(_sessionsSource);
         // ObserveOn BEFORE the binding operator (SortAndBind counts as "Bind" here, same as
-        // MainWindowViewModel.Agents/ConsentPromptViewModel.Pending): the cache is mutated on the
+        // ConsentPromptViewModel.Pending): the cache is mutated on the
         // daemon client's background thread. Transform stays upstream of it, which is only safe
         // because a SessionCardViewModel holds no thread-affine Avalonia object (its status dot is
         // an ImmutableSolidColorBrush) — adding one would have to move Transform below the

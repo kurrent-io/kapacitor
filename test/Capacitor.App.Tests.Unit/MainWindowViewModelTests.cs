@@ -185,6 +185,25 @@ public class MainWindowViewModelTests {
         });
     }
 
+    /// Retargeted from the deleted AgentGridTests.cs (AI-2199: the Agents grid is gone, but
+    /// GridEnabled itself survives — it now gates only the status block's AgentCountText).
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task GridEnabled_reflects_attach_state() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            using var activation = vm.Activator.Activate();
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+            await Assert.That(vm.GridEnabled).IsTrue();
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await Assert.That(vm.GridEnabled).IsFalse();
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Command_enablement_matrix() {

@@ -1,11 +1,8 @@
-using System.Collections.ObjectModel;
 using System.Reactive;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
 using Avalonia.Media;
 using Capacitor.App.Services;
-using DynamicData;
-using DynamicData.Binding;
 using ReactiveUI;
 
 namespace Capacitor.App.ViewModels;
@@ -95,22 +92,6 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     ObservableAsPropertyHelper<string?>? _reason;
     public string? Reason => _reason?.Value;
 
-    static readonly IComparer<AgentRowViewModel> RowComparer = Comparer<AgentRowViewModel>.Create((a, b) => {
-        var byCreated = a.CreatedAt.CompareTo(b.CreatedAt);
-        return byCreated != 0 ? byCreated : string.CompareOrdinal(a.Id, b.Id);
-    });
-
-    // ONE stable collection, created once here and never replaced: WhenActivated re-runs on
-    // every activation (hide-to-tray/reopen included), and Agents is a plain get-only property
-    // with no change notification — swapping the bound INSTANCE on each activation (the prior
-    // `SortAndBind(out _agents, ...)` shape) would leave the view's ItemsControl bound to a dead
-    // collection forever. SortAndBind's IList-targeting overload mutates THIS instance in place
-    // instead. Spec §8: rows persist across disconnects (the underlying SourceCache is retained
-    // by the service) — GridEnabled below is what disables actions and dims the XAML, never a
-    // local removal of rows.
-    readonly ObservableCollectionExtended<AgentRowViewModel> _agentsSource = new();
-    public ReadOnlyObservableCollection<AgentRowViewModel> Agents { get; }
-
     /// The Activity feed (spec §7) — constructed once at the composition root, same instance the
     /// prompt window's onConcluded callback nudges, so this is a plain ctor-injected reference,
     /// not something built here.
@@ -162,6 +143,8 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// the coordinator's close paths route through.
     public ReactiveCommand<Unit, Unit> CloseWorkspaceCommand { get; }
 
+    // Legacy name from the deleted Agents grid (AI-2199) — now gates only the "n of m agents"
+    // status-line text (MainWindow.axaml's AgentCountText), never a grid.
     ObservableAsPropertyHelper<bool>? _gridEnabled;
     public bool GridEnabled => _gridEnabled?.Value ?? false;
 
@@ -235,7 +218,6 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
             Func<string, WorkspaceViewModel>? workspaceFactory = null, SessionRailViewModel? rail = null) {
         _service = service;
         _time = time ?? TimeProvider.System;
-        Agents = new ReadOnlyObservableCollection<AgentRowViewModel>(_agentsSource);
         Activity = activity;
         Home = home;
         _navigation = navigation ?? new NavigationGate();
@@ -281,11 +263,6 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
             var status    = service.Status.ObserveOn(RxSchedulers.MainThreadScheduler);
             var snapshots = service.Snapshots.ObserveOn(RxSchedulers.MainThreadScheduler);
             var connected = status.Select(s => s.State == AttachState.Connected);
-            // Pre-scheduled here (not inside AgentRowViewModel) so every row's ActionsEnabled
-            // OAPH only ever observes on the UI thread — StopsInFlight is a plain BehaviorSubject
-            // that AgentActionService pushes to from a background Task.Run, same class of bug the
-            // canStart/canRetry comment above documents.
-            var stopsInFlight = actions.StopsInFlight.ObserveOn(RxSchedulers.MainThreadScheduler);
 
             _daemonName = snapshots.Select(s => s.Daemon.Name)
                 .ToProperty(this, x => x.DaemonName, "")
@@ -350,35 +327,10 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
                 .ToProperty(this, x => x.GridEnabled, initialValue: false)
                 .DisposeWith(disposables);
 
-            // _agentsSource is reused across activations (see its field comment) but SortAndBind
-            // below starts a brand-new pipeline — and DynamicData internal Cache<> — on every
-            // activation, so without this Clear a reactivation's initial replay would INSERT a
-            // second copy of every currently-cached row alongside whatever was left over (frozen,
-            // already-disposed) from the previous activation, since SortAndBind only clears its
-            // target on a reset, not on ordinary Add changes.
-            _agentsSource.Clear();
-
-            // Connect -> Transform to row VMs -> DisposeMany (disposes a row the instant Transform
-            // replaces or removes it — AgentRowViewModel's OAPHs otherwise stay subscribed to the
-            // shared ticker/stopsInFlight forever, since Transform recreates a row on every dto
-            // revision rather than updating one in place) -> ObserveOn BEFORE the operator that
-            // mutates the bound collection (SortAndBind counts as "Bind" here — DynamicData
-            // requires marshaling onto the UI thread before that mutation, not after) ->
-            // SortAndBind (spec §8: CreatedAt asc, Id ordinal tiebreak), targeting the stable
-            // _agentsSource in place rather than the out-param overload that would allocate a
-            // fresh collection every activation. EditDiff removals flow through as Remove changes,
-            // which is how a stopped agent's row disappears (spec §7 — no local removal on stop,
-            // only the next snapshot's absence) and DisposeMany's Remove path is what cleans up
-            // its subscriptions. Disposing this Subscribe() (window deactivation) also disposes
-            // whatever rows are still live at that point — DisposeMany disposes its full current
-            // set on teardown, not just on per-item Remove/Update.
-            service.Agents.Connect()
-                .Transform(dto => new AgentRowViewModel(dto, actions, ticker.Ticks, _time, connected, stopsInFlight))
-                .DisposeMany()
-                .ObserveOn(RxSchedulers.MainThreadScheduler)
-                .SortAndBind(_agentsSource, RowComparer)
-                .Subscribe()
-                .DisposeWith(disposables);
+            // `actions` and `ticker` feed nothing here since the Agents grid's row pipeline (the
+            // sole consumer of both) was deleted (AI-2199) — kept as ctor params unchanged rather
+            // than reshaping the signature every caller passes; a future Sessions-rail row action
+            // or live uptime would consume them again.
         });
     }
 

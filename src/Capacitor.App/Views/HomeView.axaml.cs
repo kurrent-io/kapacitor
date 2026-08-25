@@ -139,9 +139,8 @@ public sealed class HarnessChipTextConverter : IMultiValueConverter {
             : "";
 }
 
-/// Single-purpose converter, not a general int-to-bool one — mirrors Views/Converters.cs's
-/// HeaderRowVisibleConverter (the inverse case: empty-state text visible only while the count is
-/// zero).
+/// Single-purpose converter, not a general int-to-bool one — empty-state text visible only while
+/// the count is zero.
 public sealed class CountIsZeroConverter : IValueConverter {
     public static readonly CountIsZeroConverter Instance = new();
 
