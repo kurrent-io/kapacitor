@@ -48,13 +48,13 @@ public class WorkspaceViewSmokeTests {
     /// every named control up by x:Name. Every control is statically declared in the XAML (no
     /// DataTemplate/ItemsControl realization involved, unlike HomeView's session cards), so this
     /// is not red-verifiable the way a missing-feature test would be -- the view already exists and
-    /// already carries all nine names; there is no "before" state in which the assertion could
+    /// already carries all eight names; there is no "before" state in which the assertion could
     /// fail short of a typo. TerminalTabButton is a plain Button in the XAML with no Command bound
     /// (non-interactive today), so it is resolved as a bare Control like every other name here
     /// rather than assumed clickable.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task WorkspaceView_resolves_all_nine_named_controls() {
+    public async Task WorkspaceView_resolves_all_eight_named_controls() {
         await RunOnUiAsync(async () => {
             var (view, vm, _, _) = Build();
             var window = new Window { Content = view };
@@ -63,7 +63,7 @@ public class WorkspaceViewSmokeTests {
 
             var names = new[] {
                 "WorkspaceTitle", "WorkspaceRepo", "WorkspaceVendorChip", "TerminalTabButton",
-                "NoTerminalNote", "TerminalHost", "DetachButton", "ReattachButton", "BackButton",
+                "NoTerminalNote", "TerminalHost", "DetachButton", "ReattachButton",
             };
             foreach (var name in names)
                 await Assert.That(Find<Control>(window, name)).IsNotNull().Because($"{name} should resolve");

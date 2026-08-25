@@ -40,6 +40,18 @@ public sealed class HeaderRowVisibleConverter : IValueConverter {
         throw new NotSupportedException();
 }
 
+/// The rail worktree row's disclosure glyph. A converter rather than two overlaid TextBlocks so
+/// the chevron and the row's IsExpanded can never disagree.
+public sealed class ExpanderChevronConverter : IValueConverter {
+    public static readonly ExpanderChevronConverter Instance = new();
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is true ? "▾" : "▸";
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}
+
 /// Activity row outcome badge (spec §7): green for allowed, red for denied. ActivityRow stays a
 /// plain record (no Avalonia types, so its mapping can construct off any thread) — the color
 /// lives here rather than as a cached Brush field, for the same UI-thread-affinity reason

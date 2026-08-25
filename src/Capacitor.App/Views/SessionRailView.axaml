@@ -1,0 +1,112 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:Capacitor.App.ViewModels"
+             xmlns:views="clr-namespace:Capacitor.App.Views"
+             x:Class="Capacitor.App.Views.SessionRailView"
+             x:DataType="vm:MainWindowViewModel">
+    <!-- DataContext is INHERITED from the window (never assigned here), so Rail is null on any
+         window built without one — every Rail.* binding below carries a fallback for that. -->
+    <UserControl.Styles>
+        <Style Selector="Button.selected">
+            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}" />
+        </Style>
+        <Style Selector="Button.holdsSelected">
+            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}" />
+        </Style>
+    </UserControl.Styles>
+
+    <Border BorderThickness="0,0,1,0" BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}">
+        <DockPanel Margin="0">
+            <StackPanel DockPanel.Dock="Top" Margin="10,10,10,4" Spacing="8">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">
+                    <Button x:Name="RailHomeButton" Content="⌂" Command="{Binding ShowHomeCommand}" Padding="8,2" />
+                    <Button x:Name="RailSessionsButton" Content="‹›" Command="{Binding ShowSessionsCommand}" Padding="8,2" />
+                </StackPanel>
+                <Button x:Name="RailNewSessionButton" HorizontalAlignment="Stretch"
+                        Command="{Binding ShowHomeCommand}">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Right" Text="⌘N" Opacity="0.5" FontSize="11" />
+                        <TextBlock Text="+  New session" />
+                    </DockPanel>
+                </Button>
+            </StackPanel>
+
+            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Spacing="6" Margin="14,8,14,12">
+                <Ellipse Width="8" Height="8" Fill="{Binding StatusDotBrush}" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding ConnectionDisplay}" FontSize="11" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding Rail.HostedText, FallbackValue=''}" FontSize="11" Opacity="0.6" VerticalAlignment="Center" />
+            </StackPanel>
+
+            <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="10,4">
+                <Panel>
+                    <TextBlock Text="No sessions" Opacity="0.5" Margin="8,16"
+                               IsVisible="{Binding Rail.IsEmpty, FallbackValue=False}" />
+                    <ItemsControl x:Name="RailRepos" ItemsSource="{Binding Rail.Repos, FallbackValue={x:Null}}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:RailRepoViewModel">
+                                <StackPanel Margin="0,8,0,0">
+                                    <DockPanel Margin="4,0,4,4" ToolTip.Tip="{Binding RootPath}">
+                                        <TextBlock DockPanel.Dock="Right" Text="{Binding CountText}" FontSize="10" Opacity="0.6" />
+                                        <TextBlock Text="{Binding Label}" FontSize="10" FontWeight="Bold" Opacity="0.6" />
+                                    </DockPanel>
+                                    <TextBlock Text="Work with no checkout yet. It keeps a title and a session; parts and blockers arrive once it lands in a repo."
+                                               FontSize="10" Opacity="0.5" TextWrapping="Wrap" Margin="4,0,4,4"
+                                               IsVisible="{Binding IsNoRepository}" />
+                                    <ItemsControl ItemsSource="{Binding Worktrees}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:RailWorktreeViewModel">
+                                                <StackPanel>
+                                                    <Button Command="{Binding ToggleCommand}" IsVisible="{Binding ShowHeader}"
+                                                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                                            Background="Transparent" BorderThickness="0" Padding="4,3"
+                                                            ToolTip.Tip="{Binding Path}"
+                                                            Classes.holdsSelected="{Binding HoldsSelected}">
+                                                        <DockPanel>
+                                                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6">
+                                                                <TextBlock Text="{Binding CountText}" FontSize="10" Opacity="0.6" VerticalAlignment="Center" />
+                                                                <TextBlock Text="!" FontSize="10" FontWeight="Bold" Foreground="Orange"
+                                                                           IsVisible="{Binding NeedsYou}" VerticalAlignment="Center" />
+                                                            </StackPanel>
+                                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                                <TextBlock Text="{Binding IsExpanded, Converter={x:Static views:ExpanderChevronConverter.Instance}}" FontSize="9" Opacity="0.6" VerticalAlignment="Center" />
+                                                                <TextBlock Text="{Binding Label}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                                            </StackPanel>
+                                                        </DockPanel>
+                                                    </Button>
+                                                    <ItemsControl ItemsSource="{Binding Sessions}" Margin="14,0,0,0"
+                                                                  IsVisible="{Binding SessionsVisible}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate x:DataType="vm:RailSessionViewModel">
+                                                                <Button Command="{Binding OpenCommand}" HorizontalAlignment="Stretch"
+                                                                        HorizontalContentAlignment="Stretch" Background="Transparent"
+                                                                        BorderThickness="0" Padding="6,4"
+                                                                        ToolTip.Tip="{Binding Tooltip}"
+                                                                        Classes.selected="{Binding IsSelected}">
+                                                                    <DockPanel>
+                                                                        <TextBlock DockPanel.Dock="Right" Text="!" FontSize="10" FontWeight="Bold"
+                                                                                   Foreground="Orange" IsVisible="{Binding NeedsYou}" />
+                                                                        <StackPanel Orientation="Horizontal" Spacing="7">
+                                                                            <Ellipse Width="7" Height="7" Fill="{Binding StatusDot}" VerticalAlignment="Center" />
+                                                                            <StackPanel>
+                                                                                <TextBlock Text="{Binding Primary}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                                                                <TextBlock Text="{Binding Sub}" FontSize="10" Opacity="0.6" TextTrimming="CharacterEllipsis" />
+                                                                            </StackPanel>
+                                                                        </StackPanel>
+                                                                    </DockPanel>
+                                                                </Button>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Panel>
+            </ScrollViewer>
+        </DockPanel>
+    </Border>
+</UserControl>

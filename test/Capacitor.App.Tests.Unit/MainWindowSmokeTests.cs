@@ -27,15 +27,11 @@ public class MainWindowSmokeTests {
         return (actions, notifier);
     }
 
-    // Home is the default-selected tab; the Agents TabItem carries no x:Name
-    // (only HomeTabItem/ActivityTabItem do), so it's found by its header text instead — same
-    // Name-scope lookup style as everything else in this file, one step removed.
-    static void SelectAgentsTab(MainWindow window) {
-        var tabs = window.GetVisualDescendants().OfType<TabControl>().First(t => t.Name == "MainTabs");
-        var agentsTab = window.GetVisualDescendants().OfType<TabItem>().First(t => t.Header as string == "Agents");
-        tabs.SelectedItem = agentsTab;
-        Dispatcher.UIThread.RunJobs();
-    }
+    /// A real WorkspaceViewModel over the fake service and scripted attach/surface fakes — same
+    /// pieces MainWindowViewModelTests wires, over the actions this file's NewActions built.
+    static WorkspaceViewModel NewWorkspace(FakeDaemonClientService service, AgentActionService actions, string agentId) =>
+        new(agentId, service, actions, new FakeTerminalAttachClientFactory().Factory,
+            () => new FakeTerminalSurface(), new FakeTimeProvider());
 
     [Test]
     [NotInParallel("AvaloniaSession")]
@@ -192,84 +188,6 @@ public class MainWindowSmokeTests {
         await Assert.That(completed).IsTrue();
     }
 
-    /// Spec §8 empty state: "No agents running" renders only while Connected AND the Agents
-    /// cache is empty. Deliberately NOT wrapped in WithImmediateRxScheduler: no agent is ever
-    /// added to service.Agents here, so the injected FakeTicker is never subscribed either way —
-    /// but the real dispatcher is what MainWindowViewModel's own production ctor is meant to run
-    /// under, so this stays close to that path.
-    [Test]
-    [NotInParallel("AvaloniaSession")]
-    public async Task Empty_agents_grid_shows_no_agents_running_while_connected() {
-        var (rendered, emptyStateVisible) = await AvaloniaSession.DispatchAsync(() => {
-            var service = new FakeDaemonClientService();
-            service.SnapshotsSubject.OnNext(Snap(connection: "connected"));
-            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
-
-            var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
-            var window = new MainWindow { DataContext = vm };
-            window.Show();
-            Dispatcher.UIThread.RunJobs();
-
-            // Home is the default-selected tab — this test asserts what the
-            // Agents tab CONTAINS, so select it explicitly rather than relying on it opening first.
-            SelectAgentsTab(window);
-
-            var emptyState = window.GetVisualDescendants().OfType<TextBlock>()
-                .FirstOrDefault(t => t.Name == "EmptyStateText");
-            var texts = string.Join('\n', window.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text ?? ""));
-
-            window.Close();
-            Dispatcher.UIThread.RunJobs();
-
-            return (texts, emptyState is { IsVisible: true });
-        });
-
-        await Assert.That(rendered).Contains("No agents running");
-        await Assert.That(emptyStateVisible).IsTrue();
-    }
-
-    /// Fix-round 2: the column-header row (Kind/Vendor/Repo/...) rendered even with zero agents
-    /// and read as noise above "No agents running". Hidden while the Agents collection is empty,
-    /// visible as soon as a row exists — the "Agents" section title and the empty-state line both
-    /// stay either way (spec §8, Converters.cs HeaderRowVisibleConverter doc comment).
-    [Test]
-    [NotInParallel("AvaloniaSession")]
-    public async Task Agents_grid_header_hidden_when_empty_and_visible_once_a_row_exists() {
-        var (headerVisibleEmpty, headerVisibleWithRow) = await AvaloniaSession.DispatchAsync(() => {
-            var service = new FakeDaemonClientService();
-            service.SnapshotsSubject.OnNext(Snap(connection: "connected"));
-            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
-
-            var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
-            var window = new MainWindow { DataContext = vm };
-            window.Show();
-            Dispatcher.UIThread.RunJobs();
-
-            // Home is the default-selected tab — this test asserts what the
-            // Agents tab CONTAINS, so select it explicitly rather than relying on it opening first.
-            SelectAgentsTab(window);
-
-            Grid Header() => window.GetVisualDescendants().OfType<Grid>().First(g => g.Name == "AgentsGridHeader");
-
-            var emptyVisible = Header().IsVisible;
-
-            service.Agents.AddOrUpdate(new AgentStatusDto(
-                "a", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null, null));
-            Dispatcher.UIThread.RunJobs();
-            var withRowVisible = Header().IsVisible;
-
-            window.Close();
-            Dispatcher.UIThread.RunJobs();
-
-            return (emptyVisible, withRowVisible);
-        });
-
-        await Assert.That(headerVisibleEmpty).IsFalse();
-        await Assert.That(headerVisibleWithRow).IsTrue();
-    }
-
     /// StartMessageText/ReasonText must not reserve dead space when there is nothing to say
     /// (spec: "collapse when empty"): both start out empty (Connecting, no failed attempt yet),
     /// then Reason appears on Unreachable and StartMessage appears once a start attempt fails.
@@ -343,20 +261,19 @@ public class MainWindowSmokeTests {
         await Assert.That(rendered).Contains("Couldn't stop agent-a");
     }
 
-    // ---- Activity tab visibility wiring (spec §7) ----
+    // ---- Activity gate (spec §4) ----
     //
-    // Proves the real production wiring end to end — MainWindow.axaml's TabControl selection and
-    // the window's own IsVisible (Show()/Hide()) both drive ActivityViewModel.OnTabVisibleChanged
-    // through the code-behind, not just that the ViewModel reacts correctly in isolation
-    // (ActivityViewModelTests already covers that). Selecting Agents leaves the read count
-    // unchanged; each TRUE transition (select Activity, then re-Show after a Hide) issues exactly
-    // one more immediate read; Hide is a FALSE transition and reads nothing. Each TRUE transition
-    // is awaited via PendingRefreshForTesting — the VM's stat+read now hops off the UI thread,
-    // so RunJobs() alone no longer guarantees the read has landed.
+    // Proves the real production wiring end to end — the ActivityExpander's expansion, the shell
+    // view, and the window's own IsVisible (Show()/Hide()) all drive
+    // ActivityViewModel.OnTabVisibleChanged through the code-behind, not just that the ViewModel
+    // reacts correctly in isolation (ActivityViewModelTests already covers that). Each of the three
+    // flips the gate off on its own; each TRUE transition issues exactly one more immediate read,
+    // and is awaited via PendingRefreshForTesting — the VM's stat+read hops off the UI thread, so
+    // RunJobs() alone no longer guarantees the read has landed.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Activity_tab_visibility_follows_selection_and_window_IsVisible() {
-        var (afterAgents, afterActivity, afterHide, afterReshow) = await AvaloniaSession.DispatchAsync(async () => {
+    public async Task Activity_polls_only_while_expanded_on_home_in_a_visible_window() {
+        var reads = await AvaloniaSession.DispatchAsync(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
             var reader = new ScriptedReader();
@@ -367,42 +284,64 @@ public class MainWindowSmokeTests {
             window.Show();
             Dispatcher.UIThread.RunJobs();
 
-            var readsAgents = reader.ReadCalls; // Agents tab selected by default — no Activity read
+            var expander = window.GetVisualDescendants().OfType<Expander>().First(e => e.Name == "ActivityExpander");
+            var collapsed = reader.ReadCalls; // starts collapsed — no read
 
-            var tabs = window.GetVisualDescendants().OfType<TabControl>().First(t => t.Name == "MainTabs");
-            var activityTab = window.GetVisualDescendants().OfType<TabItem>().First(t => t.Name == "ActivityTabItem");
-            tabs.SelectedItem = activityTab;
+            expander.IsExpanded = true;
             Dispatcher.UIThread.RunJobs();
             await activity.PendingRefreshForTesting!;
-            var readsActivity = reader.ReadCalls;
+            var expanded = reader.ReadCalls;
+
+            vm.ShowSessionsCommand.Execute().Subscribe();
+            Dispatcher.UIThread.RunJobs();
+            var onSessions = reader.ReadCalls;
+
+            vm.ShowHomeCommand.Execute().Subscribe();
+            Dispatcher.UIThread.RunJobs();
+            await activity.PendingRefreshForTesting!;
+            var backOnHome = reader.ReadCalls;
+
+            expander.IsExpanded = false;
+            Dispatcher.UIThread.RunJobs();
+            var afterCollapse = reader.ReadCalls;
+
+            expander.IsExpanded = true;
+            Dispatcher.UIThread.RunJobs();
+            await activity.PendingRefreshForTesting!;
+            var afterReexpand = reader.ReadCalls;
 
             window.Hide();
             Dispatcher.UIThread.RunJobs();
-            var readsHidden = reader.ReadCalls;
+            var afterHide = reader.ReadCalls;
 
             window.Show();
             Dispatcher.UIThread.RunJobs();
             await activity.PendingRefreshForTesting!;
-            var readsReshown = reader.ReadCalls;
+            var afterReshow = reader.ReadCalls;
 
             window.Close();
             Dispatcher.UIThread.RunJobs();
 
-            return (readsAgents, readsActivity, readsHidden, readsReshown);
+            return (collapsed, expanded, onSessions, backOnHome, afterCollapse, afterReexpand, afterHide, afterReshow);
         });
 
-        await Assert.That(afterAgents).IsEqualTo(0);
-        await Assert.That(afterActivity).IsEqualTo(1); // selecting Activity: one immediate read
-        await Assert.That(afterHide).IsEqualTo(1); // hiding is a FALSE transition — no read
-        await Assert.That(afterReshow).IsEqualTo(2); // re-showing: another TRUE transition
+        await Assert.That(reads.collapsed).IsEqualTo(0);
+        await Assert.That(reads.expanded).IsEqualTo(1); // expanding on Home: one immediate read
+        await Assert.That(reads.onSessions).IsEqualTo(1); // leaving Home is a FALSE transition
+        await Assert.That(reads.backOnHome).IsEqualTo(2);
+        await Assert.That(reads.afterCollapse).IsEqualTo(2); // collapsing is a FALSE transition
+        await Assert.That(reads.afterReexpand).IsEqualTo(3);
+        await Assert.That(reads.afterHide).IsEqualTo(3); // hiding is a FALSE transition
+        await Assert.That(reads.afterReshow).IsEqualTo(4);
     }
 
     /// The surface swap itself (spec §3) — the XAML side of what WorkspaceNavigationTests pins on
     /// the ViewModel. WorkspaceView is materialized from a template rather than always present, so
-    /// this also proves the terminal control is CONSTRUCTED only once a workspace exists.
+    /// this also proves the terminal control is CONSTRUCTED only once a workspace exists; closing
+    /// it lands on the Sessions surface's placeholder, never back on Home.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Opening_a_session_swaps_the_window_from_the_tabbed_shell_to_the_workspace() {
+    public async Task Opening_a_session_swaps_the_window_from_home_to_the_workspace() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var swap = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
@@ -416,15 +355,16 @@ public class MainWindowSmokeTests {
                 window.Show();
                 Dispatcher.UIThread.RunJobs();
 
-                // IsEffectivelyVisible, not IsVisible: the swap hides the tab strip's whole ANCESTOR
-                // (the shell Grid), and a control's own IsVisible says nothing about that.
-                var tabs = window.GetVisualDescendants().OfType<TabControl>().First(t => t.Name == "MainTabs");
-                var shellVisible = tabs.IsEffectivelyVisible;
+                Control Surface(string name) =>
+                    window.GetVisualDescendants().OfType<Control>().First(c => c.Name == name);
+
+                var homeVisible = Surface("HomeSurface").IsVisible;
                 var workspacesBefore = window.GetVisualDescendants().OfType<WorkspaceView>().Count();
 
                 vm.OpenSession("0123456789abcdef0123456789abcdef");
                 Dispatcher.UIThread.RunJobs();
-                var shellHidden = tabs.IsEffectivelyVisible;
+                var homeHidden = Surface("HomeSurface").IsVisible;
+                var sessionsVisible = Surface("SessionsSurface").IsVisible;
                 var opened = window.GetVisualDescendants().OfType<WorkspaceView>().ToList();
                 // Read NOW, not in the return tuple: closing below detaches the view and clears the
                 // very DataContext this is asserting on.
@@ -432,23 +372,95 @@ public class MainWindowSmokeTests {
 
                 vm.CloseWorkspace();
                 Dispatcher.UIThread.RunJobs();
-                var shellBack = tabs.IsEffectivelyVisible;
+                var stillSessions = Surface("SessionsSurface").IsVisible;
+                var placeholderBack = Surface("WorkspacePlaceholder").IsVisible;
                 var workspacesAfter = window.GetVisualDescendants().OfType<WorkspaceView>().Count();
 
                 window.Close();
                 Dispatcher.UIThread.RunJobs();
 
-                return (shellVisible, workspacesBefore, shellHidden, OpenedCount: opened.Count,
-                    boundToWorkspace, shellBack, workspacesAfter);
+                return (homeVisible, workspacesBefore, homeHidden, sessionsVisible, OpenedCount: opened.Count,
+                    boundToWorkspace, stillSessions, placeholderBack, workspacesAfter);
             });
 
-            await Assert.That(swap.shellVisible).IsTrue();
+            await Assert.That(swap.homeVisible).IsTrue();
             await Assert.That(swap.workspacesBefore).IsEqualTo(0); // nothing terminal-shaped until a session is opened
-            await Assert.That(swap.shellHidden).IsFalse();
+            await Assert.That(swap.homeHidden).IsFalse();
+            await Assert.That(swap.sessionsVisible).IsTrue();
             await Assert.That(swap.OpenedCount).IsEqualTo(1);
             await Assert.That(swap.boundToWorkspace).IsTrue();
-            await Assert.That(swap.shellBack).IsTrue();
+            await Assert.That(swap.stillSessions).IsTrue();
+            await Assert.That(swap.placeholderBack).IsTrue();
             await Assert.That(swap.workspacesAfter).IsEqualTo(0);
+        });
+    }
+
+    /// The rail's own click path (spec §3): a session row rendered by SessionRailView carries the
+    /// VM's OpenCommand, and executing it opens that agent's workspace on the Sessions surface.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Rail_click_opens_the_workspace_in_sessions_view() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var opened = await AvaloniaSession.DispatchAsync(() => {
+                var service = new FakeDaemonClientService();
+                service.SnapshotsSubject.OnNext(Snap());
+                service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+                service.Agents.AddOrUpdate(new AgentStatusDto(
+                    "a1", "agent", "claude", "/dev/alpha/wt/feature-x", "Running",
+                    null, null, null, DateTime.UtcNow, null, null, Title: "Fix the flaky test"));
+
+                var (actions, _) = NewActions(service);
+                MainWindowViewModel? vm = null;
+                var rail = new SessionRailViewModel(service, id => vm!.OpenSession(id),
+                    p => p.Contains("/wt/", StringComparison.Ordinal)
+                        ? p[..p.IndexOf("/wt/", StringComparison.Ordinal)]
+                        : p);
+                vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(),
+                    workspaceFactory: id => NewWorkspace(service, actions, id), rail: rail);
+                var window = new MainWindow { DataContext = vm };
+                window.Show();
+                Dispatcher.UIThread.RunJobs();
+
+                vm.ShowSessionsCommand.Execute().Subscribe();
+                Dispatcher.UIThread.RunJobs();
+
+                var row = window.GetVisualDescendants().OfType<Button>()
+                    .First(b => b.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "Fix the flaky test"));
+                row.Command!.Execute(null);
+                Dispatcher.UIThread.RunJobs();
+
+                var result = (vm.IsSessionsView, vm.CurrentWorkspace?.AgentId);
+                window.Close();
+                Dispatcher.UIThread.RunJobs();
+                return result;
+            });
+            await Assert.That(opened.Item1).IsTrue();
+            await Assert.That(opened.Item2).IsEqualTo("a1");
+        });
+    }
+
+    /// The tabless boot (spec §3): the window opens on Home with no TabControl anywhere in its
+    /// visual tree, and the one way across to Sessions is HomeSessionsButton.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Window_boots_tabless_on_home_with_a_sessions_entry() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var ok = await AvaloniaSession.DispatchAsync(() => {
+                var service = new FakeDaemonClientService();
+                service.SnapshotsSubject.OnNext(Snap());
+                var (actions, _) = NewActions(service);
+                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+                var window = new MainWindow { DataContext = vm };
+                window.Show();
+                Dispatcher.UIThread.RunJobs();
+
+                var noTabs = !window.GetVisualDescendants().OfType<TabControl>().Any();
+                var sessionsButton = window.GetVisualDescendants().OfType<Button>().Any(b => b.Name == "HomeSessionsButton");
+                window.Close();
+                Dispatcher.UIThread.RunJobs();
+                return noTabs && sessionsButton;
+            });
+            await Assert.That(ok).IsTrue();
         });
     }
 }

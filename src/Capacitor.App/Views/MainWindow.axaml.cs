@@ -1,7 +1,8 @@
+using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
 using Avalonia;
-using Avalonia.Controls;
 using Avalonia.Controls.Notifications;
+using Avalonia.Interactivity;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using ReactiveUI;
@@ -23,9 +24,9 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
     IDisposable? _notifierSubscription;
     IAppNotifier? _notifier;
 
-    // Defaults to false — the Home TabItem is selected first (MainWindow.axaml), so Activity
-    // starts unselected regardless of the window's own visibility.
-    bool _activityTabSelected;
+    // Defaults to false — ActivityExpander starts collapsed (MainWindow.axaml), so Activity is off
+    // regardless of the window's own visibility.
+    bool _activityExpanded;
 
     /// Assigned by App.BuildAndShowMainWindow (spec §11) — the SAME IAppNotifier instance
     /// AgentActionService pushes into, so the toast overlay and stderr mirroring are always in
@@ -58,6 +59,12 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
         Loaded += (_, _) => _notifications ??= new WindowNotificationManager(this) {
             Position = NotificationPosition.TopRight,
         };
+
+        this.WhenActivated(disposables => {
+            ViewModel?.WhenAnyValue(x => x.IsHomeView)
+                .Subscribe(_ => UpdateActivityVisibility())
+                .DisposeWith(disposables);
+        });
     }
 
     // A toast fired before Loaded, or while the window is hidden (Hide() suspends rendering
@@ -67,11 +74,9 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
     void ShowToast(string message) =>
         _notifications?.Show(new Notification("Kurrent Capacitor", message, NotificationType.Warning, TimeSpan.FromSeconds(4)));
 
-    // Wired from MainWindow.axaml's TabControl (spec §7): the Activity tab's refresh cadence
-    // needs to know it is ACTUALLY on screen, which is the AND of tab selection and the window's
-    // own visibility below — a background window with Activity selected must not poll.
-    void OnTabSelectionChanged(object? sender, SelectionChangedEventArgs e) {
-        _activityTabSelected = e.AddedItems.Count > 0 && ReferenceEquals(e.AddedItems[0], ActivityTabItem);
+    // Wired from MainWindow.axaml's ActivityExpander (spec §7).
+    void OnActivityExpandChanged(object? sender, RoutedEventArgs e) {
+        _activityExpanded = ActivityExpander.IsExpanded;
         UpdateActivityVisibility();
     }
 
@@ -88,7 +93,10 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
         if (change.Property == IsVisibleProperty || change.Property == DataContextProperty) UpdateActivityVisibility();
     }
 
+    // Activity polls only when it is ACTUALLY on screen: window visible AND Home surface AND the
+    // section expanded — the same contract the Activity tab's selection used to carry.
     void UpdateActivityVisibility() {
-        if (DataContext is MainWindowViewModel vm) vm.Activity.OnTabVisibleChanged(_activityTabSelected && IsVisible);
+        if (DataContext is MainWindowViewModel vm)
+            vm.Activity.OnTabVisibleChanged(_activityExpanded && IsVisible && vm.IsHomeView);
     }
 }

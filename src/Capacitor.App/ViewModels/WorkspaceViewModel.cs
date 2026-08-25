@@ -65,14 +65,6 @@ public sealed class WorkspaceViewModel : ReactiveObject {
     public ReactiveCommand<Unit, Unit> OpenInWebCommand { get; }
     public ReactiveCommand<Unit, Unit> StopCommand { get; }
 
-    // Null (button hidden/disabled) until the window wires navigation externally -- kept settable
-    // so this view never has to be re-touched to wire it.
-    ReactiveCommand<Unit, Unit>? _backCommand;
-    public ReactiveCommand<Unit, Unit>? BackCommand {
-        get => _backCommand;
-        set => this.RaiseAndSetIfChanged(ref _backCommand, value);
-    }
-
     readonly CompositeDisposable _disposables = new();
 
     // Read by StopCommand at click time -- the DTO's own Kind decides protected-ness

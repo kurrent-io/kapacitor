@@ -7,22 +7,17 @@
              x:DataType="vm:WorkspaceViewModel"
              Background="{StaticResource KcapCanvasBrush}">
     <Grid RowDefinitions="56,42,*">
-        <!-- Header: Back (Task 14 injects BackCommand later — hidden until then) · title over
-             repo leaf · spacer · vendor chip with its family badge · Open-in-web/Stop. -->
-        <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto" Margin="16,0" VerticalAlignment="Center">
-            <Button x:Name="BackButton" Grid.Column="0" Content="← Back" Command="{Binding BackCommand}"
-                    IsVisible="{Binding BackCommand, Converter={x:Static ObjectConverters.IsNotNull}}"
-                    Background="Transparent" BorderThickness="0" Foreground="{StaticResource KcapTextBrush}"
-                    Padding="0,0,12,0" />
-
-            <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+        <!-- Header: title over repo leaf · spacer · vendor chip with its family badge ·
+             Open-in-web/Stop. Leaving the workspace is the rail's job, not a Back button's. -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto,Auto,Auto" Margin="16,0" VerticalAlignment="Center">
+            <StackPanel Grid.Column="0" Spacing="1" VerticalAlignment="Center">
                 <TextBlock x:Name="WorkspaceTitle" Text="{Binding Title}" FontWeight="Bold" FontSize="15"
                            Foreground="{StaticResource KcapTextBrush}" TextTrimming="CharacterEllipsis" />
                 <TextBlock x:Name="WorkspaceRepo" Text="{Binding RepoLabelText}" FontSize="11"
                            Foreground="{StaticResource KcapMutedBrush}" TextTrimming="CharacterEllipsis" />
             </StackPanel>
 
-            <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Margin="0,0,12,0">
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Margin="0,0,12,0">
                 <Border Background="{StaticResource KcapSurfaceRaisedBrush}" CornerRadius="999" Padding="6,1"
                         IsVisible="{Binding FamilyDot, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
                     <TextBlock Text="{Binding FamilyDot}" FontSize="9" Foreground="{StaticResource KcapMutedBrush}" />
@@ -31,10 +26,10 @@
                            Foreground="{StaticResource KcapMutedBrush}" VerticalAlignment="Center" />
             </StackPanel>
 
-            <Button Grid.Column="4" Content="Open in web" Command="{Binding OpenInWebCommand}"
+            <Button Grid.Column="3" Content="Open in web" Command="{Binding OpenInWebCommand}"
                     Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
                     Foreground="{StaticResource KcapTextBrush}" Padding="10,4" FontSize="12" Margin="0,0,6,0" />
-            <Button Grid.Column="5" Content="Stop" Command="{Binding StopCommand}"
+            <Button Grid.Column="4" Content="Stop" Command="{Binding StopCommand}"
                     Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
                     Foreground="{StaticResource KcapDangerBrush}" Padding="10,4" FontSize="12" />
         </Grid>

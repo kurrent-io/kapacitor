@@ -111,12 +111,12 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     readonly ObservableCollectionExtended<AgentRowViewModel> _agentsSource = new();
     public ReadOnlyObservableCollection<AgentRowViewModel> Agents { get; }
 
-    /// The Activity tab (spec §7) — constructed once at the composition root, same instance the
+    /// The Activity feed (spec §7) — constructed once at the composition root, same instance the
     /// prompt window's onConcluded callback nudges, so this is a plain ctor-injected reference,
     /// not something built here.
     public ActivityViewModel Activity { get; }
 
-    /// The Home tab — constructed at the composition root over the SAME
+    /// The Home surface's launcher and cards — constructed at the composition root over the SAME
     /// IDaemonClientService instance this window uses, never a second daemon connection. Null
     /// only for a caller that doesn't supply one (most existing tests predate Home); HomeView
     /// tolerates a null DataContext, same as any other unbound view.
@@ -127,9 +127,9 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     readonly Func<string, WorkspaceViewModel>? _workspaceFactory;
 
     WorkspaceViewModel? _currentWorkspace;
-    /// null = the tabbed shell has the window; non-null = that session's workspace does. Exactly
-    /// one workspace at a time, and this VM owns it: every swap starts the outgoing one's tracked
-    /// teardown (spec §3).
+    /// null = the Sessions surface shows its placeholder pane; non-null = that session's workspace.
+    /// Exactly one workspace at a time, and this VM owns it: every swap starts the outgoing one's
+    /// tracked teardown (spec §3).
     public WorkspaceViewModel? CurrentWorkspace {
         get => _currentWorkspace;
         private set => this.RaiseAndSetIfChanged(ref _currentWorkspace, value);
@@ -158,8 +158,8 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// a per-window counter, so a window built after shutdown began sees the latch too.
     public int NavigationGeneration => _navigation.Generation;
 
-    /// Bound to WorkspaceView's Back button (the VM injects it into every workspace it builds), and
-    /// the same command the coordinator's close paths route through.
+    /// Clears the open workspace back to the Sessions surface's placeholder pane — the same command
+    /// the coordinator's close paths route through.
     public ReactiveCommand<Unit, Unit> CloseWorkspaceCommand { get; }
 
     ObservableAsPropertyHelper<bool>? _gridEnabled;
@@ -221,7 +221,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// <param name="workspaceFactory">
     /// Builds the workspace for an agent id (the production one wires the daemon socket's attach
     /// client and the xterm surface). Null means this window cannot navigate to a workspace at all
-    /// — every existing caller that predates workspaces stays on the tabbed shell.
+    /// — every existing caller that predates workspaces stays on the Home surface.
     /// </param>
     /// <param name="rail">
     /// The Sessions rail. Null means this window has no rail to keep in sync — every existing
@@ -382,38 +382,36 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         });
     }
 
-    /// Card click and Back's counterpart: swaps the window to this session's workspace, starting the
-    /// tracked teardown of whatever it replaces. Refused once shutdown has latched — a new workspace
-    /// is a new attach, and quiesce/disposal is already running (spec §3).
+    /// Card and rail click: swaps the window to this session's workspace on the Sessions surface,
+    /// starting the tracked teardown of whatever it replaces. Refused once shutdown has latched — a
+    /// new workspace is a new attach, and quiesce/disposal is already running (spec §3).
     public void OpenSession(string agentId) {
         if (_navigation.ShutdownLatched || _workspaceFactory is null) return;
         CurrentView = ShellView.Sessions;
         // Re-clicking the open session must not tear down and rebuild a live attach.
         if (CurrentWorkspace?.AgentId == agentId) return;
 
-        var workspace = _workspaceFactory(agentId);
-        workspace.BackCommand = CloseWorkspaceCommand;
-        SwapTo(workspace);
+        SwapTo(_workspaceFactory(agentId));
         Rail?.NotifySessionOpened(agentId);
     }
 
     /// The launch auto-open. `generation` is what the launch captured BEFORE its call: a success
-    /// arriving after any navigation (Back, another session, close-to-hide, the shutdown latch)
-    /// opens nothing, rather than attaching an invisible terminal or replacing what the user opened
-    /// while the launch was in flight.
+    /// arriving after any navigation (closing the workspace, another session, close-to-hide, the
+    /// shutdown latch) opens nothing, rather than attaching an invisible terminal or replacing what
+    /// the user opened while the launch was in flight.
     public void OpenSessionIfCurrent(string agentId, int generation) {
         if (generation != _navigation.Generation) return;
         OpenSession(agentId);
     }
 
-    /// Back, and the coordinator's close paths. Bumps unconditionally — a close-to-hide with no
-    /// workspace open must still retire an in-flight launch's captured generation.
+    /// The coordinator's close paths. Bumps unconditionally — a close-to-hide with no workspace
+    /// open must still retire an in-flight launch's captured generation.
     public void CloseWorkspace() => SwapTo(null);
 
     /// The first shutdown pass, synchronously: unhook the live workspace and register its teardown
     /// BEFORE the drain seals the tracker, then latch the gate so no later window can open another
-    /// one. A workspace that never went through Back or close-to-hide would otherwise register its
-    /// teardown after the drain, against already-disposed dependencies (spec §3).
+    /// one. A workspace that never went through a close or close-to-hide would otherwise register
+    /// its teardown after the drain, against already-disposed dependencies (spec §3).
     public void LatchShutdown() {
         var live = CurrentWorkspace;
         CurrentWorkspace = null;
