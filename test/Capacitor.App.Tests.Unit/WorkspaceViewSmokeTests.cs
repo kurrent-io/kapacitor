@@ -184,15 +184,12 @@ public class WorkspaceViewSmokeTests {
         });
     }
 
-    /// Run-and-observe: a NORMAL read-write attach (TriggerAttached with no reason) must still
-    /// show the attach banner and its DetachButton -- the design canvas's whole point is that
-    /// Detach is reachable from the primary (read-write) flow, not only the read-only one. Before
-    /// the fix, the banner's Border bound to TerminalReadOnlyBannerVisibleConverter, which is
-    /// false here (ReadOnly stays false), so DetachButton was IsEffectivelyVisible: false and
-    /// this test failed against the pre-fix view.
+    /// Owner decision after manual QA: a NORMAL read-write attach shows NO banner — it overlaid
+    /// the terminal content. Explicit detach returns when a use case earns it; read-only keeps
+    /// the banner because it is the only explanation for dead keystrokes.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task Read_write_attached_state_shows_the_attach_banner_and_detach_button() {
+    public async Task Read_write_attached_state_shows_no_banner() {
         await RunOnUiAsync(async () => {
             var (view, vm, daemon, attach) = Build();
             var window = new Window { Content = view };
@@ -212,9 +209,8 @@ public class WorkspaceViewSmokeTests {
 
             await Assert.That(vm.Terminal.State.Phase).IsEqualTo(TerminalSessionPhase.Attached);
             await Assert.That(vm.Terminal.State.ReadOnly).IsFalse();
-            await Assert.That(detachButton.IsEffectivelyVisible).IsTrue();
-            await Assert.That(bannerText.Text)
-                .IsEqualTo("Attached to the live PTY — keystrokes go straight to the process.");
+            await Assert.That(detachButton.IsEffectivelyVisible).IsFalse();
+            await Assert.That(bannerText.IsEffectivelyVisible).IsFalse();
 
             window.Close();
             Dispatcher.UIThread.RunJobs();
@@ -223,8 +219,8 @@ public class WorkspaceViewSmokeTests {
     }
 
     /// Companion to the read-write test above: a read-only attach (TriggerAttached with a reason)
-    /// still shows the same banner/DetachButton, now with the warning copy and the reason baked
-    /// into the text -- both modes share one banner per the design canvas.
+    /// is the ONE mode that shows the banner — warning copy with the daemon's reason, plus the
+    /// Detach button (the only action a read-only session has).
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Read_only_attached_state_shows_the_warning_banner_and_detach_button() {

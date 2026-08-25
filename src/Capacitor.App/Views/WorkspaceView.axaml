@@ -57,7 +57,11 @@
              see WorkspaceView.axaml.cs header comment) plus one state banner at a time, layered
              over it. -->
         <Grid Grid.Row="2">
+            <!-- FontFamily MUST be set: the control's default is "Cascadia Mono", which only
+                 exists on Windows — elsewhere it silently falls back to ESTIMATED cell metrics
+                 while drawing with a real typeface, smearing every styled run off its column. -->
             <terminal:TerminalControl x:Name="TerminalHost" IsVisible="{Binding ShowsTerminalTab}"
+                                       FontFamily="Menlo,Monaco,Consolas,Cascadia Mono,DejaVu Sans Mono,monospace"
                                        Model="{Binding Terminal.Surface, Converter={x:Static views:TerminalSurfaceModelConverter.Instance}}" />
 
             <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=Connecting}"
@@ -66,15 +70,17 @@
                 <TextBlock Text="Connecting…" Foreground="{StaticResource KcapMutedBrush}" />
             </Border>
 
-            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalPhaseIsConverter.Instance}, ConverterParameter=Attached}"
-                    Background="{Binding Terminal.State, Converter={x:Static views:TerminalAttachBannerBackgroundBrushConverter.Instance}}"
-                    BorderBrush="{Binding Terminal.State, Converter={x:Static views:TerminalAttachBannerBorderBrushConverter.Instance}}"
+            <!-- Owner decision (post-QA): the attach banner overlays the terminal, so a normal
+                 read-write session shows NO banner — explicit detach returns when a use case
+                 earns it. Read-only keeps the banner: it is the only explanation for dead
+                 keystrokes, and Detach is the only action such a session has. -->
+            <Border IsVisible="{Binding Terminal.State, Converter={x:Static views:TerminalReadOnlyBannerVisibleConverter.Instance}}"
+                    Background="{StaticResource KcapWarningDimBrush}" BorderBrush="{StaticResource KcapWarningBrush}"
                     BorderThickness="1" CornerRadius="8" Padding="12,7" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,14,0,0">
                 <StackPanel Orientation="Horizontal" Spacing="10">
                     <TextBlock x:Name="AttachBannerText"
-                               Text="{Binding Terminal.State, Converter={x:Static views:TerminalAttachBannerTextConverter.Instance}}"
-                               Foreground="{Binding Terminal.State, Converter={x:Static views:TerminalAttachBannerForegroundBrushConverter.Instance}}"
-                               VerticalAlignment="Center" />
+                               Text="{Binding Terminal.State.Detail, StringFormat='Read-only: {0}'}"
+                               Foreground="{StaticResource KcapWarningBrush}" VerticalAlignment="Center" />
                     <Button x:Name="DetachButton" Content="Detach" Command="{Binding Terminal.DetachCommand}" Padding="10,3" FontSize="12" />
                 </StackPanel>
             </Border>

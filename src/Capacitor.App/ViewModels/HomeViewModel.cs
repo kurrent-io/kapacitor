@@ -236,19 +236,21 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
 
         StartError = null;
         Goal = ""; // the launch really did start — the goal is spent either way
-        if (!IsWellFormedAgentId(outcome.AgentId)) {
+        if (NormalizeAgentId(outcome.AgentId) is not { } agentId) {
             StartError = UnusableIdMessage;
             return;
         }
 
-        _openSessionIfCurrent?.Invoke(outcome.AgentId!, generation);
+        _openSessionIfCurrent?.Invoke(agentId, generation);
     }
 
-    /// The daemon mints agent ids as Guid("N") — 32 hex digits. Anything else cannot address a
-    /// session, so it never reaches OpenSession (which would otherwise build a workspace that can
-    /// only ever resolve to "session not found").
-    internal static bool IsWellFormedAgentId(string? agentId) =>
-        agentId is { Length: 32 } && agentId.All(Uri.IsHexDigit);
+    /// The daemon's status cache keys agents by Guid("N") — 32 hex digits — but the server hub
+    /// returns the launch id as a DASHED Guid, so the shapes must be normalized here or the
+    /// Resolving gate can never match the cache entry. Anything Guid.TryParse rejects cannot
+    /// address a session and never reaches OpenSession (which would otherwise build a workspace
+    /// that can only ever resolve to "session not found").
+    internal static string? NormalizeAgentId(string? agentId) =>
+        Guid.TryParse(agentId, out var parsed) ? parsed.ToString("N") : null;
 
     /// Repo paths compare the way the filesystem underneath them does: case-insensitively on
     /// Windows and macOS, case-sensitively on Linux where two checkouts differing only in case are

@@ -372,6 +372,30 @@ public class WorkspaceNavigationTests {
         });
     }
 
+    /// The server hub hands back the agent id as a DASHED Guid ("D"), while the daemon's status
+    /// cache keys on the 32-hex "N" form — the launch path must normalize, or every real launch
+    /// reads as unusable (found in manual QA: red error over a perfectly healthy session card).
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    [Arguments("01234567-89ab-cdef-0123-456789abcdef")]     // "D" — what the server actually sends
+    [Arguments("{01234567-89ab-cdef-0123-456789abcdef}")]   // "B" — tolerate any Guid shape
+    [Arguments("0123456789abcdef0123456789abcdef")]         // "N" — already canonical
+    public async Task A_launch_id_in_any_guid_shape_normalizes_and_opens(string agentId) {
+        await RunOnUiAsync(async () => {
+            using var tmp = TempDir.WithPathTo("app-state.json", out var path);
+            var nav = NewNav();
+            var launch = new FixedLaunchClient { Next = new LaunchOutcome(true, agentId, null) };
+            using var home = NewHome(nav, launch, path);
+
+            await home.SelectRepositoryAsync("/repo/myproj");
+            home.Goal = "do the thing";
+            await home.StartCommand.Execute();
+
+            await Assert.That(home.StartError).IsNull();
+            await Assert.That(nav.Opened).IsEquivalentTo(new[] { "0123456789abcdef0123456789abcdef" });
+        });
+    }
+
     /// The card click's own entry point (HomeView routes a click to this), distinct from the launch
     /// auto-open above: no generation is involved, the click IS the current navigation.
     [Test]

@@ -1,5 +1,4 @@
 using System.Globalization;
-using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Data.Converters;
 using Capacitor.App.Services;
@@ -54,57 +53,14 @@ public sealed class TerminalPhaseIsConverter : IValueConverter {
         throw new NotSupportedException();
 }
 
-/// The attach banner's message: the daemon's read-only reason when ReadOnly, a fixed
-/// reassurance line for a normal read-write attach -- one banner (and its DetachButton) is
-/// visible for BOTH modes (design canvas), not just the read-only one.
-public sealed class TerminalAttachBannerTextConverter : IValueConverter {
-    public static readonly TerminalAttachBannerTextConverter Instance = new();
+/// The read-only warning banner: visible only for a read-only Attached session — the one case
+/// where the banner explains otherwise-dead keystrokes. A read-write attach shows no banner
+/// (owner decision after QA: it overlaid the terminal).
+public sealed class TerminalReadOnlyBannerVisibleConverter : IValueConverter {
+    public static readonly TerminalReadOnlyBannerVisibleConverter Instance = new();
 
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        value is TerminalSessionState { ReadOnly: true } state
-            ? $"Read-only: {state.Detail}"
-            : "Attached to the live PTY — keystrokes go straight to the process.";
-
-    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        throw new NotSupportedException();
-}
-
-/// Attach banner background: the warning-dim skin for read-only, the plain surface skin for a
-/// normal read-write attach. Application-level resources (App.axaml) are a single fixed
-/// palette, so a static FindResource lookup here needs no per-frame re-resolution.
-public sealed class TerminalAttachBannerBackgroundBrushConverter : IValueConverter {
-    public static readonly TerminalAttachBannerBackgroundBrushConverter Instance = new();
-
-    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        Application.Current!.FindResource(
-            value is TerminalSessionState { ReadOnly: true } ? "KcapWarningDimBrush" : "KcapSurfaceBrush");
-
-    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        throw new NotSupportedException();
-}
-
-/// Attach banner border: warning brush for read-only, the plain border brush for read-write --
-/// paired with TerminalAttachBannerBackgroundBrushConverter above.
-public sealed class TerminalAttachBannerBorderBrushConverter : IValueConverter {
-    public static readonly TerminalAttachBannerBorderBrushConverter Instance = new();
-
-    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        Application.Current!.FindResource(
-            value is TerminalSessionState { ReadOnly: true } ? "KcapWarningBrush" : "KcapBorderBrush");
-
-    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        throw new NotSupportedException();
-}
-
-/// Attach banner text color: warning brush for read-only (matches the border), muted text for
-/// read-write -- a separate brush from the border since the neutral skin's text is muted, not
-/// KcapBorderBrush.
-public sealed class TerminalAttachBannerForegroundBrushConverter : IValueConverter {
-    public static readonly TerminalAttachBannerForegroundBrushConverter Instance = new();
-
-    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        Application.Current!.FindResource(
-            value is TerminalSessionState { ReadOnly: true } ? "KcapWarningBrush" : "KcapMutedBrush");
+        value is TerminalSessionState { Phase: TerminalSessionPhase.Attached, ReadOnly: true };
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();
