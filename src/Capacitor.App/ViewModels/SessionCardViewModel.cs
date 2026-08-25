@@ -1,5 +1,4 @@
 using Avalonia.Media;
-using Avalonia.Media.Immutable;
 using Capacitor.Cli.Core.LocalIpc;
 
 namespace Capacitor.App.ViewModels;
@@ -28,31 +27,10 @@ public sealed class SessionCardViewModel {
         RepoFull = dto.RepoPath ?? "";
         Title = $"{RepoLabel.Leaf(dto.RepoPath)} · {dto.Vendor}";
         StatusText = dto.Status;
-        StatusDot = StatusDotFor(dto.Status);
+        StatusDot = SessionStatusDots.For(dto.Status);
         CreatedAt = dto.CreatedAt;
 
         var createdAtUtc = DateTime.SpecifyKind(dto.CreatedAt, DateTimeKind.Utc);
         Age = UptimeFormat.Format(DateTime.UtcNow - createdAtUtc);
     }
-
-    // ImmutableSolidColorBrush, not SolidColorBrush: these cards are built by DynamicData's
-    // Transform on the daemon client's own pump thread (HomeViewModel), and a SolidColorBrush is
-    // an AvaloniaObject whose thread affinity is taken from whoever constructed it —
-    // MainWindowViewModel.DotBrush's own comment covers why that is a trap. An immutable brush has
-    // no affinity at all, which is also what makes these four safe to share across every card
-    // instead of reallocating per card per revision.
-    static readonly ImmutableSolidColorBrush RunningDot  = new(Color.Parse(StatusColors.Connected));
-    static readonly ImmutableSolidColorBrush StartingDot = new(Color.Parse(StatusColors.InProgress));
-    static readonly ImmutableSolidColorBrush FailedDot   = new(Color.Parse(StatusColors.Disrupted));
-    static readonly ImmutableSolidColorBrush NeutralDot  = new(Color.Parse(StatusColors.Unavailable));
-
-    // Running/Starting/Failed are the daemon's own open vocabulary (AgentOrchestrator); anything
-    // else (Completed, or a value this build has never heard of) reads as neutral rather than
-    // guessing at a verdict.
-    static IBrush StatusDotFor(string status) => status switch {
-        "Running"  => RunningDot,
-        "Starting" => StartingDot,
-        "Failed"   => FailedDot,
-        _          => NeutralDot,
-    };
 }
