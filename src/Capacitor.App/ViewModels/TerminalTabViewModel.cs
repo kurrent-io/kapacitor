@@ -161,9 +161,10 @@ public sealed class TerminalTabViewModel : ReactiveObject {
             RaiseSendProjections();
             return;
         }
-        Invalidate();
+        // State first: Invalidate raises the projections, and they must not be read against the
+        // state this publish is replacing.
         State = state;
-        RaiseSendProjections();
+        Invalidate();
     }
 
     /// Synchronous acceptance on the UI thread: true means the text is on its way through the

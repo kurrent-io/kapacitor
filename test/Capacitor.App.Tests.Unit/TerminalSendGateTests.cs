@@ -110,8 +110,15 @@ public class TerminalSendGateTests {
             await Assert.That(vm.SendAvailability).IsEqualTo(SendAvailability.Transitioning);
             await Assert.That(vm.TrySendText("x")).IsFalse();
 
+            // The fake terminalizes the run it retires (Detached) where the real client cancels
+            // it, so draining that outcome here is what fixes the order the held-open reattach
+            // resumes into, rather than letting the UI pump race the resumption.
+            await vm.CurrentRunForTesting!;
             gate.SetResult();
             await reattach;
+            await Assert.That(factory.Created.Count).IsEqualTo(1); // the drained outcome retired the attempt
+
+            await vm.ReattachCommand.Execute();
             var client2 = factory.Created[^1];
             await Assert.That(vm.CanAcceptText).IsFalse(); // Connecting: still closed
             await client2.TriggerAttached([]);
@@ -160,7 +167,7 @@ public class TerminalSendGateTests {
     [NotInParallel("AvaloniaSession")]
     public async Task A_late_attached_publish_cannot_reopen_after_a_removal_or_detach() {
         await RunOnUiAsync(async () => {
-            // (b) removal while Connecting: the attach callback's publish is queued, then the agent goes.
+            // Removal while Connecting: the attach callback's publish is queued, then the agent goes.
             var daemon = new FakeDaemonClientService();
             var factory = new FakeTerminalAttachClientFactory();
             var vm = new TerminalTabViewModel("a1", daemon, factory.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider());
@@ -178,14 +185,16 @@ public class TerminalSendGateTests {
             await Assert.That(vm.CanAcceptText).IsFalse();
             await Assert.That(vm.TrySendText("x")).IsFalse();
 
-            // (c) removal during a reattach's pre-Connecting disposal aborts that attempt.
+            // An invalidation landing during a reattach's pre-Connecting disposal aborts that
+            // attempt: no Connecting, no second client.
             var gate = new TaskCompletionSource();
             var (daemon2, factory2, _, vm2, client2) = await BuildAttachedAsync(configureNext: c => c.DisposeGate = gate);
             var reattach = vm2.ReattachCommand.Execute().ToTask();
             await WaitUntilAsync(() => client2.DisposeCalls == 1, what: "old client disposing");
-            // The fake's DisposeAsync terminalizes the run it retires (Detached), exactly as the
-            // real client does; draining that outcome first is what makes the removal below the
-            // LAST publish, rather than racing the retired attempt's own.
+            // The fake terminalizes the run it retires (Detached) where the real client cancels it
+            // -- the retiring Cancel claims the run and its outcome is swallowed as a retired
+            // attempt's own cancellation. Draining that outcome here makes the removal below the
+            // last publish, so what the abort leaves behind is asserted, not raced.
             await vm2.CurrentRunForTesting!;
             daemon2.Agents.Remove("a1");
             gate.SetResult();
@@ -193,6 +202,24 @@ public class TerminalSendGateTests {
 
             await Assert.That(vm2.State.Phase).IsEqualTo(TerminalSessionPhase.SessionEnded);
             await Assert.That(factory2.Created.Count).IsEqualTo(1); // no second client was ever created
+
+            // A detach landing while the attach callback's publish is still queued: the late
+            // Attached is discarded on its stale token, so the gate never opens.
+            var daemon3 = new FakeDaemonClientService();
+            var factory3 = new FakeTerminalAttachClientFactory();
+            var vm3 = new TerminalTabViewModel("a3", daemon3, factory3.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider());
+            daemon3.Agents.AddOrUpdate(Agent("a3", "claude", hasTerminal: true));
+            await (vm3.PendingResolveWorkForTesting ?? Task.CompletedTask);
+            var client3 = factory3.Created.Single();
+
+            var attached3 = client3.TriggerAttached([]);
+            await vm3.DetachCommand.Execute();
+            await attached3;
+
+            await Assert.That(client3.DetachCalls).IsEqualTo(1);
+            await Assert.That(vm3.State.Phase).IsEqualTo(TerminalSessionPhase.Connecting);
+            await Assert.That(vm3.CanAcceptText).IsFalse();
+            await Assert.That(vm3.TrySendText("x")).IsFalse();
         });
     }
 
