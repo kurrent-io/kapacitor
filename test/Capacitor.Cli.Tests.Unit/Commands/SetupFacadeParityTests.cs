@@ -210,22 +210,30 @@ public class SetupFacadeParityTests {
         await Assert.That(((SpectreTenantProvisioner)captured!).Scripted).IsTrue();
     }
 
+    // The guard is only worth anything if the boundary is the thing that refuses, so this drives the
+    // real facade with it attached and asserts nothing durable was written.
     [Test]
     [NotInParallel]
-    public async Task RunDiscoveryAsync_stops_when_it_lands_on_a_workspace_the_flags_did_not_name() {
+    public async Task A_commit_that_would_publish_another_workspace_writes_nothing() {
         using var handler = AuthHttp.Script(
             proxyConfig: """{"github_client_id":"cid"}""",
             tenants: TwoGitHubTenants);
 
-        SetupCommand.FacadeOverride = _ => NewFacade(new RecordingAuthProgress(), handler, PickerReturningFirst());
+        var progress = new RecordingAuthProgress();
+        var facade   = NewFacade(progress, handler, PickerReturningFirst(),
+            beforeCommit: SetupCommand.WorkspaceGuard(new RequestedWorkspace("Globex", "globex")));
 
-        using var console = ConsoleOutput.StartErrorCapture("\n");
+        var result = await facade.DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, CancellationToken.None);
 
-        var discovered = await SetupCommand.RunDiscoveryAsync(
-            ["--github"], forceDevice: true, new RequestedWorkspace("Globex", "globex"));
+        await Assert.That(result).IsTypeOf<AuthResult.Failed>();
+        await Assert.That(TokenFileExists("acme")).IsFalse();
+        await Assert.That(TokenFileExists("contoso")).IsFalse();
 
-        await Assert.That(discovered).IsNull();
-        await Assert.That(console.GetCapturedError()).Contains("globex");
+        var cfg = ReadConfig();
+
+        await Assert.That(cfg.Profiles.ContainsKey("acme")).IsFalse();
+        await Assert.That(cfg.ActiveProfile).IsNotEqualTo("acme");
+        await Assert.That(string.Join("\n", progress.Errors)).Contains("globex");
     }
 
     // ── the setup-scoped progress sink ───────────────────────────────────────

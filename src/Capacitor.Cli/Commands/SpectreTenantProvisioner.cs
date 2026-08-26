@@ -243,10 +243,15 @@ public sealed class SpectreTenantProvisioner(
         // prompt after discovery throws on the session the guidance was printed to.
         var waitPlain    = Scripted ? $"Re-run kcap setup {slug} --no-prompt" : $"Re-run kcap setup {slug}";
         var waitMarkup   = $"Re-run [cyan]kcap setup {Markup.Escape(slug)}[/]";
-        var createPlain  = requested is { } r
-            ? $"Re-run kcap setup --org \"{r.OrgName}\" --slug {slug} --no-prompt"
+        // The slug is safe to embed — it is validated down to [a-z0-9-] — but an organization name is
+        // arbitrary text, and a quote or a backtick in one turns a command meant for copying into a
+        // different command. The reader knows their own name; the shape is what they need.
+        var createPlain  = Scripted
+            ? $"Re-run kcap setup --org \"<name>\" --slug {slug} --no-prompt"
             : "Re-run kcap setup";
-        var createMarkup = "Re-run [cyan]kcap setup[/]";
+        var createMarkup = Scripted
+            ? $"Re-run [cyan]kcap setup --org \"<name>\" --slug {Markup.Escape(slug)} --no-prompt[/]"
+            : "Re-run [cyan]kcap setup[/]";
         // The live display is a terminal affordance; on a scripted run its fallback renderer would put
         // a hundred-odd progress lines on stdout, which is the stream that run's failures avoid.
         return Scripted
@@ -272,8 +277,8 @@ public sealed class SpectreTenantProvisioner(
                              markup: $"Provisioning failed. {createMarkup} to retry.");
                         return ProvisionOffer.Failed;
                     case PollVerdict.Forbidden:
-                        Fail($"Verify your email address, then {createPlain.ToLowerInvariant()}.", "forbidden",
-                             markup: $"Verify your email address, then {createMarkup.ToLowerInvariant()}.");
+                        Fail($"Verify your email address. {createPlain} to try again.", "forbidden",
+                             markup: $"Verify your email address. {createMarkup} to try again.");
                         return ProvisionOffer.Failed;
                     case PollVerdict.NotFound:
                         Fail($"'{slug}' isn't linked to your account. {createPlain}.", "not_found",

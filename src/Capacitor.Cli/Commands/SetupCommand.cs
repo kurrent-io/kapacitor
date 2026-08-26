@@ -137,7 +137,13 @@ public static class SetupCommand {
         var skipClaude       = skipClaudeFlag || legacyPluginScope == "skip";
         var legacyProjectScope = legacyPluginScope == "project";
 
-        var (requestedWorkspace, workspaceArgError) = ParseRequestedWorkspace(args, serverUrlArg is not null);
+        // Presence, not value: `--server-url` with nothing after it parses as absent, and pairing that
+        // with --org/--slug would read as "create one" and do something irreversible.
+        var serverUrlGiven = serverUrlArg is not null
+                          || args.Contains("--server-url")
+                          || args.Any(a => a.StartsWith("--server-url=", StringComparison.Ordinal));
+
+        var (requestedWorkspace, workspaceArgError) = ParseRequestedWorkspace(args, serverUrlGiven);
 
         if (workspaceArgError is not null) {
             await Console.Error.WriteLineAsync($"  {workspaceArgError}");
@@ -920,11 +926,37 @@ public static class SetupCommand {
 
     internal static readonly SetupAuthProgress StepProgress = new(ConsoleAuthProgress.Instance);
 
-    static OnboardingFacade NewFacade(ITenantProvisioner? provisioner, ITenantPicker? picker = null) =>
+    static OnboardingFacade NewFacade(
+            ITenantProvisioner? provisioner, ITenantPicker? picker = null, RequestedWorkspace? requested = null) =>
         FacadeOverride?.Invoke(provisioner)
-            ?? new OnboardingFacade(StepProgress, picker ?? new SpectreTenantPicker(), provisioner, beforeCommit: null) {
+            ?? new OnboardingFacade(
+                StepProgress, picker ?? new SpectreTenantPicker(), provisioner, WorkspaceGuard(requested)) {
                 KeyWatcher = ConsoleKeyWatcher.Instance
             };
+
+    /// <summary>
+    /// Refuses the commit when discovery is about to publish a workspace other than the one
+    /// <c>--org</c>/<c>--slug</c> named. Runs on the boundary's last cancellable step, so the stop
+    /// happens before any profile, stamp or token is written rather than after.
+    /// </summary>
+    internal static Func<IReadOnlyList<AuthIdentity>, CancellationToken, Task>? WorkspaceGuard(
+            RequestedWorkspace? requested) {
+        if (requested is null) return null;
+
+        return (identities, _) => {
+            // A WorkOS identity's profile IS its tenant slug, which is what makes this a comparison
+            // against the workspace itself rather than a URL the server chose the shape of.
+            if (identities.Any(i => string.Equals(i.Profile, requested.Slug, StringComparison.Ordinal)))
+                return Task.CompletedTask;
+
+            var landed = identities.Count > 0 ? identities[0].CanonicalServer : "a workspace you already belong to";
+
+            throw new InvalidOperationException(
+                $"your account already belongs to {landed}, so '{requested.Slug}' was not created. "
+              + $"--org/--slug create a workspace only for an account that has none — re-run with "
+              + $"--server-url {landed} to configure that one.");
+        };
+    }
 
     /// <summary>
     /// Step 2 (Login) as a standalone step: a discovery-completed sign-in just reports what
@@ -1117,25 +1149,6 @@ public static class SetupCommand {
     }
 
     /// <summary>
-    /// Why the run must stop when it did not land on the workspace <c>--org</c>/<c>--slug</c> asked
-    /// for, or null when it did. Only the zero-workspace fork consults the provisioner, so an account
-    /// that already has one never reaches it and the answers go unused.
-    /// </summary>
-    /// <param name="activeProfile">
-    /// Compared against the slug rather than the server URL: the server names the workspace it creates,
-    /// and the profile is stamped from the url it returns, which need not be the origin guessed here. A
-    /// WorkOS profile IS its tenant slug, whether that workspace was just created or already existed.
-    /// </param>
-    internal static string? WrongWorkspaceError(
-            RequestedWorkspace? requested, string activeProfile, string activeServerUrl) {
-        if (requested is null || string.Equals(activeProfile, requested.Slug, StringComparison.Ordinal)) return null;
-
-        return $"  ✗ Signed in to {activeServerUrl}, which your account already belongs to, so '{requested.Slug}' was not created.\n"
-             + $"    --org/--slug create a workspace only for an account that has none. Setup stopped rather than"
-             + $" configuring this one — re-run with --server-url {activeServerUrl} to do that.";
-    }
-
-    /// <summary>
     /// Reads <c>--org</c>/<c>--slug</c> into the answers the create-a-workspace prompts would have
     /// collected, or the error that stops the run; (null, null) when neither was passed. Every
     /// rejection is a combination that would otherwise take the flags and never act on them.
@@ -1196,8 +1209,9 @@ public static class SetupCommand {
         // a zero-workspace headless user now completes a sign-in and would otherwise hold a live
         // credential with nowhere to spend it. GitHub never provisions.
         // Resolved once and handed to both, rather than each defaulting its own seam off the same
-        // ambient property: one question, one answer.
-        var canPrompt = AnsiConsole.Profile.Capabilities.Interactive;
+        // ambient property: one question, one answer. A terminal is not enough — `--no-prompt` says
+        // not to ask, and a workspace picker on a TTY would still stop an unattended run dead.
+        var canPrompt = AnsiConsole.Profile.Capabilities.Interactive && !args.Contains("--no-prompt");
 
         var provisioner = chosen == AuthProvider.WorkOS
             ? new SpectreTenantProvisioner(
@@ -1205,7 +1219,7 @@ public static class SetupCommand {
                 isInteractive: () => canPrompt, requested: requested)
             : null;
 
-        var result = await NewFacade(provisioner, new SpectreTenantPicker(() => canPrompt))
+        var result = await NewFacade(provisioner, new SpectreTenantPicker(() => canPrompt), requested)
             .DiscoverAsync(chosen, forceDevice, CancellationToken.None);
 
         // WorkOS's own signin_completed/tenant_none fire from inside Core — only GitHub is derived here.
@@ -1236,12 +1250,6 @@ public static class SetupCommand {
 
                 if (active?.ServerUrl is null) {
                     AnsiConsole.MarkupLine("  [red]✗[/] Sign-in did not set an active profile.");
-
-                    return null;
-                }
-
-                if (WrongWorkspaceError(requested, cfg.ActiveProfile, active.ServerUrl) is { } landedElsewhere) {
-                    await Console.Error.WriteLineAsync(landedElsewhere);
 
                     return null;
                 }

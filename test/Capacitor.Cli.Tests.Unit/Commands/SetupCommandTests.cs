@@ -1157,34 +1157,40 @@ public class SetupCommandTests {
         await Assert.That(error!).Contains("--server-url");
     }
 
-    [Test]
-    public async Task WrongWorkspaceError_stops_a_run_that_landed_on_someone_elses_workspace() {
-        var error = SetupCommand.WrongWorkspaceError(
-            new RequestedWorkspace("Acme", "acme"), "globex", "https://globex.kcap.ai");
+    static Task Guard(RequestedWorkspace requested, params string[] profiles) =>
+        SetupCommand.WorkspaceGuard(requested)!(
+            [.. profiles.Select(p => new AuthIdentity(p, $"https://{p}.kcap.ai"))], CancellationToken.None);
 
-        await Assert.That(error).IsNotNull();
-        await Assert.That(error!).Contains("acme");
-        await Assert.That(error).Contains("https://globex.kcap.ai");
+    // Refusing on the commit boundary's last cancellable step is what keeps the stop free of a
+    // published profile, stamp or token.
+    [Test]
+    public async Task WorkspaceGuard_refuses_a_commit_that_would_publish_another_workspace() {
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await Guard(new RequestedWorkspace("Acme", "acme"), "globex"));
+
+        await Assert.That(thrown!.Message).Contains("acme");
+        await Assert.That(thrown.Message).Contains("globex");
     }
 
     // A re-run once the workspace exists lands on it, which is the asked-for outcome.
     [Test]
-    public async Task WrongWorkspaceError_passes_the_workspace_that_was_asked_for() {
-        await Assert.That(SetupCommand.WrongWorkspaceError(
-            new RequestedWorkspace("Acme", "acme"), "acme", "https://acme.kcap.ai")).IsNull();
+    public async Task WorkspaceGuard_lets_the_workspace_that_was_asked_for_through() {
+        await Guard(new RequestedWorkspace("Acme", "acme"), "acme");
     }
 
     // The profile name is the comparison, not the URL: the server names the workspace it creates, so
     // a url in any other shape must not read as landing somewhere else.
     [Test]
-    public async Task WrongWorkspaceError_passes_a_workspace_the_server_named_differently() {
-        await Assert.That(SetupCommand.WrongWorkspaceError(
-            new RequestedWorkspace("Acme", "acme"), "acme", "https://acme.eu.kcap.ai")).IsNull();
+    public async Task WorkspaceGuard_judges_by_slug_rather_than_by_the_url_the_server_returned() {
+        await Guard(new RequestedWorkspace("Acme", "acme"), "acme");
+
+        await SetupCommand.WorkspaceGuard(new RequestedWorkspace("Acme", "acme"))!(
+            [new AuthIdentity("acme", "https://acme.eu.kcap.ai")], CancellationToken.None);
     }
 
     [Test]
-    public async Task WrongWorkspaceError_has_nothing_to_say_when_no_workspace_was_asked_for() {
-        await Assert.That(SetupCommand.WrongWorkspaceError(null, "globex", "https://globex.kcap.ai")).IsNull();
+    public async Task WorkspaceGuard_is_absent_when_no_workspace_was_asked_for() {
+        await Assert.That(SetupCommand.WorkspaceGuard(null)).IsNull();
     }
 
     // These drive argv. The three rejections return before any config read, network call or console
@@ -1233,6 +1239,17 @@ public class SetupCommandTests {
         await Assert.That(exit).IsEqualTo(1);
         await Assert.That(capture.GetCapturedError()).Contains("--server-url is required");
         await Assert.That(capture.GetCapturedError()).Contains("--org");
+    }
+
+    // Presence, not value: a valueless --server-url parses as absent, and taking that as "no conflict"
+    // turns a run meant to point at a workspace into one that creates a different one.
+    [Test]
+    public async Task ParseRequestedWorkspace_refuses_a_server_flag_that_carries_no_value() {
+        var (workspace, error) = SetupCommand.ParseRequestedWorkspace(
+            ["setup", "--org", "Acme", "--slug", "acme", "--server-url"], haveServerUrl: true);
+
+        await Assert.That(workspace).IsNull();
+        await Assert.That(error!).Contains("--server-url");
     }
 
     [Test]

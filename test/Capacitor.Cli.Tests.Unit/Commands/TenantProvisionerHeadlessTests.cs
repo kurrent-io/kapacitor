@@ -196,8 +196,28 @@ public class TenantProvisionerHeadlessTests {
         var written = capture.GetCapturedError();
 
         await Assert.That(offer.Status).IsEqualTo(ProvisionOfferStatus.Failed);
-        await Assert.That(written).Contains("--org \"Acme\" --slug acme");
+        await Assert.That(written).Contains("--slug acme --no-prompt");
         await Assert.That(written).DoesNotContain("kcap setup acme");
+    }
+
+    // An organization name is arbitrary text; a quote or a backtick in one rewrites the command it is
+    // pasted into, so the suggestion carries a placeholder rather than the name itself.
+    [Test]
+    public async Task The_retry_command_never_carries_the_organization_name() {
+        using var capture = ConsoleOutput.StartErrorCapture();
+        using var handler = new StubHandler { ProvisionStatus = HttpStatusCode.Accepted, StatusState = "failed" };
+        var provisioner   = Provisioner(handler, () => false, new RequestedWorkspace("\"; rm -rf /; echo \"", "acme"));
+
+        await provisioner.OfferCreateAsync(Tokens());
+
+        // The echo names the organization because that is a report; the re-run line is a command
+        // somebody pastes, and that is the one the name must stay out of.
+        var retryLine = capture.GetCapturedError()
+            .Split('\n')
+            .Single(l => l.Contains("Re-run", StringComparison.Ordinal));
+
+        await Assert.That(retryLine).Contains("--org \"<name>\"");
+        await Assert.That(retryLine).DoesNotContain("rm -rf");
     }
 
     [Test]
