@@ -900,11 +900,13 @@ public class CursorHookCommandTests {
         var exit1 = await call;
         elapsed.Stop();
         await Assert.That(exit1).IsEqualTo(0);
-        // Cancelled fires only because advancing the budget clock cancelled the request's OWN token —
-        // proving the memory-budget token governs the fetch. Entered rules out a skipped attempt, and
-        // returning far inside the 15s outer deadline rules that out as the cause.
+        // Cancelled completes only from the handler's cancellation catch, i.e. only because advancing
+        // the budget clock cancelled the request's OWN token — proving the memory-budget token governs
+        // the fetch. Awaited (bounded), not read as a snapshot: the command's return does not order
+        // against the handler observing the token, so a bool read here races that propagation. Entered
+        // rules out a skipped attempt, and returning far inside the 15s outer deadline rules that out.
         await Assert.That(handler.Entered).IsTrue();
-        await Assert.That(handler.Cancelled).IsTrue();
+        await handler.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await Assert.That(elapsed.Elapsed.TotalSeconds).IsLessThan(10);
 
         // Advance well past the 30s lease duration so the still-"leased" (never committed — the
@@ -1142,10 +1144,12 @@ public class CursorHookCommandTests {
     // so the test advances the budget clock strictly after the request has entered.
     sealed class HangOnMemoryIndexHandler : HttpMessageHandler {
         volatile bool _entered;
-        volatile bool _cancelled;
-        // Separate "never fetched at all", "fetched and abandoned", and "fetched and cancelled".
+        // Separate "never fetched at all", "fetched and abandoned", and "fetched and cancelled":
+        // Entered distinguishes the first; Cancelled, completed only from the cancellation catch below,
+        // the last. A signal rather than a bool snapshot so a caller awaits the handler actually
+        // observing the token — the command's return is not ordered against that field being set.
         public bool Entered => _entered;
-        public bool Cancelled => _cancelled;
+        public TaskCompletionSource Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         // Fires the moment SendAsync is entered, so the test advances the budget clock only after entry.
         public TaskCompletionSource EnteredSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1159,7 +1163,7 @@ public class CursorHookCommandTests {
             try {
                 await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             } catch (OperationCanceledException) {
-                _cancelled = true;
+                Cancelled.TrySetResult();
                 throw;
             }
             return new HttpResponseMessage(HttpStatusCode.OK);
