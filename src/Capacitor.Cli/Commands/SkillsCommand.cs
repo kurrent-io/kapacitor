@@ -94,15 +94,23 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
         if (dryRun) return 0;
 
         foreach (var w in plan.Writes) {
+            // The slug becomes a path segment, so it must BE one — a server (or tampered response)
+            // handing out separators or dots must not reach a filesystem operation.
+            if (!SkillsSyncPlanner.IsSafeSlug(w.Slug)) {
+                await Console.Error.WriteLineAsync($"Skipping skill with unsafe slug: {w.Slug}");
+                continue;
+            }
             var dir = SkillDirFor(root, w.Slug);
             Directory.CreateDirectory(dir);
             File.WriteAllText(Path.Combine(dir, "SKILL.md"), SkillsSyncPlanner.RenderSkillFile(w));
         }
         foreach (var p in plan.Prunes) {
-            // Only ever a manifest-recorded path, and only when it still sits inside the kcap
-            // namespace — a manifest edited by hand must not aim the delete anywhere else.
+            // Only ever a manifest-recorded path, and only a DIRECT kcap-* child of the skills
+            // root — a manifest edited by hand must not aim the delete anywhere else (prefix
+            // checks admit siblings like skills-backup/ and nested user directories; parent
+            // EQUALITY does not).
             var full = Path.GetFullPath(p.Path);
-            if (full.StartsWith(Path.GetFullPath(root), StringComparison.Ordinal)
+            if (string.Equals(Path.GetDirectoryName(full), Path.GetFullPath(root), StringComparison.Ordinal)
                     && Path.GetFileName(full).StartsWith("kcap-", StringComparison.Ordinal)
                     && Directory.Exists(full))
                 Directory.Delete(full, recursive: true);
@@ -121,23 +129,31 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
 
     static SkillsManifest BuildManifest(string? etag, SkillSnapshotItem[] snapshot, string root) => new() {
         Etag = etag, SyncedAt = DateTimeOffset.UtcNow,
-        Skills = [.. snapshot.Select(s => new SkillsManifestEntry {
+        // Unsafe-slug items are skipped by the write loop, so they must not be claimed here either.
+        Skills = [.. snapshot.Where(s => SkillsSyncPlanner.IsSafeSlug(s.Slug)).Select(s => new SkillsManifestEntry {
             DocId = s.DocId, Slug = s.Slug, Version = s.Version, ContentHash = s.ContentHash,
             Path = SkillDirFor(root, s.Slug),
         })],
     };
 
     static SkillsManifest? LoadManifest(string path) {
+        if (!File.Exists(path)) return null;
         try {
-            if (!File.Exists(path)) return null;
             return JsonSerializer.Deserialize(File.ReadAllText(path), CapacitorJsonContext.Default.SkillsManifest);
         } catch {
-            return null;   // a corrupt manifest re-syncs from scratch; files reconcile by rewrite
+            // The manifest is the ownership ledger — losing it silently would strand revoked
+            // directories forever. Keep the evidence aside; the next full sync rebuilds ownership.
+            try { File.Move(path, path + ".corrupt", overwrite: true); } catch { /* best effort */ }
+            Console.Error.WriteLine($"Warning: corrupt skills manifest moved aside ({path}.corrupt); re-syncing from scratch.");
+            return null;
         }
     }
 
     static void SaveManifest(string path, SkillsManifest manifest) {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, JsonSerializer.Serialize(manifest, CapacitorJsonContext.Default.SkillsManifest));
+        // Atomic replace: a crash mid-write must never truncate the ownership ledger in place.
+        var tmp = path + ".tmp";
+        File.WriteAllText(tmp, JsonSerializer.Serialize(manifest, CapacitorJsonContext.Default.SkillsManifest));
+        File.Move(tmp, path, overwrite: true);
     }
 }

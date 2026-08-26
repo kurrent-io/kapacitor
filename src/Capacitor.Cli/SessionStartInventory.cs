@@ -17,13 +17,13 @@ static class SessionStartInventory {
             var inv  = HarnessInventory.EvaluateCurrent(config);
             var json = JsonSerializer.Serialize(inv, CapacitorJsonContext.Default.HarnessInventory);
             body["harness_inventory"] = JsonNode.Parse(json);
+            // The CLI's own OS, feeding the server's live applicability gate. Deliberately no
+            // path/heuristic inference — omitted when unrecognized, and unknown EXCLUDES
+            // platform-restricted facts server-side, which beats a wrong guess admitting them.
+            if (HostPlatform.Normalized is { } platform) body["platform"] = platform;
         } catch {
             // best-effort metadata — never break a hook
         }
-        // The CLI's own OS, feeding the server's live applicability gate. Deliberately no
-        // path/heuristic inference — omitted when unrecognized, and unknown EXCLUDES
-        // platform-restricted facts server-side, which beats a wrong guess admitting them.
-        if (HostPlatform.Normalized is { } platform) body["platform"] = platform;
     }
 }
 

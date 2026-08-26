@@ -80,6 +80,12 @@ public static class SkillsSyncPlanner {
         return sb.ToString();
     }
 
+    /// <summary>A slug usable as a single path segment: lowercase alphanumerics and dashes only —
+    /// exactly the server's slug alphabet. Anything else (separators, dots, empty) is refused
+    /// before it can reach a filesystem operation.</summary>
+    public static bool IsSafeSlug(string slug) =>
+        slug.Length is > 0 and <= 100 && slug.All(c => char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c == '-');
+
     static string YamlQuote(string value) {
         var sb = new StringBuilder(value.Length + 2).Append('"');
         foreach (var c in value)
