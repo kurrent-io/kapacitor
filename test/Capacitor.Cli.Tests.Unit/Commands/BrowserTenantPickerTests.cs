@@ -68,9 +68,9 @@ public class BrowserTenantPickerTests {
         public void Drain() { }
     }
 
-    sealed class StubLauncher : IBrowserLauncher {
+    sealed class StubLauncher(bool opens = true) : IBrowserLauncher {
         public string? Opened { get; private set; }
-        public bool TryOpen(string url) { Opened = url; return true; }
+        public bool TryOpen(string url) { Opened = url; return opens; }
     }
 
     static CliPickerPrepareResponse Ready(DateTimeOffset expires) => new() {
@@ -380,5 +380,22 @@ public class BrowserTenantPickerTests {
 
         await Assert.That(await picker.PickAsync(Two, Context(proxy), CancellationToken.None)).IsNull();
         await Assert.That(proxy.Polls_).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A launcher saying false means no browser handler exists here, so nobody can reach the page.
+    /// Polling on regardless holds the run to the deadline for a choice that cannot be made.
+    /// </summary>
+    [Test]
+    public async Task A_browser_that_cannot_be_launched_falls_back_at_once() {
+        var proxy = new StubProxy { Prepared = Ready(DateTimeOffset.UnixEpoch.AddMinutes(10)) };
+        proxy.Polls.Enqueue(new CliPickerResultResponse { Status = "selected", Key = "org_b" });
+
+        var (picker, _) = Build(proxy, launcher: new StubLauncher(opens: false));
+        var picked = await picker.PickAsync(Two, Context(proxy), CancellationToken.None);
+
+        await Assert.That(picked).IsNull();
+        await Assert.That(proxy.Polls_).IsEqualTo(0);
+        await Assert.That(proxy.Abandons).IsEqualTo(1);
     }
 }

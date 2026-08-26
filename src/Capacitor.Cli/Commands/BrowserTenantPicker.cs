@@ -55,11 +55,17 @@ public sealed class BrowserTenantPicker(
 
         var url = $"{context.ProxyUrl}/cli/v1/picker/{prepared.Handle}";
 
-        // Printed as well as opened: launching cannot confirm a browser appeared, and a user whose
-        // browser never came up should not discover the way out ten minutes later.
+        // A false answer means there is no browser handler on this machine at all, which is worth
+        // acting on: polling would hold the run to the deadline for a page nobody can reach. A true
+        // one is not confirmation anyone saw it, which is why the URL is printed as well as opened.
         Progress.Notice("Pick a workspace in your browser, or press a key to choose here.");
         Progress.Notice(url);
-        launcher.TryOpen(url);
+
+        if (!launcher.TryOpen(url)) {
+            await Abandon(context, prepared);
+
+            return await FallBackAsync(tenants, context, ct);
+        }
 
         var key = await AwaitChoiceAsync(context, prepared, secret, ct);
 
