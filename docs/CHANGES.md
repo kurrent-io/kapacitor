@@ -7,6 +7,36 @@ Not release notes. Each entry is written as of the change that produced it and i
 code moves on; where an entry disagrees with the code, the code wins.
 
 
+## Secret redaction is structural
+
+`SecretRedactor.RedactLine` walks the line token by token and rewrites one JSON value at a time.
+Scanning the serialized line cannot be made safe: `AuthHeaderRegex`'s value class excludes `"` and
+`\` but not `{`, `}`, `[`, `]`, `,` or `:`, so a header-named key carrying an object or a number had
+the match run past the value and swallow the structure after it. The server drops a line it cannot
+parse without saying so, which is what made the damage invisible.
+
+Decoding first keeps a serialized tool result carried as a string in scope, and lets the key
+vocabularies run against a real JSON property name — which no text pattern can see, the key and the
+value being separate tokens. A secret-bearing key arms every leaf beneath it, so
+`{"auth":["b1","b2"]}` redacts both elements and keeps the array. Numbers are exempt whatever the
+key: the keyword vocabulary matches anywhere in a name, so `token_count` and `input_tokens` — read
+as metrics, and present on nearly every model turn — would otherwise be rewritten. The all-digit
+credential is the deliberate price, and a header value arrives as a string. A name that is itself a
+credential is replaced outright and numbered, since two siblings sharing one marker would collide
+into a duplicate key.
+
+Every token goes straight back out through a `Utf8JsonWriter`, so a mangled document is not
+representable. The reader's depth limit is System.Text.Json's own ceiling, which is also the
+writer's: anything the reader accepts the writer can emit, leaving the whole-line pipeline only
+input no reader would take — where re-checking the result would mean re-parsing what just failed to
+parse. A comment is dropped rather than re-emitted, since strict JSON has none; the drop counts as
+a change on its own, or a line whose values are clean would ride the unchanged path still carrying
+it.
+
+A line whose values all survive is handed back as it arrived rather than as the writer re-encoded
+it, so the common case reaches the wire byte for byte. Once anything is redacted that no longer
+holds: the whole line is the writer's, escaping and spacing normalised.
+
 ## The Agents screen's visibility answer reaches the profile
 
 The flow asked who may read future sessions, recorded it on `FirstRunAgentsDecidedEvent`, served it on
