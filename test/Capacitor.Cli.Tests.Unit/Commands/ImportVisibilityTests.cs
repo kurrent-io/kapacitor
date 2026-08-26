@@ -238,6 +238,45 @@ public class ImportVisibilityTests : IDisposable {
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("private");
     }
 
+    [Test]
+    public async Task HandleImport_chain_forcePrivate_privatizes_a_resume_whose_session_end_fails() {
+        // A resume posts no session-start, so the stamp cannot reach it, and an errored one never
+        // joins importedSessionIds — leaving the closing pass as the only route and nothing to put
+        // it on that route.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"last_line_number":2}"""));
+        _server.Given(Request.Create().WithPath("/hooks/transcript").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200));
+        _server.Given(Request.Create().WithPath("/hooks/session-end*").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(500));
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        var projectsDir = Path.Combine(_tempDir, "claude-projects-resume");
+        WriteClaudeSession(projectsDir, "vis-chain-resume-fail");
+
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            filterCwd: null,
+            minLines: 1,
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
+            scope: new ImportScope.All(),
+            skipConfirmation: true,
+            forcePrivate: true,
+            defaultVisibility: "org_public"
+        );
+
+        await Assert.That(exitCode).IsEqualTo(0);
+
+        var privatized = _server.LogEntries
+            .Where(e => e.RequestMessage.Method == "PUT"
+                     && e.RequestMessage.Path == "/api/sessions/vis-chain-resume-fail/visibility")
+            .ToList();
+
+        await Assert.That(privatized.Count).IsGreaterThanOrEqualTo(1);
+        await Assert.That(JsonNode.Parse(privatized[0].RequestMessage.Body!)!["visibility"]?.GetValue<string>())
+            .IsEqualTo("none");
+    }
+
     // =====================================================================
     // Section C — routed sources, direct-logic (ImportSessionAsync + WireMock).
     // =====================================================================

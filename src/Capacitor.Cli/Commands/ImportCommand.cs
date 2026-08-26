@@ -1327,6 +1327,9 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         // deliberately a separate issue, not something this gate covers.
         var privateScopeSessionIds = new ConcurrentBag<string>();
 
+        // The chain phase's counterpart, populated before the import rather than from an outcome.
+        var chainScopeSessionIds = new ConcurrentBag<string>();
+
         // Read-only inside the parallel loops below; resolved from the sources actually in play.
         var replayChildContentVendors = byVendor.Values
             .Where(s => s.AttachesChildContentOnReplay)
@@ -1343,9 +1346,18 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         };
 
         // ImportContext.VisibilityStampFor's rule, for the one path that has no ImportContext. A
-        // stamp and not an omission: an absent default_visibility coalesces to org_public, and a
-        // session that fails mid-stream never reaches SetVisibilityNoneForAll.
+        // stamp and not an omission: an absent default_visibility coalesces to org_public.
         var chainDefaultVisibility = forcePrivate ? "private" : defaultVisibility;
+
+        // The stamp cannot reach a resumed chain session — ImportSingleSessionAsync returns before
+        // posting session-start — and importedSessionIds only gains one on OnSessionEnded, so a
+        // resume whose session-end fails is privatized by nothing at all. Captured up front, as
+        // privateScopeSessionIds is for routed sources, so outcome cannot decide exposure.
+        if (forcePrivate) {
+            foreach (var session in chains.SelectMany(chain => chain)) {
+                chainScopeSessionIds.Add(session.SessionId);
+            }
+        }
 
         if (chains.Count > 0) {
             display.BeginPhase($"Importing {chains.Sum(c => c.Count)} sessions");
@@ -1667,6 +1679,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         if (forcePrivate) {
             var toPrivatize = new HashSet<string>(importedSessionIds, StringComparer.Ordinal);
             toPrivatize.UnionWith(privateScopeSessionIds);
+            toPrivatize.UnionWith(chainScopeSessionIds);
 
             if (toPrivatize.Count > 0) {
                 display.BeginPhase("Marking imported sessions private");

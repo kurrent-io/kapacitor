@@ -79,7 +79,16 @@ Consequences worth naming:
 - **`SetVisibilityNoneForAll` becomes belt-and-braces.** It is not removed: it still corrects
   sessions an older CLI created without a stamp, and it is the only thing that reaches
   `explicit:none` rather than `default:private`. What changes is that privacy no longer *depends* on
-  it.
+  it — except on the one path below.
+- **A resumed chain session is the exception, and needs the pass.** `ImportSingleSessionAsync`
+  returns before posting session-start for a `Partial`, so no stamp can reach it; and
+  `importedSessionIds` only gains a session on `OnSessionEnded`, so a resume whose session-end POST
+  fails (`ImportCommand.cs`'s `resume session-end failed` arm) was privatised by nothing at all.
+  `chainScopeSessionIds` captures every chain session up front under `forcePrivate`, exactly as
+  `privateScopeSessionIds` does for routed sources, so an outcome cannot decide exposure. The tail
+  such a session uploads is still visible until the pass runs — that is irreducible for a session
+  created by an earlier, non-private run, and it is what the README already points at when it says
+  re-running with `--private` is the way to privatise history an earlier import made visible.
 
 ## Tests
 
