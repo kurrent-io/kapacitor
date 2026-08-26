@@ -34,7 +34,8 @@ public static class AgentsSkillsInstaller {
         "review-flows",
         "agent-flows",
         "work-items",
-        "guided-tour"
+        "guided-tour",
+        "suggest-review-flow"
     ];
 
     /// <summary>

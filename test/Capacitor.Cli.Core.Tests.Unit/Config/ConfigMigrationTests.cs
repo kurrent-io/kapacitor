@@ -118,41 +118,24 @@ public class ConfigMigrationTests {
     }
 
     [Test]
-    public async Task PickActiveProfile_returns_resolved_profile_when_present() {
-        var resolved = new Profile { ExcludedPaths = ["/from/resolved"] };
-        var config   = new ProfileConfig {
-            ActiveProfile = "default",
-            Profiles      = new Dictionary<string, Profile> { ["default"] = new() { ExcludedPaths = ["/from/active"] } }
-        };
-
-        var picked = AppConfig.PickActiveProfile(resolved, config);
-
-        await Assert.That(picked).IsSameReferenceAs(resolved);
-    }
-
-    [Test]
-    public async Task PickActiveProfile_falls_back_to_active_when_resolved_is_null() {
-        // URL override case: ResolveServerUrl returns ResolvedProfile.Profile == null,
-        // but `kcap ignore` still writes to ActiveProfile, so the hook must look there.
+    public async Task Active_returns_the_entry_active_profile_names() {
         var activeProfile = new Profile { ExcludedPaths = ["/from/active"] };
         var config        = new ProfileConfig {
             ActiveProfile = "default",
             Profiles      = new Dictionary<string, Profile> { ["default"] = activeProfile }
         };
 
-        var picked = AppConfig.PickActiveProfile(resolvedProfile: null, config);
-
-        await Assert.That(picked).IsSameReferenceAs(activeProfile);
+        await Assert.That(config.Active).IsSameReferenceAs(activeProfile);
     }
 
     [Test]
-    public async Task PickActiveProfile_returns_null_when_active_missing_and_no_resolution() {
+    public async Task Active_is_null_when_active_profile_names_no_entry() {
         var config = new ProfileConfig {
             ActiveProfile = "missing",
             Profiles      = new Dictionary<string, Profile>()
         };
 
-        await Assert.That(AppConfig.PickActiveProfile(null, config)).IsNull();
+        await Assert.That(config.Active).IsNull();
     }
 
     [Test]

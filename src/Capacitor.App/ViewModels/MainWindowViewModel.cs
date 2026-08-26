@@ -111,6 +111,33 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// not something built here.
     public ActivityViewModel Activity { get; }
 
+    /// The Home tab — constructed at the composition root over the SAME
+    /// IDaemonClientService instance this window uses, never a second daemon connection. Null
+    /// only for a caller that doesn't supply one (most existing tests predate Home); HomeView
+    /// tolerates a null DataContext, same as any other unbound view.
+    public HomeViewModel? Home { get; }
+
+    readonly NavigationGate _navigation;
+    readonly Action<Func<Task>> _trackTeardown;
+    readonly Func<string, WorkspaceViewModel>? _workspaceFactory;
+
+    WorkspaceViewModel? _currentWorkspace;
+    /// null = the tabbed shell has the window; non-null = that session's workspace does. Exactly
+    /// one workspace at a time, and this VM owns it: every swap starts the outgoing one's tracked
+    /// teardown (spec §3).
+    public WorkspaceViewModel? CurrentWorkspace {
+        get => _currentWorkspace;
+        private set => this.RaiseAndSetIfChanged(ref _currentWorkspace, value);
+    }
+
+    /// The launch auto-open's staleness token — see NavigationGate. Read from the SHARED gate, not
+    /// a per-window counter, so a window built after shutdown began sees the latch too.
+    public int NavigationGeneration => _navigation.Generation;
+
+    /// Bound to WorkspaceView's Back button (the VM injects it into every workspace it builds), and
+    /// the same command the coordinator's close paths route through.
+    public ReactiveCommand<Unit, Unit> CloseWorkspaceCommand { get; }
+
     ObservableAsPropertyHelper<bool>? _gridEnabled;
     public bool GridEnabled => _gridEnabled?.Value ?? false;
 
@@ -156,14 +183,37 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// cleared by the identical Connected-transition rule below. Null (most existing tests, and
     /// any caller without a live lifecycle controller) means this lane never receives anything.
     /// </param>
+    /// <param name="navigation">
+    /// The composition root's app-lifetime NavigationGate (spec §3). Null builds a private one, so
+    /// a caller with no navigation of its own (most existing tests) still gets a working VM — but
+    /// only a SHARED gate makes the shutdown latch reach a window built after shutdown began.
+    /// </param>
+    /// <param name="trackWorkspaceTeardown">
+    /// WorkspaceTeardownTracker.Track, as a delegate: this VM only ever registers a teardown, never
+    /// drains, and the delegate keeps the drain (a composition-root concern) off its surface. Null
+    /// falls back to running the teardown untracked — never to skipping it, or a swap would strand
+    /// a live attach.
+    /// </param>
+    /// <param name="workspaceFactory">
+    /// Builds the workspace for an agent id (the production one wires the daemon socket's attach
+    /// client and the xterm surface). Null means this window cannot navigate to a workspace at all
+    /// — every existing caller that predates workspaces stays on the tabbed shell.
+    /// </param>
     public MainWindowViewModel(
             IDaemonClientService service, AgentActionService actions, ITicker ticker,
             CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
-            IObservable<string?>? lifecycleStatus = null, TimeProvider? time = null) {
+            IObservable<string?>? lifecycleStatus = null, TimeProvider? time = null, HomeViewModel? home = null,
+            NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
+            Func<string, WorkspaceViewModel>? workspaceFactory = null) {
         _service = service;
         _time = time ?? TimeProvider.System;
         Agents = new ReadOnlyObservableCollection<AgentRowViewModel>(_agentsSource);
         Activity = activity;
+        Home = home;
+        _navigation = navigation ?? new NavigationGate();
+        _trackTeardown = trackWorkspaceTeardown ?? RunUntracked;
+        _workspaceFactory = workspaceFactory;
+        CloseWorkspaceCommand = ReactiveCommand.Create(CloseWorkspace);
 
         // ReactiveCommand's own CanExecute observable already ANDs the supplied canExecute with
         // "not currently executing" (confirmed against the installed ReactiveUI 23.2.28 API
@@ -299,6 +349,62 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
                 .Subscribe()
                 .DisposeWith(disposables);
         });
+    }
+
+    /// Card click and Back's counterpart: swaps the window to this session's workspace, starting the
+    /// tracked teardown of whatever it replaces. Refused once shutdown has latched — a new workspace
+    /// is a new attach, and quiesce/disposal is already running (spec §3).
+    public void OpenSession(string agentId) {
+        if (_navigation.ShutdownLatched || _workspaceFactory is null) return;
+
+        var workspace = _workspaceFactory(agentId);
+        workspace.BackCommand = CloseWorkspaceCommand;
+        SwapTo(workspace);
+    }
+
+    /// The launch auto-open. `generation` is what the launch captured BEFORE its call: a success
+    /// arriving after any navigation (Back, another session, close-to-hide, the shutdown latch)
+    /// opens nothing, rather than attaching an invisible terminal or replacing what the user opened
+    /// while the launch was in flight.
+    public void OpenSessionIfCurrent(string agentId, int generation) {
+        if (generation != _navigation.Generation) return;
+        OpenSession(agentId);
+    }
+
+    /// Back, and the coordinator's close paths. Bumps unconditionally — a close-to-hide with no
+    /// workspace open must still retire an in-flight launch's captured generation.
+    public void CloseWorkspace() => SwapTo(null);
+
+    /// The first shutdown pass, synchronously: unhook the live workspace and register its teardown
+    /// BEFORE the drain seals the tracker, then latch the gate so no later window can open another
+    /// one. A workspace that never went through Back or close-to-hide would otherwise register its
+    /// teardown after the drain, against already-disposed dependencies (spec §3).
+    public void LatchShutdown() {
+        var live = CurrentWorkspace;
+        CurrentWorkspace = null;
+        _navigation.Latch();
+        if (live is not null) _trackTeardown(live.TeardownAsync);
+    }
+
+    void SwapTo(WorkspaceViewModel? next) {
+        var outgoing = CurrentWorkspace;
+        CurrentWorkspace = next;
+        _navigation.Bump();
+        if (outgoing is not null) _trackTeardown(outgoing.TeardownAsync);
+    }
+
+    // A VM built without a tracker (a test, or any caller predating workspaces) must still not
+    // strand a live attach: run the teardown and observe its fault exactly like the tracker's own
+    // wrapper does. The teardown is bounded by TerminalTabViewModel's own budget, so this cannot
+    // run away.
+    static void RunUntracked(Func<Task> teardown) {
+        try {
+            _ = teardown().ContinueWith(
+                t => Console.Error.WriteLine($"kcap app: untracked workspace teardown failed: {t.Exception}"),
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap app: untracked workspace teardown failed: {ex}");
+        }
     }
 
     static string? ReasonText(AttachStatus status) => status.State switch {

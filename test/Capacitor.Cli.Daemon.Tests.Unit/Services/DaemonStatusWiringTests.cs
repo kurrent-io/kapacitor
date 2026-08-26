@@ -22,6 +22,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// resolution behavior this test exists to pin.
 /// </summary>
 public class DaemonStatusWiringTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     [Test]
     public async Task ServerConnection_resolved_via_DI_shares_the_one_registered_notifier() {
         var services = new ServiceCollection();
@@ -88,6 +90,7 @@ public class DaemonStatusWiringTests {
         });
         services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton(Config.Root);
         services.AddSingleton<DaemonStatusNotifier>();
         services.AddSingleton<ServerConnection>();
         services.AddSingleton<WorktreeManager>();

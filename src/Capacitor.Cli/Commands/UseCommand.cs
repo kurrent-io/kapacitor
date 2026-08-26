@@ -1,11 +1,12 @@
 using System.Text.Json;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core;
 using RepoConfigJsonContextIndented = Capacitor.Cli.Core.Config.RepoConfigJsonContextIndented;
 
 namespace Capacitor.Cli.Commands;
 
-public static class UseCommand {
-    public static async Task<int> HandleAsync(string[] args) {
+public sealed class UseCommand(ConfigRoot config) {
+    public async Task<int> HandleAsync(string[] args) {
         if (args.Length < 2) {
             await Console.Error.WriteLineAsync("Usage: kcap use <profile-name> [--global] [--save]");
             return 1;
@@ -15,27 +16,25 @@ public static class UseCommand {
         var global = args.Contains("--global");
         var save = args.Contains("--save");
         var repoPath = global ? null : AppConfig.RepoRoot;
-        var configPath = AppConfig.GetConfigPath();
 
-        return await SetProfile(configPath, name, repoPath, global, save, save ? AppConfig.RepoRoot : null);
+        return await SetProfile(name, repoPath, global, save, save ? AppConfig.RepoRoot : null);
     }
 
-    internal static async Task<int> SetProfile(
-        string configPath, string name, string? repoPath,
-        bool global, bool save, string? savePath
+    internal async Task<int> SetProfile(
+        string name, string? repoPath, bool global, bool save, string? savePath
     ) {
-        var config = await LoadConfig(configPath);
+        var stored = await LoadConfig();
 
-        if (!config.Profiles.TryGetValue(name, out var profile)) {
+        if (!stored.Profiles.TryGetValue(name, out var profile)) {
             await Console.Error.WriteLineAsync($"Profile '{name}' not found. Run `kcap profile list` to see available profiles.");
             return 1;
         }
 
         if (global || repoPath is null) {
-            await ConfigMutator.MutateAsync(c => c with { ActiveProfile = name });
+            await ConfigMutator.MutateAsync(config, c => c with { ActiveProfile = name });
             await Console.Out.WriteLineAsync($"Active profile set to '{name}' (global).");
         } else {
-            await ConfigMutator.MutateAsync(c => c with {
+            await ConfigMutator.MutateAsync(config, c => c with {
                 ProfileBindings = new Dictionary<string, string>(c.ProfileBindings) { [repoPath] = name }
             });
             await Console.Out.WriteLineAsync($"Profile '{name}' bound to {repoPath}.");
@@ -55,7 +54,9 @@ public static class UseCommand {
         return 0;
     }
 
-    static async Task<ProfileConfig> LoadConfig(string configPath) {
+    async Task<ProfileConfig> LoadConfig() {
+        var configPath = AppConfig.GetConfigPath(config);
+
         if (!File.Exists(configPath))
             return new() { Profiles = new() { ["default"] = new() } };
 

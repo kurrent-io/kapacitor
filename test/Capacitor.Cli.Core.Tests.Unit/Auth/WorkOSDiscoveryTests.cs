@@ -1,26 +1,22 @@
 using System.Text;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Telemetry;
 using NSubstitute;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 
-// Shares the TokenStoreProfileTests NotInParallel key so the shared KCAP_CONFIG_DIR
-// tokens directory isn't raced by other profile-writing tests.
-[NotInParallel(nameof(TokenStoreProfileTests))]
+// PublishAsync emits SetupFunnel events into CliTelemetry's process-global sink, so this class
+// must not run beside a test asserting on that sink's contents.
+[NotInParallel(nameof(CliTelemetry) + "." + nameof(CliTelemetry.TestSink))]
 public class WorkOSDiscoveryTests {
-    static string TokensDir => PathHelpers.ConfigPath("tokens");
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
     static string JwtWithExp(DateTimeOffset exp) {
         var json = $"{{\"exp\":{exp.ToUnixTimeSeconds()}}}";
         var b64  = Convert.ToBase64String(Encoding.UTF8.GetBytes(json)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
         return $"header.{b64}.signature";
-    }
-
-    [Before(Test)]
-    public void Cleanup() {
-        try { if (Directory.Exists(TokensDir)) Directory.Delete(TokensDir, recursive: true); } catch { }
     }
 
     [Test]
@@ -49,16 +45,17 @@ public class WorkOSDiscoveryTests {
         await Assert.That(flow).IsTypeOf<WorkOSDiscoveryFlow.Ready>();
 
         var result = await WorkOSDiscovery.PublishAsync(
+            Config.Root,
             (WorkOSDiscoveryFlow.Ready)flow, new RecordingAuthProgress(), beforeCommit: null, CancellationToken.None);
 
         await Assert.That(result).IsTypeOf<AuthResult.Committed>();
 
-        var stored = await TokenStore.LoadAsync("eventuous");
+        var stored = await new TokenStore(Config.Root).LoadAsync("eventuous");
         await Assert.That(stored).IsNotNull();
         await Assert.That(stored!.AccessToken).IsEqualTo("acc2");
         await Assert.That(stored.Provider).IsEqualTo(AuthProvider.WorkOS);
 
-        var cfg = await AppConfig.LoadProfileConfig();
+        var cfg = await AppConfig.LoadProfileConfig(Config.Root);
         await Assert.That(cfg.ActiveProfile).IsEqualTo("eventuous");
         await Assert.That(cfg.Profiles["eventuous"].ServerUrl).IsEqualTo("https://eventuous.kcap.ai");
     }
@@ -134,15 +131,16 @@ public class WorkOSDiscoveryTests {
         await Assert.That(flow).IsTypeOf<WorkOSDiscoveryFlow.Ready>();
 
         var result = await WorkOSDiscovery.PublishAsync(
+            Config.Root,
             (WorkOSDiscoveryFlow.Ready)flow, new RecordingAuthProgress(), beforeCommit: null, CancellationToken.None);
 
         await Assert.That(result).IsTypeOf<AuthResult.Committed>();
 
-        var stored = await TokenStore.LoadAsync("acme");
+        var stored = await new TokenStore(Config.Root).LoadAsync("acme");
         await Assert.That(stored).IsNotNull();
         await Assert.That(stored!.AccessToken).IsEqualTo("acc2");
 
-        var cfg = await AppConfig.LoadProfileConfig();
+        var cfg = await AppConfig.LoadProfileConfig(Config.Root);
         await Assert.That(cfg.ActiveProfile).IsEqualTo("acme");
         await Assert.That(cfg.Profiles["acme"].ServerUrl).IsEqualTo("https://acme.kcap.ai");
 
@@ -209,7 +207,7 @@ public class WorkOSDiscoveryTests {
 
         // Nothing WorkOS-shaped happened: no org-switch, no profile, no token.
         await Assert.That(switchCalled).IsFalse();
-        await Assert.That(await TokenStore.LoadAsync("kurrent")).IsNull();
+        await Assert.That(await new TokenStore(Config.Root).LoadAsync("kurrent")).IsNull();
     }
 
     [Test]

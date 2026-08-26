@@ -63,6 +63,66 @@ public class AcpTranscriptForwarderTests {
         await Assert.That(sentSeqsInCallOrder).IsEquivalentTo(new long[] { 0, 1, 2, 3 });
     }
 
+    // ── §2.7 B4: resume/rebind seq initialization ─────────────────────────────────────────────────
+
+    [Test]
+    public async Task Resume_mode_suppresses_SessionStarted_and_numbers_new_events_from_resumeFromSeq_plus_one() {
+        // A parked-reviewer rebind: initialEnvelope null + resumeFromSeq = the canonical AcceptedSeq. The
+        // forwarder must send NO SessionStarted and number round-2's first new event at AcceptedSeq+1.
+        // Pre-fix the forwarder ALWAYS started at seq 0, so seq 6/7 here would be <= AcceptedSeq(5) and the
+        // server would silently dedup (LOSE) them — this assertion is what catches that.
+        const long resumeFromSeq = 5;
+
+        var channel = NewChannel();
+        channel.Writer.TryWrite(NewTextEnvelope("a"));
+        channel.Writer.TryWrite(NewTextEnvelope("b"));
+        channel.Writer.Complete();
+
+        var sent = new List<AcpEventEnvelope>();
+
+        Task<AcpBatchAck> Send(AcpEventEnvelope[] batch, CancellationToken _) {
+            sent.AddRange(batch);
+            return Task.FromResult(new AcpBatchAck(batch[^1].Seq, batch[^1].Seq));
+        }
+
+        var forwarder = new AcpTranscriptForwarder(
+            send: Send, initialEnvelope: null, envelopes: channel.Reader, logger: NullLogger.Instance,
+            initialSendRetryDelay: FastRetryDelay, maxSendRetryDelay: FastRetryDelay, resumeFromSeq: resumeFromSeq);
+
+        await forwarder.RunAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(sent[0].Seq).IsEqualTo(resumeFromSeq + 1);
+        await Assert.That(sent.Select(e => e.Seq)).IsEquivalentTo(new[] { resumeFromSeq + 1, resumeFromSeq + 2 });
+        // No SessionStarted, and nothing at seq 0, is ever sent on a resume.
+        await Assert.That(sent.Any(e => e.Seq == 0)).IsFalse();
+        await Assert.That(sent.Any(e => e.Kind == AcpEventKind.SessionStarted)).IsFalse();
+        await Assert.That(forwarder.IsTerminal).IsFalse();
+        await Assert.That(forwarder.UnackedCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Fresh_mode_still_sends_SessionStarted_at_seq_0_first() {
+        // The discriminating companion: with resumeFromSeq null (default) and a non-null initialEnvelope,
+        // today's behaviour is unchanged — SessionStarted rides seq 0 as the very first thing on the wire.
+        var channel = NewChannel();
+        channel.Writer.TryWrite(NewTextEnvelope("a"));
+        channel.Writer.Complete();
+
+        var sent = new List<AcpEventEnvelope>();
+
+        Task<AcpBatchAck> Send(AcpEventEnvelope[] batch, CancellationToken _) {
+            sent.AddRange(batch);
+            return Task.FromResult(new AcpBatchAck(batch[^1].Seq, batch[^1].Seq));
+        }
+
+        var forwarder = NewForwarder(Send, channel.Reader); // resumeFromSeq null, initialEnvelope non-null
+
+        await forwarder.RunAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(sent[0].Seq).IsEqualTo(0L);
+        await Assert.That(sent[0].Kind).IsEqualTo(AcpEventKind.SessionStarted);
+    }
+
     // ── Unacked buffer ───────────────────────────────────────────────────────────────────────────
 
     [Test]

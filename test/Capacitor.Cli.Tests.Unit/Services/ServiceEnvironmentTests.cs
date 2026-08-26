@@ -3,24 +3,39 @@ using Capacitor.Cli.Services;
 namespace Capacitor.Cli.Tests.Unit.Services;
 
 public class ServiceEnvironmentTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     [Test]
     public async Task Build_pins_profile_and_includes_path() {
         var src = new Dictionary<string, string> {
             ["PATH"]              = "/usr/local/bin:/usr/bin",
-            ["KCAP_CONFIG_DIR"]   = "/home/u/.config/kcap",
             ["IRRELEVANT"]        = "x",
         };
-        var env = ServiceEnvironment.Build(profileName: "work", source: src);
+        var env = ServiceEnvironment.Build(profileName: "work", source: src, config: Config.Root);
         await Assert.That(env["PATH"]).IsEqualTo("/usr/local/bin:/usr/bin");
         await Assert.That(env["KCAP_PROFILE"]).IsEqualTo("work");
-        await Assert.That(env["KCAP_CONFIG_DIR"]).IsEqualTo("/home/u/.config/kcap");
         await Assert.That(env.ContainsKey("IRRELEVANT")).IsFalse();
+    }
+
+    /// <summary>The root comes from the installer's context, not from its environment: a unit
+    /// inherits nothing, so capturing the variable would bake a root only when one happened to be
+    /// exported and leave the supervisor's own HOME to decide otherwise.</summary>
+    [Test]
+    public async Task Build_bakes_the_root_it_was_handed_over_an_exported_one() {
+        var src = new Dictionary<string, string> {
+            ["PATH"]            = "/usr/bin",
+            [Core.ConfigRoot.ConfigDirEnvVar] = "/exported/elsewhere",
+        };
+
+        var env = ServiceEnvironment.Build(profileName: null, source: src, config: Config.Root);
+
+        await Assert.That(env[Core.ConfigRoot.ConfigDirEnvVar]).IsEqualTo(Config.Directory);
     }
 
     [Test]
     public async Task Build_omits_profile_when_null_and_keeps_kcap_url() {
         var src = new Dictionary<string, string> { ["KCAP_URL"] = "https://x" };
-        var env = ServiceEnvironment.Build(profileName: null, source: src);
+        var env = ServiceEnvironment.Build(profileName: null, source: src, config: Config.Root);
         await Assert.That(env.ContainsKey("KCAP_PROFILE")).IsFalse();
         await Assert.That(env["KCAP_URL"]).IsEqualTo("https://x");
     }
@@ -28,7 +43,7 @@ public class ServiceEnvironmentTests {
     [Test]
     public async Task Build_explicit_profile_overrides_source_env() {
         var src = new Dictionary<string, string> { ["KCAP_PROFILE"] = "old" };
-        var env = ServiceEnvironment.Build(profileName: "new", source: src);
+        var env = ServiceEnvironment.Build(profileName: "new", source: src, config: Config.Root);
         await Assert.That(env["KCAP_PROFILE"]).IsEqualTo("new");
     }
 
@@ -48,7 +63,7 @@ public class ServiceEnvironmentTests {
             ["GITHUB_TOKEN"]           = "secret-c",
         };
 
-        var env = ServiceEnvironment.Build(profileName: null, source: src, isWindows: false);
+        var env = ServiceEnvironment.Build(profileName: null, source: src, config: Config.Root, isWindows: false);
 
         await Assert.That(env["KCAP_COPILOT_TOKEN_CMD"]).IsEqualTo("gh auth token");
         foreach (var secret in new[] { "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN" })
@@ -70,7 +85,7 @@ public class ServiceEnvironmentTests {
             ["PATH"]                   = "C:\\bin",
         };
 
-        var env = ServiceEnvironment.Build(profileName: null, source: src, isWindows: true);
+        var env = ServiceEnvironment.Build(profileName: null, source: src, config: Config.Root, isWindows: true);
 
         await Assert.That(env.ContainsKey("KCAP_COPILOT_TOKEN_CMD")).IsFalse();
         await Assert.That(env["PATH"]).IsEqualTo("C:\\bin");
@@ -97,7 +112,7 @@ public class ServiceEnvironmentTests {
 
     [Test]
     public async Task Build_captures_the_google_configuration_off_windows() {
-        var env = ServiceEnvironment.Build(profileName: null, source: GoogleSource(), isWindows: false);
+        var env = ServiceEnvironment.Build(profileName: null, source: GoogleSource(), config: Config.Root, isWindows: false);
 
         foreach (var k in new[] { "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_PROJECT_ID", "GOOGLE_CLOUD_LOCATION",
                                   "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_GENAI_USE_GCA",
@@ -112,7 +127,7 @@ public class ServiceEnvironmentTests {
     [Arguments(false)]
     [Arguments(true)]
     public async Task Build_never_captures_the_google_secrets(bool isWindows) {
-        var env = ServiceEnvironment.Build(profileName: null, source: GoogleSource(), isWindows: isWindows);
+        var env = ServiceEnvironment.Build(profileName: null, source: GoogleSource(), config: Config.Root, isWindows: isWindows);
 
         foreach (var k in ServiceEnvironment.NeverCapturedKeys)
             await Assert.That(env.ContainsKey(k)).IsFalse();
@@ -130,7 +145,7 @@ public class ServiceEnvironmentTests {
     /// </summary>
     [Test]
     public async Task Build_excludes_the_secret_capable_google_values_on_windows() {
-        var env = ServiceEnvironment.Build(profileName: null, source: GoogleSource(), isWindows: true);
+        var env = ServiceEnvironment.Build(profileName: null, source: GoogleSource(), config: Config.Root, isWindows: true);
 
         await Assert.That(env.ContainsKey("GOOGLE_APPLICATION_CREDENTIALS")).IsFalse();
         await Assert.That(env.ContainsKey("GOOGLE_GEMINI_BASE_URL")).IsFalse();
@@ -152,6 +167,7 @@ public class ServiceEnvironmentTests {
         var env = ServiceEnvironment.Build(
             profileName: null,
             source: new Dictionary<string, string> { ["PATH"] = "/usr/bin", ["KCAP_CONSENT_SEED_DEFAULT"] = "" },
+            config: Config.Root,
             isWindows: false);
 
         await Assert.That(env.ContainsKey("KCAP_CONSENT_SEED_DEFAULT")).IsTrue();
@@ -163,6 +179,7 @@ public class ServiceEnvironmentTests {
         var env = ServiceEnvironment.Build(
             profileName: null,
             source: new Dictionary<string, string> { ["PATH"] = "/usr/bin", ["KCAP_EXPECT_SERVER_URL"] = "" },
+            config: Config.Root,
             isWindows: false);
 
         await Assert.That(env.ContainsKey("KCAP_EXPECT_SERVER_URL")).IsTrue();
@@ -174,6 +191,7 @@ public class ServiceEnvironmentTests {
         var env = ServiceEnvironment.Build(
             profileName: null,
             source: new Dictionary<string, string> { ["PATH"] = "/usr/bin" },
+            config: Config.Root,
             isWindows: false);
 
         await Assert.That(env.ContainsKey("KCAP_CONSENT_SEED_DEFAULT")).IsFalse();
@@ -185,6 +203,7 @@ public class ServiceEnvironmentTests {
         var env = ServiceEnvironment.Build(
             profileName: null,
             source: new Dictionary<string, string> { ["PATH"] = "/usr/bin", ["GOOGLE_CLOUD_PROJECT"] = "" },
+            config: Config.Root,
             isWindows: false);
 
         await Assert.That(env.ContainsKey("GOOGLE_CLOUD_PROJECT")).IsFalse();
@@ -208,7 +227,7 @@ public class ServiceEnvironmentTests {
     [Arguments(false)]
     [Arguments(true)]
     public async Task Build_carries_every_reviewer_consent_flag_on_every_platform(bool isWindows) {
-        var env = ServiceEnvironment.Build(profileName: null, source: ConsentSource(), isWindows: isWindows);
+        var env = ServiceEnvironment.Build(profileName: null, source: ConsentSource(), config: Config.Root, isWindows: isWindows);
 
         await Assert.That(env["KCAP_GEMINI_UNATTENDED_REVIEWER"]).IsEqualTo("1")
             .Because("a supervised daemon inherits nothing from the installing shell");
@@ -226,6 +245,7 @@ public class ServiceEnvironmentTests {
         var env = ServiceEnvironment.Build(
             profileName: null,
             source: new Dictionary<string, string> { ["PATH"] = "/usr/bin" },
+            config: Config.Root,
             isWindows: false);
 
         foreach (var key in ServiceEnvironment.ReviewerConsentKeys)
@@ -251,7 +271,7 @@ public class ServiceEnvironmentTests {
         var source = new Dictionary<string, string> { ["PATH"] = "/usr/bin" };
         foreach (var key in ServiceEnvironment.ReviewerConsentKeys) source[key] = "0";
 
-        var env = ServiceEnvironment.Build(profileName: null, source: source, isWindows: isWindows);
+        var env = ServiceEnvironment.Build(profileName: null, source: source, config: Config.Root, isWindows: isWindows);
 
         await Assert.That(ServiceEnvironment.ReviewerConsentKeys).IsNotEmpty()
             .Because("an empty registry would make every assertion below vacuously true");
@@ -264,7 +284,7 @@ public class ServiceEnvironmentTests {
 
     [Test]
     public async Task CarriedConsentFlags_names_what_the_unit_actually_got() {
-        var env = ServiceEnvironment.Build(profileName: null, source: ConsentSource(), isWindows: false);
+        var env = ServiceEnvironment.Build(profileName: null, source: ConsentSource(), config: Config.Root, isWindows: false);
 
         await Assert.That(ServiceEnvironment.CarriedConsentFlags(env))
             .IsEquivalentTo(new[] {
@@ -283,6 +303,7 @@ public class ServiceEnvironmentTests {
             source: new Dictionary<string, string> {
                 ["PATH"] = "/usr/bin", ["KCAP_GEMINI_UNATTENDED_REVIEWER"] = "",
             },
+            config: Config.Root,
             isWindows: false);
 
         await Assert.That(ServiceEnvironment.CarriedConsentFlags(env)).IsEmpty();
@@ -294,7 +315,7 @@ public class ServiceEnvironmentTests {
             ["PATH"]                  = "/usr/bin",
             ["AGY_ADC_AUTH"]          = "1",
             ["GOOGLE_CLOUD_PROJECT"]  = "proj"
-        });
+        }, Config.Root);
 
         // AGY_ADC_AUTH is a boolean switch, not a credential, so it belongs in the
         // always-carried config list beside GOOGLE_GENAI_USE_VERTEXAI — not in the
@@ -306,7 +327,7 @@ public class ServiceEnvironmentTests {
     public async Task Agy_adc_auth_is_carried_on_windows_too() {
         var env = ServiceEnvironment.Build("prof",
             new Dictionary<string, string> { ["PATH"] = "/usr/bin", ["AGY_ADC_AUTH"] = "1" },
-            isWindows: true);
+            Config.Root, isWindows: true);
 
         await Assert.That(env["AGY_ADC_AUTH"]).IsEqualTo("1");
     }

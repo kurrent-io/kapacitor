@@ -10,6 +10,7 @@ using Capacitor.App.Views;
 using Capacitor.Cli.Core.LocalIpc;
 using TUnit.Assertions.Enums;
 using AppUnderTest = Capacitor.App.App;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -27,6 +28,7 @@ namespace Capacitor.App.Tests.Unit;
 /// continuation extracted out of StartAsync — this test proves THAT method actually leaves the
 /// window visible, against a fake service, without needing a real desktop lifetime or daemon.
 public class AppStartupTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
     [Test]
@@ -35,7 +37,7 @@ public class AppStartupTests {
         var isVisible = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, notifier) = NewActions(service);
-            var window = AppUnderTest.BuildAndShowMainWindow(service, actions, notifier, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var window = AppUnderTest.BuildAndShowMainWindow(service, Config.Root, actions, notifier, new FakeTicker(), CancellationToken.None, TestActivity.New());
             Dispatcher.UIThread.RunJobs(); // flush the deferred Loaded post (diagnostic parity with the smoke test)
 
             var visible = window.IsVisible;

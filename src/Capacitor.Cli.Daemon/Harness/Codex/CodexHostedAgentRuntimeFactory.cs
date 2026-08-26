@@ -70,8 +70,17 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
     /// under an app-server selection — because interactive hosting is a later phase.</summary>
     internal bool UsesAppServer(RuntimeStartContext ctx) => _config.CodexAppServerActive && ctx.IsReviewFlow;
 
-    public Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) =>
-        UsesAppServer(ctx) ? StartAppServerAsync(ctx, ct) : _pty.StartAsync(ctx, ct);
+    public Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {
+        // §2.7 B4: resume is app-server-only (thread/resume). A resume request routed to the PTY path can't
+        // be honored and would silently start a FRESH session — forking the transcript, breaking the
+        // never-silently-fork invariant — so fail the launch instead. (Server-side, resume must also be
+        // capability-gated to app-server-capable daemons before B6 activates parking.)
+        if (ctx.ResumeSessionId is not null && !UsesAppServer(ctx))
+            throw new InvalidOperationException(
+                "codex: a resume (ResumeSessionId set) requires the app-server route; refusing to start a fresh PTY session.");
+
+        return UsesAppServer(ctx) ? StartAppServerAsync(ctx, ct) : _pty.StartAsync(ctx, ct);
+    }
 
     async Task<HostedRuntimeStart> StartAppServerAsync(RuntimeStartContext ctx, CancellationToken ct) {
         var launcherCtx = BuildLauncherContext(ctx);
@@ -98,7 +107,11 @@ internal sealed class CodexHostedAgentRuntimeFactory : IHostedAgentRuntimeFactor
             Sandbox:       sandbox,
             Approval:      approval,
             WritableRoots: [ctx.Worktree.Path],
-            ClientVersion: string.IsNullOrEmpty(_config.Version) ? "0.0.0" : _config.Version);
+            ClientVersion: string.IsNullOrEmpty(_config.Version) ? "0.0.0" : _config.Version,
+            // Non-null only for a parked reviewer relaunch: the runtime reopens this thread via
+            // thread/resume instead of thread/start (and the orchestrator suppresses the second
+            // SessionStarted, since the resumed thread keeps its canonical id).
+            ResumeSessionId: ctx.ResumeSessionId);
 
         CodexAppServerSpawn spawn = (seed, spawnCt) =>
             _spawnFactory(_launcher.CliPath, appServerArgs, seed, ctx.Worktree.Path, env, _config, _loggerFactory);

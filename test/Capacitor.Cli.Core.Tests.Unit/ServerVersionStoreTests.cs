@@ -2,90 +2,91 @@ namespace Capacitor.Cli.Core.Tests.Unit;
 
 /// <summary>
 /// Round-trip + normalization coverage for <see cref="ServerVersionStore"/>, the durable per-server
-/// cache of the <c>X-Kcap-Server-Version</c> header. Writes into the assembly-wide shared config dir
-/// (set by the module initializer); every test uses a UNIQUE server URL so the per-URL hashed files
-/// never collide with a sibling test.
+/// cache of the <c>X-Kcap-Server-Version</c> header. Each test writes into its own root, so the
+/// hashed per-URL files are private to it.
 /// </summary>
 public class ServerVersionStoreTests {
-    // A distinct URL per test/case so the hashed filename (and the in-process dedup) can't collide.
-    static string UniqueUrl(string tag) => $"https://{tag}-{Guid.NewGuid():N}.example.com";
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    static string Host(string tag) => $"{tag}.example.com";
+    static string Url(string tag)  => $"https://{Host(tag)}";
 
     [Test]
     public async Task SetThenGet_RoundTrips() {
-        var url = UniqueUrl("roundtrip");
-        ServerVersionStore.Set(url, "0.11.15");
+        var url = Url("roundtrip");
+        ServerVersionStore.Set(url, "0.11.15", Config.Root);
 
-        await Assert.That(ServerVersionStore.Get(url)).IsEqualTo("0.11.15");
+        await Assert.That(ServerVersionStore.Get(url, Config.Root)).IsEqualTo("0.11.15");
     }
 
     [Test]
     public async Task Get_UnknownServer_ReturnsNull() {
-        await Assert.That(ServerVersionStore.Get(UniqueUrl("unknown"))).IsNull();
+        await Assert.That(ServerVersionStore.Get(Url("unknown"), Config.Root)).IsNull();
     }
 
     [Test]
     public async Task Get_BlankUrl_ReturnsNull() {
-        await Assert.That(ServerVersionStore.Get(null)).IsNull();
-        await Assert.That(ServerVersionStore.Get("   ")).IsNull();
+        await Assert.That(ServerVersionStore.Get(null, Config.Root)).IsNull();
+        await Assert.That(ServerVersionStore.Get("   ", Config.Root)).IsNull();
     }
 
     [Test]
     public async Task Set_NormalizesTrailingSlashAndCase() {
-        var host = $"cap-{Guid.NewGuid():N}.example.com";
-        ServerVersionStore.Set($"https://{host}/", "0.11.15");
+        var host = Host("normalize");
+        ServerVersionStore.Set($"https://{host}/", "0.11.15", Config.Root);
 
         // A different-cased, slash-free spelling of the same server resolves the same entry.
-        await Assert.That(ServerVersionStore.Get($"HTTPS://{host.ToUpperInvariant()}")).IsEqualTo("0.11.15");
+        await Assert.That(ServerVersionStore.Get($"HTTPS://{host.ToUpperInvariant()}", Config.Root)).IsEqualTo("0.11.15");
     }
 
     [Test]
     public async Task Set_BlankVersionOrUrl_IsNoOp() {
-        var url = UniqueUrl("blank");
-        ServerVersionStore.Set(url, "");
-        ServerVersionStore.Set(url, null);
-        ServerVersionStore.Set(null, "0.11.15");
-        ServerVersionStore.Set("  ", "0.11.15");
+        var url = Url("blank");
+        ServerVersionStore.Set(url, "", Config.Root);
+        ServerVersionStore.Set(url, null, Config.Root);
+        ServerVersionStore.Set(null, "0.11.15", Config.Root);
+        ServerVersionStore.Set("  ", "0.11.15", Config.Root);
 
-        await Assert.That(ServerVersionStore.Get(url)).IsNull();
+        await Assert.That(ServerVersionStore.Get(url, Config.Root)).IsNull();
     }
 
     [Test]
     public async Task Set_DefaultPort_ConvergesWithImplicit() {
         // https://host and https://host:443 are the same server — one cache entry, not two.
-        var host = $"cap-{Guid.NewGuid():N}.example.com";
-        ServerVersionStore.Set($"https://{host}", "0.11.15");
+        var host = Host("default-port");
+        ServerVersionStore.Set($"https://{host}", "0.11.15", Config.Root);
 
-        await Assert.That(ServerVersionStore.Get($"https://{host}:443")).IsEqualTo("0.11.15");
+        await Assert.That(ServerVersionStore.Get($"https://{host}:443", Config.Root)).IsEqualTo("0.11.15");
     }
 
     [Test]
     public async Task Set_PathCase_IsSignificant() {
         // Path-routed deployments are DISTINCT servers; path casing must not be flattened, or one tenant
         // would be capped against another's server version.
-        var host = $"cap-{Guid.NewGuid():N}.example.com";
-        ServerVersionStore.Set($"https://{host}/TenantA", "0.11.15");
+        var host = Host("path-case");
+        ServerVersionStore.Set($"https://{host}/TenantA", "0.11.15", Config.Root);
 
-        await Assert.That(ServerVersionStore.Get($"https://{host}/tenanta")).IsNull();
-        await Assert.That(ServerVersionStore.Get($"https://{host}/TenantA")).IsEqualTo("0.11.15");
+        await Assert.That(ServerVersionStore.Get($"https://{host}/tenanta", Config.Root)).IsNull();
+        await Assert.That(ServerVersionStore.Get($"https://{host}/TenantA", Config.Root)).IsEqualTo("0.11.15");
     }
 
     [Test]
     public async Task Set_DistinctServers_AreIndependent() {
-        var a = UniqueUrl("srv-a");
-        var b = UniqueUrl("srv-b");
-        ServerVersionStore.Set(a, "0.11.15");
-        ServerVersionStore.Set(b, "0.12.0");
+        var a = Url("srv-a");
+        var b = Url("srv-b");
+        ServerVersionStore.Set(a, "0.11.15", Config.Root);
+        ServerVersionStore.Set(b, "0.12.0", Config.Root);
 
-        await Assert.That(ServerVersionStore.Get(a)).IsEqualTo("0.11.15");
-        await Assert.That(ServerVersionStore.Get(b)).IsEqualTo("0.12.0");
+        await Assert.That(ServerVersionStore.Get(a, Config.Root)).IsEqualTo("0.11.15");
+        await Assert.That(ServerVersionStore.Get(b, Config.Root)).IsEqualTo("0.12.0");
     }
 
     [Test]
     public async Task Set_OverwritesWithNewerObservation() {
-        var url = UniqueUrl("overwrite");
-        ServerVersionStore.Set(url, "0.11.15");
-        ServerVersionStore.Set(url, "0.12.0"); // a later deploy bumped the server
+        var url = Url("overwrite");
+        ServerVersionStore.Set(url, "0.11.15", Config.Root);
+        ServerVersionStore.Set(url, "0.12.0", Config.Root); // a later deploy bumped the server
 
-        await Assert.That(ServerVersionStore.Get(url)).IsEqualTo("0.12.0");
+        await Assert.That(ServerVersionStore.Get(url, Config.Root)).IsEqualTo("0.12.0");
     }
 }

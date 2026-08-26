@@ -1,7 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.Core;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -23,23 +22,11 @@ namespace Capacitor.Cli.Tests.Integration;
 /// host — the unguarded auth discovery in the lifecycle poster, tracked separately.</para>
 /// </summary>
 public class CodexSessionStartHandshakeOnPostFailureTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server         = WireMockServer.Start();
-    readonly string         _configPath     = PathHelpers.ConfigPath("config.json");
-    readonly string?        _previousConfig;
 
-    public CodexSessionStartHandshakeOnPostFailureTests() {
-        _previousConfig = File.Exists(_configPath) ? File.ReadAllText(_configPath) : null;
-    }
-
-    public void Dispose() {
-        _server.Stop();
-
-        if (_previousConfig is null) {
-            if (File.Exists(_configPath)) File.Delete(_configPath);
-        } else {
-            File.WriteAllText(_configPath, _previousConfig);
-        }
-    }
+    public void Dispose() => _server.Stop();
 
     [Test, NotInParallel]
     public async Task A_rejected_lifecycle_post_still_satisfies_the_blocking_stdout_handshake() {
@@ -47,7 +34,7 @@ public class CodexSessionStartHandshakeOnPostFailureTests : IDisposable {
             ActiveProfile = "work",
             Profiles      = new() { ["work"] = new Profile { ServerUrl = _server.Url } }
         };
-        await ConfigMutator.MutateAsync(_ => config);
+        await ConfigMutator.MutateAsync(Config.Root, _ => config);
 
         // A permanent rejection: PostOrSpoolAsync returns Failed for a genuine non-2xx (transport and
         // auth failures spool instead), which is exactly the case that used to skip the handshake.
@@ -67,7 +54,7 @@ public class CodexSessionStartHandshakeOnPostFailureTests : IDisposable {
 
         using var capture = ConsoleOutput.StartCapture();
 
-        var exit = await CodexHookCommand.Handle(_server.Url!, new StringReader(payload));
+        var exit = await new CodexHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(payload));
 
         // The rejection is still reported — this is not "pretend it worked".
         await Assert.That(exit).IsEqualTo(1);

@@ -3,7 +3,7 @@ using Capacitor.Cli.Core;
 namespace Capacitor.Cli.SessionStartMemory;
 
 internal static class SessionStartMemoryStorePaths {
-    public static string DefaultRoot => PathHelpers.ConfigPath(Path.Combine("cache", "session-start-memory-v1"));
+    public static string DefaultRoot(ConfigRoot config) => config.Path("cache", "session-start-memory-v1");
 
     public static string ValidateRoot(string root) {
         var full = Path.GetFullPath(root);

@@ -31,6 +31,11 @@ public class LoopbackBrowserTests {
         public bool Accept(string query)     => throw new InvalidOperationException("boom");
     }
 
+    /// <summary>A launcher whose TryOpen throws, to prove the failure propagates and frees the port.</summary>
+    sealed class ThrowingBrowser : IBrowserLauncher {
+        public bool TryOpen(string url) => throw new InvalidOperationException("boom");
+    }
+
     static bool IsPortFree(int port) {
         try {
             var probe = new HttpListener();
@@ -88,7 +93,7 @@ public class LoopbackBrowserTests {
     public async Task A_callback_without_the_authorize_state_is_not_told_the_key(string callback) {
         var (port, redirect) = Loopback();
         var join = new RecordingJoin("https://example.test/api/cli/return?j=deadbeef&p=1");
-        using var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
+        using var browser = new LoopbackBrowser(new RecordingBrowser(), join: join) {
             DrainCap = TimeSpan.FromSeconds(30), DisposeWait = TimeSpan.FromMilliseconds(200),
         };
 
@@ -109,7 +114,7 @@ public class LoopbackBrowserTests {
     public async Task A_callback_echoing_the_authorize_state_still_gets_the_redirect() {
         var (port, redirect) = Loopback();
         var join = new RecordingJoin($"https://example.test/api/cli/return?j=deadbeef&p={port}");
-        using var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
+        using var browser = new LoopbackBrowser(new RecordingBrowser(), join: join) {
             DrainCap = TimeSpan.FromMilliseconds(400), DisposeWait = TimeSpan.FromMilliseconds(400),
         };
 
@@ -130,7 +135,7 @@ public class LoopbackBrowserTests {
     public async Task An_authorize_url_with_no_state_never_emits_a_redirect() {
         var (port, redirect) = Loopback();
         var join = new RecordingJoin("https://example.test/api/cli/return?j=deadbeef&p=1");
-        using var browser = new LoopbackBrowser(openBrowser: _ => true, join: join);
+        using var browser = new LoopbackBrowser(new RecordingBrowser(), join: join);
 
         var invoke = browser.InvokeAsync(new BrowserOptions("http://example.test/authorize", redirect));
 
@@ -145,7 +150,7 @@ public class LoopbackBrowserTests {
     [Test]
     public async Task Returns_success_with_raw_query_on_callback() {
         var (port, redirect) = Loopback();
-        using var browser = new LoopbackBrowser(openBrowser: _ => true); // don't launch a real browser
+        using var browser = new LoopbackBrowser(new RecordingBrowser()); // don't launch a real browser
 
         var invoke = browser.InvokeAsync(Options(redirect));
 
@@ -163,7 +168,7 @@ public class LoopbackBrowserTests {
     [Test]
     public async Task Returns_timeout_when_no_callback_arrives() {
         var (port, redirect) = Loopback();
-        using var browser = new LoopbackBrowser(openBrowser: _ => true);
+        using var browser = new LoopbackBrowser(new RecordingBrowser());
 
         var result = await browser.InvokeAsync(Options(redirect, TimeSpan.FromMilliseconds(200)));
 
@@ -177,7 +182,7 @@ public class LoopbackBrowserTests {
     [Test]
     public async Task Callback_response_carries_the_hygiene_headers() {
         var (_, redirect) = Loopback();
-        using var browser = new LoopbackBrowser(openBrowser: _ => true);
+        using var browser = new LoopbackBrowser(new RecordingBrowser());
 
         var invoke = browser.InvokeAsync(Options(redirect));
 
@@ -193,7 +198,7 @@ public class LoopbackBrowserTests {
     public async Task Success_emits_the_redirect_and_the_success_text() {
         var (port, redirect) = Loopback();
         var join = new RecordingJoin($"https://example.test/api/cli/return?j=deadbeef&p={port}");
-        using var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
+        using var browser = new LoopbackBrowser(new RecordingBrowser(), join: join) {
             DrainCap = TimeSpan.FromMilliseconds(400), DisposeWait = TimeSpan.FromMilliseconds(400),
         };
 
@@ -213,7 +218,7 @@ public class LoopbackBrowserTests {
     public async Task Joined_arrival_reaches_Accept_and_frees_the_port() {
         var (port, redirect) = Loopback();
         var join = new RecordingJoin("https://example.test/api/cli/return?j=k&p=1");
-        var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
+        var browser = new LoopbackBrowser(new RecordingBrowser(), join: join) {
             DrainCap = TimeSpan.FromSeconds(5), DisposeWait = TimeSpan.FromSeconds(5),
         };
 
@@ -239,7 +244,7 @@ public class LoopbackBrowserTests {
     public async Task Drain_gives_up_at_its_cap_when_joined_never_arrives() {
         var (port, redirect) = Loopback();
         var join = new RecordingJoin("https://example.test/api/cli/return?j=k&p=1");
-        using var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
+        using var browser = new LoopbackBrowser(new RecordingBrowser(), join: join) {
             DrainCap = TimeSpan.FromMilliseconds(300), DisposeWait = TimeSpan.FromMilliseconds(300),
         };
 
@@ -259,7 +264,7 @@ public class LoopbackBrowserTests {
     public async Task Dispose_reclaims_the_listener_at_its_wait_when_the_drain_is_still_pending() {
         var (port, redirect) = Loopback();
         var join = new RecordingJoin("https://example.test/api/cli/return?j=k&p=1");
-        var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
+        var browser = new LoopbackBrowser(new RecordingBrowser(), join: join) {
             DrainCap = TimeSpan.FromSeconds(30), DisposeWait = TimeSpan.FromMilliseconds(200),
         };
 
@@ -277,7 +282,7 @@ public class LoopbackBrowserTests {
     public async Task An_auth_error_callback_emits_no_redirect_and_arms_no_drain() {
         var (port, redirect) = Loopback();
         var join = new RecordingJoin("https://example.test/api/cli/return?j=k&p=1");
-        using var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
+        using var browser = new LoopbackBrowser(new RecordingBrowser(), join: join) {
             DrainCap = TimeSpan.FromSeconds(30), DisposeWait = TimeSpan.FromMilliseconds(200),
         };
 
@@ -294,9 +299,9 @@ public class LoopbackBrowserTests {
     }
 
     [Test]
-    public async Task An_openBrowser_that_throws_propagates_and_still_frees_the_port() {
+    public async Task A_launcher_that_throws_propagates_and_still_frees_the_port() {
         var (port, redirect) = Loopback();
-        using var browser = new LoopbackBrowser(openBrowser: _ => throw new InvalidOperationException("boom"));
+        using var browser = new LoopbackBrowser(new ThrowingBrowser());
 
         await Assert.That(async () => await browser.InvokeAsync(Options(redirect)))
             .Throws<InvalidOperationException>();
@@ -308,7 +313,7 @@ public class LoopbackBrowserTests {
     [Test]
     public async Task A_join_that_throws_still_completes_the_callback() {
         var (port, redirect) = Loopback();
-        using var browser = new LoopbackBrowser(openBrowser: _ => true, join: new ThrowingJoin());
+        using var browser = new LoopbackBrowser(new RecordingBrowser(), join: new ThrowingJoin());
 
         var invoke = browser.InvokeAsync(Options(redirect));
 
@@ -325,7 +330,7 @@ public class LoopbackBrowserTests {
     public async Task A_non_joined_request_during_the_drain_gets_404_and_the_drain_keeps_waiting() {
         var (port, redirect) = Loopback();
         var join = new RecordingJoin("https://example.test/api/cli/return?j=k&p=1");
-        using var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
+        using var browser = new LoopbackBrowser(new RecordingBrowser(), join: join) {
             DrainCap = TimeSpan.FromSeconds(10), DisposeWait = TimeSpan.FromSeconds(5),
         };
 
@@ -347,7 +352,7 @@ public class LoopbackBrowserTests {
     [Test]
     public async Task Without_a_join_the_response_body_is_byte_identical_to_today() {
         var (port, redirect) = Loopback();
-        using var browser = new LoopbackBrowser(openBrowser: _ => true);
+        using var browser = new LoopbackBrowser(new RecordingBrowser());
 
         var invoke = browser.InvokeAsync(Options(redirect));
 
@@ -364,7 +369,7 @@ public class LoopbackBrowserTests {
     [Test]
     public async Task Dispose_twice_is_a_no_op() {
         var (port, redirect) = Loopback();
-        var browser = new LoopbackBrowser(openBrowser: _ => true);
+        var browser = new LoopbackBrowser(new RecordingBrowser());
 
         _ = await browser.InvokeAsync(Options(redirect, TimeSpan.FromMilliseconds(100)));
 
@@ -378,7 +383,7 @@ public class LoopbackBrowserTests {
     // construct-then-dispose never got as far as a listener.
     [Test]
     public async Task Dispose_without_invoking_is_a_no_op() {
-        var browser = new LoopbackBrowser(openBrowser: _ => true);
+        var browser = new LoopbackBrowser(new RecordingBrowser());
 
         await Assert.That(browser.Dispose).ThrowsNothing();
     }
@@ -393,7 +398,7 @@ public class LoopbackBrowserTests {
         for (var attempt = 0; attempt < 25; attempt++) {
             var (port, redirect) = Loopback();
             var join = new RecordingJoin("https://example.test/api/cli/return?j=k&p=1");
-            var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
+            var browser = new LoopbackBrowser(new RecordingBrowser(), join: join) {
                 // A cap short enough that the drain is giving up at roughly the moment Dispose
                 // arrives, so the two teardown paths overlap instead of queueing.
                 DrainCap = TimeSpan.FromMilliseconds(60), DisposeWait = TimeSpan.FromMilliseconds(60),
@@ -440,7 +445,7 @@ public class LoopbackBrowserTests {
     public async Task A_joined_request_with_the_wrong_key_does_not_end_the_wait() {
         var (port, redirect) = Loopback();
         var join = new KeyedJoin("https://example.test/api/cli/return?j=real&p=1", "real");
-        using var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
+        using var browser = new LoopbackBrowser(new RecordingBrowser(), join: join) {
             DrainCap = TimeSpan.FromSeconds(10), DisposeWait = TimeSpan.FromSeconds(5),
         };
 
@@ -468,7 +473,7 @@ public class LoopbackBrowserTests {
     public async Task Repeated_junk_return_hops_are_still_bounded_by_the_cap() {
         var (port, redirect) = Loopback();
         var join = new KeyedJoin("https://example.test/api/cli/return?j=real&p=1", "real");
-        using var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
+        using var browser = new LoopbackBrowser(new RecordingBrowser(), join: join) {
             DrainCap = TimeSpan.FromMilliseconds(600), DisposeWait = TimeSpan.FromMilliseconds(600),
         };
 
@@ -504,7 +509,7 @@ public class LoopbackBrowserTests {
         for (var attempt = 0; attempt < 15; attempt++) {
             var (port, redirect) = Loopback();
             var join = new KeyedJoin("https://example.test/api/cli/return?j=real&p=1", "real");
-            using var browser = new LoopbackBrowser(openBrowser: _ => true, join: join) {
+            using var browser = new LoopbackBrowser(new RecordingBrowser(), join: join) {
                 DrainCap = TimeSpan.FromSeconds(10), DisposeWait = TimeSpan.FromSeconds(5),
             };
 
@@ -531,7 +536,7 @@ public class LoopbackBrowserTests {
     [Test]
     public async Task Caller_cancellation_propagates_instead_of_reporting_a_timeout() {
         var (_, redirect) = Loopback();
-        using var browser = new LoopbackBrowser(openBrowser: _ => true);
+        using var browser = new LoopbackBrowser(new RecordingBrowser());
 
         using var cts = new CancellationTokenSource();
 

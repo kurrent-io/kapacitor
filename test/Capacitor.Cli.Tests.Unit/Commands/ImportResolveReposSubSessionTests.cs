@@ -11,7 +11,8 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// remap a path that only ever existed for a few seconds.
 /// </summary>
 public class ImportResolveReposSubSessionTests {
-    [TempDir] public required TempDir Tmp { get; init; }
+    [TempDir]        public required TempDir         Tmp    { get; init; }
+    [TempConfigRoot] public required TempConfigRoot  Config { get; init; }
 
     [Test]
     public async Task ResolveTranscriptRepos_excludes_kcap_subsessions_from_missing_cwd_report() {
@@ -45,7 +46,7 @@ public class ImportResolveReposSubSessionTests {
 
         var sessionCwds = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        await ImportCommand.ResolveTranscriptReposAsync(
+        await new ImportCommand(Config.Root, Resolutions.None(Config.Root)).ResolveTranscriptReposAsync(
             transcripts,
             codex: false,
             new ImportCommand.ImportDisplay { Tty = false },

@@ -14,28 +14,29 @@ namespace Capacitor.Cli.Core;
 /// version)</c> — a manually-rolled tenant can trail npm for days, and nudging a user to a CLI newer
 /// than the server they talk to only risks protocol mismatch.
 ///
-/// <para>One flat file per normalized server URL (<c>server-version-{hash}.json</c> in the CLI config
-/// dir, honouring <c>KCAP_CONFIG_DIR</c> — the <see cref="MachineId"/> precedent), so a multi-profile
+/// <para>One flat file per normalized server URL (<c>server-version-{hash}.json</c> under the
+/// caller's <see cref="ConfigRoot"/>), so a multi-profile
 /// user gets a per-server cap for free and two servers never race one map file. Best-effort
 /// throughout: a read or write failure never surfaces — an absent value just means "no cap", which is
 /// exactly today's behaviour. <see cref="Set"/> is deduped in-process so the per-response hot path
 /// touches disk at most once per distinct value per process.</para>
 /// </summary>
 public static class ServerVersionStore {
-    // Per-process memo of the last value written for each server, so a long-lived process (the daemon)
-    // making many requests doesn't rewrite the same file on every response.
+    // Per-process memo of the last value written to each store file, so a long-lived process (the
+    // daemon) making many requests doesn't rewrite the same file on every response.
     static readonly ConcurrentDictionary<string, string> WrittenThisProcess = new();
 
     /// <summary>
     /// Records the server version observed for <paramref name="serverUrl"/>. No-op for a blank URL or
     /// version, or when the same value was already written this process. Never throws.
     /// </summary>
-    public static void Set(string? serverUrl, string? version) {
+    public static void Set(string? serverUrl, string? version, ConfigRoot config) {
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(version)) return;
 
-        var key = Normalize(serverUrl);
+        var key  = Normalize(serverUrl);
+        var path = PathFor(key, config);
 
-        if (WrittenThisProcess.TryGetValue(key, out var prev) && prev == version) return;
+        if (WrittenThisProcess.TryGetValue(path, out var prev) && prev == version) return;
 
         try {
             var obj = new JsonObject {
@@ -44,13 +45,12 @@ public static class ServerVersionStore {
                 ["seen_at"] = DateTimeOffset.UtcNow,
             };
 
-            var path     = PathFor(key);
             var tempPath = $"{path}.tmp";
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(tempPath, obj.ToJsonString());
             File.Move(tempPath, path, overwrite: true);
 
-            WrittenThisProcess[key] = version;
+            WrittenThisProcess[path] = version;
         } catch {
             // Best-effort — a cache write must never break the request it rides on.
         }
@@ -61,11 +61,11 @@ public static class ServerVersionStore {
     /// seen (an old CLI, a never-connected server, or a server that doesn't send the header). Never
     /// throws — a corrupt/unreadable file reads as null and re-populates on the next request.
     /// </summary>
-    public static string? Get(string? serverUrl) {
+    public static string? Get(string? serverUrl, ConfigRoot config) {
         if (string.IsNullOrWhiteSpace(serverUrl)) return null;
 
         try {
-            var path = PathFor(Normalize(serverUrl));
+            var path = PathFor(Normalize(serverUrl), config);
             if (!File.Exists(path)) return null;
 
             var node    = JsonNode.Parse(File.ReadAllText(path));
@@ -83,9 +83,9 @@ public static class ServerVersionStore {
     internal static string Normalize(string serverUrl) =>
         ServerIdentity.Canonicalize(serverUrl) ?? serverUrl.Trim().TrimEnd('/');
 
-    static string PathFor(string normalizedUrl) {
+    static string PathFor(string normalizedUrl, ConfigRoot config) {
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalizedUrl)))[..16].ToLowerInvariant();
 
-        return PathHelpers.ConfigPath($"server-version-{hash}.json");
+        return config.Path($"server-version-{hash}.json");
     }
 }

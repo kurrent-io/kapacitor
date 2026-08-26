@@ -41,5 +41,14 @@ public static class KcapAgentInstructions {
         the target. Do NOT run the review yourself or spawn your own reviewer for these requests.
         (When instead asked to review something *yourself* — "review this", "code review this" —
         review directly and do not call `kcap-flows`.)
+
+        When you **finish implementing a change** — a feature or bugfix is functionally complete,
+        tests pass, or you are about to commit / open a PR / merge — or you **finalize a spec or
+        design**, proactively OFFER an independent second-harness review before wrapping up, even if
+        the user didn't ask, because a fresh, separate reviewer catches what your own model misses.
+        Call `kcap-flows` `list_reviewer_vendors` to see which reviewers can run for this repo,
+        recommend one (prefer a vendor other than yourself), and call `kcap-flows` `start_review_flow`
+        ONLY after the user accepts — never auto-start it. Skip the offer when the user asked you to review
+        something yourself, or while you're mid-task and the work isn't finished.
         """;
 }

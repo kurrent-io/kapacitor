@@ -47,10 +47,13 @@ public static partial class DaemonRunner {
         // environment, so a descendant process can't be handed a different one by accident.
         var paths = DaemonStore.FromEnvironment();
 
+        // Same for KCAP_CONFIG_DIR: read once here, then passed.
+        var configRoot = ConfigRoot.FromEnvironment();
+
         // OriginalArgs is captured for self-respawn (detached restart-after-update) and to detect
         // the successor's --await-lock handoff flag. Paths is set here, in the initializer, so the
         // config is never observably path-less.
-        var config = new DaemonConfig { Store = paths, OriginalArgs = args };
+        var config = new DaemonConfig { Store = paths, ConfigRoot = configRoot, OriginalArgs = args };
         var awaitLock = args.Contains("--await-lock");
 
         // Boot-local carriers: read off ambient env and IMMEDIATELY remove them, before anything
@@ -63,8 +66,9 @@ public static partial class DaemonRunner {
         // Program.cs, but the daemon is a separate process so its statics start
         // empty. Skips repo discovery (the daemon isn't bound to a working dir);
         // honors --server-url, KCAP_URL, KCAP_PROFILE.
-        await AppConfig.ResolveActiveProfile(args);
-        config.ServerUrl = AppConfig.ResolvedServerUrl ?? "";
+        var profiles = await AppConfig.ResolveActiveProfile(args, configRoot);
+        config.Profiles  = profiles;
+        config.ServerUrl = profiles.Resolution.ServerUrl ?? "";
 
         // CLI arg overrides for daemon-specific settings — parse before host builder.
         // --name is consumed below by DaemonNameResolver (shared with the CLI
@@ -89,6 +93,7 @@ public static partial class DaemonRunner {
         // Phase B (D3): reviewer lifetime/idle backstop overrides from env (seconds; 0 disables).
         config.ReviewerMaxLifetime = ParseSecondsEnv("KCAP_REVIEWER_MAX_LIFETIME", config.ReviewerMaxLifetime);
         config.ReviewerIdleTimeout = ParseSecondsEnv("KCAP_REVIEWER_IDLE_TIMEOUT", config.ReviewerIdleTimeout);
+        config.ReviewerResumableIdleTimeout = ParseSecondsEnv("KCAP_REVIEWER_RESUMABLE_IDLE_TIMEOUT", config.ReviewerResumableIdleTimeout);
         // Task 12: daemon-local held-turn wedge ceiling override (seconds; 0 disables), independent
         // of the server's own Flows:TurnWedgeCeilingSeconds — see DaemonConfig.ReviewerTurnWedgeCeiling.
         config.ReviewerTurnWedgeCeiling = ParseSecondsEnv("KCAP_REVIEWER_TURN_WEDGE_CEILING", config.ReviewerTurnWedgeCeiling);
@@ -129,7 +134,7 @@ public static partial class DaemonRunner {
         }
 
         // Daemon settings from the active profile, with env overrides
-        var profileDaemon = AppConfig.ResolvedProfile?.Profile?.Daemon;
+        var profileDaemon = profiles.Resolution.Profile?.Daemon;
 
         if (config.MaxConcurrentAgents == 5 && profileDaemon is { MaxAgents: var mx and not 5 })
             config.MaxConcurrentAgents = mx;
@@ -333,6 +338,7 @@ public static partial class DaemonRunner {
                 priorLockReadFailed: daemonLock.PriorLockIndeterminate, thisEpochContained: OperatingSystem.IsWindows());
 
         builder.Services.AddSingleton(paths);
+        builder.Services.AddSingleton(configRoot);
         builder.Services.AddSingleton(config);
         builder.Services.AddSingleton(daemonLock);
         builder.Services.AddSingleton<ServerConnection>();
@@ -1339,7 +1345,7 @@ public static partial class DaemonRunner {
     internal const string ClaudeLauncherPolicyVersion = "claude-unattended-v1";
     internal const string CursorLauncherPolicyVersion = "cursor-unattended-v4";
     internal const string CodexLauncherPolicyVersion = "codex-unattended-v1";
-    internal const string CodexAppServerLauncherPolicyVersion = "codex-appserver-unattended-v1";
+    internal const string CodexAppServerLauncherPolicyVersion = "codex-appserver-unattended-v2";
     internal const string CopilotLauncherPolicyVersion = "copilot-unattended-v1";
     internal const string AntigravityLauncherPolicyVersion = "antigravity-unattended-v1";
     internal const string OpenCodeLauncherPolicyVersion = "opencode-unattended-v1";

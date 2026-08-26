@@ -1,8 +1,7 @@
 using System.Text.Json;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core.Config;
-using Capacitor.Cli.Core;
-using Capacitor.Cli.SessionStartMemory;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -24,34 +23,11 @@ namespace Capacitor.Cli.Tests.Integration;
 /// test can prove the bytes were written but not that Gemini used them.</para>
 /// </summary>
 public class GeminiSessionStartHandshakeOnPostFailureTests : IDisposable {
-    // Declaration order is load-bearing. Field initializers run top-down, so the config snapshot is
-    // taken BEFORE the server is started: if reading the config throws, the constructor never completes,
-    // `Dispose` is never called, and anything started above it would leak.
-    readonly string  _configPath     = PathHelpers.ConfigPath("config.json");
-    readonly string? _previousConfig = File.Exists(PathHelpers.ConfigPath("config.json"))
-        ? File.ReadAllText(PathHelpers.ConfigPath("config.json"))
-        : null;
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
-    readonly WireMockServer _server     = WireMockServer.Start();
-    readonly string         _memoryRoot =
-        Path.Combine(Path.GetTempPath(), $"kcap-gemini-failed-post-{Guid.NewGuid():N}");
+    readonly WireMockServer _server = WireMockServer.Start();
 
-    /// <summary>Restores the developer's REAL config first and unconditionally. It is the only cleanup
-    /// here that touches machine state outside this test, so no other step — notably a throwing
-    /// <c>_server.Stop()</c> — may be able to skip it and leave the active profile pointed at a dead
-    /// WireMock URL.</summary>
-    public void Dispose() {
-        try {
-            if (_previousConfig is null) {
-                if (File.Exists(_configPath)) File.Delete(_configPath);
-            } else {
-                File.WriteAllText(_configPath, _previousConfig);
-            }
-        } finally {
-            try { _server.Stop(); }                                  catch { /* best-effort */ }
-            try { Directory.Delete(_memoryRoot, recursive: true); }  catch { /* best-effort */ }
-        }
-    }
+    public void Dispose() => _server.Stop();
 
     [Test, NotInParallel]
     public async Task A_rejected_lifecycle_post_still_delivers_the_memory_index_and_spends_the_lease_once() {
@@ -59,7 +35,7 @@ public class GeminiSessionStartHandshakeOnPostFailureTests : IDisposable {
             ActiveProfile = "work",
             Profiles      = new() { ["work"] = new Profile { ServerUrl = _server.Url } }
         };
-        await ConfigMutator.MutateAsync(_ => config);
+        await ConfigMutator.MutateAsync(Config.Root, _ => config);
 
         // A permanent rejection: PostOrSpoolAsync returns Failed only for a genuine non-2xx (transport
         // and auth failures spool instead), which is the one outcome that keeps the non-zero exit.
@@ -118,12 +94,11 @@ public class GeminiSessionStartHandshakeOnPostFailureTests : IDisposable {
 
         using var capture = ConsoleOutput.StartCapture();
 
-        // An unauthenticated client is deliberate: the stub needs no bearer, and the default factory
-        // would drag real credential resolution into a test about the failed-POST path.
-        var exit = await GeminiHookCommand.Handle(
-            _server.Url!, new StringReader(payload),
-            memoryClientFactory: (_, _) => Task.FromResult(new HttpClient()),
-            memoryStoreFactory:  () => new SessionStartMemoryLeaseStore(_memoryRoot));
+        // The real memory factory, resolving against this test's own config root: discovery finds no
+        // /auth/config, falls back to a token store that holds nothing, and hands back an
+        // unauthenticated client — which is exactly what the stub wants, without a seam.
+        var exit = await new GeminiHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System))
+            .Handle(new StringReader(payload));
 
         return (exit, capture.GetCapturedOutput());
     }

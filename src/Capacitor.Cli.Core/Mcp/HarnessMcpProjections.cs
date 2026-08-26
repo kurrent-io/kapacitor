@@ -41,15 +41,25 @@ public sealed record HarnessMcpProjection(
 /// <c>kcap/.mcp.json</c> rather than anything generated. Pi is absent because it registers no MCP
 /// config at all — it emits a bridge that discovers tools at runtime.</para></summary>
 public static class HarnessMcpProjections {
-    // Every non-Claude JSON harness receives the same subset — the full set,
-    // kcap-workitems included (see KcapMcpServers.ForCursor).
-    public static readonly HarnessMcpProjection Cursor      = new("cursor",      KcapMcpServers.ForCursor, McpConfigShape.Standard);
-    public static readonly HarnessMcpProjection Copilot     = new("copilot",     KcapMcpServers.ForCursor, McpConfigShape.Copilot);
-    public static readonly HarnessMcpProjection Gemini      = new("gemini",      KcapMcpServers.ForCursor, McpConfigShape.Gemini);
-    public static readonly HarnessMcpProjection Kiro        = new("kiro",        KcapMcpServers.ForCursor, McpConfigShape.Standard);
-    public static readonly HarnessMcpProjection OpenCode    = new("opencode",    KcapMcpServers.ForCursor, McpConfigShape.OpenCode);
-    public static readonly HarnessMcpProjection Antigravity = new("antigravity", KcapMcpServers.ForCursor, McpConfigShape.Standard);
+    // Every non-Claude JSON harness receives the same subset (the full set, kcap-workitems included),
+    // with its flows entry stamped `--driver <harness>` — the harness string IS the driver vendor
+    // (see KcapMcpServers.ForHarness). These are the harnesses that export no env signal, so the
+    // stamp is how the flows server learns who is driving.
+    public static readonly HarnessMcpProjection Cursor      = new("cursor",      KcapMcpServers.ForHarness("cursor"),      McpConfigShape.Standard);
+    public static readonly HarnessMcpProjection Copilot     = new("copilot",     KcapMcpServers.ForHarness("copilot"),     McpConfigShape.Copilot);
+    public static readonly HarnessMcpProjection Gemini      = new("gemini",      KcapMcpServers.ForHarness("gemini"),      McpConfigShape.Gemini);
+    public static readonly HarnessMcpProjection Kiro        = new("kiro",        KcapMcpServers.ForHarness("kiro"),        McpConfigShape.Standard);
+    public static readonly HarnessMcpProjection OpenCode    = new("opencode",    KcapMcpServers.ForHarness("opencode"),    McpConfigShape.OpenCode);
+    public static readonly HarnessMcpProjection Antigravity = new("antigravity", KcapMcpServers.ForHarness("antigravity"), McpConfigShape.Standard);
 
     public static readonly IReadOnlyList<HarnessMcpProjection> All =
         [Cursor, Copilot, Gemini, Kiro, OpenCode, Antigravity];
+
+    /// <summary>The exact set of vendor tokens kcap stamps as <c>--driver</c> on a flows
+    /// registration — the harness names above. <c>DriverVendor</c> validates an incoming stamp
+    /// against this (plus the two env-inferred vendors) so a malformed or stale registration can
+    /// never echo arbitrary text as <c>driver_vendor</c>. Derived from the projections so a new
+    /// harness is stamped and accepted from one edit.</summary>
+    public static readonly IReadOnlyList<string> DriverStampVendors =
+        [.. All.Select(p => p.Harness)];
 }

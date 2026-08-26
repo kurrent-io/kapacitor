@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Hosting;
@@ -16,6 +18,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// bare-orchestrator construction without the socket plumbing.
 /// </summary>
 public class AgentStatusSnapshotTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
         public CancellationToken ApplicationStopping => CancellationToken.None;
@@ -41,7 +45,7 @@ public class AgentStatusSnapshotTests {
         }
     }
 
-    static Fixture Build() {
+    Fixture Build() {
         var daemons = new TempDaemonStore();
 
         var config = new DaemonConfig {
@@ -64,7 +68,8 @@ public class AgentStatusSnapshotTests {
         var notifier         = new DaemonStatusNotifier();
 
         var orchestrator = new AgentOrchestrator(
-            config, connection, worktreeManager, repoMatcher, new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
+            config, Config.Root, connection, worktreeManager, repoMatcher,
+            new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate, statusNotifier: notifier);
@@ -143,6 +148,36 @@ public class AgentStatusSnapshotTests {
 
             await Assert.That(byId["blank-model"].Model).IsNull();
             await Assert.That(byId["real-model"].Model).IsEqualTo("gpt-5-codex");
+        } finally {
+            await fixture.CleanupAsync();
+        }
+    }
+
+    /// <summary>
+    /// Pins <see cref="AgentOrchestrator.SnapshotAgentsForStatus"/>'s stamping of
+    /// <c>HasTerminal</c> from the agent's own runtime — a PTY runtime (<c>SeedAgentForTest</c>'s
+    /// default, mirroring <see cref="PtyHostedAgentRuntime"/>) reports true, a non-PTY/ACP runtime
+    /// (<see cref="FakeAcpRuntime"/>, seeded via <see cref="AgentOrchestratorHarness.SeedAcpAgent"/>
+    /// since <c>SeedAgentForTest</c> only builds PTY runtimes) reports false. Asserted on the
+    /// SERIALIZED wire payload, not the DTO field, so a naming-policy regression on the
+    /// snake_case <c>has_terminal</c> member would fail this too.
+    /// </summary>
+    [Test]
+    public async Task Status_payload_carries_has_terminal_per_runtime() {
+        var fixture = Build();
+        var orch    = fixture.Orchestrator;
+        try {
+            orch.SeedAgentForTest("pty-1");
+            AgentOrchestratorHarness.SeedAcpAgent(orch, "acp-1", new FakeAcpRuntime());
+
+            var snapshot = orch.SnapshotAgentsForStatus();
+            var ptyJson  = JsonSerializer.Serialize(
+                snapshot.Single(a => a.Id == "pty-1"), StatusIpcJsonContext.Default.AgentStatusDto);
+            var acpJson = JsonSerializer.Serialize(
+                snapshot.Single(a => a.Id == "acp-1"), StatusIpcJsonContext.Default.AgentStatusDto);
+
+            await Assert.That(ptyJson).Contains("\"has_terminal\":true");
+            await Assert.That(acpJson).Contains("\"has_terminal\":false");
         } finally {
             await fixture.CleanupAsync();
         }

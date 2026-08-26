@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon.Services;
 
 namespace Capacitor.Cli.Daemon.Tests.Unit;
@@ -50,8 +51,12 @@ public class BootCarrierTests {
 
     [Test]
     public async Task Respawn_successor_env_reinjects_seed_and_expectation_but_not_attempt() {
+        using var root = new TempConfigRoot();
+
         var config = new DaemonConfig {
             ConsentSeedDirective = "prompt", ExpectedServerUrl = "https://s.example", BootAttemptId = "att-1",
+            // Per test, so the stamp below is the overlay's own doing and not the ambient root leaking in.
+            ConfigRoot = root.Root,
         };
         var env = DetachedRespawnStrategy.SuccessorEnvOverlay(config);
 
@@ -59,5 +64,8 @@ public class BootCarrierTests {
         await Assert.That(env[DaemonRunner.BootCarriers.Expect]).IsEqualTo("https://s.example");
         // an attempt id is per-ACTION; a self-respawn is not the app's action:
         await Assert.That(env.ContainsKey(DaemonRunner.BootCarriers.Attempt)).IsFalse();
+        // The successor is the same daemon: it must not re-derive a root, or an update could move
+        // which config it runs on.
+        await Assert.That(env[ConfigRoot.ConfigDirEnvVar]).IsEqualTo(root.Directory);
     }
 }

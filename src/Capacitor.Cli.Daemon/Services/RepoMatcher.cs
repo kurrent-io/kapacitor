@@ -99,7 +99,7 @@ internal partial class RepoMatcher(DaemonConfig config, ILogger<RepoMatcher> log
         // Persisted RepoPathStore failures are non-fatal — server candidates
         // and AllowedRepoPaths still flow through.
         try {
-            var persisted = await RepoPathStore.GetSortedPathsAsync();
+            var persisted = await new RepoPathStore(config.ConfigRoot).GetSortedPathsAsync();
             foreach (var p in persisted) Add(p);
         } catch (Exception ex) {
             LogPersistedLoadFailed(ex);

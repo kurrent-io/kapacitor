@@ -38,6 +38,7 @@ public class ServiceVerifyStartGateProductionPathTests {
         readonly ProdPathFixture _core = new(Id);
 
         public DaemonStore Store => _core.Store;
+        public ConfigRoot Config => _core.Config;
         public string PlistPath => _core.PlistPath;
         public LaunchdServiceManager Manager => _core.Manager;
 
@@ -45,7 +46,7 @@ public class ServiceVerifyStartGateProductionPathTests {
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
         public async Task<(int Exit, string[] StdErrLines)> RunStartVerifiedAsync() {
-            var sut = new ServiceVerify(Store, Manager, _ => 4242, Hello, TimeProvider.System,
+            var sut = new ServiceVerify(Store, Config, Manager, _ => 4242, Hello, TimeProvider.System,
                 gateEnv: k => k == "KCAP_CONSENT_SEED_DEFAULT" ? "prompt" : null);
 
             using var capture = ConsoleOutput.StartErrorCapture();

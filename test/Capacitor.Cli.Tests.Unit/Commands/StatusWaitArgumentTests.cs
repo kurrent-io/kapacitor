@@ -17,6 +17,13 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// poll-path tests in McpFlowsServerSettlementRetryTests.cs already do).
 /// </summary>
 public class StatusWaitArgumentTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // The dispatch is profile-scoped: its token refresh resolves a profile. These tests exercise
+    // routing, not profile selection.
+    McpFlowsServer Server() =>
+        new(Config.Root, Resolutions.None(Config.Root));
+
     static readonly TimeSpan PollInterval       = TimeSpan.FromSeconds(3);
     static readonly TimeSpan PollCap            = TimeSpan.FromMinutes(8);
     const           int      MaxTransientRetries = 5;
@@ -57,7 +64,7 @@ public class StatusWaitArgumentTests {
         // clean failure. Keeping the virtual clock here means a future regression fails in
         // milliseconds instead.
         var clock    = Clock();
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!,
             ToolCallRequest("get_review_flow_status", new JsonObject { ["flow_run_id"] = flowRunId }),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, clock: clock);
@@ -81,7 +88,7 @@ public class StatusWaitArgumentTests {
         // See the sibling absent-wait test above for why a virtual clock is injected even on this
         // compat path.
         var clock    = Clock();
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!,
             ToolCallRequest("get_flow_status", new JsonObject { ["flow_run_id"] = flowRunId, ["wait"] = false }),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, clock: clock);
@@ -99,7 +106,7 @@ public class StatusWaitArgumentTests {
         using var server = WireMockServer.Start();
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!,
             ToolCallRequest("get_review_flow_status", new JsonObject { ["flow_run_id"] = flowRunId, ["wait"] = "yes" }),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
@@ -133,7 +140,7 @@ public class StatusWaitArgumentTests {
         using var client = new HttpClient();
 
         var clock    = Clock();
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!,
             ToolCallRequest("get_review_flow_status", new JsonObject { ["flow_run_id"] = flowRunId, ["wait"] = true }),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, clock: clock);
@@ -166,7 +173,7 @@ public class StatusWaitArgumentTests {
         using var client = new HttpClient();
 
         var clock    = Clock();
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!,
             ToolCallRequest("get_flow_status", new JsonObject { ["flow_run_id"] = flowRunId, ["wait"] = true }),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, clock: clock);
@@ -192,7 +199,7 @@ public class StatusWaitArgumentTests {
         using var client = new HttpClient();
 
         var clock    = Clock();
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!,
             ToolCallRequest("get_review_flow_status", new JsonObject { ["flow_run_id"] = flowRunId, ["wait"] = true }),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, clock: clock);
@@ -222,7 +229,7 @@ public class StatusWaitArgumentTests {
         using var client = new HttpClient();
 
         var clock    = Clock();
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!,
             ToolCallRequest("get_review_flow_status", new JsonObject { ["flow_run_id"] = flowRunId, ["wait"] = true }),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, clock: clock);
@@ -268,7 +275,7 @@ public class StatusWaitArgumentTests {
         using var client = new HttpClient();
 
         var clock    = Clock();
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!,
             ToolCallRequest("get_review_flow_status", new JsonObject { ["flow_run_id"] = flowRunId, ["wait"] = true }),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, clock: clock);

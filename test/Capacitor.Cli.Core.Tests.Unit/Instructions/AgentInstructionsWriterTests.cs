@@ -4,6 +4,15 @@ namespace Capacitor.Cli.Core.Tests.Unit.Instructions;
 
 public class AgentInstructionsWriterTests {
     [Test]
+    public async Task Body_carries_the_proactive_review_offer_nudge() {
+        // The steering block is how the harnesses that do NOT consult a SKILL.md as an invocable
+        // skill (Copilot, Gemini, Pi, OpenCode, Antigravity) get the proactive review-offer
+        // behavior — dropping this paragraph silently removes the feature on those harnesses.
+        await Assert.That(KcapAgentInstructions.Body).Contains("proactively OFFER an independent second-harness review");
+        await Assert.That(KcapAgentInstructions.Body).Contains("list_reviewer_vendors");
+    }
+
+    [Test]
     public async Task Write_creates_file_with_marked_block() {
         using var tmp = new TempDir();
         var path = tmp.PathTo("copilot-instructions.md");

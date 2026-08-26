@@ -4,11 +4,10 @@ using Capacitor.Cli.Commands.Harness;
 namespace Capacitor.Cli.Tests.Unit.Harness.Gemini;
 
 /// <summary>
-/// Task 6: Gemini's session-start is routed through <see cref="AgentHookPoster.PostOrSpoolAsync(string,string,string,string,Capacitor.Cli.Core.HookSpool,string,string)"/>
-/// (was the POST-only <c>PostAsync</c>, which returned WITHOUT spawning on anything but <c>Posted</c>).
+/// Gemini's session-start is routed through <see cref="AgentHookPoster.PostOrSpoolAsync(string,string,string,Capacitor.Cli.Core.HookSpool,string,string)"/>.
 /// <see cref="GeminiHookCommand.SpawnGateForTest"/> exposes the same spawn decision as
-/// <see cref="AgentHookPoster.ShouldSpawnAfter"/> so a spooled outcome (auth lapse / outage) still
-/// spawns the watcher — capture must not depend on lifecycle-POST delivery.
+/// <see cref="AgentHookPoster.ShouldSpawnAfter"/>, so a spooled outcome (auth lapse / outage)
+/// still spawns the watcher — capture must not depend on lifecycle-POST delivery.
 /// </summary>
 public class GeminiSpawnBeforePostTests {
     [Test]

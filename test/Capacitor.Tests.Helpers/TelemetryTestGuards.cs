@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Tests.Helpers;
@@ -12,17 +13,16 @@ namespace Capacitor.Tests.Helpers;
 /// </summary>
 public static class TelemetryTestGuards {
     /// <summary>Throws with a diagnosis if <see cref="CliTelemetry.Initialize"/> left telemetry off.</summary>
-    public static void AssertEnabled(string command) {
+    public static void AssertEnabled(string command, ConfigRoot config) {
         if (CliTelemetry.Enabled) return;
 
-        var decision = TelemetrySettings.Resolve(TelemetryState.PersistedEnabled());
+        var decision = TelemetrySettings.Resolve(TelemetryState.PersistedEnabled(config));
 
         throw new InvalidOperationException(
             $"CliTelemetry did not enable after Initialize(\"{command}\").\n"
           + $"  resolver   = {decision.Enabled} (reason={decision.Reason})\n"
           + $"  reportable = {CommandEvents.IsReportable(command)}\n"
-          + $"  pathOverride       = {TelemetryState.PathOverride ?? "(none)"}\n"
-          + $"  devicePathOverride = {TelemetryDeviceId.PathOverride ?? "(none)"}\n"
+          + $"  configRoot = {config.Directory}\n"
           + $"  DO_NOT_TRACK = {Env("DO_NOT_TRACK")}, KCAP_TELEMETRY = {Env("KCAP_TELEMETRY")}\n"
           + "Read it as: resolver=False -> an env var or the persisted flag disabled it; "
           + "reportable=False -> the command is denylisted; both True -> Initialize threw "

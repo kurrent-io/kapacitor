@@ -6,6 +6,7 @@ using Avalonia.VisualTree;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels.Onboarding;
 using Capacitor.App.Views.Onboarding;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Setup;
 using TUnit.Assertions.Enums;
 

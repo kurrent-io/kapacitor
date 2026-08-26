@@ -7,11 +7,10 @@ using WireMock.Server;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 
-// Now touches the telemetry statics, so it takes the same resource lock keys as
-// SetupJoinTests/SetupFunnelTests/CliTelemetryTests.
+// Reads SetupJoin.Current (a telemetry static), so it shares the same resource lock as the other
+// telemetry-static tests (SetupFunnelTests/CliTelemetryTests) and cannot run beside one that mints.
 [NotInParallel([
-    nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
-    nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
+    nameof(CliTelemetry) + "." + nameof(CliTelemetry.TestSink),
 ])]
 public class TenantProvisioningClientTests {
     [Test]
@@ -169,10 +168,8 @@ public class TenantProvisioningClientTests {
         using var tmp = new TempDir();
         CliTelemetry.Reset();
         SetupJoin.Reset();
-        TelemetryState.PathOverride    = tmp.PathTo("telemetry.json");
-        TelemetryDeviceId.PathOverride = tmp.PathTo("telemetry-device.json");
         CliTelemetry.TestSink = [];
-        CliTelemetry.Initialize("setup", null, loggedIn: false);
+        CliTelemetry.Initialize("setup", null, loggedIn: false, new ConfigRoot(tmp.Path));
         var key = SetupJoin.Mint();
 
         try {

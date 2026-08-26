@@ -29,7 +29,7 @@ namespace Capacitor.Cli.Core.Tests.Unit.Telemetry;
 /// below has <c>$device_id</c> ONLY. That still exercises the full merge — the device id is what
 /// crosses back — while writing nothing into the real PostHog project.</para>
 /// </summary>
-// Bare [NotInParallel], not the telemetry PathOverride keys: this captures Console, which is
+// Bare [NotInParallel], not the CliTelemetry.TestSink key: this captures Console, which is
 // process-global, and ConsoleOutput rejects an overlapping capture. Ungrouped is strictly stronger.
 [NotInParallel]
 public class JoinChainLiveTests : IDisposable {
@@ -66,12 +66,11 @@ public class JoinChainLiveTests : IDisposable {
             CliTelemetry.Reset();
             SetupJoin.Reset();
 
-            TelemetryState.PathOverride    = _tmp.PathTo("telemetry.json");
-            TelemetryDeviceId.PathOverride = _tmp.PathTo("telemetry-device.json");
+            var config = new ConfigRoot(_tmp.Path);
             var sink = new List<TelemetryEvent>();
             CliTelemetry.TestSink = sink;
-            CliTelemetry.Initialize("setup", null, loggedIn: false);
-            TelemetryTestGuards.AssertEnabled("setup");
+            CliTelemetry.Initialize("setup", null, loggedIn: false, config);
+            TelemetryTestGuards.AssertEnabled("setup", config);
 
             var key = SetupJoin.Mint();
             await Assert.That(key).IsNotNull();
@@ -79,7 +78,7 @@ public class JoinChainLiveTests : IDisposable {
             var port     = OAuthLoginFlow.GetAvailablePort();
             var redirect = $"http://127.0.0.1:{port}/callback";
 
-            using var browser = new LoopbackBrowser(openBrowser: _ => true, join: SetupJoin.Loopback) {
+            using var browser = new LoopbackBrowser(new RecordingBrowser(), join: SetupJoin.Loopback) {
                 DrainCap = TimeSpan.FromSeconds(30), DisposeWait = TimeSpan.FromSeconds(10),
             };
 

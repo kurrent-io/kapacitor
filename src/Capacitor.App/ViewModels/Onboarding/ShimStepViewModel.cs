@@ -1,5 +1,6 @@
 using System.Reactive;
 using Capacitor.App.Services;
+using Capacitor.Cli.Core.Setup;
 using ReactiveUI;
 
 namespace Capacitor.App.ViewModels.Onboarding;

@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 
 namespace Capacitor.App.Services.Mutation;

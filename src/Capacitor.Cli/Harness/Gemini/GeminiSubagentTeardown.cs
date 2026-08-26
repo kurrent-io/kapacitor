@@ -2,6 +2,7 @@ using System.Text;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Gemini;
 
 namespace Capacitor.Cli.Harness.Gemini;
@@ -22,7 +23,9 @@ namespace Capacitor.Cli.Harness.Gemini;
 /// <c>SubagentStarted</c> + content but no <c>SubagentCompleted</c>. Best-effort per step
 /// (a failure on one subagent — or one step — never skips the rest; re-import recovers).
 /// </summary>
-static class GeminiSubagentTeardown {
+sealed class GeminiSubagentTeardown(ConfigRoot config, ProfileContext profiles) {
+    readonly WatcherManager _watchers = new(config, profiles);
+
     /// <summary>
     /// Time budget for the teardown on a shutdown path (the parent-exit watchdog), so a slow
     /// or retrying drain can't block process termination. Mirrors
@@ -30,7 +33,7 @@ static class GeminiSubagentTeardown {
     /// </summary>
     internal static readonly TimeSpan DrainCap = TimeSpan.FromSeconds(8);
 
-    internal static async Task DrainAsync(string baseUrl, string sessionId, string transcriptPath) {
+    internal async Task DrainAsync(string sessionId, string transcriptPath) {
         var subFiles = GeminiSubagentDiscovery.EnumerateSubagentFiles(transcriptPath);
         if (subFiles.Count == 0) return;
 
@@ -45,14 +48,15 @@ static class GeminiSubagentTeardown {
 
             // Each step best-effort + independent so subagent-stop (→ SubagentCompleted) is
             // always attempted even if the kill or drain hiccups; re-import recovers the rest.
-            await SafeAsync(() => WatcherManager.KillWatcher($"{sessionId}-{agentId}"));
-            await SafeAsync(() => WatcherManager.InlineDrainAsync(baseUrl, sessionId, subFile, agentId, vendor: "gemini"));
-            await SafeAsync(() => PostStopAsync(baseUrl, sessionId, agentId, agentType, subFile));
+            await SafeAsync(() => _watchers.KillWatcher($"{sessionId}-{agentId}"));
+            await SafeAsync(() => _watchers.InlineDrainAsync(sessionId, subFile, agentId, vendor: "gemini"));
+            await SafeAsync(() => PostStopAsync(sessionId, agentId, agentType, subFile));
         }
     }
 
-    static async Task PostStopAsync(string baseUrl, string sessionId, string agentId, string agentType, string subFile) {
-        using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+    async Task PostStopAsync(string sessionId, string agentId, string agentType, string subFile) {
+        var       baseUrl = profiles.Resolution.ServerUrl!;
+        using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
         var       payload = GeminiSubagentDiscovery.BuildStopPayload(sessionId, agentId, agentType, subFile);
         using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
         await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-stop", content);

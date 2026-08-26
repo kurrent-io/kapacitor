@@ -10,21 +10,15 @@ namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 /// <summary>
 /// The ordered commit boundary itself: the claim hook runs last-cancellable and sees every
 /// identity before anything durable exists, then config + stamp + tokens publish to completion
-/// even under a cancel. Shares the TokenStoreProfileTests key (one shared KCAP_CONFIG_DIR) and the
-/// funnel-sink keys (WorkOS discovery emits into CliTelemetry's process-global sink).
+/// even under a cancel. Shares the sink key: WorkOS discovery emits into CliTelemetry's
+/// process-global sink.
 /// </summary>
-[NotInParallel([
-    nameof(TokenStoreProfileTests),
-    nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride),
-    nameof(TelemetryDeviceId) + "." + nameof(TelemetryDeviceId.PathOverride),
-])]
+[NotInParallel(nameof(CliTelemetry) + "." + nameof(CliTelemetry.TestSink))]
 public class CommitBoundaryTests {
-    static string TokensDir  => PathHelpers.ConfigPath("tokens");
-    static string LegacyPath => PathHelpers.ConfigPath("tokens.json");
-    static string ConfigPath => AppConfig.GetConfigPath();
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
-    [Before(Test)]
-    public void Cleanup() => SharedConfigDirCleanup.ClearTokenAndProfileState(LegacyPath, TokensDir);
+    string TokensDir  => Config.PathTo("tokens");
+    string ConfigPath => AppConfig.GetConfigPath(Config.Root);
 
     const string TwoTenants = """
         [{"org_id":1,"org_login":"acme","origin":"https://acme.kcap.ai"},
@@ -34,7 +28,7 @@ public class CommitBoundaryTests {
     static AuthHttpScript GitHubDiscoveryScript(Func<HttpRequestMessage, HttpResponseMessage>? tokenExchange = null) =>
         AuthHttp.Script(proxyConfig: """{"github_client_id":"cid"}""", tenants: TwoTenants, tokenExchange: tokenExchange);
 
-    static bool TokenFileExists(string profile) => File.Exists(Path.Combine(TokensDir, $"{profile}.json"));
+    bool TokenFileExists(string profile) => File.Exists(Path.Combine(TokensDir, $"{profile}.json"));
 
     [Test]
     public async Task Hook_receives_every_identity_before_anything_durable_exists() {
@@ -45,6 +39,7 @@ public class CommitBoundaryTests {
         var       tokensAtHook = true;
 
         var facade = NewFacade(
+            Config.Root,
             new RecordingAuthProgress(), handler, PickerReturningFirst(),
             beforeCommit: (ids, _) => {
                 identities.AddRange(ids);
@@ -69,6 +64,7 @@ public class CommitBoundaryTests {
         using var handler = GitHubDiscoveryScript();
 
         var facade = NewFacade(
+            Config.Root,
             new RecordingAuthProgress(), handler, PickerReturningFirst(),
             beforeCommit: (_, _) => throw new InvalidOperationException("claim store is unwritable"));
 
@@ -86,6 +82,7 @@ public class CommitBoundaryTests {
         using var handler = GitHubDiscoveryScript();
 
         var facade = NewFacade(
+            Config.Root,
             new RecordingAuthProgress(), handler, PickerReturningFirst(),
             beforeCommit: (_, _) => throw new OperationCanceledException());
 
@@ -102,6 +99,7 @@ public class CommitBoundaryTests {
         using var handler = GitHubDiscoveryScript();
 
         var facade = NewFacade(
+            Config.Root,
             new RecordingAuthProgress(), handler, PickerReturningFirst(),
             beforeCommit: (_, _) => { cts.Cancel(); return Task.CompletedTask; });
 
@@ -131,6 +129,7 @@ public class CommitBoundaryTests {
         });
 
         var facade = NewFacade(
+            Config.Root,
             new RecordingAuthProgress(), handler, PickerReturningFirst());
 
         var result = await facade.DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, CancellationToken.None);
@@ -146,6 +145,7 @@ public class CommitBoundaryTests {
         using var handler = GitHubDiscoveryScript();
 
         var facade = NewFacade(
+            Config.Root,
             new RecordingAuthProgress(), handler, PickerReturningFirst());
 
         await facade.DiscoverAsync(AuthProvider.GitHubApp, forceDevice: true, CancellationToken.None);
@@ -158,7 +158,7 @@ public class CommitBoundaryTests {
     [Test]
     public async Task None_stamp_uses_the_vocabulary_the_start_gate_accepts() {
         using var handler = AuthHttp.Script(authConfig: """{"provider":"None"}""");
-        var       facade  = NewFacade(new RecordingAuthProgress(), handler);
+        var       facade  = NewFacade(Config.Root, new RecordingAuthProgress(), handler);
 
         await facade.LoginAsync(
             "https://none.example", forceDevice: false, profile: "solo", CancellationToken.None, adoptServer: true);
@@ -185,7 +185,7 @@ public class CommitBoundaryTests {
                 return AuthHttp.Json("""{"error":"authorization_pending"}""");
             });
 
-        var facade = NewFacade(new RecordingAuthProgress(), handler);
+        var facade = NewFacade(Config.Root, new RecordingAuthProgress(), handler);
 
         var result = await facade.LoginAsync("https://acme.kcap.ai", forceDevice: true, profile: "acme", cts.Token);
 
@@ -215,6 +215,7 @@ public class CommitBoundaryTests {
 
         var seen   = new List<AuthIdentity>();
         var result = await WorkOSDiscovery.PublishAsync(
+            Config.Root,
             (WorkOSDiscoveryFlow.Ready)flow, new RecordingAuthProgress(),
             beforeCommit: (ids, _) => { seen.AddRange(ids); return Task.CompletedTask; },
             ct: CancellationToken.None);
@@ -225,7 +226,7 @@ public class CommitBoundaryTests {
         var tokenPath = Path.Combine(TokensDir, "eventuous.json");
         await Assert.That(File.GetLastWriteTimeUtc(ConfigPath)).IsLessThanOrEqualTo(File.GetLastWriteTimeUtc(tokenPath));
 
-        var stored = await TokenStore.LoadAsync("eventuous");
+        var stored = await new TokenStore(Config.Root).LoadAsync("eventuous");
         await Assert.That(stored!.AccessToken).IsEqualTo("acc2");
         await Assert.That(stored.RefreshToken).IsEqualTo("rt2");
         await Assert.That(stored.Provider).IsEqualTo(AuthProvider.WorkOS);
@@ -248,7 +249,7 @@ public class CommitBoundaryTests {
             var flow     = await ReadyEventuousFlowAsync();
             var progress = new RecordingAuthProgress();
 
-            var result = await WorkOSDiscovery.PublishAsync(flow, progress, beforeCommit: null, ct: CancellationToken.None);
+            var result = await WorkOSDiscovery.PublishAsync(Config.Root, flow, progress, beforeCommit: null, ct: CancellationToken.None);
 
             // The config commit landed, so the boundary had begun — no torn stop, and the loss is reported.
             await Assert.That(result).IsTypeOf<AuthResult.Committed>();
@@ -269,7 +270,7 @@ public class CommitBoundaryTests {
             var flow     = await ReadyEventuousFlowAsync();
             var progress = new RecordingAuthProgress();
 
-            var result = await WorkOSDiscovery.PublishAsync(flow, progress, beforeCommit: null, ct: CancellationToken.None);
+            var result = await WorkOSDiscovery.PublishAsync(Config.Root, flow, progress, beforeCommit: null, ct: CancellationToken.None);
 
             // Nothing durable began, so this arm is honestly a failure rather than a partial commit.
             await Assert.That(result).IsTypeOf<AuthResult.Failed>();
@@ -283,7 +284,7 @@ public class CommitBoundaryTests {
     // nothing durable, and Committed (exit 0 + "Logged in as") would be a lie.
     [Test]
     public async Task A_token_only_commit_whose_sole_publication_fails_answers_Failed() {
-        await ConfigMutator.MutateAsync(c => c with {
+        await ConfigMutator.MutateAsync(Config.Root, c => c with {
             Profiles      = new Dictionary<string, Profile> { ["acme"] = new() { ServerUrl = "https://other.example" } },
             ActiveProfile = "acme",
         });
@@ -293,7 +294,7 @@ public class CommitBoundaryTests {
         try {
             using var handler  = AuthHttp.Script(authConfig: """{"provider":"GitHubApp","github_client_id":"cid"}""");
             var       progress = new RecordingAuthProgress();
-            var       facade   = NewFacade(progress, handler);
+            var       facade   = NewFacade(Config.Root, progress, handler);
 
             var result = await facade.LoginAsync(
                 "https://acme.kcap.ai", forceDevice: true, profile: "acme", CancellationToken.None);
@@ -321,7 +322,7 @@ public class CommitBoundaryTests {
         try {
             using var handler  = AuthHttp.Script(authConfig: """{"provider":"GitHubApp","github_client_id":"cid"}""");
             var       progress = new RecordingAuthProgress();
-            var       facade   = NewFacade(progress, handler);
+            var       facade   = NewFacade(Config.Root, progress, handler);
 
             var result = await facade.LoginAsync(
                 "https://acme.kcap.ai", forceDevice: true, profile: "acme", CancellationToken.None, adoptServer: true);
@@ -373,6 +374,7 @@ public class CommitBoundaryTests {
                 new WorkOSAuthResponse { OrganizationId = "org_a", AccessToken = "acc2", RefreshToken = "rt2" }));
 
         var result = await WorkOSDiscovery.PublishAsync(
+            Config.Root,
             (WorkOSDiscoveryFlow.Ready)flow, new RecordingAuthProgress(),
             beforeCommit: (_, _) => throw new IOException("claim not persisted"),
             ct: CancellationToken.None);
@@ -400,10 +402,11 @@ public class CommitBoundaryTests {
                 new WorkOSAuthResponse { OrganizationId = "org_a", AccessToken = "acc2", RefreshToken = "rt2" }));
 
         var result = await WorkOSDiscovery.PublishAsync(
+            Config.Root,
             (WorkOSDiscoveryFlow.Ready)flow, new RecordingAuthProgress(), beforeCommit: null, CancellationToken.None);
 
         await Assert.That(result).IsTypeOf<AuthResult.Committed>();
-        await Assert.That((await TokenStore.LoadAsync("eventuous"))!.AccessToken).IsEqualTo("acc2");
+        await Assert.That((await new TokenStore(Config.Root).LoadAsync("eventuous"))!.AccessToken).IsEqualTo("acc2");
         await Assert.That(ConfigMutator.LoadPure(ConfigPath).Profiles["eventuous"].AuthProvider!.Provider)
             .IsEqualTo(AuthProvider.WorkOS);
     }

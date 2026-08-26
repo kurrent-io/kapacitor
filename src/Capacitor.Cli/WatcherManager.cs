@@ -8,21 +8,27 @@ using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli;
 
-static partial class WatcherManager {
-    internal static string GetWatcherDir() {
+sealed partial class WatcherManager(ConfigRoot config, ProfileContext profiles) {
+    // The one URL this process resolved. No member takes one: a watcher spawned against a different
+    // server than the hook that spawned it would stream a session nothing on this side can see.
+    // Nullable because an offline invocation resolves none — the IsPostable guards refuse that.
+    string? Url => profiles.Resolution.ServerUrl;
+
+    internal string GetWatcherDir() {
         var overrideDir = Environment.GetEnvironmentVariable("KCAP_WATCHER_DIR");
 
-        return overrideDir ?? PathHelpers.ConfigPath("watchers");
+        return overrideDir ?? config.Path("watchers");
     }
 
-    static string GetPidFilePath(string key) => Path.Combine(GetWatcherDir(), $"{key}.pid");
+    string GetPidFilePath(string key) => Path.Combine(GetWatcherDir(), $"{key}.pid");
 
     /// <summary>
     /// Per-key heartbeat file (touched every main-loop iteration by the watcher itself —
     /// see <c>WatchCommand.RunWatch</c>) used by <see cref="IsWatcherAlive"/> to tell a
     /// wedged (hung-but-alive) watcher from a healthy one.
     /// </summary>
-    internal static string GetHeartbeatFilePath(string key) => WatcherHeartbeat.HeartbeatPath(GetWatcherDir(), key);
+    internal string GetHeartbeatFilePath(string key) =>
+        WatcherHeartbeat.HeartbeatPath(GetWatcherDir(), key);
 
     /// <summary>
     /// Per-key start-time marker, written by <see cref="SpawnWatcher"/> at the moment the
@@ -30,7 +36,7 @@ static partial class WatcherManager {
     /// instance started even if it never gets far enough to touch its own heartbeat).
     /// Backs the startup-grace window in <see cref="IsWatcherAlive"/>.
     /// </summary>
-    static string GetStartedFilePath(string key) => Path.Combine(GetWatcherDir(), $"{key}.started");
+    string GetStartedFilePath(string key) => Path.Combine(GetWatcherDir(), $"{key}.started");
 
     /// <summary>
     /// Per-key spawn lock file — same cross-platform primitive as <c>DaemonLock</c>
@@ -39,7 +45,7 @@ static partial class WatcherManager {
     /// (both "no watcher yet" and "reap a wedged one first") so concurrent hooks racing the
     /// same key can't double-spawn.
     /// </summary>
-    static string GetSpawnLockFilePath(string key) => Path.Combine(GetWatcherDir(), $"{key}.spawnlock");
+    string GetSpawnLockFilePath(string key) => Path.Combine(GetWatcherDir(), $"{key}.spawnlock");
 
     /// <summary>
     /// Test-only seam: when set, <see cref="EnsureWatcherRunning"/> invokes this instead of
@@ -50,8 +56,8 @@ static partial class WatcherManager {
     internal static Func<string, Task>? SpawnOverrideForTesting;
 
     /// <summary>
-    /// Test seam for the ACTUAL <c>Process.Start</c> call inside <see cref="SpawnWatcher"/> and
-    /// <see cref="SpawnCopilotFinalizeDrain"/>. Distinct from <see cref="SpawnOverrideForTesting"/>,
+    /// Test seam for the ACTUAL <c>Process.Start</c> call inside <see cref="SpawnWatcher"/>,
+    /// <see cref="SpawnCopilotFinalizeDrain"/> and <c>ClaudeSessionEndHandoff.TrySpawn</c>. Distinct from <see cref="SpawnOverrideForTesting"/>,
     /// which only <c>SpawnForKeyAsync</c> consults and so cannot observe those methods at all.
     ///
     /// <para>Needed because both call static <c>Process.Start</c> inside a catch-all, and the finalize
@@ -63,7 +69,7 @@ static partial class WatcherManager {
     /// </summary>
     internal static Func<ProcessStartInfo, Process?>? ProcessStarterForTesting;
 
-    static Process? StartProcess(ProcessStartInfo psi) =>
+    internal static Process? StartProcess(ProcessStartInfo psi) =>
         ProcessStarterForTesting is { } fake ? fake(psi) : Process.Start(psi);
 
     internal static string BuildSpawnArgs(
@@ -101,8 +107,7 @@ static partial class WatcherManager {
         return arguments;
     }
 
-    public static async Task SpawnWatcher(
-            string  baseUrl,
+    public async Task SpawnWatcher(
             string  key,
             string  transcriptPath,
             string? agentId,
@@ -114,9 +119,9 @@ static partial class WatcherManager {
         // Defence in depth: ShouldSpawnAfter already refuses for an unusable URL, but a caller that
         // bypassed it would otherwise write a PID file asserting capture that cannot happen — a
         // watcher streams to SignalR and can never connect here.
-        if (!HookHttp.IsPostable(baseUrl)) {
+        if (!HookHttp.IsPostable(Url)) {
             await Console.Error.WriteLineAsync(
-                UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, $"watcher not started for {key}"));
+                UnusableUrlDiagnostic.Build(profiles.Resolution.Source, Url, $"watcher not started for {key}"));
             return;
         }
 
@@ -142,7 +147,10 @@ static partial class WatcherManager {
                 RedirectStandardError  = true,
                 UseShellExecute        = false,
                 CreateNoWindow         = true,
-                Environment            = { ["KCAP_URL"] = baseUrl }
+                Environment = {
+                    ["KCAP_URL"]                 = Url,
+                    [ConfigRoot.ConfigDirEnvVar] = config.Directory
+                }
             };
 
             // Stop the watcher from inheriting the coding agent's pipe descriptors —
@@ -192,7 +200,7 @@ static partial class WatcherManager {
     /// reopening the double-spawn hole (the same reason <c>DaemonLock</c> never unlinks its
     /// lock file). The spawn lock is swept by <see cref="PurgeAuxiliaryFiles"/> / <c>kcap cleanup</c>.
     /// </summary>
-    static void DeleteHeartbeatFiles(string key) {
+    void DeleteHeartbeatFiles(string key) {
         try { File.Delete(GetHeartbeatFilePath(key)); } catch { /* best-effort */ }
         try { File.Delete(GetStartedFilePath(key)); } catch { /* best-effort */ }
     }
@@ -203,7 +211,7 @@ static partial class WatcherManager {
     /// watchers are killed — the one place it is safe to unlink spawn-lock files, since cleanup
     /// holds no spawn lock. Returns the number of files removed.
     /// </summary>
-    public static int PurgeAuxiliaryFiles() {
+    public int PurgeAuxiliaryFiles() {
         var dir = GetWatcherDir();
 
         if (!Directory.Exists(dir)) {
@@ -232,7 +240,7 @@ static partial class WatcherManager {
     /// heartbeat/started markers; see <see cref="DeleteHeartbeatFiles"/> for
     /// why the spawn lock is intentionally left behind here.
     /// </summary>
-    public static async Task<bool> KillWatcher(string key) {
+    public async Task<bool> KillWatcher(string key) {
         var pidFile = GetPidFilePath(key);
 
         if (!File.Exists(pidFile)) {
@@ -312,14 +320,15 @@ static partial class WatcherManager {
     /// teardown of its spawned children). <see cref="KillWatcher"/>'s SIGTERM-first gives each
     /// child its final drain; its 5s force-kill bound keeps a wedged child from stalling the caller.
     /// </summary>
-    public static Task KillWatchers(IEnumerable<string> keys) => Task.WhenAll(keys.Select(KillWatcher));
+    public Task KillWatchers(IEnumerable<string> keys) =>
+        Task.WhenAll(keys.Select(KillWatcher));
 
     /// <summary>
     /// Retires this watcher's own pid file (+ heartbeat markers) on graceful exit, but only while
     /// it still names this incarnation — a successor that already overwrote the file is left
     /// alone. Keeps a later teardown/cleanup from ever acting on this watcher's recycled pid.
     /// </summary>
-    public static void RemoveOwnPidFile(string key, int ownPid) {
+    public void RemoveOwnPidFile(string key, int ownPid) {
         try {
             var lines = File.ReadAllLines(GetPidFilePath(key));
 
@@ -349,7 +358,7 @@ static partial class WatcherManager {
     }
 
     /// <summary>PID-only liveness: the process exists, irrespective of whether it's wedged.</summary>
-    static bool PidAlive(string key) {
+    bool PidAlive(string key) {
         var pidFile = GetPidFilePath(key);
 
         if (!File.Exists(pidFile)) {
@@ -381,7 +390,7 @@ static partial class WatcherManager {
     /// wedged. A PID-only check (the old behavior, still available via
     /// <see cref="PidAlive"/>) can't tell a hung watcher from a healthy one.
     /// </summary>
-    internal static bool IsWatcherAlive(string key) {
+    internal bool IsWatcherAlive(string key) {
         if (!PidAlive(key)) {
             return false;
         }
@@ -404,7 +413,7 @@ static partial class WatcherManager {
     /// loser to do but skip (task 9: prevents two concurrent hooks from
     /// double-spawning a watcher for the same key).
     /// </summary>
-    internal static async Task WithSpawnLock(string key, Func<Task> body) {
+    internal async Task WithSpawnLock(string key, Func<Task> body) {
         var watcherDir = GetWatcherDir();
         Directory.CreateDirectory(watcherDir);
 
@@ -427,8 +436,7 @@ static partial class WatcherManager {
         }
     }
 
-    static Task SpawnForKeyAsync(
-            string  baseUrl,
+    Task SpawnForKeyAsync(
             string  key,
             string  transcriptPath,
             string? agentId,
@@ -439,10 +447,9 @@ static partial class WatcherManager {
         ) =>
         SpawnOverrideForTesting is { } fake
             ? fake(key)
-            : SpawnWatcher(baseUrl, key, transcriptPath, agentId, sessionIdOverride, cwd, skipTitle, vendor);
+            : SpawnWatcher(key, transcriptPath, agentId, sessionIdOverride, cwd, skipTitle, vendor);
 
-    public static async Task EnsureWatcherRunning(
-            string  baseUrl,
+    public async Task EnsureWatcherRunning(
             string  key,
             string  transcriptPath,
             string? agentId,
@@ -476,11 +483,11 @@ static partial class WatcherManager {
                 await KillWatcher(key);
             }
 
-            await SpawnForKeyAsync(baseUrl, key, transcriptPath, agentId, sessionIdOverride, cwd, skipTitle, vendor);
+            await SpawnForKeyAsync(key, transcriptPath, agentId, sessionIdOverride, cwd, skipTitle, vendor);
         });
     }
 
-    public static void SpawnWhatsDoneGenerator(string baseUrl, string sessionId, string vendor = "claude") {
+    public void SpawnWhatsDoneGenerator(string sessionId, string vendor = "claude") {
         try {
             var kcapPath = Environment.ProcessPath ?? "kcap";
 
@@ -491,7 +498,8 @@ static partial class WatcherManager {
                 UseShellExecute        = false,
                 CreateNoWindow         = true,
                 Environment = {
-                    ["KCAP_URL"] = baseUrl
+                    ["KCAP_URL"]                 = Url,
+                    [ConfigRoot.ConfigDirEnvVar] = config.Directory
                 }
             };
             psi.ArgumentList.Add("generate-whats-done");
@@ -537,12 +545,12 @@ static partial class WatcherManager {
     /// and-forget and idempotent (server watermark + deterministic ids); mirrors
     /// <see cref="SpawnWhatsDoneGenerator"/>.
     /// </summary>
-    public static void SpawnCopilotFinalizeDrain(string baseUrl, string sessionId, string transcriptPath) {
+    public void SpawnCopilotFinalizeDrain(string sessionId, string transcriptPath) {
         // A detached child that would poll for up to 45s and then exit 2 on an unusable URL, leaving
         // no marker any assertion could observe. Refuse to launch it at all.
-        if (!HookHttp.IsPostable(baseUrl)) {
+        if (!HookHttp.IsPostable(Url)) {
             Console.Error.WriteLine(
-                UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, $"copilot finalize drain not started for {sessionId}"));
+                UnusableUrlDiagnostic.Build(profiles.Resolution.Source, Url, $"copilot finalize drain not started for {sessionId}"));
             return;
         }
 
@@ -555,7 +563,10 @@ static partial class WatcherManager {
                 RedirectStandardError  = true,
                 UseShellExecute        = false,
                 CreateNoWindow         = true,
-                Environment            = { ["KCAP_URL"] = baseUrl }
+                Environment = {
+                    ["KCAP_URL"]                 = Url,
+                    [ConfigRoot.ConfigDirEnvVar] = config.Directory
+                }
             };
             psi.ArgumentList.Add("copilot-finalize");
             psi.ArgumentList.Add(sessionId);
@@ -585,30 +596,29 @@ static partial class WatcherManager {
         }
     }
 
-    public static async Task InlineDrainAsync(
-            string  baseUrl,
+    public async Task InlineDrainAsync(
             string  sessionId,
             string  transcriptPath,
             string? agentId,
             string  vendor = "claude"
         ) {
-        // Runs on session-end BEFORE the lifecycle POST, and builds its client with no baseUrl — which
-        // re-resolves the same unusable value. The caller's preceding KillWatcher is unaffected.
-        if (!HookHttp.IsPostable(baseUrl)) {
+        // Runs on session-end BEFORE the lifecycle POST. The caller's preceding KillWatcher is
+        // unaffected.
+        if (!HookHttp.IsPostable(Url)) {
             await Console.Error.WriteLineAsync(
-                UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, $"inline drain skipped for {sessionId}"));
+                UnusableUrlDiagnostic.Build(profiles.Resolution.Source, Url, $"inline drain skipped for {sessionId}"));
             return;
         }
 
         try {
-            using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+            using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, Url!);
 
             // Get server's last recorded position
             int startLine;
 
             try {
                 var query = agentId is not null ? $"?agentId={agentId}" : "";
-                var resp  = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/last-line{query}");
+                var resp  = await httpClient.GetWithRetryAsync($"{Url}/api/sessions/{sessionId}/last-line{query}");
 
                 if (resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NoContent) {
                     var json = await resp.Content.ReadAsStringAsync();
@@ -672,7 +682,7 @@ static partial class WatcherManager {
             using var content   = new StringContent(batchJson, Encoding.UTF8, "application/json");
 
             try {
-                var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/transcript", content);
+                var resp = await httpClient.PostWithRetryAsync($"{Url}/hooks/transcript", content);
 
                 if (resp.IsSuccessStatusCode) {
                     await Console.Error.WriteLineAsync($"Inline drain for {sessionId}: sent {newLines.Count} line(s)");

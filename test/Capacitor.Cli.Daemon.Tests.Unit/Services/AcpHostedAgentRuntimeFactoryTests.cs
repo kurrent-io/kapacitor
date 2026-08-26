@@ -1845,6 +1845,10 @@ public class AcpHostedAgentRuntimeFactoryTests : IDisposable {
         await Assert.That(env[BorrowedReviewAuthBroker.TargetVariable]).IsEqualTo("brokered-value");
         await Assert.That(env["HOME"]).IsEqualTo(Path.Combine("/snap/b1.vendor-state", "home"));
         await Assert.That(env["TMPDIR"]).IsEqualTo(Path.Combine("/snap/b1.vendor-state", "tmp"));
+        // Named rather than left to the derivation off HOME: an operator with KCAP_CONFIG_DIR
+        // exported would otherwise have the reviewer read the real profile through inheritance.
+        await Assert.That(env[ConfigRoot.ConfigDirEnvVar])
+            .IsEqualTo(Path.Combine("/snap/b1.vendor-state", "home", ".config", "kcap"));
         // The user's real home must not leak in through either variable.
         await Assert.That(env["HOME"]).IsNotEqualTo(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));

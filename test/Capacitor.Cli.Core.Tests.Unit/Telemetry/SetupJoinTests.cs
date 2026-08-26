@@ -4,10 +4,9 @@ using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Core.Tests.Unit.Telemetry;
 
-// Bare [NotInParallel], not the TelemetryState.PathOverride/TelemetryDeviceId.PathOverride keys
-// SetupFunnelTests uses: the debug-output tests here capture Console, which is process-global, and
-// ConsoleOutput rejects an overlapping capture outright. Ungrouped is strictly stronger, so it
-// covers the shared telemetry statics too.
+// Bare [NotInParallel], not the CliTelemetry.TestSink key SetupFunnelTests uses: the debug-output
+// tests here capture Console, which is process-global, and ConsoleOutput rejects an overlapping
+// capture outright. Ungrouped is strictly stronger, so it covers the shared telemetry statics too.
 [NotInParallel]
 public class SetupJoinTests : IDisposable {
     readonly TempDir _tmp = new();
@@ -23,13 +22,12 @@ public class SetupJoinTests : IDisposable {
     }
 
     List<TelemetryEvent> StartCapturing() {
-        TelemetryState.PathOverride    = _tmp.PathTo("telemetry.json");
-        TelemetryDeviceId.PathOverride = _tmp.PathTo("telemetry-device.json");
+        var config = new ConfigRoot(_tmp.Path);
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
-        CliTelemetry.Initialize("setup", null, loggedIn: false);
+        CliTelemetry.Initialize("setup", null, loggedIn: false, config);
 
-        TelemetryTestGuards.AssertEnabled("setup");
+        TelemetryTestGuards.AssertEnabled("setup", config);
 
         sink.Clear(); // drop cli_first_run
 
@@ -146,11 +144,10 @@ public class SetupJoinTests : IDisposable {
     [Test]
     public async Task Minting_writes_nothing_to_the_telemetry_state_files() {
         var dir = _tmp.CreateDir("state");
-        TelemetryState.PathOverride    = dir.PathTo("telemetry.json");
-        TelemetryDeviceId.PathOverride = dir.PathTo("telemetry-device.json");
+        var config = new ConfigRoot(dir.Path);
         CliTelemetry.TestSink = [];
-        CliTelemetry.Initialize("setup", null, loggedIn: false);
-        TelemetryTestGuards.AssertEnabled("setup");
+        CliTelemetry.Initialize("setup", null, loggedIn: false, config);
+        TelemetryTestGuards.AssertEnabled("setup", config);
 
         var key = SetupJoin.Mint();
         await CliTelemetry.FlushAndClose();

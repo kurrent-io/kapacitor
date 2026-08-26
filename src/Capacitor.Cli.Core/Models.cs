@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.Harness.Cursor;
+using Capacitor.Cli.Core.RepoEvidence;
 using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Core;
@@ -126,6 +127,13 @@ class WatchState {
     public RepositoryPayload? Repository         { get; set; }
     public RepositoryPayload? LastSentRepository { get; set; }
     public DateTimeOffset     LastRepoDetection  { get; set; }
+
+    // Non-null only for a Claude session watcher launched outside any repo; see RepoEvidenceScanner.
+    // RepositoryFromEvidence, once true, protects Repository from being cleared by a later null
+    // cwd-based probe (see WatchCommand.ShouldReplaceRepository).
+    public RepoEvidenceScanner<RepositoryPayload>? EvidenceScanner        { get; set; }
+    public bool                                    RepositoryFromEvidence { get; set; }
+
     public bool               InitialTitleSent   { get; set; }
     public bool               TitleGenerated     { get; set; }
     public int                TitleAttempts      { get; set; }
@@ -959,6 +967,9 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Auth.WorkOSUserInfo))]
 [JsonSerializable(typeof(Auth.ProxyConfigResponse))]
 [JsonSerializable(typeof(Auth.DiscoveredTenant[]))]
+[JsonSerializable(typeof(FirstRun.CreateFirstRunFlowRequest))]
+[JsonSerializable(typeof(FirstRun.FirstRunHarnessReport))]
+[JsonSerializable(typeof(FirstRun.FirstRunFlowResponse))]
 [JsonSerializable(typeof(LaunchAgentCommand))]
 // Task 8: reviewer-model launch block + preflight RPC + resolved report wire DTOs.
 [JsonSerializable(typeof(ExplicitReviewerModelLaunch))]
@@ -1082,6 +1093,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(AcpBindOutcome))]
 [JsonSerializable(typeof(AcpSourceClaimOutcome))]
 [JsonSerializable(typeof(AcpLaunchConfirmOutcome))]
+[JsonSerializable(typeof(ParkParticipantOutcome))]
 [JsonSerializable(typeof(TranscriptBatchAck))]
 // The AcpSessionStarted hub method's optional metadata argument. Registered as its own root type
 // (not just nested inside another JsonSerializable graph) because SignalR's JsonHubProtocol
@@ -1387,6 +1399,24 @@ public readonly record struct AcpSourceClaimOutcome(AcpBindOutcome Outcome, long
 public enum AcpLaunchConfirmOutcome { Confirmed = 0, AlreadyConfirmed = 1, Superseded = 2, NotFound = 3 }
 
 /// <summary>
+/// §2.7 B6 reply to the server's <c>ReportParticipantParked</c> hub method — a
+/// field-for-field mirror of the server-side <c>Capacitor.Events.ParkParticipantOutcome</c>.
+/// <see cref="Parked"/> (including an idempotent re-park) means the daemon may complete its local
+/// park teardown while suppressing the hosted session-end, since the app-server thread survives for
+/// a later resume; <see cref="Rejected"/> is a DEFINITE refusal (wrong reason string, not the owning
+/// connection, an ownership-claim miss, a ledger CAS refusal, or a malformed canonical id) — the
+/// daemon falls back to the normal end path instead of parking. There is no third wire value: an
+/// AMBIGUOUS outcome (a transient transport error or timeout) is the
+/// ABSENCE of a reply — never encoded here. <c>ServerConnection.ReportParticipantParkedAsync</c> is
+/// what folds that absence into the daemon-local <c>ParkAck.Ambiguous</c>. A pre-B1 server with no
+/// <c>ReportParticipantParked</c> handler at all is a separate, PERMANENT case that same method also
+/// handles: it recognizes the resulting "unknown hub method" <c>HubException</c> specifically and maps
+/// it to the daemon-local <c>ParkAck.Rejected</c> instead of Ambiguous, so a permanently-old server
+/// degrades to the normal reap rather than retrying the park forever.
+/// </summary>
+public enum ParkParticipantOutcome { Parked, Rejected }
+
+/// <summary>
 /// Ack returned from the server's <c>SendTranscriptBatchAcked</c> hub method (D3).
 /// Field-for-field mirror of the server-side <c>Capacitor.TranscriptBatchAck</c> record.
 /// <see cref="NextLineNumber"/> is the source-acknowledgement frontier — the first line number
@@ -1480,7 +1510,11 @@ public readonly record struct LaunchAgentCommand(
         // orchestrator's pre-flight AcpPermissionPresetPolicy fails closed on a preset supplied for a
         // review-flow / borrowed / non-ACP-routed launch. Appended last so the SignalR positional
         // binding stays wire-compatible — old daemons ignore it, old servers never set it.
-        string?           AcpPermissionPreset = null
+        string?           AcpPermissionPreset = null,
+        // §2.7 B4: the hosted Codex thread to RESUME (via thread/resume, no second SessionStarted) instead
+        // of starting fresh — set by the server only for a parked-reviewer relaunch, else null. Appended
+        // last so the SignalR positional binding stays wire-compatible with old daemons.
+        string?           ResumeSessionId = null
     );
 
 /// <summary>Caller-selected Codex launch posture. Valid ONLY for interactive, daemon-owned-worktree

@@ -1,5 +1,6 @@
 using Capacitor.App.Services.Mutation;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.App.Services;
 
@@ -58,7 +59,7 @@ public sealed class DaemonLifecycleController : IAsyncDisposable {
     readonly Func<Task<string?>> _resolveProfileName;
     readonly TimeProvider _time;
     // Fixed for the controller's lifetime, same as KcapCli's own canonicalServer (both resolved
-    // once from the same AppConfig.ResolvedProfile at composition time) — the mutation-request
+    // once from the same resolution at composition time) — the mutation-request
     // guard (MutationRequestFactory) reads this at every lane call, never re-resolving it.
     readonly string? _canonicalServer;
     // The lane's RunAsync — every mutating branch routes through it instead of IKcapCli directly; this controller's own _gate serializes DECIDING, the lane serializes EXECUTION.

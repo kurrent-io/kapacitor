@@ -85,6 +85,7 @@ internal enum StartGateReason { DirectiveMissing, DirectiveInvalid, IdentityMism
 /// </summary>
 sealed class ServiceVerify(
     DaemonStore store,
+    ConfigRoot config,
     IVerifyServiceManager manager,
     Func<string, int?> validatedDaemonPid,
     Func<string, TimeSpan, Task<HelloProbeResult>> hello,
@@ -167,6 +168,24 @@ sealed class ServiceVerify(
     /// fail-closed placeholder in dev/test builds.</summary>
     readonly Func<string, bool> _digestMatches = digestMatches ?? DaemonDigest.Matches;
 
+    /// <summary>The gate reason of the LAST Phase-A refusal, for an in-process caller (the ensure
+    /// ladder) that must map <see cref="VerifyExit.StartGate"/> to a recovery surface without
+    /// re-parsing its own stderr. Null after a passing start, a non-gate exit, or a fresh engine —
+    /// and reset at every operation entry, so a reused engine never carries a prior refusal into a
+    /// later call. The app shells out and reads the token from child stderr instead; this is the
+    /// in-process twin of the same <c>start_gate_reason=</c> contract.</summary>
+    internal StartGateReason? LastGateReason { get; private set; }
+
+    /// <summary>The coded <c>viability_reason=</c> token of the LAST gated-install viability abort
+    /// (the one emitted producer is <c>package_inconsistent</c>), for the same in-process caller.
+    /// Null after any other exit — reset at every operation entry like <see cref="LastGateReason"/>.</summary>
+    internal string? LastViabilityReason { get; private set; }
+
+    /// <summary>The coded <c>refusal_reason=</c> token of the LAST attributed readiness-timeout
+    /// boot refusal (e.g. <c>consent_seed_unwritable</c>), for the same in-process caller. Null
+    /// when the timeout was not attributed — reset at every operation entry.</summary>
+    internal string? LastBootRefusalToken { get; private set; }
+
     const string ConsentSeedVar = "KCAP_CONSENT_SEED_DEFAULT";
     const string ProfileVar     = "KCAP_PROFILE";
     const string UrlVar         = "KCAP_URL";
@@ -192,6 +211,12 @@ sealed class ServiceVerify(
     /// <summary>start --verify: no viability check (start writes nothing). Accepts ANY well-formed
     /// hello — capability-incompatible old daemons included.</summary>
     public async Task<int> StartVerifiedAsync(string serviceId) {
+        // Entry reset: the in-process evidence properties describe THIS operation only, so a reused
+        // engine must never carry a prior gate refusal / refusal token into a later call.
+        LastGateReason       = null;
+        LastViabilityReason  = null;
+        LastBootRefusalToken = null;
+
         using var txn = ServiceTxnLock.TryAcquire(store, serviceId, LockWait);
 
         if (txn is null) {
@@ -232,7 +257,7 @@ sealed class ServiceVerify(
                 try {
                     var unitEnv = content is not null ? LaunchdUnit.EnvFromPlist(content) : new Dictionary<string, string>();
                     var unitBinaryPath = content is not null ? LaunchdUnit.BinaryFromPlist(content) : null;
-                    reason = EvaluateStartGate(unitEnv, unitBinaryPath, UnitIdentity.ResolveDaemonBinary(), _gateEnv!, _digestMatches);
+                    reason = EvaluateStartGate(unitEnv, unitBinaryPath, UnitIdentity.ResolveDaemonBinary(), _gateEnv!, config, _digestMatches);
                     unitEnv.TryGetValue(ExpectVar, out unitExpectation);
                 } catch {
                     reason = StartGateReason.EvidenceUnreadable;
@@ -240,6 +265,7 @@ sealed class ServiceVerify(
             }
 
             if (reason is { } r) {
+                LastGateReason = r;
                 Say($"start_gate_reason={GateReasonToken(r)}");
                 Say(VerifyExit.StartGateToken);
                 return VerifyExit.StartGate;
@@ -371,7 +397,9 @@ sealed class ServiceVerify(
 
         var rollbackExit = await Rollback(serviceId);
 
-        return AttributeReadinessTimeout(store, serviceId, rollbackExit, gated, attributionEnabled, unitExpectation, observedJobPids);
+        var (exit, refusalToken) = AttributeReadinessTimeout(store, serviceId, rollbackExit, gated, attributionEnabled, unitExpectation, observedJobPids);
+        LastBootRefusalToken = refusalToken;
+        return exit;
     }
 
     /// <summary>Re-reads the plist and re-checks the digest (both contained — never an escaping
@@ -399,16 +427,17 @@ sealed class ServiceVerify(
     /// what a boot-refusal marker explains, so <paramref name="rollbackExit"/> passes through
     /// unchanged in every case; this only ever adds the one stderr line and consumes the marker.
     /// </summary>
-    static int AttributeReadinessTimeout(DaemonStore store, string daemonName, int rollbackExit, bool gated, bool attributionEnabled,
+    static (int Exit, string? RefusalToken) AttributeReadinessTimeout(DaemonStore store, string daemonName, int rollbackExit, bool gated, bool attributionEnabled,
             string? unitExpectation, IReadOnlySet<int> observedJobPids) {
         if (gated && attributionEnabled && rollbackExit == VerifyExit.ReadinessTimeout
             && BootRefusalMarker.TryRead(store, daemonName) is { } evidence
             && Attributable(evidence, daemonName, unitExpectation, observedJobPids)) {
             Say($"refusal_reason={evidence.Token}");
             BootRefusalMarker.TryDelete(store, daemonName);
+            return (rollbackExit, evidence.Token);
         }
 
-        return rollbackExit;
+        return (rollbackExit, null);
     }
 
     /// <summary>
@@ -460,7 +489,8 @@ sealed class ServiceVerify(
     /// </summary>
     internal static StartGateReason? EvaluateStartGate(
             IReadOnlyDictionary<string, string> unitEnv, string? unitBinaryPath,
-            string? installBinaryPath, Func<string, string?> env, Func<string, bool>? digestMatches = null) {
+            string? installBinaryPath, Func<string, string?> env, ConfigRoot config,
+            Func<string, bool>? digestMatches = null) {
         var invokingDirective = env(ConsentSeedVar);
         if (invokingDirective is null) return null; // true absence — this invocation never asked to be gated
 
@@ -493,7 +523,7 @@ sealed class ServiceVerify(
         }
 
         try {
-            return EvaluateIdentity(unitEnv, env);
+            return EvaluateIdentity(unitEnv, env, config);
         } catch {
             return StartGateReason.EvidenceUnreadable;
         }
@@ -529,7 +559,8 @@ sealed class ServiceVerify(
     /// compared by exact name, server identity through <see cref="ServerIdentity.Canonicalize"/> — a
     /// candidate that fails to canonicalize can never silently agree with the others.
     /// </summary>
-    static StartGateReason? EvaluateIdentity(IReadOnlyDictionary<string, string> unitEnv, Func<string, string?> env) {
+    static StartGateReason? EvaluateIdentity(
+            IReadOnlyDictionary<string, string> unitEnv, Func<string, string?> env, ConfigRoot config) {
         unitEnv.TryGetValue(ProfileVar, out var unitProfile);
         unitEnv.TryGetValue(UrlVar, out var unitUrl);
         unitEnv.TryGetValue(ExpectVar, out var unitExpect);
@@ -543,7 +574,7 @@ sealed class ServiceVerify(
         if (!string.IsNullOrEmpty(unitProfile) && !string.Equals(envProfile, unitProfile, StringComparison.Ordinal))
             return StartGateReason.IdentityMismatch;
 
-        var unitResolved = !string.IsNullOrEmpty(unitUrl) ? unitUrl : BakedProfileServerUrl(unitEnv, unitProfile);
+        var unitResolved = !string.IsNullOrEmpty(unitUrl) ? unitUrl : BakedProfileServerUrl(unitEnv, unitProfile, config);
         if (string.IsNullOrEmpty(unitResolved)) return StartGateReason.IdentityMismatch; // unresolvable unit server
 
         string? canonical = null;
@@ -568,9 +599,10 @@ sealed class ServiceVerify(
     /// the caller's try/catch reports that as <see cref="StartGateReason.EvidenceUnreadable"/>,
     /// never silently folded into the same "server unresolvable" outcome an absent/unconfigured
     /// profile gets. <c>DaemonCommands</c>' UX-only counterpart fails soft to null instead.</summary>
-    static string? BakedProfileServerUrl(IReadOnlyDictionary<string, string> unitEnv, string? profile) {
+    static string? BakedProfileServerUrl(
+            IReadOnlyDictionary<string, string> unitEnv, string? profile, ConfigRoot root) {
         if (string.IsNullOrEmpty(profile)) return null;
-        var configPath = UnitIdentity.ConfigPathFromUnitEnv(unitEnv);
+        var configPath = UnitIdentity.ConfigPathFromUnitEnv(unitEnv, root);
 
         if (!ConfigMutator.TryLoadPure(configPath, out var config))
             throw new InvalidDataException($"unreadable config at '{configPath}'");
@@ -578,7 +610,7 @@ sealed class ServiceVerify(
         return config.Profiles.TryGetValue(profile, out var p) ? p.ServerUrl : null;
     }
 
-    static string GateReasonToken(StartGateReason reason) => reason switch {
+    internal static string GateReasonToken(StartGateReason reason) => reason switch {
         StartGateReason.DirectiveMissing     => "directive_missing",
         StartGateReason.DirectiveInvalid     => "directive_invalid",
         StartGateReason.IdentityMismatch     => "identity_mismatch",
@@ -661,6 +693,12 @@ sealed class ServiceVerify(
     /// (spec §3.4): a fresh install refuses to touch an existing label/unit
     /// (<see cref="VerifyExit.Contended"/>), while <c>--replace</c> clears/takes it over first.</summary>
     public async Task<int> InstallVerifiedAsync(ServiceSpec spec, bool replace, string? expectedVersion) {
+        // Entry reset: see StartVerifiedAsync — the in-process evidence properties describe THIS
+        // operation only.
+        LastGateReason       = null;
+        LastViabilityReason  = null;
+        LastBootRefusalToken = null;
+
         var serviceId   = spec.ServiceId;
         var op          = replace ? "replace" : "install";
         using var txn = ServiceTxnLock.TryAcquire(store, serviceId, LockWait);
@@ -707,7 +745,8 @@ sealed class ServiceVerify(
         // that as EvidenceUnreadable — install has no third bucket, and either way the binary
         // about to be installed cannot be trusted, so it's still a viability abort.
         if (gated && !DigestStillGood(spec.DaemonBinaryPath)) {
-            Say($"viability_reason={GateReasonToken(StartGateReason.PackageInconsistent)}");
+            LastViabilityReason = GateReasonToken(StartGateReason.PackageInconsistent);
+            Say($"viability_reason={LastViabilityReason}");
             return VerifyExit.Viability;
         }
 
@@ -786,7 +825,9 @@ sealed class ServiceVerify(
             // plist on disk, so route through the same fingerprint-gated rollback.
             Say($"{op}: {ex.Message}");
             var bootstrapThrowExit = await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.ReadinessTimeout, VerifyExit.ReadinessTimeoutToken);
-            return AttributeReadinessTimeout(store, serviceId, bootstrapThrowExit, gated, attributionEnabled, unitExpectation, observedJobPids);
+            var (bootstrapExit, bootstrapToken) = AttributeReadinessTimeout(store, serviceId, bootstrapThrowExit, gated, attributionEnabled, unitExpectation, observedJobPids);
+            LastBootRefusalToken = bootstrapToken;
+            return bootstrapExit;
         }
 
         ServiceTxnMarker.Write(store, serviceId, new TxnMarker(1, op, "bootstrapped", preState, "no-unit", fingerprint));
@@ -848,7 +889,9 @@ sealed class ServiceVerify(
         }
 
         var readinessTimeoutExit = await InstallRollback(serviceId, generated.Path, fingerprint, VerifyExit.ReadinessTimeout, VerifyExit.ReadinessTimeoutToken);
-        return AttributeReadinessTimeout(store, serviceId, readinessTimeoutExit, gated, attributionEnabled, unitExpectation, observedJobPids);
+        var (timeoutExit, timeoutToken) = AttributeReadinessTimeout(store, serviceId, readinessTimeoutExit, gated, attributionEnabled, unitExpectation, observedJobPids);
+        LastBootRefusalToken = timeoutToken;
+        return timeoutExit;
     }
 
     /// <summary>

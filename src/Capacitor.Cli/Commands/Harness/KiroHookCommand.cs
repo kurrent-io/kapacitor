@@ -32,7 +32,17 @@ namespace Capacitor.Cli.Commands.Harness;
 /// The raw fragment is written with no JSON envelope and no diagnostics: whatever lands on stdout
 /// becomes conversation context verbatim.
 /// </remarks>
-static class KiroHookCommand {
+sealed class KiroHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+    readonly WatcherManager  _watchers = new(config, profiles);
+    readonly AgentHookPoster _poster   = new(config, profiles);
+
+    string Url => profiles.Resolution.ServerUrl!;
+
+    /// <summary>kcap writes no <c>timeout_ms</c> into Kiro's hook entry, so Kiro's own default
+    /// governs and this conservative ceiling is the safe floor. Kiro discards the stdout of a hook it
+    /// killed, so an overrun costs the injection outright.</summary>
+    static readonly TimeSpan Ceiling = TimeSpan.FromSeconds(5);
+
     /// <summary>
     /// Writes the team-memory fragment as Kiro consumes it: raw text, no envelope.
     ///
@@ -72,44 +82,36 @@ static class KiroHookCommand {
     /// is skipped rather than letting the shared resolver fall back to the hook PROCESS's cwd and
     /// inject an unrelated repository's memories.</para>
     /// </summary>
-    static Task<string?> StartMemoryIndexTask(
-            string     baseUrl,
+    Task<string?> StartMemoryIndexTask(
             string     sessionId,
             string?    scopeRoot,
             bool       disabled,
             bool       guidelinesDisabled,
-            TimeSpan   budget,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+            TimeSpan   budget) {
         if ((disabled && guidelinesDisabled) || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
          || budget <= TimeSpan.Zero
-         || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
+         || !SessionStartMemoryHookSupport.CanAttempt(Url))
             return Task.FromResult<string?>(null);
 
         try {
-            var store    = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var store    = SessionStartMemoryLeaseStore.Create(config, clock.Time);
             var provider = SessionStartMemoryHookSupport.CompositeProvider(
-                memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
-                disposeClients: memoryClientFactory is null);
+                config,
+                SessionStartMemoryHookSupport.ClientFactory(config, profiles, Url),
+                disposeClients: true);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
                 new SessionMemoryLifecycle(SessionStartHarness.Kiro, sessionId, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true,
                     SessionLifecycleReason.RepeatedTurnCallback, CallbackMayRepeat: true),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None,
+                new SessionStartMemoryContextRequest(Url, scopeRoot, disabled, budget, CancellationToken.None,
                     GuidelinesDisabled: guidelinesDisabled));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);
         }
     }
 
-    /// <param name="processStart">Monotonic hook-start stamp anchoring every budget computation;
-    /// defaults to now. Tests pass an older stamp to drive the budget-exhausted branch without sleeping.</param>
-    public static async Task<int> Handle(string baseUrl, TextReader stdin, string[] args,
-            long processStart = 0,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) {
-        var ps = processStart == 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : processStart;
+    public async Task<int> Handle(TextReader stdin, string[] args) {
         // The installer always passes --event; default to agentSpawn so a
         // hand-rolled hook entry without it still records.
         var eventName = GetArg(args, "--event") ?? "agentSpawn";
@@ -149,14 +151,14 @@ static class KiroHookCommand {
 
         // Mirror the Claude/Codex/Copilot disabled-session fast path: `kcap
         // disable` must stop every POST and watcher restart for the session.
-        if (DisabledSessions.IsDisabled(sessionId)) return 0;
+        if (DisabledSessions.IsDisabled(sessionId, config)) return 0;
 
         // Task 12: the cross-vendor backlog drain now runs centrally in Program.cs's
         // `case "hook":` before dispatch — no longer wired here (removes the double-wire).
-        var spool = new HookSpool(PathHelpers.ConfigPath("spool"));
+        var spool = new HookSpool(config);
 
         var cwd           = TryGetString(node, "cwd");
-        var activeProfile = await AppConfig.GetActiveProfileAsync();
+        var activeProfile = profiles.Effective;
 
         // Cheap string-prefix path exclusion runs on every firing; repo exclusion
         // runs once after enrichment, then marks the session disabled so later
@@ -166,21 +168,18 @@ static class KiroHookCommand {
             return 0;
         }
 
-        return await HandleAgentSpawn(baseUrl, node, dashedSessionId, sessionId, cwd, activeProfile, spool,
-                   ps, memoryClientFactory, memoryStoreFactory);
+        var hookBudget = clock.Budget(Ceiling);
+        return await HandleAgentSpawn(node, dashedSessionId, sessionId, cwd, activeProfile, spool, hookBudget);
     }
 
-    static async Task<int> HandleAgentSpawn(
-            string    baseUrl,
-            JsonNode  node,
-            string    dashedSessionId,
-            string    sessionId,
-            string?   cwd,
-            Profile?  activeProfile,
-            HookSpool spool,
-            long      processStart,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory
+    async Task<int> HandleAgentSpawn(
+            JsonNode   node,
+            string     dashedSessionId,
+            string     sessionId,
+            string?    cwd,
+            Profile?   activeProfile,
+            HookSpool  spool,
+            HookBudget budget
         ) {
         var forwarded = new JsonObject {
             ["hook_event_name"] = "agentSpawn",
@@ -214,12 +213,12 @@ static class KiroHookCommand {
             forwarded["model"] = model;
         }
 
-        SessionStartInventory.Stamp(forwarded);
-        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(forwarded.ToJsonString());
+        SessionStartInventory.Stamp(forwarded, config);
+        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
-         && await RepoExclusion.IsExcludedAsync(enriched, excludedRepos)) {
-            DisabledSessions.Mark(sessionId);
+         && await RepoExclusion.IsExcludedAsync(config, enriched, excludedRepos)) {
+            DisabledSessions.Mark(sessionId, config);
             return 0;
         }
 
@@ -227,19 +226,15 @@ static class KiroHookCommand {
         // excluded-path/excluded-repo early-outs above so an excluded repo never reaches the memory
         // subsystem. The git root stamped onto the forwarded payload is the preferred scope; the
         // payload cwd is the fallback (never a process-cwd fallback — see StartMemoryIndexTask).
-        // Ceiling: the generic 5s hook budget. kcap writes no `timeout_ms` into Kiro's agent hook
-        // entry, so Kiro's own default governs and the conservative shared ceiling is the safe floor.
-        var memoryTask = StartMemoryIndexTask(
-            baseUrl, sessionId,
+        var memoryTask = StartMemoryIndexTask(sessionId,
             TryGetString(JsonNode.Parse(enriched), "workspace_root") ?? cwd,
             // The EFFECTIVE profile: ProfileResolver returns a null Profile whenever --server-url or
-            // KCAP_URL wins, so reading AppConfig.ResolvedProfile?.Profile here would silently ignore
-            // the user's opt-out on those deployments (the defect found reviewing the Copilot adapter).
+            // KCAP_URL wins, so reading the resolution's own profile here would silently ignore the
+            // user's opt-out on those deployments (the defect found reviewing the Copilot adapter).
             activeProfile?.DisableMemoryIndex is true,
             activeProfile?.DisableSessionGuidelines is true,
-            // Remaining() already reserves Safety — do not subtract it again.
-            HookBudget.Remaining(processStart, "session-start"),
-            memoryClientFactory, memoryStoreFactory);
+            // Remaining already reserves Safety — do not subtract it again.
+            budget.Remaining);
 
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse /
         // outage) — a doomed/delayed lifecycle POST must never withhold the watcher. On a real
@@ -250,8 +245,7 @@ static class KiroHookCommand {
         // Started but NOT awaited yet, so the POST cannot stand between a fetched fragment and stdout:
         // PostWithRetryAsync retries for 30s, far beyond this hook's 5s ceiling. Safe to run
         // concurrently with the write below because the poster only ever writes to stderr.
-        var postTask = AgentHookPoster.PostOrSpoolAsync(
-            baseUrl, "session-start/kiro", enriched, "kiro-hook",
+        var postTask = _poster.PostOrSpoolAsync("session-start/kiro", enriched, "kiro-hook",
             spool, sessionId, route: "session-start/kiro");
 
         // The fragment reaches stdout as soon as the bounded fetch resolves — before the POST is
@@ -259,10 +253,10 @@ static class KiroHookCommand {
         // EnsureWatcherRunning stall can strand an already-committed injection. Flushed explicitly:
         // a fragment sitting in a buffer when Kiro's hook timeout kills the process is a fragment
         // whose lease was spent for nothing.
-        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
+        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = HarnessNudgeEmitter.Combine(
             WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Kiro, sessionId, activeProfile?.DisableWorkItemsNudge is true),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true));
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config));
         WriteAgentSpawnOutput(Console.Out, fragment, workItemsNudge);
         await Console.Out.FlushAsync();
 
@@ -277,7 +271,7 @@ static class KiroHookCommand {
         HookPostOutcome outcome;
 
         try {
-            outcome = await postTask.WaitAsync(HookBudget.Remaining(processStart, "session-start"));
+            outcome = await postTask.WaitAsync(budget.Remaining);
         } catch (TimeoutException) {
             // Spooled, not Failed: a drain pass will replay it, so capture must still start — but only
             // claim that when the write actually landed.
@@ -286,7 +280,7 @@ static class KiroHookCommand {
                 : HookPostOutcome.Skipped;
         }
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return 0;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, Url)) return 0;
 
         // The watcher tails Kiro's own append-only session log
         // ~/.kiro/sessions/cli/{id}.jsonl (the file is named with the dashed id).
@@ -301,11 +295,10 @@ static class KiroHookCommand {
         // transcript (startup is idempotent and agentSpawn fires again next prompt); a killed hook
         // costs the whole session's injection. An abandoned in-flight spawn reconciles on that firing.
         try {
-            await WatcherManager.EnsureWatcherRunning(
-                baseUrl, sessionId, transcriptPath,
+            await _watchers.EnsureWatcherRunning(sessionId, transcriptPath,
                 agentId: null, sessionIdOverride: null, cwd: cwd,
                 skipTitle: false, vendor: "kiro"
-            ).WaitAsync(HookBudget.Remaining(processStart, "session-start"));
+            ).WaitAsync(budget.Remaining);
         } catch (TimeoutException) {
             // Budget exhausted (possibly already zero, which skips the attempt outright). The next
             // agentSpawn ensures the watcher; exiting 0 now is what keeps the fragment deliverable.

@@ -4,22 +4,16 @@ namespace Capacitor.Cli.Core.Setup;
 
 /// <summary>
 /// Reads and writes the <see cref="HarnessOfferLedger"/> and owns the shared 6-hour evaluation
-/// throttle stamp. Both files live under <see cref="PathHelpers.ConfigPath"/> and therefore inherit
-/// the <c>KCAP_CONFIG_DIR</c> override like all kcap config. Load is corrupt-tolerant (→ empty
+/// throttle stamp. Both files live under the caller's <see cref="ConfigRoot"/>. Load is
+/// corrupt-tolerant (→ empty
 /// ledger); Save is atomic (temp + rename) so a reader never observes a partial file.
 /// </summary>
-public sealed class HarnessOfferStore {
-    readonly string _ledgerPath;
-    readonly string _stampPath;
+public sealed class HarnessOfferStore(ConfigRoot config) {
+    const string LedgerFileName = "harness-offers-v1.json";
+    const string StampFileName  = "harness-offers.last-check";
 
-    public HarnessOfferStore(string ledgerPath, string stampPath) {
-        _ledgerPath = ledgerPath;
-        _stampPath  = stampPath;
-    }
-
-    /// <summary>Production instance rooted at <c>~/.config/kcap</c> (honours <c>KCAP_CONFIG_DIR</c>).</summary>
-    public static HarnessOfferStore Default() =>
-        new(PathHelpers.ConfigPath("harness-offers-v1.json"), PathHelpers.ConfigPath("harness-offers.last-check"));
+    readonly string _ledgerPath = config.Path(LedgerFileName);
+    readonly string _stampPath  = config.Path(StampFileName);
 
     /// <summary>Missing or corrupt file → empty ledger; never throws. A syntactically valid file
     /// with a null <c>vendors</c> member is normalized to an empty dictionary so callers never
@@ -62,7 +56,7 @@ public sealed class HarnessOfferStore {
     /// </summary>
     public bool Update(Func<HarnessOfferLedger, HarnessOfferLedger> mutate, TimeSpan? lockTimeout = null) {
         IDisposable lease;
-        try { lease = ConfigFileLock.Acquire(_ledgerPath, lockTimeout ?? TimeSpan.FromSeconds(5)); }
+        try { lease = config.AcquireLock(LedgerFileName, lockTimeout ?? TimeSpan.FromSeconds(5)); }
         catch { return false; } // timeout or foreign-owned mutex → skip rather than risk a lockless overwrite
         using (lease) {
             return Save(mutate(Load()));

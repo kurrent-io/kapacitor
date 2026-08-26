@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.Harness.Kiro;
 using Capacitor.Cli.Core.Mcp;
@@ -32,7 +33,7 @@ public class PluginCommandKiroTests {
             {"mcpServers":{"my-tool":{"command":"my-tool","args":["serve"],"autoApprove":["do_thing"]}}}
             """);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--kiro", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.KiroMcpJson))!.AsObject()["mcpServers"]!.AsObject();
@@ -58,8 +59,8 @@ public class PluginCommandKiroTests {
         var env = TestEnv(home.Path);
         SeedAgent(env);
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--kiro", "--if-installed", "--skip-kiro-mcp"], env);
+        var exit = await new PluginCommand(env).HandleAsync(
+            ["plugin", "install", "--kiro", "--if-installed", "--skip-kiro-mcp"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(env.KiroMcpJson)).IsFalse();
@@ -74,7 +75,7 @@ public class PluginCommandKiroTests {
         // settings/ dir does not exist yet — Register must create it.
         await Assert.That(Directory.Exists(Path.GetDirectoryName(env.KiroMcpJson)!)).IsFalse();
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--kiro", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(env.KiroMcpJson)).IsTrue();
@@ -92,7 +93,7 @@ public class PluginCommandKiroTests {
         seeded["mcpServers"]!["my-tool"] = JsonNode.Parse("""{"command":"my-tool","args":["serve"]}""");
         await File.WriteAllTextAsync(env.KiroMcpJson, seeded.ToJsonString());
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "remove", "--kiro"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--kiro"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.KiroMcpJson))!.AsObject()["mcpServers"]!.AsObject();
@@ -114,7 +115,7 @@ public class PluginCommandKiroTests {
         JsonMcpConfigWriter.Register(env.KiroMcpJson, partial, McpConfigShape.Standard, cwd: null, new McpMarker("kiro"));
         await Assert.That(File.Exists(env.KiroKcapAgentJson)).IsFalse();  // no agent installed
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--kiro", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // The refresh reached RegisterKiroMcpServersAsync (instead of bailing on the missing agent
@@ -135,7 +136,7 @@ public class PluginCommandKiroTests {
         var env = TestEnv(home.Path);
 
         // Neither agent nor MCP present → refresh must be a pure no-op (never force-installs).
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--kiro", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--kiro", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(env.KiroMcpJson)).IsFalse();
@@ -149,6 +150,7 @@ public class PluginCommandKiroTests {
 
     static PluginEnvironment TestEnv(string fakeHome) => new(
         HomeDirectory:     fakeHome,
+        Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null

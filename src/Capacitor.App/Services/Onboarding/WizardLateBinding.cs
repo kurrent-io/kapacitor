@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 
 namespace Capacitor.App.Services.Onboarding;

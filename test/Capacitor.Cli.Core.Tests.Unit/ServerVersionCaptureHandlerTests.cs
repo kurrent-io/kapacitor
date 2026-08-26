@@ -8,13 +8,15 @@ namespace Capacitor.Cli.Core.Tests.Unit;
 /// <c>ServerVersionCaptureHandler</c> over a stub inner handler (no network).
 /// </summary>
 public class ServerVersionCaptureHandlerTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     sealed class StubHandler(HttpResponseMessage response) : HttpMessageHandler {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
             Task.FromResult(response);
     }
 
-    static async Task SendThrough(string serverUrl, HttpResponseMessage response) {
-        var capture = new ServerVersionCaptureHandler(serverUrl) { InnerHandler = new StubHandler(response) };
+    static async Task SendThrough(string serverUrl, HttpResponseMessage response, ConfigRoot config) {
+        var capture = new ServerVersionCaptureHandler(serverUrl, config) { InnerHandler = new StubHandler(response) };
         using var client = new HttpClient(capture);
         using var _ = await client.GetAsync(serverUrl);
     }
@@ -25,9 +27,9 @@ public class ServerVersionCaptureHandlerTests {
         var response = new HttpResponseMessage(HttpStatusCode.OK);
         response.Headers.Add(HttpClientExtensions.ServerVersionHeader, "0.11.15");
 
-        await SendThrough(url, response);
+        await SendThrough(url, response, Config.Root);
 
-        await Assert.That(ServerVersionStore.Get(url)).IsEqualTo("0.11.15");
+        await Assert.That(ServerVersionStore.Get(url, Config.Root)).IsEqualTo("0.11.15");
     }
 
     [Test]
@@ -35,8 +37,8 @@ public class ServerVersionCaptureHandlerTests {
         var url      = $"https://cap-{Guid.NewGuid():N}.example.com";
         var response = new HttpResponseMessage(HttpStatusCode.OK);
 
-        await SendThrough(url, response);
+        await SendThrough(url, response, Config.Root);
 
-        await Assert.That(ServerVersionStore.Get(url)).IsNull();
+        await Assert.That(ServerVersionStore.Get(url, Config.Root)).IsNull();
     }
 }

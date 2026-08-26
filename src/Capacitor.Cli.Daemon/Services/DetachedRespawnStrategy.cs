@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Capacitor.Cli.Core;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -18,7 +19,8 @@ internal sealed partial class DetachedRespawnStrategy(
         originalArgs.Contains("--await-lock") ? [.. originalArgs] : [.. originalArgs, "--await-lock"];
 
     /// <summary>
-    /// Pure: the boot-carrier env to re-apply on a self-respawned successor's <see cref="ProcessStartInfo"/>.
+    /// Pure: the env to re-apply on a self-respawned successor's <see cref="ProcessStartInfo"/> — the
+    /// config root, plus the boot carriers.
     /// Re-injects <see cref="DaemonRunner.BootCarriers.Seed"/>/<see cref="DaemonRunner.BootCarriers.Expect"/>
     /// (the successor needs the same consent-seed directive and expected server URL its predecessor was
     /// booted with) but deliberately NOT <see cref="DaemonRunner.BootCarriers.Attempt"/> — an attempt id
@@ -28,6 +30,8 @@ internal sealed partial class DetachedRespawnStrategy(
         var env = new Dictionary<string, string>();
         if (!string.IsNullOrEmpty(config.ConsentSeedDirective)) env[DaemonRunner.BootCarriers.Seed] = config.ConsentSeedDirective;
         if (!string.IsNullOrEmpty(config.ExpectedServerUrl))    env[DaemonRunner.BootCarriers.Expect] = config.ExpectedServerUrl;
+
+        env[ConfigRoot.ConfigDirEnvVar] = config.ConfigRoot.Directory;
 
         return env;
     }

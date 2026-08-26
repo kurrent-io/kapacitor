@@ -8,6 +8,7 @@ using System.Text.Json.Serialization.Metadata;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Telemetry;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Commands;
 
@@ -16,7 +17,7 @@ namespace Capacitor.Cli.Commands;
 /// the agent fetches the schema document, writes SQL, and self-repairs from the server's
 /// rejection reasons. Structure cloned from McpMemoryServer.
 /// </summary>
-static class McpAnalyticsServer {
+sealed class McpAnalyticsServer(ConfigRoot config, ProfileContext profiles) {
     internal const string NotLoggedInMessage = AuthRejectionNotice.NotLoggedIn;
 
     internal const string NotSupportedMessage =
@@ -31,7 +32,9 @@ static class McpAnalyticsServer {
     static string TimeoutHintFor(string toolName) =>
         toolName == "get_analytics_schema" ? SchemaTimedOutMessage : TimedOutMessage;
 
-    public static async Task<int> RunAsync(string baseUrl) {
+    public async Task<int> RunAsync() {
+        var baseUrl = profiles.Resolution.ServerUrl!;
+
         var cwdRepoHash = await ResolveCwdRepoHashAsync();
         var tools       = BuildToolsList();
 
@@ -40,8 +43,8 @@ static class McpAnalyticsServer {
         // "mcp-server" so per-tool-call events actually leave. Best-effort: a stale token on
         // disk must never block the server from starting.
         var loggedIn = false;
-        try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
-        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn);
+        try { loggedIn = await new TokenStore(config).LoadForProfileAsync(profiles.Name) is not null; } catch { }
+        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn, config);
 
         var urlOk = HttpClientExtensions.IsAcceptableUrl(baseUrl);
 
@@ -55,7 +58,7 @@ static class McpAnalyticsServer {
                 return BuildToolResult(callId, HttpClientExtensions.SchemeMissingHint, isError: true);
 
             try {
-                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, autoRetryUnauthorized: false);
+                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl, autoRetryUnauthorized: false);
                 return await HandleToolCallAsync(callId, callRequest, client, baseUrl, cwdRepoHash);
             } catch (Exception ex) {
                 await Console.Error.WriteLineAsync($"kcap mcp analytics: unexpected error handling tools/call: {ex}");
@@ -125,10 +128,10 @@ static class McpAnalyticsServer {
         return 0;
     }
 
-    static async Task<string?> ResolveCwdRepoHashAsync() {
+    async Task<string?> ResolveCwdRepoHashAsync() {
         try {
             var cwd      = Directory.GetCurrentDirectory();
-            var repoInfo = await RepositoryDetection.DetectRepositoryAsync(cwd);
+            var repoInfo = await RepositoryDetection.DetectRepositoryAsync(config, cwd);
 
             if (repoInfo?.Owner is null || repoInfo.RepoName is null) return null;
 
@@ -154,7 +157,7 @@ static class McpAnalyticsServer {
     static string BuildToolsListResponse(JsonNode id, McpTool[] tools) =>
         ToResponse(id, new McpToolsResult(tools), McpJsonContext.Default.McpToolsResult);
 
-    internal static async Task<string> HandleToolCallAsync(
+    internal async Task<string> HandleToolCallAsync(
             JsonNode   id,
             JsonObject request,
             HttpClient client,
@@ -187,7 +190,7 @@ static class McpAnalyticsServer {
             // read — resolved here so MapResponse stays a pure, unit-testable mapper (its own
             // 401 arm remains as the fallback wording).
             if (httpResponse.StatusCode == HttpStatusCode.Unauthorized) {
-                return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(baseUrl), isError: true);
+                return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(config, profiles.Name, baseUrl), isError: true);
             }
 
             return BuildToolResult(id, MapResponse(toolName, httpResponse.StatusCode, body, out var isError), isError);
@@ -271,7 +274,7 @@ static class McpAnalyticsServer {
         }
     }
 
-    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, string baseUrl, Func<HttpClient, Task<HttpResponseMessage>> send) {
+    async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, string baseUrl, Func<HttpClient, Task<HttpResponseMessage>> send) {
         var response = await send(client);
 
         if (response.StatusCode != HttpStatusCode.Unauthorized) return response;
@@ -286,9 +289,10 @@ static class McpAnalyticsServer {
 
         // A failed rotation must not be worse than no rotation: fall back to whatever is stored so
         // the pre-existing "re-read and resend once" recovery still happens.
+        var tokens    = new TokenStore(config);
         var refreshed = rejected is null
-            ? (await TokenStore.GetValidTokensForServerAsync(baseUrl)).Tokens
-            : await TokenStore.RecoverForServerAsync(baseUrl, rejected);
+            ? (await tokens.GetValidTokensForServerAsync(profiles.Name, baseUrl)).Tokens
+            : await tokens.RecoverForServerAsync(profiles.Name, baseUrl, rejected);
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 

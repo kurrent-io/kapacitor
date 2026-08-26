@@ -1,5 +1,6 @@
 using Capacitor.App.Services;
 using Capacitor.App.Services.Mutation;
+using Capacitor.Cli.Core;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Capacitor.App.Tests.Unit;
@@ -1430,30 +1431,7 @@ sealed class FakeKcapCli : IKcapCli {
     }
 }
 
-/// Scripted ILoginShellProbe — the controller only ever calls TerminalPathAsync (the install
-/// precondition); KcapOnPathAsync is used by PathShimInstaller/ShimOfferCoordinator tests.
-/// KcapOnPathFreshBehavior, when set, answers a forceRefresh=true call distinctly from the cached
-/// KcapOnPathBehavior — otherwise a forced call just falls back to KcapOnPathBehavior too.
-sealed class FakeLoginShellProbe : ILoginShellProbe {
-    public Func<CancellationToken, Task<string?>> TerminalPathBehavior = _ => Task.FromResult<string?>("/usr/bin:/bin");
-    public Task<string?> TerminalPathAsync(CancellationToken ct) => TerminalPathBehavior(ct);
+// FakeLoginShellProbe is shared via Capacitor.Tests.Helpers (the controller only ever calls
+// TerminalPathAsync — the install precondition; KcapOnPathAsync serves the ShimOfferCoordinator
+// tests, and the fresh-answer seam scripts the post-install re-probe).
 
-    public Func<CancellationToken, Task<bool?>> KcapOnPathBehavior = _ => Task.FromResult<bool?>(true);
-    public Func<CancellationToken, Task<bool?>>? KcapOnPathFreshBehavior;
-    public int KcapOnPathForceRefreshCallCount;
-    public Task<bool?> KcapOnPathAsync(CancellationToken ct, bool forceRefresh = false) {
-        if (forceRefresh) {
-            KcapOnPathForceRefreshCallCount++;
-            return (KcapOnPathFreshBehavior ?? KcapOnPathBehavior)(ct);
-        }
-        return KcapOnPathBehavior(ct);
-    }
-
-    public Func<CancellationToken, Task<string?>> KcapPathBehavior = _ => Task.FromResult<string?>(null);
-    public Func<CancellationToken, Task<string?>>? KcapPathFreshBehavior;
-    public readonly List<bool> KcapPathForceRefreshCalls = [];
-    public Task<string?> KcapPathAsync(CancellationToken ct, bool forceRefresh = false) {
-        KcapPathForceRefreshCalls.Add(forceRefresh);
-        return forceRefresh ? (KcapPathFreshBehavior ?? KcapPathBehavior)(ct) : KcapPathBehavior(ct);
-    }
-}

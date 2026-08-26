@@ -56,6 +56,77 @@ public class AgentOrchestratorSourceClaimTests {
         }
     }
 
+    // ── §2.7 B4: the source-claim AcceptedSeq drives the forwarder's resume/fresh mode ─────────────
+
+    [Test]
+    public async Task Deferred_rebind_resumes_the_forwarder_from_the_claim_seq_with_no_second_SessionStarted() {
+        // A parked-reviewer relaunch's source claim returns a canonical AcceptedSeq >= 0. The bind seam
+        // must build the forwarder in RESUME mode: NO SessionStarted, and the first new envelope numbered
+        // at AcceptedSeq+1 — otherwise round-2 events (seq'd from 0 by the pre-fix forwarder) would be
+        // <= AcceptedSeq and the server would silently dedup (LOSE) them.
+        const long acceptedSeq = 7;
+
+        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        try {
+            var server = new CaptureServerConnection {
+                SourceClaimOutcome = new AcpSourceClaimOutcome(AcpBindOutcome.Bound, 1, acceptedSeq)
+            };
+            var factory = DeferredFactory();
+
+            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+                server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [factory]);
+            orch.AcpFinalDrainBudget = TimeSpan.FromMilliseconds(200);
+
+            await orch.HandleLaunchAgentForTest(AgentOrchestratorHarness.NewCursorLaunch("agent-rebind", repoPath));
+
+            // The claim ran (the forwarder is built right after it). A round-2 canonical envelope — the
+            // unbounded transcript channel buffers it until the forwarder drains it.
+            await server.SourceClaimSignal.Reader.ReadAsync().AsTask().WaitAsync(WaitHarness.AcpHangGuard);
+            factory.LastRuntime!.EnvelopesWriter.TryWrite(new AcpEventEnvelope(Kind: AcpEventKind.AssistantText, Text: "round 2"));
+
+            await server.AcpEventsCallSignal.Reader.ReadAsync().AsTask().WaitAsync(WaitHarness.AcpHangGuard);
+
+            // The VERY FIRST thing forwarded is the round-2 envelope at AcceptedSeq+1 — never a SessionStarted@0.
+            var firstBatch = server.AcpEventsCalls[0].Envelopes;
+            await Assert.That(firstBatch[0].Kind).IsEqualTo(AcpEventKind.AssistantText);
+            await Assert.That(firstBatch[0].Seq).IsEqualTo(acceptedSeq + 1);
+            await Assert.That(server.AcpEventsCalls.SelectMany(c => c.Envelopes).Any(e => e.Kind == AcpEventKind.SessionStarted)).IsFalse();
+
+            await orch.HandleStopAgentForTest("agent-rebind");
+        } finally {
+            cleanup();
+        }
+    }
+
+    [Test]
+    public async Task Deferred_fresh_claim_still_sends_SessionStarted_at_seq_0() {
+        // The discriminating companion: a brand-new envelope-sourced session's claim returns AcceptedSeq
+        // -1 (the default), so the bind seam stays on today's fresh path — SessionStarted@0 first.
+        var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();
+        try {
+            var server  = new CaptureServerConnection(); // default claim: Bound@1, AcceptedSeq -1
+            var factory = DeferredFactory();
+
+            await using var orch = AgentOrchestratorHarness.BuildOrchestrator(
+                server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [factory]);
+            orch.AcpFinalDrainBudget = TimeSpan.FromMilliseconds(200);
+
+            await orch.HandleLaunchAgentForTest(AgentOrchestratorHarness.NewCursorLaunch("agent-fresh", repoPath));
+
+            await server.AcpEventsCallSignal.Reader.ReadAsync().AsTask().WaitAsync(WaitHarness.AcpHangGuard);
+
+            var firstBatch = server.AcpEventsCalls[0].Envelopes;
+            await Assert.That(firstBatch[0].Kind).IsEqualTo(AcpEventKind.SessionStarted);
+            await Assert.That(firstBatch[0].Seq).IsEqualTo(0);
+
+            await orch.HandleStopAgentForTest("agent-fresh");
+        } finally {
+            cleanup();
+        }
+    }
+
     [Test]
     public async Task Rejected_claim_tears_the_launch_down_without_a_first_turn_or_confirm() {
         var (repoPath, cleanup) = GitRepoHarness.CreateGitRepo();

@@ -46,6 +46,12 @@ namespace Capacitor.Cli.Tests.Integration;
                 // with WatcherLifecycleTests / WatcherHeartbeatStalenessTests (bare NotInParallel
                 // — no explicit key — puts all of them in the same implicit mutual-exclusion bucket).
 public class CursorTailingWatcherTests {
+    WatchCommand Watch => field ??= new(Config.Root, Resolutions.None(Config.Root));
+
+    CursorMarkers Markers => new(Config.Root);
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     static readonly TempDir Tmp = new();
 
     static string? _previousWatcherDir;
@@ -65,7 +71,6 @@ public class CursorTailingWatcherTests {
     [After(Test)]
     public void ResetOverridesAndConfigDir() {
         Cli.WatcherManager.SpawnOverrideForTesting = null;
-        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
     }
 
     static string NewSessionId() => Guid.NewGuid().ToString("N");
@@ -171,7 +176,6 @@ public class CursorTailingWatcherTests {
     [Test]
     public async Task Reactivation_ViaSessionStartHook_SpawnsAFreshWatcher() {
         using var tmp = new TempDir();
-        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
         var sessionId      = NewSessionId();
         var transcriptPath = tmp.PathTo($"{sessionId}.jsonl");
         await File.WriteAllTextAsync(transcriptPath, """{"role":"user","message":{"content":[]}}""" + "\n");
@@ -191,7 +195,7 @@ public class CursorTailingWatcherTests {
         var spool = new HookSpool(tmp.PathTo("spool"));
 
         var body = $$"""{"hook_event_name":"sessionStart","session_id":"{{sessionId}}","transcript_path":"{{transcriptPath.Replace(@"\", @"\\")}}"}""";
-        var exit = await CursorHookCommand.HandleCore(client, server.Url!, new StringReader(body), spool, TimeSpan.FromSeconds(2));
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(server.Url!, Config.Root), new HookClock(TimeProvider.System)).HandleCore(client, new StringReader(body), spool);
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(spawned).IsEquivalentTo([sessionId]);
@@ -207,7 +211,6 @@ public class CursorTailingWatcherTests {
     [Test]
     public async Task Reactivation_ViaNonSessionStartHook_SpawnsAFreshWatcher() {
         using var tmp = new TempDir();
-        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
         var sessionId      = NewSessionId();
         var transcriptPath = tmp.PathTo($"{sessionId}.jsonl");
         await File.WriteAllTextAsync(transcriptPath, """{"role":"user","message":{"content":[]}}""" + "\n");
@@ -227,7 +230,7 @@ public class CursorTailingWatcherTests {
         var spool = new HookSpool(tmp.PathTo("spool"));
 
         var body = $$"""{"hook_event_name":"postToolUse","session_id":"{{sessionId}}","transcript_path":"{{transcriptPath.Replace(@"\", @"\\")}}","tool_name":"Bash"}""";
-        var exit = await CursorHookCommand.HandleCore(client, server.Url!, new StringReader(body), spool, TimeSpan.FromSeconds(2));
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(server.Url!, Config.Root), new HookClock(TimeProvider.System)).HandleCore(client, new StringReader(body), spool);
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(spawned).IsEquivalentTo([sessionId]);
@@ -267,16 +270,16 @@ public class CursorTailingWatcherTests {
             // prior watcher's shutdown final drain sent and the server already acknowledged.
             await File.WriteAllTextAsync(transcriptPath, "{\"a\":1}\n{\"b\":2}");
 
-            var guard = new CursorRewriteGuard(sessionId);
+            var guard = new CursorRewriteGuard(Config.Root, sessionId);
             // The server resumes this fresh watcher process at line 2 (1-based: 2 lines already
             // acked — line 0 and the unterminated line 1).
             var state = new WatchState { LinesProcessed = 2 };
 
-            var seeded = await WatchCommand.SeedCursorByteOffsetAsync(
+            var seeded = await Watch.SeedCursorByteOffsetAsync(
                 state, lineNumber: 2, sessionId, vendor: "cursor", transcriptPath, guard, CancellationToken.None);
 
             await Assert.That(seeded).IsTrue();
-            await Assert.That(CursorMarkers.IsQuarantined(sessionId)).IsFalse();
+            await Assert.That(Markers.IsQuarantined(sessionId)).IsFalse();
             // Rewound to the unterminated record's own start, NOT EOF — and LinesProcessed
             // rewound with it, so the two frontiers stay in lockstep.
             await Assert.That(state.CursorByteOffset).IsEqualTo(8L);  // "{\"a\":1}\n".Length
@@ -306,7 +309,7 @@ public class CursorTailingWatcherTests {
             // exactly 3, matching the file's true 3 complete lines; no permanent gap opens up.
             await Assert.That(drainRead.NextPosition).IsEqualTo(3);
         } finally {
-            try { File.Delete(CursorMarkers.QuarantinePath(sessionId)); } catch { }
+            try { File.Delete(Markers.QuarantinePath(sessionId)); } catch { }
         }
     }
 }

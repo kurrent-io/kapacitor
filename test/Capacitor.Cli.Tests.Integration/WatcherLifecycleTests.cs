@@ -11,6 +11,15 @@ public class WatcherLifecycleTests {
     static readonly TempDir Transcripts = new();
     static string TempDir => Tmp.Path;
 
+    // KCAP_WATCHER_DIR is pinned below and wins over the root, so nothing here reads it — it points
+    // at the same temp directory anyway, so a lapse in that precedence cannot escape into the
+    // developer's own config.
+    static readonly ConfigRoot Root = new(Tmp.Path);
+
+    // One manager over that root and a resolution naming the URL these spawns target — the same two
+    // values production hands it, so nothing here can point a watcher at a second server.
+    static readonly WatcherManager Watchers = new(Root, Resolutions.At("http://localhost:0", Root));
+
     [Before(Class)]
     public static void SetUp() {
         Environment.SetEnvironmentVariable("KCAP_WATCHER_DIR", TempDir);
@@ -41,10 +50,10 @@ public class WatcherLifecycleTests {
     public async Task SpawnAndKill_ManagesPidFile() {
         var (key, transcriptPath, pidFile) = SetUpWatcher();
 
-        await Cli.WatcherManager.SpawnWatcher("http://localhost:0", key, transcriptPath, agentId: null);
+        await Watchers.SpawnWatcher(key, transcriptPath, agentId: null);
         await AssertPidFileValid(pidFile);
 
-        await Cli.WatcherManager.KillWatcher(key);
+        await Watchers.KillWatcher(key);
         await Assert.That(File.Exists(pidFile)).IsFalse();
     }
 
@@ -52,10 +61,10 @@ public class WatcherLifecycleTests {
     public async Task EnsureWatcherRunning_SpawnsIfDead() {
         var (key, transcriptPath, pidFile) = SetUpWatcher();
 
-        await Cli.WatcherManager.EnsureWatcherRunning("http://localhost:0", key, transcriptPath, agentId: null);
+        await Watchers.EnsureWatcherRunning(key, transcriptPath, agentId: null);
         await AssertPidFileValid(pidFile);
 
-        await Cli.WatcherManager.KillWatcher(key);
+        await Watchers.KillWatcher(key);
     }
 
     // The pid file must identify the watcher INCARNATION, not just the pid — a recycled pid must
@@ -65,7 +74,7 @@ public class WatcherLifecycleTests {
     public async Task SpawnWatcher_records_the_process_start_token_beside_the_pid() {
         var (key, transcriptPath, pidFile) = SetUpWatcher();
 
-        await Cli.WatcherManager.SpawnWatcher("http://localhost:0", key, transcriptPath, agentId: null);
+        await Watchers.SpawnWatcher(key, transcriptPath, agentId: null);
 
         var lines = await File.ReadAllLinesAsync(pidFile);
         await Assert.That(lines.Length).IsGreaterThanOrEqualTo(2);
@@ -73,7 +82,7 @@ public class WatcherLifecycleTests {
         var pid = int.Parse(lines[0].Trim(), CultureInfo.InvariantCulture);
         await Assert.That(lines[1].Trim()).IsEqualTo(ProcessStartToken.ForPid(pid));
 
-        await Cli.WatcherManager.KillWatcher(key);
+        await Watchers.KillWatcher(key);
     }
 
     // Process.Kill is SIGKILL on Unix, so before this fix a "killed" watcher never ran its
@@ -98,7 +107,7 @@ public class WatcherLifecycleTests {
 
             await File.WriteAllTextAsync(pidFile, $"{trapped.Id}\n{ProcessStartToken.ForPid(trapped.Id)}");
 
-            var wasRunning = await Cli.WatcherManager.KillWatcher(key);
+            var wasRunning = await Watchers.KillWatcher(key);
 
             await Assert.That(wasRunning).IsTrue();
             await trapped.WaitForExitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
@@ -122,7 +131,7 @@ public class WatcherLifecycleTests {
             // Same token scheme, provably different incarnation: the current test process's token.
             await File.WriteAllTextAsync(pidFile, $"{bystander.Id}\n{ProcessStartToken.ForCurrent()}");
 
-            var wasRunning = await Cli.WatcherManager.KillWatcher(key);
+            var wasRunning = await Watchers.KillWatcher(key);
 
             await Assert.That(wasRunning).IsFalse();
             await Assert.That(bystander.HasExited).IsFalse();
@@ -142,8 +151,8 @@ public class WatcherLifecycleTests {
         await File.WriteAllTextAsync(ownPidFile, $"{Environment.ProcessId}\ntk:1");
         await File.WriteAllTextAsync(successorPidFile, $"{Environment.ProcessId + 1}\ntk:2");
 
-        Cli.WatcherManager.RemoveOwnPidFile(ownKey, Environment.ProcessId);
-        Cli.WatcherManager.RemoveOwnPidFile(successorKey, Environment.ProcessId);
+        Watchers.RemoveOwnPidFile(ownKey, Environment.ProcessId);
+        Watchers.RemoveOwnPidFile(successorKey, Environment.ProcessId);
 
         await Assert.That(File.Exists(ownPidFile)).IsFalse();
         await Assert.That(File.Exists(successorPidFile)).IsTrue();
@@ -159,13 +168,13 @@ public class WatcherLifecycleTests {
         var (liveKey, liveTranscript, livePidFile) = SetUpWatcher();
         var (deadKey, _, deadPidFile) = SetUpWatcher();
 
-        await Cli.WatcherManager.SpawnWatcher("http://localhost:0", liveKey, liveTranscript, agentId: null);
+        await Watchers.SpawnWatcher(liveKey, liveTranscript, agentId: null);
         await AssertPidFileValid(livePidFile);
 
         // A pid that cannot belong to a live process — exercises the already-exited sweep arm.
         await File.WriteAllTextAsync(deadPidFile, "99999999");
 
-        await Cli.WatcherManager.KillWatchers([liveKey, deadKey]);
+        await Watchers.KillWatchers([liveKey, deadKey]);
 
         await Assert.That(File.Exists(livePidFile)).IsFalse();
         await Assert.That(File.Exists(deadPidFile)).IsFalse();

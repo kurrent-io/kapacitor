@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Capacitor.App.Services.Onboarding;
-using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
 using AppUnderTest = Capacitor.App.App;
@@ -17,28 +16,11 @@ namespace Capacitor.App.Tests.Unit;
 /// ResolveConsentFlipIdentity (the ConsentFlipCoordinator identity delegate, MUST-WIRE 1).
 /// WizardStartupTests owns the wizard-mode half; DaemonLifecycleControllerTests covers the
 /// controller-level ctor param behavior (fake lane, no gate involved).
-///
-/// [NotInParallel]: shares OnboardingGateTests' one real config.json under the assembly-wide
-/// KCAP_CONFIG_DIR (see OnboardingGateGlobalSetup) — same isolation rule, same shared resource.
-[NotInParallel(nameof(OnboardingGateTests))]
 public class AppStartupCarveOutTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     const string ProfileName = "acme";
     const string ServerUrl = "https://acme.example";
-
-    static string ConfigPath => AppConfig.GetConfigPath();
-    static string TokensDir  => PathHelpers.ConfigPath("tokens");
-
-    [Before(Test)]
-    public void Cleanup() {
-        if (File.Exists(ConfigPath)) File.Delete(ConfigPath);
-        if (Directory.Exists(TokensDir)) Directory.Delete(TokensDir, recursive: true);
-        AppConfig.ResetResolvedStateForTesting();
-
-        // Same unauthenticated-path test-isolation rule OnboardingGateTests follows: a stray
-        // KCAP_URL/KCAP_PROFILE from the developer's shell must not redirect config resolution.
-        Environment.SetEnvironmentVariable("KCAP_URL", null);
-        Environment.SetEnvironmentVariable("KCAP_PROFILE", null);
-    }
 
     // ---- AutoActionsPermanentlyClosed: the pure gate→flag switch ----
 
@@ -58,14 +40,14 @@ public class AppStartupCarveOutTests {
         await Assert.That(AppUnderTest.AutoActionsPermanentlyClosed(new GateResult.Incomplete(reason))).IsTrue();
     }
 
-    // ---- End-to-end against a REAL OnboardingGate.EvaluateAsync() — the brief's two §10 rows ----
-    // that apply without a wizard: valid URL + no token, and an invalid/non-HTTP URL.
+    // ---- End-to-end against a REAL new OnboardingGate(Config.Root).EvaluateAsync() ----
+    // The two cases that apply without a wizard: valid URL + no token, and an invalid/non-HTTP URL.
 
     [Test]
     public async Task ValidUrl_noToken_fixture_closes_auto_actions() {
         WriteConfig(SingleProfileConfig(new Profile { ServerUrl = ServerUrl }));
 
-        var gate = await OnboardingGate.EvaluateAsync(CancellationToken.None);
+        var gate = (await new OnboardingGate(Config.Root).EvaluateAsync(CancellationToken.None)).Result;
 
         await Assert.That(gate).IsTypeOf<GateResult.Incomplete>();
         await Assert.That(((GateResult.Incomplete)gate).Reason).IsEqualTo(GateReason.NoToken);
@@ -76,7 +58,7 @@ public class AppStartupCarveOutTests {
     public async Task InvalidNonHttpUrl_fixture_closes_auto_actions() {
         WriteConfig(SingleProfileConfig(new Profile { ServerUrl = "file:///tmp/x" }));
 
-        var gate = await OnboardingGate.EvaluateAsync(CancellationToken.None);
+        var gate = (await new OnboardingGate(Config.Root).EvaluateAsync(CancellationToken.None)).Result;
 
         await Assert.That(gate).IsTypeOf<GateResult.Incomplete>();
         await Assert.That(((GateResult.Incomplete)gate).Reason).IsEqualTo(GateReason.InvalidServerUrl);
@@ -89,7 +71,7 @@ public class AppStartupCarveOutTests {
         var profile = new Profile { ServerUrl = ServerUrl, AuthProvider = new AuthProviderStamp("none", ServerUrl) };
         WriteConfig(SingleProfileConfig(profile));
 
-        var gate = await OnboardingGate.EvaluateAsync(CancellationToken.None);
+        var gate = (await new OnboardingGate(Config.Root).EvaluateAsync(CancellationToken.None)).Result;
 
         await Assert.That(gate).IsTypeOf<GateResult.Complete>();
         await Assert.That(AppUnderTest.AutoActionsPermanentlyClosed(gate)).IsFalse();
@@ -102,7 +84,7 @@ public class AppStartupCarveOutTests {
         var profile = new Profile { ServerUrl = ServerUrl, Daemon = new DaemonSettings { Name = "acme-daemon" } };
         WriteConfig(SingleProfileConfig(profile));
 
-        var (resolvedProfile, server, daemonName) = AppUnderTest.ResolveConsentFlipIdentity();
+        var (resolvedProfile, server, daemonName) = AppUnderTest.ResolveConsentFlipIdentity(Config.Root);
 
         await Assert.That(resolvedProfile).IsEqualTo(ProfileName);
         await Assert.That(server).IsEqualTo(ServerIdentity.Canonicalize(ServerUrl));
@@ -114,7 +96,7 @@ public class AppStartupCarveOutTests {
     public async Task ResolveConsentFlipIdentity_falls_back_to_the_raw_server_when_unparseable() {
         WriteConfig(SingleProfileConfig(new Profile { ServerUrl = "not a url" }));
 
-        var (_, server, _) = AppUnderTest.ResolveConsentFlipIdentity();
+        var (_, server, _) = AppUnderTest.ResolveConsentFlipIdentity(Config.Root);
 
         await Assert.That(server).IsEqualTo("not a url");
     }
@@ -122,7 +104,7 @@ public class AppStartupCarveOutTests {
     // No config.json at all: ConfigMutator.LoadPure degrades to a fresh default rather than throwing.
     [Test]
     public async Task ResolveConsentFlipIdentity_no_config_file_yields_the_default_profile_with_no_server() {
-        var (resolvedProfile, server, daemonName) = AppUnderTest.ResolveConsentFlipIdentity();
+        var (resolvedProfile, server, daemonName) = AppUnderTest.ResolveConsentFlipIdentity(Config.Root);
 
         await Assert.That(resolvedProfile).IsEqualTo("default");
         await Assert.That(server).IsEqualTo("");
@@ -135,18 +117,24 @@ public class AppStartupCarveOutTests {
     public async Task EvaluateGateSafelyAsync_passes_a_successful_result_through_unchanged() {
         var complete = new GateResult.Complete();
 
-        var result = await AppUnderTest.EvaluateGateSafelyAsync(_ => Task.FromResult<GateResult>(complete), CancellationToken.None);
+        var (result, profiles) = await AppUnderTest.EvaluateGateSafelyAsync(
+            _ => Task.FromResult<(GateResult, ProfileContext)>((complete, Resolutions.None(Config.Root))),
+            CancellationToken.None);
 
         await Assert.That(result).IsSameReferenceAs(complete);
+        // The resolution rides along with the verdict, so the graph cannot build on a second one.
+        await Assert.That(profiles).IsNotNull();
     }
 
     [Test]
     public async Task EvaluateGateSafelyAsync_degrades_an_unexpected_exception_to_incomplete() {
-        var result = await AppUnderTest.EvaluateGateSafelyAsync(
+        var (result, profiles) = await AppUnderTest.EvaluateGateSafelyAsync(
             _ => throw new InvalidOperationException("boom"), CancellationToken.None);
 
         await Assert.That(result).IsTypeOf<GateResult.Incomplete>();
         await Assert.That(((GateResult.Incomplete)result).Reason).IsEqualTo(GateReason.EvaluationFailed);
+        // Nothing resolved: every consumer of this reads null as "stay fail-closed".
+        await Assert.That(profiles).IsNull();
     }
 
     // A cancellation matching the caller's OWN token is shutdown, not a gate failure — it must
@@ -164,16 +152,18 @@ public class AppStartupCarveOutTests {
     // another unexpected exception — it degrades exactly like InvalidOperationException above.
     [Test]
     public async Task EvaluateGateSafelyAsync_degrades_an_unrelated_cancellation_to_incomplete() {
-        var result = await AppUnderTest.EvaluateGateSafelyAsync(
+        var (result, profiles) = await AppUnderTest.EvaluateGateSafelyAsync(
             _ => throw new OperationCanceledException("unrelated"), CancellationToken.None);
 
         await Assert.That(result).IsTypeOf<GateResult.Incomplete>();
         await Assert.That(((GateResult.Incomplete)result).Reason).IsEqualTo(GateReason.EvaluationFailed);
+        // Nothing resolved: every consumer of this reads null as "stay fail-closed".
+        await Assert.That(profiles).IsNull();
     }
 
     static ProfileConfig SingleProfileConfig(Profile profile) =>
         new() { ActiveProfile = ProfileName, Profiles = new() { [ProfileName] = profile } };
 
-    static void WriteConfig(ProfileConfig config) =>
-        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config, ProfileConfigJsonContext.Default.ProfileConfig));
+    void WriteConfig(ProfileConfig config) =>
+        File.WriteAllText(AppConfig.GetConfigPath(Config.Root), JsonSerializer.Serialize(config, ProfileConfigJsonContext.Default.ProfileConfig));
 }

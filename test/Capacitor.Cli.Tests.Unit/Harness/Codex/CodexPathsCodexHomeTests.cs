@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Codex;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Codex;
@@ -33,7 +34,7 @@ public class CodexPathsCodexHomeTests {
     [NotInParallel("HomeEnvVarMutation")]
     public async Task PluginEnvironment_CodexHome_delegates_and_honors_override() {
         var original = Environment.GetEnvironmentVariable("CODEX_HOME");
-        var env = new PluginEnvironment("/fake/home", () => null, TextWriter.Null, TextWriter.Null);
+        var env = new PluginEnvironment("/fake/home", new ProfileConfig(), () => null, TextWriter.Null, TextWriter.Null);
         try {
             Environment.SetEnvironmentVariable("CODEX_HOME", null);
             await Assert.That(env.CodexHome).IsEqualTo(Path.Combine("/fake/home", ".codex"));

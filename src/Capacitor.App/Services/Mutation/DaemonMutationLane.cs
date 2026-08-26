@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.App.Services.Mutation;
 

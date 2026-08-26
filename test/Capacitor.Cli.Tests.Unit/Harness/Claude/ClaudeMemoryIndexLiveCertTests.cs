@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Tests.Unit.Commands.Harness;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Claude;
@@ -45,7 +46,9 @@ public class ClaudeMemoryIndexLiveCertTests {
         var baseUrl = Environment.GetEnvironmentVariable(ServerUrlEnvVar)!;
         var nonce   = $"kcap-live-nonce-{Guid.NewGuid():N}";
 
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+        var       root   = ConfigRoot.FromEnvironment();
+        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(
+            root, await AppConfig.ResolveActiveProfile([], root), baseUrl);
         var memoryId = await SaveNonceMemoryAsync(client, baseUrl, nonce);
 
         try {
@@ -76,7 +79,9 @@ public class ClaudeMemoryIndexLiveCertTests {
         var baseUrl = Environment.GetEnvironmentVariable(ServerUrlEnvVar)!;
         var nonce   = $"kcap-live-nonce-{Guid.NewGuid():N}";
 
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+        var       root   = ConfigRoot.FromEnvironment();
+        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(
+            root, await AppConfig.ResolveActiveProfile([], root), baseUrl);
         var memoryId = await SaveNonceMemoryAsync(client, baseUrl, nonce);
 
         // Capture the ORIGINAL disable_memory_index value BEFORE the first mutation, and put the

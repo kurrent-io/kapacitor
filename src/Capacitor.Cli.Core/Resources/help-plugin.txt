@@ -155,7 +155,7 @@ Notes:
   nothing, because that session started with the integration.
 
   Skills install to ~/.agents/skills/kcap-{recap,errors,hide,disable,
-  validate-plan,review-flows,agent-flows,work-items,guided-tour}/.
+  validate-plan,review-flows,agent-flows,work-items,guided-tour,suggest-review-flow}/.
   Codex, Cursor, and any other agent that honors the .agents/skills convention
   will pick them up automatically. Every install of a vendor that reads that tree
   writes them, so `install --cursor` alone leaves nothing missing. Kiro and

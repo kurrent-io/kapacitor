@@ -12,9 +12,9 @@ namespace Capacitor.Cli;
 /// omits the field (must never break a hook).
 /// </summary>
 static class SessionStartInventory {
-    public static void Stamp(JsonObject body) {
+    public static void Stamp(JsonObject body, ConfigRoot config) {
         try {
-            var inv  = HarnessInventory.EvaluateCurrent();
+            var inv  = HarnessInventory.EvaluateCurrent(config);
             var json = JsonSerializer.Serialize(inv, CapacitorJsonContext.Default.HarnessInventory);
             body["harness_inventory"] = JsonNode.Parse(json);
         } catch {

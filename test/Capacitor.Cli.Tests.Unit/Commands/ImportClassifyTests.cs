@@ -6,6 +6,8 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class ImportClassifyTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
     readonly string         _tempDir;
@@ -45,6 +47,7 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
             client,
             _server.Url!,
             transcripts,
@@ -75,6 +78,7 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
             client,
             _server.Url!,
             transcripts,
@@ -106,6 +110,7 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
             client,
             _server.Url!,
             transcripts,
@@ -135,6 +140,7 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
             client,
             _server.Url!,
             transcripts,
@@ -161,6 +167,7 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
             client,
             _server.Url!,
             transcripts,
@@ -194,6 +201,7 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
             client,
             _server.Url!,
             transcripts,
@@ -235,6 +243,7 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
             client,
             _server.Url!,
             transcripts,
@@ -262,6 +271,7 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
             client,
             _server.Url!,
             paths,
@@ -298,6 +308,7 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
             client, _server.Url!, transcripts,
             minLines: 15, excludedRepos: null, CancellationToken.None
         );
@@ -327,6 +338,7 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
             client, _server.Url!, transcripts,
             minLines: 15, excludedRepos: null, CancellationToken.None
         );
@@ -382,6 +394,7 @@ public class ImportClassifyTests : IDisposable {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
             client, _server.Url!, transcripts,
             minLines: 15,
             excludedRepos: ["any/repo"],

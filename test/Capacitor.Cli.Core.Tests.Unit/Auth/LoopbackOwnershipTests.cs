@@ -95,7 +95,8 @@ public class LoopbackOwnershipTests {
         var fake = new DisposableFakeBrowser("?code=abc&state=mismatch");
 
         var token = await OAuthLoginFlow.RunGitHubBrowserFlowAsync(
-            "client-id", "http://127.0.0.1:1/exchange", browser: fake, timeout: TimeSpan.FromSeconds(1));
+            "client-id", "http://127.0.0.1:1/exchange", new RecordingBrowser(),
+            browser: fake, timeout: TimeSpan.FromSeconds(1));
 
         await Assert.That(token).IsNull();
         await Assert.That(fake.Disposed).IsFalse();

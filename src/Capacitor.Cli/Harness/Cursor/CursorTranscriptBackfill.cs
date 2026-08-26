@@ -37,6 +37,7 @@ public static class CursorTranscriptBackfill {
     /// so a valid newline-less final record must be consumed rather than permanently stranded.
     /// </param>
     public static async Task<Stats> RunAsync(
+            CursorMarkers     markers,
             HttpClient        client,
             string            baseUrl,
             string            sessionId,
@@ -52,7 +53,7 @@ public static class CursorTranscriptBackfill {
 
         // a session already quarantined by the runtime rewrite guard must never
         // have more transcript lines delivered; the watcher has already given up on it.
-        if (CursorMarkers.IsQuarantined(sessionId)) {
+        if (markers.IsQuarantined(sessionId)) {
             return new Stats(0, false);
         }
 
@@ -60,7 +61,7 @@ public static class CursorTranscriptBackfill {
         // attachment the Cursor normalizer needs to see BEFORE the matching user transcript line
         // is normalized. While the barrier is pending, hold delivery entirely (retry next
         // invocation) rather than risk normalizing ahead of the attachment.
-        if (CursorMarkers.BarrierPending(sessionId, DateTimeOffset.UtcNow, CursorMarkers.DefaultBarrierBound)) {
+        if (markers.BarrierPending(sessionId, DateTimeOffset.UtcNow, CursorMarkers.DefaultBarrierBound)) {
             return new Stats(0, false);
         }
 
@@ -122,8 +123,8 @@ public static class CursorTranscriptBackfill {
         // landing in that window — between the early check and this POST — must still be caught
         // here rather than let the transcript line overtake the attachment it depends on, or
         // escape the quarantine the watcher just imposed.
-        if (CursorMarkers.IsQuarantined(sessionId)
-         || CursorMarkers.BarrierPending(sessionId, DateTimeOffset.UtcNow, CursorMarkers.DefaultBarrierBound)) {
+        if (markers.IsQuarantined(sessionId)
+         || markers.BarrierPending(sessionId, DateTimeOffset.UtcNow, CursorMarkers.DefaultBarrierBound)) {
             return new Stats(0, false);
         }
 

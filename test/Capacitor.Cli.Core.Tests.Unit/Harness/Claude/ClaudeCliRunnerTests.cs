@@ -145,6 +145,7 @@ public class ClaudeCliRunnerTests {
                 prompt:        "irrelevant",
                 timeout:       TimeSpan.FromSeconds(1),
                 log:           _ => { },
+                profile:       null,
                 mcpConfigJson: """{"mcpServers":{}}""",
                 allowedTools:  allowedTools
             )

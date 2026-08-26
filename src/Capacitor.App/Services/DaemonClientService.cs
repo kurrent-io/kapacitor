@@ -153,27 +153,27 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
     /// from that same resolution, so the gate verdict and the daemon identity can never diverge on
     /// a concurrently-changing profile.
     /// </summary>
-    public static DaemonClientService CreateResolved(DaemonStore store, Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
-        var name = DaemonNameResolver.Resolve([], AppConfig.ResolvedProfile?.Profile?.Daemon?.Name);
+    public static DaemonClientService CreateResolved(
+            DaemonStore store, ResolvedProfile? profile,
+            Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) {
+        var name = DaemonNameResolver.Resolve([], profile?.Profile?.Daemon?.Name);
 
         return new DaemonClientService(
             name,
             ct => new LocalControlClient(store, name).RunAsync(ct),
-            BuildStartDaemon(name, () => AppConfig.ResolvedProfile, runMutation)
+            BuildStartDaemon(name, profile, runMutation)
         );
     }
 
-    /// The main-window Start/Retry delegate: builds a DetachedStart MutationRequest at the
-    /// CURRENTLY resolved profile/server (re-read on every call, never captured once — a profile
-    /// resolved after this service was constructed must still be honored) and hands it to
+    /// The main-window Start/Retry delegate: builds a DetachedStart MutationRequest at the profile
+    /// this service was resolved for — the one the gate was evaluated on — and hands it to
     /// `runMutation`; a caller that cannot bind a canonical server never reaches it (binding
-    /// ruling 1). Extracted from CreateResolved — whose daemon-name resolution reads real config —
-    /// so this request-building logic stays unit-testable on its own.
+    /// ruling 1). A profile written after startup reaches it through a graph rebuild, which is the
+    /// only thing that re-evaluates the gate too.
     internal static Func<CancellationToken, Task<MutationOutcome>> BuildStartDaemon(
-            string daemonName, Func<ResolvedProfile?> resolveProfile,
+            string daemonName, ResolvedProfile? profile,
             Func<MutationRequest, CancellationToken, Task<MutationOutcome>> runMutation) =>
         ct => {
-            var profile = resolveProfile();
             var refusal = MutationRequestFactory.TryBuild(
                 MutationVerb.DetachedStart, profile?.ProfileName, profile?.ServerUrl, daemonName, out var request);
             return refusal is not null ? Task.FromResult(refusal) : runMutation(request!, ct);
@@ -196,135 +196,5 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
         _status.Dispose();
         _snapshots.Dispose();
         Agents.Dispose();
-    }
-
-    /// Production IProcessRunner: wraps System.Diagnostics.Process with stdout/stderr capture, an
-    /// env overlay, an internal timeout, and a per-call cancel mode. `RunOptions.Timeout` is an
-    /// internal deadline distinct from `ct`: on expiry the process (or tree, per `RunOptions.TimeoutKill`) is killed and awaited, and the
-    /// result comes back with TimedOut=true rather than throwing. `ct` cancellation behaves per
-    /// `RunOptions.CancelMode`: AbandonWait abandons the WAIT only (a detached `daemon start -d`
-    /// keeps running) and still throws OperationCanceledException; KillTree kills the tree and
-    /// awaits its exit first, then STILL throws — cancellation is cancellation, TimedOut is only
-    /// for the internal Timeout.
-    /// Internal (not private): lets ProcessRunnerTests drive a REAL child process, since
-    /// IProcessRunner itself is only a seam for DaemonClientService's own consumers.
-    internal sealed class ProcessRunner : IProcessRunner {
-        public async Task<ProcessResult> RunAsync(string fileName, string[] args, RunOptions options, CancellationToken ct) {
-            var psi = new ProcessStartInfo(fileName) {
-                RedirectStandardOutput = true,
-                RedirectStandardError  = true,
-                UseShellExecute        = false,
-            };
-            foreach (var a in args) psi.ArgumentList.Add(a);
-            if (options.EnvOverlay is not null)
-                foreach (var (key, value) in options.EnvOverlay) psi.Environment[key] = value;
-
-            using var process = Process.Start(psi) ?? throw new InvalidOperationException($"Failed to start '{fileName}'.");
-            // CancellationToken.None on both drains: neither `ct` nor the internal timeout ever
-            // abandons the pipes — a drain tied to either would stop reading on cancellation and
-            // let a detached/killed child block on a full pipe buffer.
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
-            var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
-
-            using var timeoutCts = options.Timeout is { } timeout ? new CancellationTokenSource(timeout) : null;
-            using var waitCts = timeoutCts is null ? null : CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-
-            try {
-                await process.WaitForExitAsync(waitCts?.Token ?? ct).ConfigureAwait(false);
-            } catch (OperationCanceledException) {
-                if (ct.IsCancellationRequested) {
-                    if (options.CancelMode == CancelMode.KillTree)
-                        await KillAndAwaitAsync(process).ConfigureAwait(false);
-
-                    // The drains outlive this method on the abandoned-wait path — observe them
-                    // so a later fault surfaces nowhere instead of as an unobserved task
-                    // exception. Under KillTree the child is already dead, so this still
-                    // completes promptly; it just isn't awaited before the throw below.
-                    Observe(stdoutTask);
-                    Observe(stderrTask);
-                    throw;
-                }
-
-                // Only the internal timeout could have fired the linked token.
-                await KillAndAwaitAsync(process, options.TimeoutKill == TimeoutKillScope.Tree).ConfigureAwait(false);
-                await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
-                return new ProcessResult(process.ExitCode, stdoutTask.Result, stderrTask.Result, TimedOut: true);
-            }
-
-            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
-            return new ProcessResult(process.ExitCode, stdoutTask.Result, stderrTask.Result, TimedOut: false);
-        }
-
-        const int TailLimit = 500;
-
-        public async Task<StreamingResult> RunStreamingAsync(string fileName, string[] args, RunOptions options,
-                Action<StreamedLine> onLine, CancellationToken ct) {
-            var psi = new ProcessStartInfo(fileName) {
-                RedirectStandardOutput = true,
-                RedirectStandardError  = true,
-                UseShellExecute        = false,
-            };
-            foreach (var a in args) psi.ArgumentList.Add(a);
-            if (options.EnvOverlay is not null)
-                foreach (var (key, value) in options.EnvOverlay) psi.Environment[key] = value;
-
-            using var process = Process.Start(psi) ?? throw new InvalidOperationException($"Failed to start '{fileName}'.");
-
-            var tailLock = new object();
-            var tail = new Queue<StreamedLine>(TailLimit + 1);
-
-            void Record(StreamedLine line) {
-                try { onLine(line); }
-                catch (Exception ex) { Console.Error.WriteLine($"kcap: streaming callback threw for '{fileName}': {ex}"); }
-
-                lock (tailLock) {
-                    tail.Enqueue(line);
-                    if (tail.Count > TailLimit) tail.Dequeue();
-                }
-            }
-
-            // Line-buffered per stream — no cross-stream ordering promise; drains to EOF even under kill.
-            async Task PumpAsync(TextReader reader, ProcessStreamKind kind) {
-                string? line;
-                while ((line = await reader.ReadLineAsync(CancellationToken.None).ConfigureAwait(false)) is not null)
-                    Record(new StreamedLine(kind, line));
-            }
-
-            var stdoutTask = PumpAsync(process.StandardOutput, ProcessStreamKind.Stdout);
-            var stderrTask = PumpAsync(process.StandardError, ProcessStreamKind.Stderr);
-
-            using var timeoutCts = options.Timeout is { } timeout ? new CancellationTokenSource(timeout) : null;
-            using var waitCts = timeoutCts is null ? null : CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-
-            try {
-                await process.WaitForExitAsync(waitCts?.Token ?? ct).ConfigureAwait(false);
-            } catch (OperationCanceledException) {
-                if (ct.IsCancellationRequested) {
-                    // Streaming always kills the tree on cancellation, ignoring RunOptions.CancelMode.
-                    await KillAndAwaitAsync(process).ConfigureAwait(false);
-                    // Awaited, not fire-and-forget: the pumps end at EOF once the tree is killed
-                    // (same as the timeout arm below) — a fire-and-forget Observe let a callback
-                    // fire AFTER this method had already thrown OCE, racing caller cleanup.
-                    await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
-                    throw;
-                }
-
-                await KillAndAwaitAsync(process, options.TimeoutKill == TimeoutKillScope.Tree).ConfigureAwait(false);
-                await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
-                lock (tailLock) return new StreamingResult(process.ExitCode, TimedOut: true, tail.ToArray());
-            }
-
-            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
-            lock (tailLock) return new StreamingResult(process.ExitCode, TimedOut: false, tail.ToArray());
-        }
-
-        static async Task KillAndAwaitAsync(Process process, bool entireProcessTree = true) {
-            try { process.Kill(entireProcessTree); }
-            catch (InvalidOperationException) { /* already exited */ }
-            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-
-        static void Observe(Task task) => task.ContinueWith(t => _ = t.Exception, CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 }

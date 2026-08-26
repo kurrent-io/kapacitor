@@ -1,4 +1,5 @@
 using Capacitor.App.Services.Mutation;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.App.Tests.Unit;
 

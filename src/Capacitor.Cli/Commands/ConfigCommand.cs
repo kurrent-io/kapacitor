@@ -1,12 +1,13 @@
 using System.Text.Json;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Telemetry;
+using Capacitor.Cli.Core;
 using ProfileConfigJsonContextIndented = Capacitor.Cli.Core.Config.ProfileConfigJsonContextIndented;
 
 namespace Capacitor.Cli.Commands;
 
-public static class ConfigCommand {
-    public static async Task<int> HandleAsync(string[] args) {
+public sealed class ConfigCommand(ConfigRoot config) {
+    public async Task<int> HandleAsync(string[] args) {
         if (args.Length < 2) {
             await Console.Error.WriteLineAsync("Usage: kcap config <show|set|unset> [key] [value]");
 
@@ -26,29 +27,29 @@ public static class ConfigCommand {
         };
     }
 
-    static async Task<int> Show() {
-        var profileConfig = await AppConfig.LoadProfileConfig();
+    async Task<int> Show() {
+        var profileConfig = await AppConfig.LoadProfileConfig(config);
         var json          = JsonSerializer.Serialize(profileConfig, ProfileConfigJsonContextIndented.Default.ProfileConfig);
         await Console.Out.WriteLineAsync(json);
         await Console.Out.WriteLineAsync();
-        await Console.Out.WriteLineAsync($"  Path: {AppConfig.GetConfigPath()}");
+        await Console.Out.WriteLineAsync($"  Path: {AppConfig.GetConfigPath(config)}");
 
         // Telemetry is machine-scoped (see TryApplyTelemetry), so it isn't part of the profile
         // JSON above. Reporting the Reason alongside the state is what lets a user with an
         // inherited DO_NOT_TRACK tell that apart from their own `config set telemetry off`.
-        var decision = TelemetrySettings.Resolve(TelemetryState.PersistedEnabled());
+        var decision = TelemetrySettings.Resolve(TelemetryState.PersistedEnabled(config));
         await Console.Out.WriteLineAsync($"  Telemetry: {(decision.Enabled ? "on" : "off")} (source: {decision.Reason})");
 
         return 0;
     }
 
-    static async Task<int> Set(string key, string value, bool skipProbe) {
+    async Task<int> Set(string key, string value, bool skipProbe) {
         // Telemetry consent is a property of the machine, not of whichever profile happens to be
         // active — switching profiles must never silently re-enable reporting. So it is
         // special-cased ahead of the profile load, the same way server_url is normalized below.
         if (TryApplyTelemetry(key, value)) {
             await Console.Out.WriteLineAsync(
-                $"Set telemetry = {(TelemetryState.PersistedEnabled() is true ? "on" : "off")} (machine-wide)");
+                $"Set telemetry = {(TelemetryState.PersistedEnabled(config) is true ? "on" : "off")} (machine-wide)");
 
             return 0;
         }
@@ -65,7 +66,7 @@ public static class ConfigCommand {
 
         var profileName = "default";
 
-        await ConfigMutator.MutateAsync(c => {
+        await ConfigMutator.MutateAsync(config, c => {
             profileName = c.ActiveProfile;
             var profile = ApplySet(c.Profiles.GetValueOrDefault(profileName) ?? new Profile(), key, value);
 
@@ -90,10 +91,10 @@ public static class ConfigCommand {
         return 0;
     }
 
-    static async Task<int> Unset(string key) {
+    async Task<int> Unset(string key) {
         var profileName = "default";
 
-        await ConfigMutator.MutateAsync(c => {
+        await ConfigMutator.MutateAsync(config, c => {
             profileName = c.ActiveProfile;
             var profile = ApplyUnset(c.Profiles.GetValueOrDefault(profileName) ?? new Profile(), key);
 
@@ -115,13 +116,13 @@ public static class ConfigCommand {
     /// Returns false for any other key so <see cref="Set"/> falls through to the profile path
     /// unchanged, and <see cref="ApplySet"/> itself never learns the key exists.
     /// </summary>
-    public static bool TryApplyTelemetry(string key, string value) {
+    public bool TryApplyTelemetry(string key, string value) {
         if (key != "telemetry") return false;
 
         var enabled = TryParseTelemetryToggle(value)
             ?? throw new ArgumentException($"Invalid value for telemetry: '{value}'. Must be on or off.");
 
-        TelemetryState.SetEnabled(enabled);
+        TelemetryState.SetEnabled(enabled, config);
 
         // Belt-and-braces, not the primary defence: Program.cs's pre-Initialize check (see
         // Program.cs, right before CliTelemetry.Initialize) already stops telemetry from ever

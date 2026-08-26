@@ -37,16 +37,18 @@ internal static class AgentOrchestratorHarness {
             // inline arm and the publication barrier. Production never has that window.
             bool                                                deferProcessorPublication = false
         ) {
-        var tmp    = new TempDaemonStore();
+        var daemonStore    = new TempDaemonStore();
+        var configRoot   = new TempConfigRoot();
         var config = new DaemonConfig {
             Name                = "test",
             ServerUrl           = "http://127.0.0.1:1",
             ClaudePath          = "claude",
             MaxConcurrentAgents = 5,
-            WorktreeRoot        = tmp.CreateDir("worktree"),
+            WorktreeRoot        = daemonStore.CreateDir("worktree"),
             // Phase B (D4): the PID-record store, consent policy and decision log all hang off this
             // directory, so each harness gets its own and nothing reaches the real daemons dir.
-            Store               = tmp.Store
+            Store               = daemonStore.Store,
+            ConfigRoot          = configRoot.Root
         };
 
         if (allowedRepoPath is not null) {
@@ -76,7 +78,8 @@ internal static class AgentOrchestratorHarness {
             prompter: null, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         return new HarnessOrchestrator(
-            tmp,
+            daemonStore,
+            configRoot,
             config,
             server,
             worktreeManager,
@@ -93,14 +96,17 @@ internal static class AgentOrchestratorHarness {
         );
     }
 
-    /// <summary>Owns the scratch directory its config points at, so disposing the orchestrator — which
-    /// every call site already does — reaps it at test end. BuildOrchestrator is called from many
-    /// sites, so no per-test fixture could own that directory instead.</summary>
+    /// <summary>Owns the scratch directories its config points at — the daemon store and the config
+    /// root — so disposing the orchestrator, which every call site already does, reaps them at test
+    /// end. BuildOrchestrator is called from many sites, so no per-test fixture could own them
+    /// instead.</summary>
     sealed class HarnessOrchestrator : AgentOrchestrator {
         readonly TempDaemonStore _tmp;
+        readonly TempConfigRoot  _config;
 
         internal HarnessOrchestrator(
                 TempDaemonStore                                         tmp,
+                TempConfigRoot                                          configRoot,
                 DaemonConfig                                            config,
                 ServerConnection                                        server,
                 WorktreeManager                                         worktreeManager,
@@ -116,6 +122,7 @@ internal static class AgentOrchestratorHarness {
                 bool                                                    deferProcessorPublication
             ) : base(
             config,
+            configRoot.Root,
             server,
             worktreeManager,
             repoMatcher,
@@ -129,7 +136,8 @@ internal static class AgentOrchestratorHarness {
             consentGate,
             deferProcessorPublication
         ) {
-            _tmp = tmp;
+            _tmp    = tmp;
+            _config = configRoot;
         }
 
         public override async ValueTask DisposeAsync() {
@@ -137,6 +145,7 @@ internal static class AgentOrchestratorHarness {
                 await base.DisposeAsync();
             } finally {
                 _tmp.Dispose();
+                _config.Dispose();
             }
         }
     }

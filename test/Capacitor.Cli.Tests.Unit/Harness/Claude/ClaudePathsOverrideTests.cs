@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Claude;
 
 namespace Capacitor.Cli.Tests.Unit.Harness.Claude;
@@ -64,7 +65,7 @@ public class ClaudePathsOverrideTests {
     [NotInParallel("HomeEnvVarMutation")]
     public async Task PluginEnvironment_ClaudeHome_delegates_and_honors_override() {
         var original = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
-        var env = new PluginEnvironment("/fake/home", () => null, TextWriter.Null, TextWriter.Null);
+        var env = new PluginEnvironment("/fake/home", new ProfileConfig(), () => null, TextWriter.Null, TextWriter.Null);
         try {
             Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", null);
             await Assert.That(env.ClaudeHome).IsEqualTo(Path.Combine("/fake/home", ".claude"));

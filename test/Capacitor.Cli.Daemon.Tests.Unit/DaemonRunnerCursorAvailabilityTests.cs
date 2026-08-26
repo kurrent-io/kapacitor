@@ -282,6 +282,37 @@ public class DaemonRunnerCursorAvailabilityTests {
         await Assert.That(capabilities.Single(c => c.Vendor == "claude").SupportsLaunchPosture).IsFalse();
     }
 
+    /// <summary>The advertised codex launcher-policy version is selected from
+    /// <see cref="DaemonConfig.CodexAppServerActive"/> — the SAME resolved field the launch router
+    /// reads — so the certified policy and the transport actually launched can never diverge. Active
+    /// app-server advertises the v2 token (server A1 classifies v2 Active, v1 Retired); the
+    /// non-app-server row is unaffected and keeps advertising the vendor-only v1 token.</summary>
+    [Test]
+    public async Task ComputeUnattendedVendorCapabilities_CodexAppServerActive_AdvertisesV2LauncherPolicy() {
+        IHostedAgentRuntimeFactory[] factories = [
+            new FakeRuntimeFactory("codex", isAvailable: true, supportsUnattended: true),
+        ];
+
+        var capabilities = DaemonRunner.ComputeUnattendedVendorCapabilities(
+            factories, new DaemonConfig { CodexAppServerActive = true });
+
+        await Assert.That(capabilities.Single(c => c.Vendor == "codex").LauncherPolicyVersion)
+            .IsEqualTo("codex-appserver-unattended-v2");
+    }
+
+    [Test]
+    public async Task ComputeUnattendedVendorCapabilities_CodexAppServerInactive_AdvertisesV1LauncherPolicy() {
+        IHostedAgentRuntimeFactory[] factories = [
+            new FakeRuntimeFactory("codex", isAvailable: true, supportsUnattended: true),
+        ];
+
+        var capabilities = DaemonRunner.ComputeUnattendedVendorCapabilities(
+            factories, new DaemonConfig { CodexAppServerActive = false });
+
+        await Assert.That(capabilities.Single(c => c.Vendor == "codex").LauncherPolicyVersion)
+            .IsEqualTo(DaemonRunner.CodexLauncherPolicyVersion);
+    }
+
     // === Trust-by-default borrowed-review advertisement ===
     // (docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md)
     //

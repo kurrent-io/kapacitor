@@ -17,6 +17,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// frames.
 /// </summary>
 public class LocalControlOpsV2PutTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
         public CancellationToken ApplicationStopping => CancellationToken.None;
@@ -41,7 +43,7 @@ public class LocalControlOpsV2PutTests {
 
     sealed record Harness(TempDaemonStore Daemons, LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection, DaemonConfig Config, string SockPath);
 
-    static async Task<Harness> StartAsync(string daemonName, CancellationToken ct, string serverUrl = "http://127.0.0.1:1") {
+    async Task<Harness> StartAsync(string daemonName, CancellationToken ct, string serverUrl = "http://127.0.0.1:1") {
         var daemons     = new TempDaemonStore();
         var stateRoot   = daemons.Store.StateDirectory(daemonName);
         var store       = new LaunchConsentStore(stateRoot, NullLogger.Instance);
@@ -63,7 +65,8 @@ public class LocalControlOpsV2PutTests {
         var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
 
         var orchestrator = new AgentOrchestrator(
-            config, connection, worktreeManager, repoMatcher, new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
+            config, Config.Root, connection, worktreeManager, repoMatcher,
+            new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate);
@@ -91,7 +94,7 @@ public class LocalControlOpsV2PutTests {
     /// Wraps a test body with the harness lifecycle, mirroring
     /// ConsentRulesPutV2Tests.RunAsync, and hands the body a LocalControlOps pointed at the same
     /// daemon name so it can drive Put/Get through the real client under test.
-    static async Task RunAsync(string daemonName, Func<Harness, LocalControlOps, CancellationToken, Task> body, string serverUrl = "http://127.0.0.1:1") {
+    async Task RunAsync(string daemonName, Func<Harness, LocalControlOps, CancellationToken, Task> body, string serverUrl = "http://127.0.0.1:1") {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         Harness? h = null;

@@ -68,12 +68,11 @@ public class JoinChainBrowserTests : IDisposable {
             CliTelemetry.Reset();
             SetupJoin.Reset();
 
-            TelemetryState.PathOverride    = _tmp.PathTo("telemetry.json");
-            TelemetryDeviceId.PathOverride = _tmp.PathTo("telemetry-device.json");
+            var config = new ConfigRoot(_tmp.Path);
             var sink = new List<TelemetryEvent>();
             CliTelemetry.TestSink = sink;
-            CliTelemetry.Initialize("setup", null, loggedIn: false);
-            TelemetryTestGuards.AssertEnabled("setup");
+            CliTelemetry.Initialize("setup", null, loggedIn: false, config);
+            TelemetryTestGuards.AssertEnabled("setup", config);
 
             var key = SetupJoin.Mint();
             await Assert.That(key).IsNotNull();
@@ -81,7 +80,7 @@ public class JoinChainBrowserTests : IDisposable {
             var port     = OAuthLoginFlow.GetAvailablePort();
             var redirect = $"http://127.0.0.1:{port}/callback";
 
-            using var browser = new LoopbackBrowser(openBrowser: _ => true, join: SetupJoin.Loopback) {
+            using var browser = new LoopbackBrowser(new RecordingBrowser(), join: SetupJoin.Loopback) {
                 DrainCap = DriverBudget, DisposeWait = TimeSpan.FromSeconds(10),
             };
 

@@ -146,6 +146,10 @@ internal record AgentInstance(
     /// </summary>
     public string PendingEndReason { get; set; } = "agent_exited";
 
+    /// <summary>True while a park ack is outstanding; a sweep skips an agent already parking; reset
+    /// on ambiguous ack to allow retry.</summary>
+    public bool ParkAttemptInFlight { get; set; }
+
     // ── Local terminal attach (Phase 1) ──────────────────────────────────
     // Internal: these expose the daemon-internal ITerminalSink, so they can't be public
     // on this public record (CS0053). They're only touched inside the daemon assembly.
@@ -238,11 +242,18 @@ internal record AgentInstance(
     /// paths cannot share a lock and must share a CAS instead.
     ///
     /// <para>Read via <see cref="IsReapClaimed"/> by <see cref="AgentOrchestrator.HandleSendInput"/>,
-    /// which refuses to deliver to a condemned agent. Never reset: a claimed agent is on its way down,
-    /// and <see cref="AgentOrchestrator.StopAgentCoreAsync"/> flipping the status to "Completed"
-    /// already takes it out of the reap candidate set permanently, so the latch adds no new
+    /// which refuses to deliver to a condemned agent. Effectively write-once: a claimed agent is on its
+    /// way down, and <see cref="AgentOrchestrator.StopAgentCoreAsync"/> flipping the status to
+    /// "Completed" already takes it out of the reap candidate set permanently, so the latch adds no new
     /// terminality — it only makes the losing side of the race observable to the delivery path BEFORE
-    /// teardown has physically closed the transport.</para></summary>
+    /// teardown has physically closed the transport.</para>
+    ///
+    /// <para>The SOLE reset is §2.7 B6 arm-A's <see cref="AgentOrchestrator.ParkReviewerAsync"/> on a
+    /// <see cref="ParkAck.Ambiguous"/> ack: a park that got no definite reply tears down NOTHING, so it
+    /// must un-condemn the still-Running agent (release the latch) for a later sweep to re-claim — a
+    /// claim that neither parks nor reaps may not permanently strand a live reviewer. That reset runs
+    /// while the agent is still Running (no teardown began) and before the in-flight guard is cleared,
+    /// so it never races a path that already assumed terminality.</para></summary>
     public int ReapClaimed;
 
     /// <summary><see cref="ReapClaimed"/> as a bool, through a
@@ -345,7 +356,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// </summary>
     async Task<(int Status, string Body)> ForwardFlowSubmissionAsync(
             string apiPath, string body, CancellationToken ct) {
-        using var http = await HttpClientExtensions.CreateAuthenticatedClientAsync(_config.ServerUrl, ct);
+        using var http = await HttpClientExtensions.CreateAuthenticatedClientAsync(_configRoot, _config.Profiles, _config.ServerUrl, ct);
         using var content  = new StringContent(body, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync(
             $"{_config.ServerUrl.TrimEnd('/')}{apiPath}", content, ct);
@@ -440,6 +451,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     int _orphanSweepRunning;
     int _quarantineSweepRunning;
     readonly DaemonConfig                                      _config;
+    readonly ConfigRoot                                        _configRoot;
     readonly ServerConnection                                  _server;
     readonly WorktreeManager                                   _worktreeManager;
     readonly RepoMatcher                                       _repoMatcher;
@@ -541,6 +553,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     public AgentOrchestrator(
             DaemonConfig                                      config,
+            ConfigRoot                                        configRoot,
             ServerConnection                                  server,
             WorktreeManager                                   worktreeManager,
             RepoMatcher                                       repoMatcher,
@@ -564,6 +577,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         ) {
         _shutdownCts       = CancellationTokenSource.CreateLinkedTokenSource(lifetime.ApplicationStopping);
         _config            = config;
+        _configRoot        = configRoot;
         _server            = server;
         _worktreeManager   = worktreeManager;
         _repoMatcher       = repoMatcher;
@@ -807,6 +821,28 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// can become active in the very next instant. Each candidate therefore carries the activity
     /// generation it was selected against, which <see cref="TryClaimReapAsync"/> re-validates inside
     /// the per-agent fence.</para></summary>
+
+    /// <summary>§2.7 B6 arm-A: the end/park reason for a resumable reviewer parked (not reaped). This
+    /// exact string is BOTH the ack reason sent to the server's <c>ReportParticipantParked</c> AND the
+    /// <see cref="AgentInstance.PendingEndReason"/> that tells <see cref="FinalizeAgentRunAsync"/> to
+    /// SUPPRESS the hosted session-end — so it must match on both sides. Do not vary it.</summary>
+    internal const string ReviewerParkedResumableReason = "reviewer_parked_resumable";
+
+    /// <summary>§2.7 B6 arm-A: the end reason stamped when the server REJECTS a park — the reviewer is
+    /// then ended normally (session-end fires) rather than parked, so this must NOT be
+    /// <see cref="ReviewerParkedResumableReason"/> (which would suppress that end).</summary>
+    const string ReviewerParkRejectedReason = "reviewer_park_rejected";
+
+    /// <summary>§2.7 B6 arm-A resume-capability predicate: true only for an app-server hosted Codex
+    /// reviewer, whose <c>thread/start</c> handshake bound a Codex thread id that a later
+    /// <c>thread/resume</c> can reopen — the one runtime that reports the app-server transport
+    /// (<see cref="Harness.Codex.CodexAppServerHostedAgentRuntime"/>; every other runtime reports the
+    /// "pty" default). A PTY / non-Codex reviewer has no resumable thread and never matches. Read off
+    /// the transport label rather than type-switching the runtime — the same value the server validates
+    /// its launch decision against on registration.</summary>
+    static bool IsResumableReviewer(AgentInstance a) =>
+        a.RuntimeTransport == Harness.Codex.CodexTransportDecision.AppServer;
+
     internal IReadOnlyList<ReapCandidate> FindReviewersToReap() {
         var result = new List<ReapCandidate>();
 
@@ -852,6 +888,26 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 continue; // a held turn suppresses the plain idle rule outright
             }
 
+            // §2.7 B6 arm-A: a RESUMABLE hosted reviewer (app-server Codex, whose thread survives a
+            // process teardown for a later thread/resume) that has been idle past the SHORT resumable
+            // bound — and is not already mid-park — is PARKED rather than reaped: its slot is freed but
+            // its Codex thread is kept. Checked here, BEFORE the 2h arm-B idle rule and inside the same
+            // !clock.TurnInFlight region, so a resumable reviewer parks at ~10min instead of reaping at
+            // 2h. A non-resumable reviewer (PTY / non-Codex) never satisfies the transport gate and
+            // falls through to arm-B unchanged.
+            //
+            // No separate "channel-drained" clause (Task 0): !TurnInFlight already means no active turn,
+            // every input enqueue / turn transition / notification advances this same activity clock (so
+            // idle past the bound already implies the input queue and transcript are quiescent — the
+            // forwarder's unacked buffer flushes within its <=30s retry cadence, far under the bound),
+            // and FencedOnActivity: true re-checks at claim that nothing has advanced since selection.
+            if (IsResumableReviewer(a) && !a.ParkAttemptInFlight
+                && _config.ReviewerResumableIdleTimeout > TimeSpan.Zero
+                && clock.IdleForMs > (ulong) _config.ReviewerResumableIdleTimeout.TotalMilliseconds) {
+                result.Add(new ReapCandidate(a, ReviewerParkedResumableReason, clock.ActivitySeq, FencedOnActivity: true) { Park = true });
+                continue;
+            }
+
             if (_config.ReviewerIdleTimeout > TimeSpan.Zero && clock.IdleForMs > (ulong) _config.ReviewerIdleTimeout.TotalMilliseconds)
                 result.Add(new ReapCandidate(a, "reviewer_idle_expired", clock.ActivitySeq, FencedOnActivity: true));
         }
@@ -872,6 +928,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     internal readonly record struct ReapCandidate(
             AgentInstance Agent, string Reason, ulong ActivityGeneration, bool FencedOnActivity) {
         public string Id => Agent.Id;
+
+        /// <summary>§2.7 B6 arm-A discriminator. When true, the heartbeat routes this candidate to the
+        /// resumable-PARK path (<see cref="AgentOrchestrator.ParkReviewerAsync"/>) instead of the reap
+        /// path: its daemon slot is freed like a reap, but its Codex app-server thread is kept alive
+        /// (the hosted session-end is SUPPRESSED) for a later <c>thread/resume</c>. False for every
+        /// reap rule (TTL / wedge / idle), which keep flowing to
+        /// <see cref="AgentOrchestrator.ReapReviewerAsync"/> unchanged.</summary>
+        public bool Park { get; init; }
     }
 
     // Surface 3: cached machine inventory, recomputed on a 6h in-memory cadence. Deliberately never
@@ -894,7 +958,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             if (_harnessInventory is not null &&
                 DateTimeOffset.UtcNow - _harnessInventoryEvaluatedAt < HarnessInventoryTtl) return;
             try {
-                _harnessInventory = Capacitor.Cli.Core.Setup.HarnessInventory.EvaluateCurrent();
+                _harnessInventory = Capacitor.Cli.Core.Setup.HarnessInventory.EvaluateCurrent(_configRoot);
             } catch (Exception ex) {
                 // Keep the last cached value (or null); inventory must never break the report path.
                 _logger.LogDebug(ex, "Harness inventory evaluation failed — keeping last cached");
@@ -1872,7 +1936,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             // Whether this reviewer's kcap-flow-result channel must deliver through a daemon-brokered
             // capability instead of authenticating for itself. The channel resolves its credential
-            // from PathHelpers.ConfigDir, which hangs off HOME — so the question is whether the launch
+            // from its own config root, which hangs off HOME — so the question is whether the launch
             // runs under the daemon user's HOME, and there are two independent causes of its not doing
             // so, one owned by the launch and one by the runtime:
             //
@@ -1979,7 +2043,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 ActivityClock: activityClock,
                 // Carried verbatim; the ACP factory resolves it (non-review-flow launches only) into the
                 // interaction bridge's preset.
-                AcpPermissionPreset: cmd.AcpPermissionPreset
+                AcpPermissionPreset: cmd.AcpPermissionPreset,
+                // Carried verbatim; the Codex app-server factory branches thread/start -> thread/resume
+                // on it for a parked reviewer relaunch. Ignored by every other runtime.
+                ResumeSessionId: cmd.ResumeSessionId
             );
 
             HostedRuntimeStart start;
@@ -2679,7 +2746,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // genuinely long outage falls back to server-side daemon-disconnect reconcile.
             //
             // PrivateLocal agents have no server-side session to end (deny-all).
-            if (!agent.IsPrivate) {
+            //
+            // §2.7 B6 arm-A: a PARKED reviewer (ParkReviewerAsync got a durable Parked ack, which stamped
+            // ReviewerParkedResumableReason here) completes EVERY local-teardown step EXCEPT this hosted
+            // session-end — its Codex app-server thread must survive for a later thread/resume, and the
+            // server's B5 close authority owns the eventual close. Every other teardown step (the ACP
+            // final-drain above, UnregisterAcpBinding + CleanupAgentAsync below) still runs, so the slot
+            // is freed exactly as a reap frees it.
+            if (!agent.IsPrivate && agent.PendingEndReason != ReviewerParkedResumableReason) {
                 var endTask = _server.EndAgentSessionAsync(agent.Id, agent.PendingEndReason);
 
                 try {
@@ -2805,6 +2879,94 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             await StopClaimedReapAsync(candidate);
         } catch (Exception ex) {
             LogReapFailed(ex, candidate.Id, candidate.Reason);
+        }
+    }
+
+    /// <summary>§2.7 B6 arm-A: PARK a resumable reviewer instead of reaping it — free its daemon slot
+    /// while keeping its Codex app-server thread alive for a later <c>thread/resume</c> (B4). Mirrors
+    /// <see cref="ReapReviewerAsync"/>'s claim fence, then, on a DURABLE-park ack, takes the same local
+    /// teardown a reap does (<see cref="StopClaimedReapAsync"/> → stop process, unregister, free slot)
+    /// MINUS the hosted <c>EndAgentSession</c> emission: <see cref="FinalizeAgentRunAsync"/> suppresses
+    /// that when <see cref="AgentInstance.PendingEndReason"/> is <see cref="ReviewerParkedResumableReason"/>,
+    /// because the server's B5 close authority owns the eventual close and a resume needs the thread
+    /// intact. Fire-and-forget from the heartbeat, so — like <see cref="ReapReviewerAsync"/> — it
+    /// contains its own faults, and it never strands <see cref="AgentInstance.ParkAttemptInFlight"/>.
+    ///
+    /// <para>Three-way on the ack (<see cref="ServerConnection.ReportParticipantParkedAsync"/> never
+    /// throws): <see cref="ParkAck.Parked"/> completes the park teardown (session-end suppressed);
+    /// <see cref="ParkAck.Rejected"/> keeps the won claim but restores a normal end reason and ends the
+    /// reviewer through the same stop path (so a refused park is cleaned up, never left dangling — and
+    /// NOT re-claimed, which could now abort on activity and strand it); <see cref="ParkAck.Ambiguous"/>
+    /// tears down NOTHING and RESTORES the pre-attempt state (releasing the reap latch the claim took —
+    /// the one park-specific exception to <see cref="AgentInstance.ReapClaimed"/> being write-once,
+    /// since a claim that neither parks nor reaps must not condemn a live agent) so the next sweep
+    /// re-selects and retries.</para></summary>
+    async Task ParkReviewerAsync(ReapCandidate candidate) {
+        var a = candidate.Agent;
+
+        // One park attempt at a time per agent (a sweep skips an agent already parking); reset on an
+        // ambiguous ack / lost claim / fault below so a later sweep can retry.
+        a.ParkAttemptInFlight = true;
+        try {
+            // Claim/revalidate under the per-agent fence EXACTLY as the reap path does: incarnation +
+            // status + the activity generation captured at selection (FencedOnActivity: true — a
+            // delivery since selection has advanced the seq and the park aborts here). A lost claim
+            // tears down nothing; clear the guard so the next sweep can retry.
+            if (!await TryClaimReapAsync(candidate)) {
+                a.ParkAttemptInFlight = false;
+
+                return;
+            }
+
+            // The canonical session id the server keys the park (and a later resume) on: the app-server
+            // thread id, exposed by the runtime's IAcpTranscriptSource facet.
+            var canonicalSessionId = (a.Runtime as IAcpTranscriptSource)?.AcpSessionId ?? "";
+
+            // Never throws: a transport error / timeout / unknown-method folds to Ambiguous rather than a
+            // false Rejected, so an uncertain reply never triggers a destructive teardown.
+            var ack = await _server.ReportParticipantParkedAsync(
+                a.Id, canonicalSessionId, ReviewerParkedResumableReason, _shutdownCts.Token);
+
+            switch (ack) {
+                case ParkAck.Parked:
+                    // Durable park acked. Stamp ReviewerParkedResumableReason NOW — this is the
+                    // authoritative set (the claim deliberately left a neutral default so a child-exit
+                    // during the ack await above could not suppress an unconfirmed park; see
+                    // TryLatchClaim). It both attributes the teardown AND drives FinalizeAgentRunAsync to
+                    // SUPPRESS the hosted session-end so the thread survives — and it is set strictly
+                    // before StopClaimedReapAsync below, whose stop is what triggers finalization.
+                    // Complete every other local-teardown step through the shared stop path.
+                    a.PendingEndReason = ReviewerParkedResumableReason;
+                    LogReviewerParked(a.Id, canonicalSessionId);
+                    await StopClaimedReapAsync(candidate);
+                    break;
+
+                case ParkAck.Rejected:
+                    // The server refused the park (e.g. a terminal close already won). End the reviewer
+                    // normally instead of leaving it dangling: keep the won claim, but restore a normal
+                    // end reason so FinalizeAgentRunAsync's session-end FIRES (it is suppressed only for
+                    // the park reason), then run the same stop path.
+                    a.PendingEndReason = ReviewerParkRejectedReason;
+                    LogReviewerParkRejected(a.Id);
+                    await StopClaimedReapAsync(candidate);
+                    break;
+
+                case ParkAck.Ambiguous:
+                    // No definite reply. Tear down NOTHING; restore the pre-attempt state so the next
+                    // sweep re-selects and re-claims. Order matters: clear the reap-reason stamp and
+                    // RELEASE the reap latch (so the retry's claim can win) BEFORE clearing the in-flight
+                    // guard LAST, so no concurrent sweep re-selects a half-restored agent.
+                    a.PendingEndReason = "agent_exited";
+                    Interlocked.Exchange(ref a.ReapClaimed, 0);
+                    LogReviewerParkAmbiguous(a.Id);
+                    a.ParkAttemptInFlight = false;
+                    break;
+            }
+        } catch (Exception ex) {
+            // Fire-and-forget from the heartbeat (matching ReapReviewerAsync): contain the fault, and
+            // NEVER strand the in-flight guard on an unexpected throw.
+            a.ParkAttemptInFlight = false;
+            LogParkFailed(ex, candidate.Id, candidate.Reason);
         }
     }
 
@@ -2983,7 +3145,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return false;
         }
 
-        candidate.Agent.PendingEndReason = candidate.Reason;
+        // §2.7 B6 arm-A: a PARK candidate must NOT stamp its suppress reason
+        // (ReviewerParkedResumableReason) here at claim time. The claim happens BEFORE ParkReviewerAsync
+        // awaits the park ack, and FinalizeAgentRunAsync suppresses the hosted session-end whenever it
+        // sees that exact reason — so if the reviewer's app-server child exits DURING the ack await, the
+        // finalizer would suppress the session-end for a park that was never confirmed, orphaning the
+        // ledger row (neither durably parked nor cleanly closed). Stamp the neutral default instead;
+        // ParkReviewerAsync applies ReviewerParkedResumableReason itself, but only on a definite
+        // ParkAck.Parked and immediately before the stop that drives finalization (an unconfirmed park is
+        // not a park — a mid-await exit must end the session normally). Reap candidates are unchanged.
+        candidate.Agent.PendingEndReason = candidate.Park ? "agent_exited" : candidate.Reason;
 
         return true;
     }
@@ -3215,7 +3386,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 UseShellExecute        = false,
                 CreateNoWindow         = true,
                 Environment = {
-                    ["KCAP_URL"] = _config.ServerUrl
+                    ["KCAP_URL"] = _config.ServerUrl,
+                    [ConfigRoot.ConfigDirEnvVar] = _config.ConfigRoot.Directory
                 }
             };
             psi.ArgumentList.Add("generate-whats-done");
@@ -3504,7 +3676,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             try {
                 using var httpClient = _httpClientFactory.CreateClient("Attachments");
 
-                var resolution = await TokenStore.GetValidTokensForServerAsync(_config.ServerUrl);
+                var resolution = await new TokenStore(_configRoot).GetValidTokensForServerAsync(_config.Profiles.Name, _config.ServerUrl);
 
                 if (resolution.Tokens is not null) {
                     httpClient.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);
@@ -3701,7 +3873,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // Persist repo path and notify server so the launch dialog updates.
         _ = Task.Run(async () => {
                 try {
-                    await RepoPathStore.AddAsync(agent.RepoPath);
+                    await new RepoPathStore(_configRoot).AddAsync(agent.RepoPath);
                     await _server.UpdateRepoPathsAsync();
                 } catch (Exception ex) {
                     LogRepoPathPersistFailed(ex, agent.Id);
@@ -3753,7 +3925,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 acpCts.Token
             );
 
-            StartForwarderAfterBind(agent, transcript, vendor, acpCts);
+            // Non-envelope AcpSessionStarted bind: no source-claim cursor, so always a fresh forwarder
+            // (SessionStarted@0). §2.7 B4's rebind cursor rides ONLY the source-claim path below.
+            StartForwarderAfterBind(agent, transcript, vendor, acpCts, acceptedSeq: -1);
         } catch (Exception ex) {
             LogAcpBindFailed(ex, agent.Id);
         }
@@ -3764,11 +3938,17 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// liveness / TOCTOU guards, the local reconnect-binding registration, and the transcript
     /// forwarder build + run. Factored out of <see cref="StartAcpForwardingAsync"/> so the §2.5
     /// deferred-first-turn source-claim path — which binds via <c>AcpSessionSourceClaim</c>, NOT
-    /// <c>AcpSessionStarted</c> — can reuse it verbatim without re-binding. Synchronous (no awaits): the
-    /// forwarder's local seq always starts at 0 and the server drives resume via the AcpBatchAck, so
-    /// this needs no cursor from either bind path. The CALLER owns the try/catch.
+    /// <c>AcpSessionStarted</c> — can reuse it verbatim without re-binding. Synchronous (no awaits). The
+    /// CALLER owns the try/catch.
+    ///
+    /// <para><paramref name="acceptedSeq"/> (§2.7 B4): a FRESH bind (<c>-1</c>, the default) builds the
+    /// SessionStarted@0 initial envelope and the forwarder's local seq starts at 0. An envelope-sourced
+    /// REBIND (a parked reviewer relaunch, <c>≥ 0</c>) initializes the forwarder from the source-claim's
+    /// canonical <c>AcceptedSeq</c> instead — no SessionStarted, new events numbered from that seq + 1
+    /// (see §2.5 item 6). Only the <see cref="StartEnvelopeSourcedSessionAsync"/> source-claim path can
+    /// carry a cursor; the non-envelope <see cref="StartAcpForwardingAsync"/> path always passes -1.</para>
     /// </summary>
-    void StartForwarderAfterBind(AgentInstance agent, IAcpTranscriptSource transcript, string vendor, CancellationTokenSource acpCts) {
+    void StartForwarderAfterBind(AgentInstance agent, IAcpTranscriptSource transcript, string vendor, CancellationTokenSource acpCts, long acceptedSeq = -1) {
         // Liveness check: the bind await (either path) can span a reconnect outage. If finalize already
         // ran (cancelling acpCts and/or removing the agent from _agents) while we waited, abort — do not
         // register a binding, build a forwarder, or start it for an agent that's finalizing or gone.
@@ -3795,7 +3975,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return;
         }
 
-        var sessionStarted = AcpEventTranslator.BuildSessionStarted(
+        // §2.7 B4: a fresh bind (acceptedSeq < 0) synthesizes SessionStarted@0 and starts the local seq at
+        // 0; an envelope-sourced rebind (acceptedSeq >= 0) suppresses SessionStarted and resumes numbering
+        // from the canonical cursor, so round-2 events aren't deduped away against round-1's high-water.
+        var isRebind = acceptedSeq >= 0;
+
+        var sessionStarted = isRebind ? (AcpEventEnvelope?) null : AcpEventTranslator.BuildSessionStarted(
             seq: 0,
             DateTimeOffset.UtcNow.ToString("O"),
             cwd: transcript.Cwd,
@@ -3807,7 +3992,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             send: (batch, ct) => _server.SendAcpEventsAsync(agent.Id, transcript.AcpSessionId, batch, ct),
             initialEnvelope: sessionStarted,
             envelopes: transcript.Envelopes,
-            logger: _logger
+            logger: _logger,
+            resumeFromSeq: isRebind ? acceptedSeq : null
         );
 
         var runTask = ForwardAcpTranscriptAsync(agent, forwarder, acpCts.Token);
@@ -3862,8 +4048,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         try {
             // The claim already bound server-side, so build the forwarder WITHOUT AcpSessionStarted. It
-            // is running BEFORE the first turn dispatches, so it captures that turn's envelopes.
-            StartForwarderAfterBind(agent, transcript, vendor, acpCts);
+            // is running BEFORE the first turn dispatches, so it captures that turn's envelopes. §2.7 B4:
+            // pass the claim's canonical AcceptedSeq — -1 for a brand-new session (fresh SessionStarted@0),
+            // or the resume high-water for a parked-reviewer rebind (suppress SessionStarted, resume seq).
+            StartForwarderAfterBind(agent, transcript, vendor, acpCts, acceptedSeq: claim.AcceptedSeq);
 
             // StartForwarderAfterBind aborts silently if finalize ran (cancelled acpCts and/or removed the
             // agent) during the bind — re-check the SAME liveness before releasing the held first turn, so a
@@ -4295,7 +4483,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // rules — the activity generation this candidate was selected against. The end-reason stamp
             // moved in there with it: an aborted reap must not leave "reviewer_idle_expired" on a live
             // agent for whatever ends it later.
-            foreach (var candidate in FindReviewersToReap()) _ = ReapReviewerAsync(candidate);
+            // §2.7 B6 arm-A: a Park candidate (a resumable reviewer past the short resumable idle bound)
+            // routes to the PARK path — slot freed, Codex thread kept for resume; every reap rule keeps
+            // flowing to the reap path unchanged. Both are fire-and-forget and contain their own faults.
+            foreach (var candidate in FindReviewersToReap())
+                _ = candidate.Park ? ParkReviewerAsync(candidate) : ReapReviewerAsync(candidate);
 
             // PrivateLocal agents get no heartbeats and no stuck-Starting auto-stop (deny-all;
             // the local user is present and drives them directly).
@@ -4336,7 +4528,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     }
 
     async Task RunTokenRefreshLoopAsync(CancellationToken ct) {
-        var loop = new TokenRefreshLoop(new TokenStoreRefreshPort(ProactiveRefreshWindow), _logger, ProactiveRefreshMinInterval);
+        var loop = new TokenRefreshLoop(new TokenStoreRefreshPort(_configRoot, _config.Profiles.Name, ProactiveRefreshWindow), _logger, ProactiveRefreshMinInterval);
 
         while (await _tokenRefresh.WaitForNextTickAsync(ct)) {
             // Defence in depth: TickAsync is intentionally total, but this runs as an
@@ -4354,9 +4546,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     async Task RunSpoolDrainLoopAsync(CancellationToken ct) {
         var loop = new SpoolDrainLoop(
+            _configRoot,
+            _config.Profiles,
             _config.ServerUrl,
-            new HookSpool(PathHelpers.ConfigPath("spool")),
-            new TranscriptSpool(PathHelpers.ConfigPath("transcript-spool")),
+            new HookSpool(_configRoot),
+            new TranscriptSpool(_configRoot),
             _logger,
             onWhatsDoneRequested: SpawnWhatsDoneGenerator);
 
@@ -4647,6 +4841,18 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     [LoggerMessage(Level = LogLevel.Warning, Message = "Reaping review-flow reviewer {AgentId} ({Reason}) failed")]
     partial void LogReapFailed(Exception ex, string agentId, string reason);
 
+    [LoggerMessage(Level = LogLevel.Information, Message = "Parked resumable review-flow reviewer {AgentId} (canonical session {CanonicalSessionId}): slot freed, Codex thread kept alive for resume; hosted session-end suppressed")]
+    partial void LogReviewerParked(string agentId, string canonicalSessionId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Park of review-flow reviewer {AgentId} was REJECTED by the server — ending it on the normal path instead of parking")]
+    partial void LogReviewerParkRejected(string agentId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Park of review-flow reviewer {AgentId} got no definite reply (ambiguous) — leaving it intact for the next sweep to retry")]
+    partial void LogReviewerParkAmbiguous(string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Parking review-flow reviewer {AgentId} ({Reason}) failed")]
+    partial void LogParkFailed(Exception ex, string agentId, string reason);
+
     // Codex (PTY) turn-start diagnostic — after SendInput is delivered, did Codex act?
     [LoggerMessage(Level = LogLevel.Information, Message = "Codex turn started for agent {AgentId} after input ({ElapsedMs}ms after delivery)")]
     partial void LogCodexTurnStarted(string agentId, long elapsedMs);
@@ -4886,6 +5092,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// <summary>Test-only: run ONE selected reap exactly as the heartbeat does (claim, then stop only
     /// if the claim was won) — the seam for driving a candidate selected before some racing event.</summary>
     internal Task ReapReviewerForTest(ReapCandidate candidate) => ReapReviewerAsync(candidate);
+
+    /// <summary>Test-only: run ONE selected PARK exactly as the heartbeat does (claim, report, then the
+    /// ack-gated teardown) — the seam for driving the arm-A park state machine against a fake
+    /// <see cref="ServerConnection"/> whose <see cref="ServerConnection.ReportParticipantParkedAsync"/>
+    /// returns a chosen <see cref="ParkAck"/>.</summary>
+    internal Task ParkReviewerForTest(ReapCandidate candidate) => ParkReviewerAsync(candidate);
 
     /// <summary>Test-only: the claim ALONE, without the teardown it gates. Lets a contention test pin
     /// which side won the section without also driving a stop whose (slow, side-effecting) teardown is

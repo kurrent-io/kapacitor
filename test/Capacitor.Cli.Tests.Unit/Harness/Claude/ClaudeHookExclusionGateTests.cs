@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core.Config;
 
@@ -12,6 +12,19 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Claude;
 /// intentionally skipped.
 /// </summary>
 public class ClaudeHookExclusionGateTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    readonly HookClock _clock = new(TimeProvider.System);
+
+    // Instance, not static: the hook writes under the config dir (the repo-detection cache,
+    // the lease store), so it must be handed this test's own root — which a static helper
+    // cannot see, TUnit injecting it after construction.
+    ClaudeHookCommand Hook() => new(Config.Root, Resolutions.None(Config.Root), _clock);
+
+    // The gate reads the budget only for the repo probe, which these path-exclusion payloads never
+    // reach; what they vary is the profile, not the clock. Any live ceiling will do.
+    HookBudget Budget() => _clock.Budget(TimeSpan.FromSeconds(5));
+
     static string Body(string cwd) => new JsonObject { ["cwd"] = cwd }.ToJsonString();
 
     [Test]
@@ -22,8 +35,7 @@ public class ClaudeHookExclusionGateTests {
         var profile  = new Profile { ExcludedPaths = [excludedDir] };
         var body     = Body(excludedDir.PathTo("project"));
 
-        var excluded = await ClaudeHookCommand.IsSessionExcludedAsync(
-            profile, body, Stopwatch.GetTimestamp(), "permission-request");
+        var excluded = await Hook().IsSessionExcludedAsync(profile, body, Budget());
 
         await Assert.That(excluded).IsTrue();
     }
@@ -37,24 +49,21 @@ public class ClaudeHookExclusionGateTests {
         var profile  = new Profile { ExcludedPaths = [excludedDir] };
         var body     = Body(otherDir.PathTo("project"));
 
-        var excluded = await ClaudeHookCommand.IsSessionExcludedAsync(
-            profile, body, Stopwatch.GetTimestamp(), "permission-request");
+        var excluded = await Hook().IsSessionExcludedAsync(profile, body, Budget());
 
         await Assert.That(excluded).IsFalse();
     }
 
     [Test]
     public async Task NullProfile_ReturnsFalse() {
-        var excluded = await ClaudeHookCommand.IsSessionExcludedAsync(
-            profile: null, Body("/tmp/anything"), Stopwatch.GetTimestamp(), "permission-request");
+        var excluded = await Hook().IsSessionExcludedAsync(profile: null, Body("/tmp/anything"), Budget());
 
         await Assert.That(excluded).IsFalse();
     }
 
     [Test]
     public async Task ProfileWithoutExclusions_ReturnsFalse() {
-        var excluded = await ClaudeHookCommand.IsSessionExcludedAsync(
-            new Profile(), Body("/tmp/anything"), Stopwatch.GetTimestamp(), "permission-request");
+        var excluded = await Hook().IsSessionExcludedAsync(new Profile(), Body("/tmp/anything"), Budget());
 
         await Assert.That(excluded).IsFalse();
     }

@@ -12,7 +12,7 @@ static class ServiceEnvironment {
     /// <summary>Variables carried from the installing shell into the service unit. No credentials —
     /// the unit is a file on disk.</summary>
     static readonly string[] Keys =
-        ["PATH", "KCAP_CONFIG_DIR", "KCAP_PROFILE", "KCAP_URL", "KCAP_CLAUDE_PATH", "KCAP_CODEX_PATH",
+        ["PATH", "KCAP_PROFILE", "KCAP_URL", "KCAP_CLAUDE_PATH", "KCAP_CODEX_PATH",
          "KCAP_CONSENT_SEED_DEFAULT", "KCAP_EXPECT_SERVER_URL"];
 
     /// <summary>
@@ -108,8 +108,8 @@ static class ServiceEnvironment {
     const string TokenCommandKey = "KCAP_COPILOT_TOKEN_CMD";
 
     /// <summary>Production entry point: capture from the current process env.</summary>
-    public static IReadOnlyDictionary<string, string> Capture(string? profileName) =>
-        Build(profileName, Snapshot(), OperatingSystem.IsWindows());
+    public static IReadOnlyDictionary<string, string> Capture(string? profileName, Core.ConfigRoot config) =>
+        Build(profileName, Snapshot(), config, OperatingSystem.IsWindows());
 
     static Dictionary<string, string> Snapshot() {
         var d = new Dictionary<string, string>();
@@ -125,10 +125,12 @@ static class ServiceEnvironment {
     /// on the way into the unit would let it vanish instead of failing closed.</summary>
     static readonly string[] BakeEvenEmptyKeys = ["KCAP_CONSENT_SEED_DEFAULT", "KCAP_EXPECT_SERVER_URL"];
 
-    /// <summary>Pure: select the relevant keys from <paramref name="source"/>, pin the profile.</summary>
+    /// <summary>Pure: select the relevant keys from <paramref name="source"/>, pin the profile and the
+    /// config root.</summary>
     /// <param name="isWindows">Platform, passed rather than probed so the exclusion is testable.</param>
     public static IReadOnlyDictionary<string, string> Build(
-            string? profileName, IReadOnlyDictionary<string, string> source, bool isWindows = false) {
+            string? profileName, IReadOnlyDictionary<string, string> source, Core.ConfigRoot config,
+            bool isWindows = false) {
         var env = new Dictionary<string, string>(StringComparer.Ordinal);
         string[] keys = isWindows
             ? [.. Keys, .. ReviewerConsentKeys, .. GoogleConfigKeys]
@@ -138,6 +140,12 @@ static class ServiceEnvironment {
             if (!string.IsNullOrEmpty(v) || BakeEvenEmptyKeys.Contains(key)) env[key] = v;
         }
         if (!string.IsNullOrEmpty(profileName)) env["KCAP_PROFILE"] = profileName; // explicit pin wins
+
+        // From the installer's context rather than captured from its environment: a unit inherits
+        // nothing, so a captured root would be baked only when one happened to be exported — and the
+        // supervisor's own HOME would decide the rest.
+        env[Core.ConfigRoot.ConfigDirEnvVar] = config.Directory;
+
         return env;
     }
 

@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Harness.Claude;
 
@@ -13,7 +14,7 @@ namespace Capacitor.Cli.Harness.Codex;
 /// with <c>vendor = "codex"</c>. <see cref="ImportSessionAsync"/> is a stub —
 /// the orchestrator will wire chain workers in E2.
 /// </summary>
-internal sealed class CodexImportSource(string? rootOverride = null) : IImportSource {
+internal sealed class CodexImportSource(ConfigRoot config, string? rootOverride = null) : IImportSource {
     readonly string _sessionsDir = rootOverride ?? CodexPaths.Sessions;
 
     public string Vendor => "codex";
@@ -100,6 +101,7 @@ internal sealed class CodexImportSource(string? rootOverride = null) : IImportSo
         }
 
         return await TranscriptFileClassification.ClassifyAsync(
+            config,
             ctx.HttpClient,
             ctx.BaseUrl,
             transcripts,

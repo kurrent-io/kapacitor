@@ -20,7 +20,11 @@ public sealed record DaemonStatusDto(DaemonInfoDto Daemon, List<AgentStatusDto> 
 /// </summary>
 public sealed record DaemonInfoDto(
     string Name, string Version, string ServerUrl, string Connection, int MaxAgents, int ActiveAgents,
-    int? Pid = null, string? InstanceId = null);
+    int? Pid = null, string? InstanceId = null,
+    // Vendor tokens this daemon can host, from the runtime factories' own availability probe —
+    // the same set advertised to the server on DaemonConnect. Trailing/additive: null from a
+    // daemon that predates it, which a client must read as UNKNOWN, never as "hosts nothing".
+    string[]? SupportedVendors = null);
 
 /// <summary>
 /// <see cref="Status"/> is the daemon's internal status string VERBATIM (PascalCase, open
@@ -34,7 +38,13 @@ public sealed record DaemonInfoDto(
 public sealed record AgentStatusDto(
     string Id, string Kind, string Vendor, string? RepoPath, string Status,
     string? FlowRunId, string? FlowRole, string? Requester, DateTime CreatedAt, string? Model,
-    string? RequesterDisplay);
+    string? RequesterDisplay,
+    // Whether the agent's runtime emits a PTY the app can attach to
+    // (IHostedAgentRuntime.EmitsTerminalOutput). Trailing + nullable so every
+    // existing positional construction stays valid; null = older daemon,
+    // unknown — the app falls back to its vendor heuristic. Always emitted:
+    // false is a real value, not an absence.
+    bool? HasTerminal = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(DaemonStatusDto))]

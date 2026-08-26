@@ -1,7 +1,7 @@
-using System.Diagnostics;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -19,9 +19,25 @@ public class UnusableUrlGuardTests : IDisposable {
     const string BadUrl = "ftp://host";
     const string Sid    = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+    // The suppression gate reads its budget only for the repo probe, which no payload here reaches
+    // (no profile, so no excluded repos). One clock per test so the command and its budget agree.
+    static readonly TimeSpan Ceiling = TimeSpan.FromSeconds(5);
+
+    readonly HookClock _clock = new(TimeProvider.System);
+
     readonly TempDir _tmp = new();
     readonly string  _dir;
     readonly string  _tdir;
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // Every guard below reads the URL off the resolution, so the unusable one lives there — a
+    // parameter would let a caller point a guard at a URL the process never resolved.
+    ProfileContext  Bad => field ??= Resolutions.At(BadUrl, Config.Root);
+
+    AgentHookPoster  Poster => field ??= new(Config.Root, Bad);
+
+    WatcherManager  Watchers => field ??= new(Config.Root, Bad);
 
     public UnusableUrlGuardTests() {
         _tdir = _tmp.PathTo("tdir");
@@ -36,8 +52,8 @@ public class UnusableUrlGuardTests : IDisposable {
     [Test]
     public async Task PostOrSpool_spools_the_payload_and_reports_Spooled() {
         var spool   = new HookSpool(_dir);
-        var outcome = await AgentHookPoster.PostOrSpoolAsync(
-            BadUrl, "session-start/codex", """{"session_id":"x"}""", "codex-hook", spool, Sid, "session-start/codex");
+        var outcome = await Poster.PostOrSpoolAsync(
+            "session-start/codex", """{"session_id":"x"}""", "codex-hook", spool, Sid, "session-start/codex");
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Spooled);
         await Assert.That(spool.HasBacklog(Sid)).IsTrue();
@@ -51,8 +67,8 @@ public class UnusableUrlGuardTests : IDisposable {
         Directory.CreateDirectory(_dir);
         File.WriteAllText(unwritable, "not a directory");
 
-        var outcome = await AgentHookPoster.PostOrSpoolAsync(
-            BadUrl, "session-start/codex", "{}", "codex-hook", new HookSpool(unwritable), Sid, "session-start/codex");
+        var outcome = await Poster.PostOrSpoolAsync(
+            "session-start/codex", "{}", "codex-hook", new HookSpool(unwritable), Sid, "session-start/codex");
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Skipped);
     }
@@ -60,7 +76,7 @@ public class UnusableUrlGuardTests : IDisposable {
     [Test]
     public async Task PostAsync_reports_Skipped_never_Failed() {
         // Failed would make every caller exit non-zero — the hook must still exit 0.
-        var outcome = await AgentHookPoster.PostAsync(BadUrl, "session-end/gemini", "{}", "gemini-hook");
+        var outcome = await Poster.PostAsync("session-end/gemini", "{}", "gemini-hook");
 
         await Assert.That(outcome).IsEqualTo(HookPostOutcome.Skipped);
         await Assert.That(outcome).IsNotEqualTo(HookPostOutcome.Failed);
@@ -90,9 +106,9 @@ public class UnusableUrlGuardTests : IDisposable {
 
         var entered = false;
 
-        await AgentHookPoster.DrainSpoolsAsync(
-            BadUrl, new HookSpool(_dir), new TranscriptSpool(_tdir), Sid,
-            clientFactory: _ => {
+        await Poster.DrainSpoolsCoreAsync(
+            new HookSpool(_dir), new TranscriptSpool(_tdir), Sid,
+            _ => {
                 entered = true;
                 throw new InvalidOperationException("the drain guard did not run");
             });
@@ -109,7 +125,7 @@ public class UnusableUrlGuardTests : IDisposable {
         var starts = 0;
         WatcherManager.ProcessStarterForTesting = _ => { starts++; return null; };
 
-        await WatcherManager.SpawnWatcher(BadUrl, Sid, Path.Combine(_dir, "t.jsonl"), agentId: null);
+        await Watchers.SpawnWatcher(Sid, Path.Combine(_dir, "t.jsonl"), agentId: null);
 
         await Assert.That(starts).IsEqualTo(0);
     }
@@ -121,7 +137,7 @@ public class UnusableUrlGuardTests : IDisposable {
         var starts = 0;
         WatcherManager.ProcessStarterForTesting = _ => { starts++; return null; };
 
-        WatcherManager.SpawnCopilotFinalizeDrain(BadUrl, Sid, Path.Combine(_dir, "t.jsonl"));
+        Watchers.SpawnCopilotFinalizeDrain(Sid, Path.Combine(_dir, "t.jsonl"));
 
         await Assert.That(starts).IsEqualTo(0);
     }
@@ -137,9 +153,24 @@ public class UnusableUrlGuardTests : IDisposable {
         // from the drain guard's, so it cannot be satisfied by a neighbouring path.
         using var capture = ConsoleOutput.StartErrorCapture();
 
-        await WatcherManager.InlineDrainAsync(BadUrl, Sid, Path.Combine(_dir, "t.jsonl"), agentId: null);
+        await Watchers.InlineDrainAsync(Sid, Path.Combine(_dir, "t.jsonl"), agentId: null);
 
         await Assert.That(capture.GetCapturedError()).Contains($"inline drain skipped for {Sid}");
+    }
+
+    // Console again, so globally sequential for the same reason.
+    [Test, NotInParallel]
+    public async Task InlineDrain_names_the_source_it_was_handed() {
+        // The remediation has to follow the source: `kcap config set server_url` does not repair a
+        // malformed KCAP_URL. A guard rendering a fixed source passes every other test here.
+        using var capture = ConsoleOutput.StartErrorCapture();
+
+        var watchers = new WatcherManager(Config.Root, Resolutions.At(BadUrl, Config.Root, UrlSource.Environment));
+
+        await watchers.InlineDrainAsync(Sid, Path.Combine(_dir, "t.jsonl"), agentId: null);
+
+        await Assert.That(capture.GetCapturedError()).Contains("KCAP_URL");
+        await Assert.That(capture.GetCapturedError()).DoesNotContain("kcap config set server_url");
     }
 
     [Test]
@@ -156,51 +187,34 @@ public class UnusableUrlGuardTests : IDisposable {
     /// <summary>
     /// The gates live in HandleCore, which the degraded arm never reaches — without the extracted
     /// helper an unusable URL would capture a session the user explicitly disabled.
-    ///
-    /// <para>Uses the process's REAL resolved config dir with a random id, because
-    /// <c>PathHelpers.ConfigDir</c> is a static readonly resolved at type load: setting
-    /// KCAP_CONFIG_DIR from inside a test has no effect. The marker is removed in a finally.</para>
     /// </summary>
     [Test]
     public async Task Suppresses_a_disabled_session_given_a_dashed_payload_id() {
         var dashed   = Guid.NewGuid().ToString();
         var dashless = dashed.Replace("-", "");
-        var marker   = Path.Combine(PathHelpers.ConfigPath("disabled"), dashless);
 
-        Directory.CreateDirectory(PathHelpers.ConfigPath("disabled"));
-        File.WriteAllText(marker, "");
+        Config.CreateFile(Path.Combine("disabled", dashless));
 
-        try {
-            // Dashed id in the payload, dashless marker on disk. DisabledSessions does no
-            // normalization, so passing the raw payload id straight through would miss it entirely.
-            var body = $$"""{"session_id":"{{dashed}}","hook_event_name":"SessionStart"}""";
+        // Dashed id in the payload, dashless marker on disk. DisabledSessions does no
+        // normalization, so passing the raw payload id straight through would miss it entirely.
+        var body = $$"""{"session_id":"{{dashed}}","hook_event_name":"SessionStart"}""";
 
-            await Assert.That(await ClaudeHookCommand.ShouldSuppressCaptureAsync(
-                dashless, body, "session-start", activeProfile: null, processStart: Stopwatch.GetTimestamp())).IsTrue();
-        } finally {
-            try { File.Delete(marker); } catch { }
-        }
+        await Assert.That(await new ClaudeHookCommand(Config.Root, Resolutions.None(Config.Root), _clock).ShouldSuppressCaptureAsync(
+            dashless, body, "session-start", activeProfile: null, _clock.Budget(Ceiling))).IsTrue();
     }
 
     [Test]
     public async Task Session_end_suppression_also_clears_the_marker() {
         var sid    = Guid.NewGuid().ToString("N");
-        var marker = Path.Combine(PathHelpers.ConfigPath("disabled"), sid);
+        var marker = Config.CreateFile(Path.Combine("disabled", sid));
 
-        Directory.CreateDirectory(PathHelpers.ConfigPath("disabled"));
-        File.WriteAllText(marker, "");
+        var body = $$"""{"session_id":"{{sid}}","hook_event_name":"SessionEnd"}""";
 
-        try {
-            var body = $$"""{"session_id":"{{sid}}","hook_event_name":"SessionEnd"}""";
+        await Assert.That(await new ClaudeHookCommand(Config.Root, Resolutions.None(Config.Root), _clock).ShouldSuppressCaptureAsync(
+            sid, body, "session-end", activeProfile: null, _clock.Budget(Ceiling))).IsTrue();
 
-            await Assert.That(await ClaudeHookCommand.ShouldSuppressCaptureAsync(
-                sid, body, "session-end", activeProfile: null, processStart: Stopwatch.GetTimestamp())).IsTrue();
-
-            // Collapsing the gate into a plain boolean would have dropped this cleanup.
-            await Assert.That(File.Exists(marker)).IsFalse();
-        } finally {
-            try { File.Delete(marker); } catch { }
-        }
+        // Collapsing the gate into a plain boolean would have dropped this cleanup.
+        await Assert.That(File.Exists(marker)).IsFalse();
     }
 
     [Test]
@@ -209,8 +223,8 @@ public class UnusableUrlGuardTests : IDisposable {
         var sid  = Guid.NewGuid().ToString("N");
         var body = $$"""{"session_id":"{{sid}}","hook_event_name":"SessionStart"}""";
 
-        await Assert.That(await ClaudeHookCommand.ShouldSuppressCaptureAsync(
-            sid, body, "session-start", activeProfile: null, processStart: Stopwatch.GetTimestamp())).IsFalse();
+        await Assert.That(await new ClaudeHookCommand(Config.Root, Resolutions.None(Config.Root), _clock).ShouldSuppressCaptureAsync(
+            sid, body, "session-start", activeProfile: null, _clock.Budget(Ceiling))).IsFalse();
     }
 
     /// <summary>Non-entry, not exit 0 — Cursor's outer catch-all also returns 0.</summary>
@@ -218,15 +232,13 @@ public class UnusableUrlGuardTests : IDisposable {
     public async Task Cursor_never_builds_a_client_for_an_unusable_url() {
         var entered = false;
 
-        var exit = await CursorHookCommand.HandleInternal(
-            BadUrl,
+        var exit = await new CursorHookCommand(Config.Root, Bad, new HookClock(TimeProvider.System)).HandleWithDeps(
             new StringReader("""{"hook_event_name":"sessionStart","session_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"""),
-            budget: TimeSpan.FromSeconds(5),
-            clientFactory: _ => {
+            _ => {
                 entered = true;
                 throw new InvalidOperationException("the cursor guard did not run");
             },
-            spoolFactory: () => new HookSpool(_dir));
+            () => new HookSpool(_dir));
 
         await Assert.That(entered).IsFalse();
         await Assert.That(exit).IsEqualTo(0);
@@ -240,10 +252,8 @@ public class UnusableUrlGuardTests : IDisposable {
     public async Task Claude_never_builds_a_client_for_an_unusable_url() {
         var entered = false;
 
-        var exit = await ClaudeHookCommand.HandleWithDeps(
+        var exit = await new ClaudeHookCommand(Config.Root, Bad, new HookClock(TimeProvider.System)).HandleWithDeps(
             new HookSpool(_dir),
-            processStart: Stopwatch.GetTimestamp(),
-            baseUrl: BadUrl,
             stdin: new StringReader($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}"}"""),
             clientFactory: () => {
                 entered = true;

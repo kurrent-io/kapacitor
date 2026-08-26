@@ -36,7 +36,7 @@ static class ServiceProcess {
     /// Like <see cref="Run"/> but bounded: on expiry, kills the whole process tree and awaits
     /// its exit rather than returning with a still-running child. Stdout/stderr are drained on
     /// background tasks (not <c>ReadToEnd</c>) so a chatty child can't deadlock on a full pipe
-    /// while <c>WaitForExit</c> blocks — mirrors <c>DaemonClientService.ProcessRunner</c>.
+    /// while <c>WaitForExit</c> blocks — mirrors <see cref="Core.ProcessRunner"/>.
     /// </summary>
     public static (int ExitCode, string StdOut, string StdErr, bool TimedOut) RunBounded(
             string file, string[] args, TimeSpan timeout) {

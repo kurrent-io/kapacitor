@@ -37,11 +37,11 @@ namespace Capacitor.Cli.Core.Auth;
 /// above, it reads as an alternative to signing in at all instead of an alternative to that URL.
 /// </param>
 public sealed class LoopbackBrowser(
-        Func<string, bool>? openBrowser = null,
+        IBrowserLauncher    launcher,
         IAuthProgress?      progress    = null,
         string?             hint        = null,
         ILoopbackJoin?      join        = null) : IBrowser, IDisposable {
-    readonly Func<string, bool> _openBrowser = openBrowser ?? SystemBrowser.TryOpen;
+    readonly IBrowserLauncher _launcher = launcher;
     readonly IAuthProgress  _progress    = progress ?? ConsoleAuthProgress.Instance;
     readonly ILoopbackJoin? _join        = join;
 
@@ -82,7 +82,7 @@ public sealed class LoopbackBrowser(
             // INSIDE the try, unlike the version this merged with: the listener is already bound, so a
             // throw that escapes before the try would keep the port for the life of the process. Harmless
             // in a CLI that is about to exit, a real leak in the desktop app, which outlives the flow.
-            if (!_openBrowser(options.StartUrl)) throw new BrowserLaunchException();
+            if (!_launcher.TryOpen(options.StartUrl)) throw new BrowserLaunchException();
 
             _progress.BrowserOpening(options.StartUrl);
             if (hint is not null) _progress.Notice(hint);
