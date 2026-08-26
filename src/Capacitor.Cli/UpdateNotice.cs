@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli;
@@ -54,9 +55,9 @@ internal static class UpdateNotice {
     /// so at most one network round-trip happens per process no matter how many call sites
     /// (<see cref="FlushAsync"/>, <c>kcap status</c>) ask for the result.
     /// </summary>
-    internal static Task<UpdateCommand.UpdateCheckResult?> GetSharedCheckAsync(string channel) {
+    internal static Task<UpdateCommand.UpdateCheckResult?> GetSharedCheckAsync(string channel, ConfigRoot root) {
         lock (_gate) {
-            return _sharedCheck ??= UpdateCommand.CheckForUpdateWithBudgetAsync(channel);
+            return _sharedCheck ??= UpdateCommand.CheckForUpdateWithBudgetAsync(root, channel);
         }
     }
 
@@ -68,19 +69,23 @@ internal static class UpdateNotice {
     /// <see cref="MarkReported"/> this invocation. Never throws — an update notice must never break
     /// the command it's attached to.
     /// </summary>
-    public static async Task FlushAsync(string command, string[] args) {
+    public static async Task FlushAsync(string command, string[] args, ProfileContext profiles, ConfigRoot config) {
         try {
             if (_reported || !IsHumanFacing(command, args)) return;
 
-            var profile = await AppConfig.GetActiveProfileAsync();
+            var profile = profiles.Effective;
             if (profile?.UpdateCheck == false) return;
 
             var channel  = UpdateCommand.ResolveChannel(args, profile?.UpdateChannel);
-            var result   = await GetSharedCheckAsync(channel);
+            var result   = await GetSharedCheckAsync(channel, config);
 
             // Cap the recommendation at the connected server's version (min(npm latest, server)) so we
             // never steer a user to a CLI newer than the server they talk to. Uncapped ⇒ today's copy.
-            var advisory = UpdateAdvisoryResolver.Resolve(result, channel);
+            // Re-read when the startup resolution named no server: this runs at exit, and `kcap
+            // setup` points a previously-unconfigured machine at its first one. Capping against
+            // nothing would recommend a CLI newer than the server the user just connected to.
+            var serverUrl = profiles.Resolution.ServerUrl ?? await CurrentServerUrlAsync(config, profiles.Name);
+            var advisory  = UpdateAdvisoryResolver.Resolve(result, channel, serverUrl, config);
 
             // Re-check after the await: `kcap status` may have won the race and already reported
             // while this was in flight (both may share the same in-flight task via GetSharedCheckAsync).
@@ -102,6 +107,19 @@ internal static class UpdateNotice {
             }
         } catch {
             // Best effort — an update notice must never break the command it's attached to.
+        }
+    }
+
+    /// <summary>The server the cap is computed against when the startup resolution named none —
+    /// this runs at exit, and <c>kcap setup</c> points a previously-unconfigured machine at its
+    /// first server. Reads the profile the rest of the flow reads, so a resolution that named a
+    /// profile without a <c>server_url</c> does not silently fall through to another one.</summary>
+    static async Task<string?> CurrentServerUrlAsync(ConfigRoot config, string profileName) {
+        try {
+            var saved = await AppConfig.LoadProfileConfig(config);
+            return saved.Profiles.GetValueOrDefault(profileName)?.ServerUrl;
+        } catch {
+            return null;   // best-effort: an unreadable config just means no cap
         }
     }
 }

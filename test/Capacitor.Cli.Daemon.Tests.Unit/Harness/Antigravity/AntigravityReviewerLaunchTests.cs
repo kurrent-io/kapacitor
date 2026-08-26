@@ -219,6 +219,10 @@ public class AntigravityReviewerLaunchTests {
 
         await Assert.That(psi.Environment["HOME"]).IsEqualTo(HomePath);
         await Assert.That(psi.Environment["TMPDIR"]).IsEqualTo(Path.Combine(HomePath, "tmp"));
+        // Named rather than left to the derivation: an operator with KCAP_CONFIG_DIR exported would
+        // otherwise have agy's own kcap read the real profile through inheritance.
+        await Assert.That(psi.Environment[ConfigRoot.ConfigDirEnvVar])
+            .IsEqualTo(Path.Combine(HomePath, ".config", "kcap"));
     }
 
     /// <summary>Google auth is INHERITED from the daemon's own environment (<c>UseShellExecute</c> is
@@ -817,7 +821,7 @@ public class AntigravityReviewerLaunchTests {
     /// <summary>
     /// <b>The delivery credential, at the launch boundary.</b> This runtime hands the child a
     /// per-launch isolated <c>HOME</c>, and the result channel is spawned as that child's child — so
-    /// it inherits the isolated home and resolves <c>PathHelpers.ConfigDir</c> at an empty directory.
+    /// it inherits the isolated home and the config root stamped with it, an empty directory.
     /// Measured live: the channel failed with <c>Not logged in. Run 'kcap login' on the host shell.</c>
     /// after the reviewer had already produced its answer.
     ///

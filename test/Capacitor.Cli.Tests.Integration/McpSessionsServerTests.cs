@@ -19,17 +19,11 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </summary>
 public class McpSessionsServerTests : IDisposable {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
+    [TempConfigRoot]  public required TempConfigRoot  Config  { get; init; }
+    [TempDir]         public required TempDir         Tmp     { get; init; }
 
-    readonly WireMockServer _server            = WireMockServer.Start();
-    readonly TempDir        _tmp               = new();
-    readonly string         _cfgDir;
-    readonly string         _cwdDir;
-    readonly List<Process>  _spawnedProcesses  = [];
-
-    public McpSessionsServerTests() {
-        _cfgDir = _tmp.CreateDir("cfg");
-        _cwdDir = _tmp.CreateDir("cwd");
-    }
+    readonly WireMockServer _server           = WireMockServer.Start();
+    readonly List<Process>  _spawnedProcesses = [];
 
     public void Dispose() {
         // Safety net: per-test `using`/`finally` blocks should already shut down processes,
@@ -44,7 +38,6 @@ public class McpSessionsServerTests : IDisposable {
         }
 
         _server.Stop();
-        _tmp.Dispose();
     }
 
     /// <summary>
@@ -58,10 +51,9 @@ public class McpSessionsServerTests : IDisposable {
         _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""{"provider":"{{provider}}"}"""));
 
-        var psi = KcapProcess.StartInfo(Daemons.Store, "mcp", "sessions");
-        psi.WorkingDirectory = _cwdDir;
+        var psi = KcapProcess.StartInfo(Daemons.Store, Config.Root, "mcp", "sessions");
+        psi.WorkingDirectory = Tmp.Path;
         psi.Environment["KCAP_URL"] = urlOverride ?? _server.Url!;
-        psi.Environment["KCAP_CONFIG_DIR"] = _cfgDir;
 
         var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start kcap process");
         _spawnedProcesses.Add(process);
@@ -337,7 +329,7 @@ public class McpSessionsServerTests : IDisposable {
     /// single HttpClient for the agent's whole session).
     /// </summary>
     void SeedToken(string accessToken = "seed-token") {
-        var tokensDir  = Path.Combine(_cfgDir, "tokens");
+        var tokensDir  = Config.Root.Path("tokens");
         Directory.CreateDirectory(tokensDir);
         var tokenJson = $$"""
             {
@@ -427,8 +419,8 @@ public class McpSessionsServerTests : IDisposable {
                     .WithBody("")
             );
 
-        // Provider != "None" forces the auth path; no tokens.json exists in _cfgDir so the
-        // request goes out without a Bearer header.
+        // Provider != "None" forces the auth path; no tokens.json exists under the config root,
+        // so the request goes out without a Bearer header.
         using var proc = SpawnMcpServer(provider: "GitHub");
         try {
             var args     = new JsonObject { ["query"] = "anything", ["repo"] = "all" };
@@ -462,7 +454,7 @@ public class McpSessionsServerTests : IDisposable {
         const string repoName = "widget";
         var          repoHash = RepoHashHelper.ComputeRepoHash(owner, repoName);
 
-        InitCwdAsGitRepo(_cwdDir, owner, repoName);
+        InitCwdAsGitRepo(Tmp.Path, owner, repoName);
 
         const string firstBody   = """{"hits":[{"session_id":"s1","title":"A"},{"session_id":"s2","title":"B"}]}""";
         const string widenedBody = """{"hits":[{"session_id":"s1","title":"A"},{"session_id":"s3","title":"C"}]}""";
@@ -528,7 +520,7 @@ public class McpSessionsServerTests : IDisposable {
         const string repoName = "widget-fail";
         var          repoHash = RepoHashHelper.ComputeRepoHash(owner, repoName);
 
-        InitCwdAsGitRepo(_cwdDir, owner, repoName);
+        InitCwdAsGitRepo(Tmp.Path, owner, repoName);
 
         const string firstBody = """{"hits":[{"session_id":"s1","title":"A"}]}""";
 

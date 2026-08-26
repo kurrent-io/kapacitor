@@ -7,6 +7,8 @@ namespace Capacitor.Cli.Core.Tests.Unit;
 /// here without touching disk; a single round-trip test covers the disk wrappers.
 /// </summary>
 public class AuthProviderCacheTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     const long Now = 1_000_000;
 
     [Test]
@@ -63,19 +65,10 @@ public class AuthProviderCacheTests {
         await Assert.That(AuthProviderCache.Read(store, "https://a.example", Now)).IsEqualTo("WorkOS");
     }
 
-    [Test, NotInParallel]
+    [Test]
     public async Task Set_then_TryGet_round_trips_on_disk() {
-        var previous = AuthProviderCache.OverridePathForTesting;
-        var tempFile = Path.Combine(Path.GetTempPath(), "kcap-authprovider-rt-" + Guid.NewGuid().ToString("N") + ".json");
-        AuthProviderCache.OverridePathForTesting = tempFile;
-
-        try {
-            await Assert.That(AuthProviderCache.TryGet("https://rt.example")).IsNull(); // cold
-            AuthProviderCache.Set("https://rt.example", "GitHubApp");
-            await Assert.That(AuthProviderCache.TryGet("https://rt.example")).IsEqualTo("GitHubApp");
-        } finally {
-            AuthProviderCache.OverridePathForTesting = previous;
-            try { File.Delete(tempFile); } catch { /* best effort */ }
-        }
+        await Assert.That(AuthProviderCache.TryGet("https://rt.example", Config.Root)).IsNull(); // cold
+        AuthProviderCache.Set("https://rt.example", "GitHubApp", Config.Root);
+        await Assert.That(AuthProviderCache.TryGet("https://rt.example", Config.Root)).IsEqualTo("GitHubApp");
     }
 }

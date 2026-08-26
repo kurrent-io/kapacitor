@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Core.Auth;
 
@@ -38,7 +39,10 @@ public sealed class TenantProvisioningClient(HttpClient http) {
     public async Task<ProvisionOutcome> ProvisionAsync(
             string baseUrl, string token, string orgName, string slug, CancellationToken ct) {
         var payload = JsonSerializer.Serialize(
-            new ProvisionRequest { OrgName = orgName, Slug = slug, Tier = "free" },
+            // Read off the process-wide static rather than threaded down through the provisioner:
+            // it is per-run state, the same shape CliTelemetry already has everywhere, and null by
+            // construction whenever telemetry is off.
+            new ProvisionRequest { OrgName = orgName, Slug = slug, Tier = "free", JoinId = SetupJoin.Current },
             CapacitorJsonContext.Default.ProvisionRequest);
 
         try {

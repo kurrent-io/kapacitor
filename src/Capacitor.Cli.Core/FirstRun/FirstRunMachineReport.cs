@@ -68,7 +68,7 @@ public sealed record FirstRunMachineReport(
     /// crash rendered on the consent screen as "no coding agents were found" is a failure reported as
     /// a result.</para>
     /// </summary>
-    public static FirstRunMachineReport EvaluateCurrent(string? machine, bool? loginShellFindsCli) {
+    public static FirstRunMachineReport EvaluateCurrent(ConfigRoot config, string? machine, bool? loginShellFindsCli) {
         try {
             var inputs = AgentDetection.FromEnvironment();
 
@@ -76,19 +76,19 @@ public sealed record FirstRunMachineReport(
                 machine,
                 // The one unguarded read here: it creates and writes a config file, unlike every
                 // probe around it, which swallows its own I/O failures.
-                MachineIdOrNull(),
+                MachineIdOrNull(config),
                 AgentDetection.Detect(inputs),
                 vendor => HarnessIntegrationProbe.IsWired(vendor, inputs),
-                HarnessOfferStore.Default().Load(),
+                new HarnessOfferStore(config).Load(),
                 loginShellFindsCli);
         } catch (Exception) {
             return new FirstRunMachineReport(machine, null, new Dictionary<string, FirstRunHarnessReport>(), [], null);
         }
     }
 
-    static string? MachineIdOrNull() {
+    static string? MachineIdOrNull(ConfigRoot config) {
         try {
-            return Core.MachineId.Get();
+            return new Core.MachineId(config).Get();
         } catch (Exception) {
             return null;
         }

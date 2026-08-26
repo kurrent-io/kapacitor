@@ -5,6 +5,13 @@ using Capacitor.Cli.Core.Telemetry;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class McpWorkItemsServerTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // The dispatch is profile-scoped: its token refresh resolves a profile. These tests exercise
+    // routing, not profile selection.
+    McpWorkItemsServer Server() =>
+        new(Config.Root, Resolutions.None(Config.Root));
+
     const string CapacitorSessionIdEnvVar = "KCAP_SESSION_ID";
     const string CodexThreadIdEnvVar      = "CODEX_THREAD_ID";
 
@@ -414,7 +421,7 @@ public class McpWorkItemsServerTests {
         }
     }
 
-    static async Task<CapturingHandler> DispatchAsync(string toolName, string argsJson) {
+    async Task<CapturingHandler> DispatchAsync(string toolName, string argsJson) {
         var handler = new CapturingHandler();
         using var client = new HttpClient(handler);
 
@@ -427,7 +434,7 @@ public class McpWorkItemsServerTests {
             }
         };
 
-        await McpWorkItemsServer.HandleToolCallAsync(JsonValue.Create(1)!, request, client, "http://x");
+        await Server().HandleToolCallAsync(JsonValue.Create(1)!, request, client, "http://x");
 
         return handler;
     }
@@ -503,7 +510,7 @@ public class McpWorkItemsServerTests {
             ["params"] = new JsonObject { ["name"] = "not_a_real_tool", ["arguments"] = new JsonObject() }
         };
 
-        var response = await McpWorkItemsServer.HandleToolCallAsync(JsonValue.Create(1)!, request, client, "http://x");
+        var response = await Server().HandleToolCallAsync(JsonValue.Create(1)!, request, client, "http://x");
 
         await Assert.That(McpTelemetry.ResponseOk(response)).IsFalse();
     }
@@ -521,7 +528,7 @@ public class McpWorkItemsServerTests {
             }
         };
 
-        var response = await McpWorkItemsServer.HandleToolCallAsync(JsonValue.Create(1)!, request, client, "http://x");
+        var response = await Server().HandleToolCallAsync(JsonValue.Create(1)!, request, client, "http://x");
 
         await Assert.That(McpTelemetry.ResponseOk(response)).IsTrue();
     }

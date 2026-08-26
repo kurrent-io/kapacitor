@@ -23,11 +23,10 @@ public static class ProviderApiKeyPolicy {
     public const string EnvVarName = "KCAP_USE_PROVIDER_API_KEY";
 
     /// <summary>
-    /// Convenience entry point: reads the env var and the active profile.
+    /// Convenience entry point: the env var, plus the profile the caller resolved.
     /// </summary>
-    public static bool ShouldKeepProviderKey() => ShouldKeepProviderKey(
-        Environment.GetEnvironmentVariable(EnvVarName),
-        AppConfig.ResolvedProfile?.Profile);
+    public static bool ShouldKeepProviderKey(Profile? profile) => ShouldKeepProviderKey(
+        Environment.GetEnvironmentVariable(EnvVarName), profile);
 
     /// <summary>
     /// Pure resolver — exposed for testing.

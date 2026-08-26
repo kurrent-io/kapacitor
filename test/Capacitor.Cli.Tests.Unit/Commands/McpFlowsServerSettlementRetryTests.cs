@@ -24,6 +24,13 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// timing assumptions without any test failing to flag it.
 /// </remarks>
 public class McpFlowsServerSettlementRetryTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // The dispatch is profile-scoped: its token refresh resolves a profile. These tests exercise
+    // routing, not profile selection.
+    McpFlowsServer Server() =>
+        new(Config.Root, Resolutions.None(Config.Root));
+
     // Every wait in both retry lanes runs on the injected clock, so these tests are instant and
     // the requested schedule is directly assertable (VirtualFlowRetryClock.Delays).
     static VirtualFlowRetryClock Clock() => new();
@@ -166,7 +173,7 @@ public class McpFlowsServerSettlementRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        using var response = ResponseOf(await McpFlowsServer.SendWithSettlementRetryAsync(
+        using var response = ResponseOf(await Server().SendWithSettlementRetryAsync(
             client, "https://flows.example.test", (c, ct) => c.PostAsync($"{server.Url}/start", null, ct), clock, SettlementBackoff.Seeded(11)));
         var delays = clock.Delays;
 
@@ -193,7 +200,7 @@ public class McpFlowsServerSettlementRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        using var response = ResponseOf(await McpFlowsServer.SendWithSettlementRetryAsync(
+        using var response = ResponseOf(await Server().SendWithSettlementRetryAsync(
             client, "https://flows.example.test", (c, ct) => c.PostAsync($"{server.Url}/start", null, ct), clock, SettlementBackoff.Seeded(11)));
         var delays = clock.Delays;
 
@@ -213,7 +220,7 @@ public class McpFlowsServerSettlementRetryTests {
         using var client = new HttpClient();
 
         var clock  = Clock();
-        var result = await McpFlowsServer.SendWithSettlementRetryAsync(
+        var result = await Server().SendWithSettlementRetryAsync(
             client, "https://flows.example.test", (c, ct) => c.PostAsync($"{server.Url}/start", null, ct), clock, SettlementBackoff.Seeded(11));
 
         var exhausted = result as McpFlowsServer.SettlementSendResult.DeadlineExhausted;
@@ -237,7 +244,7 @@ public class McpFlowsServerSettlementRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        using var response = ResponseOf(await McpFlowsServer.SendWithSettlementRetryAsync(
+        using var response = ResponseOf(await Server().SendWithSettlementRetryAsync(
             client, "https://flows.example.test", (c, ct) => c.PostAsync($"{server.Url}/start", null, ct), clock, SettlementBackoff.Seeded(11)));
         var delays = clock.Delays;
 
@@ -254,7 +261,7 @@ public class McpFlowsServerSettlementRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        using var response = ResponseOf(await McpFlowsServer.SendWithSettlementRetryAsync(
+        using var response = ResponseOf(await Server().SendWithSettlementRetryAsync(
             client, "https://flows.example.test", (c, ct) => c.PostAsync($"{server.Url}/start", null, ct), clock, SettlementBackoff.Seeded(11)));
         var delays = clock.Delays;
 
@@ -297,7 +304,7 @@ public class McpFlowsServerSettlementRetryTests {
         });
         using var client = new HttpClient(handler) { BaseAddress = new Uri("http://settlement.test") };
 
-        var result = await McpFlowsServer.SendWithSettlementRetryAsync(
+        var result = await Server().SendWithSettlementRetryAsync(
             client, "https://flows.example.test", (c, ct) => c.PostAsync("/start", null, ct), clock, SettlementBackoff.Seeded(5));
 
         var exhausted = result as McpFlowsServer.SettlementSendResult.DeadlineExhausted;
@@ -322,7 +329,7 @@ public class McpFlowsServerSettlementRetryTests {
         });
         using var client = new HttpClient(handler) { BaseAddress = new Uri("http://settlement.test") };
 
-        var result = await McpFlowsServer.SendWithSettlementRetryAsync(
+        var result = await Server().SendWithSettlementRetryAsync(
             client, "https://flows.example.test", (c, ct) => c.PostAsync("/start", null, ct), clock, SettlementBackoff.Seeded(5));
 
         var exhausted = result as McpFlowsServer.SettlementSendResult.DeadlineExhausted;
@@ -348,7 +355,7 @@ public class McpFlowsServerSettlementRetryTests {
         });
         using var client = new HttpClient(handler) { BaseAddress = new Uri("http://settlement.test") };
 
-        await Assert.That(async () => await McpFlowsServer.SendWithSettlementRetryAsync(
+        await Assert.That(async () => await Server().SendWithSettlementRetryAsync(
                 client, "https://flows.example.test", (c, ct) => c.PostAsync("/start", null, ct), clock, SettlementBackoff.Seeded(5), caller.Token))
             .Throws<OperationCanceledException>();
     }
@@ -366,7 +373,7 @@ public class McpFlowsServerSettlementRetryTests {
         });
         using var client = new HttpClient(handler) { BaseAddress = new Uri("http://settlement.test") };
 
-        var result = await McpFlowsServer.SendWithSettlementRetryAsync(
+        var result = await Server().SendWithSettlementRetryAsync(
             client, "https://flows.example.test", (c, ct) => c.PostAsync("/start", null, ct), clock, SettlementBackoff.Seeded(5));
 
         var exhausted = result as McpFlowsServer.SettlementSendResult.DeadlineExhausted;
@@ -441,7 +448,7 @@ public class McpFlowsServerSettlementRetryTests {
                   """{"flow_run_id":"f-fresh","status":"running","round_id":null,"round_number":null,"result_kind":null,"result_text":null}"""));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 
@@ -467,7 +474,7 @@ public class McpFlowsServerSettlementRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             clock: clock, backoff: SettlementBackoff.Seeded(3));
@@ -498,7 +505,7 @@ public class McpFlowsServerSettlementRetryTests {
                   """{"error":"budget_unverifiable","message":"cannot verify spend for this run"}"""));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 
@@ -535,7 +542,7 @@ public class McpFlowsServerSettlementRetryTests {
                   $$"""{"flow_run_id":"{{flowRunId}}","round_number":1,"status":"closed","round_status":"clean","round_result_text":"all clean"}"""));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 
@@ -569,7 +576,7 @@ public class McpFlowsServerSettlementRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             clock: clock, backoff: SettlementBackoff.Seeded(seed));
@@ -614,7 +621,7 @@ public class McpFlowsServerSettlementRetryTests {
                   """{"error":"budget_unverifiable","message":"cannot verify spend for this run"}"""));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 

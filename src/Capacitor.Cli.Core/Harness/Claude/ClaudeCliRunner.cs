@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Core.Harness.Claude;
 
@@ -109,6 +110,7 @@ static class ClaudeCliRunner {
             string            prompt,
             TimeSpan          timeout,
             Action<string>    log,
+            Profile?          profile,
             string            model          = "haiku",
             int               maxTurns       = 1,
             bool              promptViaStdin = false,
@@ -156,7 +158,7 @@ static class ClaudeCliRunner {
         }
 
         try {
-            return await RunCoreAsync(prompt, timeout, log, workingDir, model, maxTurns, promptViaStdin, jsonSchema, mcpConfigJson, allowedTools, maxBudgetUsd, systemPrompt, ct);
+            return await RunCoreAsync(prompt, timeout, log, profile, workingDir, model, maxTurns, promptViaStdin, jsonSchema, mcpConfigJson, allowedTools, maxBudgetUsd, systemPrompt, ct);
         } finally {
             if (createdWorkingDir) {
                 try {
@@ -173,6 +175,7 @@ static class ClaudeCliRunner {
             string            prompt,
             TimeSpan          timeout,
             Action<string>    log,
+            Profile?          profile,
             string            workingDir,
             string            model,
             int               maxTurns,
@@ -213,7 +216,7 @@ static class ClaudeCliRunner {
         // which surfaced as (API error text leaking into session titles).
         // Users on PAYG/API-key auth opt back in via profile flag or
         // KCAP_USE_PROVIDER_API_KEY=1.
-        if (!ProviderApiKeyPolicy.ShouldKeepProviderKey()) {
+        if (!ProviderApiKeyPolicy.ShouldKeepProviderKey(profile)) {
             psi.Environment.Remove("ANTHROPIC_API_KEY");
         }
 

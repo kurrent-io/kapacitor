@@ -311,10 +311,11 @@ public sealed class WizardBridges {
 /// carries <see cref="OnboardingGate"/> to Complete.
 /// </summary>
 public static class WizardSignInOperation {
-    public static Func<ConnectIntent, CancellationToken, Task<AuthResult>> For(OnboardingFacade facade) =>
+    public static Func<ConnectIntent, CancellationToken, Task<AuthResult>> For(
+            OnboardingFacade facade, string profile) =>
         async (intent, ct) => intent switch {
             ConnectIntent.Paste paste => await facade.LoginAsync(
-                ResolveServer(paste.ServerInput), forceDevice: false, profile: null, ct, adoptServer: true),
+                ResolveServer(paste.ServerInput), forceDevice: false, profile, ct, adoptServer: true),
             ConnectIntent.Discover discover => await facade.DiscoverAsync(discover.Provider, forceDevice: false, ct),
             // Creation runs inside WorkOS discovery, after the org-less sign-in finds no tenant.
             ConnectIntent.Create => await facade.DiscoverAsync(AuthProvider.WorkOS, forceDevice: false, ct),

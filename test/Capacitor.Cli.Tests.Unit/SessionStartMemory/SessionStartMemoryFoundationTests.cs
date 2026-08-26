@@ -170,7 +170,7 @@ public class SessionStartMemoryFoundationTests {
         using var root = new TempDir();
         var key = new string('d', 64);
         var attempts = Enumerable.Range(0, 16)
-            .Select(_ => new SessionStartMemoryLeaseStore(root.Path).TryBeginAsync(key, TimeSpan.FromSeconds(2)));
+            .Select(_ => new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System).TryBeginAsync(key, TimeSpan.FromSeconds(2)));
         var winners = (await Task.WhenAll(attempts)).Count(static lease => lease is not null);
 
         await Assert.That(winners).IsEqualTo(1);
@@ -294,7 +294,7 @@ public class SessionStartMemoryFoundationTests {
         var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
             (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK,
                 "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]"))));
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
         var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Claude, "session", null,
             true, true, SessionLifecycleReason.New, true);
         var request = new SessionStartMemoryContextRequest(
@@ -347,7 +347,7 @@ public class SessionStartMemoryFoundationTests {
         var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
             (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK,
                 "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]"))));
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
         var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Copilot, "3f2504e0-4f89-41d3-9a0c-0305e82c3301", null,
             true, true, SessionLifecycleReason.New, true);
         var request = new SessionStartMemoryContextRequest(
@@ -385,7 +385,7 @@ public class SessionStartMemoryFoundationTests {
                 Interlocked.Increment(ref calls);
                 return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson)));
             });
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
 
         var first  = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
         var second = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
@@ -406,7 +406,7 @@ public class SessionStartMemoryFoundationTests {
         using var root = new TempDir();
         var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
             (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson))));
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
 
         var a = await orchestrator.GetFragmentAsync(KiroLifecycle("session-a"), KiroRequest());
         var b = await orchestrator.GetFragmentAsync(KiroLifecycle("session-b"), KiroRequest());
@@ -451,7 +451,7 @@ public class SessionStartMemoryFoundationTests {
                 Interlocked.Increment(ref calls);
                 return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.NoContent, "")));
             });
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
 
         await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
         var second = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
@@ -487,7 +487,7 @@ public class SessionStartMemoryFoundationTests {
 
                 return new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson));
             });
-        var store = new SessionStartMemoryLeaseStore(root.Path);
+        var store = new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System);
 
         var winner = Task.Run(() => new SessionStartMemoryOrchestrator(store, provider)
             .GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest(20)));
@@ -535,7 +535,7 @@ public class SessionStartMemoryFoundationTests {
                 Interlocked.Increment(ref fetches);
                 return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson)));
             });
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
 
         // A real GUID — Antigravity is on the fail-closed identity arm, which normalizes any
         // non-GUID id to null and would short-circuit before the lease is ever consulted,
@@ -556,7 +556,7 @@ public class SessionStartMemoryFoundationTests {
         using var root = new TempDir();
         var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
             (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson))));
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
 
         var a = await orchestrator.GetFragmentAsync(
             AntigravityLifecycle("e80c33bfc10f4d2fb626b0043f488fc0"), AntigravityRequest());
@@ -587,7 +587,7 @@ public class SessionStartMemoryFoundationTests {
             clientCalls++;
             return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.NoContent, "")));
         });
-        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path), provider);
+        var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root.Path, TimeProvider.System), provider);
         var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Claude, "session", null,
             true, true, SessionLifecycleReason.New, false);
 

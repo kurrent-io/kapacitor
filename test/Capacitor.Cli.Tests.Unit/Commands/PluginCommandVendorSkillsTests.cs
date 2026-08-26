@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
@@ -23,7 +24,7 @@ public class PluginCommandVendorSkillsTests {
     public async Task fresh_install_writes_the_shared_agent_skills(Vendor vendor) {
         using var scope = new VendorScope(vendor);
 
-        var exit = await PluginCommand.HandleAsync(vendor.InstallArgs(scope.Home), scope.Env);
+        var exit = await new PluginCommand(scope.Env).HandleAsync(vendor.InstallArgs(scope.Home));
 
         await Assert.That(exit).IsEqualTo(0);
 
@@ -38,8 +39,8 @@ public class PluginCommandVendorSkillsTests {
     public async Task refresh_does_not_create_skills_for_a_vendor_never_installed(Vendor vendor) {
         using var scope = new VendorScope(vendor);
 
-        var exit = await PluginCommand.HandleAsync(
-            [.. vendor.InstallArgs(scope.Home), "--if-installed"], scope.Env);
+        var exit = await new PluginCommand(scope.Env).HandleAsync(
+            [.. vendor.InstallArgs(scope.Home), "--if-installed"]);
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(Directory.Exists(scope.Env.AgentsSkillsDir))
@@ -54,12 +55,12 @@ public class PluginCommandVendorSkillsTests {
         using var scope = new VendorScope(vendor);
 
         // Install for real, then remove the skills the way a user would.
-        await PluginCommand.HandleAsync(vendor.InstallArgs(scope.Home), scope.Env);
-        await PluginCommand.HandleAsync(["plugin", "remove", "--skills"], scope.Env);
+        await new PluginCommand(scope.Env).HandleAsync(vendor.InstallArgs(scope.Home));
+        await new PluginCommand(scope.Env).HandleAsync(["plugin", "remove", "--skills"]);
         await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.AgentsSkillsDir)).IsFalse();
 
-        var exit = await PluginCommand.HandleAsync(
-            [.. vendor.InstallArgs(scope.Home), "--if-installed"], scope.Env);
+        var exit = await new PluginCommand(scope.Env).HandleAsync(
+            [.. vendor.InstallArgs(scope.Home), "--if-installed"]);
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.AgentsSkillsDir))
@@ -73,7 +74,7 @@ public class PluginCommandVendorSkillsTests {
     public async Task fresh_install_kiro_writes_its_own_skills_tree_not_the_shared_one() {
         using var scope = new VendorScope(Vendor.Kiro);
 
-        await PluginCommand.HandleAsync(["plugin", "install", "--kiro"], scope.Env);
+        await new PluginCommand(scope.Env).HandleAsync(["plugin", "install", "--kiro"]);
 
         // Kiro reads ~/.kiro/skills; writing the shared tree instead would be silently useless to it.
         await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.KiroSkillsDir)).IsTrue();
@@ -84,7 +85,7 @@ public class PluginCommandVendorSkillsTests {
     public async Task fresh_install_antigravity_writes_its_own_skills_tree_not_the_shared_one() {
         using var scope = new VendorScope(Vendor.Antigravity);
 
-        await PluginCommand.HandleAsync(["plugin", "install", "--antigravity"], scope.Env);
+        await new PluginCommand(scope.Env).HandleAsync(["plugin", "install", "--antigravity"]);
 
         await Assert.That(AgentsSkillsInstaller.IsInstalled(scope.Env.AntigravitySkillsDir)).IsTrue();
         await Assert.That(Directory.Exists(scope.Env.AgentsSkillsDir)).IsFalse();
@@ -95,8 +96,8 @@ public class PluginCommandVendorSkillsTests {
     public async Task the_skip_flag_declines_the_shared_skills(Vendor vendor) {
         using var scope = new VendorScope(vendor);
 
-        var exit = await PluginCommand.HandleAsync(
-            [.. vendor.InstallArgs(scope.Home), $"--skip-{vendor.Flag}-skills"], scope.Env);
+        var exit = await new PluginCommand(scope.Env).HandleAsync(
+            [.. vendor.InstallArgs(scope.Home), $"--skip-{vendor.Flag}-skills"]);
 
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(Directory.Exists(scope.Env.AgentsSkillsDir))
@@ -109,14 +110,14 @@ public class PluginCommandVendorSkillsTests {
     public async Task install_sweeps_legacy_codex_skills_even_when_the_tree_is_already_current() {
         using var scope = new VendorScope(Vendor.Cursor);
 
-        await PluginCommand.HandleAsync(Vendor.Cursor.InstallArgs(scope.Home), scope.Env);
+        await new PluginCommand(scope.Env).HandleAsync(Vendor.Cursor.InstallArgs(scope.Home));
         await Assert.That(AgentsSkillsInstaller.IsCurrent(scope.Env.AgentsSkillsDir)).IsTrue();
 
         // A pre-migration machine still carrying the old Codex-only copy.
         var legacy = Path.Combine(scope.Env.LegacyCodexSkills, "kcap-recap");
         Directory.CreateDirectory(legacy);
 
-        await PluginCommand.HandleAsync(Vendor.Cursor.InstallArgs(scope.Home), scope.Env);
+        await new PluginCommand(scope.Env).HandleAsync(Vendor.Cursor.InstallArgs(scope.Home));
 
         await Assert.That(Directory.Exists(legacy))
                     .IsFalse()
@@ -188,6 +189,7 @@ public class PluginCommandVendorSkillsTests {
 
             Env = new PluginEnvironment(
                 HomeDirectory:     _home.Path,
+                Profiles:          new ProfileConfig(),
                 // The siblings pass `() => null`, which short-circuits the skills copy to a warning and
                 // would make every assertion here vacuous.
                 ResolvePluginPath: RepoTree.KcapDir,

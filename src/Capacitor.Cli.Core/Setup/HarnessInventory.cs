@@ -40,6 +40,6 @@ public sealed record HarnessInventory(
 
     /// <summary>Production convenience: evaluate from the current process environment, the default
     /// on-disk offer ledger (read-only — never claims the throttle stamp), and this machine's id.</summary>
-    public static HarnessInventory EvaluateCurrent() =>
-        Evaluate(AgentDetection.FromEnvironment(), HarnessOfferStore.Default().Load(), Core.MachineId.Get());
+    public static HarnessInventory EvaluateCurrent(ConfigRoot config) =>
+        Evaluate(AgentDetection.FromEnvironment(), new HarnessOfferStore(config).Load(), new Core.MachineId(config).Get());
 }

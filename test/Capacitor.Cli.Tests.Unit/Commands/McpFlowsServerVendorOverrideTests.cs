@@ -12,6 +12,13 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// requested/applied echo defense-in-depth check.
 /// </summary>
 public class McpFlowsServerVendorOverrideTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // The dispatch is profile-scoped: its token refresh resolves a profile. These tests exercise
+    // routing, not profile selection.
+    McpFlowsServer Server() =>
+        new(Config.Root, Resolutions.None(Config.Root));
+
     static JsonObject StartArguments(string? vendor = null) {
         var args = new JsonObject {
             ["kind"]         = "code-review",
@@ -45,7 +52,7 @@ public class McpFlowsServerVendorOverrideTests {
                 """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_vendor":"claude"}"""));
         using var client = new HttpClient();
 
-        using var response = await McpFlowsServer.StartFlowAsync(
+        using var response = await Server().StartFlowAsync(
             client, server.Url!, StartArguments("claude"), cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
@@ -72,7 +79,7 @@ public class McpFlowsServerVendorOverrideTests {
                 """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_vendor":"claude"}"""));
         using var client = new HttpClient();
 
-        using var response = await McpFlowsServer.StartFlowAsync(
+        using var response = await Server().StartFlowAsync(
             client, server.Url!, StartArguments("claude"), cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
@@ -94,7 +101,7 @@ public class McpFlowsServerVendorOverrideTests {
                 """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null}"""));
         using var client = new HttpClient();
 
-        using var response = await McpFlowsServer.StartFlowAsync(
+        using var response = await Server().StartFlowAsync(
             client, server.Url!, StartArguments(vendor: null), cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
@@ -118,7 +125,7 @@ public class McpFlowsServerVendorOverrideTests {
         // proves the no-override path never touches it.
         using var client = new HttpClient();
 
-        using var response = await McpFlowsServer.StartFlowAsync(
+        using var response = await Server().StartFlowAsync(
             client, server.Url!, StartArguments(vendor: null), cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
@@ -237,7 +244,7 @@ public class McpFlowsServerVendorOverrideTests {
         // is the one the vendor-override guard fails closed on.
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments("claude")),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 
@@ -258,7 +265,7 @@ public class McpFlowsServerVendorOverrideTests {
                 """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_vendor":"claude"}"""));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments("claude")),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 
@@ -278,7 +285,7 @@ public class McpFlowsServerVendorOverrideTests {
             .RespondWith(Response.Create().WithStatusCode(200));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments("claude")),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 
@@ -301,7 +308,7 @@ public class McpFlowsServerVendorOverrideTests {
             .RespondWith(Response.Create().WithStatusCode(500));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments("claude")),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 

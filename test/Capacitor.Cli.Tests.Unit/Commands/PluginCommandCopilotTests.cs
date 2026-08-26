@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.Harness.Copilot;
 using Capacitor.Cli.Core.Instructions;
@@ -30,7 +31,7 @@ public class PluginCommandCopilotTests {
             {"mcpServers":{"my-tool":{"type":"stdio","command":"my-tool","args":["serve"]}}}
             """);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--copilot", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--copilot", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.CopilotMcpConfigJson))!.AsObject();
@@ -54,8 +55,8 @@ public class PluginCommandCopilotTests {
         PluginCommand.InstallCopilotHooks(env.CopilotKcapHooksJson);
         CopilotHooksInstaller.DeleteMarker(env.CopilotKcapHooksJson);
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--copilot", "--if-installed", "--skip-copilot-mcp"], env);
+        var exit = await new PluginCommand(env).HandleAsync(
+            ["plugin", "install", "--copilot", "--if-installed", "--skip-copilot-mcp"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(env.CopilotMcpConfigJson)).IsFalse();
@@ -68,7 +69,7 @@ public class PluginCommandCopilotTests {
         var env = TestEnv(home.Path);
 
         // No hooks seeded → --if-installed no-ops before touching hooks OR mcp-config.
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--copilot", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--copilot", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(env.CopilotMcpConfigJson)).IsFalse();
@@ -84,7 +85,7 @@ public class PluginCommandCopilotTests {
         // still (re)create the separate MCP + instructions files if they're missing (self-heal).
         PluginCommand.InstallCopilotHooks(env.CopilotKcapHooksJson); // writes hooks + current marker
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--copilot", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--copilot", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(env.CopilotMcpConfigJson)).IsTrue();
@@ -107,7 +108,7 @@ public class PluginCommandCopilotTests {
         Directory.CreateDirectory(env.CopilotKcapHooksJson);   // kcap.json is a directory → write fails
         await File.WriteAllTextAsync(System.IO.Path.Combine(hooksDir, CopilotHooksInstaller.MarkerFileName), "0.0.0-stale");
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--copilot", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--copilot", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);                  // refresh swallows the hook-write failure
 
         await Assert.That(File.Exists(env.CopilotMcpConfigJson)).IsTrue();   // MCP healed despite the hook failure
@@ -127,7 +128,7 @@ public class PluginCommandCopilotTests {
         seeded["mcpServers"]!["my-tool"] = JsonNode.Parse("""{"type":"stdio","command":"my-tool","args":["serve"]}""");
         await File.WriteAllTextAsync(env.CopilotMcpConfigJson, seeded.ToJsonString());
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "remove", "--copilot"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--copilot"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.CopilotMcpConfigJson))!.AsObject();
@@ -153,13 +154,13 @@ public class PluginCommandCopilotTests {
         // The config is temporarily malformed/unreadable → Unregister fails-closed.
         await File.WriteAllTextAsync(env.CopilotMcpConfigJson, "{ not valid json");
 
-        var failExit = await PluginCommand.HandleAsync(["plugin", "remove", "--copilot"], env);
+        var failExit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--copilot"]);
         await Assert.That(failExit).IsEqualTo(1);                                                  // failed MCP unregister propagates
         await Assert.That(new McpMarker("copilot").Owned(env.CopilotMcpConfigJson).ToArray()).IsNotEmpty();  // marker RETAINED for retry
 
         // User fixes the file (kcap entries intact); the retry now succeeds and cleans up.
         await File.WriteAllTextAsync(env.CopilotMcpConfigJson, installed);
-        var retryExit = await PluginCommand.HandleAsync(["plugin", "remove", "--copilot"], env);
+        var retryExit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--copilot"]);
         await Assert.That(retryExit).IsEqualTo(0);
 
         var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.CopilotMcpConfigJson))!.AsObject();
@@ -182,7 +183,7 @@ public class PluginCommandCopilotTests {
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(env.CopilotInstructionsMd)!);
         await File.WriteAllTextAsync(env.CopilotInstructionsMd, "# My rules\n\nAlways use tabs.\n");
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--copilot", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--copilot", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var content = await File.ReadAllTextAsync(env.CopilotInstructionsMd);
@@ -200,8 +201,8 @@ public class PluginCommandCopilotTests {
         PluginCommand.InstallCopilotHooks(env.CopilotKcapHooksJson);
         CopilotHooksInstaller.DeleteMarker(env.CopilotKcapHooksJson);
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--copilot", "--if-installed", "--skip-copilot-instructions"], env);
+        var exit = await new PluginCommand(env).HandleAsync(
+            ["plugin", "install", "--copilot", "--if-installed", "--skip-copilot-instructions"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(env.CopilotInstructionsMd)).IsFalse();
@@ -217,7 +218,7 @@ public class PluginCommandCopilotTests {
         await File.WriteAllTextAsync(env.CopilotInstructionsMd, "# My rules\n\nAlways use tabs.\n");
         AgentInstructionsWriter.Write(env.CopilotInstructionsMd, KcapAgentInstructions.Body);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "remove", "--copilot"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--copilot"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var content = await File.ReadAllTextAsync(env.CopilotInstructionsMd);
@@ -233,6 +234,7 @@ public class PluginCommandCopilotTests {
 
     static PluginEnvironment TestEnv(string fakeHome) => new(
         HomeDirectory:     fakeHome,
+        Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null

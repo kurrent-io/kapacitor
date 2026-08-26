@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core;
@@ -15,23 +16,11 @@ namespace Capacitor.Cli.Tests.Integration;
 /// See #579.
 /// </summary>
 public class CursorSessionStartVisibilityTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server     = WireMockServer.Start();
-    readonly string         _configPath = PathHelpers.ConfigPath("config.json");
-    readonly string?        _previousConfig;
 
-    public CursorSessionStartVisibilityTests() {
-        _previousConfig = File.Exists(_configPath) ? File.ReadAllText(_configPath) : null;
-    }
-
-    public void Dispose() {
-        _server.Stop();
-
-        if (_previousConfig is null) {
-            if (File.Exists(_configPath)) File.Delete(_configPath);
-        } else {
-            File.WriteAllText(_configPath, _previousConfig);
-        }
-    }
+    public void Dispose() => _server.Stop();
 
     async Task<JsonNode> RunSessionStartAndCaptureBodyAsync(string defaultVisibility) {
         var config = new ProfileConfig {
@@ -43,7 +32,7 @@ public class CursorSessionStartVisibilityTests : IDisposable {
                 }
             }
         };
-        await ConfigMutator.MutateAsync(_ => config);
+        await ConfigMutator.MutateAsync(Config.Root, _ => config);
 
         _server.Given(Request.Create().WithPath("/hooks/session-start/cursor").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
@@ -69,7 +58,7 @@ public class CursorSessionStartVisibilityTests : IDisposable {
         using var client = new HttpClient();
         var spool = new HookSpool(tmp.CreateDir("spool").Path);
 
-        var exit = await CursorHookCommand.HandleCore(client, _server.Url!, new StringReader(body), spool, TimeSpan.FromSeconds(2));
+        var exit = await new CursorHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).HandleCore(client, new StringReader(body), spool);
         await Assert.That(exit).IsEqualTo(0);
 
         var requests = _server.FindLogEntries(Request.Create().WithPath("/hooks/session-start/cursor").UsingPost());
@@ -78,13 +67,13 @@ public class CursorSessionStartVisibilityTests : IDisposable {
         return JsonNode.Parse(requests[0].RequestMessage.Body!)!;
     }
 
-    [Test, NotInParallel("AppConfig_FileState")]
+    [Test]
     public async Task SessionStart_stamps_default_visibility_from_active_profile() {
         var body = await RunSessionStartAndCaptureBodyAsync("private");
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("private");
     }
 
-    [Test, NotInParallel("AppConfig_FileState")]
+    [Test]
     public async Task SessionStart_stamps_the_profiles_configured_visibility_value() {
         // Fidelity: the stamped value is the profile's configured visibility, not a hardcoded
         // constant — a different profile value must round-trip verbatim.

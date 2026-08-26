@@ -31,13 +31,14 @@ internal sealed class CopilotImportSource : IImportSource {
     readonly Func<string, Task<RepositoryPayload?>> _repoDetector;
 
     public CopilotImportSource(
+        ConfigRoot                              config,
         string?                                 sessionStateDirOverride = null,
         string?                                 legacyDirOverride       = null,
         Func<string, Task<RepositoryPayload?>>? repoDetector            = null
     ) {
         _sessionStateDir       = sessionStateDirOverride ?? CopilotPaths.SessionStateDir();
         _legacySessionStateDir = legacyDirOverride       ?? CopilotPaths.LegacySessionStateDir();
-        _repoDetector          = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false));
+        _repoDetector          = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false));
     }
 
     static StringComparison PathComparison =>

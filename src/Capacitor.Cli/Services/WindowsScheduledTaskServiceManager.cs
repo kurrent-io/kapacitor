@@ -3,20 +3,20 @@ using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Services;
 
-sealed class WindowsScheduledTaskServiceManager(UnitFileWriter? writeUnit = null) : IServiceManager {
+sealed class WindowsScheduledTaskServiceManager(ConfigRoot config, UnitFileWriter? writeUnit = null) : IServiceManager {
     readonly UnitFileWriter _writeUnit = writeUnit ?? ((path, content, encoding) => ServiceFiles.WriteOwnerOnly(path, content, encoding));
 
     public string Describe() => "Windows Scheduled Task";
 
     public IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec) {
-        var wrapperPath = WindowsTaskUnit.WrapperPath(spec.ServiceId);
+        var wrapperPath = WindowsTaskUnit.WrapperPath(config, spec.ServiceId);
         return [
             new GeneratedFile(wrapperPath, WindowsTaskUnit.Wrapper(spec)),
-            new GeneratedFile(TaskXmlTempPath(spec.ServiceId), WindowsTaskUnit.TaskXml(spec, wrapperPath)),
+            new GeneratedFile(TaskXmlTempPath(config, spec.ServiceId), WindowsTaskUnit.TaskXml(spec, wrapperPath)),
         ];
     }
 
-    static string TaskXmlTempPath(string id) => PathHelpers.ConfigPath($"daemon-service-{id}.task.xml");
+    static string TaskXmlTempPath(ConfigRoot config, string id) => config.Path($"daemon-service-{id}.task.xml");
 
     public IReadOnlyList<string> ListInstalled() {
         var (code, stdout, _) = ServiceProcess.Run("schtasks", "/Query", "/FO", "LIST");
@@ -29,7 +29,7 @@ sealed class WindowsScheduledTaskServiceManager(UnitFileWriter? writeUnit = null
 
     public ServiceStatus Status(string serviceId) {
         var (code, stdout, _) = ServiceProcess.Run("schtasks", WindowsTaskUnit.QueryArgs(serviceId));
-        var wrapper = WindowsTaskUnit.WrapperPath(serviceId);
+        var wrapper = WindowsTaskUnit.WrapperPath(config, serviceId);
         // Report the daemon binary baked inside the wrapper (not the wrapper itself)
         // so doctor catches a moved kcap-daemon.exe even when the wrapper still exists.
         var bin = File.Exists(wrapper) ? WindowsTaskUnit.BinaryFromWrapper(File.ReadAllText(wrapper)) : null;
@@ -38,7 +38,7 @@ sealed class WindowsScheduledTaskServiceManager(UnitFileWriter? writeUnit = null
 
     public ServiceQuery Query(string serviceId) {
         var (code, stdout, _) = ServiceProcess.Run("schtasks", WindowsTaskUnit.QueryArgs(serviceId));
-        var wrapper = WindowsTaskUnit.WrapperPath(serviceId);
+        var wrapper = WindowsTaskUnit.WrapperPath(config, serviceId);
         var bin = File.Exists(wrapper) ? WindowsTaskUnit.BinaryFromWrapper(File.ReadAllText(wrapper)) : null;
         var state = WindowsTaskUnit.StatusFromQuery(code, stdout);
         var probe = state != ServiceState.NotInstalled ? LabelProbe.Loaded : LabelProbe.Absent;
@@ -71,7 +71,7 @@ sealed class WindowsScheduledTaskServiceManager(UnitFileWriter? writeUnit = null
 
     public bool Uninstall(string serviceId, out string? error) {
         ServiceProcess.Run("schtasks", WindowsTaskUnit.DeleteArgs(serviceId));
-        var wrapper = WindowsTaskUnit.WrapperPath(serviceId);
+        var wrapper = WindowsTaskUnit.WrapperPath(config, serviceId);
         if (File.Exists(wrapper)) File.Delete(wrapper);
         error = null;
         return true;

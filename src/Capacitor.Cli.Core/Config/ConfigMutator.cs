@@ -8,16 +8,17 @@ namespace Capacitor.Cli.Core.Config;
 /// ConfigFileLock is a thread-affine named Mutex (WaitOne/ReleaseMutex), so no await may
 /// occur while it is held; async callers are wrapped in Task.Run here.
 public static class ConfigMutator {
+    // The root leads so a caller's multi-line mutation stays the last argument.
     public static Task<ProfileConfig> MutateAsync(
-            Func<ProfileConfig, ProfileConfig> mutate, CancellationToken ct = default) =>
-        Task.Run(() => Mutate(mutate), ct);
+            ConfigRoot config, Func<ProfileConfig, ProfileConfig> mutate, CancellationToken ct = default) =>
+        Task.Run(() => Mutate(config, mutate), ct);
 
-    public static ProfileConfig Mutate(Func<ProfileConfig, ProfileConfig> mutate) {
-        var path = AppConfig.GetConfigPath();
+    public static ProfileConfig Mutate(ConfigRoot config, Func<ProfileConfig, ProfileConfig> mutate) {
+        var path = AppConfig.GetConfigPath(config);
         var dir  = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(dir);
 
-        using (ConfigFileLock.Acquire(path)) {
+        using (config.AcquireLock(AppConfig.ConfigFileName)) {
             var current = LoadPure(path);           // fresh re-read + in-memory migration
             var next    = mutate(current);
             Publish(path, next);
@@ -91,7 +92,7 @@ public static class ConfigMutator {
         }
     }
 
-    static ProfileConfig FreshDefault() => new() { Profiles = new() { ["default"] = new() } };
+    static ProfileConfig FreshDefault() => ProfileConfig.Fresh();
 
     static void Publish(string path, ProfileConfig config) {
         var tmp = path + ".tmp-" + Guid.NewGuid().ToString("N")[..8];

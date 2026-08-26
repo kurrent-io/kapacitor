@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Harness.Codex;
 using Capacitor.Cli.Core.Harness.Cursor;
@@ -23,7 +24,12 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Capacitor.Cli.Commands;
 
-static partial class WatchCommand {
+partial class WatchCommand(ConfigRoot config, ProfileContext profiles) {
+    readonly CursorMarkers  _markers  = new(config);
+    readonly WatcherManager _watchers = new(config, profiles);
+
+    string Url => profiles.Resolution.ServerUrl!;
+
     /// <summary>Outcome of deciding whether the parent-exit watchdog can run.</summary>
     internal enum ParentWatchdog {
         /// <summary>Parent PID is alive — start the 5s liveness poll.</summary>
@@ -213,8 +219,7 @@ static partial class WatchCommand {
         return slices;
     }
 
-    public static async Task<int> RunWatch(
-            string  baseUrl,
+    public async Task<int> RunWatch(
             string  sessionId,
             string  transcriptPath,
             string? agentId,
@@ -229,13 +234,13 @@ static partial class WatchCommand {
         // opaque exit 1. Validating here gives a hand-run watcher the actionable hint on the real
         // stderr and the same exit 2 every interactive command gives; a few lines later Console.Error
         // is a log file nobody is looking at.
-        if (!HookHttp.IsPostable(baseUrl)) {
+        if (!HookHttp.IsPostable(Url)) {
             Console.Error.WriteLine(HttpClientExtensions.SchemeMissingHint);
             return 2;
         }
 
         // Redirect all output to a log file so we don't hold parent's pipe FDs open
-        var logDir = PathHelpers.ConfigPath("logs");
+        var logDir = config.Path("logs");
         Directory.CreateDirectory(logDir);
         var logKey    = agentId is not null ? $"{sessionId}-{agentId}" : sessionId;
         var logPath   = Path.Combine(logDir, $"{logKey}.log");
@@ -248,7 +253,7 @@ static partial class WatchCommand {
         // once here (startup) and then every main-loop iteration below so a hook-side
         // staleness probe can distinguish a wedged (hung-but-alive) watcher from a healthy
         // one — a PID-only liveness check can't tell the difference.
-        var heartbeatPath = WatcherManager.GetHeartbeatFilePath(logKey);
+        var heartbeatPath = _watchers.GetHeartbeatFilePath(logKey);
 
         void TouchHeartbeat() {
             try {
@@ -345,7 +350,7 @@ static partial class WatchCommand {
         // lifetime (its checkpoint/pending-range state is meant to persist poll-to-poll). Null
         // for every non-Cursor vendor — DrainNewLines only exercises guard/ack logic when both
         // vendor == "cursor" AND this is non-null.
-        var cursorGuard = vendor == "cursor" ? new CursorRewriteGuard(sessionId) : null;
+        var cursorGuard = vendor == "cursor" ? new CursorRewriteGuard(config, sessionId) : null;
 
         // serializes a reconnect-discovered rewind
         // (ApplyReconnectRewindAsync, run from the Reconnected handler) against DrainNewLines'
@@ -368,7 +373,7 @@ static partial class WatchCommand {
 
         // Task 8: the dedicated undelivered-transcript-tail spool, shared by the final-drain
         // needs-import marker below and the shutdown-during-outage tail spool.
-        var transcriptSpool = new TranscriptSpool(PathHelpers.ConfigPath("transcript-spool"));
+        var transcriptSpool = new TranscriptSpool(config);
 
         // Watch the spawning coding-agent process. If it dies without firing
         // session-end (crash, force-kill, IDE-detach), self-terminate within ~5s and
@@ -495,7 +500,7 @@ static partial class WatchCommand {
 
         // Detect repository info upfront if cwd is provided (session watchers only, not agents)
         if (cwd is not null) {
-            state.Repository        = await RepositoryDetection.DetectRepositoryAsync(cwd);
+            state.Repository        = await RepositoryDetection.DetectRepositoryAsync(config, cwd);
             state.LastRepoDetection = DateTimeOffset.UtcNow;
         }
 
@@ -505,7 +510,7 @@ static partial class WatchCommand {
         // watcher is always spawned with cwd: null too and has never had its own repo detection.
         if (vendor == "claude" && agentId is null && (cwd is null || GitRepository.FindRoot(cwd) is null)) {
             state.EvidenceScanner = new RepoEvidenceScanner<RepositoryPayload>(
-                GitRepository.FindRoot, root => RepositoryDetection.DetectRepositoryAsync(root),
+                GitRepository.FindRoot, root => RepositoryDetection.DetectRepositoryAsync(config, root),
                 p => p.Owner is not null && p.RepoName is not null);
 
             try {
@@ -524,14 +529,14 @@ static partial class WatchCommand {
         Log($"Watching {transcriptPath} for session {sessionId}" + (agentId is not null ? $" agent {agentId}" : ""));
 
         // Build SignalR hub connection
-        var hubUrl = $"{baseUrl}/hubs/sessions";
+        var hubUrl = $"{Url}/hubs/sessions";
 
         var hubConnection = new HubConnectionBuilder()
             .WithUrl(
                 hubUrl,
                 options => {
                     options.AccessTokenProvider = async () => {
-                        var resolution = await TokenStore.GetValidTokensForServerAsync(baseUrl);
+                        var resolution = await new TokenStore(config).GetValidTokensForServerAsync(profiles.Name, Url);
 
                         return resolution.Tokens?.AccessToken;
                     };
@@ -746,7 +751,7 @@ static partial class WatchCommand {
 
                 // Periodically refresh repository info (every 60s)
                 if (cwd is not null && DateTimeOffset.UtcNow - state.LastRepoDetection > TimeSpan.FromSeconds(60)) {
-                    var detected = await RepositoryDetection.DetectRepositoryAsync(cwd);
+                    var detected = await RepositoryDetection.DetectRepositoryAsync(config, cwd);
 
                     // An evidence-derived repo may only be replaced by another real detection,
                     // never cleared back to null by a launch-cwd probe that still finds nothing.
@@ -771,15 +776,14 @@ static partial class WatchCommand {
                 // spawn-time signal — drained this tick (nesting only, subagents are
                 // captured standalone already).
                 if (agentId is null && vendor == "gemini") {
-                    await ScanGeminiSubagents(baseUrl, sessionId, transcriptPath, seenSubagents, spawnedChildWatcherKeys, cts.Token);
+                    await ScanGeminiSubagents(sessionId, transcriptPath, seenSubagents, spawnedChildWatcherKeys, cts.Token);
                 } else if (agentId is null && vendor == "opencode") {
-                    await ScanOpenCodeSubagents(baseUrl, sessionId, transcriptPath, seenSubagents, spawnedChildWatcherKeys, cts.Token);
+                    await ScanOpenCodeSubagents(sessionId, transcriptPath, seenSubagents, spawnedChildWatcherKeys, cts.Token);
                 } else if (agentId is null && vendor == "codex") {
-                    await ScanCodexSubagents(
-                        baseUrl, sessionId, transcriptPath, seenSubagents, codexRuledOutRollouts,
+                    await ScanCodexSubagents(sessionId, transcriptPath, seenSubagents, codexRuledOutRollouts,
                         codexRolloutMtimes, spawnedChildWatcherKeys, cts.Token);
                 } else if (agentId is null && vendor == "antigravity") {
-                    await ScanAntigravitySubagentLinks(baseUrl, sessionId, drained, state.PostedSubagentLinks, cts.Token);
+                    await ScanAntigravitySubagentLinks(sessionId, drained, state.PostedSubagentLinks, cts.Token);
                 }
 
                 // A Codex collab CHILD posts its own subagent-stop once its rollout's
@@ -799,7 +803,7 @@ static partial class WatchCommand {
                         DateTimeOffset.UtcNow, codexSubagentStopGrace)) {
                     codexChildAgentType ??= ResolveCodexChildAgentType(transcriptPath);
 
-                    if (await PostCodexSubagentStopAsync(baseUrl, sessionId, agentId, codexChildAgentType, transcriptPath, cts.Token)) {
+                    if (await PostCodexSubagentStopAsync(sessionId, agentId, codexChildAgentType, transcriptPath, cts.Token)) {
                         state.CodexSubagentTurn.StopPosted = true;
                         Log($"Codex subagent {agentId} ({codexChildAgentType}) turn complete + idle "
                           + $"{codexSubagentStopGrace.TotalMinutes:F0}m; posted subagent-stop");
@@ -816,7 +820,7 @@ static partial class WatchCommand {
                 // the PARENT id.
                 var cursorIdleClockAt = ResolveCursorIdleClock(
                     vendor, state.LastActivityAt,
-                    vendor == "cursor" ? WatcherHeartbeat.Read(CursorMarkers.HeartbeatPath(agentId ?? sessionId)) : null);
+                    vendor == "cursor" ? WatcherHeartbeat.Read(_markers.HeartbeatPath(agentId ?? sessionId)) : null);
 
                 if (ShouldEndOnIdle(
                         vendor,
@@ -900,7 +904,7 @@ static partial class WatchCommand {
             // INVOKE_SUBAGENT step after the main loop's last tick but before exit, and this is
             // the watcher's final chance to link it.
             if (agentId is null && vendor == "antigravity") {
-                await ScanAntigravitySubagentLinks(baseUrl, sessionId, finalDrained, state.PostedSubagentLinks, CancellationToken.None);
+                await ScanAntigravitySubagentLinks(sessionId, finalDrained, state.PostedSubagentLinks, CancellationToken.None);
             }
         }
 
@@ -924,7 +928,7 @@ static partial class WatchCommand {
         // that orphan case is what the codex-child reap ceiling backstops.
         if (spawnedChildWatcherKeys.Count > 0) {
             Log($"Stopping {spawnedChildWatcherKeys.Count} spawned child watcher(s)");
-            await WatcherManager.KillWatchers(spawnedChildWatcherKeys);
+            await _watchers.KillWatchers(spawnedChildWatcherKeys);
         }
 
         Log($"Done. {state.LinesProcessed} total lines processed.");
@@ -963,12 +967,12 @@ static partial class WatchCommand {
         }
 
         if (endReason is not null && agentId is null && state.ThresholdReached && !cursorSuppressesEndPost) {
-            await PostSessionEndOnParentExitAsync(baseUrl, sessionId, transcriptPath, cwd, vendor, state.Repository, endReason);
+            await PostSessionEndOnParentExitAsync(sessionId, transcriptPath, cwd, vendor, state.Repository, endReason);
         }
 
         // Graceful exit: retire this incarnation's pid file so no later teardown/cleanup can act
         // on a recycled pid (KillWatcher's token guard is the crash-exit backstop).
-        WatcherManager.RemoveOwnPidFile(
+        _watchers.RemoveOwnPidFile(
             agentId is null ? sessionId : $"{sessionId}-{agentId}", Environment.ProcessId);
 
         await logWriter.DisposeAsync();
@@ -984,8 +988,7 @@ static partial class WatchCommand {
     /// (→ <c>AgentSubsession-*</c>). Idempotent across ticks via <paramref name="seen"/>;
     /// deterministic server-side lifecycle ids make re-registration safe.
     /// </summary>
-    static async Task ScanGeminiSubagents(
-            string              baseUrl,
+    async Task ScanGeminiSubagents(
             string              sessionId,
             string              transcriptPath,
             HashSet<string>     seen,
@@ -1016,13 +1019,12 @@ static partial class WatchCommand {
 
             // Fail-closed: register the subagent (→ SubagentStarted) before its child watcher
             // streams content. On POST failure, drop from `seen` so the next tick retries.
-            if (!await PostSubagentStartAsync(baseUrl, sessionId, agentId, agentType, subFile, ct)) {
+            if (!await PostSubagentStartAsync(sessionId, agentId, agentType, subFile, ct)) {
                 seen.Remove(subFile);
                 continue;
             }
 
-            await WatcherManager.EnsureWatcherRunning(
-                baseUrl, key: $"{sessionId}-{agentId}", transcriptPath: subFile,
+            await _watchers.EnsureWatcherRunning(key: $"{sessionId}-{agentId}", transcriptPath: subFile,
                 agentId: agentId, sessionIdOverride: sessionId, vendor: "gemini");
             spawnedChildKeys.Add($"{sessionId}-{agentId}");
 
@@ -1030,14 +1032,14 @@ static partial class WatchCommand {
         }
     }
 
-    static async Task<bool> PostSubagentStartAsync(
-        string baseUrl, string sessionId, string agentId, string agentType, string subFile, CancellationToken ct
+    async Task<bool> PostSubagentStartAsync(
+        string sessionId, string agentId, string agentType, string subFile, CancellationToken ct
     ) {
         try {
-            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, ct);
+            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, Url, ct);
             var       payload = GeminiSubagentDiscovery.BuildStartPayload(sessionId, agentId, agentType, subFile);
             using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
-            using var resp    = await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-start", content, ct: ct);
+            using var resp    = await client.PostWithRetryAsync($"{Url}/hooks/subagent-start", content, ct: ct);
 
             return resp.IsSuccessStatusCode;
         } catch {
@@ -1056,8 +1058,7 @@ static partial class WatchCommand {
     /// Idempotent across ticks via <paramref name="seen"/>; deterministic server-side lifecycle
     /// ids make re-registration safe.
     /// </summary>
-    static async Task ScanOpenCodeSubagents(
-            string              baseUrl,
+    async Task ScanOpenCodeSubagents(
             string              sessionId,
             string              transcriptPath,
             HashSet<string>     seen,
@@ -1083,13 +1084,12 @@ static partial class WatchCommand {
 
             // Fail-closed: register the subagent (→ SubagentStarted) before its child watcher
             // streams content. On POST failure, drop from `seen` so the next tick retries.
-            if (!await PostOpenCodeSubagentStartAsync(baseUrl, sessionId, agentId, agentType, subFile, ct)) {
+            if (!await PostOpenCodeSubagentStartAsync(sessionId, agentId, agentType, subFile, ct)) {
                 seen.Remove(subFile);
                 continue;
             }
 
-            await WatcherManager.EnsureWatcherRunning(
-                baseUrl, key: $"{sessionId}-{agentId}", transcriptPath: subFile,
+            await _watchers.EnsureWatcherRunning(key: $"{sessionId}-{agentId}", transcriptPath: subFile,
                 agentId: agentId, sessionIdOverride: sessionId, vendor: "opencode");
             spawnedChildKeys.Add($"{sessionId}-{agentId}");
 
@@ -1097,14 +1097,14 @@ static partial class WatchCommand {
         }
     }
 
-    static async Task<bool> PostOpenCodeSubagentStartAsync(
-        string baseUrl, string sessionId, string agentId, string agentType, string subFile, CancellationToken ct
+    async Task<bool> PostOpenCodeSubagentStartAsync(
+        string sessionId, string agentId, string agentType, string subFile, CancellationToken ct
     ) {
         try {
-            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, ct);
+            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, Url, ct);
             var       payload = OpenCodeSubagentDiscovery.BuildStartPayload(sessionId, agentId, agentType, subFile);
             using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
-            using var resp    = await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-start", content, ct: ct);
+            using var resp    = await client.PostWithRetryAsync($"{Url}/hooks/subagent-start", content, ct: ct);
 
             return resp.IsSuccessStatusCode;
         } catch {
@@ -1139,8 +1139,7 @@ static partial class WatchCommand {
         return true;
     }
 
-    static async Task ScanCodexSubagents(
-            string                       baseUrl,
+    async Task ScanCodexSubagents(
             string                       sessionId,
             string                       transcriptPath,
             HashSet<string>              seen,
@@ -1172,13 +1171,12 @@ static partial class WatchCommand {
 
             // Fail-closed: register the subagent (→ SubagentStarted) before its child watcher
             // streams content. On POST failure, drop from `seen` so the next tick retries.
-            if (isNew && !await PostCodexSubagentStartAsync(baseUrl, sessionId, childAgentId, agentType, sub.FilePath, ct)) {
+            if (isNew && !await PostCodexSubagentStartAsync(sessionId, childAgentId, agentType, sub.FilePath, ct)) {
                 seen.Remove(sub.FilePath);
                 continue;
             }
 
-            await WatcherManager.EnsureWatcherRunning(
-                baseUrl, key: $"{sessionId}-{childAgentId}", transcriptPath: sub.FilePath,
+            await _watchers.EnsureWatcherRunning(key: $"{sessionId}-{childAgentId}", transcriptPath: sub.FilePath,
                 agentId: childAgentId, sessionIdOverride: sessionId, vendor: "codex");
             spawnedChildKeys.Add($"{sessionId}-{childAgentId}");
 
@@ -1186,14 +1184,14 @@ static partial class WatchCommand {
         }
     }
 
-    static async Task<bool> PostCodexSubagentStartAsync(
-        string baseUrl, string sessionId, string agentId, string agentType, string subFile, CancellationToken ct
+    async Task<bool> PostCodexSubagentStartAsync(
+        string sessionId, string agentId, string agentType, string subFile, CancellationToken ct
     ) {
         try {
-            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, ct);
+            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, Url, ct);
             var       payload = CodexSubagentDiscovery.BuildStartPayload(sessionId, agentId, agentType, subFile);
             using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
-            using var resp    = await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-start", content, ct: ct);
+            using var resp    = await client.PostWithRetryAsync($"{Url}/hooks/subagent-start", content, ct: ct);
 
             return resp.IsSuccessStatusCode;
         } catch {
@@ -1227,17 +1225,17 @@ static partial class WatchCommand {
     /// <see cref="CodexSubagentStopPostBudget"/>; failures are logged and reported to the
     /// caller, never thrown.
     /// </summary>
-    static async Task<bool> PostCodexSubagentStopAsync(
-        string baseUrl, string sessionId, string agentId, string agentType, string subFile, CancellationToken ct
+    async Task<bool> PostCodexSubagentStopAsync(
+        string sessionId, string agentId, string agentType, string subFile, CancellationToken ct
     ) {
         try {
             using var budgetCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             budgetCts.CancelAfter(CodexSubagentStopPostBudget);
 
-            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, budgetCts.Token);
+            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, Url, budgetCts.Token);
             var       payload = CodexSubagentDiscovery.BuildStopPayload(sessionId, agentId, agentType, subFile);
             using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
-            using var resp    = await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-stop", content, timeout: CodexSubagentStopPostBudget, ct: budgetCts.Token);
+            using var resp    = await client.PostWithRetryAsync($"{Url}/hooks/subagent-stop", content, timeout: CodexSubagentStopPostBudget, ct: budgetCts.Token);
 
             if (!resp.IsSuccessStatusCode) {
                 Log($"Codex subagent {agentId} stop POST returned {(int)resp.StatusCode}; "
@@ -1651,8 +1649,7 @@ static partial class WatchCommand {
         }
     }
 
-    internal static async Task PostSessionEndOnParentExitAsync(
-            string             baseUrl,
+    internal async Task PostSessionEndOnParentExitAsync(
             string             sessionId,
             string             transcriptPath,
             string?            cwd,
@@ -1674,7 +1671,7 @@ static partial class WatchCommand {
         if (vendor == "gemini") {
             try {
                 var finalized = await TimeBudget.RunCappedAsync(
-                    () => GeminiSubagentTeardown.DrainAsync(baseUrl, sessionId, transcriptPath),
+                    () => new GeminiSubagentTeardown(config, profiles).DrainAsync(sessionId, transcriptPath),
                     GeminiSubagentTeardown.DrainCap);
 
                 if (!finalized) {
@@ -1695,7 +1692,7 @@ static partial class WatchCommand {
         if (vendor == "codex") {
             try {
                 var finalized = await TimeBudget.RunCappedAsync(
-                    () => CodexSubagentTeardown.DrainAsync(baseUrl, sessionId, transcriptPath),
+                    () => new CodexSubagentTeardown(config, profiles).DrainAsync(sessionId, transcriptPath),
                     CodexSubagentTeardown.DrainCap);
 
                 if (!finalized) {
@@ -1720,7 +1717,7 @@ static partial class WatchCommand {
             // ceiling and returns how many were left unfinalized (logged below — OpenCode has no
             // historical import to recover a missed stop).
             try {
-                var unfinalized = await OpenCodeSubagentTeardown.DrainAsync(baseUrl, sessionId, transcriptPath);
+                var unfinalized = await new OpenCodeSubagentTeardown(config, profiles).DrainAsync(sessionId, transcriptPath);
                 if (unfinalized > 0) {
                     Log($"Parent-exit OpenCode subagent teardown hit the {OpenCodeSubagentTeardown.OverallBudget.TotalSeconds:0}s ceiling; "
                       + $"{unfinalized} subagent(s) left without SubagentCompleted");
@@ -1754,10 +1751,10 @@ static partial class WatchCommand {
                 );
             }
 
-            using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, budgetCts.Token);
+            using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, Url, budgetCts.Token);
             using var content    = new StringContent(endHook.ToJsonString(), Encoding.UTF8, "application/json");
 
-            var url = $"{baseUrl}/hooks/session-end/{vendor}";
+            var url = $"{Url}/hooks/session-end/{vendor}";
             using var response = await httpClient.PostWithRetryAsync(url, content, timeout: ParentExitPostBudget, ct: budgetCts.Token);
 
             if (!response.IsSuccessStatusCode) {
@@ -1772,7 +1769,7 @@ static partial class WatchCommand {
                 var node = JsonNode.Parse(body);
 
                 if (node?["generate_whats_done"]?.GetValue<bool>() == true) {
-                    WatcherManager.SpawnWhatsDoneGenerator(baseUrl, sessionId, vendor);
+                    _watchers.SpawnWhatsDoneGenerator(sessionId, vendor);
                 }
             } catch (Exception ex) {
                 Log($"Parent-exit session-end response parse failed: {ex.Message}");
@@ -1792,7 +1789,7 @@ static partial class WatchCommand {
     // is directly regression-testable: every path exercised by those tests trips the guard and
     // returns BEFORE ever touching `hubConnection`, so an unconnected/never-started HubConnection
     // instance is sufficient — no live SignalR server needed.
-    internal static async Task<IReadOnlyList<string>> DrainNewLines(
+    internal async Task<IReadOnlyList<string>> DrainNewLines(
             HubConnection      hubConnection,
             string             sessionId,
             string             transcriptPath,
@@ -1816,11 +1813,11 @@ static partial class WatchCommand {
             // normalizing a transcript line ahead of the attachment it depends on (the watcher's
             // half of the barrier Task 8 introduced and Task 10 wired into the backfill).
             if (vendor == "cursor") {
-                if (CursorMarkers.IsQuarantined(sessionId)) {
+                if (_markers.IsQuarantined(sessionId)) {
                     return [];
                 }
 
-                if (CursorMarkers.BarrierPending(sessionId, DateTimeOffset.UtcNow, CursorMarkers.DefaultBarrierBound)) {
+                if (_markers.BarrierPending(sessionId, DateTimeOffset.UtcNow, CursorMarkers.DefaultBarrierBound)) {
                     return [];
                 }
             }
@@ -2309,8 +2306,8 @@ static partial class WatchCommand {
                     // time), so a beforeSubmitPrompt barrier created — or a quarantine written by
                     // a concurrent process — in that window must still be caught here, never sent.
                     // Hold (never advance state) so the next poll re-evaluates from scratch.
-                    if (CursorMarkers.IsQuarantined(sessionId)
-                     || CursorMarkers.BarrierPending(sessionId, DateTimeOffset.UtcNow, CursorMarkers.DefaultBarrierBound)) {
+                    if (_markers.IsQuarantined(sessionId)
+                     || _markers.BarrierPending(sessionId, DateTimeOffset.UtcNow, CursorMarkers.DefaultBarrierBound)) {
                         return newLines;
                     }
 
@@ -2464,7 +2461,7 @@ static partial class WatchCommand {
     /// Returns <c>null</c> when there is nothing undelivered (nothing spooled), otherwise the
     /// <see cref="TranscriptSpool.AppendResult"/> from the spool write.
     /// </summary>
-    internal static async Task<TranscriptSpool.AppendResult?> SpoolUndeliveredTranscriptTailAsync(
+    internal async Task<TranscriptSpool.AppendResult?> SpoolUndeliveredTranscriptTailAsync(
             TranscriptSpool   transcriptSpool,
             string            transcriptPath,
             string            sessionId,
@@ -2483,7 +2480,7 @@ static partial class WatchCommand {
         // block. No needs-import marker either — D0's quarantine is a deliberate, permanent,
         // diagnosable stop (see CursorRewriteGuard), and `kcap import` also refuses a quarantined
         // session (review fix #7), so a needs-import marker here would just be inert.
-        if (vendor == "cursor" && CursorMarkers.IsQuarantined(sessionId)) {
+        if (vendor == "cursor" && _markers.IsQuarantined(sessionId)) {
             Log($"Cursor session {sessionId} is quarantined; skipping shutdown-tail spool "
               + "(no line-number path may keep feeding a corrupted cursor)");
 
@@ -2985,24 +2982,24 @@ static partial class WatchCommand {
     /// success, so a failed POST retries on the next scan (fail-open — never breaks the drain
     /// loop).
     /// </summary>
-    static Task ScanAntigravitySubagentLinks(
-            string baseUrl, string sessionId, IReadOnlyList<string> drainedLines,
+    Task ScanAntigravitySubagentLinks(
+            string sessionId, IReadOnlyList<string> drainedLines,
             HashSet<string> posted, CancellationToken ct) =>
         ExtractAndPostSubagentLinks(drainedLines, posted,
-            child => PostAntigravitySubagentLinkAsync(baseUrl, sessionId, child, ct));
+            child => PostAntigravitySubagentLinkAsync(sessionId, child, ct));
 
-    static async Task<bool> PostAntigravitySubagentLinkAsync(
-        string baseUrl, string sessionId, string childId, CancellationToken ct
+    async Task<bool> PostAntigravitySubagentLinkAsync(
+        string sessionId, string childId, CancellationToken ct
     ) {
         try {
-            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, ct);
+            using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, Url, ct);
             var       payload = new JsonObject {
                 ["hook_event_name"] = "subagent-link",
                 ["session_id"]      = sessionId,
                 ["agent_id"]        = childId,
             };
             using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
-            using var resp    = await client.PostWithRetryAsync($"{baseUrl}/hooks/antigravity/subagent-link", content, ct: ct);
+            using var resp    = await client.PostWithRetryAsync($"{Url}/hooks/antigravity/subagent-link", content, ct: ct);
 
             return resp.IsSuccessStatusCode;
         } catch (OperationCanceledException) {
@@ -3225,9 +3222,9 @@ static partial class WatchCommand {
 
     static readonly Regex SystemInstructionsRegex = SystemInstructionsRx();
 
-    static async Task GenerateTitleAsync(HubConnection hubConnection, string sessionId, WatchState state, string vendor) {
+    async Task GenerateTitleAsync(HubConnection hubConnection, string sessionId, WatchState state, string vendor) {
         try {
-            var result = await TitleGenerator.GenerateAsync(state.FirstUserText!, state.FirstAssistantText, Log, vendor);
+            var result = await TitleGenerator.GenerateAsync(state.FirstUserText!, state.FirstAssistantText, Log, profiles.Resolution.Profile, vendor);
 
             if (result is null) {
                 Log($"Title generation attempt {state.TitleAttempts}/5 returned no usable result (CLI failure, refusal-like output, or empty title)");
@@ -3634,7 +3631,7 @@ static partial class WatchCommand {
     /// it seeds in the same call. See that method's doc for why.
     /// </para>
     /// </summary>
-    internal static async Task<bool> ApplyReconnectRewindAsync(
+    internal async Task<bool> ApplyReconnectRewindAsync(
             WatchState          state,
             int                 serverPosition,
             string              sessionId,
@@ -3699,7 +3696,7 @@ static partial class WatchCommand {
     /// call paths that could disagree.
     /// </para>
     /// </summary>
-    internal static async Task<bool> SeedCursorByteOffsetAsync(
+    internal async Task<bool> SeedCursorByteOffsetAsync(
             WatchState          state,
             int                 lineNumber,
             string              sessionId,
@@ -3716,7 +3713,7 @@ static partial class WatchCommand {
         var resolved = await ResolveByteOffsetForLineAsync(transcriptPath, lineNumber, ct);
 
         if (resolved is null) {
-            CursorMarkers.Quarantine(
+            _markers.Quarantine(
                 sessionId,
                 $"cursor_transcript_rewrite_detected: session {sessionId} zone=resume_frontier — "
               + $"server-acknowledged line {lineNumber} exceeds the local transcript's line count");
@@ -3749,7 +3746,7 @@ static partial class WatchCommand {
     /// server's frontier exactly and quarantined the session instead — the caller must exit the
     /// same way it would for a runtime rewrite detection.
     /// </summary>
-    internal static async Task<bool> GatedApplyReconnectRewindAsync(
+    internal async Task<bool> GatedApplyReconnectRewindAsync(
             SemaphoreSlim?      gate,
             WatchState          state,
             int                 serverPosition,
@@ -3778,7 +3775,7 @@ static partial class WatchCommand {
     /// gate instance serializes both, so a drain can never observe a half-applied reconnect
     /// rewind (or vice versa — a rewind can never observe/clobber a half-applied drain ack).
     /// </summary>
-    internal static async Task<IReadOnlyList<string>> GatedDrainNewLinesAsync(
+    internal async Task<IReadOnlyList<string>> GatedDrainNewLinesAsync(
             SemaphoreSlim?      gate,
             HubConnection       hubConnection,
             string              sessionId,

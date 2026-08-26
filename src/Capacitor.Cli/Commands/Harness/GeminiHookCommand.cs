@@ -61,10 +61,19 @@ namespace Capacitor.Cli.Commands.Harness;
 /// observation, not a guarantee. The mitigation does not depend on it: emitting a
 /// valid non-blocking object is correct under any of these selection rules.
 /// </remarks>
-static class GeminiHookCommand {
+sealed class GeminiHookCommand(ConfigRoot config, ProfileContext profiles, HookClock clock) {
+    readonly WatcherManager  _watchers = new(config, profiles);
+    readonly AgentHookPoster _poster   = new(config, profiles);
+
+    string Url => profiles.Resolution.ServerUrl!;
+
     // Mirror of CopilotHookCommand.PreHookDrainCap: the drain must
     // never starve the session-end POST, or the session sticks "Active".
     static readonly TimeSpan PreHookDrainCap = TimeSpan.FromSeconds(8);
+
+    /// <summary>Far inside the 30s <c>GeminiHooksParser</c> writes into settings.json: the cap that
+    /// matters is what a user will wait at startup, not what the host tolerates.</summary>
+    static readonly TimeSpan Ceiling = TimeSpan.FromSeconds(5);
 
     // Notification forwarding is telemetry — a stalled server must not block
     // Gemini's turn loop.
@@ -168,44 +177,35 @@ static class GeminiHookCommand {
             // inject on an unverified reason AND spend the once-per-session lease on it.
             SessionStartMemoryHookSupport.ReasonFor(source), CallbackMayRepeat: false);
 
-    static Task<string?> StartMemoryIndexTask(
-            string     baseUrl,
+    Task<string?> StartMemoryIndexTask(
             string     sessionId,
             string?    scopeRoot,
             bool       disabled,
             bool       guidelinesDisabled,
             string?    source,
-            TimeSpan   budget,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+            TimeSpan   budget) {
         if ((disabled && guidelinesDisabled) || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
          || budget <= TimeSpan.Zero
-         || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
+         || !SessionStartMemoryHookSupport.CanAttempt(Url))
             return Task.FromResult<string?>(null);
 
         try {
-            var store    = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var store    = SessionStartMemoryLeaseStore.Create(config, clock.Time);
             var provider = SessionStartMemoryHookSupport.CompositeProvider(
-                memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
-                disposeClients: memoryClientFactory is null);
+                config,
+                SessionStartMemoryHookSupport.ClientFactory(config, profiles, Url),
+                disposeClients: true);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
                 LifecycleFor(sessionId, source),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None,
+                new SessionStartMemoryContextRequest(Url, scopeRoot, disabled, budget, CancellationToken.None,
                     GuidelinesDisabled: guidelinesDisabled));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);
         }
     }
 
-    /// <param name="processStart">Monotonic hook-start stamp anchoring every budget computation;
-    /// defaults to now. Tests pass an older stamp to drive the budget-exhausted branch without sleeping.</param>
-    public static async Task<int> Handle(string baseUrl, TextReader stdin,
-            long processStart = 0,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) {
-        var ps = processStart == 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : processStart;
-
+    public async Task<int> Handle(TextReader stdin) {
         var body = await stdin.ReadToEndAsync();
 
         JsonNode? node;
@@ -233,21 +233,16 @@ static class GeminiHookCommand {
         var result = new HookResultWriter(Console.Out);
 
         try {
-            return await DispatchAsync(baseUrl, node, eventName, result, ps,
-                                       memoryClientFactory, memoryStoreFactory);
+            return await DispatchAsync(node, eventName, result);
         } finally {
             result.EnsureWritten();
         }
     }
 
-    static async Task<int> DispatchAsync(
-            string    baseUrl,
+    async Task<int> DispatchAsync(
             JsonNode  node,
             string    eventName,
-            HookResultWriter result,
-            long      ps,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+            HookResultWriter result) {
         // Gemini session ids are dashed UUIDs; keep the dashless form for the
         // server (AgentSession-{dashless} convention shared by every vendor).
         var dashedSessionId = TryGetString(node, "session_id");
@@ -258,41 +253,38 @@ static class GeminiHookCommand {
         // Mirror the Claude/Codex/Copilot disabled-session fast path: `kcap
         // disable` must stop every POST and watcher restart for the session. Suppression is not
         // silence — these paths are not stderr-free (Program.cs drains the spool before dispatch).
-        if (DisabledSessions.IsDisabled(sessionId)) {
-            if (eventName == "SessionEnd") DisabledSessions.RemoveMarker(sessionId);
+        if (DisabledSessions.IsDisabled(sessionId, config)) {
+            if (eventName == "SessionEnd") DisabledSessions.RemoveMarker(sessionId, config);
             return 0;
         }
 
         // Task 12: the cross-vendor backlog drain now runs centrally in Program.cs's
         // `case "hook":` before dispatch — no longer wired here (removes the double-wire).
-        var spool = new HookSpool(PathHelpers.ConfigPath("spool"));
+        var spool = new HookSpool(config);
 
         var cwd           = TryGetString(node, "cwd");
-        var activeProfile = await AppConfig.GetActiveProfileAsync();
+        var activeProfile = profiles.Effective;
 
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
          && PathExclusion.IsExcluded(cwd, excludedPaths)) return 0;
 
         return eventName switch {
-            "SessionStart" => await HandleSessionStart(baseUrl, node, sessionId, cwd, activeProfile, spool,
-                                                       result, ps, memoryClientFactory, memoryStoreFactory),
-            "SessionEnd"   => await HandleSessionEnd(baseUrl, node, sessionId, cwd),
-            "Notification" => await HandleNotification(baseUrl, node, sessionId, cwd),
+            "SessionStart" => await HandleSessionStart(node, sessionId, cwd, activeProfile, spool,
+                                                       result, clock.Budget(Ceiling)),
+            "SessionEnd"   => await HandleSessionEnd(node, sessionId, cwd),
+            "Notification" => await HandleNotification(node, sessionId, cwd),
             _              => 0   // unknown / unsubscribed — fail-open like the other dispatchers
         };
     }
 
-    static async Task<int> HandleSessionStart(
-            string    baseUrl,
+    async Task<int> HandleSessionStart(
             JsonNode  node,
             string    sessionId,
             string?   cwd,
             Profile?  activeProfile,
             HookSpool spool,
             HookResultWriter result,
-            long      processStart,
-            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null
+            HookBudget       budget
         ) {
         var source = TryGetString(node, "source") is { Length: > 0 } s ? s : "startup";
 
@@ -327,51 +319,48 @@ static class GeminiHookCommand {
             forwarded["default_visibility"] = visibility;
         }
 
-        SessionStartInventory.Stamp(forwarded);
-        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(forwarded.ToJsonString());
+        SessionStartInventory.Stamp(forwarded, config);
+        var enriched = await RepositoryDetection.EnrichWithRepositoryInfo(config, forwarded.ToJsonString());
 
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
-         && await RepoExclusion.IsExcludedAsync(enriched, excludedRepos)) {
-            DisabledSessions.Mark(sessionId);
+         && await RepoExclusion.IsExcludedAsync(config, enriched, excludedRepos)) {
+            DisabledSessions.Mark(sessionId, config);
             return 0;
         }
 
         // Started in PARALLEL with the POST below, not before it — the lifecycle POST is the
         // latency-critical path. Remaining() already subtracts its own safety margin; do not subtract
         // again here (double-subtraction was a real defect in the Copilot adapter).
-        var memoryTask = StartMemoryIndexTask(
-            baseUrl, sessionId,
+        var memoryTask = StartMemoryIndexTask(sessionId,
             scopeRoot: cwd is not null ? GitRepository.FindRoot(cwd) ?? cwd : null,
             disabled: activeProfile?.DisableMemoryIndex is true,
             guidelinesDisabled: activeProfile?.DisableSessionGuidelines is true,
             source: source,
-            budget: HookBudget.Remaining(processStart, "session-start"),
-            memoryClientFactory, memoryStoreFactory);
+            budget: budget.Remaining);
 
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse /
         // outage) — a doomed/delayed lifecycle POST must never withhold the watcher. On a real
         // failure PostOrSpoolAsync already logged to stderr; a lapse or transient outage instead
         // durably spools the payload for a later drain pass. Only a permanent failure keeps the
         // prior non-zero exit and skips the watcher; the next resume/startup retries.
-        var outcome = await AgentHookPoster.PostOrSpoolAsync(
-            baseUrl, "session-start/gemini", enriched, "gemini-hook",
+        var outcome = await _poster.PostOrSpoolAsync("session-start/gemini", enriched, "gemini-hook",
             spool, sessionId, route: "session-start/gemini");
 
         // Claim the single write HERE, before the failed-POST return below, so the memory envelope is
         // what lands rather than the backstop's bare allow. The memory index is independent of lifecycle
         // capture — a server rejecting the POST has not invalidated an index already fetched — and Gemini
         // parses hook stdout unconditionally, with the exit code only setting its own `success` flag.
-        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
+        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
         var workItemsNudge = HarnessNudgeEmitter.Combine(
             WorkItemsNudgeEmitter.Resolve(SessionStartHarness.Gemini, sessionId, activeProfile?.DisableWorkItemsNudge is true),
-            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true));
+            HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true, config));
         result.Write(RenderSessionStartPayload(fragment, workItemsNudge));
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return outcome == HookPostOutcome.Failed ? 1 : 0;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, Url)) return outcome == HookPostOutcome.Failed ? 1 : 0;
 
         // Task 6: await (was fire-and-forget) so a spawn failure is observed here rather
         // than silently swallowed, and the process isn't torn down before the spawn completes.
-        await EnsureWatcher(baseUrl, sessionId, node, cwd, source);
+        await EnsureWatcher(sessionId, node, cwd, source);
         return 0;
     }
 
@@ -381,7 +370,7 @@ static class GeminiHookCommand {
     internal static bool SpawnGateForTest(HookPostOutcome o, string? baseUrl)
         => AgentHookPoster.ShouldSpawnAfter(o, baseUrl);
 
-    static async Task<int> HandleSessionEnd(string baseUrl, JsonNode node, string sessionId, string? cwd) {
+    async Task<int> HandleSessionEnd(JsonNode node, string sessionId, string? cwd) {
         var transcriptPath = TryGetString(node, "transcript_path");
 
         // Kill watcher + inline-drain BEFORE the POST so the server computes
@@ -392,14 +381,14 @@ static class GeminiHookCommand {
             try {
                 var drained = await TimeBudget.RunCappedAsync(
                     async () => {
-                        await WatcherManager.KillWatcher(sessionId);
-                        await WatcherManager.InlineDrainAsync(baseUrl, sessionId, transcriptPath, agentId: null, vendor: "gemini");
+                        await _watchers.KillWatcher(sessionId);
+                        await _watchers.InlineDrainAsync(sessionId, transcriptPath, agentId: null, vendor: "gemini");
                         // Gemini fires no subagent-stop hook, so the parent owns subagent
                         // teardown: kill each live child watcher, drain its tail, and finalize
                         // it (subagent-stop). Restart-safe — driven off the on-disk files,
                         // not an in-memory set. Shared with the watcher's parent-exit fallback
                         // so a crash that bypasses this hook still finalizes subagents.
-                        await GeminiSubagentTeardown.DrainAsync(baseUrl, sessionId, transcriptPath);
+                        await new GeminiSubagentTeardown(config, profiles).DrainAsync(sessionId, transcriptPath);
                     },
                     PreHookDrainCap
                 );
@@ -433,10 +422,10 @@ static class GeminiHookCommand {
         }
 
         // AuthLapsed / Posted → clean exit (0); a real failure keeps the prior non-zero exit.
-        return await PostHookAsync(baseUrl, "session-end/gemini", forwarded.ToJsonString()) == HookPostOutcome.Failed ? 1 : 0;
+        return await PostHookAsync("session-end/gemini", forwarded.ToJsonString()) == HookPostOutcome.Failed ? 1 : 0;
     }
 
-    static async Task<int> HandleNotification(string baseUrl, JsonNode node, string sessionId, string? cwd) {
+    async Task<int> HandleNotification(JsonNode node, string sessionId, string? cwd) {
         // The server's NotificationHook requires message + notification_type.
         var message          = TryGetString(node, "message");
         var notificationType = TryGetString(node, "notification_type")
@@ -458,11 +447,11 @@ static class GeminiHookCommand {
         try {
             // Status-returning variant (not CreateAuthenticatedClientAsync, which writes a
             // per-turn "expired" line to stderr): on a lapse, stay quiet and skip the doomed POST.
-            var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl, cts.Token);
+            var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(config, profiles, Url, cts.Token);
             using (client) {
                 if (AgentHookPoster.IsAuthLapsed(status)) return 0;
                 using var content = new StringContent(forwarded.ToJsonString(), Encoding.UTF8, "application/json");
-                using var _       = await client.PostAsync($"{baseUrl}/hooks/notification", content, cts.Token);
+                using var _       = await client.PostAsync($"{Url}/hooks/notification", content, cts.Token);
             }
         } catch {
             // Recording must never fail the hook.
@@ -471,7 +460,7 @@ static class GeminiHookCommand {
         return 0;
     }
 
-    static async Task EnsureWatcher(string baseUrl, string sessionId, JsonNode node, string? cwd, string source) {
+    async Task EnsureWatcher(string sessionId, JsonNode node, string? cwd, string source) {
         // Gemini hands us the transcript path directly (no derivation needed,
         // unlike Copilot). Empty/absent → skip (can't tail nothing).
         var transcriptPath = TryGetString(node, "transcript_path");
@@ -484,8 +473,7 @@ static class GeminiHookCommand {
         // Task 6: awaited (was fire-and-forget `_ =`) so a spawn failure surfaces to the
         // caller instead of being silently dropped, and the host process doesn't exit before the
         // spawn completes.
-        await WatcherManager.EnsureWatcherRunning(
-            baseUrl, sessionId, transcriptPath,
+        await _watchers.EnsureWatcherRunning(sessionId, transcriptPath,
             agentId: null, sessionIdOverride: null, cwd: cwd,
             skipTitle: skipTitle, vendor: "gemini"
         );
@@ -494,8 +482,8 @@ static class GeminiHookCommand {
     // Shared auth-aware recording POST: skips the doomed POST (and the misleading per-turn
     // "HTTP 401" stderr line) when auth has lapsed, reporting AuthLapsed so the caller exits
     // cleanly instead of erroring. See AgentHookPoster.
-    static Task<HookPostOutcome> PostHookAsync(string baseUrl, string endpoint, string body)
-        => AgentHookPoster.PostAsync(baseUrl, endpoint, body, "gemini-hook");
+    Task<HookPostOutcome> PostHookAsync(string endpoint, string body)
+        => _poster.PostAsync(endpoint, body, "gemini-hook");
 
     static DateTimeOffset? TryGetIsoTimestamp(JsonNode? node, string fieldName) {
         if (node?[fieldName] is JsonValue v

@@ -2,7 +2,7 @@ using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.SessionStartMemory;
 
-internal sealed class SessionStartMemoryScopeResolver : ISessionStartMemoryScopeResolver {
+internal sealed class SessionStartMemoryScopeResolver(ConfigRoot config) : ISessionStartMemoryScopeResolver {
     public async Task<SessionStartMemoryScope> ResolveAsync(string? cwd, TimeSpan budget, CancellationToken ct) {
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
         TimeSpan Remaining() {
@@ -14,13 +14,13 @@ internal sealed class SessionStartMemoryScopeResolver : ISessionStartMemoryScope
         string? machine = null;
         try {
             var path = string.IsNullOrWhiteSpace(cwd) ? Directory.GetCurrentDirectory() : cwd;
-            var repo = await RepositoryDetection.DetectRepositoryAsync(path, Remaining(), detectPullRequest: false);
+            var repo = await RepositoryDetection.DetectRepositoryAsync(config, path, Remaining(), detectPullRequest: false);
             if (repo?.Owner is not null && repo.RepoName is not null)
                 repoHash = RepoHashHelper.ComputeRepoHash(repo.Owner, repo.RepoName);
         } catch { }
         ct.ThrowIfCancellationRequested();
         if (Remaining() <= TimeSpan.Zero) throw new OperationCanceledException(ct);
-        try { machine = await MachineIdProvider.GetOrCreateAsync(ct); } catch (OperationCanceledException) { throw; } catch { }
+        try { machine = await MachineIdProvider.GetOrCreateAsync(config, ct); } catch (OperationCanceledException) { throw; } catch { }
         return new SessionStartMemoryScope(repoHash, machine);
     }
 }

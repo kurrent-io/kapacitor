@@ -8,6 +8,13 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class McpFlowsServerReviewerVendorsTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // Same shape as ReviewerVendorFallbackTests: the dispatch is profile-scoped, and these tests
+    // exercise routing, not profile selection.
+    McpFlowsServer Server() =>
+        new(Config.Root, Resolutions.None(Config.Root));
+
     static JsonObject ToolCall() => new() {
         ["params"] = new JsonObject { ["name"] = "list_reviewer_vendors", ["arguments"] = new JsonObject() }
     };
@@ -21,7 +28,7 @@ public class McpFlowsServerReviewerVendorsTests {
         // The tool reads the machine id read-only (ReadPersisted, never Get) and filters on it; mirror
         // that so the stub daemon matches whether or not machine.json exists in the test env (a null id
         // drops the filter, so the daemon is included either way).
-        var machine = MachineId.ReadPersisted() ?? "test-machine";
+        var machine = new MachineId(Config.Root).ReadPersisted() ?? "test-machine";
         using var server = WireMockServer.Start();
         server.Given(Request.Create().WithPath("/api/daemons").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody($$"""
@@ -30,7 +37,7 @@ public class McpFlowsServerReviewerVendorsTests {
             """));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCall(), client, server.Url!,
             cwd: "/repo/a", repoRoot: "/repo/a", repoInfo: null, driverVendor: "claude");
 
@@ -49,7 +56,7 @@ public class McpFlowsServerReviewerVendorsTests {
             .RespondWith(Response.Create().WithStatusCode(500));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCall(), client, server.Url!,
             cwd: "/r", repoRoot: "/r", repoInfo: null, driverVendor: null);
 
@@ -67,7 +74,7 @@ public class McpFlowsServerReviewerVendorsTests {
             .RespondWith(Response.Create().WithStatusCode(401));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCall(), client, server.Url!,
             cwd: "/x", repoRoot: null, repoInfo: null, driverVendor: null);
 
@@ -83,7 +90,7 @@ public class McpFlowsServerReviewerVendorsTests {
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("[]"));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCall(), client, server.Url!,
             cwd: "/x", repoRoot: null, repoInfo: null, driverVendor: null);
 

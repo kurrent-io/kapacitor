@@ -61,21 +61,19 @@ public class ConsentFlipCoordinatorTests {
         public readonly FakeLifecycleSurface Surface = new();
         public readonly FakeAppStateStore Store = new();
         public readonly ScriptedResolver Resolver = new();
-        readonly TempDir _tmp = new();
-        public string TempDir => _tmp.Path;
+        readonly TempConfigRoot _config = new();
+        public string CreateFile(string relativePath, string content) => _config.CreateFile(relativePath, content);
+
         public readonly ConsentFlipClaims Claims;
         public readonly ConsentFlipCoordinator Coordinator;
 
         public Harness() {
-            Claims = new ConsentFlipClaims(
-                _tmp.PathTo("consent-flip-claims.json"),
-                _tmp.PathTo("config.json")
-            );
+            Claims = new ConsentFlipClaims(_config.Root);
             Coordinator = new ConsentFlipCoordinator(
                 Client, Ops, Claims, Resolver.Resolve, Surface, Store, CancellationToken.None);
         }
 
-        public void Dispose() => _tmp.Dispose();
+        public void Dispose() => _config.Dispose();
     }
 
     // ---- happy path ----
@@ -366,7 +364,7 @@ public class ConsentFlipCoordinatorTests {
     [Test]
     public async Task Quarantine_surfaces_once_as_a_confirm_prompt_naming_the_preserved_path() {
         using var h = new Harness();
-        File.WriteAllText(Path.Combine(h.TempDir, "consent-flip-claims.json"), "{not json");
+        h.CreateFile("consent-flip-claims.json", "{not json");
 
         h.Coordinator.Start(); // Start()'s own read discovers the corruption — no pre-read needed
 
@@ -392,7 +390,7 @@ public class ConsentFlipCoordinatorTests {
     [Test]
     public async Task Confirmed_quarantine_is_acked_and_not_re_surfaced_by_a_fresh_coordinator() {
         using var h = new Harness();
-        File.WriteAllText(Path.Combine(h.TempDir, "consent-flip-claims.json"), "{not json");
+        h.CreateFile("consent-flip-claims.json", "{not json");
         h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(true);
 
         h.Coordinator.Start();
@@ -413,7 +411,7 @@ public class ConsentFlipCoordinatorTests {
     [Test]
     public async Task Declined_quarantine_is_not_persisted_and_re_surfaces_on_a_fresh_coordinator() {
         using var h = new Harness();
-        File.WriteAllText(Path.Combine(h.TempDir, "consent-flip-claims.json"), "{not json");
+        h.CreateFile("consent-flip-claims.json", "{not json");
         h.Surface.ConfirmBehavior = (_, _) => Task.FromResult(false);
 
         h.Coordinator.Start();
@@ -434,7 +432,7 @@ public class ConsentFlipCoordinatorTests {
     [Test]
     public async Task Cancelled_confirm_prompt_returns_null_and_is_not_persisted() {
         using var h = new Harness();
-        File.WriteAllText(Path.Combine(h.TempDir, "consent-flip-claims.json"), "{not json");
+        h.CreateFile("consent-flip-claims.json", "{not json");
         h.Surface.TryConfirmBehavior = (_, _) => Task.FromResult<bool?>(null);
 
         h.Coordinator.Start();
@@ -447,7 +445,7 @@ public class ConsentFlipCoordinatorTests {
     [Test]
     public async Task Already_acked_quarantine_never_prompts() {
         using var h = new Harness();
-        File.WriteAllText(Path.Combine(h.TempDir, "consent-flip-claims.json"), "{not json");
+        h.CreateFile("consent-flip-claims.json", "{not json");
         await h.Store.UpdateAsync(s => s with { ConsentQuarantineAcked = true });
 
         h.Coordinator.Start();

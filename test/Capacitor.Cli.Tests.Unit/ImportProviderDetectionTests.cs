@@ -10,6 +10,8 @@ namespace Capacitor.Cli.Tests.Unit;
 /// CLI, while the default (live) path still does.
 /// </summary>
 public class ImportProviderDetectionTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     // Records every command the detector spawns; answers git probes with a GitHub remote so
     // owner/repo/host resolve, and answers `gh pr view` with a PR so the live path can populate it.
     static CommandRunner Recording(List<string> log) => (cmd, args, _, _) => {
@@ -25,7 +27,7 @@ public class ImportProviderDetectionTests {
     public async Task Import_detection_resolves_repo_without_spawning_a_provider_cli() {
         var log = new List<string>();
 
-        var repo = await RepositoryDetection.DetectRepositoryAsync(
+        var repo = await RepositoryDetection.DetectRepositoryAsync(Config.Root, 
             "/fake/import/skip-pr", budget: null, detectPullRequest: false, run: Recording(log));
 
         // Base repo info still resolves from git alone…
@@ -41,7 +43,7 @@ public class ImportProviderDetectionTests {
     public async Task Live_detection_still_runs_provider_detection() {
         var log = new List<string>();
 
-        var repo = await RepositoryDetection.DetectRepositoryAsync(
+        var repo = await RepositoryDetection.DetectRepositoryAsync(Config.Root, 
             "/fake/live/do-pr", budget: null, detectPullRequest: true, run: Recording(log));
 
         await Assert.That(log.Any(c => c.StartsWith("gh pr view", StringComparison.Ordinal))).IsTrue(); // provider detection ran

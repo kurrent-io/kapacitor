@@ -28,6 +28,11 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// isolation").
 /// </summary>
 public class ImportVisibilityTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // These tests exercise chaining and repo resolution, not profile selection.
+    ImportCommand Import() =>
+        new(Config.Root, Resolutions.None(Config.Root));
     readonly WireMockServer _server = WireMockServer.Start();
     readonly TempDir        _tmp    = new();
     readonly string         _tempDir;
@@ -111,7 +116,7 @@ public class ImportVisibilityTests : IDisposable {
         };
 
         using var client = new HttpClient();
-        await ImportCommand.ImportChainsAsync(
+        await Import().ImportChainsAsync(
             client, _server.Url!, chains, NoOpChainEvents(), CancellationToken.None,
             sessionCwds: null, defaultVisibility: "org_public");
 
@@ -128,7 +133,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         // defaultVisibility omitted -> defaults null.
-        await ImportCommand.ImportChainsAsync(client, _server.Url!, chains, NoOpChainEvents(), CancellationToken.None);
+        await Import().ImportChainsAsync(client, _server.Url!, chains, NoOpChainEvents(), CancellationToken.None);
 
         var body = SessionStartBody("claude");
         await Assert.That(body.ContainsKey("default_visibility")).IsFalse();
@@ -142,7 +147,7 @@ public class ImportVisibilityTests : IDisposable {
         };
 
         using var client = new HttpClient();
-        await ImportCommand.ImportChainsAsync(
+        await Import().ImportChainsAsync(
             client, _server.Url!, chains, NoOpChainEvents(), CancellationToken.None,
             sessionCwds: null, defaultVisibility: "org_public");
 
@@ -176,11 +181,10 @@ public class ImportVisibilityTests : IDisposable {
         var projectsDir = Path.Combine(_tempDir, "claude-projects-pos");
         WriteClaudeSession(projectsDir, "vis-chain-handle-pos");
 
-        var exitCode = await ImportCommand.HandleImport(
-            baseUrl: _server.Url!,
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
             filterCwd: null,
             minLines: 1,
-            sources: [new ClaudeImportSource(projectsDir)],
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
             scope: new ImportScope.All(),
             skipConfirmation: true,
             forcePrivate: false,
@@ -214,11 +218,10 @@ public class ImportVisibilityTests : IDisposable {
         var projectsDir = Path.Combine(_tempDir, "claude-projects-neg");
         WriteClaudeSession(projectsDir, "vis-chain-handle-neg");
 
-        var exitCode = await ImportCommand.HandleImport(
-            baseUrl: _server.Url!,
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
             filterCwd: null,
             minLines: 1,
-            sources: [new ClaudeImportSource(projectsDir)],
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
             scope: new ImportScope.All(),
             skipConfirmation: true,
             forcePrivate: true,
@@ -268,7 +271,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new CopilotImportSource().ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new CopilotImportSource(Config.Root).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         var body = SessionStartBody("copilot");
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("org_public");
@@ -283,13 +286,13 @@ public class ImportVisibilityTests : IDisposable {
         var partialPath = WriteTranscript("copilot-partial.jsonl");
         var partial = RoutedClassification("copilot-partial-1", ImportCommand.ClassificationStatus.Partial,
             new() { ["TranscriptPath"] = partialPath }, resumeFromLine: 2);
-        await new CopilotImportSource().ImportSessionAsync(partial, ctx, CancellationToken.None);
+        await new CopilotImportSource(Config.Root).ImportSessionAsync(partial, ctx, CancellationToken.None);
         await Assert.That(SessionStartBody("copilot").ContainsKey("default_visibility")).IsFalse();
 
         var alreadyPath = WriteTranscript("copilot-already.jsonl");
         var already = RoutedClassification("copilot-already-1", ImportCommand.ClassificationStatus.AlreadyLoaded,
             new() { ["TranscriptPath"] = alreadyPath }, totalLines: 5);
-        await new CopilotImportSource().ImportSessionAsync(already, ctx, CancellationToken.None);
+        await new CopilotImportSource(Config.Root).ImportSessionAsync(already, ctx, CancellationToken.None);
 
         var alreadyBody = JsonNode.Parse(
             _server.LogEntries.Where(e => e.RequestMessage.Path == "/hooks/session-start/copilot")
@@ -307,7 +310,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
-        await new CopilotImportSource().ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new CopilotImportSource(Config.Root).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         // Copilot has no forcePrivate handling of its own (per the spec) — the field must be
         // entirely absent, not just missing the org value.
@@ -370,7 +373,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new KiroImportSource().ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new KiroImportSource(Config.Root).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         var body = SessionStartBody("kiro");
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("org_public");
@@ -385,7 +388,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new KiroImportSource().ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new KiroImportSource(Config.Root).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         await Assert.That(SessionStartBody("kiro").ContainsKey("default_visibility")).IsFalse();
     }
@@ -399,7 +402,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
-        await new KiroImportSource().ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new KiroImportSource(Config.Root).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         await Assert.That(SessionStartBody("kiro").ContainsKey("default_visibility")).IsFalse();
     }
@@ -415,7 +418,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new PiImportSource().ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new PiImportSource(Config.Root).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         var body = SessionStartBody("pi");
         await Assert.That(body["default_visibility"]?.GetValue<string>()).IsEqualTo("org_public");
@@ -430,7 +433,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new PiImportSource().ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new PiImportSource(Config.Root).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         await Assert.That(SessionStartBody("pi").ContainsKey("default_visibility")).IsFalse();
     }
@@ -444,7 +447,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
-        await new PiImportSource().ImportSessionAsync(c, ctx, CancellationToken.None);
+        await new PiImportSource(Config.Root).ImportSessionAsync(c, ctx, CancellationToken.None);
 
         // Pi's existing forcePrivate behavior (stamping the literal "private") is untouched —
         // the new guard must never override it with the org-level default.
@@ -634,7 +637,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new CursorImportSource(
+        await new CursorImportSource(Config.Root, 
                 Path.Combine(_tempDir, "unused-cursor-projects"),
                 Path.Combine(_tempDir, "unused-cursor-workspace-storage")
             )
@@ -654,7 +657,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: false, DefaultVisibility: "org_public");
-        await new CursorImportSource(
+        await new CursorImportSource(Config.Root, 
                 Path.Combine(_tempDir, "unused-cursor-projects-2"),
                 Path.Combine(_tempDir, "unused-cursor-workspace-storage-2")
             )
@@ -672,7 +675,7 @@ public class ImportVisibilityTests : IDisposable {
 
         using var client = new HttpClient();
         var ctx = new ImportContext(client, _server.Url!, ForcePrivate: true, DefaultVisibility: "org_public");
-        await new CursorImportSource(
+        await new CursorImportSource(Config.Root, 
                 Path.Combine(_tempDir, "unused-cursor-projects-3"),
                 Path.Combine(_tempDir, "unused-cursor-workspace-storage-3")
             )
@@ -702,10 +705,9 @@ public class ImportVisibilityTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(404));
         StubAllHookEndpoints();
 
-        var source = new CursorImportSource(projectsDir, Path.Combine(_tempDir, "cursor-workspace-storage-rt"));
+        var source = new CursorImportSource(Config.Root, projectsDir, Path.Combine(_tempDir, "cursor-workspace-storage-rt"));
 
-        var exitCode = await ImportCommand.HandleImport(
-            baseUrl: _server.Url!,
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
             filterCwd: null,
             minLines: 0,
             sources: [source],
@@ -752,24 +754,24 @@ public class ImportVisibilityTests : IDisposable {
         Func<string, Dictionary<string, object?>>    MakeSourceMeta,
         bool                                          OwnPrivateStamp);
 
-    static RoutedSourceCase CopilotCase() =>
-        new("copilot", () => new CopilotImportSource(), p => new() { ["TranscriptPath"] = p }, OwnPrivateStamp: false);
+    RoutedSourceCase CopilotCase() =>
+        new("copilot", () => new CopilotImportSource(Config.Root), p => new() { ["TranscriptPath"] = p }, OwnPrivateStamp: false);
 
     static RoutedSourceCase GeminiCase() =>
         new("gemini", () => new GeminiImportSource(), p => new() { ["TranscriptPath"] = p }, OwnPrivateStamp: false);
 
-    static RoutedSourceCase KiroCase() =>
-        new("kiro", () => new KiroImportSource(), p => new() { ["TranscriptPath"] = p }, OwnPrivateStamp: false);
+    RoutedSourceCase KiroCase() =>
+        new("kiro", () => new KiroImportSource(Config.Root), p => new() { ["TranscriptPath"] = p }, OwnPrivateStamp: false);
 
-    static RoutedSourceCase PiCase() =>
-        new("pi", () => new PiImportSource(), p => new() { ["TranscriptPath"] = p }, OwnPrivateStamp: true);
+    RoutedSourceCase PiCase() =>
+        new("pi", () => new PiImportSource(Config.Root), p => new() { ["TranscriptPath"] = p }, OwnPrivateStamp: true);
 
     static RoutedSourceCase AntigravityCase() =>
         new("antigravity", () => new AntigravityImportSource(), p => new() { ["TranscriptPath"] = p }, OwnPrivateStamp: true);
 
     RoutedSourceCase CursorCase() =>
         new("cursor",
-            () => new CursorImportSource(
+            () => new CursorImportSource(Config.Root, 
                 Path.Combine(_tempDir, $"unused-cursor-projects-{Guid.NewGuid():N}"),
                 Path.Combine(_tempDir, $"unused-cursor-workspace-storage-{Guid.NewGuid():N}")),
             p => new() { ["TranscriptPath"] = p, ["WorkspaceFolder"] = "/Users/me/proj" },
@@ -946,13 +948,11 @@ public class ImportVisibilityTests : IDisposable {
     // "original", and restores it when it finishes — after which our own "Auto-skipping" line is
     // written to that test's writer instead of ours, and our buffer holds only whatever some other
     // test wrote to stderr in the meantime (an unrelated login-flow error was the observed symptom).
-    // Bare NotInParallel also subsumes the AppConfigResolvedStateTests serialization the
-    // SetResolvedState call below needs, since nothing runs alongside a bare-NotInParallel test.
     [Test, NotInParallel]
     public async Task HandleImport_autoSkipExclusions_completes_without_prompting_and_logs_auto_skip() {
         // Excluded PATH (not repo) so no real git repo needs to be spun up — PathExclusion.IsExcluded
-        // is a plain prefix check. The profile injection uses AppConfig.SetResolvedState (the same
-        // seam Change 2 → Refresh added), which the bare NotInParallel above covers.
+        // is a plain prefix check. The profile carrying the exclusion arrives as the import's own
+        // resolution, so nothing process-global has to be steered.
         var excludedDir = Path.Combine(_tempDir, "excluded-proj");
         Directory.CreateDirectory(excludedDir);
 
@@ -967,8 +967,6 @@ public class ImportVisibilityTests : IDisposable {
             $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":{{{cwdJson}}},"message":{"content":"line-{{{i}}}"}}"""
         ));
 
-        AppConfig.SetResolvedState(_server.Url!, "autoskip-test", new Profile { ExcludedPaths = [excludedDir] });
-
         _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(404));
         StubAllHookEndpoints();
@@ -980,11 +978,13 @@ public class ImportVisibilityTests : IDisposable {
         // If autoSkipExclusions didn't force the non-interactive branch, and this process
         // happened to look like an interactive TTY, this call could block forever on
         // Console.ReadLine(). It must not, regardless of ambient TTY state.
-        var task = ImportCommand.HandleImport(
-            baseUrl: _server.Url!,
+        var import = new ImportCommand(Config.Root,
+            Resolutions.Of(new Profile { ExcludedPaths = [excludedDir] }, "autoskip-test", _server.Url!));
+
+        var task = import.HandleImport(
             filterCwd: null,
             minLines: 1,
-            sources: [new ClaudeImportSource(projectsDir)],
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
             scope: new ImportScope.All(),
             skipConfirmation: true,
             autoSkipExclusions: true

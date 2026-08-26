@@ -10,25 +10,29 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Cursor;
 
 // several tests here share hardcoded session ids ("11111111-…",
 // "22222222-…") across BOTH ClassifyAsync and ImportSessionAsync calls, and CursorMarkers writes
-// a REAL, non-per-test quarantine marker file (no DI seam to isolate it). ImportSessionAsync now
-// also reads that marker (review fix #6) in addition to ClassifyAsync's existing check, widening
-// the window where a quarantine-toggling test (classify_skips_a_correlated_child_when_its_parent_is_quarantined)
-// running in parallel with any other test sharing the same id could flip its outcome.
+// its quarantine marker file under the per-test config root. Both ClassifyAsync and
+// ImportSessionAsync read that marker, so a quarantine-toggling test
+// (classify_skips_a_correlated_child_when_its_parent_is_quarantined) running in parallel with any
+// other test sharing the same id could flip its outcome.
 // [NotInParallel] serializes this whole class against itself (mirrors MachineIdFileTests) —
 // still parallel with every other test class.
 [NotInParallel(nameof(CursorImportSourceTests))]
 public class CursorImportSourceTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    CursorMarkers Markers => new(Config.Root);
+
     [Test]
     public async Task vendor_is_cursor() {
         using var fx  = new ProjectsDirFixture();
-        var       src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var       src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         await Assert.That(src.Vendor).IsEqualTo("cursor");
     }
 
     [Test]
     public async Task does_not_support_title_generation() {
         using var fx  = new ProjectsDirFixture();
-        var       src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var       src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         await Assert.That(src.SupportsTitleGeneration).IsFalse();
     }
 
@@ -56,14 +60,14 @@ public class CursorImportSourceTests {
     [Test]
     public async Task is_available_when_projects_dir_exists() {
         using var fx  = new ProjectsDirFixture();
-        var       src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var       src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         await Assert.That(src.IsAvailable).IsTrue();
     }
 
     [Test]
     public async Task is_unavailable_when_projects_dir_missing() {
         var missing = Path.Combine(Path.GetTempPath(), $"kcap-cursor-missing-{Guid.NewGuid():N}");
-        var src     = new CursorImportSource(missing, missing);
+        var src     = new CursorImportSource(Config.Root, missing, missing);
         await Assert.That(src.IsAvailable).IsFalse();
     }
 
@@ -82,7 +86,7 @@ public class CursorImportSourceTests {
     [Test]
     public async Task discover_returns_empty_when_projects_dir_missing() {
         var missing = Path.Combine(Path.GetTempPath(), $"kcap-cursor-missing-{Guid.NewGuid():N}");
-        var src     = new CursorImportSource(missing, missing);
+        var src     = new CursorImportSource(Config.Root, missing, missing);
         var result  = await src.DiscoverAsync(Filters(), CancellationToken.None);
         await Assert.That(result.Count).IsEqualTo(0);
     }
@@ -93,7 +97,7 @@ public class CursorImportSourceTests {
         fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{\"x\":1}\n");
         fx.AddSession("Users-me-proj", "22222222-2222-2222-2222-222222222222", "{\"x\":2}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         var got = await src.DiscoverAsync(Filters(), CancellationToken.None);
 
         await Assert.That(got.Count).IsEqualTo(2);
@@ -108,7 +112,7 @@ public class CursorImportSourceTests {
         fx.AddWorkspaceJson("hash-aaa", "file:///Users/me/dev/foo");
         fx.AddSession("Users-me-dev-foo", "33333333-3333-3333-3333-333333333333", "{}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         var got = await src.DiscoverAsync(Filters(), CancellationToken.None);
 
         await Assert.That(got.Count).IsEqualTo(1);
@@ -120,7 +124,7 @@ public class CursorImportSourceTests {
         using var fx = new ProjectsDirFixture();
         fx.AddSession("Users-someone-else-proj", "44444444-4444-4444-4444-444444444444", "{}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         var got = await src.DiscoverAsync(Filters(), CancellationToken.None);
 
         await Assert.That(got.Count).IsEqualTo(1);
@@ -133,7 +137,7 @@ public class CursorImportSourceTests {
         fx.AddSession("Users-me-proj", "55555555-5555-5555-5555-555555555555", "{}\n");
         fx.AddSession("Users-me-proj", "66666666-6666-6666-6666-666666666666", "{}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         // Pass the dashed form; the filter must normalize to dashless before matching.
         var got = await src.DiscoverAsync(Filters(filterSession: "55555555-5555-5555-5555-555555555555"), CancellationToken.None);
 
@@ -149,7 +153,7 @@ public class CursorImportSourceTests {
         fx.AddSession("Users-me-dev-match", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "{}\n");
         fx.AddSession("Users-me-dev-other", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "{}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         var got = await src.DiscoverAsync(Filters(filterCwd: "/Users/me/dev/match"), CancellationToken.None);
 
         await Assert.That(got.Count).IsEqualTo(1);
@@ -165,7 +169,7 @@ public class CursorImportSourceTests {
             "11111111-1111-1111-1111-111111111111",
             "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n"
         );
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         using var handler = new StubHandler(
             getResponse: _ => new HttpResponseMessage(HttpStatusCode.NotFound)
@@ -195,7 +199,7 @@ public class CursorImportSourceTests {
         using var fx = new ProjectsDirFixture();
         fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{}\n{}\n");
 
-        var       src     = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var       src     = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         using var handler = new StubHandler(getResponse: _ => new HttpResponseMessage(HttpStatusCode.NotFound));
         using var client  = new HttpClient(handler);
 
@@ -219,7 +223,7 @@ public class CursorImportSourceTests {
             "11111111-1111-1111-1111-111111111111",
             "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n"
         );
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         // Three non-blank lines at indexes 0,1,2 → last_line_number=2 means fully loaded.
         using var handler = new StubHandler(
@@ -247,7 +251,7 @@ public class CursorImportSourceTests {
             "11111111-1111-1111-1111-111111111111",
             "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n"
         );
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         using var handler = new StubHandler(
             getResponse: _ => new HttpResponseMessage(HttpStatusCode.OK) {
@@ -270,7 +274,7 @@ public class CursorImportSourceTests {
     public async Task classify_marks_too_short_below_min_lines() {
         using var fx = new ProjectsDirFixture();
         fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{\"a\":1}\n");
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         using var handler = new StubHandler(getResponse: _ => new HttpResponseMessage(HttpStatusCode.NotFound));
         using var client  = new HttpClient(handler);
@@ -293,7 +297,7 @@ public class CursorImportSourceTests {
             "11111111-1111-1111-1111-111111111111",
             "{\"a\":1}\n{\"b\":2}\n"
         );
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         using var handler = new StubHandler(getResponse: _ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
         using var client  = new HttpClient(handler);
@@ -320,9 +324,9 @@ public class CursorImportSourceTests {
         var sessionIdWithDashes = Guid.NewGuid().ToString();
         var sessionId           = CursorImportSource.NormalizeCursorSessionId(sessionIdWithDashes);
         fx.AddSession("Users-me-proj", sessionIdWithDashes, "{\"a\":1}\n{\"b\":2}\n");
-        CursorMarkers.Quarantine(sessionId, "transcript rewrite detected");
+        Markers.Quarantine(sessionId, "transcript rewrite detected");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         using var handler = new StubHandler(getResponse: _ => new HttpResponseMessage(HttpStatusCode.NotFound));
         using var client  = new HttpClient(handler);
 
@@ -346,7 +350,7 @@ public class CursorImportSourceTests {
         // test's quarantine marker for that id (see classify_skips_a_quarantined_standalone_session).
         fx.AddSession("Users-me-proj", Guid.NewGuid().ToString(), "{\"a\":1}\n{\"b\":2}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         using var handler = new StubHandler(getResponse: _ => new HttpResponseMessage(HttpStatusCode.NotFound));
         using var client  = new HttpClient(handler);
 
@@ -375,7 +379,7 @@ public class CursorImportSourceTests {
         // hardcodes these ids and is shared by several OTHER tests in this file, so the marker
         // MUST be cleaned up afterward — CursorMarkers writes a real, non-test-scoped file that
         // would otherwise leak into (and break) every later test reusing the same parent id.
-        CursorMarkers.Quarantine(parentId, "transcript rewrite detected");
+        Markers.Quarantine(parentId, "transcript rewrite detected");
 
         try {
             using var handler = new StubHandler(getResponse: _ => new HttpResponseMessage(HttpStatusCode.NotFound));
@@ -395,7 +399,7 @@ public class CursorImportSourceTests {
             await Assert.That(childClass.Status).IsEqualTo(ImportCommand.ClassificationStatus.ProbeError);
             await Assert.That(childClass.ProbeErrorReason).Contains("quarantined");
         } finally {
-            try { File.Delete(CursorMarkers.QuarantinePath(parentId)); } catch { }
+            try { File.Delete(Markers.QuarantinePath(parentId)); } catch { }
         }
     }
 
@@ -409,7 +413,7 @@ public class CursorImportSourceTests {
             "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n"
         );
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var posted = new List<(string Path, string Body)>();
 
@@ -484,7 +488,7 @@ public class CursorImportSourceTests {
         File.SetCreationTimeUtc(jsonl, created);
         File.SetLastWriteTimeUtc(jsonl, modified);
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var posted = new List<(string Path, string Body)>();
 
@@ -528,7 +532,7 @@ public class CursorImportSourceTests {
         using var fx    = new ProjectsDirFixture();
         var       jsonl = fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var posted = new List<string>();
 
@@ -569,7 +573,7 @@ public class CursorImportSourceTests {
         using var fx    = new ProjectsDirFixture();
         var       jsonl = fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         using var handler = new StubHandler(
             postCapture: (req, _) => req.RequestUri!.AbsolutePath == "/hooks/session-end/cursor"
@@ -610,7 +614,7 @@ public class CursorImportSourceTests {
             "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n"
         );
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var posted = new List<string>();
 
@@ -659,7 +663,7 @@ public class CursorImportSourceTests {
         var parentJsonl = fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n");
         var childJsonl  = fx.AddSession("Users-me-proj", "22222222-2222-2222-2222-222222222222", "{\"x\":1}\n{\"y\":2}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         using var handler = new StubHandler(
             getResponse: _ => new HttpResponseMessage(HttpStatusCode.NotFound), // child subsession watermark: nothing sent yet
@@ -703,7 +707,7 @@ public class CursorImportSourceTests {
         var parentJsonl = fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n");
         var childJsonl  = fx.AddSession("Users-me-proj", "22222222-2222-2222-2222-222222222222", "{\"x\":1}\n{\"y\":2}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         using var handler = new StubHandler(
             // Subsession watermark already covers both child lines (0-indexed last_line_number=1).
@@ -760,7 +764,7 @@ public class CursorImportSourceTests {
         var parentJsonl = fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n");
         var childJsonl  = fx.AddSession("Users-me-proj", "22222222-2222-2222-2222-222222222222", "{\"x\":1}\n{\"y\":2}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var posted = new List<string>();
 
@@ -816,7 +820,7 @@ public class CursorImportSourceTests {
         // ingested), so lines 1 and 2 are genuinely new.
         var childJsonl = fx.AddSession("Users-me-proj", "22222222-2222-2222-2222-222222222222", "{\"x\":1}\n{\"y\":2}\n{\"z\":3}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         using var handler = new StubHandler(
             getResponse: _ => new HttpResponseMessage(HttpStatusCode.OK) {
@@ -863,7 +867,7 @@ public class CursorImportSourceTests {
         // are genuinely new.
         var childJsonl = fx.AddSession("Users-me-proj", "22222222-2222-2222-2222-222222222222", "{\"x\":1}\n{\"y\":2}\n{\"z\":3}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var getCalls = 0;
         var posted   = new List<(string Path, string Body)>();
@@ -927,7 +931,7 @@ public class CursorImportSourceTests {
         var parentJsonl = fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n");
         var childJsonl  = fx.AddSession("Users-me-proj", "22222222-2222-2222-2222-222222222222", "{\"x\":1}\n{\"y\":2}\n{\"z\":3}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var getCalls = 0;
         var posted   = new List<(string Path, string Body)>();
@@ -986,7 +990,7 @@ public class CursorImportSourceTests {
         var parentJsonl = fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n");
         var childJsonl  = fx.AddSession("Users-me-proj", "22222222-2222-2222-2222-222222222222", "{\"x\":1}\n{\"y\":2}\n{\"z\":3}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var getCalls = 0;
 
@@ -1033,7 +1037,7 @@ public class CursorImportSourceTests {
         var parentJsonl = fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n");
         var childJsonl  = fx.AddSession("Users-me-proj", "22222222-2222-2222-2222-222222222222", "{\"x\":1}\n{\"y\":2}\n{\"z\":3}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var getCalls = 0;
 
@@ -1162,7 +1166,7 @@ public class CursorImportSourceTests {
         using var fx    = new ProjectsDirFixture();
         var       jsonl = fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{}\n{}\n");
 
-        var src = new CursorImportSource(
+        var src = new CursorImportSource(Config.Root, 
             fx.ProjectsDir,
             fx.WorkspaceStorageDir,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(
@@ -1214,7 +1218,7 @@ public class CursorImportSourceTests {
         using var fx    = new ProjectsDirFixture();
         var       jsonl = fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{}\n");
 
-        var src = new CursorImportSource(
+        var src = new CursorImportSource(Config.Root, 
             fx.ProjectsDir,
             fx.WorkspaceStorageDir,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(null)
@@ -1251,7 +1255,7 @@ public class CursorImportSourceTests {
 
     // Builds a parent (Task prompt) + child (first user_query == prompt) session pair in the
     // same workspace and returns their (parentId, childId, discovered, classified).
-    static async Task<(string ParentId, string ChildId, IReadOnlyList<ImportCommand.SessionClassification> Classified, CursorImportSource Src)> SetupParentChildAsync(ProjectsDirFixture fx) {
+    async Task<(string ParentId, string ChildId, IReadOnlyList<ImportCommand.SessionClassification> Classified, CursorImportSource Src)> SetupParentChildAsync(ProjectsDirFixture fx) {
         const string prompt = "EXPLORE the repo and report back";
         var childUserText = System.Text.Json.JsonSerializer.Serialize("<user_query>\n" + prompt + "\n</user_query>");
         var taskPrompt    = System.Text.Json.JsonSerializer.Serialize(prompt);
@@ -1263,7 +1267,7 @@ public class CursorImportSourceTests {
             "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":" + childUserText + "}]}}\n" +
             "{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         using var getHandler = new StubHandler(getResponse: _ => new HttpResponseMessage(HttpStatusCode.NotFound));
         using var getClient  = new HttpClient(getHandler);
         var discovered = await src.DiscoverAsync(Filters(), CancellationToken.None);
@@ -1399,9 +1403,9 @@ public class CursorImportSourceTests {
         var sessionId           = CursorImportSource.NormalizeCursorSessionId(sessionIdWithDashes);
         var jsonl = fx.AddSession("Users-me-proj", sessionIdWithDashes, "{\"a\":1}\n{\"b\":2}\n");
 
-        CursorMarkers.Quarantine(sessionId, "transcript rewrite detected");
+        Markers.Quarantine(sessionId, "transcript rewrite detected");
         try {
-            var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+            var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
             var posted = new List<string>();
             using var handler = new StubHandler(
@@ -1429,7 +1433,7 @@ public class CursorImportSourceTests {
 
             await Assert.That(outcome).IsEqualTo(ImportOutcome.Skipped);
             await Assert.That(posted.Count).IsEqualTo(0);
-        } finally { try { File.Delete(CursorMarkers.QuarantinePath(sessionId)); } catch { } }
+        } finally { try { File.Delete(Markers.QuarantinePath(sessionId)); } catch { } }
     }
 
     // A non-quarantined session must import normally even WITH a QuarantineIdentity stamped —
@@ -1439,7 +1443,7 @@ public class CursorImportSourceTests {
         using var fx = new ProjectsDirFixture();
         var jsonl = fx.AddSession(
             "Users-me-proj", "11111111-1111-1111-1111-111111111111", "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n");
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         var sessionId = "11111111111111111111111111111111";
 
         var posted = new List<string>();
@@ -1481,7 +1485,7 @@ public class CursorImportSourceTests {
         var sessionIdWithDashes = Guid.NewGuid().ToString();
         var sessionId           = CursorImportSource.NormalizeCursorSessionId(sessionIdWithDashes);
         var jsonl = fx.AddSession("Users-me-proj", sessionIdWithDashes, "{\"a\":1}\n{\"b\":2}\n");
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var posted = new List<string>();
         using var handler = new StubHandler(postCapture: (req, _) => {
@@ -1489,7 +1493,7 @@ public class CursorImportSourceTests {
             posted.Add(path);
             if (path == "/hooks/session-start/cursor") {
                 // The runtime guard trips WHILE this POST is "in flight" (simulated side effect).
-                CursorMarkers.Quarantine(sessionId, "test");
+                Markers.Quarantine(sessionId, "test");
             }
             return new HttpResponseMessage(HttpStatusCode.OK);
         });
@@ -1514,7 +1518,7 @@ public class CursorImportSourceTests {
             await Assert.That(posted).Contains("/hooks/session-start/cursor");
             await Assert.That(posted).DoesNotContain("/hooks/transcript");
             await Assert.That(posted).Contains("/hooks/session-end/cursor");
-        } finally { try { File.Delete(CursorMarkers.QuarantinePath(sessionId)); } catch { } }
+        } finally { try { File.Delete(Markers.QuarantinePath(sessionId)); } catch { } }
     }
 
     // the round-2 fix above only re-checked quarantine
@@ -1531,7 +1535,7 @@ public class CursorImportSourceTests {
         var sessionId           = CursorImportSource.NormalizeCursorSessionId(sessionIdWithDashes);
         var lines = string.Concat(Enumerable.Range(0, 150).Select(i => $$"""{"n":{{i}}}""" + "\n"));
         var jsonl = fx.AddSession("Users-me-proj", sessionIdWithDashes, lines);
-        var src   = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src   = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var posted         = new List<string>();
         var transcriptPosts = 0;
@@ -1544,7 +1548,7 @@ public class CursorImportSourceTests {
                     // The live watcher's runtime rewrite guard trips WHILE the first 100-line
                     // batch is "in flight" (simulated side effect, mirroring the sessionStart test
                     // above but at the transcript-batch boundary instead).
-                    CursorMarkers.Quarantine(sessionId, "test");
+                    Markers.Quarantine(sessionId, "test");
                 }
             }
             return new HttpResponseMessage(HttpStatusCode.OK);
@@ -1574,7 +1578,7 @@ public class CursorImportSourceTests {
             // Best-effort closed rather than left hanging "active" forever (same contract as the
             // two boundary checks — pre-flight and post-sessionStart — above).
             await Assert.That(posted).Contains("/hooks/session-end/cursor");
-        } finally { try { File.Delete(CursorMarkers.QuarantinePath(sessionId)); } catch { } }
+        } finally { try { File.Delete(Markers.QuarantinePath(sessionId)); } catch { } }
     }
 
     // the round-3 fix above only proved the SECOND of TWO
@@ -1591,7 +1595,7 @@ public class CursorImportSourceTests {
         var sessionId           = CursorImportSource.NormalizeCursorSessionId(sessionIdWithDashes);
         var lines = string.Concat(Enumerable.Range(0, 30).Select(i => $$"""{"n":{{i}}}""" + "\n"));
         var jsonl = fx.AddSession("Users-me-proj", sessionIdWithDashes, lines);
-        var src   = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src   = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var posted           = new List<string>();
         var transcriptPosts  = 0;
@@ -1603,7 +1607,7 @@ public class CursorImportSourceTests {
                 // The live watcher's runtime rewrite guard trips WHILE this — the ONLY — batch is
                 // "in flight" (simulated side effect). There is no second batch to catch this on a
                 // pre-POST check; the fix must observe it immediately AFTER this POST instead.
-                CursorMarkers.Quarantine(sessionId, "test");
+                Markers.Quarantine(sessionId, "test");
             }
             return new HttpResponseMessage(HttpStatusCode.OK);
         });
@@ -1630,7 +1634,7 @@ public class CursorImportSourceTests {
             await Assert.That(posted).Contains("/hooks/session-start/cursor");
             // Best-effort closed rather than left hanging "active" forever.
             await Assert.That(posted).Contains("/hooks/session-end/cursor");
-        } finally { try { File.Delete(CursorMarkers.QuarantinePath(sessionId)); } catch { } }
+        } finally { try { File.Delete(Markers.QuarantinePath(sessionId)); } catch { } }
     }
 
     // a quarantine trip during a CHILD's own transcript
@@ -1652,7 +1656,7 @@ public class CursorImportSourceTests {
         var parentJsonl = fx.AddSession("Users-me-proj", parentIdWithDashes, "{\"a\":1}\n");
         var childJsonl  = fx.AddSession("Users-me-proj", childIdWithDashes, "{\"b\":1}\n{\"c\":2}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var posted = new List<string>();
         using var handler = new StubHandler(
@@ -1662,7 +1666,7 @@ public class CursorImportSourceTests {
                 posted.Add(path);
                 if (path == "/hooks/transcript" && JsonNode.Parse(body)!["agent_id"] is not null) {
                     // The child's OWN transcript delivery is what trips the guard mid-flight.
-                    CursorMarkers.Quarantine(parentId, "test");
+                    Markers.Quarantine(parentId, "test");
                 }
                 return new HttpResponseMessage(HttpStatusCode.OK);
             });
@@ -1699,7 +1703,7 @@ public class CursorImportSourceTests {
             // The parent must still be best-effort closed instead of left hanging Active forever
             // (this is exactly the case the pre-fix bare-`false` return skipped).
             await Assert.That(posted).Contains("/hooks/session-end/cursor");
-        } finally { try { File.Delete(CursorMarkers.QuarantinePath(parentId)); } catch { } }
+        } finally { try { File.Delete(Markers.QuarantinePath(parentId)); } catch { } }
     }
 
     // never START a NEW child once the family is found
@@ -1722,7 +1726,7 @@ public class CursorImportSourceTests {
         var childAJsonl = fx.AddSession("Users-me-proj", childAIdWithDashes, "{\"b\":1}\n");
         var childBJsonl = fx.AddSession("Users-me-proj", childBIdWithDashes, "{\"c\":1}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var bodies = new List<(string Path, string Body)>();
         using var handler = new StubHandler(
@@ -1733,7 +1737,7 @@ public class CursorImportSourceTests {
                 if (path == "/hooks/subagent-stop" && JsonNode.Parse(body)!["agent_id"]!.GetValue<string>() == childAId) {
                     // A trip unrelated to child A's own (clean) delivery — e.g. the live watcher
                     // concurrently detected a rewrite — lands right as child A finishes.
-                    CursorMarkers.Quarantine(parentId, "test");
+                    Markers.Quarantine(parentId, "test");
                 }
                 return new HttpResponseMessage(HttpStatusCode.OK);
             });
@@ -1775,7 +1779,7 @@ public class CursorImportSourceTests {
             // nothing about child B's OWN delivery caused the trip.
             await Assert.That(subagentStartAgentIds).DoesNotContain(childBId);
             await Assert.That(bodies.Any(b => b.Path == "/hooks/session-end/cursor")).IsTrue();
-        } finally { try { File.Delete(CursorMarkers.QuarantinePath(parentId)); } catch { } }
+        } finally { try { File.Delete(Markers.QuarantinePath(parentId)); } catch { } }
     }
 
     // subagentLinks is only ever computed from the sessions THIS batch
@@ -1793,11 +1797,11 @@ public class CursorImportSourceTests {
         fx.AddSession("Users-me-proj", childIdWithDashes, "{\"a\":1}\n{\"b\":2}\n");
         // Mirrors CursorHookCommand.SaveLink at the child's own sessionStart — written by the LIVE
         // path independent of what any one `kcap import` invocation happens to discover.
-        CursorLiveSubagentLinker.SaveLink(childId, parentId, "task");
-        CursorMarkers.Quarantine(parentId, "transcript rewrite detected");
+        CursorLiveSubagentLinker.SaveLink(Config.Root, childId, parentId, "task");
+        Markers.Quarantine(parentId, "transcript rewrite detected");
 
         try {
-            var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+            var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
             using var handler = new StubHandler(getResponse: _ => new HttpResponseMessage(HttpStatusCode.NotFound));
             using var client  = new HttpClient(handler);
 
@@ -1811,7 +1815,7 @@ public class CursorImportSourceTests {
             await Assert.That(classified[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.ProbeError);
             await Assert.That(classified[0].ProbeErrorReason).Contains("quarantined");
         } finally {
-            try { File.Delete(CursorMarkers.QuarantinePath(parentId)); } catch { }
+            try { File.Delete(Markers.QuarantinePath(parentId)); } catch { }
         }
     }
 
@@ -1819,17 +1823,17 @@ public class CursorImportSourceTests {
     public async Task ResolveQuarantineIdentity_falls_back_to_the_persisted_live_marker_when_not_in_subagentLinks() {
         var child  = Guid.NewGuid().ToString("N");
         var parent = Guid.NewGuid().ToString("N");
-        CursorLiveSubagentLinker.SaveLink(child, parent, "task");
+        CursorLiveSubagentLinker.SaveLink(Config.Root, child, parent, "task");
 
         var empty = new Dictionary<string, CursorSubagentCorrelator.SubagentLink>();
-        await Assert.That(CursorImportSource.ResolveQuarantineIdentity(child, empty)).IsEqualTo(parent);
+        await Assert.That(CursorImportSource.ResolveQuarantineIdentity(Config.Root, child, empty)).IsEqualTo(parent);
     }
 
     [Test]
     public async Task ResolveQuarantineIdentity_falls_back_to_self_when_no_link_anywhere() {
         var sid   = Guid.NewGuid().ToString("N");
         var empty = new Dictionary<string, CursorSubagentCorrelator.SubagentLink>();
-        await Assert.That(CursorImportSource.ResolveQuarantineIdentity(sid, empty)).IsEqualTo(sid);
+        await Assert.That(CursorImportSource.ResolveQuarantineIdentity(Config.Root, sid, empty)).IsEqualTo(sid);
     }
 
     [Test]
@@ -1855,7 +1859,7 @@ public class CursorImportSourceTests {
             "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":" + childUserText + "}]}}\n" +
             "{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         using var handler = new StubHandler(getResponse: _ => new HttpResponseMessage(HttpStatusCode.NotFound));
         using var client  = new HttpClient(handler);
 
@@ -1881,7 +1885,7 @@ public class CursorImportSourceTests {
         fx.AddSession("Users-me-proj", "11111111-1111-1111-1111-111111111111", "{}\n");
         fx.AddSession("Users-me-proj", "22222222-2222-2222-2222-222222222222", "{}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         using var handler = new StubHandler(getResponse: _ => new HttpResponseMessage(HttpStatusCode.NotFound));
         using var client  = new HttpClient(handler);
 
@@ -1900,7 +1904,7 @@ public class CursorImportSourceTests {
         using var fx    = new ProjectsDirFixture();
         var       jsonl = fx.AddSession("unknown-workspace", "11111111-1111-1111-1111-111111111111", "{}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var posted = new List<(string Path, string Body)>();
 
@@ -1942,7 +1946,7 @@ public class CursorImportSourceTests {
             "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n"
         );
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
 
         var posted = new List<(string Path, string Body)>();
 
@@ -1992,7 +1996,7 @@ public class CursorImportSourceTests {
             "{\"a\":1}\n{\"b\":2}\n"
         );
 
-        var src = new CursorImportSource(
+        var src = new CursorImportSource(Config.Root, 
             fx.ProjectsDir,
             fx.WorkspaceStorageDir,
             repoDetector: _ => Task.FromResult<RepositoryPayload?>(
@@ -2026,7 +2030,7 @@ public class CursorImportSourceTests {
 
         var detectorCalls = 0;
 
-        var src = new CursorImportSource(
+        var src = new CursorImportSource(Config.Root, 
             fx.ProjectsDir,
             fx.WorkspaceStorageDir,
             repoDetector: _ => {
@@ -2058,7 +2062,7 @@ public class CursorImportSourceTests {
 
         var detectorCalls = 0;
 
-        var src = new CursorImportSource(
+        var src = new CursorImportSource(Config.Root, 
             fx.ProjectsDir,
             fx.WorkspaceStorageDir,
             repoDetector: _ => {
@@ -2096,7 +2100,7 @@ public class CursorImportSourceTests {
         fx.AddWorkspaceJson("hash-aaa", "file:///Users/me/dev/MyProj");
         fx.AddSession("Users-me-dev-MyProj", "11111111-1111-1111-1111-111111111111", "{}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         // Caller passes a lower-cased cwd, e.g. from a shell tab-completion.
         var got = await src.DiscoverAsync(Filters(filterCwd: "/users/me/dev/myproj"), CancellationToken.None);
 
@@ -2125,7 +2129,7 @@ public class CursorImportSourceTests {
         File.SetCreationTimeUtc(jsonl, thirtyDaysAgo);
         File.SetLastWriteTimeUtc(jsonl, DateTime.UtcNow);
 
-        var src   = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src   = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         var since = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-7));
         var got   = await src.DiscoverAsync(Filters(since: since), CancellationToken.None);
 
@@ -2142,7 +2146,7 @@ public class CursorImportSourceTests {
         fx.AddWorkspaceJson("hash-b", "file:///foo-bar");
         fx.AddSession("foo-bar", "11111111-1111-1111-1111-111111111111", "{}\n");
 
-        var src = new CursorImportSource(fx.ProjectsDir, fx.WorkspaceStorageDir);
+        var src = new CursorImportSource(Config.Root, fx.ProjectsDir, fx.WorkspaceStorageDir);
         var got = await src.DiscoverAsync(Filters(), CancellationToken.None);
 
         await Assert.That(got.Count).IsEqualTo(1);

@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.Harness.Gemini;
 using Capacitor.Cli.Core.Instructions;
@@ -30,7 +31,7 @@ public class PluginCommandGeminiTests {
         };
         await File.WriteAllTextAsync(env.GeminiSettingsJson, seeded.ToJsonString());
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--gemini", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--gemini", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject();
@@ -64,8 +65,8 @@ public class PluginCommandGeminiTests {
         PluginCommand.InstallGeminiHooks(env.GeminiSettingsJson);
         GeminiHooksInstaller.DeleteMarker(env.GeminiSettingsJson);
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--gemini", "--if-installed", "--skip-gemini-mcp"], env);
+        var exit = await new PluginCommand(env).HandleAsync(
+            ["plugin", "install", "--gemini", "--if-installed", "--skip-gemini-mcp"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // settings.json exists (hooks) but no MCP servers were written.
@@ -80,7 +81,7 @@ public class PluginCommandGeminiTests {
         var env = TestEnv(home.Path);
 
         // No hooks/marker seeded → --if-installed no-ops before touching settings.json OR GEMINI.md.
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--gemini", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--gemini", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(env.GeminiSettingsJson)).IsFalse();
@@ -97,7 +98,7 @@ public class PluginCommandGeminiTests {
         // still register the MCP servers (into settings.json) + install the instructions (GEMINI.md).
         PluginCommand.InstallGeminiHooks(env.GeminiSettingsJson);  // writes hooks + current marker
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--gemini", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--gemini", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject()["mcpServers"]!.AsObject();
@@ -119,7 +120,7 @@ public class PluginCommandGeminiTests {
             Path.Combine(GeminiPaths.Root(env.HomeDirectory), GeminiHooksInstaller.MarkerFileName), "0.0.0-stale");
         await File.WriteAllTextAsync(env.GeminiSettingsJson, "{ not valid json");
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--gemini", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--gemini", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);  // refresh swallows the hook/MCP failures on the shared file
 
         await Assert.That(await File.ReadAllTextAsync(env.GeminiSettingsJson)).IsEqualTo("{ not valid json"); // untouched
@@ -140,7 +141,7 @@ public class PluginCommandGeminiTests {
         PluginCommand.InstallGeminiHooks(env.GeminiSettingsJson);  // hooks + current marker
         File.Delete(env.GeminiSettingsJson);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--gemini", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--gemini", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var root = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject();
@@ -162,7 +163,7 @@ public class PluginCommandGeminiTests {
         seeded["mcpServers"]!["my-tool"] = JsonNode.Parse("""{"command":"my-tool","args":["serve"]}""");
         await File.WriteAllTextAsync(env.GeminiSettingsJson, seeded.ToJsonString());
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "remove", "--gemini"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--gemini"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject();
@@ -189,13 +190,13 @@ public class PluginCommandGeminiTests {
         // settings.json is temporarily malformed → Unregister fails-closed.
         await File.WriteAllTextAsync(env.GeminiSettingsJson, "{ not valid json");
 
-        var failExit = await PluginCommand.HandleAsync(["plugin", "remove", "--gemini"], env);
+        var failExit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--gemini"]);
         await Assert.That(failExit).IsEqualTo(1);                                                        // failed unregister propagates
         await Assert.That(new McpMarker("gemini").Owned(env.GeminiSettingsJson).ToArray()).IsNotEmpty(); // marker RETAINED for retry
 
         // User fixes the file (kcap entries intact); the retry now succeeds and cleans up.
         await File.WriteAllTextAsync(env.GeminiSettingsJson, installed);
-        var retryExit = await PluginCommand.HandleAsync(["plugin", "remove", "--gemini"], env);
+        var retryExit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--gemini"]);
         await Assert.That(retryExit).IsEqualTo(0);
 
         var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject();
@@ -218,7 +219,7 @@ public class PluginCommandGeminiTests {
         Directory.CreateDirectory(Path.GetDirectoryName(env.GeminiInstructionsMd)!);
         await File.WriteAllTextAsync(env.GeminiInstructionsMd, "# My rules\n\nAlways use tabs.\n");
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "install", "--gemini", "--if-installed"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "install", "--gemini", "--if-installed"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var content = await File.ReadAllTextAsync(env.GeminiInstructionsMd);
@@ -236,8 +237,8 @@ public class PluginCommandGeminiTests {
         PluginCommand.InstallGeminiHooks(env.GeminiSettingsJson);
         GeminiHooksInstaller.DeleteMarker(env.GeminiSettingsJson);
 
-        var exit = await PluginCommand.HandleAsync(
-            ["plugin", "install", "--gemini", "--if-installed", "--skip-gemini-instructions"], env);
+        var exit = await new PluginCommand(env).HandleAsync(
+            ["plugin", "install", "--gemini", "--if-installed", "--skip-gemini-instructions"]);
         await Assert.That(exit).IsEqualTo(0);
 
         await Assert.That(File.Exists(env.GeminiInstructionsMd)).IsFalse();
@@ -253,7 +254,7 @@ public class PluginCommandGeminiTests {
         await File.WriteAllTextAsync(env.GeminiInstructionsMd, "# My rules\n\nAlways use tabs.\n");
         AgentInstructionsWriter.Write(env.GeminiInstructionsMd, KcapAgentInstructions.Body);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "remove", "--gemini"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--gemini"]);
         await Assert.That(exit).IsEqualTo(0);
 
         var content = await File.ReadAllTextAsync(env.GeminiInstructionsMd);
@@ -274,7 +275,7 @@ public class PluginCommandGeminiTests {
         await Assert.That(new McpMarker("gemini").Owned(env.GeminiSettingsJson).ToArray()).IsNotEmpty();
         File.Delete(env.GeminiSettingsJson);
 
-        var exit = await PluginCommand.HandleAsync(["plugin", "remove", "--gemini"], env);
+        var exit = await new PluginCommand(env).HandleAsync(["plugin", "remove", "--gemini"]);
         await Assert.That(exit).IsEqualTo(0);
 
         // The marker is cleared despite the absent file → a future user-authored mcpServers.kcap-*
@@ -290,6 +291,7 @@ public class PluginCommandGeminiTests {
 
     static PluginEnvironment TestEnv(string fakeHome) => new(
         HomeDirectory:     fakeHome,
+        Profiles:          new ProfileConfig(),
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null

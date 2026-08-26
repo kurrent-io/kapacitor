@@ -95,8 +95,8 @@ sealed class SpectreFirstRunFlowProgress : IFirstRunFlowProgress {
     }
 }
 
-public static class SetupCommand {
-    public static async Task<int> HandleAsync(string[] args) {
+public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBrowserLauncher browser) {
+    public async Task<int> HandleAsync(string[] args) {
         var serverUrlArg     = GetArg(args, "--server-url");
 
         // `kcap setup <tenant>`: a leading positional arg (bare slug or full URL) is treated as the
@@ -161,11 +161,12 @@ public static class SetupCommand {
             return 1;
         }
 
+        var profile = await AppConfig.LoadProfileConfig(config);
+
         SetupFunnel.Started(
-            hasExistingProfile: AppConfig.HasConfiguredProfile(await AppConfig.LoadProfileConfig()),
+            hasExistingProfile: AppConfig.HasConfiguredProfile(profile),
             serverUrlProvided:  serverUrlArg is not null,
             noPrompt:           noPrompt);
-
         // Resolve repo root once and reuse for both the project-scope install path and the
         // non-repo tip at the end. --plugin-scope project writes hooks at <repo>/.claude/...,
         // so it requires a working tree; without one the hooks would land in a directory
@@ -181,14 +182,12 @@ public static class SetupCommand {
                 "Either re-run `kcap setup` from inside your repo, or drop --plugin-scope project to install user-scope hooks.");
             return 1;
         }
-
         AnsiConsole.Write(new Rule("[bold green]Welcome to Capacitor[/]").Centered());
 
         // Check if already configured
-        var existingProfile = await AppConfig.LoadProfileConfig();
-        var activeProfile   = string.IsNullOrWhiteSpace(existingProfile.ActiveProfile) ? "default" : existingProfile.ActiveProfile;
-        var existing        = existingProfile.Profiles.GetValueOrDefault(activeProfile);
-        var existingTokens  = await TokenStore.LoadAsync(activeProfile);
+        var activeProfile  = profile.ActiveName;
+        var existing       = profile.Profiles.GetValueOrDefault(activeProfile);
+        var existingTokens = await new TokenStore(config).LoadAsync(activeProfile);
 
         if (existing?.ServerUrl is not null && existingTokens is not null && !noPrompt) {
             var rerun = AnsiConsole.Prompt(
@@ -225,7 +224,7 @@ public static class SetupCommand {
             // Discovery activates the tenant you picked, so the profile captured before it ran is
             // now stale. Step 2 must save the token under the profile setup will actually
             // configure, or the token lands on the old profile and the new one has none.
-            var afterDiscovery = await AppConfig.LoadProfileConfig();
+            var afterDiscovery = await AppConfig.LoadProfileConfig(config);
             activeProfile = string.IsNullOrWhiteSpace(afterDiscovery.ActiveProfile)
                 ? "default"
                 : afterDiscovery.ActiveProfile;
@@ -372,7 +371,7 @@ public static class SetupCommand {
         // **.kcap.ai wildcard covers every SaaS tenant (current + future) and the auth
         // proxy; self-hosted servers are added as exact hosts. Derived from the active
         // server URL plus every configured profile so switching profiles still works.
-        var profilesForDomains = await AppConfig.LoadProfileConfig();
+        var profilesForDomains = await AppConfig.LoadProfileConfig(config);
 
         // Every profile's server, EXCEPT on the browser path. The Agents screen discloses this on the
         // Codex row — "also opens Codex's sandbox network to your server" — and that sentence is about
@@ -473,7 +472,7 @@ public static class SetupCommand {
         OfferedIf(detected.Pi,          skipPiFlag,          "pi");
         OfferedIf(detected.OpenCode,    skipOpenCodeFlag,    "opencode");
         OfferedIf(detected.Antigravity, skipAntigravityFlag, "antigravity");
-        HarnessOfferStore.Default().StampOffered(offeredNow, DateTimeOffset.UtcNow);
+        new HarnessOfferStore(config).StampOffered(offeredNow, DateTimeOffset.UtcNow);
 
         // Provider API key handling. kcap scrubs ANTHROPIC_API_KEY / OPENAI_API_KEY
         // from headless agent CLI spawns by default so subscription auth
@@ -542,8 +541,8 @@ public static class SetupCommand {
         var activeName     = "default";
         var defaultProfile = new Profile();
 
-        await ConfigMutator.MutateAsync(c => {
-            activeName     = string.IsNullOrWhiteSpace(c.ActiveProfile) ? "default" : c.ActiveProfile;
+        await ConfigMutator.MutateAsync(config, c => {
+            activeName     = c.ActiveName;
             defaultProfile = c.Profiles.GetValueOrDefault(activeName) ?? new Profile();
 
             defaultProfile = defaultProfile with {
@@ -558,13 +557,13 @@ public static class SetupCommand {
             };
         });
 
-        // Refresh the in-process resolved state to the exact values just
-        // saved, so any same-process work after this point (e.g. the import
-        // step) observes this server URL + profile rather than re-resolving
-        // CLI/env/repo precedence and possibly landing on something else.
-        AppConfig.SetResolvedState(serverUrl, activeName, defaultProfile);
+        // The exact values just saved, for the same-process work below (the import step). Built
+        // rather than re-resolved: CLI/env/repo precedence could land on something else than what
+        // this run just wrote.
+        var saved = new ProfileContext(
+            new(serverUrl, activeName, defaultProfile, null), await AppConfig.LoadProfileConfig(config));
 
-        var finalTokens = await TokenStore.LoadAsync(activeName);
+        var finalTokens = await new TokenStore(config).LoadAsync(activeName);
 
         // tell the server this user has finished CLI setup, so the dashboard
         // can flip the new-tenant welcome modal from "Waiting for CLI to register"
@@ -579,7 +578,7 @@ public static class SetupCommand {
         // detectPullRequest:false — Step 6 only needs (owner, name) to scope the repo import;
         // PR/MR detection would run extra provider probes/subprocesses for nothing here.
         var currentRepoDetected = await RepositoryDetection.DetectRepositoryAsync(
-            Environment.CurrentDirectory, detectPullRequest: false);
+            config, Environment.CurrentDirectory, detectPullRequest: false);
         (string Owner, string Name)? currentRepo = currentRepoDetected is { Owner: { } o, RepoName: { } n }
             ? (o, n)
             : null;
@@ -595,12 +594,13 @@ public static class SetupCommand {
         // Server-scoped: the import step is only actually authorized if the token both refreshes
         // and belongs to the server we just configured.
         var authSatisfied = await IsAuthSatisfiedAsync(
-            provider, async () => (await TokenStore.GetValidTokensForServerAsync(serverUrl)).Tokens is not null);
+            provider, async () => (await new TokenStore(config).GetValidTokensForServerAsync(activeName, serverUrl)).Tokens is not null);
 
         await RunImportStepAsync(
             currentRepo, authSatisfied, skipImport, noPrompt,
             () => AnsiConsole.Prompt(new ConfirmationPrompt("Import past sessions from this repository?") { DefaultValue = true }),
-            serverUrl, activeName, defaultVisibility);
+            saved,
+            defaultVisibility);
 
         await Console.Out.WriteLineAsync();
 
@@ -619,7 +619,7 @@ public static class SetupCommand {
             grid.AddRow("[bold]Auth[/]", Markup.Escape($"{finalTokens.GitHubUsername} ({finalTokens.Provider})"));
         }
 
-        grid.AddRow("[bold]Config[/]", Markup.Escape(AppConfig.GetConfigPath()));
+        grid.AddRow("[bold]Config[/]", Markup.Escape(AppConfig.GetConfigPath(config)));
 
         AnsiConsole.Write(grid);
 
@@ -790,14 +790,13 @@ public static class SetupCommand {
     /// exit code is reported with a warning and swallowed — this method never throws and never
     /// fails setup.
     /// </summary>
-    internal static async Task RunImportStepAsync(
+    internal async Task RunImportStepAsync(
             (string Owner, string Name)? currentRepo,
             bool                          authSatisfied,
             bool                          skipImport,
             bool                          noPrompt,
             Func<bool>                    promptYesNo,
-            string                        serverUrl,
-            string                        activeProfile,
+            ProfileContext                profiles,
             string                        defaultVisibility) {
         var decision = SetupDecisions.DecideImport(
             currentRepo is not null, authSatisfied, skipImport, noPrompt, promptYesNo);
@@ -812,12 +811,11 @@ public static class SetupCommand {
         // Run: DecideImport only returns Run when hasCurrentRepo was true, so currentRepo is
         // guaranteed non-null here.
         var invocation = new ImportInvocation(
-            BaseUrl:            serverUrl,
             Repo:               currentRepo!.Value,
             DefaultVisibility:  defaultVisibility,
             AutoSkipExclusions: true,
             ForcePrivate:       false,
-            ActiveProfile:      activeProfile);
+            Profiles:           profiles);
 
         try {
             var exitCode = await (ImportRunnerOverride ?? DefaultImportRunner)(invocation);
@@ -838,12 +836,11 @@ public static class SetupCommand {
     /// <see cref="ImportRunnerOverride"/> without running a real import.
     /// </summary>
     internal sealed record ImportInvocation(
-        string                       BaseUrl,
         (string Owner, string Name) Repo,
         string?                      DefaultVisibility,
         bool                         AutoSkipExclusions,
         bool                         ForcePrivate,
-        string                       ActiveProfile);
+        ProfileContext               Profiles);
 
     /// <summary>
     /// Test seam: when set, replaces the real <see cref="ImportCommand.HandleImport"/> call made
@@ -852,9 +849,8 @@ public static class SetupCommand {
     /// </summary>
     internal static Func<ImportInvocation, Task<int>>? ImportRunnerOverride;
 
-    static Task<int> DefaultImportRunner(ImportInvocation inv) =>
-        ImportCommand.HandleImport(
-            baseUrl:                 inv.BaseUrl,
+    Task<int> DefaultImportRunner(ImportInvocation inv) =>
+        new ImportCommand(config, inv.Profiles).HandleImport(
             filterCwd:               null,
             filterSession:           null,
             minLines:                15,
@@ -865,7 +861,6 @@ public static class SetupCommand {
             scope:                   new ImportScope.Repo(inv.Repo.Owner, inv.Repo.Name),
             skipConfirmation:        true,
             forcePrivate:            inv.ForcePrivate,
-            activeProfile:           inv.ActiveProfile,
             currentRepo:             inv.Repo,
             needOrgPick:             false,
             storedOrg:               null,
@@ -873,17 +868,17 @@ public static class SetupCommand {
             defaultVisibility:       inv.DefaultVisibility);
 
     /// <summary>The nine supported import sources — mirrors Program.cs's `kcap import` construction.</summary>
-    static IReadOnlyList<IImportSource> BuildImportSources() => new IImportSource[] {
-        new ClaudeImportSource(),
-        new CodexImportSource(),
-        new CursorImportSource(),
-        new CopilotImportSource(),
+    IReadOnlyList<IImportSource> BuildImportSources() => [
+        new ClaudeImportSource(config),
+        new CodexImportSource(config),
+        new CursorImportSource(config),
+        new CopilotImportSource(config),
         new GeminiImportSource(),
-        new KiroImportSource(),
-        new PiImportSource(),
+        new KiroImportSource(config),
+        new PiImportSource(config),
         new OpenCodeImportSource(),
-        new AntigravityImportSource(),
-    };
+        new AntigravityImportSource()
+    ];
 
     /// <summary>
     /// Normalizes a user-supplied server (a full URL, or a bare slug already expanded by
@@ -892,7 +887,7 @@ public static class SetupCommand {
     /// `kcap setup &lt;tenant&gt;` / --server-url and by the zero-tenant "I already have a
     /// workspace" path, so provider selection has exactly one implementation.
     /// </summary>
-    static async Task<(string ServerUrl, string Provider)?> ResolveServerAndProviderAsync(string serverArg) {
+    async Task<(string ServerUrl, string Provider)?> ResolveServerAndProviderAsync(string serverArg) {
         var normalized = await AnsiConsole.Status().Spinner(Spinner.Known.Dots).StartAsync("Checking server…",
             async _ => await ServerUrlNormalizer.NormalizeAsync(
                 serverArg, skipProbe: false, CancellationToken.None));
@@ -911,7 +906,7 @@ public static class SetupCommand {
             AnsiConsole.MarkupLine($"  [yellow]![/] {Markup.Escape(normalized.Warning)}");
 
         try {
-            var provider = await HttpClientExtensions.DiscoverProviderAsync(serverUrl);
+            var provider = await HttpClientExtensions.DiscoverProviderAsync(serverUrl, config, profiles);
             AnsiConsole.MarkupLine($"  [green]✓[/] Reachable · auth provider: [cyan]{Markup.Escape(provider)}[/]");
 
             return (serverUrl, provider);
@@ -926,11 +921,11 @@ public static class SetupCommand {
 
     internal static readonly SetupAuthProgress StepProgress = new(ConsoleAuthProgress.Instance);
 
-    static OnboardingFacade NewFacade(
+    OnboardingFacade NewFacade(
             ITenantProvisioner? provisioner, ITenantPicker? picker = null, RequestedWorkspace? requested = null) =>
         FacadeOverride?.Invoke(provisioner)
-            ?? new OnboardingFacade(
-                StepProgress, picker ?? new SpectreTenantPicker(), provisioner, WorkspaceGuard(requested)) {
+            ?? new OnboardingFacade(config, StepProgress, browser, picker ?? new SpectreTenantPicker(), provisioner,
+                WorkspaceGuard(requested)) {
                 KeyWatcher = ConsoleKeyWatcher.Instance
             };
 
@@ -965,11 +960,11 @@ public static class SetupCommand {
     /// commit boundary — goes through the façade, adopting the server onto the active profile,
     /// since setup's whole job is configuring that profile for the chosen server.
     /// </summary>
-    internal static async Task<int> RunLoginStepAsync(
+    internal async Task<int> RunLoginStepAsync(
             bool loginComplete, string provider, string serverUrl, bool forceDevice, string activeProfile) {
         if (loginComplete) {
-            var cfgAfter = await AppConfig.LoadProfileConfig();
-            var tokens   = await TokenStore.LoadAsync(cfgAfter.ActiveProfile);
+            var cfgAfter = await AppConfig.LoadProfileConfig(config);
+            var tokens   = await new TokenStore(config).LoadAsync(cfgAfter.ActiveProfile);
             AnsiConsole.MarkupLine($"  [green]✓[/] Logged in as [cyan]{Markup.Escape(tokens?.GitHubUsername ?? "?")}[/]");
 
             return 0;
@@ -989,7 +984,7 @@ public static class SetupCommand {
             return 0;
         }
 
-        var loggedInTokens = await TokenStore.LoadAsync(activeProfile);
+        var loggedInTokens = await new TokenStore(config).LoadAsync(activeProfile);
         await Console.Out.WriteLineAsync($"  ✓ Logged in as {loggedInTokens?.GitHubUsername}");
 
         return 0;
@@ -1008,7 +1003,7 @@ public static class SetupCommand {
     /// vendor keys and booleans, and the install runs through the same one place the terminal prompt
     /// does. Every outcome leaves setup running: sign-in has already happened, so nothing in this leg
     /// can strand a machine.</summary>
-    static async Task<FirstRunAgentsAnswer?> RunBrowserFlowStepAsync(string serverUrl, string provider, bool noPrompt) {
+    async Task<FirstRunAgentsAnswer?> RunBrowserFlowStepAsync(string serverUrl, string provider, bool noPrompt) {
         // --no-prompt is a scripted run and this waits on a human. None has no identity for a flow to
         // be owned by, and its routes are authenticated. Headless is deliberately NOT a skip: a
         // machine with no browser of its own is exactly the one whose user is sitting at another, and
@@ -1025,7 +1020,7 @@ public static class SetupCommand {
         // keeps the leg's "no reachable failure crashes setup" promise whole.
         try {
             var (http, authStatus) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(
-                serverUrl, autoRetryUnauthorized: true);
+                config, profiles, serverUrl, autoRetryUnauthorized: true);
 
             using (http) {
                 http.Timeout = BrowserFlowHttpTimeout;
@@ -1047,10 +1042,10 @@ public static class SetupCommand {
                 AnsiConsole.MarkupLine("  [dim]Checking this machine for coding agents…[/]");
 
                 var report = FirstRunMachineReport.EvaluateCurrent(
-                    Environment.MachineName, await LoginShellFindsCliAsync());
+                    config, Environment.MachineName, await LoginShellFindsCliAsync());
 
                 result = await new BrowserFirstRunFlow(
-                        new FirstRunFlowClient(http), new SpectreFirstRunFlowProgress())
+                        new FirstRunFlowClient(http), new SpectreFirstRunFlowProgress(), browser)
                     .RunAsync(serverUrl, report, CancellationToken.None);
             }
         } catch (Exception ex) when (ex is not OperationCanceledException) {
@@ -1190,7 +1185,7 @@ public static class SetupCommand {
         return (new RequestedWorkspace(orgName!.Trim(), canonical), null);
     }
 
-    internal static async Task<(string ServerUrl, string Provider, bool LoginComplete)?> RunDiscoveryAsync(
+    internal async Task<(string ServerUrl, string Provider, bool LoginComplete)?> RunDiscoveryAsync(
             string[] args, bool forceDevice, RequestedWorkspace? requested = null) {
         var chosen   = OAuthLoginFlow.ChooseDiscoveryProvider(args);
         var headless = HeadlessEnvironment.IsHeadless();
@@ -1245,7 +1240,7 @@ public static class SetupCommand {
 
         switch (result) {
             case AuthResult.Committed committed: {
-                var cfg    = await AppConfig.LoadProfileConfig();
+                var cfg    = await AppConfig.LoadProfileConfig(config);
                 var active = cfg.Profiles.GetValueOrDefault(cfg.ActiveProfile);
 
                 if (active?.ServerUrl is null) {
@@ -1333,7 +1328,23 @@ public static class SetupCommand {
     //     wall-clock bound is enforced independently of what HttpClient does
     //     internally. If the delay wins, HttpClient disposal on method-exit
     //     cancels the in-flight POST.
-    static async Task PingCliSetupAsync(string serverUrl, string profile, string provider) {
+    /// <summary>
+    /// The cli-setup ping body, hand-built on purpose. A typed DTO here would inherit
+    /// CapacitorJsonContext's global SnakeCaseLower policy and serialise <c>cli_version</c>,
+    /// silently breaking an endpoint that works today — the mirror image of why
+    /// <c>ProvisionRequest.JoinId</c> needs an explicit attribute. So both names stay literal
+    /// camelCase, and <c>joinId</c> is omitted entirely rather than sent as null when telemetry is
+    /// off. Both inputs are ours — an assembly version and 32 hex chars — so neither can carry a
+    /// quote that would break the literal.
+    /// </summary>
+    internal static string CliSetupPingBody(string? version, string? joinId) {
+        var versionJson = version is null ? "null" : $"\"{version}\"";
+        var joinJson    = joinId is null ? "" : $",\"joinId\":\"{joinId}\"";
+
+        return $$"""{"cliVersion":{{versionJson}}{{joinJson}}}""";
+    }
+
+    async Task PingCliSetupAsync(string serverUrl, string profile, string provider) {
         // The ping is intentionally silent (see method-doc), which also hides why the
         // dashboard welcome modal never flips when it fails — e.g. a token the server
         // rejects or maps to a different identity. Set KCAP_DEBUG to surface the
@@ -1353,7 +1364,7 @@ public static class SetupCommand {
         }
 
         try {
-            var tokens = await TokenStore.LoadAsync(profile);
+            var tokens = await new TokenStore(config).LoadAsync(profile);
             if (tokens is null || tokens.IsExpired) {
                 Debug(tokens is null ? "skipped — no stored token" : "skipped — token expired");
 
@@ -1374,7 +1385,7 @@ public static class SetupCommand {
 
             var version = typeof(SetupCommand).Assembly.GetName().Version?.ToString();
             var payload = new StringContent(
-                $$"""{"cliVersion":{{(version is null ? "null" : "\"" + version + "\"")}}}""",
+                CliSetupPingBody(version, SetupJoin.Current),
                 System.Text.Encoding.UTF8,
                 "application/json");
 

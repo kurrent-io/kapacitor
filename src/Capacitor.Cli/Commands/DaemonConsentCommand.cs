@@ -16,7 +16,7 @@ namespace Capacitor.Cli.Commands;
 public static class DaemonConsentCommand {
     static readonly string[] Verbs = ["show", "set-default", "allow", "deny", "remove", "log"];
 
-    public static async Task<int> HandleAsync(DaemonStore store, string[] args) {
+    public static async Task<int> HandleAsync(DaemonStore store, ProfileContext profiles, string[] args) {
         if (args.Length == 0) return PrintConsentUsage();
 
         var sub  = args[0];
@@ -24,13 +24,13 @@ public static class DaemonConsentCommand {
 
         // `log` is the one verb that never touches the socket, so it skips the
         // running-daemon precondition below.
-        if (sub == "log") return await LogAsync(store, rest);
+        if (sub == "log") return await LogAsync(store, profiles, rest);
 
         if (!Verbs.Contains(sub)) return PrintConsentUsage();
 
         string name;
         try {
-            name = ResolveName(rest);
+            name = ResolveName(profiles, rest);
         } catch (ArgumentException ex) {
             await Console.Error.WriteLineAsync(ex.Message);
 
@@ -55,8 +55,8 @@ public static class DaemonConsentCommand {
         };
     }
 
-    static string ResolveName(string[] args) =>
-        DaemonNameResolver.Resolve(args, AppConfig.ResolvedProfile?.Profile?.Daemon?.Name);
+    static string ResolveName(ProfileContext profiles, string[] args) =>
+        DaemonNameResolver.Resolve(args, profiles.DaemonName);
 
     // ── show ────────────────────────────────────────────────────────────────
 
@@ -186,10 +186,10 @@ public static class DaemonConsentCommand {
 
     // ── log ─────────────────────────────────────────────────────────────────
 
-    static async Task<int> LogAsync(DaemonStore store, string[] args) {
+    static async Task<int> LogAsync(DaemonStore store, ProfileContext profiles, string[] args) {
         string name;
         try {
-            name = ResolveName(args);
+            name = ResolveName(profiles, args);
         } catch (ArgumentException ex) {
             await Console.Error.WriteLineAsync(ex.Message);
 

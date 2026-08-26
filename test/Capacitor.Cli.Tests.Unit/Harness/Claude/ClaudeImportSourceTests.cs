@@ -5,35 +5,37 @@ using Capacitor.Cli.Harness.Claude;
 namespace Capacitor.Cli.Tests.Unit.Harness.Claude;
 
 public class ClaudeImportSourceTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     [Test]
     public async Task vendor_is_claude() {
-        var src = new ClaudeImportSource();
+        var src = new ClaudeImportSource(Config.Root);
         await Assert.That(src.Vendor).IsEqualTo("claude");
     }
 
     [Test]
     public async Task supports_title_generation() {
-        var src = new ClaudeImportSource();
+        var src = new ClaudeImportSource(Config.Root);
         await Assert.That(src.SupportsTitleGeneration).IsTrue();
     }
 
     [Test]
     public async Task is_available_when_projects_dir_exists() {
         using var tmp = new TempDir();
-        var src = new ClaudeImportSource(tmp.Path);
+        var src = new ClaudeImportSource(Config.Root, tmp.Path);
         await Assert.That(src.IsAvailable).IsTrue();
     }
 
     [Test]
     public async Task is_unavailable_when_projects_dir_missing() {
         var missing = Path.Combine(Path.GetTempPath(), "kcap-claude-source-missing-" + Guid.NewGuid().ToString("N"));
-        var src     = new ClaudeImportSource(missing);
+        var src     = new ClaudeImportSource(Config.Root, missing);
         await Assert.That(src.IsAvailable).IsFalse();
     }
 
     [Test]
     public async Task import_session_async_throws_not_implemented() {
-        var src = new ClaudeImportSource();
+        var src = new ClaudeImportSource(Config.Root);
         var classification = new ImportCommand.SessionClassification {
             SessionId  = "abc",
             FilePath   = "/tmp/none",

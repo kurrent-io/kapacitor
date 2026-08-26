@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Commands;
@@ -8,11 +9,11 @@ namespace Capacitor.Cli.Commands;
 /// nudge; <c>reset</c> undoes a dismissal. All three run their own detection pass and neither read
 /// nor claim the shared 6-hour evaluation throttle (the nudge surfaces' concern, not the commands').
 /// </summary>
-public static class HarnessCommand {
-    public static Task<int> HandleAsync(string[] args) {
+public sealed class HarnessCommand(ConfigRoot config) {
+    public Task<int> HandleAsync(string[] args) {
         if (args.Length < 2) { PrintUsage(); return Task.FromResult(1); }
 
-        var store    = HarnessOfferStore.Default();
+        var store    = new HarnessOfferStore(config);
         var inputs   = AgentDetection.FromEnvironment();
         var detected = AgentDetection.Detect(inputs);
 

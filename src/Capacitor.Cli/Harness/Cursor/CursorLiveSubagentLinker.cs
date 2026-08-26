@@ -54,7 +54,7 @@ public static class CursorLiveSubagentLinker {
     // the hook dispatcher's ~2s wall-clock budget (CursorHookCommand.DispatcherBudget).
     const int MaxCandidates = 500;
 
-    static string MarkerDir => PathHelpers.ConfigPath("cursor-subagent-links");
+    static string MarkerDir(ConfigRoot config) => config.Path("cursor-subagent-links");
 
     /// <summary>
     /// Resolves <paramref name="childSessionId"/> to a parent by running
@@ -139,9 +139,9 @@ public static class CursorLiveSubagentLinker {
     /// affects classification.
     /// </para>
     /// </summary>
-    public static LinkMarker? TryLoadLink(string childSessionId) {
+    public static LinkMarker? TryLoadLink(ConfigRoot config, string childSessionId) {
         try {
-            var path = Path.Combine(MarkerDir, childSessionId);
+            var path = Path.Combine(MarkerDir(config), childSessionId);
             if (!File.Exists(path)) return null;
 
             var lines = File.ReadAllLines(path);
@@ -159,10 +159,10 @@ public static class CursorLiveSubagentLinker {
     /// Cursor <c>sessionStart</c> never carries one. Note it also returns void and swallows
     /// write failures; see the catch below for why that matters to the caller.
     /// </summary>
-    public static void SaveLink(string childSessionId, string parentSessionId, string subagentType) {
+    public static void SaveLink(ConfigRoot config, string childSessionId, string parentSessionId, string subagentType) {
         try {
-            Directory.CreateDirectory(MarkerDir);
-            File.WriteAllLines(Path.Combine(MarkerDir, childSessionId), [parentSessionId, subagentType]);
+            Directory.CreateDirectory(MarkerDir(config));
+            File.WriteAllLines(Path.Combine(MarkerDir(config), childSessionId), [parentSessionId, subagentType]);
         } catch {
             // Fail-open, but the consequence depends on WHEN the write failed, and the
             // optimistic reading is only half the story:

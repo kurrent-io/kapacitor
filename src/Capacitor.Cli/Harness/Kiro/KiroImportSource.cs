@@ -23,11 +23,12 @@ internal sealed class KiroImportSource : IImportSource {
     readonly Func<string, Task<RepositoryPayload?>> _repoDetector;
 
     public KiroImportSource(
+        ConfigRoot                              config,
         string?                                 sessionsDirOverride = null,
         Func<string, Task<RepositoryPayload?>>? repoDetector        = null
     ) {
         _sessionsDir  = sessionsDirOverride ?? KiroPaths.SessionsDir();
-        _repoDetector = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(cwd, detectPullRequest: false));
+        _repoDetector = repoDetector ?? (cwd => RepositoryDetection.DetectRepositoryAsync(config, cwd, detectPullRequest: false));
     }
 
     static StringComparison PathComparison =>

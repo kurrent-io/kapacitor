@@ -40,6 +40,11 @@ Deliberate choices a change can silently undo — each looks like a bug until yo
   failing closed, so an update cannot brick a pre-existing daemon. Decisions append to an
   owner-only log; no gate path blocks a launch on a terminal prompt, and cancellation aborts the
   launch rather than fabricating a decision.
+- **The daemons directory is a fixed location and ignores `KCAP_CONFIG_DIR`.** It shares the
+  `~/.config/kcap` prefix with the config directory by coincidence, not derivation: when it was
+  derived, two daemons under different config dirs took different `flock`s, never saw each other,
+  both authenticated as the same GitHub ID and oscillated the server's registry slot. Same literal,
+  different anchor — `DaemonStoreTests` guards it.
 - **Local control IPC is append-only and capability-gated.** `FrameType` values are never reused or
   renumbered, and `LocalControlCapabilities.Current` is assembled beside the routing switch so
   nothing can be advertised without a live handler.

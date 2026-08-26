@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using ReactiveUI;
 
@@ -22,6 +23,7 @@ public sealed class DefaultsStepViewModel : ReactiveObject, IWizardStep {
         new("public",     "All public — others can see all your sessions"),
     ];
 
+    readonly ConfigRoot     _config;
     readonly Func<string?>? _resolveProfileName;
 
     string  _visibility = "org_public";
@@ -30,7 +32,13 @@ public sealed class DefaultsStepViewModel : ReactiveObject, IWizardStep {
     string? _message;
 
     /// <param name="resolveProfileName">Re-invoked per persist rather than captured; null or unresolved falls back to <c>c.ActiveProfile</c>.</param>
-    public DefaultsStepViewModel(string? defaultDaemonName = null, Func<string?>? resolveProfileName = null) {
+    public DefaultsStepViewModel(
+            ConfigRoot     config,
+            string?        defaultDaemonName  = null,
+            Func<string?>? resolveProfileName = null
+        ) {
+        _config = config;
+
         _daemonName = string.IsNullOrWhiteSpace(defaultDaemonName)
             ? Environment.UserName.ToLowerInvariant()
             : defaultDaemonName;
@@ -72,7 +80,7 @@ public sealed class DefaultsStepViewModel : ReactiveObject, IWizardStep {
         if (direction != WizardNavigation.Next) return true;
 
         try {
-            await ConfigMutator.MutateAsync(c => {
+            await ConfigMutator.MutateAsync(_config, c => {
                 var resolvedName = _resolveProfileName?.Invoke();
                 var activeName   = resolvedName is not null && c.Profiles.ContainsKey(resolvedName)
                     ? resolvedName

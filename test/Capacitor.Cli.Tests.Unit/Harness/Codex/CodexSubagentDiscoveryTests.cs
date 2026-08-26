@@ -13,6 +13,8 @@ namespace Capacitor.Cli.Tests.Unit.Harness.Codex;
 /// <c>session_id</c> field (which holds the PARENT's id — the child's own id is in <c>id</c>).
 /// </summary>
 public class CodexSubagentDiscoveryTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     const string ParentDashed = "019fec43-21ea-7542-bbde-4a9dfe352e81";
     const string ChildDashed  = "019fec44-2cff-7d70-9806-78a49595f393";
     const string OtherDashed  = "019fec44-e819-72c2-bb86-e18efa92e18c";
@@ -262,7 +264,7 @@ public class CodexSubagentDiscoveryTests {
             Path.Combine(day, $"rollout-2026-08-10T17-24-19-{malformedDashed}.jsonl"),
             "not json at all\n");
 
-        var source     = new CodexImportSource(rootOverride: tmp.Path);
+        var source     = new CodexImportSource(Config.Root, rootOverride: tmp.Path);
         var discovered = await source.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
         var ids        = discovered.Select(d => d.SessionId).OrderBy(x => x, StringComparer.Ordinal).ToList();
 

@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Core;
 using WireMock.RequestBuilders;
@@ -20,6 +20,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// auth, no real server required.
 /// </summary>
 public class SpoolOutageRecoveryTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     // 32-hex dashless session id — required by HookSpool.SafeSessionId regex.
     const string Sid = "deadbeef0123456789abcdef01234567";
 
@@ -64,11 +66,9 @@ public class SpoolOutageRecoveryTests : IDisposable {
     HookSpool MakeSpool() => new(_spoolDir);
 
     // HandleCore takes a pre-built HttpClient so we bypass auth entirely.
-    Task<int> Invoke(HttpClient client, string payload, long? processStart = null) {
-        var spool = MakeSpool();
-        var ps    = processStart ?? Stopwatch.GetTimestamp();
-        return ClaudeHookCommand.HandleCore(client, AuthStatus.Ok, spool, ps, _server.Url!, new StringReader(payload));
-    }
+    Task<int> Invoke(HttpClient client, string payload) =>
+        new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System))
+            .HandleCore(client, AuthStatus.Ok, MakeSpool(), new StringReader(payload));
 
     IEnumerable<string> SpoolFiles =>
         Directory.Exists(_spoolDir) ? Directory.EnumerateFiles(_spoolDir) : [];

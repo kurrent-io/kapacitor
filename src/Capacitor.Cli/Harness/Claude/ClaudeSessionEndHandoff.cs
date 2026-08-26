@@ -32,7 +32,7 @@ static class ClaudeSessionEndHandoff {
     /// Starts the detached continuation and feeds it <paramref name="body"/>. False when that did
     /// not fully happen — the caller then runs the event inline, as before.
     /// </summary>
-    public static bool TrySpawn(string[] args, string body) {
+    public static bool TrySpawn(string[] args, string body, ConfigRoot config) {
         Process? process = null;
 
         try {
@@ -46,6 +46,10 @@ static class ClaudeSessionEndHandoff {
 
             foreach (var arg in args) psi.ArgumentList.Add(arg);
             psi.ArgumentList.Add(DetachedFlag);
+
+            // The continuation resolves everything else for itself; the root is the one thing it must
+            // not, or a hook and its own continuation would read different tokens.
+            psi.Environment[ConfigRoot.ConfigDirEnvVar] = config.Directory;
 
             // Same pipe-leak hazard as the watcher spawn: the child must not hold Claude's hook
             // pipes open, or Claude waits on them past the hook's own exit.
@@ -82,11 +86,11 @@ static class ClaudeSessionEndHandoff {
     /// The continuation's own setup: output to the session log (its pipes are already closed) and
     /// out of the terminal's session so a closing window cannot SIGHUP it mid-drain.
     /// </summary>
-    public static void EnterDetached(string body) {
+    public static void EnterDetached(string body, ConfigRoot config) {
         TextWriter writer;
 
         try {
-            var logDir = PathHelpers.ConfigPath("logs");
+            var logDir = config.Path("logs");
             Directory.CreateDirectory(logDir);
             writer = new StreamWriter(Path.Combine(logDir, $"{LogName(body)}.log"), append: true) { AutoFlush = true };
         } catch {

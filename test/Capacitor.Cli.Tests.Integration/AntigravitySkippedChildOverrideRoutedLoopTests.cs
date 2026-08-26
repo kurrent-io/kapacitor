@@ -58,6 +58,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// </para>
 /// </summary>
 public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server         = WireMockServer.Start();
     readonly TempDir        _tmp            = new();
     readonly string         _home;
@@ -162,8 +164,7 @@ public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
 
         var exitCode = 0;
         var stdout = await CaptureStdoutAsync(async () => {
-            exitCode = await ImportCommand.HandleImport(
-                baseUrl: _server.Url!,
+            exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
                 filterCwd: null,
                 minLines: 0,
                 sources: [antigravity, gemini],

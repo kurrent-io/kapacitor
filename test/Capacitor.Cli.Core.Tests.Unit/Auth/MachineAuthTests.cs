@@ -21,6 +21,8 @@ namespace Capacitor.Cli.Core.Tests.Unit.Auth;
 /// </summary>
 [NotInParallel]
 public class MachineAuthTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
 
     public void Dispose() {
@@ -230,7 +232,7 @@ public class MachineAuthTests : IDisposable {
         Environment.SetEnvironmentVariable(MachineAuth.ClientIdVar, "client_01ABC");
         Environment.SetEnvironmentVariable(MachineAuth.ClientSecretVar, "sekrit");
 
-        var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(_server.Urls[0]);
+        var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(Config.Root, Resolutions.None(Config.Root), _server.Urls[0]);
 
         await Assert.That(status).IsEqualTo(AuthStatus.Ok);
         await Assert.That(client.DefaultRequestHeaders.Authorization).IsNotNull();
@@ -260,7 +262,7 @@ public class MachineAuthTests : IDisposable {
 
         Environment.SetEnvironmentVariable(MachineAuth.ClientIdVar, "client_01ABC"); // secret missing
 
-        var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(_server.Urls[0]);
+        var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(Config.Root, Resolutions.None(Config.Root), _server.Urls[0]);
 
         await Assert.That(status).IsEqualTo(AuthStatus.NotAuthenticated);
         await Assert.That(client.DefaultRequestHeaders.Authorization).IsNull();
@@ -394,7 +396,7 @@ public class MachineAuthTests : IDisposable {
         Environment.SetEnvironmentVariable(MachineAuth.ClientSecretVar, "sekrit");
 
         // The interactive builder is the one that installs the retry handler (autoRetryUnauthorized:true).
-        var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(_server.Urls[0]);
+        var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(Config.Root, Resolutions.None(Config.Root), _server.Urls[0]);
 
         using var resp = await client.GetAsync($"{_server.Urls[0]}/api/ping");
 

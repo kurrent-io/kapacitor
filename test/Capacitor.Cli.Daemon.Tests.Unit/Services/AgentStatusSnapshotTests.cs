@@ -18,6 +18,8 @@ namespace Capacitor.Cli.Daemon.Tests.Unit.Services;
 /// bare-orchestrator construction without the socket plumbing.
 /// </summary>
 public class AgentStatusSnapshotTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     sealed class NoopHostLifetime : IHostApplicationLifetime {
         public CancellationToken ApplicationStarted  => CancellationToken.None;
         public CancellationToken ApplicationStopping => CancellationToken.None;
@@ -43,7 +45,7 @@ public class AgentStatusSnapshotTests {
         }
     }
 
-    static Fixture Build() {
+    Fixture Build() {
         var daemons = new TempDaemonStore();
 
         var config = new DaemonConfig {
@@ -66,7 +68,8 @@ public class AgentStatusSnapshotTests {
         var notifier         = new DaemonStatusNotifier();
 
         var orchestrator = new AgentOrchestrator(
-            config, connection, worktreeManager, repoMatcher, new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
+            config, Config.Root, connection, worktreeManager, repoMatcher,
+            new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
             permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate, statusNotifier: notifier);

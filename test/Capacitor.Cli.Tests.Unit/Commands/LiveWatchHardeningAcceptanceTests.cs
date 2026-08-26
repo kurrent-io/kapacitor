@@ -5,6 +5,7 @@ using Capacitor.Cli.Tests.Unit.Harness.Codex;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
+using Capacitor.Cli.Core.Harness.Cursor;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -39,6 +40,16 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 //      assistant's transcript line landed before the sidecar write.
 // ---------------------------------------------------------------------------------------------
 public class LiveWatchHardeningAcceptanceTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // Nothing listens on this loopback port: the spawn matrix's spool-on-lapse never reaches it, and
+    // the drain below needs an unreachable server rather than an unusable URL.
+    const string Unreachable = "http://127.0.0.1:1";
+
+    AgentHookPoster  Poster => field ??= new(Config.Root, Resolutions.At(Unreachable, Config.Root));
+
+    CursorMarkers Markers => new(Config.Root);
+
     static string TmpDir(string prefix) => Path.Combine(Path.GetTempPath(), $"kcap-{prefix}-{Guid.NewGuid():N}");
 
     // ── 1. Spawn-before-post across all 7 watcher-backed non-Claude vendors ──────────────────
@@ -77,9 +88,8 @@ public class LiveWatchHardeningAcceptanceTests {
                 var spool = new HookSpool(dir);
                 var sessionId = Guid.NewGuid().ToString("N");
 
-                var outcome = await AgentHookPoster.PostOrSpoolAsync(
-                    () => Task.FromResult<(HttpClient, AuthStatus)>((new HttpClient(), AuthStatus.Expired)),
-                    "http://localhost:1", route, """{"session_id":"x"}""",
+                var outcome = await Poster.PostOrSpoolAsync(
+                    () => Task.FromResult<(HttpClient, AuthStatus)>((new HttpClient(), AuthStatus.Expired)), route, """{"session_id":"x"}""",
                     agentTag: route, spool, sessionId, route);
 
                 await Assert.That(outcome).IsEqualTo(HookPostOutcome.Spooled);
@@ -128,14 +138,9 @@ public class LiveWatchHardeningAcceptanceTests {
             var sw             = new StringWriter();
             var stdoutWritten  = false;
 
-            // Unreachable (nothing listens on this loopback port) — DrainSpoolsAsync's own
-            // 1.5s-budget network attempt will fail/timeout, standing in for "an unreachable
-            // spool backlog" per the spec's wording (the backlog itself can't be drained either).
-            const string unreachableBaseUrl = "http://127.0.0.1:1";
-
             var handshake = CodexHookCommand.RunSessionStartHandshakeForTest(
                 writeStdout: () => { stdoutWritten = true; sw.Write("""{"continue":true}"""); },
-                postStdoutWork: () => AgentHookPoster.DrainSpoolsAsync(unreachableBaseUrl, lifecycle, transcript, sessionId: null));
+                postStdoutWork: () => Poster.DrainSpoolsAsync(lifecycle, transcript, sessionId: null));
 
             // The synchronous writeStdout callback must already have run and its output already
             // be observable, even though the real drain (network attempt + large backlog scan)
@@ -164,7 +169,7 @@ public class LiveWatchHardeningAcceptanceTests {
     /// <para><c>LifecycleSpoolDrainTests.drains_start_then_transcript_then_end_for_a_session_with_no_further_hook</c>
     /// and <c>...delivers_needs_import_marker_even_when_transcript_bytes_exceeded_cap</c> already
     /// prove this exact ordering against injected poster delegates; this test proves the SAME
-    /// contract through <see cref="LifecycleSpoolDrain.RunAsync(HttpClient,string,HookSpool,TranscriptSpool,string?,TimeSpan,CancellationToken,Action{string,string}?)"/>'s
+    /// contract through <see cref="LifecycleSpoolDrain.RunAsync(CursorMarkers,HttpClient,string,HookSpool,TranscriptSpool,string?,TimeSpan,CancellationToken,Action{string,string}?)"/>'s
     /// production HTTP wrapper (route→POST mapping, status→<see cref="DrainOutcome"/> mapping,
     /// the needs-import route literally hitting the wire) — the part the delegate-injected test
     /// can't reach.</para>
@@ -190,7 +195,7 @@ public class LiveWatchHardeningAcceptanceTests {
             // currentSessionId: null — this drain pass belongs to a DIFFERENT vendor's own
             // invocation; `sid`'s session never fires another hook of its own.
             await LifecycleSpoolDrain.RunAsync(
-                client, server.Url!, lifecycle, transcript, currentSessionId: null,
+                Markers, client, server.Url!, lifecycle, transcript, currentSessionId: null,
                 budget: TimeSpan.FromSeconds(5), ct: CancellationToken.None);
 
             var hits = server.LogEntries.Select(e => e.RequestMessage).ToList();

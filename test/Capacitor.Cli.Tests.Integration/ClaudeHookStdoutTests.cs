@@ -1,5 +1,7 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Commands.Harness;
+using Capacitor.Cli.Core.Setup;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -23,16 +25,23 @@ namespace Capacitor.Cli.Tests.Integration;
 /// path short-circuits before <c>WatcherManager.EnsureWatcherRunning</c>;
 /// spawning the watcher's child process would still corrupt capture.
 ///
-/// Config isolation is provided by <see cref="IntegrationGlobalSetup"/>, which
-/// points <c>KCAP_CONFIG_DIR</c> at a fresh temp directory before any test code
-/// touches <c>PathHelpers</c>. Without it, a developer-side <c>excluded_paths</c>
-/// entry covering the test <c>cwd</c> would silently short-circuit
-/// <c>ClaudeHookCommand</c> and make these tests pass for the wrong reason.
+/// The per-test config root is load-bearing, not hygiene: a developer-side
+/// <c>excluded_paths</c> entry covering the test <c>cwd</c> would silently
+/// short-circuit <c>ClaudeHookCommand</c> and make these tests pass for the
+/// wrong reason.
 /// </summary>
 public class ClaudeHookStdoutTests : IDisposable {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     readonly WireMockServer _server = WireMockServer.Start();
 
     public void Dispose() => _server.Stop();
+
+    // The harness nudge fires unless an on-disk stamp throttles it, and a private root starts with
+    // none — these tests assert on the envelope alone, so they claim the window themselves.
+    [Before(Test)]
+    public void ThrottleHarnessNudge() =>
+        new HarnessOfferStore(Config.Root).TryClaimCheck(HarnessNudgeEmitter.CheckThrottle);
 
     static string SessionStartPayloadWithoutTranscriptPath() =>
         // No transcript_path, no session_id → WatcherManager spawn is skipped.
@@ -49,8 +58,7 @@ public class ClaudeHookStdoutTests : IDisposable {
     // concurrently-running test writes to Console can contaminate it.
     async Task<string> RunSessionStartAsync() {
         var stdout = new StringWriter();
-        await ClaudeHookCommand.Handle(
-            _server.Url!, new StringReader(SessionStartPayloadWithoutTranscriptPath()), stdout: stdout);
+        await new ClaudeHookCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root), new HookClock(TimeProvider.System)).Handle(new StringReader(SessionStartPayloadWithoutTranscriptPath()), stdout: stdout);
         return stdout.ToString();
     }
 

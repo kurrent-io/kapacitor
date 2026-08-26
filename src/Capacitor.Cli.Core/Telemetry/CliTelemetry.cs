@@ -38,7 +38,8 @@ public static class CliTelemetry {
     /// </summary>
     public static void Reset() {
         _client = null; _deviceId = null; _orgGroup = null;
-        _shared = new JsonObject(); Enabled = false; TestSink = null; _suppressedSticky = false;
+        lock (_sharedGate) _shared = new JsonObject();
+        Enabled = false; TestSink = null; _suppressedSticky = false;
     }
 
     /// <summary>
@@ -61,13 +62,13 @@ public static class CliTelemetry {
         return true;
     }
 
-    public static void Initialize(string command, string? serverUrl, bool loggedIn, bool suppressed = false) {
+    public static void Initialize(string command, string? serverUrl, bool loggedIn, ConfigRoot config, bool suppressed = false) {
         try {
             if (suppressed) {
                 _suppressedSticky = true;
             }
             if (_suppressedSticky) return; // app-spawned child: no notice, no device id, no events, _client stays null
-            Enabled = TelemetrySettings.Resolve(TelemetryState.PersistedEnabled()).Enabled
+            Enabled = TelemetrySettings.Resolve(TelemetryState.PersistedEnabled(config)).Enabled
                    && CommandEvents.IsReportable(command);
             if (!Enabled) return;
 
@@ -77,12 +78,12 @@ public static class CliTelemetry {
             // process, rather than disabling telemetry outright: silently going dark on a disk
             // hiccup costs more in data quality than a marginally inflated unique-device count in
             // this rare fallback case.
-            _deviceId = TelemetryDeviceId.GetOrCreate() ?? Guid.NewGuid().ToString("N");
+            _deviceId = TelemetryDeviceId.GetOrCreate(config) ?? Guid.NewGuid().ToString("N");
 
             var version = Version();
 
             _orgGroup = PostHogPayload.OrgGroup(serverUrl);
-            _shared   = new JsonObject {
+            var shared = new JsonObject {
                 ["source"]        = "cli",
                 ["cli_version"]   = version,
                 ["build_channel"] = TelemetryEnvironment.BuildChannel(version),
@@ -93,9 +94,19 @@ public static class CliTelemetry {
                 ["has_server"]    = serverUrl is not null,
                 ["logged_in"]     = loggedIn,
             };
+            lock (_sharedGate) _shared = shared;
 
             if (TestSink is null)
-                _client = new TelemetryClient(new HttpClientHandler(), Spool(), Token, Endpoint);
+                _client = new TelemetryClient(new HttpClientHandler(), Spool(config), Token, Endpoint);
+
+            // The join key has to be in the shared bag BEFORE cli_first_run fires just below, or that
+            // once-per-device event ships without it and no later run can repair it. Gated to the two
+            // interactive auth commands so it never attaches to a recap or an import — which have no
+            // auth run to correlate — and minted here, ahead of any lane the command later chooses, so
+            // every setup/login lane (loopback, device-code, headless) carries it. No-ops when
+            // telemetry is off, which by this point it is not.
+            if (command is "setup" or "login")
+                SetupJoin.Mint();
 
             // "mcp-server" is the re-initialise long-lived MCP servers perform on top of the
             // denylisted "mcp" (see McpTelemetry) — an agent-spawned, non-interactive process
@@ -108,26 +119,67 @@ public static class CliTelemetry {
             // marker, and the cli_first_run event for this pseudo-command; the first
             // human-invoked (reportable, non-"mcp-server") command still shows it as designed.
             if (command != "mcp-server")
-                NoticeAndFirstRun();
+                NoticeAndFirstRun(config);
         } catch {
             Enabled = false;
         }
     }
+
+    /// <summary>
+    /// Guards <see cref="_shared"/>. It used to be written once during <see cref="Initialize"/>
+    /// and only read afterwards, so no lock was needed. It is now also written from the loopback
+    /// browser's background wait, which merges the returned web identity at whatever moment the
+    /// browser comes back — and that moment coincides with the foreground funnel by design, since
+    /// sign-in reports completion immediately after the browser call returns.
+    /// <para>Unsynchronised, an insert during a capture's read faults the read, the exception is
+    /// swallowed on the way out (telemetry must never throw), and the event silently never
+    /// appears. Reproduced, and it takes the event the feature exists to measure.</para>
+    /// </summary>
+    static readonly object _sharedGate = new();
 
     /// <summary>Queue an event for the exit flush.</summary>
     public static void Capture(string name, JsonObject properties) {
         try {
             if (!Enabled) return;
 
-            foreach (var (key, value) in _shared)
-                properties[key] ??= value?.DeepClone();
+            lock (_sharedGate)
+                foreach (var (key, value) in _shared)
+                    properties[key] ??= value?.DeepClone();
 
             var e = new TelemetryEvent(name, properties, DateTimeOffset.UtcNow);
 
-            if (_debug) Console.Error.WriteLine($"[telemetry] {name} {properties.ToJsonString()}");
+            if (_debug) Console.Error.WriteLine($"[telemetry] {name} {DebugRender(properties)}");
 
             if (TestSink is not null) TestSink.Add(e);
             else                      _client?.Enqueue(e);
+        } catch { }
+    }
+
+    /// <summary>
+    /// Attach a property to every event this process captures from here on. Swallowing like
+    /// everything else in this class.
+    /// </summary>
+    public static void AddSharedProperty(string name, JsonNode? value) {
+        try {
+            if (!Enabled) return;
+
+            lock (_sharedGate) _shared[name] = value;
+        } catch { }
+    }
+
+    /// <summary>
+    /// Attach several properties as ONE step, so no event can be captured carrying half of them.
+    /// The returned web identity arrives as a set — an arm and one id per host — and an event
+    /// holding one host's id while the other is still missing would read as a real absence rather
+    /// than a moment mid-merge.
+    /// </summary>
+    public static void AddSharedProperties(JsonObject properties) {
+        try {
+            if (!Enabled) return;
+
+            lock (_sharedGate)
+                foreach (var (name, value) in properties)
+                    _shared[name] = value?.DeepClone();
         } catch { }
     }
 
@@ -202,20 +254,40 @@ public static class CliTelemetry {
         } catch { }
     }
 
-    static void NoticeAndFirstRun() {
-        if (TelemetryState.Read().NoticeShown) return;
+    static void NoticeAndFirstRun(ConfigRoot config) {
+        if (TelemetryState.Read(config).NoticeShown) return;
 
         Console.Error.WriteLine(
-            "kcap collects anonymous usage data — command and flag names only, never argument values,");
+            "kcap collects pseudonymous usage data — command and flag names only, never argument values,");
         Console.Error.WriteLine(
-            "file paths, or transcript content. Opt out: kcap config set telemetry off (or DO_NOT_TRACK=1).");
+            "file paths, or transcript content. It can be associated with your workspace and its creator.");
+        Console.Error.WriteLine(
+            "Opt out: kcap config set telemetry off (or DO_NOT_TRACK=1).");
         Console.Error.WriteLine("https://capacitor.kurrent.io/privacy");
 
-        TelemetryState.MarkNoticeShown();
+        TelemetryState.MarkNoticeShown(config);
         Capture("cli_first_run", new JsonObject());
     }
 
-    static TelemetrySpool Spool() => new(PathHelpers.ConfigPath("telemetry-spool.jsonl"));
+    /// <summary>
+    /// Debug render with the join key redacted. <see cref="Capture"/> prints the whole merged
+    /// properties object, so without this a <c>KCAP_TELEMETRY_DEBUG=1</c> run would emit the
+    /// bridge key to stderr on every <c>cli_*</c> event — and an access log holding that key is a
+    /// copy of the join.
+    /// <para>A placeholder rather than omission: the useful debug signal is WHETHER the property
+    /// is attached, which the placeholder shows. The value itself is only ever needed in PostHog,
+    /// where it legitimately lives.</para>
+    /// </summary>
+    static string DebugRender(JsonObject properties) {
+        if (properties[SetupJoin.PropertyName] is null) return properties.ToJsonString();
+
+        var redacted = properties.DeepClone().AsObject();
+        redacted[SetupJoin.PropertyName] = "[set]";
+
+        return redacted.ToJsonString();
+    }
+
+    static TelemetrySpool Spool(ConfigRoot config) => new(config.Path("telemetry-spool.jsonl"));
 
     static string Version() =>
         typeof(CliTelemetry).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()

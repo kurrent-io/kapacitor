@@ -14,8 +14,10 @@ using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Commands;
 
-static class McpFlowsServer {
-    public static async Task<int> RunAsync(string baseUrl, string? driverArg = null) {
+class McpFlowsServer(ConfigRoot config, ProfileContext profiles) {
+    public async Task<int> RunAsync(string? driverArg = null) {
+        var baseUrl = profiles.Resolution.ServerUrl!;
+
         // Requester context is resolved ONCE here, from the running harness rather than from the
         // environment this process inherited — see HarnessRequesterContext for why an inherited
         // KCAP_SESSION_ID / process cwd names the launching session instead of this driver. Both the
@@ -31,7 +33,7 @@ static class McpFlowsServer {
 
         RepositoryPayload? repoInfo = null;
         try {
-            repoInfo = await RepositoryDetection.DetectRepositoryAsync(cwd);
+            repoInfo = await RepositoryDetection.DetectRepositoryAsync(config, cwd);
         } catch {
             // best-effort; proceed with null
         }
@@ -41,8 +43,8 @@ static class McpFlowsServer {
         // "mcp-server" so per-tool-call events actually leave. Best-effort: a stale token on
         // disk must never block the server from starting.
         var loggedIn = false;
-        try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
-        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn);
+        try { loggedIn = await new TokenStore(config).LoadForProfileAsync(profiles.Name) is not null; } catch { }
+        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn, config);
 
         // Validate the server_url shape once, locally (pure string check — no network, token,
         // or stderr). Used to fail gracefully instead of hard-exiting mid-request (below).
@@ -68,7 +70,7 @@ static class McpFlowsServer {
 
             try {
                 if (client is null) {
-                    client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, autoRetryUnauthorized: false);
+                    client = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl, autoRetryUnauthorized: false);
                     // the review-flow endpoints long-poll (start_review_flow /
                     // submit_review_round block server-side up to ~10 min while the reviewer runs).
                     // The default 100s timeout would abort the POST, which the server sees as a
@@ -79,7 +81,8 @@ static class McpFlowsServer {
 
                 return await HandleToolCallAsync(
                     callId, callRequest, client, baseUrl, cwd, repoRoot, repoInfo,
-                    requestingSessionId: requester.SessionId, driverVendor: driverVendor);
+                    requestingSessionId: requester.SessionId, driverVendor: driverVendor,
+                    reviewerVendorPreference: () => LoadReviewerVendorPreferenceAsync());
             } catch (Exception ex) {
                 // Unexpected: log the detail to stderr (not to the client, which could leak local
                 // paths from IO errors) and return a generic tool error, keeping the loop alive.
@@ -154,7 +157,7 @@ static class McpFlowsServer {
     // Internal (not private) so unit tests can drive the tool-call dispatch directly against a
     // WireMock stub, without spawning the real stdio JSON-RPC process (that full-process path is
     // Capacitor.Cli.Tests.Integration's job).
-    internal static async Task<string> HandleToolCallAsync(
+    internal async Task<string> HandleToolCallAsync(
             JsonNode            id,
             JsonObject          request,
             HttpClient          client,
@@ -169,10 +172,10 @@ static class McpFlowsServer {
             // exercise routing/retry/error paths, where requester identity is irrelevant, can omit
             // it; the production dispatch in RunAsync always supplies it.
             string?             requestingSessionId = null,
-            // How the saved reviewer-vendor preference is read, injectable for the same reason the
-            // clock is: the real read resolves a profile from the user's own config file, which a
-            // unit test must never depend on. Production passes nothing and gets the real read — a
-            // fresh one per consultation, never a cached value (see LoadReviewerVendorPreferenceAsync).
+            // How the saved reviewer-vendor preference is read. RunAsync supplies the real read —
+            // a fresh one per consultation, never a cached value (see
+            // LoadReviewerVendorPreferenceAsync). Absent means "none saved", so a test that does not
+            // care cannot accidentally consult the developer's own config file.
             Func<Task<SavedReviewerVendor>>? reviewerVendorPreference = null,
             // The driver harness, inferred once by RunAsync from the running harness's env, so the
             // reviewer-vendor lookup can echo driver_vendor without this handler reading the env.
@@ -180,7 +183,7 @@ static class McpFlowsServer {
         ) {
         clock                    ??= FlowRetryClock.System;
         backoff                  ??= SettlementBackoff.Default;
-        reviewerVendorPreference ??= LoadReviewerVendorPreferenceAsync;
+        reviewerVendorPreference ??= () => Task.FromResult(new SavedReviewerVendor(null, ProfileConfig.DefaultName));
         var paramsNode = request["params"]?.AsObject();
         var toolName   = paramsNode?["name"]?.GetValue<string>();
         var arguments  = paramsNode?["arguments"]?.AsObject();
@@ -248,7 +251,7 @@ static class McpFlowsServer {
                 var postBody = await postResponse.Content.ReadAsStringAsync();
 
                 if (postResponse.StatusCode == HttpStatusCode.Unauthorized)
-                    return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), isError: true);
+                    return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(config, profiles.Name, apiRoot), isError: true);
 
                 // Catalog-start protocol-v2 skew seam (404 means an old server, before any run
                 // started) plus an explicit-vendor echo check once the route matched.
@@ -340,7 +343,7 @@ static class McpFlowsServer {
                     // send already had its go) is an auth problem, not a vendor one — say so, rather
                     // than printing a raw HTTP 401 the caller would read as a flow rejection.
                     if (retryResponse.StatusCode == HttpStatusCode.Unauthorized)
-                        return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), isError: true);
+                        return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(config, profiles.Name, apiRoot), isError: true);
 
                     if (CheckVendorOverrideResult(toolName, preference, retryResponse.StatusCode, retryResponse.IsSuccessStatusCode, retryBody, out var retryRunIdToClose) is { } retryVendorCheck) {
                         if (retryRunIdToClose is not null)
@@ -399,7 +402,7 @@ static class McpFlowsServer {
                 // Read-only: never MachineId.Get() here — that would persist machine.json on first
                 // use, breaking this tool's read-only/side-effect-free contract. A null id (no
                 // machine.json yet) just drops the same-machine filter for this call.
-                var machineId = MachineId.ReadPersisted();
+                var machineId = new MachineId(config).ReadPersisted();
 
                 // repo_unresolved is a local precondition AND the highest-precedence reason — settle it
                 // before any network call, so an unresolved repo can never surface as an auth/lookup
@@ -413,7 +416,7 @@ static class McpFlowsServer {
                     client, apiRoot, (c, ct) => c.GetAsync(apiRoot + "/api/daemons", ct));
 
                 if (daemonsResp.StatusCode == HttpStatusCode.Unauthorized)
-                    return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), isError: true);
+                    return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(config, profiles.Name, apiRoot), isError: true);
 
                 ReviewerVendorsResult result;
                 if (!daemonsResp.IsSuccessStatusCode) {
@@ -438,7 +441,7 @@ static class McpFlowsServer {
             var body = await httpResponse.Content.ReadAsStringAsync();
 
             if (httpResponse.StatusCode == HttpStatusCode.Unauthorized) {
-                return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), isError: true);
+                return BuildToolResult(id, await AuthRejectionNotice.ForPersistentUnauthorizedAsync(config, profiles.Name, apiRoot), isError: true);
             }
 
             if (!httpResponse.IsSuccessStatusCode) {
@@ -477,14 +480,14 @@ static class McpFlowsServer {
     /// Sends an HTTP request with one-shot retry on 401. The MCP server reuses a single
     /// <see cref="HttpClient"/> for the lifetime of the agent session, so a cached token
     /// that was valid at startup may have expired by the time a tool call is made. On 401
-    /// we ask <see cref="TokenStore.GetValidTokensAsync"/> for a fresh token (which triggers
+    /// we ask <see cref="TokenStore.GetValidTokensForProfileAsync"/> for a fresh token (which triggers
     /// the refresh flow for WorkOS / GitHubApp), update the client's <c>Authorization</c>
     /// header, and retry the same request once. If refresh fails (genuinely not logged in
     /// or refresh-token expired), the original 401 is returned and the caller surfaces the
     /// store-aware <see cref="AuthRejectionNotice"/> line (which keeps the legacy
     /// "Not logged in" wording only for a genuinely missing login).
     /// </summary>
-    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(
+    async Task<HttpResponseMessage> SendWithRefreshRetryAsync(
             HttpClient client, string baseUrl, Func<HttpClient, CancellationToken, Task<HttpResponseMessage>> send,
             CancellationToken ct = default
         ) {
@@ -502,9 +505,10 @@ static class McpFlowsServer {
 
         // A failed rotation must not be worse than no rotation: fall back to whatever is stored so
         // the pre-existing "re-read and resend once" recovery still happens.
+        var tokens    = new TokenStore(config);
         var refreshed = rejected is null
-            ? (await TokenStore.GetValidTokensForServerAsync(baseUrl, ct)).Tokens
-            : await TokenStore.RecoverForServerAsync(baseUrl, rejected, ct);
+            ? (await tokens.GetValidTokensForServerAsync(profiles.Name, baseUrl, ct)).Tokens
+            : await tokens.RecoverForServerAsync(profiles.Name, baseUrl, rejected, ct);
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 
@@ -672,7 +676,7 @@ static class McpFlowsServer {
     /// already given up, and the driver starts the flow again. Omitted, the budget starts now, which
     /// is every other caller's behavior unchanged.</para>
     /// </summary>
-    internal static async Task<SettlementSendResult> SendWithSettlementRetryAsync(
+    internal async Task<SettlementSendResult> SendWithSettlementRetryAsync(
             HttpClient                                                    client,
             string                                                        apiRoot,
             Func<HttpClient, CancellationToken, Task<HttpResponseMessage>> send,
@@ -913,15 +917,16 @@ static class McpFlowsServer {
     /// make a unit test depend on the developer's own config file; the production binding is covered
     /// end-to-end by the KCAP_CONFIG_DIR-isolated integration test.</para>
     /// </summary>
-    static async Task<SavedReviewerVendor> LoadReviewerVendorPreferenceAsync() {
-        var config   = await AppConfig.LoadProfileConfig();
-        var resolved = AppConfig.ResolvedProfile?.ProfileName;
+    async Task<SavedReviewerVendor> LoadReviewerVendorPreferenceAsync() {
+        // Read from disk per consultation, not from the startup snapshot: this server outlives the
+        // invocation that started it, and the error it returns TELLS the user to go and save this
+        // very setting from another process. Which profile to read is still fixed at startup — only
+        // the setting needs currency, and this is the only reader in the CLI that does.
+        var current = await AppConfig.LoadProfileConfig(config);
 
-        var name = !string.IsNullOrEmpty(resolved)              ? resolved
-                 : !string.IsNullOrEmpty(config.ActiveProfile)  ? config.ActiveProfile
-                 : "default";
-
-        return new(config.Profiles.GetValueOrDefault(name)?.EffectiveReviewerVendorPreference(), name);
+        return new(
+            current.Profiles.GetValueOrDefault(profiles.Name)?.EffectiveReviewerVendorPreference(),
+            profiles.Name);
     }
 
     /// <summary>Reads a string property without throwing on a missing key, a null, or a
@@ -1051,7 +1056,7 @@ static class McpFlowsServer {
     /// environment here — an inherited <c>KCAP_SESSION_ID</c> names the session that launched this
     /// one. It is a required parameter so no call site can acquire it ambiently by accident.</para>
     /// </summary>
-    internal static async Task<System.Net.Http.HttpResponseMessage> StartFlowAsync(
+    internal async Task<System.Net.Http.HttpResponseMessage> StartFlowAsync(
             HttpClient         client,
             string             apiRoot,
             JsonObject?        arguments,
@@ -1114,7 +1119,7 @@ static class McpFlowsServer {
         // mirror rather than aborting the whole flow-start.
         string? machineId;
         try {
-            machineId = MachineId.Get();
+            machineId = new MachineId(config).Get();
         } catch (Exception e) {
             await Console.Error.WriteLineAsync(
                 $"kcap mcp flows: could not resolve machine id ({e.Message}); starting review flow without requester_machine_id (server falls back to mirror)");
@@ -1386,7 +1391,7 @@ static class McpFlowsServer {
     /// (the instant before its first POST), so the poll lane shares that budget with the settlement
     /// lane rather than starting fresh. Null from a call site with no settlement lane in front of it,
     /// which then falls back to <see cref="PollCap"/> alone.</summary>
-    static async Task<PollResult> ResolveRoundResultAsync(HttpClient client, string apiRoot, string postBody, string toolName, bool wasDynamicStart, FlowRetryClock clock, SettlementBackoff backoff, DateTimeOffset? toolCallStartedAt = null) {
+    async Task<PollResult> ResolveRoundResultAsync(HttpClient client, string apiRoot, string postBody, string toolName, bool wasDynamicStart, FlowRetryClock clock, SettlementBackoff backoff, DateTimeOffset? toolCallStartedAt = null) {
         if (TryFormatRoundlessStart(postBody, out var roundlessPendingIds) is { } roundless) {
             if (roundlessPendingIds.Count > 0 &&
                 JsonNode.Parse(postBody)?.AsObject()?["flow_run_id"]?.GetValue<string>() is { } roundlessRunId)
@@ -1421,7 +1426,7 @@ static class McpFlowsServer {
     static string StatusToolNameFor(string toolName) =>
         toolName is "start_review_flow" or "submit_review_round" ? "get_review_flow_status" : "get_flow_status";
 
-    static async Task<PollResult> PollUntilTerminalAsync(HttpClient client, string apiRoot, string flowRunId, int roundNumber, string toolName, bool wasDynamicStart, FlowRetryClock clock, SettlementBackoff backoff, DateTimeOffset? toolCallStartedAt = null) {
+    async Task<PollResult> PollUntilTerminalAsync(HttpClient client, string apiRoot, string flowRunId, int roundNumber, string toolName, bool wasDynamicStart, FlowRetryClock clock, SettlementBackoff backoff, DateTimeOffset? toolCallStartedAt = null) {
         var url                   = $"{apiRoot}/api/flows/{Uri.EscapeDataString(flowRunId)}";
         var pollStartedAt         = clock.UtcNow;
         // The poll lane's cap, CLIPPED to what remains of the shared ToolCallBudget. Absent an anchor
@@ -1462,7 +1467,7 @@ static class McpFlowsServer {
                 }
 
                 if (resp.StatusCode == HttpStatusCode.Unauthorized)
-                    return new(await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), true);
+                    return new(await AuthRejectionNotice.ForPersistentUnauthorizedAsync(config, profiles.Name, apiRoot), true);
 
                 // Fix #4: non-transient 4xx (e.g. 400, 403, 409 budget_unverifiable) fail
                 // immediately — coded bodies surface via FormatFlowStartError like the POST path.
@@ -1548,7 +1553,7 @@ static class McpFlowsServer {
     /// <see cref="FormatStatusResponse(string, out IReadOnlyList{string})"/> — the same envelope a <c>wait:false</c> call renders — never
     /// <see cref="FormatPolledRoundResult(JsonObject, string, out IReadOnlyList{string})"/>'s round-submission shape. Reusing it would make the tool's
     /// response shape depend on whether <c>wait</c> was set.</para></summary>
-    static async Task<PollResult> PollStatusUntilTerminalAsync(
+    async Task<PollResult> PollStatusUntilTerminalAsync(
             HttpClient client, string apiRoot, string flowRunId, string toolName, FlowRetryClock clock, SettlementBackoff backoff) {
         var url                   = $"{apiRoot}/api/flows/{Uri.EscapeDataString(flowRunId)}";
         var pollStartedAt         = clock.UtcNow;
@@ -1572,7 +1577,7 @@ static class McpFlowsServer {
 
             using (resp) {
                 if (resp.StatusCode == HttpStatusCode.Unauthorized)
-                    return new(await AuthRejectionNotice.ForPersistentUnauthorizedAsync(apiRoot), true);
+                    return new(await AuthRejectionNotice.ForPersistentUnauthorizedAsync(config, profiles.Name, apiRoot), true);
 
                 var statusCode = (int)resp.StatusCode;
                 if (statusCode is >= 400 and < 500) {
@@ -2004,7 +2009,7 @@ static class McpFlowsServer {
     /// failure (non-2xx or exception), then swallows and logs to stderr — the next status/round/
     /// close call will see the same messages still pending and re-render + re-ack them, so a lost
     /// ack only delays cleanup, it never drops a message.</summary>
-    internal static async Task AckRenderedMessagesAsync(
+    internal async Task AckRenderedMessagesAsync(
             HttpClient            client,
             string                apiRoot,
             string                flowRunId,

@@ -11,6 +11,12 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// after recovery, without a manual `kcap import`.
 /// </summary>
 public class ShutdownTranscriptSpoolTests {
+    WatchCommand Watch => field ??= new(Config.Root, Resolutions.None(Config.Root));
+
+    CursorMarkers Markers => new(Config.Root);
+
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     const string Sid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     [Test]
@@ -59,7 +65,7 @@ public class ShutdownTranscriptSpoolTests {
             "{\"line\":0}\n{\"line\":1}\n{\"line\":2}\n{\"line\":3}\n");
 
         var spool  = new TranscriptSpool(spoolDir);
-        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+        var result = await Watch.SpoolUndeliveredTranscriptTailAsync(
             spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 2, CancellationToken.None);
 
         await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.Appended);
@@ -90,7 +96,7 @@ public class ShutdownTranscriptSpoolTests {
 
         var spool  = new TranscriptSpool(spoolDir);
         // LinesProcessed already at EOF — the final drain sent everything before the hub went down.
-        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+        var result = await Watch.SpoolUndeliveredTranscriptTailAsync(
             spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 2, CancellationToken.None);
 
         await Assert.That(result).IsNull();
@@ -109,7 +115,7 @@ public class ShutdownTranscriptSpoolTests {
         await File.WriteAllTextAsync(transcriptPath, bigLine + "\n");
 
         var spool  = new TranscriptSpool(spoolDir, capBytes: 64); // tiny cap — the batch can't fit
-        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+        var result = await Watch.SpoolUndeliveredTranscriptTailAsync(
             spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 0, CancellationToken.None);
 
         await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.MarkedNeedsImport);
@@ -133,10 +139,10 @@ public class ShutdownTranscriptSpoolTests {
         // Lines beyond `linesProcessed` exist on disk — exactly what a rejected/discarded
         // batch left behind when the guard tripped mid-poll.
         await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n{\"line\":1}\n{\"line\":2}\n");
-        CursorMarkers.Quarantine(sid, "rewrite detected");
+        Markers.Quarantine(sid, "rewrite detected");
 
         var spool  = new TranscriptSpool(spoolDir);
-        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+        var result = await Watch.SpoolUndeliveredTranscriptTailAsync(
             spool, transcriptPath, sid, agentId: null, vendor: "cursor", linesProcessed: 0, CancellationToken.None);
 
         await Assert.That(result).IsNull();
@@ -149,7 +155,7 @@ public class ShutdownTranscriptSpoolTests {
     [Test]
     public async Task shutdown_still_spools_for_non_cursor_vendors_when_a_cursor_marker_exists_for_a_different_session() {
         var quarantinedSid = Guid.NewGuid().ToString("N");
-        CursorMarkers.Quarantine(quarantinedSid, "unrelated");
+        Markers.Quarantine(quarantinedSid, "unrelated");
 
         using var tmp = new TempDir();
         var spoolDir       = tmp.PathTo("shut-nonCursor-spool");
@@ -158,7 +164,7 @@ public class ShutdownTranscriptSpoolTests {
         await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n");
 
         var spool  = new TranscriptSpool(spoolDir);
-        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+        var result = await Watch.SpoolUndeliveredTranscriptTailAsync(
             spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 0, CancellationToken.None);
 
         await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.Appended);
@@ -170,7 +176,7 @@ public class ShutdownTranscriptSpoolTests {
         using var tmp = new TempDir();
         var spoolDir = tmp.PathTo("shut-missing-spool");
         var spool  = new TranscriptSpool(spoolDir);
-        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+        var result = await Watch.SpoolUndeliveredTranscriptTailAsync(
             spool, "/tmp/kcap-nonexistent-" + Guid.NewGuid(), Sid, agentId: null, vendor: "kiro",
             linesProcessed: 0, CancellationToken.None);
 
@@ -196,7 +202,7 @@ public class ShutdownTranscriptSpoolTests {
         await File.WriteAllTextAsync(transcriptPath, "{\"line\":0}\n");
 
         var spool  = new TranscriptSpool(spoolDir);
-        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+        var result = await Watch.SpoolUndeliveredTranscriptTailAsync(
             spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 0, CancellationToken.None);
 
         await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.Appended);
@@ -219,7 +225,7 @@ public class ShutdownTranscriptSpoolTests {
         await File.WriteAllTextAsync(transcriptPath, "{\"token\":\"" + secret + "\"}\n");
 
         var spool  = new TranscriptSpool(spoolDir);
-        var result = await WatchCommand.SpoolUndeliveredTranscriptTailAsync(
+        var result = await Watch.SpoolUndeliveredTranscriptTailAsync(
             spool, transcriptPath, Sid, agentId: null, vendor: "kiro", linesProcessed: 0, CancellationToken.None);
 
         await Assert.That(result).IsEqualTo(TranscriptSpool.AppendResult.Appended);

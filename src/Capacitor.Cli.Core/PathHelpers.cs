@@ -9,8 +9,4 @@ public static class PathHelpers {
             return home;
         }
     }
-
-    static readonly string ConfigDir = Environment.GetEnvironmentVariable("KCAP_CONFIG_DIR") ?? Path.Combine(HomeDirectory, ".config", "kcap");
-
-    public static string ConfigPath(string name) => Path.Combine(ConfigDir, name);
 }

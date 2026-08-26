@@ -1,6 +1,7 @@
 using System.Text;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Harness.OpenCode;
 using Capacitor.Cli.Harness.Gemini;
 
@@ -21,7 +22,9 @@ namespace Capacitor.Cli.Harness.OpenCode;
 /// session-end path OpenCode has. Best-effort per step (a failure on one subagent — or
 /// one step — never skips the rest).
 /// </summary>
-static class OpenCodeSubagentTeardown {
+sealed class OpenCodeSubagentTeardown(ConfigRoot config, ProfileContext profiles) {
+    readonly WatcherManager _watchers = new(config, profiles);
+
     /// <summary>
     /// Shared budget for the best-effort kill+drain cleanup ACROSS all children, so a slow
     /// first child can't consume it and starve later children. <c>subagent-stop</c> is ALWAYS
@@ -40,7 +43,7 @@ static class OpenCodeSubagentTeardown {
 
     /// <summary>Returns the number of discovered children left UNFINALIZED because the overall
     /// budget elapsed (0 in the normal case) so the caller can log it.</summary>
-    internal static async Task<int> DrainAsync(string baseUrl, string sessionId, string parentTranscriptPath) {
+    internal async Task<int> DrainAsync(string sessionId, string parentTranscriptPath) {
         var subFiles = OpenCodeSubagentDiscovery.EnumerateSubagentFiles(parentTranscriptPath);
         if (subFiles.Count == 0) return 0;
 
@@ -64,20 +67,21 @@ static class OpenCodeSubagentTeardown {
             if (DateTimeOffset.UtcNow < cleanupDeadline) {
                 // InlineDrain overlaps harmlessly with any still-live watcher (server dedupes by
                 // deterministic event id); both capped so neither blocks process termination.
-                await CappedAsync(() => WatcherManager.KillWatcher($"{sessionId}-{agentId}"),                               TimeSpan.FromSeconds(1.5));
-                await CappedAsync(() => WatcherManager.InlineDrainAsync(baseUrl, sessionId, subFile, agentId, vendor: "opencode"), TimeSpan.FromSeconds(2.5));
+                await CappedAsync(() => _watchers.KillWatcher($"{sessionId}-{agentId}"),                               TimeSpan.FromSeconds(1.5));
+                await CappedAsync(() => _watchers.InlineDrainAsync(sessionId, subFile, agentId, vendor: "opencode"), TimeSpan.FromSeconds(2.5));
             }
 
             // The critical SubagentCompleted — attempted for every child within the overall budget.
-            await CappedAsync(() => PostStopAsync(baseUrl, sessionId, agentId, agentType, subFile), TimeSpan.FromSeconds(2.5));
+            await CappedAsync(() => PostStopAsync(sessionId, agentId, agentType, subFile), TimeSpan.FromSeconds(2.5));
             stopped++;
         }
 
         return subFiles.Count - stopped;
     }
 
-    static async Task PostStopAsync(string baseUrl, string sessionId, string agentId, string agentType, string subFile) {
-        using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+    async Task PostStopAsync(string sessionId, string agentId, string agentType, string subFile) {
+        var       baseUrl = profiles.Resolution.ServerUrl!;
+        using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
         var       payload = OpenCodeSubagentDiscovery.BuildStopPayload(sessionId, agentId, agentType, subFile);
         using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
         await client.PostWithRetryAsync($"{baseUrl}/hooks/subagent-stop", content);

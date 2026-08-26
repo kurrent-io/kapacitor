@@ -44,15 +44,9 @@ public record DaemonSettings {
 internal partial class ConfigJsonContext : JsonSerializerContext;
 
 public static class AppConfig {
-    static readonly string ConfigPath = PathHelpers.ConfigPath("config.json");
-
     // Flipped the first time a legacy v1 config is migrated to v2 in this process,
     // so the deprecation notice in LoadProfileConfig fires at most once per run.
     static bool _v1MigrationSignalled;
-
-    public static string? ResolvedServerUrl { get; private set; }
-
-    public static ResolvedProfile? ResolvedProfile { get; private set; }
 
     public static string RepoRoot => GetGitRepoRoot() ?? Environment.CurrentDirectory;
 
@@ -62,15 +56,15 @@ public static class AppConfig {
     /// remote matching — used by the daemon, which is not bound to a working
     /// directory.
     /// </summary>
-    public static async Task<string?> ResolveActiveProfile(string[] args) {
+    public static async Task<ProfileContext> ResolveActiveProfile(string[] args, ConfigRoot config) {
         var idx          = Array.IndexOf(args, "--server-url");
         var cliServerUrl = (idx >= 0 && idx + 1 < args.Length) ? args[idx + 1] : null;
         var envUrl       = Environment.GetEnvironmentVariable("KCAP_URL");
         var envProfile   = Environment.GetEnvironmentVariable("KCAP_PROFILE");
 
-        var config   = await LoadProfileConfig();
+        var loaded   = await LoadProfileConfig(config);
         var resolver = new ProfileResolver(
-            config,
+            loaded,
             cliServerUrl,
             envUrl,
             envProfile,
@@ -80,17 +74,15 @@ public static class AppConfig {
         );
 
         var resolved = resolver.Resolve();
-        ResolvedProfile   = resolved;
-        ResolvedServerUrl = resolved.ServerUrl;
 
         if (resolved.Warning is not null) {
             await Console.Error.WriteLineAsync($"Warning: {resolved.Warning}");
         }
 
-        return resolved.ServerUrl;
+        return new(resolved, loaded);
     }
 
-    public static async Task<string?> ResolveServerUrl(string[] args, int gitTimeoutMs = 5000) {
+    public static async Task<ProfileContext> ResolveForRepo(string[] args, ConfigRoot root, int gitTimeoutMs = 5000) {
         var idx          = Array.IndexOf(args, "--server-url");
         var cliServerUrl = (idx >= 0 && idx + 1 < args.Length) ? args[idx + 1] : null;
 
@@ -99,7 +91,7 @@ public static class AppConfig {
 
         // Short-circuit: if explicit URL is provided, skip all profile/repo resolution
         if (cliServerUrl is not null || envUrl is not null) {
-            var config = await LoadProfileConfig();
+            var config = await LoadProfileConfig(root);
 
             var resolver = new ProfileResolver(
                 config,
@@ -111,14 +103,12 @@ public static class AppConfig {
                 repoPath: null
             );
             var quickResolved = resolver.Resolve();
-            ResolvedProfile   = quickResolved;
-            ResolvedServerUrl = quickResolved.ServerUrl;
 
-            return quickResolved.ServerUrl;
+            return new(quickResolved, config);
         }
 
         {
-            var config = await LoadProfileConfig();
+            var config = await LoadProfileConfig(root);
 
             var repoRoot = GetGitRepoRoot(gitTimeoutMs) ?? Environment.CurrentDirectory;
 
@@ -147,14 +137,12 @@ public static class AppConfig {
             );
 
             var resolved = resolver.Resolve();
-            ResolvedProfile   = resolved;
-            ResolvedServerUrl = resolved.ServerUrl;
 
             if (resolved.Warning is not null) {
                 await Console.Error.WriteLineAsync($"Warning: {resolved.Warning}");
             }
 
-            return resolved.ServerUrl;
+            return new(resolved, config);
         }
     }
 
@@ -233,44 +221,6 @@ public static class AppConfig {
     public static readonly string[] ValidVisibilities = ["private", "project", "org_public", "public"];
 
     /// <summary>
-    /// Directly assigns <see cref="ResolvedServerUrl"/> and <see cref="ResolvedProfile"/>
-    /// to the given values, bypassing precedence resolution entirely — does
-    /// **not** call <see cref="ResolveServerUrl"/>. Used by <c>kcap setup</c>
-    /// immediately after saving a new/updated profile, so that any
-    /// same-process work afterward (e.g. the Step 6 import) observes the
-    /// exact normalized server URL and profile object just written to disk.
-    /// Re-running <see cref="ResolveServerUrl"/> instead could produce a
-    /// different result than what was just saved (e.g. a raw scheme-less
-    /// <c>--server-url</c> re-resolving to its unnormalized form, or a
-    /// <c>KCAP_URL</c>/<c>KCAP_PROFILE</c> override picking a different
-    /// server/profile than the one setup just wrote).
-    /// </summary>
-    public static void SetResolvedState(string serverUrl, string profileName, Profile profile) {
-        ResolvedServerUrl = serverUrl;
-        // Profile, not a parameter: the only caller is `kcap setup`, immediately after persisting the
-        // profile whose server_url this is. The profile owns the value, so that is what remediation
-        // must name.
-        ResolvedProfile   = new ResolvedProfile(serverUrl, profileName, profile, null, UrlSource.Profile);
-    }
-
-    /// <summary>
-    /// Where the resolved server URL came from, for the diagnostic a guard writes when it declines to
-    /// use it. Falls back to <see cref="UrlSource.Profile"/> before resolution has run, which is the
-    /// safe default: its remediation points at config rather than at an override the user never set.
-    /// </summary>
-    public static UrlSource ResolvedUrlSource => ResolvedProfile?.Source ?? UrlSource.Profile;
-
-    /// <summary>
-    /// Test seam: clears the process-global resolved state. Token lookup consults
-    /// <see cref="ResolvedProfile"/>, so a value left behind by an earlier test would silently
-    /// redirect a later test's token reads to another profile.
-    /// </summary>
-    internal static void ResetResolvedStateForTesting() {
-        ResolvedServerUrl = null;
-        ResolvedProfile   = null;
-    }
-
-    /// <summary>
     /// Whether any profile has actually been configured — NOT whether <see cref="LoadProfileConfig"/>
     /// returned one. That method synthesizes a `default` entry whenever config.json is missing or
     /// unreadable, so `Profiles.Count > 0` is true on a machine that has never run kcap and cannot
@@ -280,18 +230,20 @@ public static class AppConfig {
     public static bool HasConfiguredProfile(ProfileConfig config) =>
         config.Profiles.Values.Any(p => !string.IsNullOrWhiteSpace(p.ServerUrl));
 
-    public static async Task<ProfileConfig> LoadProfileConfig(CancellationToken ct = default) {
-        if (!File.Exists(ConfigPath))
-            return new() { Profiles = new() { ["default"] = new() } };
+    public static async Task<ProfileConfig> LoadProfileConfig(ConfigRoot config, CancellationToken ct = default) {
+        var configPath = GetConfigPath(config);
+
+        if (!File.Exists(configPath))
+            return ProfileConfig.Fresh();
 
         string json;
 
         try {
-            json = await File.ReadAllTextAsync(ConfigPath, ct);
+            json = await File.ReadAllTextAsync(configPath, ct);
         } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
-            await Console.Error.WriteLineAsync($"Warning: could not read config at {ConfigPath}: {ex.Message}");
+            await Console.Error.WriteLineAsync($"Warning: could not read config at {configPath}: {ex.Message}");
 
-            return new() { Profiles = new() { ["default"] = new() } };
+            return ProfileConfig.Fresh();
         }
 
         ConfigMigration.MigrationResult result;
@@ -299,9 +251,9 @@ public static class AppConfig {
         try {
             result = ConfigMigration.MigrateIfNeeded(json);
         } catch (JsonException ex) {
-            await Console.Error.WriteLineAsync($"Warning: invalid config at {ConfigPath}: {ex.Message}");
+            await Console.Error.WriteLineAsync($"Warning: invalid config at {configPath}: {ex.Message}");
 
-            return new() { Profiles = new() { ["default"] = new() } };
+            return ProfileConfig.Fresh();
         }
 
         // Persist a v1→v2 migration when possible, but never drop the in-memory
@@ -331,7 +283,7 @@ public static class AppConfig {
                 // re-applies ConfigMigration itself, so it publishes the same migrated form
                 // `result.Config` holds here — the mutate callback need not (and must not,
                 // to avoid clobbering a concurrent writer) reuse this already-read snapshot.
-                await ConfigMutator.MutateAsync(c => c, ct);
+                await ConfigMutator.MutateAsync(config, c => c, ct);
             } catch (Exception ex) when (ex is not OperationCanceledException) {
                 // Broad on purpose: unlike the pre-ConfigMutator write, this path now also goes
                 // through ConfigFileLock, which can throw TimeoutException (10s lock wait) or a
@@ -340,7 +292,7 @@ public static class AppConfig {
                 // config must never be dropped just because the best-effort persist couldn't run.
                 // OperationCanceledException is excluded so a caller's own cancellation still
                 // propagates instead of being swallowed as a warning.
-                await Console.Error.WriteLineAsync($"Warning: could not persist migrated config at {ConfigPath}: {ex.Message}");
+                await Console.Error.WriteLineAsync($"Warning: could not persist migrated config at {configPath}: {ex.Message}");
             }
         }
 
@@ -374,30 +326,9 @@ public static class AppConfig {
         return rebuilt is null ? config : config with { Profiles = rebuilt };
     }
 
-    public static string GetConfigPath() => ConfigPath;
+    /// <summary>The profile config file. <c>config.json</c>'s name is AppConfig's to know, not the
+    /// root's.</summary>
+    public const string ConfigFileName = "config.json";
 
-    /// <summary>
-    /// Returns the profile whose per-profile settings apply to the current
-    /// process. Prefers <paramref name="resolvedProfile"/> (set by
-    /// <see cref="ResolveServerUrl"/>) and falls back to the on-disk
-    /// <see cref="ProfileConfig.ActiveProfile"/> when URL overrides
-    /// (<c>--server-url</c> / <c>KCAP_URL</c>) caused the resolver to
-    /// skip profile selection. Exposed for testing; production callers should
-    /// use <see cref="GetActiveProfileAsync"/>.
-    /// </summary>
-    public static Profile? PickActiveProfile(Profile? resolvedProfile, ProfileConfig fallback) =>
-        resolvedProfile ?? fallback.Profiles.GetValueOrDefault(fallback.ActiveProfile);
-
-    /// <summary>
-    /// Convenience wrapper around <see cref="PickActiveProfile"/> that pulls
-    /// the resolved profile from <see cref="ResolvedProfile"/> and loads the
-    /// fallback config from disk when needed.
-    /// </summary>
-    public static async Task<Profile?> GetActiveProfileAsync(CancellationToken ct = default) {
-        if (ResolvedProfile?.Profile is { } profile) return profile;
-
-        // Thread ct so a caller under a hard deadline (e.g. the Cursor hook's 2s dispatcher race)
-        // lets the disk read observe cancellation instead of lingering after its work is abandoned.
-        return PickActiveProfile(null, await LoadProfileConfig(ct));
-    }
+    public static string GetConfigPath(ConfigRoot config) => config.Path(ConfigFileName);
 }

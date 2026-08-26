@@ -16,7 +16,8 @@ namespace Capacitor.Cli.Core.Auth;
 /// <c>HttpClientExtensions.CreateAuthenticatedClientAsync</c>, and call sites that used to run
 /// their own retry loop on top of that client have had theirs removed.
 /// </summary>
-internal sealed class UnauthorizedRetryHandler(StoredTokens initial, string targetBaseUrl) : DelegatingHandler {
+internal sealed class UnauthorizedRetryHandler(
+        ConfigRoot config, string profile, StoredTokens initial, string targetBaseUrl) : DelegatingHandler {
     // Swapped as a whole reference, never mutated in place, so concurrent requests either see the
     // old token or the new one. Volatile because requests on a long-lived client run on many
     // threads and a refresh on one must become visible to the rest.
@@ -37,7 +38,7 @@ internal sealed class UnauthorizedRetryHandler(StoredTokens initial, string targ
         // `applied` — not a re-read of _current — is what this request actually sent. A peer
         // request may have refreshed in the meantime, and attributing the rejection to its fresh
         // token would rotate a credential that was never rejected.
-        var refreshed = await TokenStore.RecoverForServerAsync(targetBaseUrl, applied.AccessToken, cancellationToken);
+        var refreshed = await new TokenStore(config).RecoverForServerAsync(profile, targetBaseUrl, applied.AccessToken, cancellationToken);
 
         if (refreshed is null) return response; // Nothing better to try — surface the original 401.
 

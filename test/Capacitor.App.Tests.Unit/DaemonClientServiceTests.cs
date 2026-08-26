@@ -472,7 +472,7 @@ public class DaemonClientServiceTests {
     }
 
     // Task 10: DaemonClientService.BuildStartDaemon is the extracted request-building seam
-    // CreateResolved wires to the real AppConfig.ResolvedProfile — this drives it directly
+    // CreateResolved wires to the resolution the gate was evaluated on — this drives it directly
     // against a scripted profile resolver, proving the main-window Start path produces a
     // DetachedStart MutationRequest through the lane rather than any direct process spawn.
     [Test]
@@ -484,7 +484,7 @@ public class DaemonClientServiceTests {
         }
 
         var profile = new ResolvedProfile("https://kcap.example.com", "default", null, null);
-        var start = DaemonClientService.BuildStartDaemon("daemon-a", () => profile, RunMutation);
+        var start = DaemonClientService.BuildStartDaemon("daemon-a", profile, RunMutation);
 
         var outcome = await start(CancellationToken.None);
 
@@ -507,7 +507,7 @@ public class DaemonClientServiceTests {
             return Task.FromResult<MutationOutcome>(new MutationOutcome.Succeeded());
         }
 
-        var start = DaemonClientService.BuildStartDaemon("daemon-a", () => null, RunMutation);
+        var start = DaemonClientService.BuildStartDaemon("daemon-a", null, RunMutation);
 
         var outcome = await start(CancellationToken.None);
 

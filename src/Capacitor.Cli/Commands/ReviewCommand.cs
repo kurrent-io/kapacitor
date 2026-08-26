@@ -1,11 +1,14 @@
 using System.Diagnostics;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Commands;
 
 namespace Capacitor.Cli.Commands;
 
-static class ReviewCommand {
-    public static async Task<int> HandleReview(string baseUrl, string prIdentifier) {
+class ReviewCommand(ConfigRoot config, ProfileContext profiles) {
+    public async Task<int> HandleReview(string prIdentifier) {
+        var baseUrl = profiles.Resolution.ServerUrl!;
+
         // Parse PR identifier
         if (!PrRefParser.TryParse(prIdentifier, out var owner, out var repo, out var prNumber)) {
             await Console.Error.WriteLineAsync($"Could not parse PR identifier: {prIdentifier}");
@@ -20,7 +23,7 @@ static class ReviewCommand {
         await Console.Error.WriteLineAsync($"Reviewing PR #{prNumber} in {owner}/{repo}...");
 
         // Verify that review context exists on the server
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
 
         try {
             var response = await client.GetAsync(

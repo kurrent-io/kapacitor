@@ -23,13 +23,12 @@ public readonly record struct TelemetryStateFile(bool? Enabled, bool NoticeShown
 /// a privacy failure.
 /// </summary>
 public static class TelemetryState {
-    /// <summary>Test seam. Null in production, where the path resolves under the config dir.</summary>
-    public static string? PathOverride { get; set; }
+    const string StateFileName = "telemetry.json";
 
-    static string Path => PathOverride ?? PathHelpers.ConfigPath("telemetry.json");
+    static string StatePath(ConfigRoot config) => config.Path(StateFileName);
 
-    public static TelemetryStateFile Read() {
-        var path = Path;
+    public static TelemetryStateFile Read(ConfigRoot config) {
+        var path = StatePath(config);
         if (!File.Exists(path)) return default;
 
         try {
@@ -40,7 +39,7 @@ public static class TelemetryState {
         }
     }
 
-    public static bool? PersistedEnabled() => Read().Enabled;
+    public static bool? PersistedEnabled(ConfigRoot config) => Read(config).Enabled;
 
     /// <summary>
     /// Persists the enable flag. Disabling also deletes the device id file (see
@@ -50,13 +49,13 @@ public static class TelemetryState {
     /// <see cref="TelemetryDeviceId.GetOrCreate"/> call, which is more private than resurrecting the
     /// discarded one.
     /// </summary>
-    public static void SetEnabled(bool enabled) {
-        Mutate(state => state with { Enabled = enabled });
-        if (!enabled) TelemetryDeviceId.Delete();
+    public static void SetEnabled(bool enabled, ConfigRoot config) {
+        Mutate(config, state => state with { Enabled = enabled });
+        if (!enabled) TelemetryDeviceId.Delete(config);
     }
 
-    public static void MarkNoticeShown() =>
-        Mutate(state => state with { NoticeShown = true });
+    public static void MarkNoticeShown(ConfigRoot config) =>
+        Mutate(config, state => state with { NoticeShown = true });
 
     /// <summary>
     /// Acquires a cross-process lock, reads current state, applies the mutation, and writes
@@ -65,12 +64,12 @@ public static class TelemetryState {
     /// On lock-acquisition failure, falls back to unlocked read-modify-write to ensure changes
     /// like SetEnabled(false) are never silently dropped.
     /// </summary>
-    static void Mutate(Func<TelemetryStateFile, TelemetryStateFile?> apply) {
-        var path = Path;
-        var dir = System.IO.Path.GetDirectoryName(path)!;
+    static void Mutate(ConfigRoot config, Func<TelemetryStateFile, TelemetryStateFile?> apply) {
+        var path = StatePath(config);
+        var dir = Path.GetDirectoryName(path)!;
 
         try {
-            using (ConfigFileLock.Acquire(path, TimeSpan.FromSeconds(2))) {
+            using (config.AcquireLock(StateFileName, TimeSpan.FromSeconds(2))) {
                 Directory.CreateDirectory(dir);
                 var currentState = ReadLocked(path);
                 var newState = apply(currentState);
@@ -128,8 +127,8 @@ public static class TelemetryState {
     /// reader then only ever sees the fully-old or fully-new file, never a torn one.
     /// </summary>
     static void WriteLocked(string path, TelemetryStateFile state) {
-        var dir      = System.IO.Path.GetDirectoryName(path) ?? "";
-        var tempPath = System.IO.Path.Combine(dir, $".{System.IO.Path.GetFileName(path)}.tmp-{Guid.NewGuid():N}");
+        var dir      = Path.GetDirectoryName(path) ?? "";
+        var tempPath = Path.Combine(dir, $".{Path.GetFileName(path)}.tmp-{Guid.NewGuid():N}");
 
         try {
             var json = JsonSerializer.Serialize(state, CapacitorJsonContext.Default.TelemetryStateFile);

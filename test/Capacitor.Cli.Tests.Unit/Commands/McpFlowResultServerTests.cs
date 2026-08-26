@@ -7,6 +7,13 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class McpFlowResultServerTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // The dispatch is profile-scoped: its token refresh resolves a profile. These tests exercise
+    // routing, not profile selection.
+    McpFlowResultServer Server() =>
+        new(Config.Root, Resolutions.None(Config.Root));
+
     static JsonObject Args(string? roundToken = "round-1", string? kind = "findings", string? findings = "1. issue") {
         var o = new JsonObject();
         if (roundToken is not null) o["round_token"] = (JsonNode?)roundToken;
@@ -31,7 +38,7 @@ public class McpFlowResultServerTests {
         using var client = new HttpClient();
 
         var delays = new List<TimeSpan>();
-        var (text, isError) = await McpFlowResultServer.SubmitCoreAsync(client, server.Url!, "agent-1", Args(), NoDelay(delays));
+        var (text, isError) = await Server().SubmitCoreAsync(client, server.Url!, "agent-1", Args(), NoDelay(delays));
 
         await Assert.That(isError).IsFalse();
         await Assert.That(text).IsEqualTo("Result recorded. You may end your reply now.");
@@ -58,7 +65,7 @@ public class McpFlowResultServerTests {
               .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"flow_run_id":"f1","round_id":"r1","round_number":1}"""));
         using var client = new HttpClient();
 
-        var (text, isError) = await McpFlowResultServer.SubmitCoreAsync(
+        var (text, isError) = await Server().SubmitCoreAsync(
             client, "http://unreachable.invalid", "agent-1", Args(), NoDelay([]),
             submitUrlOverride: $"{server.Url}/abc123/flow-result");
 
@@ -74,7 +81,7 @@ public class McpFlowResultServerTests {
               .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"flow_run_id":"f1","round_id":"r1","round_number":1}"""));
         using var client = new HttpClient();
 
-        var (_, isError) = await McpFlowResultServer.SubmitCoreAsync(client, server.Url!, "agent-1", Args(kind: "clean", findings: null), NoDelay([]));
+        var (_, isError) = await Server().SubmitCoreAsync(client, server.Url!, "agent-1", Args(kind: "clean", findings: null), NoDelay([]));
 
         await Assert.That(isError).IsFalse();
         // McpJsonContext ignores null when writing, so a clean submit must not carry a text key.
@@ -95,7 +102,7 @@ public class McpFlowResultServerTests {
         using var client = new HttpClient();
 
         var delays = new List<TimeSpan>();
-        var (text, isError) = await McpFlowResultServer.SubmitCoreAsync(client, server.Url!, "agent-1", Args(), NoDelay(delays));
+        var (text, isError) = await Server().SubmitCoreAsync(client, server.Url!, "agent-1", Args(), NoDelay(delays));
 
         await Assert.That(isError).IsFalse();
         await Assert.That(text).IsEqualTo("Result recorded. You may end your reply now.");
@@ -111,7 +118,7 @@ public class McpFlowResultServerTests {
         using var client = new HttpClient();
 
         var delays = new List<TimeSpan>();
-        var (text, isError) = await McpFlowResultServer.SubmitCoreAsync(client, server.Url!, "agent-1", Args(), NoDelay(delays));
+        var (text, isError) = await Server().SubmitCoreAsync(client, server.Url!, "agent-1", Args(), NoDelay(delays));
 
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("no round awaiting a result");
@@ -129,7 +136,7 @@ public class McpFlowResultServerTests {
         using var client = new HttpClient();
 
         var delays = new List<TimeSpan>();
-        var (text, isError) = await McpFlowResultServer.SubmitCoreAsync(client, server.Url!, "agent-1", Args(roundToken: "round-0"), NoDelay(delays));
+        var (text, isError) = await Server().SubmitCoreAsync(client, server.Url!, "agent-1", Args(roundToken: "round-0"), NoDelay(delays));
 
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("Discard this result entirely");
@@ -146,7 +153,7 @@ public class McpFlowResultServerTests {
         using var client = new HttpClient();
 
         var delays = new List<TimeSpan>();
-        var (text, isError) = await McpFlowResultServer.SubmitCoreAsync(client, server.Url!, "agent-1", Args(), NoDelay(delays));
+        var (text, isError) = await Server().SubmitCoreAsync(client, server.Url!, "agent-1", Args(), NoDelay(delays));
 
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("catching up");
@@ -160,9 +167,9 @@ public class McpFlowResultServerTests {
         using var server = WireMockServer.Start();
         using var client = new HttpClient();
 
-        var missingToken = await McpFlowResultServer.SubmitCoreAsync(client, server.Url!, "agent-1", Args(roundToken: null), NoDelay([]));
-        var badKind      = await McpFlowResultServer.SubmitCoreAsync(client, server.Url!, "agent-1", Args(kind: "bogus"), NoDelay([]));
-        var noFindings   = await McpFlowResultServer.SubmitCoreAsync(client, server.Url!, "agent-1", Args(findings: null), NoDelay([]));
+        var missingToken = await Server().SubmitCoreAsync(client, server.Url!, "agent-1", Args(roundToken: null), NoDelay([]));
+        var badKind      = await Server().SubmitCoreAsync(client, server.Url!, "agent-1", Args(kind: "bogus"), NoDelay([]));
+        var noFindings   = await Server().SubmitCoreAsync(client, server.Url!, "agent-1", Args(findings: null), NoDelay([]));
 
         await Assert.That(missingToken.IsError).IsTrue();
         await Assert.That(missingToken.Text).Contains("round_token");
@@ -178,7 +185,7 @@ public class McpFlowResultServerTests {
               .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
         using var client = new HttpClient();
 
-        var (text, isError) = await McpFlowResultServer.SendMessageCoreAsync(
+        var (text, isError) = await Server().SendMessageCoreAsync(
             client, server.Url!, "agent-1", MessageArgs(), NoDelay([]), messageId: "msg-1"
         );
 
@@ -212,7 +219,7 @@ public class McpFlowResultServerTests {
         using var client = new HttpClient();
 
         var delays = new List<TimeSpan>();
-        var (text, isError) = await McpFlowResultServer.SendMessageCoreAsync(
+        var (text, isError) = await Server().SendMessageCoreAsync(
             client, server.Url!, "agent-1", MessageArgs(), NoDelay(delays), messageId: "msg-stable"
         );
 
@@ -235,7 +242,7 @@ public class McpFlowResultServerTests {
         using var client = new HttpClient();
 
         var delays = new List<TimeSpan>();
-        var (text, isError) = await McpFlowResultServer.SendMessageCoreAsync(
+        var (text, isError) = await Server().SendMessageCoreAsync(
             client, server.Url!, "agent-1", MessageArgs(), NoDelay(delays)
         );
 
@@ -250,7 +257,7 @@ public class McpFlowResultServerTests {
         using var server = WireMockServer.Start();
         using var client = new HttpClient();
 
-        var (text, isError) = await McpFlowResultServer.SendMessageCoreAsync(
+        var (text, isError) = await Server().SendMessageCoreAsync(
             client, server.Url!, "agent-1", MessageArgs(text: null), NoDelay([])
         );
 
@@ -266,7 +273,7 @@ public class McpFlowResultServerTests {
 
         var args = new JsonObject { ["text"] = 42 };
 
-        var (text, isError) = await McpFlowResultServer.SendMessageCoreAsync(
+        var (text, isError) = await Server().SendMessageCoreAsync(
             client, server.Url!, "agent-1", args, NoDelay([])
         );
 
@@ -283,7 +290,7 @@ public class McpFlowResultServerTests {
         using var client = new HttpClient();
 
         var delays = new List<TimeSpan>();
-        var (text, isError) = await McpFlowResultServer.SendMessageCoreAsync(
+        var (text, isError) = await Server().SendMessageCoreAsync(
             client, server.Url!, "agent-1", MessageArgs(), NoDelay(delays)
         );
 
@@ -302,7 +309,7 @@ public class McpFlowResultServerTests {
         using var client = new HttpClient();
 
         var delays = new List<TimeSpan>();
-        var (text, isError) = await McpFlowResultServer.SendMessageCoreAsync(
+        var (text, isError) = await Server().SendMessageCoreAsync(
             client, server.Url!, "agent-1", MessageArgs(), NoDelay(delays)
         );
 
@@ -318,7 +325,8 @@ public class McpFlowResultServerTests {
         var prior = Environment.GetEnvironmentVariable(McpFlowResultServer.AgentIdEnvVar);
         Environment.SetEnvironmentVariable(McpFlowResultServer.AgentIdEnvVar, null);
         try {
-            var exit = await McpFlowResultServer.RunAsync("https://example.test");
+            var exit = await new McpFlowResultServer(
+                Config.Root, Resolutions.At("https://example.test", Config.Root)).RunAsync();
             await Assert.That(exit).IsEqualTo(2);
         } finally {
             Environment.SetEnvironmentVariable(McpFlowResultServer.AgentIdEnvVar, prior);

@@ -356,7 +356,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// </summary>
     async Task<(int Status, string Body)> ForwardFlowSubmissionAsync(
             string apiPath, string body, CancellationToken ct) {
-        using var http = await HttpClientExtensions.CreateAuthenticatedClientAsync(_config.ServerUrl, ct);
+        using var http = await HttpClientExtensions.CreateAuthenticatedClientAsync(_configRoot, _config.Profiles, _config.ServerUrl, ct);
         using var content  = new StringContent(body, Encoding.UTF8, "application/json");
         using var response = await http.PostAsync(
             $"{_config.ServerUrl.TrimEnd('/')}{apiPath}", content, ct);
@@ -451,6 +451,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     int _orphanSweepRunning;
     int _quarantineSweepRunning;
     readonly DaemonConfig                                      _config;
+    readonly ConfigRoot                                        _configRoot;
     readonly ServerConnection                                  _server;
     readonly WorktreeManager                                   _worktreeManager;
     readonly RepoMatcher                                       _repoMatcher;
@@ -552,6 +553,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     public AgentOrchestrator(
             DaemonConfig                                      config,
+            ConfigRoot                                        configRoot,
             ServerConnection                                  server,
             WorktreeManager                                   worktreeManager,
             RepoMatcher                                       repoMatcher,
@@ -575,6 +577,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         ) {
         _shutdownCts       = CancellationTokenSource.CreateLinkedTokenSource(lifetime.ApplicationStopping);
         _config            = config;
+        _configRoot        = configRoot;
         _server            = server;
         _worktreeManager   = worktreeManager;
         _repoMatcher       = repoMatcher;
@@ -955,7 +958,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             if (_harnessInventory is not null &&
                 DateTimeOffset.UtcNow - _harnessInventoryEvaluatedAt < HarnessInventoryTtl) return;
             try {
-                _harnessInventory = Capacitor.Cli.Core.Setup.HarnessInventory.EvaluateCurrent();
+                _harnessInventory = Capacitor.Cli.Core.Setup.HarnessInventory.EvaluateCurrent(_configRoot);
             } catch (Exception ex) {
                 // Keep the last cached value (or null); inventory must never break the report path.
                 _logger.LogDebug(ex, "Harness inventory evaluation failed — keeping last cached");
@@ -1933,7 +1936,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             // Whether this reviewer's kcap-flow-result channel must deliver through a daemon-brokered
             // capability instead of authenticating for itself. The channel resolves its credential
-            // from PathHelpers.ConfigDir, which hangs off HOME — so the question is whether the launch
+            // from its own config root, which hangs off HOME — so the question is whether the launch
             // runs under the daemon user's HOME, and there are two independent causes of its not doing
             // so, one owned by the launch and one by the runtime:
             //
@@ -3383,7 +3386,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 UseShellExecute        = false,
                 CreateNoWindow         = true,
                 Environment = {
-                    ["KCAP_URL"] = _config.ServerUrl
+                    ["KCAP_URL"] = _config.ServerUrl,
+                    [ConfigRoot.ConfigDirEnvVar] = _config.ConfigRoot.Directory
                 }
             };
             psi.ArgumentList.Add("generate-whats-done");
@@ -3672,7 +3676,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             try {
                 using var httpClient = _httpClientFactory.CreateClient("Attachments");
 
-                var resolution = await TokenStore.GetValidTokensForServerAsync(_config.ServerUrl);
+                var resolution = await new TokenStore(_configRoot).GetValidTokensForServerAsync(_config.Profiles.Name, _config.ServerUrl);
 
                 if (resolution.Tokens is not null) {
                     httpClient.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);
@@ -3869,7 +3873,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // Persist repo path and notify server so the launch dialog updates.
         _ = Task.Run(async () => {
                 try {
-                    await RepoPathStore.AddAsync(agent.RepoPath);
+                    await new RepoPathStore(_configRoot).AddAsync(agent.RepoPath);
                     await _server.UpdateRepoPathsAsync();
                 } catch (Exception ex) {
                     LogRepoPathPersistFailed(ex, agent.Id);
@@ -4524,7 +4528,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     }
 
     async Task RunTokenRefreshLoopAsync(CancellationToken ct) {
-        var loop = new TokenRefreshLoop(new TokenStoreRefreshPort(ProactiveRefreshWindow), _logger, ProactiveRefreshMinInterval);
+        var loop = new TokenRefreshLoop(new TokenStoreRefreshPort(_configRoot, _config.Profiles.Name, ProactiveRefreshWindow), _logger, ProactiveRefreshMinInterval);
 
         while (await _tokenRefresh.WaitForNextTickAsync(ct)) {
             // Defence in depth: TickAsync is intentionally total, but this runs as an
@@ -4542,9 +4546,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     async Task RunSpoolDrainLoopAsync(CancellationToken ct) {
         var loop = new SpoolDrainLoop(
+            _configRoot,
+            _config.Profiles,
             _config.ServerUrl,
-            new HookSpool(PathHelpers.ConfigPath("spool")),
-            new TranscriptSpool(PathHelpers.ConfigPath("transcript-spool")),
+            new HookSpool(_configRoot),
+            new TranscriptSpool(_configRoot),
             _logger,
             onWhatsDoneRequested: SpawnWhatsDoneGenerator);
 

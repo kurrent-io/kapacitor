@@ -9,6 +9,13 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class McpFlowsServerTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // The dispatch is profile-scoped: its token refresh resolves a profile. These tests exercise
+    // routing, not profile selection.
+    McpFlowsServer Server() =>
+        new(Config.Root, Resolutions.None(Config.Root));
+
     // The ack retry's 2s wait now runs on the injected clock, so these tests stay instant while
     // still asserting the real schedule (VirtualFlowRetryClock.Delays records every requested wait).
     static VirtualFlowRetryClock Clock() => new();
@@ -334,7 +341,7 @@ public class McpFlowsServerTests {
               .RespondWith(Response.Create().WithStatusCode(200));
         using var client = new HttpClient();
 
-        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1", "m2"], Clock());
+        await Server().AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1", "m2"], Clock());
 
         await Assert.That(server.LogEntries.Count).IsEqualTo(1);
         var body = server.LogEntries.Single().RequestMessage.Body!;
@@ -352,7 +359,7 @@ public class McpFlowsServerTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1"], clock);
+        await Server().AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1"], clock);
         var delays = clock.Delays;
 
         await Assert.That(server.LogEntries.Count).IsEqualTo(2);
@@ -375,7 +382,7 @@ public class McpFlowsServerTests {
         using var client = new HttpClient { Timeout = TimeSpan.FromMilliseconds(50) };
 
         var clock = Clock();
-        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1"], clock);
+        await Server().AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1"], clock);
         var delays = clock.Delays;
 
         // No exception propagated, and the retry-after-delay path still ran once — i.e. both the
@@ -388,7 +395,7 @@ public class McpFlowsServerTests {
         using var server = WireMockServer.Start();
         using var client = new HttpClient();
 
-        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", [], Clock());
+        await Server().AckRenderedMessagesAsync(client, server.Url!, "f1", [], Clock());
 
         await Assert.That(server.LogEntries.Count).IsEqualTo(0);
     }
@@ -420,7 +427,7 @@ public class McpFlowsServerTests {
               .RespondWith(Response.Create().WithStatusCode(200));
         using var client = new HttpClient();
 
-        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", pendingIds, Clock());
+        await Server().AckRenderedMessagesAsync(client, server.Url!, "f1", pendingIds, Clock());
 
         await Assert.That(server.LogEntries.Count).IsEqualTo(1);
         var ackBody = server.LogEntries.Single().RequestMessage.Body!;
@@ -464,7 +471,7 @@ public class McpFlowsServerTests {
         // lands on /v4 with no fallback (zero v3/v2/legacy retry).
         using var client = new HttpClient();
 
-        using var response = await McpFlowsServer.StartFlowAsync(
+        using var response = await Server().StartFlowAsync(
             client, server.Url!, ModelStartArguments("claude", "opus"),
             cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
 
@@ -491,7 +498,7 @@ public class McpFlowsServerTests {
             .RespondWith(Response.Create().WithStatusCode(200).WithBody(V3RunningWithAck));
         using var client = new HttpClient();
 
-        using var response = await McpFlowsServer.StartFlowAsync(
+        using var response = await Server().StartFlowAsync(
             client, server.Url!, ModelStartArguments("claude", "opus"),
             cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
 
@@ -512,7 +519,7 @@ public class McpFlowsServerTests {
             .RespondWith(Response.Create().WithStatusCode(200).WithBody(V3RunningWithAck));
         using var client = new HttpClient();
 
-        await Assert.That(async () => await McpFlowsServer.StartFlowAsync(
+        await Assert.That(async () => await Server().StartFlowAsync(
                 client, server.Url!, ModelStartArguments(vendor: null, model: "opus"),
                 cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null))
             .Throws<ArgumentException>();
@@ -537,7 +544,7 @@ public class McpFlowsServerTests {
             ["model"]           = "opus"
         };
 
-        await Assert.That(async () => await McpFlowsServer.StartFlowAsync(
+        await Assert.That(async () => await Server().StartFlowAsync(
                 client, server.Url!, args,
                 cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "definition_id", requestingSessionId: null))
             .Throws<ArgumentException>();
@@ -553,7 +560,7 @@ public class McpFlowsServerTests {
                 """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null}"""));
         using var client = new HttpClient();
 
-        using var response = await McpFlowsServer.StartFlowAsync(
+        using var response = await Server().StartFlowAsync(
             client, server.Url!, ModelStartArguments(vendor: null, model: null),
             cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
 
@@ -600,7 +607,7 @@ public class McpFlowsServerTests {
             arguments.Remove("kind");
         }
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ModelToolCall(toolName, arguments),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
             requestingSessionId: "d15c0ffee0000000000000000000ba5e");
@@ -692,7 +699,7 @@ public class McpFlowsServerTests {
         // path never falls to /v2, so the final /v3 404 maps to reviewer_model_protocol_required.
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 
@@ -719,7 +726,7 @@ public class McpFlowsServerTests {
                 """{"error":"reviewer_model_unavailable","message":"the requested model is not available"}"""));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 
@@ -749,7 +756,7 @@ public class McpFlowsServerTests {
             .RespondWith(Response.Create().WithStatusCode(200));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 
@@ -772,7 +779,7 @@ public class McpFlowsServerTests {
                 """));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 
@@ -802,7 +809,7 @@ public class McpFlowsServerTests {
                 """{"error":"flow_settlement_busy","message":"A concurrent settlement operation is racing this flow run."}"""));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 
@@ -818,40 +825,18 @@ public class McpFlowsServerTests {
 
     // Round-2 regression guard: dropping the settlement re-POST for a v3 model start must NOT also
     // drop the one-shot 401 token refresh. Seeds a non-expired token so TokenStore.GetValidTokensAsync
-    // returns it, then stubs v3 to 401-then-200 so the refreshed re-send is observable. Serialized on
-    // the shared KCAP_CONFIG_DIR token store like every other token-store test.
+    // returns it, then stubs v3 to 401-then-200 so the refreshed re-send is observable.
     const string FreshBearer = "refreshed-bearer-xyz";
 
-    static async Task SeedDefaultTokenAsync() {
-        // The active profile must resolve to "default" so GetValidTokensAsync() loads what we seed —
-        // clear any config.json a sibling token-store test may have left in the shared config dir,
-        // and the process-global resolved profile, which token lookup now prefers over config.
-        var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
-        if (File.Exists(cfg)) File.Delete(cfg);
-        Capacitor.Cli.Core.Config.AppConfig.ResetResolvedStateForTesting();
-
-        await TokenStore.SaveAsync("default", new StoredTokens {
+    async Task SeedDefaultTokenAsync() =>
+        await new TokenStore(Config.Root).SaveAsync("default", new StoredTokens {
             AccessToken    = FreshBearer,
             ExpiresAt      = DateTimeOffset.UtcNow.AddHours(1), // not expired → returned as-is (no real refresh endpoint needed)
             GitHubUsername = "seed",
             Provider       = AuthProvider.GitHubApp
         });
-    }
-
-    static void CleanupDefaultToken() {
-        // Loud, not best-effort: a silently-leaked "default" token makes any later test that
-        // resolves the default profile authenticate for real. ClearWithRetry throws a named
-        // cause after its bounded retry; the config cleanup still runs either way.
-        try {
-            SharedConfigDirCleanup.ClearWithRetry("the seeded default-profile token", () => TokenStore.Delete("default"));
-        } finally {
-            var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
-            try { if (File.Exists(cfg)) File.Delete(cfg); } catch { /* best effort */ }
-        }
-    }
 
     [Test]
-    [NotInParallel("TokenStoreProfileTests")]
     public async Task HandleToolCall_with_model_401_refreshes_token_and_resends_v4_exactly_once() {
         // A model-bearing start keeps the one-shot 401 token refresh (SendWithRefreshRetryAsync, which
         // wraps the whole StartFlowAsync including the B3 /v4 attempt): in a long-lived flows MCP
@@ -860,34 +845,30 @@ public class McpFlowsServerTests {
         // run is created, so the re-send is the only POST that reaches business logic —
         // exactly-one-EFFECTIVE-POST still holds. (A 401 is not a 404, so /v4 never falls back to /v3.)
         await SeedDefaultTokenAsync();
-        try {
-            using var server = WireMockServer.Start();
-            server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
-                .InScenario("model-401").WillSetStateTo("after-401")
-                .RespondWith(Response.Create().WithStatusCode(401).WithBody(""));
-            server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
-                .InScenario("model-401").WhenStateIs("after-401")
-                .RespondWith(Response.Create().WithStatusCode(200).WithBody(V3RunningWithAck));
-            using var client = new HttpClient();
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
+            .InScenario("model-401").WillSetStateTo("after-401")
+            .RespondWith(Response.Create().WithStatusCode(401).WithBody(""));
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v4").UsingPost())
+            .InScenario("model-401").WhenStateIs("after-401")
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody(V3RunningWithAck));
+        using var client = new HttpClient();
 
-            var response = await McpFlowsServer.HandleToolCallAsync(
-                JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
-                client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
+        var response = await Server().HandleToolCallAsync(
+            JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
+            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 
-            var result = JsonNode.Parse(response)!.AsObject();
-            // The refreshed 2nd send succeeded — NOT surfaced as the friendly "Not logged in".
-            await Assert.That(result["result"]!["isError"]).IsNull();
+        var result = JsonNode.Parse(response)!.AsObject();
+        // The refreshed 2nd send succeeded — NOT surfaced as the friendly "Not logged in".
+        await Assert.That(result["result"]!["isError"]).IsNull();
 
-            // Exactly two v4 POSTs (the original 401 + one refreshed re-send).
-            await Assert.That(server.FindLogEntries(
-                Request.Create().WithPath("/api/flows/review/start/v4").UsingPost()).Count).IsEqualTo(2);
-            // Only the 2nd carries the refreshed bearer (the first client had no auth header).
-            await Assert.That(server.FindLogEntries(
-                Request.Create().WithPath("/api/flows/review/start/v4")
-                    .WithHeader("Authorization", $"Bearer {FreshBearer}").UsingPost()).Count).IsEqualTo(1);
-        } finally {
-            CleanupDefaultToken();
-        }
+        // Exactly two v4 POSTs (the original 401 + one refreshed re-send).
+        await Assert.That(server.FindLogEntries(
+            Request.Create().WithPath("/api/flows/review/start/v4").UsingPost()).Count).IsEqualTo(2);
+        // Only the 2nd carries the refreshed bearer (the first client had no auth header).
+        await Assert.That(server.FindLogEntries(
+            Request.Create().WithPath("/api/flows/review/start/v4")
+                .WithHeader("Authorization", $"Bearer {FreshBearer}").UsingPost()).Count).IsEqualTo(1);
     }
 
     [Test]
@@ -903,7 +884,7 @@ public class McpFlowsServerTests {
             .RespondWith(Response.Create().WithStatusCode(200));
         using var client = new HttpClient();
 
-        var response = await McpFlowsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
 

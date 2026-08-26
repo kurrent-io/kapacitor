@@ -5,6 +5,13 @@ using Capacitor.Cli.Commands;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 public class McpAnalyticsServerTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
+    // The dispatch is profile-scoped: its token refresh resolves a profile. These tests exercise
+    // routing, not profile selection.
+    McpAnalyticsServer Server() =>
+        new(Config.Root, Resolutions.None(Config.Root));
+
     static JsonObject Args(string json) => JsonNode.Parse(json)!.AsObject();
 
     [Test]
@@ -72,7 +79,7 @@ public class McpAnalyticsServerTests {
         using var client = new HttpClient();
         var request = Args("""{"jsonrpc":"2.0","id":1,"method":"tools/call","params":[]}""");
 
-        var response = await McpAnalyticsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonValue.Create(1), request, client, "https://example.test", "abc123");
 
         var error = JsonNode.Parse(response)!["error"];
@@ -88,7 +95,7 @@ public class McpAnalyticsServerTests {
         using var client = new HttpClient(new TimingOutHandler());
         var request = Args("""{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_analytics","arguments":{"sql":"SELECT vendor FROM v_an_sessions"}}}""");
 
-        var response = await McpAnalyticsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonValue.Create(1), request, client, "https://example.test", "abc123");
 
         // The tool result is JSON-serialized (the em-dash escapes to —), so match on the
@@ -106,7 +113,7 @@ public class McpAnalyticsServerTests {
         using var client = new HttpClient(new TimingOutHandler());
         var request = Args("""{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_analytics_schema","arguments":{}}}""");
 
-        var response = await McpAnalyticsServer.HandleToolCallAsync(
+        var response = await Server().HandleToolCallAsync(
             JsonValue.Create(1), request, client, "https://example.test", "abc123");
 
         await Assert.That(response).Contains("Schema fetch timed out");

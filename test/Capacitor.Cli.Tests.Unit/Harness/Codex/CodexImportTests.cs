@@ -9,6 +9,8 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit.Harness.Codex;
 
 public class CodexImportTests {
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     [Test]
     public async Task ExtractCodexSessionMetadata_pulls_cwd_model_provider_and_first_timestamp() {
         using var tmp = TempDir.WithPathTo("rollout.tmp", out var path);
@@ -235,6 +237,7 @@ public class CodexImportTests {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
             client,
             server.Url!,
             transcripts,
@@ -272,6 +275,7 @@ public class CodexImportTests {
         using var client = new HttpClient();
 
         var result = await TranscriptFileClassification.ClassifyAsync(
+            Config.Root,
             client,
             server.Url!,
             transcripts,

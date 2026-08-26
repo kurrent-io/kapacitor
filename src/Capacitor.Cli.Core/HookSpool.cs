@@ -28,6 +28,14 @@ public enum DrainOutcome {
 public sealed partial class HookSpool(string spoolDir, int capBytes = HookSpool.DefaultCapBytes) {
     public const int DefaultCapBytes = 1_048_576; // 1 MB per session file
 
+    // The subdirectory name belongs to the spool, not to ConfigRoot: a root that enumerated its
+    // tenants' directories would change every time one of them gained a file.
+    const string DirName = "spool";
+
+    /// <summary>The spool under a config root. The directory overload is for a spool that is not
+    /// under one — a test's own throwaway directory, or a vendor's legacy location.</summary>
+    public HookSpool(ConfigRoot config, int capBytes = DefaultCapBytes) : this(config.Path(DirName), capBytes) { }
+
     static readonly Regex SafeSessionId  = SafeSessionIdRegex();
     static readonly Regex LegacyGuidKey = LegacyGuidKeyRegex();
     static          int   seqCounter;

@@ -32,6 +32,12 @@ public sealed class TempDirAttribute(string? hint = null) : TempFixtureAttribute
     protected override TempDir Create(string name) => new(name);
 }
 
+/// <summary><c>[TempConfigRoot] public required TempConfigRoot Config { get; init; }</c></summary>
+public sealed class TempConfigRootAttribute(string? hint = null)
+        : TempFixtureAttribute<TempConfigRoot>(hint) {
+    protected override TempConfigRoot Create(string name) => new(name);
+}
+
 /// <summary><c>[TempDaemonPaths] public required TempDaemonPaths Daemons { get; init; }</c></summary>
 public sealed class TempDaemonPathsAttribute(string? hint = null)
         : TempFixtureAttribute<TempDaemonStore>(hint) {

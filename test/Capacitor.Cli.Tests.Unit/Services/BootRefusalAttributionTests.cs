@@ -13,6 +13,8 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 public class BootRefusalAttributionTests {
     [TempDaemonPaths] public required TempDaemonStore Daemons { get; init; }
 
+    [TempConfigRoot] public required TempConfigRoot Config { get; init; }
+
     const string Id = "boot-refusal-svc";
 
     // ── pure rule, verbatim per the task brief ──
@@ -176,7 +178,7 @@ public class BootRefusalAttributionTests {
 
         // Ownership never matches (validated pid always disagrees with the observed job pid), so
         // readiness never settles and the forward budget genuinely rolls back to a timeout.
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => -1, Hello, time,
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => -1, Hello, time,
             forwardBudget: TimeSpan.FromSeconds(2),
             readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
             gateEnv: GatedEnvWithIdentity("https://s.example"),
@@ -213,7 +215,7 @@ public class BootRefusalAttributionTests {
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(false, null, null, null)); // never well-formed
 
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => -1, Hello, time,
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => -1, Hello, time,
             forwardBudget: TimeSpan.FromSeconds(2),
             readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
             gateEnv: GatedEnvWithIdentity("https://s.example"),
@@ -243,7 +245,7 @@ public class BootRefusalAttributionTests {
         static Task<HelloProbeResult> Hello(string _, TimeSpan __) =>
             Task.FromResult(new HelloProbeResult(true, 1, "1.2.3", "kcap-daemon"));
 
-        var sut = new ServiceVerify(Daemons.Store, manager, _ => 4242, Hello, TimeProvider.System,
+        var sut = new ServiceVerify(Daemons.Store, Config.Root, manager, _ => 4242, Hello, TimeProvider.System,
             readPlist: _ => MinimalPlist("/bin/kcap-daemon", "prompt", "https://s.example"),
             gateEnv: GatedEnvWithIdentity("https://s.example"),
             digestMatches: _ => true);

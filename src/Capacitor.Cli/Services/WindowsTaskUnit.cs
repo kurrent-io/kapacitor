@@ -9,7 +9,7 @@ static class WindowsTaskUnit {
 
     public static string TaskName(string id) => Prefix + id;
 
-    public static string WrapperPath(string id) => PathHelpers.ConfigPath($"daemon-service-{id}.cmd");
+    public static string WrapperPath(ConfigRoot config, string id) => config.Path($"daemon-service-{id}.cmd");
 
     /// <summary>
     /// A value this wrapper cannot represent safely.
