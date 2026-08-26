@@ -429,9 +429,15 @@ mutated only on the UI thread:
 - `SendGate` ∈ Open | Closed, and the **opening token** — a counter whose
   current value names who may open the gate. Two operations, and only two,
   advance it, both synchronous on the UI thread:
-  - `BeginAttempt()` — the first thing `TryStartAttemptAsync` does, before
-    any await: closes the gate, allocates a fresh token and hands it to the
-    attempt, which carries it for its whole life.
+  - `BeginAttempt()` — `TryStartAttemptAsync`'s first **state-mutating**
+    action, after it has try-entered `_attachLane` and passed the
+    disposed/retired guard, and still before any await: closes the gate,
+    allocates a fresh token and hands it to the attempt, which carries it
+    for its whole life. A call that loses the lane (a double-click —
+    `ReactiveCommand.Execute` runs the handler even while one is active) or
+    finds the VM torn down allocates no token and touches no send state; it
+    is the complete no-op it is today, so the winning attempt's token stays
+    current.
   - `Invalidate()` — closes the gate (an already-closed gate still counts:
     ownership must advance even mid-`Connecting`), allocates a fresh token
     that no attempt holds, and clears `SendInFlight`. Called at the start of
@@ -597,7 +603,11 @@ inserts a newline — a view-level key handler on the composer's `TextBox`.
   (c) a removal or detach landing during a reattach's pre-`Connecting`
   old-client disposal (`DisposeGate`) aborts that attempt — it never
   publishes `Connecting` or `Attached` — while a subsequently, explicitly
-  begun attempt holds a fresh token and does open; a reattach
+  begun attempt holds a fresh token and does open; (d) the existing
+  back-to-back reattach test grows a token assertion: with the winning
+  attempt held in its first await, the losing call changes neither the
+  token nor the gate, and once the winner publishes `Connecting` and
+  `Attached`, `CanAcceptText` is true; a reattach
   whose old-client disposal
   is held open past 150 ms, a detach, or a teardown started during the delay
   sends no CR to any client and clears `SendInFlight` synchronously; an
