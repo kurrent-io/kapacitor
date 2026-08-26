@@ -324,7 +324,8 @@ already scrolled up keeps their offset untouched.
 `MarkdownView` — a `ContentControl` with a styled `Text` property and an
 `OpenLink` command property — rebuilds its `Content` (a vertical panel of
 block controls) from a Markdig AST (default CommonMark pipeline plus
-auto-links) on every `Text` change. `MarkdownBlocks` maps: paragraphs and
+auto-links, with precise source locations so an unmapped inline can print its
+own source text — no other extension) on every `Text` change. `MarkdownBlocks` maps: paragraphs and
 headings → `SelectableTextBlock` with inlines (`Bold`, `Italic`, monospace
 `Run` for code spans); a soft line break is a space, as CommonMark renders it,
 and a paragraph with a top-level hard break is a vertical stack of one
