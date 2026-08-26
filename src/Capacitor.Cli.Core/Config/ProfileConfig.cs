@@ -146,6 +146,9 @@ public record Profile {
     [JsonPropertyName("flows")]
     public FlowsSettings? Flows { get; init; }
 
+    [JsonPropertyName("skills")]
+    public SkillsSettings? Skills { get; init; }
+
     /// <summary>
     /// Provider + canonical server identity learned at the last successful sign-in (Plan C's
     /// commit boundary). Additive and READ-only in Plan B — nothing writes it yet; only
@@ -170,6 +173,14 @@ public sealed record AuthProviderStamp(
 public record FlowsSettings {
     [JsonPropertyName("reviewer_vendor")]
     public string? ReviewerVendor { get; init; }
+}
+
+public record SkillsSettings {
+    /// <summary>when true, the Claude session-start hook spawns a detached, self-throttling
+    /// `kcap skills sync --auto` so centrally revoked or re-approved skills reach this machine
+    /// without a manual sync. Off by default.</summary>
+    [JsonPropertyName("auto_sync")]
+    public bool? AutoSync { get; init; }
 }
 
 /// <summary>Repo-level .kcap.json committed to VCS.</summary>

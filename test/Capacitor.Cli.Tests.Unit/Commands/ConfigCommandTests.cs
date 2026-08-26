@@ -216,6 +216,29 @@ public class ConfigCommandTests {
             .Throws<ArgumentException>();
     }
 
+    // ── skills.auto_sync ─────────────────────────────────────────────────────
+
+    [Test]
+    public async Task ApplySet_SkillsAutoSync_ParsesBoolean() {
+        var updated = ConfigCommand.ApplySet(new Profile(), "skills.auto_sync", "true");
+        await Assert.That(updated.Skills!.AutoSync!.Value).IsTrue();
+        var off = ConfigCommand.ApplySet(updated, "skills.auto_sync", "false");
+        await Assert.That(off.Skills!.AutoSync!.Value).IsFalse();
+    }
+
+    [Test]
+    public async Task ApplySet_SkillsAutoSync_RejectsNonBoolean() {
+        await Assert.That(() => ConfigCommand.ApplySet(new Profile(), "skills.auto_sync", "yes"))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task ApplyUnset_SkillsAutoSync_ClearsTheKey() {
+        var set = ConfigCommand.ApplySet(new Profile(), "skills.auto_sync", "true");
+        var cleared = ConfigCommand.ApplyUnset(set, "skills.auto_sync");
+        await Assert.That(cleared.Skills!.AutoSync).IsNull();
+    }
+
     // ── flows.reviewer_vendor ────────────────────────────────────────────────
 
     [Test]

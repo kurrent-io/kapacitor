@@ -527,6 +527,11 @@ public sealed class ClaudeHookCommand(ConfigRoot config, ProfileContext profiles
                     agentId: null, cwd: sessionCwd, skipTitle: isResumeOrCompact);
             }
 
+            // Opt-in background skills refresh: detached and never awaited (the hook's latency
+            // budget must not pay for a sync); the child throttles itself off the manifest.
+            if (activeProfile?.Skills?.AutoSync == true && sessionCwd is not null)
+                SkillsAutoSync.SpawnDetached(sessionCwd);
+
             // Now that the watcher is running, await the deferred repo enrichment (a slow git/gh
             // probe could not have delayed capture start) and then inject default_visibility +
             // plan_content onto the enriched body before the POST.

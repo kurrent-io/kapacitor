@@ -17,7 +17,12 @@ namespace Capacitor.Cli.Commands;
 class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
     const string Vendor = "claude";
 
-    public async Task<int> HandleSync(bool dryRun) {
+    // The background refresh keys off the manifest's synced_at, so a burst of session starts
+    // costs one network round-trip per interval, not one per session.
+    static readonly TimeSpan AutoSyncInterval = TimeSpan.FromHours(6);
+
+    public async Task<int> HandleSync(bool dryRun, bool auto = false) {
+        void Info(string line) { if (!auto) Console.WriteLine(line); }
         var baseUrl = profiles.Resolution.ServerUrl!;
         var cwd = Environment.CurrentDirectory;
 
@@ -34,6 +39,7 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
 
         var manifestPath = config.Path("skills", hash, Vendor, "manifest.json");
         if (!TryLoadManifest(manifestPath, out var manifest)) return 1;
+        if (auto && AutoThrottled(manifest, DateTimeOffset.UtcNow)) return 0;
 
         // Metadata alone cannot prove a skill is served: a deleted or hand-edited SKILL.md must be
         // re-materialized, so local drift forfeits the conditional request — a 304 would otherwise
@@ -58,7 +64,7 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
 
         if (resp.StatusCode == HttpStatusCode.NotModified) {
             if (!dryRun) SaveManifest(manifestPath, manifest! with { SyncedAt = DateTimeOffset.UtcNow });
-            Console.WriteLine($"Skills up to date ({manifest?.Skills?.Length ?? 0} materialized).");
+            Info($"Skills up to date ({manifest?.Skills?.Length ?? 0} materialized).");
             return 0;
         }
         if (await HttpClientExtensions.HandleUnauthorizedAsync(resp)) return 1;
@@ -100,22 +106,25 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
 
         if (writes.Count == 0 && plan.Prunes.Count == 0) {
             if (!dryRun) SaveManifest(manifestPath, BuildManifest(dto.Etag, snapshot, root));
-            Console.WriteLine($"Skills up to date ({snapshot.Length} materialized).");
+            Info($"Skills up to date ({snapshot.Length} materialized).");
             return 0;
         }
 
         foreach (var w in writes)
-            Console.WriteLine($"{(dryRun ? "would write" : "write"),-12} {ClaudeSkillsMaterializer.SkillDirFor(root, w.Slug)} (v{w.Version})");
+            Info($"{(dryRun ? "would write" : "write"),-12} {ClaudeSkillsMaterializer.SkillDirFor(root, w.Slug)} (v{w.Version})");
         foreach (var p in plan.Prunes)
-            Console.WriteLine($"{(dryRun ? "would prune" : "prune"),-12} {p.Path}");
+            Info($"{(dryRun ? "would prune" : "prune"),-12} {p.Path}");
         if (dryRun) return 0;
 
         foreach (var w in writes) ClaudeSkillsMaterializer.Write(root, w);
         foreach (var p in plan.Prunes) ClaudeSkillsMaterializer.Prune(root, p);
         SaveManifest(manifestPath, BuildManifest(dto.Etag, snapshot, root));
-        Console.WriteLine($"Synced {writes.Count} skill(s), pruned {plan.Prunes.Count}; {snapshot.Length} materialized.");
+        Info($"Synced {writes.Count} skill(s), pruned {plan.Prunes.Count}; {snapshot.Length} materialized.");
         return 0;
     }
+
+    internal static bool AutoThrottled(SkillsManifest? manifest, DateTimeOffset now) =>
+        manifest?.SyncedAt is { } syncedAt && now - syncedAt < AutoSyncInterval;
 
     static SkillsManifest BuildManifest(string? etag, SkillSnapshotItem[] snapshot, string root) => new() {
         Etag = etag, SyncedAt = DateTimeOffset.UtcNow,

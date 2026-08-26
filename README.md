@@ -652,6 +652,11 @@ kcap skills sync              # fetch, write and prune this repo's skills
 kcap skills sync --dry-run    # print what would change without writing anything
 ```
 
+Opt into an automatic background refresh with `kcap config set skills.auto_sync true`: the Claude
+session-start hook then spawns a detached, self-throttling sync (at most one network round-trip
+per ~6 hours per repo), so centrally revoked or re-approved skills reach the machine without a
+manual sync. Off by default.
+
 
 ### Loading historical sessions
 

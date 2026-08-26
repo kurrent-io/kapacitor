@@ -183,6 +183,9 @@ public sealed class ConfigCommand(ConfigRoot config) {
                 profile with { Flows = (profile.Flows ?? new FlowsSettings()) with { ReviewerVendor = ReviewerVendors.Normalize(value) } },
             "flows.reviewer_vendor" => throw new ArgumentException(
                 "Invalid value for flows.reviewer_vendor: must not be empty. Use 'kcap config unset flows.reviewer_vendor' to remove it."),
+            "skills.auto_sync" when bool.TryParse(value, out var b) =>
+                profile with { Skills = (profile.Skills ?? new SkillsSettings()) with { AutoSync = b } },
+            "skills.auto_sync" => throw new ArgumentException($"Invalid value for skills.auto_sync: '{value}'. Must be true or false."),
             _ => throw new ArgumentException($"Unknown config key: {key}")
         };
 
@@ -193,6 +196,7 @@ public sealed class ConfigCommand(ConfigRoot config) {
     public static Profile ApplyUnset(Profile profile, string key) =>
         key switch {
             "flows.reviewer_vendor" => profile with { Flows = (profile.Flows ?? new FlowsSettings()) with { ReviewerVendor = null } },
+            "skills.auto_sync" => profile with { Skills = (profile.Skills ?? new SkillsSettings()) with { AutoSync = null } },
             _ => throw new ArgumentException($"Unknown or non-unsettable config key: {key}")
         };
 
@@ -214,6 +218,7 @@ public sealed class ConfigCommand(ConfigRoot config) {
         Console.Error.WriteLine("  use_provider_api_key        Keep ANTHROPIC_API_KEY/OPENAI_API_KEY in headless agent spawns (true/false)");
         Console.Error.WriteLine("  excluded_repos              Excluded repos, comma-separated (owner/repo,owner/repo)");
         Console.Error.WriteLine("  flows.reviewer_vendor       Preferred review-flow reviewer vendor (used only when the definition names none)");
+        Console.Error.WriteLine("  skills.auto_sync            Background skills refresh at Claude session start (true/false, default false)");
         Console.Error.WriteLine("  telemetry                   Anonymous CLI usage reporting, machine-wide (on/off)");
         Console.Error.WriteLine();
         Console.Error.WriteLine("Flags:");
