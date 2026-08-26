@@ -28,14 +28,36 @@ persists locally. `AppConfig.ValidVisibilities` is the closed set; AI-2215's own
 parallel enum, and this is why it was right: the CLI already has the set, and a second spelling of it
 would be a mapping table with no meaning.
 
-A dropped value degrades to null, which leaves the profile exactly as it was — the same outcome as
-never having asked, and the only degradation that cannot make a session more visible than the user's
-existing configuration already allows.
+A dropped value degrades to null, and what null then means depends on whether the step settled — see
+below. Either way the degradation cannot widen anything: on a settled step the profile is carried
+unchanged, and on an unsettled one the user is asked.
 
-## Null is not a value
+## Null is not a value, and the two nulls are not the same
 
-Null covers two situations the CLI must not tell apart: the step is unanswered, and the user declined
-everything. Neither asks for a default, so both fall through to the prompt.
+The wire field is null both when the step is unanswered and when the user answered it and set nothing.
+An earlier draft of this design said both fall through to the prompt. **That is wrong, and it was the
+one defect an external review found here**: the prompt cannot leave the profile alone, because its
+cursor starts on `org_public`, so a single Return on a re-run silently widens an existing `private` —
+on a screen the user had already answered. The lane's own contract says a null answer leaves the
+profile alone; falling through to the prompt violates it.
+
+So the two nulls are separated by whether the **step settled**, which `FirstRunAgentsAnswer` already
+encodes by existing at all:
+
+| Agents step | `default_visibility` | Step 3 |
+| --- | --- | --- |
+| settled | a stop | applies it |
+| settled | null | re-writes what the profile already holds, and says so |
+| never settled | — | prompts, exactly as before |
+
+Re-writing the profile's own value rather than skipping the write keeps `defaultVisibility` a single
+non-nullable string for everything downstream — the profile write, the `saved` context, step 6's
+import stamp — instead of threading a nullable through paths that have no meaning for one.
+
+The rule is `SetupCommand.DecideVisibility`, extracted because `HandleSetupAsync`'s interactive
+branches have no test coverage at all: every `HandleAsync_*` test drives `--no-prompt`, which never
+reaches the browser leg. A rule a reviewer just found a defect in should not be the part that is
+untestable.
 
 **`IsDecline` says nothing about it.** Declining every harness and still choosing who may read future
 sessions is a coherent answer — the screen asks two questions — so the two are read separately.
@@ -60,8 +82,16 @@ places is how a user learns not to trust either.
 
 ## Tests
 
-The boundary's own: every stop the wire can name is carried, null leaves the profile alone, an unknown
-stop and an empty string both degrade to null, and declining every harness still carries the answer.
-Two mutations confirm they bind — ignoring the validation, and never reading the field — and both had
-to be reshaped to compile, because dropping the reference outright trips IDE0005/IDE0051 as errors.
-Analyzer protection is worth noting but is not test coverage.
+The boundary's own: every stop the wire can name is carried, null degrades to null, an unknown stop and
+an empty string both degrade to null, and declining every harness still carries the answer. Two
+mutations confirm they bind — ignoring the validation, and never reading the field — and both had to be
+reshaped to compile, because dropping the reference outright trips IDE0005/IDE0051 as errors. Analyzer
+protection is worth noting but is not test coverage.
+
+`DecideVisibility`'s three arms are pinned separately, with three more mutations: an answered-but-unset
+screen falling through to the prompt, an unsettled screen treated as answered, and the kept branch
+inventing a fallback of its own instead of carrying the profile's value.
+
+The field is also round-tripped through the source-generated JSON context against WireMock, present and
+absent. Nothing else covered that: every other test builds `FirstRunFlowResponse` directly, so a naming
+or AOT-binding slip would have left the profile untouched for ever with the whole suite green.

@@ -20,10 +20,16 @@ config and is stamped on every session afterwards, so a stop a newer server inve
 to a file this build owns and read back by something that may not mean the same by it. A dropped value
 degrades to null, which leaves the profile as it was — the same outcome as never having asked.
 
-Null is not a value here, and covers both "unanswered" and "declined everything". Declining every
-harness while still choosing an audience is coherent, so `IsDecline` says nothing about the visibility.
-No precedence question against `--default-visibility` arises: that flag is read only under
-`--no-prompt`, where the browser leg never runs.
+**The two nulls are not the same.** The field is null both when the step is unanswered and when it was
+answered and left unset, and only the first should reach the prompt: the prompt's cursor starts on
+`org_public`, so a Return on a re-run would widen an existing `private` on a question the user had
+already answered. An answered-but-unset screen therefore re-writes what the profile already holds,
+which is the lane's contract for a null answer and a no-op for everything downstream. Whether the step
+settled is what separates them, and `SetupCommand.DecideVisibility` is the one place that decides.
+
+Declining every harness while still choosing an audience is coherent, so `IsDecline` says nothing about
+the visibility. No precedence question against `--default-visibility` arises: that flag is read only
+under `--no-prompt`, where the browser leg never runs.
 
 ## `--private` stamps a value
 

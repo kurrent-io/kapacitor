@@ -513,4 +513,50 @@ public class FirstRunFlowClientTests {
         await Assert.That(answer.Vendors).IsEquivalentTo(["claude"]);
         await Assert.That(answer.Choices.Single().Level).IsEqualTo(FirstRunImportLevel.Shared);
     }
+
+    [Test]
+    public async Task PollAsync_reads_the_default_visibility_the_decision_carries() {
+        // Through the source-generated context, not a hand-built response: the field lands in profile
+        // config, so a naming or AOT-binding slip would silently leave the profile untouched forever
+        // while every unit test above still passed.
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(PollPath).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithBody($$$"""
+                  {"flow_id":"{{{FlowId}}}","step":"Import","can_finish":true,
+                   "steps":{"SignIn":"Completed","Agents":"Completed","Import":"Active","Done":"Pending"},
+                   "agents":[{"vendor":"claude","record":true,"tools":true}],
+                   "agents_decided_at":"2026-08-26T10:00:00Z",
+                   "default_visibility":"private"}
+                  """)
+                .WithHeader("Content-Type", "application/json"));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http).PollAsync(server.Urls[0], FlowId, CancellationToken.None);
+
+        await Assert.That(outcome.Body!.DefaultVisibility).IsEqualTo("private");
+        await Assert.That(FirstRunFlowOutcomes.Agents(outcome.Body)!.DefaultVisibility).IsEqualTo("private");
+    }
+
+    [Test]
+    public async Task PollAsync_leaves_the_visibility_null_when_the_decision_carries_none() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(PollPath).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithBody($$$"""
+                  {"flow_id":"{{{FlowId}}}","step":"Import","can_finish":true,
+                   "steps":{"SignIn":"Completed","Agents":"Completed","Import":"Active","Done":"Pending"},
+                   "agents":[{"vendor":"claude","record":true,"tools":true}],
+                   "agents_decided_at":"2026-08-26T10:00:00Z"}
+                  """)
+                .WithHeader("Content-Type", "application/json"));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http).PollAsync(server.Urls[0], FlowId, CancellationToken.None);
+
+        await Assert.That(outcome.Body!.DefaultVisibility).IsNull();
+        await Assert.That(FirstRunFlowOutcomes.Agents(outcome.Body)!.DefaultVisibility).IsNull();
+    }
 }
