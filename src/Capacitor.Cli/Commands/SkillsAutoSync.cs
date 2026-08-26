@@ -26,6 +26,9 @@ static class SkillsAutoSync {
             psi.ArgumentList.Add("skills");
             psi.ArgumentList.Add("sync");
             psi.ArgumentList.Add("--auto");
+            // The child must not inherit the hook's ambient coding-agent pipe descriptors —
+            // an inherited data-channel fd would hold the agent open until the sync exits.
+            ProcessHelpers.PreventInheritedHandles();
             var child = ProcessStarterForTesting is { } fake ? fake(psi) : Process.Start(psi);
             if (child is not null) {
                 // Redirected pipes must not wedge the child once their buffers fill: drain both

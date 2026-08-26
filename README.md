@@ -650,6 +650,7 @@ working directory).
 ```bash
 kcap skills sync              # fetch, write and prune this repo's skills
 kcap skills sync --dry-run    # print what would change without writing anything
+kcap skills sync --auto       # hook-spawned form: silent, and skipped when synced recently
 ```
 
 Opt into an automatic background refresh with `kcap config set skills.auto_sync true`: the Claude

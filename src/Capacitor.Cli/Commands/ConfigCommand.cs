@@ -67,7 +67,7 @@ public sealed class ConfigCommand(ConfigRoot config) {
         var profileName = "default";
 
         await ConfigMutator.MutateAsync(config, c => {
-            profileName = c.ActiveProfile;
+            profileName = c.ActiveName;
             var profile = ApplySet(c.Profiles.GetValueOrDefault(profileName) ?? new Profile(), key, value);
 
             return c with { Profiles = new Dictionary<string, Profile>(c.Profiles) { [profileName] = profile } };
@@ -95,7 +95,7 @@ public sealed class ConfigCommand(ConfigRoot config) {
         var profileName = "default";
 
         await ConfigMutator.MutateAsync(config, c => {
-            profileName = c.ActiveProfile;
+            profileName = c.ActiveName;
             var profile = ApplyUnset(c.Profiles.GetValueOrDefault(profileName) ?? new Profile(), key);
 
             return c with { Profiles = new Dictionary<string, Profile>(c.Profiles) { [profileName] = profile } };

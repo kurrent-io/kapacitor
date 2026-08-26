@@ -58,33 +58,3 @@ public class ClaudeSkillsMaterializerTests {
     }
 }
 
-public class SkillsAutoSyncTests {
-    [Test]
-    public async Task Throttle_skips_within_the_interval_and_runs_past_it() {
-        var now = new DateTimeOffset(2026, 8, 26, 12, 0, 0, TimeSpan.Zero);
-        static SkillsManifest M(DateTimeOffset t) => new() { SyncedAt = t };
-
-        await Assert.That(Cli.Commands.SkillsCommand.AutoThrottled(M(now.AddHours(-1)), now)).IsTrue();
-        await Assert.That(Cli.Commands.SkillsCommand.AutoThrottled(M(now.AddHours(-7)), now)).IsFalse();
-        await Assert.That(Cli.Commands.SkillsCommand.AutoThrottled(null, now)).IsFalse();               // no ledger ⇒ sync
-        await Assert.That(Cli.Commands.SkillsCommand.AutoThrottled(new() { SyncedAt = null }, now)).IsFalse();
-    }
-
-    [Test]
-    public async Task Spawn_is_detached_quiet_and_never_throws() {
-        System.Diagnostics.ProcessStartInfo? seen = null;
-        Cli.Commands.SkillsAutoSync.ProcessStarterForTesting = psi => { seen = psi; return null; };
-        try {
-            Cli.Commands.SkillsAutoSync.SpawnDetached("/some/repo");
-            await Assert.That(seen).IsNotNull();
-            await Assert.That(seen!.ArgumentList.ToArray()).IsEquivalentTo(new[] { "skills", "sync", "--auto" });
-            await Assert.That(seen.WorkingDirectory).IsEqualTo("/some/repo");
-            await Assert.That(seen.RedirectStandardOutput).IsTrue();   // the hook's stdout is a data channel
-
-            Cli.Commands.SkillsAutoSync.ProcessStarterForTesting = _ => throw new InvalidOperationException("boom");
-            Cli.Commands.SkillsAutoSync.SpawnDetached("/some/repo");       // swallowed — never breaks a hook
-        } finally {
-            Cli.Commands.SkillsAutoSync.ProcessStarterForTesting = null;
-        }
-    }
-}

@@ -141,7 +141,10 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
     }
 
     internal static bool AutoThrottled(SkillsManifest? manifest, DateTimeOffset now) =>
-        manifest?.SyncedAt is { } syncedAt && now - syncedAt < AutoSyncInterval;
+        // A future stamp (clock correction, tampered file) must read as stale, not as an
+        // unbounded suppression of every revocation refresh until that future arrives.
+        manifest?.SyncedAt is { } syncedAt && now - syncedAt is { } age
+            && age >= TimeSpan.Zero && age < AutoSyncInterval;
 
     static SkillsManifest BuildManifest(string? etag, SkillSnapshotItem[] snapshot, string root) => new() {
         Etag = etag, SyncedAt = DateTimeOffset.UtcNow,
