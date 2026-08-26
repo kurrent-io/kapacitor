@@ -112,24 +112,42 @@ public partial class LauncherPaneView : UserControl {
         flyout.ShowAt(anchor);
     }
 
-    // Vendor tiles for the picker's icon rail — monogram glyphs with a brand-adjacent tint, not
-    // logos: we ship no vendor artwork, and a wrong-looking logo is worse than a clean tile.
+    // Monogram + tint per vendor: the glyph is the fallback where VendorIcons has no brand mark
+    // (kiro, antigravity, pi, unknown tokens); the tint colors both the mark and the monogram.
+    // Monochrome brands render in the near-white text color; claude/gemini keep their brand hues.
     static readonly Dictionary<string, (string Glyph, string Color)> VendorTiles = new(StringComparer.OrdinalIgnoreCase) {
         ["claude"]      = ("✳", "#D97757"),
-        ["codex"]       = ("Cx", "#71C7AE"),
+        ["codex"]       = ("Cx", "#F1F3F7"),
         ["cursor"]      = ("Cu", "#F1F3F7"),
-        ["copilot"]     = ("Cp", "#8B8BF7"),
+        ["copilot"]     = ("Cp", "#F1F3F7"),
         ["gemini"]      = ("Ge", "#7BA7F7"),
         ["kiro"]        = ("Ki", "#B78BF7"),
-        ["opencode"]    = ("Oc", "#5BE0B3"),
+        ["opencode"]    = ("Oc", "#F1F3F7"),
         ["antigravity"] = ("An", "#F4B860"),
-        ["pi"]          = ("Pi", "#A994FF"),
+        ["pi"]          = ("π", "#A994FF"),
     };
 
     static (string Glyph, string Color) TileFor(string vendor) =>
         VendorTiles.TryGetValue(vendor, out var tile)
             ? tile
             : (vendor.Length > 0 ? vendor[..1].ToUpperInvariant() : "?", "#9299AA");
+
+    /// The vendor's mark at a given size: the brand path when VendorIcons carries one, the tinted
+    /// monogram otherwise. UI-thread only (constructs thread-affine Geometry/brushes).
+    internal static Control BuildGlyph(string vendor, double size) {
+        var (glyph, color) = TileFor(vendor);
+        if (VendorIcons.For(vendor) is { } geometry)
+            return new Avalonia.Controls.Shapes.Path {
+                Data = geometry, Fill = new SolidColorBrush(Color.Parse(color)),
+                Width = size, Height = size, Stretch = Stretch.Uniform,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+            };
+        return new TextBlock {
+            Text = glyph, FontSize = size, FontWeight = FontWeight.Bold,
+            Foreground = new SolidColorBrush(Color.Parse(color)),
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+        };
+    }
 
     // The combined harness+model picker, T3-shaped: a vendor icon rail on the left, an underlined
     // search over the model rows on the right. No search term = the active vendor tab's models;
@@ -192,21 +210,12 @@ public partial class LauncherPaneView : UserControl {
             flyout.Hide();
         }
 
-        TextBlock Monogram(string vendor, double size) {
-            var (glyph, color) = TileFor(vendor);
-            return new TextBlock {
-                Text = glyph, FontSize = size, FontWeight = FontWeight.Bold,
-                Foreground = new SolidColorBrush(Color.Parse(color)),
-                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
-            };
-        }
-
         Button Row(string vendor, string vendorLabel, string label, bool enabled, bool selected, Action pick) {
             var sub = new StackPanel {
                 Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 6,
                 Margin = new Thickness(0, 2, 0, 0),
             };
-            sub.Children.Add(Monogram(vendor, 10));
+            sub.Children.Add(BuildGlyph(vendor, 10));
             sub.Children.Add(new TextBlock { Text = vendorLabel, FontSize = 11.5, Foreground = muted });
 
             var body = new StackPanel();
@@ -280,7 +289,7 @@ public partial class LauncherPaneView : UserControl {
                 var vendor = option.Vendor;
                 var active = string.Equals(vendor, currentTab, StringComparison.OrdinalIgnoreCase);
                 var tile = new Button {
-                    Content = Monogram(vendor, 14), IsEnabled = option.Available,
+                    Content = BuildGlyph(vendor, 16), IsEnabled = option.Available,
                     Width = 34, Height = 34, Padding = new Thickness(0),
                     HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Center,
                     VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Center,
@@ -307,6 +316,20 @@ public partial class LauncherPaneView : UserControl {
         flyout.ShowAt(anchor);
         searchBox.Focus();
     }
+}
+
+/// The vendor's mark as bindable content (AgentChip's leading glyph). One-way; parameter is the
+/// size in pixels. Bindings evaluate on the UI thread, which BuildGlyph requires.
+public sealed class VendorGlyphConverter : IValueConverter {
+    public static readonly VendorGlyphConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value is string vendor
+            ? LauncherPaneView.BuildGlyph(vendor, double.TryParse(parameter as string, out var size) ? size : 13)
+            : null;
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
 }
 
 /// AgentChip's label: "Claude · Fable 5" — vendor label plus the model's curated label (raw slug

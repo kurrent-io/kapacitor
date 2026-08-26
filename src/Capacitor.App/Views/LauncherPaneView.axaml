@@ -36,13 +36,19 @@
                             Background="{StaticResource KcapSurfaceRaisedBrush}" BorderBrush="{StaticResource KcapBorderBrush}"
                             Foreground="{StaticResource KcapTextBrush}" CornerRadius="999" Padding="11,5"
                             ToolTip.Tip="Harness and model">
-                        <Button.Content>
-                            <MultiBinding Converter="{x:Static views:AgentChipTextConverter.Instance}">
-                                <Binding Path="Harnesses" />
-                                <Binding Path="SelectedVendor" />
-                                <Binding Path="SelectedModel" />
-                            </MultiBinding>
-                        </Button.Content>
+                        <StackPanel Orientation="Horizontal" Spacing="7">
+                            <ContentControl VerticalAlignment="Center"
+                                            Content="{Binding SelectedVendor, Converter={x:Static views:VendorGlyphConverter.Instance}, ConverterParameter=13}" />
+                            <TextBlock VerticalAlignment="Center">
+                                <TextBlock.Text>
+                                    <MultiBinding Converter="{x:Static views:AgentChipTextConverter.Instance}">
+                                        <Binding Path="Harnesses" />
+                                        <Binding Path="SelectedVendor" />
+                                        <Binding Path="SelectedModel" />
+                                    </MultiBinding>
+                                </TextBlock.Text>
+                            </TextBlock>
+                        </StackPanel>
                     </Button>
 
                     <Button x:Name="EffortChip" Click="OnEffortChipClick"
