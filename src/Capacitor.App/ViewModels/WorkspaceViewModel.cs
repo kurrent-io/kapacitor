@@ -12,7 +12,7 @@ namespace Capacitor.App.ViewModels;
 
 public enum WorkspaceTab { Chat, Terminal }
 
-/// The session workspace: header (title/repo/vendor chip) + one Terminal tab, for a single agent
+/// The session workspace: header (title/repo/vendor chip) + Chat and Terminal tabs, for one agent
 /// id. Constructed once per workspace, like TerminalTabViewModel/HomeViewModel -- ctor-scoped, not
 /// WhenActivated -- since the header projections and the Terminal tab must be live from
 /// construction, not deferred to a window's activation.
