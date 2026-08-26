@@ -9,13 +9,18 @@ using Capacitor.App.Services;
 using Markdig;
 using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
+using MdInline = Markdig.Syntax.Inlines.Inline;
 
 namespace Capacitor.App.Views;
 
 /// Maps the markdown constructs agents actually emit to Avalonia controls. Anything else
 /// renders as its literal source text — degraded, never dropped.
 public static class MarkdownBlocks {
-    static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder().UseAutoLinks().Build();
+    // Precise source locations are what let an unmapped inline fall back to its own source text:
+    // without them every inline span is empty and that fallback prints the document's first
+    // character. They change recorded positions only, never which constructs parse.
+    static readonly MarkdownPipeline Pipeline =
+        new MarkdownPipelineBuilder().UseAutoLinks().UsePreciseSourceLocation().Build();
     static readonly FontFamily Mono = new("Menlo,Monaco,Consolas,Cascadia Mono,DejaVu Sans Mono,monospace");
 
     static IBrush Brush(string key) => Application.Current?.FindResource(key) as IBrush ?? Brushes.Gray;
@@ -28,8 +33,8 @@ public static class MarkdownBlocks {
     }
 
     static Control BuildBlock(string source, Block block, ICommand? openLink) => block switch {
-        ParagraphBlock p     => InlineText(p.Inline, openLink, 13.5, bold: false),
-        HeadingBlock h       => InlineText(h.Inline, openLink, h.Level switch { 1 => 18, 2 => 16, _ => 14.5 }, bold: true),
+        ParagraphBlock p     => InlineText(source, p.Inline, openLink, 13.5, bold: false),
+        HeadingBlock h       => InlineText(source, h.Inline, openLink, h.Level switch { 1 => 18, 2 => 16, _ => 14.5 }, bold: true),
         FencedCodeBlock f    => CodeBlock(f),
         CodeBlock c          => CodeBlock(c),
         ListBlock list       => List(source, list, openLink),
@@ -38,7 +43,23 @@ public static class MarkdownBlocks {
         _                    => Literal(source, block),
     };
 
-    static SelectableTextBlock InlineText(ContainerInline? inlines, ICommand? openLink, double fontSize, bool bold) {
+    static Control InlineText(string source, ContainerInline? inlines, ICommand? openLink, double fontSize, bool bold) {
+        // A hard break is a segment boundary rather than an inline, for the reason on Flat.
+        var segments = new List<List<MdInline>> { new() };
+        if (inlines is not null)
+            foreach (var inline in inlines) {
+                if (inline is LineBreakInline { IsHard: true }) segments.Add([]);
+                else segments[^1].Add(inline);
+            }
+
+        if (segments.Count == 1) return Segment(source, segments[0], openLink, fontSize, bold);
+        var panel = new StackPanel();
+        foreach (var segment in segments) panel.Children.Add(Segment(source, segment, openLink, fontSize, bold));
+        return panel;
+    }
+
+    static SelectableTextBlock Segment(
+            string source, List<MdInline> inlines, ICommand? openLink, double fontSize, bool bold) {
         var text = new SelectableTextBlock {
             TextWrapping = TextWrapping.Wrap,
             FontSize = fontSize,
@@ -46,57 +67,70 @@ public static class MarkdownBlocks {
             LineHeight = fontSize * 1.6,
             Foreground = Brush("KcapTextBrush"),
         };
-        AddInlines(text.Inlines!, inlines, openLink);
+        foreach (var inline in inlines) AddInline(source, text.Inlines!, inline, openLink);
         return text;
     }
 
-    // A newline reaching a text block's inlines makes Avalonia's line breaker spin forever
-    // whenever the block's height is unconstrained (every scrolled list). Inline content is
-    // therefore always single-line — a break inside a paragraph becomes a space, which is also
-    // how CommonMark's soft break renders. Multi-line source belongs on Text, which is safe.
+    // Avalonia 12's line breaker never finishes laying out a text block whose inlines carry a
+    // newline while the parent leaves height unconstrained — every StackPanel and ScrollViewer.
+    // Inline content is single-line: a soft break is a space, as CommonMark renders it. Multi-line
+    // source belongs on Text, which lays out fine.
     static string Flat(string text) => text.ReplaceLineEndings(" ");
 
-    static void AddInlines(InlineCollection target, ContainerInline? container, ICommand? openLink) {
+    static string SpanText(string source, SourceSpan span) =>
+        span.Start >= 0 && span.End >= span.Start && span.End < source.Length
+            ? source.Substring(span.Start, span.Length)
+            : "";
+
+    static void AddInlines(string source, InlineCollection target, ContainerInline? container, ICommand? openLink) {
         if (container is null) return;
-        foreach (var inline in container) {
-            switch (inline) {
-                case LiteralInline literal:
-                    target.Add(new Run(Flat(literal.Content.ToString())));
-                    break;
-                case EmphasisInline emphasis: {
-                    Span span = emphasis.DelimiterCount >= 2 ? new Bold() : new Italic();
-                    AddInlines(span.Inlines, emphasis, openLink);
-                    target.Add(span);
-                    break;
-                }
-                case CodeInline code:
-                    target.Add(new Run(Flat(code.Content)) { FontFamily = Mono });
-                    break;
-                case LineBreakInline:
-                    target.Add(new Run(" "));
-                    break;
-                case LinkInline link when !link.IsImage && LinkPolicy.IsOpenable(link.Url):
-                    target.Add(new InlineUIContainer { Child = LinkButton(PlainText(link), link.Url!, openLink) });
-                    break;
-                case LinkInline link:
-                    AddInlines(target, link, openLink);
-                    break;
-                case AutolinkInline auto when LinkPolicy.IsOpenable(auto.Url):
-                    target.Add(new InlineUIContainer { Child = LinkButton(auto.Url, auto.Url, openLink) });
-                    break;
-                case AutolinkInline auto:
-                    target.Add(new Run(Flat(auto.Url)));
-                    break;
-                case HtmlInline html:
-                    target.Add(new Run(Flat(html.Tag)));
-                    break;
-                case ContainerInline nested:
-                    AddInlines(target, nested, openLink);
-                    break;
-                default:
-                    target.Add(new Run(Flat(inline.ToString() ?? "")));
-                    break;
+        foreach (var inline in container) AddInline(source, target, inline, openLink);
+    }
+
+    static void AddInline(string source, InlineCollection target, MdInline inline, ICommand? openLink) {
+        switch (inline) {
+            case LiteralInline literal:
+                target.Add(new Run(Flat(literal.Content.ToString())));
+                break;
+            case EmphasisInline emphasis: {
+                Span span = emphasis.DelimiterCount >= 2 ? new Bold() : new Italic();
+                AddInlines(source, span.Inlines, emphasis, openLink);
+                target.Add(span);
+                break;
             }
+            case CodeInline code:
+                target.Add(new Run(Flat(code.Content)) { FontFamily = Mono });
+                break;
+            case HtmlEntityInline entity:
+                target.Add(new Run(Flat(entity.Transcoded.ToString())));
+                break;
+            case LineBreakInline:
+                target.Add(new Run(" "));
+                break;
+            case LinkInline { IsImage: true } image:
+                target.Add(new Run(Flat(SpanText(source, image.Span))));
+                break;
+            case LinkInline link when LinkPolicy.IsOpenable(link.Url):
+                target.Add(new InlineUIContainer { Child = LinkButton(Flat(PlainText(source, link)), link.Url!, openLink) });
+                break;
+            case LinkInline link:
+                AddInlines(source, target, link, openLink);
+                break;
+            case AutolinkInline auto when LinkPolicy.IsOpenable(auto.Url):
+                target.Add(new InlineUIContainer { Child = LinkButton(auto.Url, auto.Url, openLink) });
+                break;
+            case AutolinkInline auto:
+                target.Add(new Run(Flat(auto.Url)));
+                break;
+            case HtmlInline html:
+                target.Add(new Run(Flat(html.Tag)));
+                break;
+            case ContainerInline nested:
+                AddInlines(source, target, nested, openLink);
+                break;
+            default:
+                target.Add(new Run(Flat(SpanText(source, inline.Span))));
+                break;
         }
     }
 
@@ -112,8 +146,15 @@ public static class MarkdownBlocks {
         VerticalAlignment = VerticalAlignment.Center,
     };
 
-    static string PlainText(ContainerInline container) =>
-        string.Concat(container.Select(i => i is LiteralInline l ? l.Content.ToString() : i is ContainerInline c ? PlainText(c) : ""));
+    static string PlainText(string source, ContainerInline container) =>
+        string.Concat(container.Select(inline => inline switch {
+            LiteralInline literal    => literal.Content.ToString(),
+            CodeInline code          => code.Content,
+            HtmlEntityInline entity  => entity.Transcoded.ToString(),
+            LineBreakInline          => " ",
+            ContainerInline nested   => PlainText(source, nested),
+            _                        => SpanText(source, inline.Span),
+        }));
 
     static Control CodeBlock(LeafBlock code) => new Border {
         Background = Brush("KcapSurfaceBrush"),
@@ -162,16 +203,10 @@ public static class MarkdownBlocks {
         };
     }
 
-    static Control Literal(string source, Block block) {
-        var span = block.Span;
-        var text = span.Start >= 0 && span.End < source.Length && span.End >= span.Start
-            ? source.Substring(span.Start, span.Length)
-            : block.ToString() ?? "";
-        return new SelectableTextBlock {
-            Text = text,
-            TextWrapping = TextWrapping.Wrap,
-            FontSize = 13.5,
-            Foreground = Brush("KcapTextBrush"),
-        };
-    }
+    static Control Literal(string source, Block block) => new SelectableTextBlock {
+        Text = SpanText(source, block.Span),
+        TextWrapping = TextWrapping.Wrap,
+        FontSize = 13.5,
+        Foreground = Brush("KcapTextBrush"),
+    };
 }

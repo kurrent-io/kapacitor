@@ -4,7 +4,6 @@ using Avalonia.Controls;
 
 namespace Capacitor.App.Views;
 
-/// Assistant prose: a ContentControl whose content is rebuilt from the markdown on every change.
 public sealed class MarkdownView : ContentControl {
     public static readonly StyledProperty<string?> TextProperty =
         AvaloniaProperty.Register<MarkdownView, string?>(nameof(Text));
