@@ -409,8 +409,8 @@ Lives on `ChatTabViewModel`, sends through the sibling Terminal tab:
   the gate into the state so the hint is truthful in every window: `Ready` →
   "Reply to {vendor label} · Enter sends · Shift+Enter for a new line";
   `Sending` → "Sending…"; `Transitioning` (the gate is closed while `State`
-  still reads Attached — a reattach or detach in progress) → "Reconnecting
-  the terminal…"; otherwise by `State`: attached read-only → "Read-only:
+  still reads Attached — a reattach or detach in progress) → "Updating the
+  terminal connection…"; otherwise by `State`: attached read-only → "Read-only:
   {reason}"; `Resolving`/`Connecting` → "Connecting to the terminal…";
   `Detached`/`Failed` → "Reattach the terminal to send";
   `Exited`/`SessionEnded` → "This session has ended"; `NoTerminal`/`NotFound` →
@@ -435,9 +435,18 @@ mutated only on the UI thread:
   outcomes `FinishAttemptAsync` maps — Detached, Exited, Failed,
   ConnectionLost — the agent removal that lands `SessionEnded`, `NotFound`,
   `NoTerminal`), in the same dispatch and before the new state is published.
-  It reopens only inside the publish of a read-write `Attached`. To make
-  that unforgettable, `State` has one publish point that applies the gate
-  rule; nothing assigns it directly. Neither `State` nor `_client` can serve
+  It reopens only inside the publish of a read-write `Attached`, **and only
+  for the attempt that owns the current closure**: an attempt records the
+  epoch value its own opening closure produced, and `OnAttachedAsync`'s
+  publish is discarded unless both its attempt generation and that epoch are
+  still current. The attempt generation alone cannot decide this — a cache
+  removal (`SessionEnded`) and an explicit detach retire nothing today, so a
+  callback still queued for its UI dispatch when either lands would publish
+  a writable `Attached` on top of the closure and reopen a terminal the
+  daemon has already dropped. Only an explicitly started later attempt, with
+  its own epoch, can reopen. To make all of this unforgettable, `State` has
+  one publish point that applies the gate rule; nothing assigns it directly.
+  Neither `State` nor `_client` can serve
   as the gate on its own: a reattach leaves both `Attached` and live while it
   awaits the old client's disposal, and a detach leaves both unchanged while
   it awaits the detach write — a send started in either window would
@@ -565,9 +574,15 @@ inserts a newline — a view-level key handler on the composer's `TextBox`.
   a send started while a reattach is awaiting the old client's disposal
   (`DisposeGate`) or a detach is awaiting its write (`HangDetachForever`) is
   refused — `State` still reads `Attached` in both windows, `SendCommand`'s
-  `CanExecute` is false and the hint reads "Reconnecting the terminal…" — and
-  the gate reopens only once the new attempt lands read-write `Attached` (a
-  read-only Attached leaves it closed); a reattach whose old-client disposal
+  `CanExecute` is false and the hint reads "Updating the terminal
+  connection…" — and the gate reopens only once the new attempt lands
+  read-write `Attached` (a read-only Attached leaves it closed); an attach
+  callback whose UI publish is still queued when the agent is removed (and,
+  separately, when an explicit detach begins) does not reopen: after the
+  queue drains, `State` is still `SessionEnded` (respectively not Attached),
+  `CanAcceptText` is false and a direct `TrySendText` is refused, while a
+  later explicitly started attempt's own Attached does reopen; a reattach
+  whose old-client disposal
   is held open past 150 ms, a detach, or a teardown started during the delay
   sends no CR to any client and clears `SendInFlight` synchronously; an
   `AttachOutcome` (`Exited` and `ConnectionLost` at least) and an agent
@@ -578,8 +593,8 @@ inserts a newline — a view-level key handler on the composer's `TextBox`.
   `SendInFlight`; after `TeardownAsync` returns, no bound state changes and no
   dispatcher work is queued by a still-running delivery; the text clears on
   acceptance and stays on refusal; every hint string including "Sending…"
-  and "Reconnecting the terminal…"; a pool-thread state flip updates the
-  hint on the UI thread.
+  and "Updating the terminal connection…"; a pool-thread state flip updates
+  the hint on the UI thread.
 - `TerminalInputEncoderTests`, `ToolDetailTests` (key priority, first line,
   80-character cut), `LinkPolicyTests` (https/http open, `file:`,
   `javascript:`, custom schemes, relative and malformed text refused).
