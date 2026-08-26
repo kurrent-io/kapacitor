@@ -18,15 +18,24 @@ permanent exposure for any session whose PUT failed, since those failures are sw
 The other three stamped `"private"` in their own payload builder, which is why checking one source
 found it correct.
 
-`ImportContext.VisibilityStampFor(status)` is now the only place that decides, and the chain path
-resolves the same rule into `chainDefaultVisibility`. The two halves are asymmetric on purpose: the
-Step-3 default is a creation default and lands on `New` alone, while `private` is a floor, and
-re-asserting a floor on a replay can only narrow what is already there — so it does not gate on
-status. Every site is therefore a widening and none a narrowing. `SetVisibilityNoneForAll` stays as
-belt-and-braces, still correcting sessions an older CLI created unstamped, but privacy no longer
-depends on it. The 2026-07-20 unified-import spec scoped this expansion out while already arguing
-that post-hoc privatisation is unsafe for a session that fails mid-stream; this is that argument
-applied to the eight other paths.
+`ImportContext.VisibilityStampFor(status)` is now the only place that decides the stamp, and the
+chain path resolves the same rule into `chainDefaultVisibility`. The Step-3 default lands on `New`
+alone, while `private` is sent on every status because it costs nothing.
+
+**A stamp only decides visibility at creation.** The read model's import-overlap branch — the one a
+re-import of an already-closed session takes — omits `default_visibility` from its update, so
+re-asserting `private` on a session that already exists is discarded. For anything a run merely
+revisits, the closing `visibility=none` pass is the only mechanism, which is why membership in it is
+now the in-scope classification set rather than whatever the import concluded: `importedSessionIds`
+gains a session only where new work happened, and `privateScopeSessionIds` excludes Copilot, Kiro, Pi
+and OpenCode, so a failed routed replay or a chain resume whose session-end POST failed was
+privatised by nothing. The bound is status — the scope filter runs before classification and an
+excluded source has its status flipped — so `New | Partial | AlreadyLoaded` is the selected-and-
+present set and a too-short session is left alone.
+
+The 2026-07-20 unified-import spec scoped this expansion out while already arguing that post-hoc
+privatisation is unsafe for a session that fails mid-stream; this is that argument applied to the
+eight other paths.
 
 ## Claude SessionEnd hand-off
 
