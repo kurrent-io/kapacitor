@@ -4,6 +4,10 @@ namespace Capacitor.App.Services;
 
 public sealed record HarnessOption(string Vendor, string Label, string TransportFamily, bool Available);
 
+/// One curated model suggestion for the combined harness+model picker. Slug is what the wire
+/// carries verbatim; Label is the picker's friendly name.
+public sealed record ModelChoice(string Slug, string Label);
+
 /// The picker's vendor list. Availability comes from what the daemon advertises
 /// (DaemonInfoDto.SupportedVendors), never from a version check — a vendor auto-update must not
 /// silently withdraw a harness. A vendor the daemon advertises but this build has never heard of
@@ -52,6 +56,34 @@ public static class HostedHarnessCatalog {
 
         return options;
     }
+
+    // Curated model suggestions per vendor — a hardcoded catalog, deliberately (T3 Code ships
+    // Claude's exactly this way; it lists Codex's live from `codex app-server`, which our daemon
+    // could do too once a model-list IPC exists). The picker always offers "vendor default" and a
+    // typed custom id besides these, so catalog drift can never block a launch.
+    static readonly Dictionary<string, ModelChoice[]> ModelChoices = new(StringComparer.OrdinalIgnoreCase) {
+        ["claude"] = [
+            new("claude-fable-5", "Claude Fable 5"),
+            new("claude-opus-5", "Claude Opus 5"),
+            new("claude-sonnet-5", "Claude Sonnet 5"),
+            new("claude-haiku-4-5", "Claude Haiku 4.5"),
+        ],
+        ["codex"] = [
+            new("gpt-5.6", "GPT-5.6"),
+        ],
+    };
+
+    /// The curated suggestions for a vendor; empty for one without a list (picker then offers
+    /// only the default + custom rows).
+    public static IReadOnlyList<ModelChoice> ModelChoicesFor(string vendor) =>
+        ModelChoices.TryGetValue(vendor, out var models) ? models : [];
+
+    /// Chip wording for a model selection: the curated label when known, the raw slug otherwise,
+    /// "default" for the "" sentinel.
+    public static string ModelLabelFor(string vendor, string model) =>
+        string.IsNullOrWhiteSpace(model)
+            ? "default"
+            : ModelChoicesFor(vendor).FirstOrDefault(m => string.Equals(m.Slug, model, StringComparison.OrdinalIgnoreCase))?.Label ?? model;
 
     /// Display label for a vendor token: the option's Label when the list carries one, the raw
     /// token otherwise (before the first daemon snapshot, or a token this build has never heard

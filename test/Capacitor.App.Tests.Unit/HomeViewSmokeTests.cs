@@ -56,7 +56,7 @@ public class HomeViewSmokeTests {
             window.Show();
             Dispatcher.UIThread.RunJobs();
 
-            var names = new[] { "GoalInput", "RepositoryChip", "HarnessChip", "StartButton", "StartErrorText" };
+            var names = new[] { "GoalInput", "RepositoryChip", "AgentChip", "StartButton", "StartErrorText" };
             var resolved = names.ToDictionary(name => name, name => Find<Control>(window, name) is not null);
 
             window.Close();
@@ -67,7 +67,7 @@ public class HomeViewSmokeTests {
 
         await Assert.That(found["GoalInput"]).IsTrue();
         await Assert.That(found["RepositoryChip"]).IsTrue();
-        await Assert.That(found["HarnessChip"]).IsTrue();
+        await Assert.That(found["AgentChip"]).IsTrue();
         await Assert.That(found["StartButton"]).IsTrue();
         await Assert.That(found["StartErrorText"]).IsTrue();
     }

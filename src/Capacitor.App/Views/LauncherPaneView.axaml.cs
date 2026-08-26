@@ -112,36 +112,112 @@ public partial class LauncherPaneView : UserControl {
         flyout.ShowAt(anchor);
     }
 
-    // Harness picker: one flyout item per HostedHarnessCatalog option, disabled (never denied
-    // outright) when the daemon hasn't advertised it — same "always offered, never withdrawn
-    // silently" rule HostedHarnessCatalog's own doc comment states.
-    void OnHarnessChipClick(object? sender, RoutedEventArgs e) {
+    // The combined harness+model picker (T3-style): one searchable surface, grouped by vendor,
+    // each group leading with the vendor-default row and following with the curated suggestions.
+    // Unavailable vendors stay listed but disabled (never withdrawn silently — HostedHarnessCatalog's
+    // rule), and a non-empty search always offers itself as a custom model id, so the curated
+    // catalog can drift without ever blocking a launch.
+    void OnAgentChipClick(object? sender, RoutedEventArgs e) {
         if (DataContext is not HomeViewModel vm || sender is not Control anchor) return;
 
-        var flyout = new MenuFlyout();
-        foreach (var option in vm.Harnesses) {
-            var item = new MenuItem {
-                Header = $"{option.Label} — {HostedHarnessCatalog.DescriptionFor(option)}",
-                IsEnabled = option.Available,
-            };
-            var vendor = option.Vendor;
-            item.Click += async (_, _) => await vm.ChooseHarnessAsync(vendor);
-            flyout.Items.Add(item);
+        var text = (IBrush)this.FindResource("KcapTextBrush")!;
+        var muted = (IBrush)this.FindResource("KcapMutedBrush")!;
+        var faint = (IBrush)this.FindResource("KcapFaintBrush")!;
+        var accent = (IBrush)this.FindResource("KcapAccentBrush")!;
+
+        var search = new TextBox { PlaceholderText = "Search models…", FontSize = 12.5 };
+        var rows = new StackPanel { Spacing = 2 };
+        var flyout = new Flyout {
+            Placement = PlacementMode.Bottom,
+            Content = new StackPanel {
+                Width = 330, Spacing = 8,
+                Children = { search, new ScrollViewer { MaxHeight = 380, Content = rows } },
+            },
+        };
+
+        async void Pick(string vendor, string slug) {
+            await vm.ChooseHarnessAsync(vendor);
+            vm.SelectedModel = slug;
+            flyout.Hide();
         }
+
+        Button Row(string label, string? sub, bool enabled, bool selected, Action pick) {
+            var body = new StackPanel { Spacing = 1 };
+            body.Children.Add(new TextBlock {
+                Text = label, FontSize = 12.5,
+                Foreground = selected ? accent : enabled ? text : faint,
+            });
+            if (sub is not null)
+                body.Children.Add(new TextBlock { Text = sub, FontSize = 10.5, Foreground = faint });
+
+            var row = new Button {
+                Content = body, IsEnabled = enabled,
+                HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Left,
+                Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+                CornerRadius = new CornerRadius(6), Padding = new Thickness(8, 5),
+            };
+            row.Click += (_, _) => pick();
+            return row;
+        }
+
+        void Rebuild() {
+            rows.Children.Clear();
+            var term = search.Text?.Trim() ?? "";
+            bool Matches(string s) => term.Length == 0 || s.Contains(term, StringComparison.OrdinalIgnoreCase);
+
+            foreach (var option in vm.Harnesses) {
+                var vendor = option.Vendor;
+                var vendorMatches = Matches(option.Label) || Matches(option.Vendor);
+                var models = HostedHarnessCatalog.ModelChoicesFor(vendor);
+                var visible = vendorMatches ? models : models.Where(m => Matches(m.Label) || Matches(m.Slug)).ToList();
+                var showDefault = vendorMatches || Matches("default");
+                if (!showDefault && visible.Count == 0) continue;
+
+                rows.Children.Add(new TextBlock {
+                    Text = $"{option.Label}  ·  {HostedHarnessCatalog.DescriptionFor(option)}",
+                    FontSize = 10, FontWeight = Avalonia.Media.FontWeight.Bold, Foreground = faint,
+                    Margin = new Thickness(8, 8, 8, 2),
+                });
+                var isCurrentVendor = string.Equals(vm.SelectedVendor, vendor, StringComparison.OrdinalIgnoreCase);
+                if (showDefault)
+                    rows.Children.Add(Row(
+                        "Default", $"whatever {option.Label} chooses", option.Available,
+                        isCurrentVendor && vm.SelectedModel.Length == 0, () => Pick(vendor, "")));
+                foreach (var model in visible)
+                    rows.Children.Add(Row(
+                        model.Label, model.Slug, option.Available,
+                        isCurrentVendor && string.Equals(vm.SelectedModel, model.Slug, StringComparison.OrdinalIgnoreCase),
+                        () => Pick(vendor, model.Slug)));
+            }
+
+            // The escape hatch: whatever was typed is offered verbatim for the CURRENT vendor,
+            // unless it already matched a curated slug above.
+            if (term.Length > 0 && !vm.Harnesses.SelectMany(o => HostedHarnessCatalog.ModelChoicesFor(o.Vendor))
+                    .Any(m => string.Equals(m.Slug, term, StringComparison.OrdinalIgnoreCase))) {
+                var current = HostedHarnessCatalog.LabelFor(vm.Harnesses, vm.SelectedVendor);
+                rows.Children.Add(Row(
+                    $"Use “{term}”", $"as the model id for {current}", enabled: true,
+                    selected: false, () => Pick(vm.SelectedVendor, term)));
+            }
+        }
+
+        search.TextChanged += (_, _) => Rebuild();
+        Rebuild();
         flyout.ShowAt(anchor);
+        search.Focus();
     }
 }
 
-/// ModelChip's label: the chosen id verbatim, or the default wording for "" — the wire's own
-/// "blank = vendor default" convention rendered as words.
-public sealed class ModelChipTextConverter : IValueConverter {
-    public static readonly ModelChipTextConverter Instance = new();
+/// AgentChip's label: "Claude · Fable 5" — vendor label plus the model's curated label (raw slug
+/// when uncurated, "default" for the "" sentinel).
+public sealed class AgentChipTextConverter : IMultiValueConverter {
+    public static readonly AgentChipTextConverter Instance = new();
 
-    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        value is string { Length: > 0 } model && !string.IsNullOrWhiteSpace(model) ? model : "Default model";
-
-    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        throw new NotSupportedException();
+    public object? Convert(IList<object?> values, Type targetType, object? parameter, CultureInfo culture) =>
+        values is [IReadOnlyList<HarnessOption> options, string vendor, string model]
+            ? $"{HostedHarnessCatalog.LabelFor(options, vendor)} · {HostedHarnessCatalog.ModelLabelFor(vendor, model)}"
+            : "";
 }
 
 /// EffortChip's label: the chosen rung, or the default wording for null.

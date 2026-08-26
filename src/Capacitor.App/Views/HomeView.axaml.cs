@@ -2,7 +2,6 @@ using System.Globalization;
 using Avalonia.Controls;
 using Avalonia.Data.Converters;
 using Avalonia.Interactivity;
-using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 
 namespace Capacitor.App.Views;
@@ -32,17 +31,6 @@ public sealed class RepositoryLabelConverter : IValueConverter {
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();
-}
-
-/// HarnessChip's label: SelectedVendor resolved through HostedHarnessCatalog.LabelFor (see its
-/// fallback rules).
-public sealed class HarnessChipTextConverter : IMultiValueConverter {
-    public static readonly HarnessChipTextConverter Instance = new();
-
-    public object? Convert(IList<object?> values, Type targetType, object? parameter, CultureInfo culture) =>
-        values is [IReadOnlyList<HarnessOption> options, string vendor]
-            ? HostedHarnessCatalog.LabelFor(options, vendor)
-            : "";
 }
 
 /// Single-purpose converter, not a general int-to-bool one — empty-state text visible only while
