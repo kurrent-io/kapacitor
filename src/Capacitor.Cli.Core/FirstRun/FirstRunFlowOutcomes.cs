@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Core.FirstRun;
@@ -149,8 +150,20 @@ public static class FirstRunFlowOutcomes {
             choices.Add(new FirstRunAgentsChoice(entry.Vendor, entry.Record, entry.Tools));
         }
 
-        return new FirstRunAgentsAnswer(choices, decidedAt, unrecognised);
+        return new FirstRunAgentsAnswer(choices, decidedAt, unrecognised, Visibility(view.DefaultVisibility));
     }
+
+    /// <summary>
+    /// The default visibility to write, or null to leave the profile alone.
+    ///
+    /// <para><b>Validated against this build's own closed set, not forwarded.</b> The value lands in
+    /// profile config and is stamped on every session this machine records afterwards, so one a newer
+    /// server invented would be written to disk and then read back by a server that may no longer mean
+    /// the same thing by it. Null is what a dropped value degrades to, which leaves the profile as it
+    /// was — the same outcome as never having asked.</para>
+    /// </summary>
+    static string? Visibility(string? value) =>
+        value is { Length: > 0 } && AppConfig.ValidVisibilities.Contains(value) ? value : null;
 
     /// <summary>
     /// The actions the browser is asking this machine to perform, filtered to ones this build can name.

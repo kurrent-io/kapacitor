@@ -210,6 +210,20 @@ public sealed record FirstRunFlowResponse {
     [JsonPropertyName("agents_decided_at")] public DateTimeOffset? AgentsDecidedAt { get; init; }
 
     /// <summary>
+    /// The default session visibility the same decision chose, as a canonical
+    /// <c>default_visibility</c> value.
+    ///
+    /// <para><b>Null means leave the profile alone</b>, and it is null in two situations this build must
+    /// not tell apart: the step is unanswered, and the user declined everything. Neither asks for a
+    /// default.</para>
+    ///
+    /// <para><b>It can name a stop this tenant would no longer offer</b>, because the server's fold keeps
+    /// a durable answer as given. Such a value is still the one to write: every stop it can name resolves
+    /// no wider than the profile's own fallback.</para>
+    /// </summary>
+    [JsonPropertyName("default_visibility")] public string? DefaultVisibility { get; init; }
+
+    /// <summary>
     /// What the browser is asking this machine to do, and the one field on this response the CLI acts on
     /// rather than records. Absent or empty means nothing is outstanding.
     ///

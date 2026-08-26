@@ -25,12 +25,20 @@ public sealed record FirstRunAgentsChoice(string VendorId, bool Record, bool Too
 /// <param name="Unrecognised">How many entries named a vendor this build has never heard of. Dropped
 /// rather than forwarded, and counted so the user can be told their CLI is behind their server rather
 /// than left with a harness that silently did not get set up.</param>
+/// <param name="DefaultVisibility">Who may read the sessions this machine records from now on, or null
+/// to leave the profile's own value alone. Part of this answer rather than beside it, because it rides
+/// the same decision and the same timestamp — see the wire model.</param>
 public sealed record FirstRunAgentsAnswer(
         IReadOnlyList<FirstRunAgentsChoice> Choices,
         DateTimeOffset                      DecidedAt,
-        int                                 Unrecognised) {
-    /// <summary>The user asked for nothing, and we understood all of it. Distinct from an answer whose
-    /// every entry was dropped, which asks for nothing only because this build could not read it.</summary>
+        int                                 Unrecognised,
+        string?                             DefaultVisibility = null) {
+    /// <summary>The user asked for nothing to be installed, and we understood all of it. Distinct from
+    /// an answer that asks for nothing only because none of its entries are readable here.
+    ///
+    /// <para>Says nothing about <see cref="DefaultVisibility"/>: declining every harness and still
+    /// choosing who may read future sessions is a coherent answer, so the two are read separately.</para>
+    /// </summary>
     public bool IsDecline => Choices.Count == 0 && Unrecognised == 0;
 
     /// <summary>Install capture for this harness. False for a vendor the answer never mentions — a

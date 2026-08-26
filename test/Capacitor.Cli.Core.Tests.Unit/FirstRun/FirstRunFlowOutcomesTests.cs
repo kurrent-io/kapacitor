@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.FirstRun;
 
 namespace Capacitor.Cli.Core.Tests.Unit.FirstRun;
@@ -334,5 +335,58 @@ public class FirstRunFlowOutcomesTests {
         var result = new FirstRunFlowResult.Dismissed(WithImport(Decision(repos: ("o", "n", "Shared"))));
 
         await Assert.That(FirstRunFlowOutcomes.Import(result)).IsNotNull();
+    }
+
+    // =====================================================================
+    // The default visibility the same decision carries.
+    // =====================================================================
+
+    static FirstRunFlowResponse WithVisibility(string? visibility) =>
+        AllSettled() with {
+            Agents          = [new FirstRunAgentChoiceResponse { Vendor = "claude", Record = true, Tools = true }],
+            AgentsDecidedAt = new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero),
+            DefaultVisibility = visibility
+        };
+
+    [Test]
+    public async Task Each_stop_the_wire_can_name_is_carried_through() {
+        foreach (var stop in AppConfig.ValidVisibilities) {
+            await Assert.That(FirstRunFlowOutcomes.Agents(WithVisibility(stop))!.DefaultVisibility)
+                        .IsEqualTo(stop);
+        }
+    }
+
+    [Test]
+    public async Task No_visibility_answer_leaves_the_profile_alone() {
+        // Null covers both "unanswered" and "declined everything", and neither asks for a default.
+        await Assert.That(FirstRunFlowOutcomes.Agents(WithVisibility(null))!.DefaultVisibility).IsNull();
+    }
+
+    [Test]
+    public async Task A_stop_this_build_does_not_know_is_dropped_rather_than_written_to_disk() {
+        // It would land in profile config and be stamped on every session afterwards, so forwarding one
+        // a newer server invented writes a value this build cannot reason about to a file it owns.
+        await Assert.That(FirstRunFlowOutcomes.Agents(WithVisibility("telepathy"))!.DefaultVisibility).IsNull();
+    }
+
+    [Test]
+    public async Task An_empty_visibility_string_is_not_a_stop() {
+        await Assert.That(FirstRunFlowOutcomes.Agents(WithVisibility(""))!.DefaultVisibility).IsNull();
+    }
+
+    [Test]
+    public async Task Declining_every_harness_still_carries_the_visibility_answer() {
+        // Two separate questions on one screen: installing nothing and choosing who may read future
+        // sessions are both coherent together.
+        var view = AllSettled() with {
+            Agents            = [],
+            AgentsDecidedAt   = new DateTimeOffset(2026, 8, 21, 12, 0, 0, TimeSpan.Zero),
+            DefaultVisibility = "private"
+        };
+
+        var answer = FirstRunFlowOutcomes.Agents(view)!;
+
+        await Assert.That(answer.IsDecline).IsTrue();
+        await Assert.That(answer.DefaultVisibility).IsEqualTo("private");
     }
 }

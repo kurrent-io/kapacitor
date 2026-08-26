@@ -450,17 +450,18 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             }
 
             await Console.Out.WriteLineAsync($"  Default visibility: {defaultVisibility}");
+        } else if (browserAgents?.DefaultVisibility is { } chosenInBrowser) {
+            // Answered on the Agents screen, which asks this question in the same words. Prompting again
+            // would take a second answer and silently keep it, which is what this step used to do.
+            defaultVisibility = chosenInBrowser;
+
+            AnsiConsole.MarkupLine(
+                $"  [dim]· Chosen in the browser: {Markup.Escape(VisibilityLabel(defaultVisibility))}[/]");
         } else {
             var visibilityPrompt = new SelectionPrompt<string>()
                 .Title("Which of your sessions should be readable by other users in the same Kurrent Capacitor account by default?")
                 .AddChoices(AppConfig.ValidVisibilities)
-                .UseConverter(v => v switch {
-                    "private"    => "All private — only you can see your sessions",
-                    "project"    => "Project repos public to fellow project members, others private",
-                    "org_public" => "Org repos public, others private (default)",
-                    "public"     => "All public — others can see all your sessions",
-                    _            => v
-                });
+                .UseConverter(VisibilityLabel);
 
             // Start the cursor on the option we label "(default)" rather than the first choice.
             visibilityPrompt.DefaultValue = "org_public";
@@ -1215,6 +1216,16 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
         return 0;
     }
+
+    /// <summary>What each <c>default_visibility</c> stop is called. Shared by the prompt and by the line
+    /// that reports the browser's answer, because two lists that have to correspond are one list.</summary>
+    internal static string VisibilityLabel(string visibility) => visibility switch {
+        "private"    => "All private — only you can see your sessions",
+        "project"    => "Project repos public to fellow project members, others private",
+        "org_public" => "Org repos public, others private (default)",
+        "public"     => "All public — others can see all your sessions",
+        _            => visibility
+    };
 
     /// <summary>Per request, not per leg: the poll below runs for as long as a human takes.</summary>
     static readonly TimeSpan BrowserFlowHttpTimeout = TimeSpan.FromSeconds(15);

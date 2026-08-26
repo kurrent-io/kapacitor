@@ -163,6 +163,24 @@ public class SetupCommandTests {
         await Assert.That(SetupCommand.BrowserImportSummary(ImportAnswer(repos: "kcap")).Count).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task VisibilityLabel_names_every_stop_the_wire_can_carry() {
+        // One list behind the prompt and behind the browser-answer line, so the two cannot describe the
+        // same stop differently.
+        foreach (var stop in AppConfig.ValidVisibilities) {
+            await Assert.That(SetupCommand.VisibilityLabel(stop))
+                        .IsNotEqualTo(stop)
+                        .Because($"'{stop}' has no human label");
+        }
+    }
+
+    [Test]
+    public async Task VisibilityLabel_falls_back_to_the_value_for_a_stop_it_does_not_know() {
+        // Reachable only if the closed set grows without this switch; showing the raw value beats
+        // showing nothing.
+        await Assert.That(SetupCommand.VisibilityLabel("telepathy")).IsEqualTo("telepathy");
+    }
+
     // --- Step 6 import auth-eligibility probe (IsAuthSatisfiedAsync) ---
 
     [Test]
