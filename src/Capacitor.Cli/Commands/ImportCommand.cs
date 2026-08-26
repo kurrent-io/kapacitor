@@ -614,9 +614,10 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     /// indistinguishable from the process having died.
     /// </summary>
     static int WriteEmptyDiscoveryReport(
-            Action<ImportDiscoveryResult> sink, IReadOnlyList<string> scanned) {
+            Action<ImportDiscoveryResult> sink, IReadOnlyList<string> scanned, DateTimeOffset? windowsAsOf) {
         sink(new ImportDiscoveryResult(
-            ImportDiscoverySummary.Build([], new Dictionary<string, (string, string)?>(), DiscoveryWindows()),
+            ImportDiscoverySummary.Build(
+                [], new Dictionary<string, (string, string)?>(), DiscoveryWindows(windowsAsOf)),
             scanned));
 
         return 0;
@@ -687,6 +688,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             bool                          shareWithOrg            = false,
             bool                          discoverOnly            = false,
             bool                          discoverJson            = false,
+            DateTimeOffset?               windowsAsOf             = null,
             Action<ImportDiscoveryResult>? onDiscovered           = null
         ) {
         // A caller that wants the figures rather than the rendering says so by handing one over; the
@@ -723,7 +725,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
                 return 1;
             }
 
-            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, []);
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, [], windowsAsOf);
 
             display.Line("No coding-agent sessions found. Install Claude, Codex, or Cursor and try again.");
 
@@ -768,14 +770,14 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             // Keep the message aligned with the dead branch lower in this method
             // (cleanup follow-up) so downstream tooling sees consistent output.
             if (filterSession is not null) {
-                if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, ScannedVendors(sources));
+                if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, ScannedVendors(sources), windowsAsOf);
 
                 await Console.Error.WriteLineAsync($"Session not found: {NormalizeGuid(filterSession)}");
 
                 return 1;
             }
 
-            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, ScannedVendors(sources));
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, ScannedVendors(sources), windowsAsOf);
 
             display.Line("No transcript files found.");
 
@@ -896,7 +898,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
                     sources.SelectMany((src, i) =>
                         discoveriesPerSource[i].Select(d => (d.SessionId, src.DiscoveryAge(d)))),
                     resolved,
-                    DiscoveryWindows()),
+                    DiscoveryWindows(windowsAsOf)),
                 ScannedVendors(sources)));
 
             return 0;
@@ -1353,6 +1355,12 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         // deliberately a separate issue, not something this gate covers.
         var privateScopeSessionIds = new ConcurrentBag<string>();
 
+        // Every session the scope selected, captured before the import rather than from its outcome.
+        // importedSessionIds gains one only where this run did new work, so a session already fully
+        // loaded — the ordinary case for a re-run, and one discovery still counts and offers — would
+        // never receive the explicit visibility the user chose for it.
+        var scopedSessionIds = new ConcurrentBag<string>();
+
         // Read-only inside the parallel loops below; resolved from the sources actually in play.
         var replayChildContentVendors = byVendor.Values
             .Where(s => s.AttachesChildContentOnReplay)
@@ -1376,6 +1384,23 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         // fails mid-stream (before session-end / importedSessionIds, i.e. before the post-hoc
         // SetVisibilityNoneForAll below would ever see it).
         var chainDefaultVisibility = forcePrivate ? null : defaultVisibility;
+
+        // Shared only. Private-set membership has rules of its own — see privateScopeSessionIds and
+        // RoutedPrivatizeMembershipTests — and widening it from here would overturn them sideways.
+        //
+        // Status carries both filters by this point: the scope filter ran before classification, and an
+        // excluded source had its status flipped to Excluded — so these three statuses are exactly the
+        // sessions the user selected AND the server already has. AlreadyLoaded is the one that matters:
+        // it reaches neither chains nor routed for a file-based source, so nothing else would see it.
+        if (shareWithOrg) {
+            foreach (var c in classifications) {
+                if (c.Status is ClassificationStatus.New
+                             or ClassificationStatus.Partial
+                             or ClassificationStatus.AlreadyLoaded) {
+                    scopedSessionIds.Add(c.SessionId);
+                }
+            }
+        }
 
         if (chains.Count > 0) {
             display.BeginPhase($"Importing {chains.Sum(c => c.Count)} sessions");
@@ -1693,16 +1718,15 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         // tenant's configured org, which is empty on every provider but GitHubApp — so leaning on it
         // promises a workspace can read this and delivers owner-only nearly everywhere.
         //
-        // the set is importedSessionIds (chain-phase +
-        // routed-phase "real new work") UNIONED with privateScopeSessionIds (every routed
-        // classification touched this run under --private whose source can attach child content
-        // on a replay, regardless of outcome — see its declaration above). The union — not a
-        // replacement — keeps chain-phase and other routed privatization exactly as before; it
-        // only widens what those sources contribute so privacy no longer depends on the
-        // Loaded/Failed/AlreadyLoaded/SentChildContent accounting used for import counts.
+        // The set unions three: importedSessionIds (what did new work), privateScopeSessionIds
+        // (routed classifications under --private whose source can attach child content on a replay),
+        // and scopedSessionIds (every in-scope session the server has, populated for the shared stop
+        // alone). Widening, never replacing — an outcome must not decide whether the visibility the
+        // user chose is applied.
         if (ExplicitVisibility(forcePrivate, shareWithOrg) is { } explicitVisibility) {
             var touched = new HashSet<string>(importedSessionIds, StringComparer.Ordinal);
             touched.UnionWith(privateScopeSessionIds);
+            touched.UnionWith(scopedSessionIds);
 
             if (touched.Count > 0) {
                 display.BeginPhase(forcePrivate

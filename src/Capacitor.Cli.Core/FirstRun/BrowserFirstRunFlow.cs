@@ -256,8 +256,12 @@ public sealed class BrowserFirstRunFlow(
 
             // A scan that throws leaves the screen waiting, which is what it should say: nothing was
             // learned about this disk, and claiming an empty one would be a failure reported as a result.
+            // Stamped before the scan, and reused when the decision is acted on: the counts the
+            // screen shows and the import that follows them have to mean the same window.
+            state.DiscoveredAsOf = _clock.GetUtcNow();
+
             try {
-                state.Discovered = await importing.DiscoverAsync(vendors, ct);
+                state.Discovered = await importing.DiscoverAsync(vendors, state.DiscoveredAsOf.Value, ct);
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                 throw;
             } catch (Exception) {
@@ -304,7 +308,7 @@ public sealed class BrowserFirstRunFlow(
         progress.Importing(answer.Choices.Count, SessionsInScope(state.Discovered, answer));
 
         try {
-            await importing.ImportAsync(answer, DateOnly.FromDateTime(_clock.GetUtcNow().UtcDateTime), ct);
+            await importing.ImportAsync(answer, state.WindowsAsOf(_clock), ct);
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             throw;
         } catch (Exception) {
@@ -334,6 +338,15 @@ public sealed class BrowserFirstRunFlow(
         /// stamp only when the answer CHANGES, so going Back and widening the window runs the wider
         /// import, while re-confirming the same answer runs nothing.</summary>
         public DateTimeOffset? ImportedThrough { get; set; }
+
+        /// <summary>When the scan ran, which is the instant its window counts were built against.</summary>
+        public DateTimeOffset? DiscoveredAsOf { get; set; }
+
+        /// <summary>The date the import's <c>--since</c> resolves against: the scan's, so the figure
+        /// the screen showed and the history the import selects agree. Falls back to now only when
+        /// there was no scan to agree with.</summary>
+        public DateOnly WindowsAsOf(TimeProvider clock) =>
+            DateOnly.FromDateTime((DiscoveredAsOf ?? clock.GetUtcNow()).UtcDateTime);
     }
 
     /// <summary>Sessions the chosen window holds across the chosen repositories, or null when any of

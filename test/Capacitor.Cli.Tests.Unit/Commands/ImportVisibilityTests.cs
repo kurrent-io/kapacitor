@@ -294,6 +294,66 @@ public class ImportVisibilityTests : IDisposable {
     }
 
     [Test]
+    public async Task HandleImport_shareWithOrg_reaches_a_session_this_run_only_revisited() {
+        // The re-run case, and the one the screen offers: a session already fully loaded is counted
+        // in discovery and selectable as Shared, but does nothing new, so importedSessionIds never
+        // gains it. Without the scoped capture it stays owner-only under a green summary.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"last_line_number":19}"""));
+        StubAllHookEndpoints();
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        var projectsDir = Path.Combine(_tempDir, "claude-projects-already");
+        WriteClaudeSession(projectsDir, "vis-already-shared");
+
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            filterCwd: null,
+            minLines: 1,
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
+            scope: new ImportScope.All(),
+            skipConfirmation: true,
+            shareWithOrg: true
+        );
+
+        await Assert.That(exitCode).IsEqualTo(0);
+
+        var put = _server.LogEntries.SingleOrDefault(e =>
+            e.RequestMessage.Method == "PUT"
+         && e.RequestMessage.Path == "/api/sessions/vis-already-shared/visibility");
+
+        await Assert.That(put).IsNotNull().Because("the user chose Shared for a repo holding this session");
+        await Assert.That(JsonNode.Parse(put!.RequestMessage.Body!)!["visibility"]?.GetValue<string>())
+                    .IsEqualTo("org");
+    }
+
+    [Test]
+    public async Task HandleImport_shareWithOrg_leaves_alone_a_session_the_run_never_sent() {
+        // The capture is bounded by status, which is what keeps it to sessions the server actually
+        // has. A too-short session was never uploaded, so sharing it would name something absent —
+        // and the same status gate is what keeps an excluded source out.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
+        StubAllHookEndpoints();
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        var projectsDir = Path.Combine(_tempDir, "claude-projects-short");
+        WriteClaudeSession(projectsDir, "vis-too-short", lines: 3);
+
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            filterCwd: null,
+            minLines: 500,
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
+            scope: new ImportScope.All(),
+            skipConfirmation: true,
+            shareWithOrg: true
+        );
+
+        await Assert.That(_server.LogEntries.Where(e => e.RequestMessage.Method == "PUT")).IsEmpty();
+    }
+
+    [Test]
     public async Task ExplicitVisibility_refuses_both_stops_at_once() {
         // Opposite promises. Silently picking one would hide the caller's bug.
         await Assert.That(() => ImportCommand.ExplicitVisibility(forcePrivate: true, shareWithOrg: true))

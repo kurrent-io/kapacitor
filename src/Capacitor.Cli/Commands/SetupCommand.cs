@@ -139,9 +139,21 @@ sealed class SpectreFirstRunFlowProgress : IFirstRunFlowProgress {
 /// Both go through <see cref="ImportCommand.HandleImport"/> rather than reimplementing anything: the
 /// screen's job is to choose the arguments a person would otherwise have typed.
 /// </remarks>
-sealed class SetupImportLane(ConfigRoot config, ProfileContext profiles) : IFirstRunImportLane {
+sealed class SetupImportLane(
+        ConfigRoot config,
+        ProfileContext profiles,
+        Func<SetupImportLane.Pass, Task<int>>? runner = null) : IFirstRunImportLane {
+    /// <summary>One invocation's arguments, so a test can assert what each level asked for without
+    /// running an import.</summary>
+    internal sealed record Pass(
+        FirstRunImportLevel               Level,
+        IReadOnlyList<FirstRunImportChoice> Repos,
+        DateOnly?                         Since,
+        bool                              SkipTitle,
+        IReadOnlyList<string>?            Vendors);
+
     public async Task<ReportFirstRunImportRequest?> DiscoverAsync(
-            IReadOnlyList<string>? vendors, CancellationToken ct) {
+            IReadOnlyList<string>? vendors, DateTimeOffset asOf, CancellationToken ct) {
         ImportCommand.ImportDiscoveryResult? found = null;
 
         // Quiet, because the caller owns the terminal for the duration and the figures go to a screen.
@@ -150,6 +162,7 @@ sealed class SetupImportLane(ConfigRoot config, ProfileContext profiles) : IFirs
             sources:      SetupCommand.BuildImportSources(config, vendors),
             discoverOnly: true,
             discoverJson: true,
+            windowsAsOf:  asOf,
             onDiscovered: result => found = result);
 
         if (exit != 0 || found is null) return null;
@@ -191,6 +204,20 @@ sealed class SetupImportLane(ConfigRoot config, ProfileContext profiles) : IFirs
     /// reporting a backfill that did not happen.</summary>
     public bool Failed { get; private set; }
 
+    Task<int> Run(Pass pass) =>
+        new ImportCommand(config, profiles).HandleImport(
+            filterCwd:          null,
+            sources:            SetupCommand.BuildImportSources(config, pass.Vendors),
+            since:              pass.Since,
+            scope:              new ImportScope.Repo([.. pass.Repos.Select(c => (c.Owner, c.Name))]),
+            skipConfirmation:   true,
+            forcePrivate:       pass.Level is FirstRunImportLevel.OnlyMe,
+            autoSkipExclusions: true,
+            skipTitle:          pass.SkipTitle,
+            // What makes the shared stop honest, since the profile default cannot reach the class the
+            // visibility predicate admits unconditionally.
+            shareWithOrg:       pass.Level is FirstRunImportLevel.Shared);
+
     public async Task ImportAsync(FirstRunImportAnswer answer, DateOnly today, CancellationToken ct) {
         var since = answer.Since(today);
 
@@ -199,18 +226,27 @@ sealed class SetupImportLane(ConfigRoot config, ProfileContext profiles) : IFirs
         foreach (var level in (FirstRunImportLevel[])[FirstRunImportLevel.OnlyMe, FirstRunImportLevel.Shared]) {
             if (answer.At(level) is not { Count: > 0 } chosen) continue;
 
-            var exit = await new ImportCommand(config, profiles).HandleImport(
-                filterCwd:          null,
-                sources:            SetupCommand.BuildImportSources(config, answer.Vendors),
-                since:              since,
-                scope:              new ImportScope.Repo([.. chosen.Select(c => (c.Owner, c.Name))]),
-                skipConfirmation:   true,
-                forcePrivate:       level is FirstRunImportLevel.OnlyMe,
-                autoSkipExclusions: true,
-                skipTitle:          answer.SkipTitle,
-                // What makes the shared stop honest, since the profile default cannot reach the class
-                // the visibility predicate admits unconditionally.
-                shareWithOrg:       level is FirstRunImportLevel.Shared);
+            int exit;
+
+            // Per pass, so a throw in the private one does not cancel the shared one, and so a
+            // failure that arrived as an exception counts the same as one that arrived as an exit
+            // code — the closing summary reads this, and a swallowed throw would draw a tick.
+            try {
+                exit = await (runner ?? Run)(
+                    new Pass(level, chosen, since, answer.SkipTitle, answer.Vendors));
+            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                Failed = true;
+
+                throw;
+            } catch (Exception ex) {
+                Failed = true;
+
+                AnsiConsole.MarkupLine(
+                    $"  [yellow]![/] That history did not import: {Markup.Escape(ex.Message)}. "
+                  + "Run [cyan]kcap import[/] to retry it.");
+
+                continue;
+            }
 
             if (exit != 0) {
                 Failed = true;

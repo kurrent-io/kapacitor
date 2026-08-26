@@ -63,6 +63,14 @@ window's `--since` and to the decision's vendor flags, with `--skip-title` unles
 Narrowest first, so a run interrupted between the passes has uploaded the private history rather than
 the shared.
 
+**The explicit write has to reach a session the run only revisited.** `importedSessionIds` gains a
+session only where this run did new work, so a re-run — the ordinary case, and one discovery still
+counts and offers — would leave an already-loaded session owner-only under a green summary.
+`scopedSessionIds` captures every in-scope session the server has, bounded by classification status:
+the scope filter runs before classification and an excluded source has its status flipped, so
+`New | Partial | AlreadyLoaded` is exactly the right set. Populated for the shared stop **alone** —
+private-set membership has rules of its own, and widening it from here would overturn them sideways.
+
 The shared pass then needs an explicit per-session `visibility=org` write, which is what
 `SetVisibilityForAll` is. Without it "shared" delivers owner-only on every provider but `GitHubApp`:
 the profile default produces the `default:org` class, which `VisibilitySql` admits only where the
@@ -81,6 +89,13 @@ for.
 **Both lanes add their elapsed time back to the poll budget.** That budget exists to catch a terminal
 nobody is sitting at; a disk scan and an upload are work, and letting them spend it would abandon a
 flow that is progressing.
+
+**One instant behind the counts and the import that acts on them.** The scan's stamp is kept on the
+lane state and reused when the decision runs, rather than each half reading the clock: a user reading
+the screen across UTC midnight would otherwise be shown a figure for one boundary and handed an
+import against the next, silently missing the day between. A failed pass is recorded whether it
+arrived as a non-zero exit or as a throw, and a throw does not cancel the pass after it — they are
+separate promises about separate repositories.
 
 **The decision's timestamp is a cursor, not a flag.** The server advances it only when the answer
 *changes*, so going Back and widening the window runs the wider import — which has real work in it —

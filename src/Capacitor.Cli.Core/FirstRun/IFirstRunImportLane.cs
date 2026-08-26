@@ -18,7 +18,10 @@ public interface IFirstRunImportLane {
     /// <para>Null return means the scan could not produce a report. The screen keeps waiting, which is
     /// honest: nothing was learned.</para>
     /// </summary>
-    Task<ReportFirstRunImportRequest?> DiscoverAsync(IReadOnlyList<string>? vendors, CancellationToken ct);
+    /// <param name="asOf">The instant the reported windows resolve against. Handed in so the import
+    /// that acts on these counts can be given the same one.</param>
+    Task<ReportFirstRunImportRequest?> DiscoverAsync(
+        IReadOnlyList<string>? vendors, DateTimeOffset asOf, CancellationToken ct);
 
     /// <summary>
     /// Runs the decision: one pass per level, because <c>--private</c> is per invocation.
@@ -26,7 +29,9 @@ public interface IFirstRunImportLane {
     /// <para><b>Writes to the console.</b> The caller stops its own progress output first — two live
     /// Spectre renderables cannot share a terminal.</para>
     /// </summary>
-    /// <param name="today">The date the window's <c>--since</c> resolves against, handed in rather
-    /// than read here so both passes share one boundary however long the first takes.</param>
+    /// <param name="today">The date the window's <c>--since</c> resolves against. <b>The date the
+    /// report's counts were built from</b>, not today's — a user who reads the screen across UTC
+    /// midnight would otherwise be shown a figure for one boundary and given an import against the
+    /// next, silently missing the day between.</param>
     Task ImportAsync(FirstRunImportAnswer answer, DateOnly today, CancellationToken ct);
 }

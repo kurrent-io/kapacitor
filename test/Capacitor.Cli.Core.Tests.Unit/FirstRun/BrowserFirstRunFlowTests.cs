@@ -147,9 +147,12 @@ public class BrowserFirstRunFlowTests {
         /// only moves from outside, so a lane that should look slow has to move it itself.</summary>
         public Action? Advance { get; set; }
 
+        public List<DateTimeOffset> ScanStamps { get; } = [];
+
         public Task<ReportFirstRunImportRequest?> DiscoverAsync(
-                IReadOnlyList<string>? vendors, CancellationToken ct) {
+                IReadOnlyList<string>? vendors, DateTimeOffset asOf, CancellationToken ct) {
             log.Add("scan");
+            ScanStamps.Add(asOf);
             Advance?.Invoke();
             Scans.Add(vendors);
 
@@ -1181,14 +1184,56 @@ public class BrowserFirstRunFlowTests {
 
     [Test]
     public async Task Resolves_the_since_boundary_from_the_flows_own_clock() {
-        // One date for the whole decision, taken from the injected clock rather than read inside the
-        // lane — so two passes either side of UTC midnight cannot import against different windows.
         var h = Build(importing: true);
         h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
         h.Channel.Polls.Enqueue(new(200, Done()));
 
         await Run(h);
 
+        await Assert.That(h.Importing!.Dates.Single())
+                    .IsEqualTo(DateOnly.FromDateTime(ClockBase.UtcDateTime));
+    }
+
+    [Test]
+    public async Task Imports_against_the_date_the_reported_counts_were_built_from() {
+        // A user reading the screen across UTC midnight would otherwise be shown a figure for one
+        // boundary and handed an import against the next, silently missing the day between.
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        // The scan lands on one day; the decision arrives on the next.
+        h.Importing!.Advance = () => h.Clock.Advance(TimeSpan.FromHours(14));
+
+        await Run(h);
+
+        var scannedOn = DateOnly.FromDateTime(h.Importing.ScanStamps.Single().UtcDateTime);
+
+        await Assert.That(h.Importing.Dates.Single())
+                    .IsEqualTo(scannedOn)
+                    .Because("the import has to select the history the counts promised");
+    }
+
+    [Test]
+    public async Task Falls_back_to_now_when_no_scan_ran_to_agree_with() {
+        // Reachable only where the Import step settled while Agents did not, so the scan was never
+        // gated in. Defensive rather than expected — but the alternative to a fallback is a null date.
+        var h = Build(importing: true);
+        var answered = ImportAnswered();
+        h.Channel.Polls.Enqueue(new(200, answered with {
+            Steps = new() {
+                ["SignIn"] = "Completed", ["Agents"] = "Active", ["Import"] = "Completed", ["Done"] = "Pending"
+            }
+        }));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        // The import ran on the tick before the scan was gated in, so there was no stamp to reuse.
+        var order = h.Log.Entries.ToList();
+
+        await Assert.That(order.IndexOf("import")).IsLessThan(order.IndexOf("scan"));
         await Assert.That(h.Importing!.Dates.Single())
                     .IsEqualTo(DateOnly.FromDateTime(ClockBase.UtcDateTime));
     }
