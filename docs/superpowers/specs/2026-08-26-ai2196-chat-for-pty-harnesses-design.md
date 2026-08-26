@@ -326,7 +326,14 @@ already scrolled up keeps their offset untouched.
 block controls) from a Markdig AST (default CommonMark pipeline plus
 auto-links) on every `Text` change. `MarkdownBlocks` maps: paragraphs and
 headings → `SelectableTextBlock` with inlines (`Bold`, `Italic`, monospace
-`Run` for code spans, `LineBreak`); fenced and indented code → a `Border`
+`Run` for code spans); a soft line break is a space, as CommonMark renders it,
+and a paragraph with a top-level hard break is a vertical stack of one
+`SelectableTextBlock` per hard-break-delimited segment — never a `LineBreak`
+inline or a `\n` inside a `Run`, which Avalonia 12's line breaker never
+finishes laying out under a height-unconstrained parent (any `StackPanel` or
+`ScrollViewer`) — so selection stops at a segment boundary, and a hard break
+nested inside emphasis or a link label degrades to a space; fenced and
+indented code → a `Border`
 around a monospace `SelectableTextBlock`; bullet and ordered lists → marker +
 nested content rows; block quotes → a left rule beside the content; thematic
 breaks → a hairline. A link is an `InlineUIContainer` hosting a link-styled
