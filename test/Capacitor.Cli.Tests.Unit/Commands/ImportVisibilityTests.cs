@@ -308,6 +308,76 @@ public class ImportVisibilityTests : IDisposable {
         await Assert.That(_server.LogEntries.Where(e => e.RequestMessage.Method == "PUT")).IsEmpty();
     }
 
+    [Test]
+    public async Task HandleImport_forcePrivate_privatizes_an_existing_session_before_uploading_into_it() {
+        // The window itself, not just its eventual closure: content replayed into a session the user
+        // asked to keep private must not be publishable while it uploads. Ordering is the assertion —
+        // a closing-pass-only implementation passes every count and still leaks for the run's duration.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"last_line_number":2}"""));
+        StubAllHookEndpoints();
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        var projectsDir = Path.Combine(_tempDir, "claude-projects-window");
+        WriteClaudeSession(projectsDir, "vis-window");
+
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            filterCwd: null,
+            minLines: 1,
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
+            scope: new ImportScope.All(),
+            skipConfirmation: true,
+            forcePrivate: true
+        );
+
+        var ordered = _server.LogEntries
+            .OrderBy(e => e.RequestMessage.DateTime)
+            .Select(e => e.RequestMessage.Method == "PUT" ? "privatize" : e.RequestMessage.Path)
+            .ToList();
+
+        var firstPrivatize = ordered.IndexOf("privatize");
+        var firstTranscript = ordered.IndexOf("/hooks/transcript");
+
+        await Assert.That(firstPrivatize).IsGreaterThanOrEqualTo(0)
+                    .Because("a revisited session has to be narrowed by a write, not by a stamp");
+        await Assert.That(firstTranscript).IsGreaterThanOrEqualTo(0)
+                    .Because("otherwise nothing was uploaded and the ordering proves nothing");
+        await Assert.That(firstPrivatize).IsLessThan(firstTranscript);
+    }
+
+    [Test]
+    public async Task HandleImport_forcePrivate_does_not_pre_privatize_a_session_that_does_not_exist_yet() {
+        // A New session has nothing to narrow, and naming it would PUT at a session id the server has
+        // never seen. Its creation stamp is the mechanism that works.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
+        StubAllHookEndpoints();
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        var projectsDir = Path.Combine(_tempDir, "claude-projects-newonly");
+        WriteClaudeSession(projectsDir, "vis-new-only");
+
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            filterCwd: null,
+            minLines: 1,
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
+            scope: new ImportScope.All(),
+            skipConfirmation: true,
+            forcePrivate: true
+        );
+
+        var ordered = _server.LogEntries
+            .OrderBy(e => e.RequestMessage.DateTime)
+            .Select(e => e.RequestMessage.Method == "PUT" ? "privatize" : e.RequestMessage.Path)
+            .ToList();
+
+        // The closing pass still runs; what must not happen is a write before the session exists.
+        await Assert.That(ordered.IndexOf("privatize"))
+                    .IsGreaterThan(ordered.IndexOf("/hooks/transcript"));
+    }
+
     // =====================================================================
     // Section C — routed sources, direct-logic (ImportSessionAsync + WireMock).
     // =====================================================================

@@ -119,9 +119,12 @@ public class RoutedPrivatizeMembershipTests : IDisposable {
         // ...and the session was privatized anyway, by the in-scope capture rather than by anything
         // the import concluded. Nothing else could have: the raw outcome is Skipped and the source
         // declares no child content on replay.
+        // Which sessions, not how many writes: an existing session is narrowed before the content and
+        // again by the closing pass, so the count is a property of that two-phase design.
         var privatized = _server.LogEntries
             .Where(e => e.RequestMessage.Method == "PUT")
             .Select(e => e.RequestMessage.Path)
+            .Distinct()
             .ToList();
 
         await Assert.That(privatized).IsEquivalentTo([$"/api/sessions/{ProbeSessionId}/visibility"]);

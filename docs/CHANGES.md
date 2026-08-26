@@ -33,6 +33,12 @@ privatised by nothing. The bound is status — the scope filter runs before clas
 excluded source has its status flipped — so `New | Partial | AlreadyLoaded` is the selected-and-
 present set and a too-short session is left alone.
 
+**And it happens before the content, not after.** A closing pass guarantees a revisited session ends
+up owner-only; it does not stop what this run uploads into it being readable meanwhile, which is the
+window the defect is named after. So the in-scope `Partial` and `AlreadyLoaded` sessions are narrowed
+ahead of both import phases — `New` is excluded, having nothing to narrow and no row to name — and the
+closing pass becomes recovery for a session created during the run plus a retry for any write lost.
+
 The 2026-07-20 unified-import spec scoped this expansion out while already arguing that post-hoc
 privatisation is unsafe for a session that fails mid-stream; this is that argument applied to the
 eight other paths.

@@ -1373,6 +1373,29 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             }
         }
 
+        // Close the window before anything is uploaded into it.
+        //
+        // A stamp cannot narrow a session that already exists, so for one this run revisits the only
+        // way to avoid publishing new content into a session the user just asked to be private is to
+        // make it private FIRST. New sessions are absent on purpose: they do not exist yet, so there
+        // is nothing to narrow and their creation stamp is the mechanism that works.
+        //
+        // The closing pass stays, as recovery for whatever this misses — a session created during the
+        // run, and any write lost here.
+        if (forcePrivate) {
+            var existing = classifications
+                .Where(c => c.Status is ClassificationStatus.Partial
+                                     or ClassificationStatus.AlreadyLoaded)
+                .Select(c => c.SessionId)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            if (existing.Count > 0) {
+                display.BeginPhase("Making existing sessions private");
+                await SetVisibilityNoneForAll(httpClient, baseUrl, existing);
+            }
+        }
+
         if (chains.Count > 0) {
             display.BeginPhase($"Importing {chains.Sum(c => c.Count)} sessions");
 

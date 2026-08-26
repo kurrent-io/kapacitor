@@ -114,9 +114,20 @@ import. The bound is classification status — the scope filter runs before clas
 excluded source has its status flipped to `Excluded`, so `New | Partial | AlreadyLoaded` is exactly
 the selected-and-present set, and a too-short session is not written to.
 
-The tail such a session uploads is still visible until the pass runs. That is irreducible for a
-session an earlier non-private run created, and it is what the README already points at when it says
-re-running with `--private` is the way to privatise history an earlier import made visible.
+### The window, not just its eventual closure
+
+A closing pass guarantees a revisited session ends up owner-only. It does not stop the content
+uploaded into it being readable while the run proceeds — which is the window this ticket is named
+after, so leaving it open would be fixing the symptom the title does not mention.
+
+So an existing session is narrowed **before** anything is uploaded into it: one `visibility=none`
+pass over the in-scope `Partial` and `AlreadyLoaded` sessions, ahead of both import phases. `New` is
+deliberately absent — it does not exist yet, so there is nothing to narrow and a write would name a
+session the server has never seen; its creation stamp is the mechanism that works there.
+
+The closing pass stays, and its role is now precise: recovery for a session created during the run,
+and a retry for any write this pass lost. A revisited session is therefore written twice, which is
+why the tests assert *which* sessions were privatised rather than how many writes it took.
 
 ## Tests
 
@@ -133,10 +144,6 @@ are each killed (20, 12, 1 and 1 failures respectively).
 
 ## Out of scope
 
-- **Privatising before the content, rather than after.** The closing pass guarantees a revisited
-  session ends up owner-only; it does not stop the tail being visible while it uploads. Closing that
-  would mean a PUT per session before replaying content — a round trip each and a reordering of the
-  run — and is a change worth making on its own terms.
 - **Subagent / child session-start payloads.** Whether a nested child stream carries a visibility of
   its own, or inherits the parent's server-side, is a separate question from the one this ticket
   names.

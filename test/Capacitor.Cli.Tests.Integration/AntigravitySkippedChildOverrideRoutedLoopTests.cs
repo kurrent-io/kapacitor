@@ -216,6 +216,8 @@ public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
             .Where(e => e.RequestMessage.Method == "PUT")
             .Select(e => e.RequestMessage.Path)
             .ToArray();
-        await Assert.That(putPaths).IsEquivalentTo([$"/api/sessions/{Root}/visibility"]);
+        // Distinct: an existing session is narrowed before the replay and again by the closing pass, so
+        // which sessions were privatized is the claim here, not how many writes it took.
+        await Assert.That(putPaths.Distinct()).IsEquivalentTo([$"/api/sessions/{Root}/visibility"]);
     }
 }
