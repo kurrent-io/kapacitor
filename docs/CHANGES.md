@@ -34,6 +34,11 @@ so widening the window on a second answer runs the wider import while re-confirm
 `FirstRunImportAnswer.NoReadableVendors` covers the one otherwise-silent failure — repositories chosen
 but no vendor this build can read, where running would report success for history that never moved.
 
+Whether a pass succeeded is read off `ImportRunOutcome`, not the exit code: `HandleImport` returns 0
+for a run whose sessions failed, because import is best-effort and the Done grid is where that is
+reported. The outcome carries the run's counts plus lost explicit-visibility writes, since a session
+the user chose an audience for that still carries the old one is a failure of what they asked for.
+
 ## Claude SessionEnd hand-off
 
 Claude Code computes the grace it gives SessionEnd hooks from `settings.json` timeouts only; a

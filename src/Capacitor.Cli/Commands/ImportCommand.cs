@@ -600,6 +600,19 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     }
 
     /// <summary>
+    /// How a run ended, for a caller that has to say so.
+    /// </summary>
+    /// <remarks>
+    /// <b>The exit code cannot answer this.</b> <c>HandleImport</c> returns 0 for a run whose sessions
+    /// failed — import is best-effort and the Done grid is where that is reported — so a caller
+    /// deriving success from the exit code calls a partial or total failure a success.
+    /// </remarks>
+    internal sealed record ImportRunOutcome(FinalCounts Counts, int VisibilityFailures) {
+        /// <summary>Anything the user asked for that did not happen.</summary>
+        internal bool AnythingFailed => Counts.Failed > 0 || VisibilityFailures > 0;
+    }
+
+    /// <summary>
     /// What a discovery run produced.
     /// </summary>
     /// <param name="ScannedVendors">The sources actually walked — what was asked for, intersected with
@@ -689,6 +702,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             bool                          discoverOnly            = false,
             bool                          discoverJson            = false,
             DateTimeOffset?               windowsAsOf             = null,
+            Action<ImportRunOutcome>?     onFinished              = null,
             Action<ImportDiscoveryResult>? onDiscovered           = null
         ) {
         // A caller that wants the figures rather than the rendering says so by handing one over; the
@@ -1361,6 +1375,11 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         // never receive the explicit visibility the user chose for it.
         var scopedSessionIds = new ConcurrentBag<string>();
 
+        // Sessions whose explicit visibility write was lost — part of the run's outcome, because one
+        // the user chose a visibility for that still carries the old one is a failure of the thing
+        // they asked for, whatever the transcript did.
+        var visibilityFailures = 0;
+
         // Read-only inside the parallel loops below; resolved from the sources actually in play.
         var replayChildContentVendors = byVendor.Values
             .Where(s => s.AttachesChildContentOnReplay)
@@ -1732,7 +1751,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
                 display.BeginPhase(forcePrivate
                     ? "Marking imported sessions private"
                     : "Sharing imported sessions with your workspace");
-                await SetVisibilityForAll(httpClient, baseUrl, [.. touched], explicitVisibility);
+                visibilityFailures = await SetVisibilityForAll(
+                    httpClient, baseUrl, [.. touched], explicitVisibility);
             }
         }
 
@@ -1850,6 +1870,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         }
 
         display.WriteDoneGrid(final, doneBySource);
+
+        onFinished?.Invoke(new ImportRunOutcome(final, visibilityFailures));
 
         return 0;
     }
@@ -3105,8 +3127,16 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     /// The visibility to write explicitly over what this run imported, or null to leave each session
     /// on whatever its <c>default_visibility</c> resolved to.
     /// </summary>
-    /// <remarks>Refuses both at once rather than picking: they are opposite promises, and a caller
-    /// asking for both has a bug that silently choosing one would hide.</remarks>
+    /// <remarks>
+    /// Refuses both at once rather than picking: they are opposite promises, and a caller asking for
+    /// both has a bug that silently choosing one would hide.
+    ///
+    /// <para><c>org</c> and not the profile default, because leaning on <c>org_public</c> produces the
+    /// <c>default:org</c> class, which the visibility predicate admits only where the repository's
+    /// owner matches the tenant's configured org — empty on every provider but <c>GitHubApp</c>. So the
+    /// default route promises a team can read this and delivers owner-only on most tenants;
+    /// <c>explicit:org</c> is admitted unconditionally.</para>
+    /// </remarks>
     internal static string? ExplicitVisibility(bool forcePrivate, bool shareWithOrg) {
         if (forcePrivate && shareWithOrg)
             throw new ArgumentException("An import cannot be both private and shared with the org.", nameof(shareWithOrg));
@@ -3114,32 +3144,27 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         return forcePrivate ? "none" : shareWithOrg ? "org" : null;
     }
 
-    /// <summary>
-    /// PUT visibility=org for every session id — what makes "everyone in your workspace" true.
-    ///
-    /// <para><b>An explicit write, not the profile default.</b> Leaning on <c>org_public</c> produces
-    /// the <c>default:org</c> class, which the visibility predicate admits only where the repository's
-    /// owner matches the tenant's configured org — empty on every provider but <c>GitHubApp</c>. So the
-    /// default route promises a team can read this and delivers owner-only on most tenants;
-    /// <c>explicit:org</c> is admitted unconditionally.</para>
-    /// </summary>
-    /// <summary>
-    /// PUT visibility=none for every imported session id.
-    /// </summary>
-    internal static Task SetVisibilityNoneForAll(
+    /// <summary>PUT visibility=none for every imported session id.</summary>
+    internal static Task<int> SetVisibilityNoneForAll(
             HttpClient            httpClient,
             string                baseUrl,
             IReadOnlyList<string> sessionIds
         ) => SetVisibilityForAll(httpClient, baseUrl, sessionIds, "none");
 
-    /// <summary>Failures are logged inline (one line per session) but never throw — the import already
-    /// succeeded; users can re-run `kcap hide` or `kcap share` for any that failed.</summary>
-    internal static async Task SetVisibilityForAll(
+    /// <summary>
+    /// Failures are logged inline (one line per session) but never throw — the import already
+    /// succeeded; users can re-run `kcap hide` or `kcap share` for any that failed. <b>Returns how
+    /// many were lost</b>, because a caller reporting the run cannot call it a success while a session
+    /// the user chose a visibility for still carries the old one.
+    /// </summary>
+    internal static async Task<int> SetVisibilityForAll(
             HttpClient            httpClient,
             string                baseUrl,
             IReadOnlyList<string> sessionIds,
             string                visibility
         ) {
+        var lost = 0;
+
         foreach (var sessionId in sessionIds) {
             var       payload = new JsonObject { ["visibility"] = visibility };
             using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
@@ -3151,15 +3176,21 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
                 );
 
                 if (!resp.IsSuccessStatusCode) {
+                    lost++;
+
                     await Console.Error.WriteLineAsync(
                         $"  ! visibility={visibility} failed for {sessionId}: HTTP {(int)resp.StatusCode}"
                     );
                 }
             } catch (Exception ex) {
+                lost++;
+
                 await Console.Error.WriteLineAsync(
                     $"  ! visibility={visibility} failed for {sessionId}: {ex.Message}"
                 );
             }
         }
+
+        return lost;
     }
 }

@@ -100,14 +100,24 @@ public class SetupImportLaneTests {
             DateTimeOffset.UnixEpoch,
             0);
 
-    SetupImportLane Lane(Func<SetupImportLane.Pass, Task<int>> runner) =>
+    SetupImportLane Lane(Func<SetupImportLane.Pass, Task<ImportCommand.ImportRunOutcome?>> runner) =>
         new(Config.Root, Resolutions.None(Config.Root), runner);
+
+    /// <summary>A run that reported its Done grid with nothing failed.</summary>
+    static Task<ImportCommand.ImportRunOutcome?> Clean() =>
+        Task.FromResult<ImportCommand.ImportRunOutcome?>(new(Counts(), 0));
+
+    static ImportCommand.FinalCounts Counts(int errored = 0, int probeError = 0) =>
+        new(Loaded: 1, Resumed: 0, AlreadyLoaded: 0, TooShort: 0, Excluded: 0,
+            ProbeError: probeError, Errored: errored,
+            TitlesGenerated: 0, TitlesSkipped: 0, TitlesFailed: 0,
+            SummariesGenerated: 0, SummariesFailed: 0, RanBackground: false, RequestedSummaries: false);
 
     [Test]
     public async Task One_pass_per_level_because_private_is_per_invocation() {
         var passes = new List<SetupImportLane.Pass>();
 
-        await Lane(p => { passes.Add(p); return Task.FromResult(0); }).ImportAsync(
+        await Lane(p => { passes.Add(p); return Clean(); }).ImportAsync(
             Answer(repos: [("mine", FirstRunImportLevel.OnlyMe), ("ours", FirstRunImportLevel.Shared)]),
             new DateOnly(2026, 6, 15), CancellationToken.None);
 
@@ -123,7 +133,7 @@ public class SetupImportLaneTests {
         // import against different windows.
         var passes = new List<SetupImportLane.Pass>();
 
-        await Lane(p => { passes.Add(p); return Task.FromResult(0); }).ImportAsync(
+        await Lane(p => { passes.Add(p); return Clean(); }).ImportAsync(
             Answer(repos: [("mine", FirstRunImportLevel.OnlyMe), ("ours", FirstRunImportLevel.Shared)]),
             new DateOnly(2026, 6, 15), CancellationToken.None);
 
@@ -132,13 +142,48 @@ public class SetupImportLaneTests {
     }
 
     [Test]
-    public async Task A_pass_that_returns_non_zero_is_recorded_as_a_failure() {
-        var lane = Lane(_ => Task.FromResult(1));
+    public async Task A_run_whose_sessions_failed_is_recorded_as_a_failure() {
+        // The case an exit code cannot express: import is best-effort and returns 0 having printed a
+        // Done grid with failures in it, so reading the code would call this a success.
+        var lane = Lane(_ => Task.FromResult<ImportCommand.ImportRunOutcome?>(new(Counts(errored: 2), 0)));
 
         await lane.ImportAsync(
             Answer(repos: ("ours", FirstRunImportLevel.Shared)), new DateOnly(2026, 6, 15), CancellationToken.None);
 
         await Assert.That(lane.Failed).IsTrue();
+    }
+
+    [Test]
+    public async Task A_lost_visibility_write_is_recorded_as_a_failure() {
+        // The user chose who may read this history. A session still carrying the old visibility is a
+        // failure of that, whatever the transcript did.
+        var lane = Lane(_ => Task.FromResult<ImportCommand.ImportRunOutcome?>(new(Counts(), 1)));
+
+        await lane.ImportAsync(
+            Answer(repos: ("ours", FirstRunImportLevel.Shared)), new DateOnly(2026, 6, 15), CancellationToken.None);
+
+        await Assert.That(lane.Failed).IsTrue();
+    }
+
+    [Test]
+    public async Task A_run_that_reported_nothing_is_recorded_as_a_failure() {
+        // No Done grid means it never got there — an early return, not a success.
+        var lane = Lane(_ => Task.FromResult<ImportCommand.ImportRunOutcome?>(null));
+
+        await lane.ImportAsync(
+            Answer(repos: ("ours", FirstRunImportLevel.Shared)), new DateOnly(2026, 6, 15), CancellationToken.None);
+
+        await Assert.That(lane.Failed).IsTrue();
+    }
+
+    [Test]
+    public async Task A_clean_run_is_not_recorded_as_a_failure() {
+        var lane = Lane(_ => Clean());
+
+        await lane.ImportAsync(
+            Answer(repos: ("ours", FirstRunImportLevel.Shared)), new DateOnly(2026, 6, 15), CancellationToken.None);
+
+        await Assert.That(lane.Failed).IsFalse();
     }
 
     [Test]
@@ -164,7 +209,7 @@ public class SetupImportLaneTests {
 
             return p.Level is FirstRunImportLevel.OnlyMe
                 ? throw new HttpRequestException("private pass died")
-                : Task.FromResult(0);
+                : Clean();
         });
 
         await lane.ImportAsync(

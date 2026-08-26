@@ -93,9 +93,16 @@ flow that is progressing.
 **One instant behind the counts and the import that acts on them.** The scan's stamp is kept on the
 lane state and reused when the decision runs, rather than each half reading the clock: a user reading
 the screen across UTC midnight would otherwise be shown a figure for one boundary and handed an
-import against the next, silently missing the day between. A failed pass is recorded whether it
-arrived as a non-zero exit or as a throw, and a throw does not cancel the pass after it — they are
-separate promises about separate repositories.
+import against the next, silently missing the day between. A throw does not cancel the pass after it — they are separate
+promises about separate repositories.
+
+**Success is read off a structured outcome, never the exit code.** `HandleImport` returns 0 for a run
+whose sessions failed: import is best-effort and the Done grid is where that is reported. So a caller
+deriving success from the exit code calls a partial or total failure a success, and the closing summary
+then draws a tick under the failure lines. `ImportRunOutcome` carries the run's `FinalCounts` plus the
+count of **lost explicit-visibility writes** — a session the user chose an audience for that still
+carries the old one is a failure of what they asked for, whatever the transcript did. A run that
+reported no outcome at all never reached its Done grid, which counts as failed too.
 
 **The decision's timestamp is a cursor, not a flag.** The server advances it only when the answer
 *changes*, so going Back and widening the window runs the wider import — which has real work in it —

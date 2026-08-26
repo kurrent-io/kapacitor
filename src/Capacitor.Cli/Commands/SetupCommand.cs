@@ -142,7 +142,7 @@ sealed class SpectreFirstRunFlowProgress : IFirstRunFlowProgress {
 sealed class SetupImportLane(
         ConfigRoot config,
         ProfileContext profiles,
-        Func<SetupImportLane.Pass, Task<int>>? runner = null) : IFirstRunImportLane {
+        Func<SetupImportLane.Pass, Task<ImportCommand.ImportRunOutcome?>>? runner = null) : IFirstRunImportLane {
     /// <summary>One invocation's arguments, so a test can assert what each level asked for without
     /// running an import.</summary>
     internal sealed record Pass(
@@ -204,8 +204,10 @@ sealed class SetupImportLane(
     /// reporting a backfill that did not happen.</summary>
     public bool Failed { get; private set; }
 
-    Task<int> Run(Pass pass) =>
-        new ImportCommand(config, profiles).HandleImport(
+    async Task<ImportCommand.ImportRunOutcome?> Run(Pass pass) {
+        ImportCommand.ImportRunOutcome? outcome = null;
+
+        await new ImportCommand(config, profiles).HandleImport(
             filterCwd:          null,
             sources:            SetupCommand.BuildImportSources(config, pass.Vendors),
             since:              pass.Since,
@@ -216,7 +218,11 @@ sealed class SetupImportLane(
             skipTitle:          pass.SkipTitle,
             // What makes the shared stop honest, since the profile default cannot reach the class the
             // visibility predicate admits unconditionally.
-            shareWithOrg:       pass.Level is FirstRunImportLevel.Shared);
+            shareWithOrg:       pass.Level is FirstRunImportLevel.Shared,
+            onFinished:         o => outcome = o);
+
+        return outcome;
+    }
 
     public async Task ImportAsync(FirstRunImportAnswer answer, DateOnly today, CancellationToken ct) {
         var since = answer.Since(today);
@@ -226,13 +232,12 @@ sealed class SetupImportLane(
         foreach (var level in (FirstRunImportLevel[])[FirstRunImportLevel.OnlyMe, FirstRunImportLevel.Shared]) {
             if (answer.At(level) is not { Count: > 0 } chosen) continue;
 
-            int exit;
+            ImportCommand.ImportRunOutcome? outcome;
 
             // Per pass, so a throw in the private one does not cancel the shared one, and so a
-            // failure that arrived as an exception counts the same as one that arrived as an exit
-            // code — the closing summary reads this, and a swallowed throw would draw a tick.
+            // failure that arrived as an exception counts the same as one the run reported.
             try {
-                exit = await (runner ?? Run)(
+                outcome = await (runner ?? Run)(
                     new Pass(level, chosen, since, answer.SkipTitle, answer.Vendors));
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                 Failed = true;
@@ -248,7 +253,10 @@ sealed class SetupImportLane(
                 continue;
             }
 
-            if (exit != 0) {
+            // The exit code cannot answer this: an import is best-effort and returns 0 for a run whose
+            // sessions failed, so reading it would call a partial or total failure a success. A run
+            // that reported nothing at all did not reach its Done grid, which is a failure too.
+            if (outcome is null || outcome.AnythingFailed) {
                 Failed = true;
 
                 AnsiConsole.MarkupLine(

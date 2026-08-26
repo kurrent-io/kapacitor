@@ -354,6 +354,63 @@ public class ImportVisibilityTests : IDisposable {
     }
 
     [Test]
+    public async Task HandleImport_reports_a_lost_visibility_write_through_the_outcome() {
+        // The exit code stays 0 — import is best-effort — so a caller that has to say whether the
+        // user's choice landed needs this, and only this.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
+        StubAllHookEndpoints();
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(500));
+
+        var projectsDir = Path.Combine(_tempDir, "claude-projects-lostwrite");
+        WriteClaudeSession(projectsDir, "vis-lost-write");
+
+        ImportCommand.ImportRunOutcome? outcome = null;
+
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            filterCwd: null,
+            minLines: 1,
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
+            scope: new ImportScope.All(),
+            skipConfirmation: true,
+            shareWithOrg: true,
+            onFinished: o => outcome = o
+        );
+
+        await Assert.That(exitCode).IsEqualTo(0).Because("import is best-effort and says so in its grid");
+        await Assert.That(outcome).IsNotNull();
+        await Assert.That(outcome!.VisibilityFailures).IsEqualTo(1);
+        await Assert.That(outcome.AnythingFailed).IsTrue();
+    }
+
+    [Test]
+    public async Task HandleImport_reports_a_clean_run_as_nothing_failed() {
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
+        StubAllHookEndpoints();
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        var projectsDir = Path.Combine(_tempDir, "claude-projects-cleanrun");
+        WriteClaudeSession(projectsDir, "vis-clean-run");
+
+        ImportCommand.ImportRunOutcome? outcome = null;
+
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            filterCwd: null,
+            minLines: 1,
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
+            scope: new ImportScope.All(),
+            skipConfirmation: true,
+            shareWithOrg: true,
+            onFinished: o => outcome = o
+        );
+
+        await Assert.That(outcome!.AnythingFailed).IsFalse();
+    }
+
+    [Test]
     public async Task ExplicitVisibility_refuses_both_stops_at_once() {
         // Opposite promises. Silently picking one would hide the caller's bug.
         await Assert.That(() => ImportCommand.ExplicitVisibility(forcePrivate: true, shareWithOrg: true))
