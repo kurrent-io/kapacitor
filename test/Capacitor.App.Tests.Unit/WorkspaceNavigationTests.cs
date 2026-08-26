@@ -86,7 +86,7 @@ public class WorkspaceNavigationTests {
             workspaceFactory: agentId => {
                 opened.Add(agentId);
                 return new WorkspaceViewModel(
-                    agentId, daemon, actions, attach.Factory, () => new FakeTerminalSurface(), time);
+                    agentId, daemon, actions, attach.Factory, () => new FakeTerminalSurface(), time, new RecordingOpener());
             });
 
         return new Nav {

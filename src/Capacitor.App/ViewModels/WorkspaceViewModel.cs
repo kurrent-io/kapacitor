@@ -3,11 +3,14 @@ using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
 using Capacitor.App.Services;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 using DynamicData;
 using ReactiveUI;
 
 namespace Capacitor.App.ViewModels;
+
+public enum WorkspaceTab { Chat, Terminal }
 
 /// The session workspace: header (title/repo/vendor chip) + one Terminal tab, for a single agent
 /// id. Constructed once per workspace, like TerminalTabViewModel/HomeViewModel -- ctor-scoped, not
@@ -62,6 +65,29 @@ public sealed class WorkspaceViewModel : ReactiveObject {
 
     public TerminalTabViewModel Terminal { get; }
 
+    ChatTabViewModel? _chat;
+    /// Built once, on the first dto that passes the PTY gate -- the projection is chosen by the
+    /// dto's vendor. Null for a non-PTY session.
+    public ChatTabViewModel? Chat {
+        get => _chat;
+        private set => this.RaiseAndSetIfChanged(ref _chat, value);
+    }
+
+    WorkspaceTab _activeTab = WorkspaceTab.Chat;
+    public WorkspaceTab ActiveTab {
+        get => _activeTab;
+        private set {
+            this.RaiseAndSetIfChanged(ref _activeTab, value);
+            this.RaisePropertyChanged(nameof(IsChatActive));
+            this.RaisePropertyChanged(nameof(IsTerminalActive));
+        }
+    }
+    public bool IsChatActive => ActiveTab == WorkspaceTab.Chat;
+    public bool IsTerminalActive => ActiveTab == WorkspaceTab.Terminal;
+
+    public ReactiveCommand<Unit, Unit> ShowChatCommand { get; }
+    public ReactiveCommand<Unit, Unit> ShowTerminalCommand { get; }
+
     public ReactiveCommand<Unit, Unit> OpenInWebCommand { get; }
     public ReactiveCommand<Unit, Unit> StopCommand { get; }
 
@@ -74,7 +100,8 @@ public sealed class WorkspaceViewModel : ReactiveObject {
 
     public WorkspaceViewModel(
             string agentId, IDaemonClientService daemon, AgentActionService actions,
-            TerminalAttachClientFactory factory, Func<ITerminalSurface> surfaceFactory, TimeProvider time) {
+            TerminalAttachClientFactory factory, Func<ITerminalSurface> surfaceFactory, TimeProvider time,
+            IUrlOpener opener) {
         AgentId = agentId;
         Terminal = new TerminalTabViewModel(agentId, daemon, factory, surfaceFactory, time);
 
@@ -112,6 +139,18 @@ public sealed class WorkspaceViewModel : ReactiveObject {
             .ToProperty(this, x => x.SessionEnded, initialValue: false)
             .DisposeWith(_disposables);
 
+        presence
+            .Where(p => p.Dto is not null && HostedHarnessCatalog.ShowsTerminal(p.Dto.HasTerminal, p.Dto.Vendor))
+            .Take(1)
+            .Subscribe(p => Chat = new ChatTabViewModel(
+                agentId, daemon, Terminal, TranscriptProjection.For(p.Dto!.Vendor), opener, time))
+            .DisposeWith(_disposables);
+
+        ShowChatCommand = ReactiveCommand.Create(() => { ActiveTab = WorkspaceTab.Chat; });
+        ShowTerminalCommand = ReactiveCommand.Create(() => { ActiveTab = WorkspaceTab.Terminal; });
+        _disposables.Add(ShowChatCommand);
+        _disposables.Add(ShowTerminalCommand);
+
         OpenInWebCommand = ReactiveCommand.Create(() => actions.OpenInWeb(agentId));
         _disposables.Add(OpenInWebCommand);
 
@@ -145,10 +184,11 @@ public sealed class WorkspaceViewModel : ReactiveObject {
         return dto.Model is null ? dto.Vendor : $"{dto.Vendor} ({dto.Model})";
     }
 
-    /// Disposes this workspace's own daemon-cache projections, then delegates to
-    /// Terminal.TeardownAsync() -- Task 13's tracker calls this once, when the tab closes.
-    public Task TeardownAsync() {
+    /// Disposes this workspace's own daemon-cache projections, then tears down Chat (if built)
+    /// before Terminal -- the caller that closes a workspace tab calls this once.
+    public async Task TeardownAsync() {
         _disposables.Dispose();
-        return Terminal.TeardownAsync();
+        if (Chat is { } chat) await chat.TeardownAsync();
+        await Terminal.TeardownAsync();
     }
 }

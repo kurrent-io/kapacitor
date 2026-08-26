@@ -24,7 +24,7 @@ public class WorkspaceViewModelTests {
     static WorkspaceViewModel Build(
             FakeDaemonClientService daemon, AgentActionService actions, FakeTerminalAttachClientFactory factory,
             FakeTimeProvider time, string agentId = "a1") =>
-        new(agentId, daemon, actions, factory.Factory, () => new FakeTerminalSurface(), time);
+        new(agentId, daemon, actions, factory.Factory, () => new FakeTerminalSurface(), time, new RecordingOpener());
 
     static AgentActionService NewActions(
             ScriptedLocalControlOps ops, RecordingNotifier notifier, RecordingOpener opener,
@@ -138,6 +138,50 @@ public class WorkspaceViewModelTests {
             await WaitUntilAsync(() => ops.StopCalls >= 1, what: "stop issued after confirm");
             await Assert.That(confirmer.Prompted.Count).IsEqualTo(1);
             await Assert.That(ops.StopPayloads).IsEquivalentTo([("a1", true)], CollectionOrdering.Matching);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Chat_is_the_default_tab_and_the_switch_commands_flip_it() {
+        await RunOnUiAsync(async () => {
+            var vm = Build(new FakeDaemonClientService(), NewActions(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener()), new FakeTerminalAttachClientFactory(), new FakeTimeProvider());
+
+            await Assert.That(vm.ActiveTab).IsEqualTo(WorkspaceTab.Chat);
+            await Assert.That(vm.IsChatActive).IsTrue();
+            await Assert.That(vm.IsTerminalActive).IsFalse();
+
+            await vm.ShowTerminalCommand.Execute();
+            await Assert.That(vm.IsTerminalActive).IsTrue();
+            await vm.ShowChatCommand.Execute();
+            await Assert.That(vm.IsChatActive).IsTrue();
+            await vm.TeardownAsync();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Chat_is_built_for_a_pty_dto_only_and_torn_down_with_the_workspace() {
+        await RunOnUiAsync(async () => {
+            var daemon = new FakeDaemonClientService();
+            var vm = Build(daemon, NewActions(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener()), new FakeTerminalAttachClientFactory(), new FakeTimeProvider());
+            await Assert.That(vm.Chat).IsNull();
+
+            daemon.Agents.AddOrUpdate(Agent("a1", "gemini", hasTerminal: false));
+            await (vm.Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
+            await Assert.That(vm.Chat).IsNull();
+
+            daemon.Agents.AddOrUpdate(Agent("a1", "gemini", hasTerminal: true));
+            await (vm.Terminal.PendingResolveWorkForTesting ?? Task.CompletedTask);
+            await Assert.That(vm.Chat).IsNotNull();
+            await Assert.That(vm.Chat!.Phase).IsEqualTo(ChatTabPhase.Unavailable); // gemini has no transcript projection
+
+            var chat = vm.Chat;
+            daemon.Agents.AddOrUpdate(Agent("a1", "claude", hasTerminal: true));
+            await Assert.That(vm.Chat).IsSameReferenceAs(chat); // built once
+
+            await vm.TeardownAsync();
+            await Assert.That(chat.PendingReadForTesting!).IsNull();
         });
     }
 }
