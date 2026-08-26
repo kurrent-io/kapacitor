@@ -1,7 +1,4 @@
-#pragma warning disable IDE0005 // Suppress false positive on necessary usings
 using System.Text;
-using Capacitor.Cli.Core;
-#pragma warning restore IDE0005
 
 namespace Capacitor.Cli.Core.Tests.Unit;
 
