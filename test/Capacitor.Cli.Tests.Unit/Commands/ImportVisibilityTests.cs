@@ -21,10 +21,9 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// Topology-specific coverage for the <c>default_visibility</c> stamp on historical import and
 /// the <c>autoSkipExclusions</c> non-interactive guarantee.
 ///
-/// <para>One rule across all nine sources, which is why the matrix rows below are uniform:
-/// <c>ForcePrivate</c> stamps <c>private</c> on every status, and the Step-3 default lands on
-/// <c>New</c> alone. It lives in <c>ImportContext.VisibilityStampFor</c>; the two designs behind
-/// it are docs/superpowers/specs/2026-07-20-unified-agent-install-and-import-design.md and
+/// <para>The rule the rows below pin, one for all nine sources
+/// (<c>ImportContext.VisibilityStampFor</c>): <c>ForcePrivate</c> stamps <c>private</c> on every
+/// status, and the Step-3 default lands on <c>New</c> alone. Reasoning in
 /// docs/superpowers/specs/2026-08-26-ai2222-private-stamp-design.md.</para>
 /// Driven through each source's real <c>ImportSessionAsync</c> / <see cref="ImportCommand.ImportChainsAsync"/>
 /// / <see cref="ImportCommand.HandleImport"/> entry point — never through the private

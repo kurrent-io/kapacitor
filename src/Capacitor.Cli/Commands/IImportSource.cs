@@ -51,19 +51,12 @@ internal sealed record ImportContext(
     bool       ForcePrivate,
     string?    DefaultVisibility = null) {
     /// <summary>
-    /// What to stamp as <c>default_visibility</c> on this session's session-start, or null to
-    /// leave the field off.
+    /// The <c>default_visibility</c> to stamp on a session-start, or null to leave the field off.
+    /// <b>An omitted stamp is not "no default"</b> — the server coalesces an absent one to
+    /// <c>org_public</c> — so force-private must say <c>private</c> out loud.
     ///
-    /// <para><b>An omitted stamp is not "no default".</b> The server reads an absent field as
-    /// <c>org_public</c>, so <c>--private</c> has to say <c>private</c> out loud or the session
-    /// lands org-visible and stays that way until the closing privatising pass reaches it —
-    /// permanently, for any session whose PUT fails. <b>This is the only place that decides</b>,
-    /// for all nine sources: the rule is one a source must not be able to answer differently.</para>
-    ///
-    /// <para><b>The two halves are deliberately asymmetric.</b> The Step 3 default is a
-    /// <i>creation</i> default and says nothing about a session that already exists, so it is
-    /// stamped on New alone; <c>private</c> is a floor, and re-asserting a floor on a replay can
-    /// only narrow what is already there.</para>
+    /// <para>Asymmetric on purpose: the Step 3 default is a <i>creation</i> default, so it lands on
+    /// New alone, while <c>private</c> is a floor that a replay can only be narrowed by.</para>
     /// </summary>
     public string? VisibilityStampFor(ImportCommand.ClassificationStatus status) =>
         ForcePrivate                                        ? "private"

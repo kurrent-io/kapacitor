@@ -503,8 +503,7 @@ internal sealed class CursorImportSource : IImportSource {
         // Errored and the user re-runs, which is idempotent on the server
         // (canonical event ids are deterministic).
         var startPayload = BuildSessionStartPayload(classification.SessionId, workspaceFolder, transcriptPath, createdUtc, repositoryNode);
-        // Import-only, unlike every other source: the live Cursor hook stamps no
-        // default_visibility at all, so this is the only path that sets one.
+        // The only Cursor path that stamps one: its live hook sets no default_visibility at all.
         if (ctx.VisibilityStampFor(classification.Status) is { } visibility) {
             startPayload["default_visibility"] = visibility;
         }

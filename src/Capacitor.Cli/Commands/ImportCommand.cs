@@ -1342,11 +1342,9 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             _                                             => (prev.Loaded, prev.Skipped, prev.Failed + 1),
         };
 
-        // The chain path has no ImportContext, so the same rule ImportContext.VisibilityStampFor
-        // holds for every routed source is applied here instead — and it is a stamp, never an
-        // omission: the server reads an absent default_visibility as org_public, so a force-private
-        // import that says nothing lands org-visible until SetVisibilityNoneForAll reaches it, and
-        // permanently for a session that fails mid-stream and never gets there.
+        // ImportContext.VisibilityStampFor's rule, for the one path that has no ImportContext. A
+        // stamp and not an omission: an absent default_visibility coalesces to org_public, and a
+        // session that fails mid-stream never reaches SetVisibilityNoneForAll.
         var chainDefaultVisibility = forcePrivate ? "private" : defaultVisibility;
 
         if (chains.Count > 0) {
@@ -2869,9 +2867,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         if (meta.FirstTimestamp is not null) startHook["started_at"]                = meta.FirstTimestamp.Value.ToString("O");
         if (session.PreviousSessionId is not null) startHook["previous_session_id"] = session.PreviousSessionId;
         if (meta.Slug is not null) startHook["slug"]                                = meta.Slug;
-        // New-only, because this branch only runs for ClassificationStatus.New (Partial returned
-        // above). The caller resolved force-private into the value itself, so there is nothing
-        // to check for here.
+        // New-only: this branch runs only for ClassificationStatus.New, Partial having returned above.
         if (defaultVisibility is not null) startHook["default_visibility"]          = defaultVisibility;
 
         // best-effort git-root discovery from the (already remap-resolved) cwd, so
