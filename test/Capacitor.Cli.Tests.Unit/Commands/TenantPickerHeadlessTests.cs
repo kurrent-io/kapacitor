@@ -19,7 +19,7 @@ public class TenantPickerHeadlessTests {
         using var capture = ConsoleOutput.StartErrorCapture();
         var picker = new SpectreTenantPicker(isInteractive: () => false);
 
-        var picked = await picker.PickAsync(Two(), CancellationToken.None);
+        var picked = await picker.PickAsync(Two(), TenantPickContext.None, CancellationToken.None);
 
         await Assert.That(picked).IsNull();
     }
@@ -29,7 +29,7 @@ public class TenantPickerHeadlessTests {
         using var capture = ConsoleOutput.StartErrorCapture();
         var picker = new SpectreTenantPicker(isInteractive: () => false);
 
-        await picker.PickAsync(Two(), CancellationToken.None);
+        await picker.PickAsync(Two(), TenantPickContext.None, CancellationToken.None);
 
         var written = capture.GetCapturedError();
 

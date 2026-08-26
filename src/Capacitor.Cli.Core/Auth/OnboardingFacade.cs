@@ -315,7 +315,13 @@ public sealed class OnboardingFacade(
                 http, OAuthLoginFlow.WorkOSApiBase, clientId, refreshToken, refreshCt),
             provisioner: provisioner,
             ct: ct,
-            progress: progress);
+            progress: progress,
+            // Bearer and channel are filled in by discovery once the login has answered; only the
+            // proxy half is knowable here.
+            pickContext: new TenantPickContext(
+                Proxy: proxy,
+                ProxyUrl: AuthProxyEndpoint.Url,
+                PickerVersion: proxyConfig.CliPickerVersion));
 
         return flow switch {
             WorkOSDiscoveryFlow.Ready ready       => await WorkOSDiscovery.PublishAsync(root, ready, progress, beforeCommit, ct),

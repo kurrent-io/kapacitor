@@ -114,7 +114,7 @@ public class AuthCancellationTests {
         var picker = Substitute.For<ITenantPicker>();
         picker.Pick(Arg.Any<DiscoveredTenant[]>())
               .Returns(_ => throw new InvalidOperationException("TenantDiscovery must await PickAsync, not call the sync Pick"));
-        picker.PickAsync(list, Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(list[1]));
+        picker.PickAsync(list, Arg.Any<TenantPickContext>(), Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(list[1]));
 
         var discovery = new TenantDiscovery(proxy, picker);
         var outcome   = await discovery.RunAsync("https://proxy", "gh");

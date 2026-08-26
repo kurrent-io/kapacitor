@@ -26,6 +26,12 @@ public sealed record FirstRunMachineReport(
         IReadOnlyList<string>                              Declined,
         bool?                                              LoginShellFindsCli,
         string?                                            Platform = null) {
+    /// <summary>Vendors this machine reported a signal for. The set the Agents screen could offer,
+    /// and so the only set a decision can be read as REFUSING: a vendor with history on disk but
+    /// nothing installed now was never offered, and its absence from an answer is not a refusal.</summary>
+    public IReadOnlyList<string> Detected =>
+        [.. Harnesses.Where(kv => kv.Value.BinaryOnPath || kv.Value.ConfigFound).Select(kv => kv.Key)];
+
     /// <summary>Injectable core: detection, the wired-probe and the ledger already resolved, so the
     /// vendor→report mapping is testable without touching the filesystem or PATH.</summary>
     public static FirstRunMachineReport Evaluate(

@@ -953,6 +953,10 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(TranscriptBatch))]
 [JsonSerializable(typeof(SessionTitlePayload))]
 [JsonSerializable(typeof(WhatsDonePayload))]
+[JsonSerializable(typeof(Auth.CliPickerPrepareRequest))]
+[JsonSerializable(typeof(Auth.CliPickerPrepareResponse))]
+[JsonSerializable(typeof(Auth.CliPickerResultRequest))]
+[JsonSerializable(typeof(Auth.CliPickerResultResponse))]
 [JsonSerializable(typeof(Auth.StoredTokens))]
 [JsonSerializable(typeof(Auth.AuthDiscoveryResponse))]
 [JsonSerializable(typeof(Auth.TokenExchangeRequest))]
@@ -971,6 +975,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(FirstRun.FirstRunHarnessReport))]
 [JsonSerializable(typeof(FirstRun.FirstRunFlowResponse))]
 [JsonSerializable(typeof(FirstRun.ReportFirstRunMachineActionRequest))]
+[JsonSerializable(typeof(FirstRun.ReportFirstRunImportRequest))]
 [JsonSerializable(typeof(LaunchAgentCommand))]
 // Task 8: reviewer-model launch block + preflight RPC + resolved report wire DTOs.
 [JsonSerializable(typeof(ExplicitReviewerModelLaunch))]

@@ -345,7 +345,7 @@ public class SignInStepViewModelTests {
             using var h = new Harness();
             h.Connect.Choice = ConnectChoice.Discover;
             h.Operation = async (_, ct) => {
-                var picked = await h.Picker.PickAsync([Tenant("acme"), Tenant("globex")], ct);
+                var picked = await h.Picker.PickAsync([Tenant("acme"), Tenant("globex")], TenantPickContext.None, ct);
 
                 return picked is null
                     ? new AuthResult.Failed("No tenant selected.")
@@ -376,7 +376,7 @@ public class SignInStepViewModelTests {
             using var h = new Harness();
             h.Connect.Choice = ConnectChoice.Discover;
             h.Operation = async (_, ct) => {
-                var picked = await h.Picker.PickAsync([Tenant("acme"), Tenant("globex")], ct);
+                var picked = await h.Picker.PickAsync([Tenant("acme"), Tenant("globex")], TenantPickContext.None, ct);
 
                 return picked is null ? new AuthResult.Failed("No tenant selected.") : Committed();
             };

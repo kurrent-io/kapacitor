@@ -71,7 +71,7 @@ public class WizardAuthBridgesTests {
         DiscoveredTenant[]? offered = null;
         picker.SelectionRequested += tenants => offered = tenants;
 
-        var pick = picker.PickAsync([Tenant("acme"), Tenant("globex")], CancellationToken.None);
+        var pick = picker.PickAsync([Tenant("acme"), Tenant("globex")], TenantPickContext.None, CancellationToken.None);
         picker.Select(Tenant("globex"));
 
         await Assert.That((await pick.WaitAsync(TimeSpan.FromSeconds(5)))!.OrgLogin).IsEqualTo("globex");
@@ -82,7 +82,7 @@ public class WizardAuthBridgesTests {
     public async Task Selecting_nothing_completes_the_await_with_no_tenant() {
         var picker = new WizardTenantPicker(new RecordingAuthProgress());
 
-        var pick = picker.PickAsync([Tenant("acme")], CancellationToken.None);
+        var pick = picker.PickAsync([Tenant("acme")], TenantPickContext.None, CancellationToken.None);
         picker.Select(null);
 
         await Assert.That(await pick.WaitAsync(TimeSpan.FromSeconds(5))).IsNull();
@@ -94,7 +94,7 @@ public class WizardAuthBridgesTests {
         var progress = new RecordingAuthProgress();
         var picker   = new WizardTenantPicker(progress);
 
-        var pick = picker.PickAsync([Tenant("acme"), Tenant("globex")], CancellationToken.None);
+        var pick = picker.PickAsync([Tenant("acme"), Tenant("globex")], TenantPickContext.None, CancellationToken.None);
         picker.Select(null);
         await pick.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -106,7 +106,7 @@ public class WizardAuthBridgesTests {
         var picker = new WizardTenantPicker(new RecordingAuthProgress());
         using var cts = new CancellationTokenSource();
 
-        var pick = picker.PickAsync([Tenant("acme")], cts.Token);
+        var pick = picker.PickAsync([Tenant("acme")], TenantPickContext.None, cts.Token);
         await cts.CancelAsync();
 
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await pick.WaitAsync(TimeSpan.FromSeconds(5)));
@@ -153,8 +153,8 @@ public class WizardAuthBridgesTests {
     public async Task A_second_pick_cancels_the_one_it_displaces() {
         var picker = new WizardTenantPicker(new RecordingAuthProgress());
 
-        var first  = picker.PickAsync([Tenant("acme")], CancellationToken.None);
-        var second = picker.PickAsync([Tenant("globex")], CancellationToken.None);
+        var first  = picker.PickAsync([Tenant("acme")], TenantPickContext.None, CancellationToken.None);
+        var second = picker.PickAsync([Tenant("globex")], TenantPickContext.None, CancellationToken.None);
         picker.Select(Tenant("globex"));
 
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await first.WaitAsync(TimeSpan.FromSeconds(5)));

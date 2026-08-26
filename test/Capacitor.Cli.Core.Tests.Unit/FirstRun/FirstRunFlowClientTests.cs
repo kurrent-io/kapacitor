@@ -408,4 +408,109 @@ public class FirstRunFlowClientTests {
 
         await Assert.That(outcome.StatusCode).IsEqualTo(0);
     }
+
+    [Test]
+    public async Task ReportImportAsync_posts_the_report_to_the_flow_s_import_route() {
+        // Every key here is one the server reads by name; a rename on either side shows up as a
+        // picker with no figures against it rather than as a failure.
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath($"{PollPath}/import").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithBody(StateBody("Pending")).WithHeader("Content-Type", "application/json"));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http).ReportImportAsync(
+            server.Urls[0], FlowId,
+            new ReportFirstRunImportRequest {
+                Repos = [
+                    new FirstRunImportRepoReport {
+                        Owner         = "kurrent-io",
+                        Name          = "kcap-server",
+                        Sessions      = new Dictionary<string, int> {
+                            [FirstRunImportWindows.Last30]     = 12,
+                            [FirstRunImportWindows.Everything] = 41
+                        },
+                        LastSessionAt = new DateTimeOffset(2026, 8, 24, 9, 0, 0, TimeSpan.Zero)
+                    }
+                ],
+                Unmatched = new Dictionary<string, int> { [FirstRunImportWindows.Everything] = 35 },
+                RepoTotal = 312,
+                Vendors   = ["claude", "codex"]
+            },
+            CancellationToken.None);
+
+        await Assert.That(outcome.Recorded).IsTrue();
+
+        var body = JsonNode.Parse(
+            server.FindLogEntries(Request.Create().WithPath($"{PollPath}/import").UsingPost())[0]
+                  .RequestMessage.Body!)!;
+
+        var repo = body["repos"]![0]!;
+
+        await Assert.That(repo["owner"]!.GetValue<string>()).IsEqualTo("kurrent-io");
+        await Assert.That(repo["name"]!.GetValue<string>()).IsEqualTo("kcap-server");
+        await Assert.That(repo["sessions"]!["30"]!.GetValue<int>()).IsEqualTo(12);
+        await Assert.That(repo["sessions"]!["all"]!.GetValue<int>()).IsEqualTo(41);
+        await Assert.That(repo["last_session_at"]!.GetValue<string>()).StartsWith("2026-08-24T09:00:00");
+
+        await Assert.That(body["unmatched"]!["all"]!.GetValue<int>()).IsEqualTo(35);
+        await Assert.That(body["repo_total"]!.GetValue<int>()).IsEqualTo(312);
+        await Assert.That(body["vendors"]!.AsArray().Select(v => v!.GetValue<string>()))
+                    .IsEquivalentTo(["claude", "codex"]);
+    }
+
+    [Test]
+    public async Task ReportImportAsync_sends_an_empty_repo_list_rather_than_omitting_it() {
+        // A machine with no history is a real report, and the screen waits for it either way.
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath($"{PollPath}/import").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithBody(StateBody("Pending")).WithHeader("Content-Type", "application/json"));
+
+        using var http = new HttpClient();
+
+        await new FirstRunFlowClient(http).ReportImportAsync(
+            server.Urls[0], FlowId,
+            new ReportFirstRunImportRequest {
+                Repos     = [],
+                Unmatched = new Dictionary<string, int>(),
+                RepoTotal = 0,
+                Vendors   = []
+            },
+            CancellationToken.None);
+
+        var body = JsonNode.Parse(
+            server.FindLogEntries(Request.Create().WithPath($"{PollPath}/import").UsingPost())[0]
+                  .RequestMessage.Body!)!;
+
+        await Assert.That(body["repos"]!.AsArray()).IsEmpty();
+        await Assert.That(body["vendors"]!.AsArray()).IsEmpty().Because("empty is not null on this field");
+    }
+
+    [Test]
+    public async Task PollAsync_reads_the_import_decision_the_server_returns() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(PollPath).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithBody($$$"""
+                  {"flow_id":"{{{FlowId}}}","step":"Done","can_finish":true,
+                   "steps":{"SignIn":"Completed","Agents":"Completed","Import":"Completed","Done":"Pending"},
+                   "import_decided_at":"2026-08-24T10:00:00Z",
+                   "import":{"window":"90","titles":"Server","vendors":["claude"],
+                             "repos":[{"owner":"kurrent-io","name":"kcap-server","level":"Shared"}]}}
+                  """)
+                .WithHeader("Content-Type", "application/json"));
+
+        using var http = new HttpClient();
+
+        var outcome = await new FirstRunFlowClient(http).PollAsync(server.Urls[0], FlowId, CancellationToken.None);
+
+        var answer = FirstRunFlowOutcomes.Import(outcome.Body)!;
+
+        await Assert.That(answer.Window).IsEqualTo(FirstRunImportWindows.Last90);
+        await Assert.That(answer.Titles).IsEqualTo(FirstRunImportTitles.Server);
+        await Assert.That(answer.Vendors).IsEquivalentTo(["claude"]);
+        await Assert.That(answer.Choices.Single().Level).IsEqualTo(FirstRunImportLevel.Shared);
+    }
 }

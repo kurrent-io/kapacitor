@@ -21,7 +21,7 @@ public class TenantDiscoveryTests {
         await Assert.That(outcome.Picked).IsNotNull();
         await Assert.That(outcome.Picked!.OrgLogin).IsEqualTo("solo");
         picker.DidNotReceive().Pick(Arg.Any<DiscoveredTenant[]>());
-        await picker.DidNotReceive().PickAsync(Arg.Any<DiscoveredTenant[]>(), Arg.Any<CancellationToken>());
+        await picker.DidNotReceive().PickAsync(Arg.Any<DiscoveredTenant[]>(), Arg.Any<TenantPickContext>(), Arg.Any<CancellationToken>());
     }
 
     [Test]
@@ -35,7 +35,7 @@ public class TenantDiscoveryTests {
              .Returns(Task.FromResult(new Cli.Core.Auth.DiscoveryResult(list, DiscoveryError.None)));
 
         var picker = Substitute.For<ITenantPicker>();
-        picker.PickAsync(list, Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(list[1]));
+        picker.PickAsync(list, Arg.Any<TenantPickContext>(), Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(list[1]));
 
         var discovery = new TenantDiscovery(proxy, picker);
         var outcome = await discovery.RunAsync("https://proxy", "gh");
@@ -113,7 +113,7 @@ public class TenantDiscoveryTests {
              .Returns(Task.FromResult(new Cli.Core.Auth.DiscoveryResult(list, DiscoveryError.None)));
 
         var picker = Substitute.For<ITenantPicker>();
-        picker.PickAsync(list, Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(null));
+        picker.PickAsync(list, Arg.Any<TenantPickContext>(), Arg.Any<CancellationToken>()).Returns(Task.FromResult<DiscoveredTenant?>(null));
 
         var discovery = new TenantDiscovery(proxy, picker);
         var outcome = await discovery.RunAsync("https://proxy", "gh");

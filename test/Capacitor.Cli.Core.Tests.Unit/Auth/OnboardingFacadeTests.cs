@@ -291,7 +291,7 @@ public class OnboardingFacadeTests {
             tenants: TwoGitHubTenants);
 
         var picker = Substitute.For<ITenantPicker>();
-        picker.PickAsync(Arg.Any<DiscoveredTenant[]>(), Arg.Any<CancellationToken>())
+        picker.PickAsync(Arg.Any<DiscoveredTenant[]>(), Arg.Any<TenantPickContext>(), Arg.Any<CancellationToken>())
               .Returns(Task.FromResult<DiscoveredTenant?>(null));
 
         var progress = new RecordingAuthProgress();
@@ -390,7 +390,7 @@ public class OnboardingFacadeTests {
             tenants: TwoGitHubTenants);
 
         var picker = Substitute.For<ITenantPicker>();
-        picker.PickAsync(Arg.Any<DiscoveredTenant[]>(), Arg.Any<CancellationToken>())
+        picker.PickAsync(Arg.Any<DiscoveredTenant[]>(), Arg.Any<TenantPickContext>(), Arg.Any<CancellationToken>())
               .Returns<Task<DiscoveredTenant?>>(_ => { cts.Cancel(); throw new OperationCanceledException(cts.Token); });
 
         var facade = NewFacade(Config.Root, new RecordingAuthProgress(), handler, picker);
