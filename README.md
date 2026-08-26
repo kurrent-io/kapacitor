@@ -284,7 +284,7 @@ At a glance — each links to its section below:
 | [`kcap review`](#pr-review-with-full-context) | Launch a PR review with full transcript context |
 | [`kcap mcp <server>`](#sessions-mcp-server-for-agents) | Run an MCP server (sessions / flows / memory / …) for agents |
 | [`kcap curate apply`](#curate-guidelines) | Sync promoted guidelines into `CLAUDE.md` / `AGENTS.md` |
-| [`kcap skills sync`](#skills-sync) | Materialize the repo's approved skill docs into Claude's skills directory |
+| [`kcap skills sync`](#skills-sync) | Materialize the repo's approved skill docs into every present harness's skills tree |
 | [`kcap daemon …`](#daemon) | Run and manage the agent daemon |
 | [`kcap agent`](#local-agents-kcap-agent) | Start, list, attach to, and stop daemon-hosted agents |
 | [`kcap repos`](#repository-paths) | Manage known repo paths for the launch dialog |

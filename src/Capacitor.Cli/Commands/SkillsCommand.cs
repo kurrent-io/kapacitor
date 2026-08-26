@@ -4,6 +4,7 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.Core.Harness.Kiro;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Core.Skills;
 
 namespace Capacitor.Cli.Commands;
@@ -47,13 +48,16 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
         var hash = RepoHashHelper.ComputeRepoHash(repo.Owner, repo.RepoName);
 
         using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
+        // Real harness detection, not destination-parent existence: ~/.agents is created by
+        // kcap's own installer, so a fresh machine with (say) Codex installed would otherwise
+        // never adopt the shared tree.
+        var detection = AgentDetection.Detect(AgentDetection.FromEnvironment());
         var exitCode = 0;
         foreach (var target in Targets()) {
             var manifestName = Path.Combine("skills", hash, target.Key, "manifest.json");
-            // Adopt a target only while its harness is present; a target we already own keeps
-            // reconciling (revocation must reach it) even if the harness was since removed.
-            if (!File.Exists(config.Path(manifestName))
-                    && !Directory.Exists(Path.GetDirectoryName(target.Root)!))
+            // Adopt a target only while a consuming harness is present; a target we already own
+            // keeps reconciling (revocation must reach it) even after the harness is removed.
+            if (!File.Exists(config.Path(manifestName)) && !ConsumerPresent(detection, target.Key))
                 continue;
             exitCode = Math.Max(exitCode,
                 await SyncTargetAsync(client, baseUrl, hash, target, manifestName, dryRun, auto));
@@ -166,6 +170,18 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
         Info($"[{target.Key}] synced {writes.Count} skill(s), pruned {plan.Prunes.Count}; {snapshot.Length} materialized.");
         return 0;
     }
+
+    /// <summary>Whether any harness that reads this target's tree is installed. The shared trees
+    /// list their consumers: ~/.agents is read by the codex-family harnesses, the gemini tree by
+    /// Gemini CLI and Antigravity; Claude and Kiro read only their own.</summary>
+    internal static bool ConsumerPresent(AgentDetectionResult detection, string targetKey) => targetKey switch {
+        "claude" => detection.Claude.Detected,
+        "agents" => detection.Codex.Detected || detection.Cursor.Detected || detection.Copilot.Detected
+                 || detection.Pi.Detected || detection.OpenCode.Detected,
+        "kiro"   => detection.Kiro.Detected,
+        "gemini" => detection.Gemini.Detected || detection.Antigravity.Detected,
+        _        => false,
+    };
 
     internal static bool AutoThrottled(SkillsManifest? manifest, DateTimeOffset now) =>
         // A future stamp (clock correction, tampered file) must read as stale, not as an
