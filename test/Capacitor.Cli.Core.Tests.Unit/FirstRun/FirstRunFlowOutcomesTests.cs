@@ -337,10 +337,6 @@ public class FirstRunFlowOutcomesTests {
         await Assert.That(FirstRunFlowOutcomes.Import(result)).IsNotNull();
     }
 
-    // =====================================================================
-    // The default visibility the same decision carries.
-    // =====================================================================
-
     static FirstRunFlowResponse WithVisibility(string? visibility) =>
         AllSettled() with {
             Agents          = [new FirstRunAgentChoiceResponse { Vendor = "claude", Record = true, Tools = true }],
