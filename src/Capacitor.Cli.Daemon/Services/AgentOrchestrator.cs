@@ -4443,7 +4443,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 await _server.AgentStatusChangedAsync(agent.Id, agent.Status, winner.SessionId);
             }, cts.Token);
 
-            if (!found && !agent.ReadCts.IsCancellationRequested) LogSessionIdNotDetected(agent.Id, SessionIdPollTimeout.TotalSeconds);
+            if (!found && !cts.IsCancellationRequested) LogSessionIdNotDetected(agent.Id, SessionIdPollTimeout.TotalSeconds);
         } catch (Exception ex) {
             LogSessionIdDetectFailed(ex, agent.Id);
         }

@@ -273,9 +273,9 @@ public class AgentStatusSnapshotTests {
         }
     }
 
-    /// A private agent gets the path and the pulse with no server call in the way.
+    /// A private agent gets the path and the pulse too.
     [Test]
-    public async Task A_private_agent_gets_its_path_and_pulse_without_server_reports() {
+    public async Task A_private_agent_gets_its_path_and_pulse() {
         var fixture = Build();
         var orch    = fixture.Orchestrator;
         try {

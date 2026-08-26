@@ -182,6 +182,32 @@ public class AgentOrchestratorLocalAttachTests {
     }
 
     [Test]
+    public async Task Discovery_reports_to_the_server_for_a_public_agent_only() {
+        var privServer = new TripwireServerConnection();
+        await using var privOrch = AgentOrchestratorHarness.BuildOrchestrator(privServer, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var privAgent = new AgentInstance("priv-1", null, "", null, "/r", "claude",
+            new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo("/r", "", "/r"), new CancellationTokenSource()) { IsPrivate = true };
+        privOrch.RegisterAgentForTest(privAgent);
+
+        await privOrch.RunDiscoveryForTest(privAgent, _ => ("sid", "/p.jsonl"));
+
+        await Assert.That(privAgent.TranscriptPath).IsEqualTo("/p.jsonl");
+        await Assert.That(privServer.Calls.Count).IsEqualTo(0);
+
+        var pubServer = new TripwireServerConnection();
+        await using var pubOrch = AgentOrchestratorHarness.BuildOrchestrator(pubServer, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var pubAgent = new AgentInstance("pub-1", null, "", null, "/r", "claude",
+            new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo("/r", "", "/r"), new CancellationTokenSource()) { IsPrivate = false };
+        pubOrch.RegisterAgentForTest(pubAgent);
+
+        await pubOrch.RunDiscoveryForTest(pubAgent, _ => ("sid2", "/q.jsonl"));
+
+        await Assert.That(pubAgent.TranscriptPath).IsEqualTo("/q.jsonl");
+        await Assert.That(pubServer.Calls).Contains(nameof(ServerConnection.AgentStatusChangedAsync));
+        await Assert.That(pubServer.Calls).Contains(nameof(ServerConnection.AppendAgentRunEventAsync));
+    }
+
+    [Test]
     public async Task RegisterAgentAsync_registers_public_agent_and_skips_private() {
         var server = new TripwireServerConnection();
         await using var orch = AgentOrchestratorHarness.BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
