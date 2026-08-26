@@ -960,10 +960,6 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             };
 
     /// <summary>
-    /// The workspace pick, in the browser where one is reachable and in the terminal otherwise.
-    /// The composite decides per call, since only the completed login knows which it was.
-    /// </summary>
-    /// <summary>
     /// The workspace pick, in the browser where one is reachable and in the terminal otherwise. The
     /// composite decides per call, since only the completed login knows which channel it used.
     /// </summary>

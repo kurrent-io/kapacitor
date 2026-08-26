@@ -84,10 +84,8 @@ public sealed class BrowserTenantPicker(
             DiscoveredTenant[] tenants, TenantPickContext context, CancellationToken ct) =>
         ct.IsCancellationRequested ? null : await fallback.PickAsync(tenants, context, ct);
 
-    /// <summary>
-    /// Polls until the browser answers, the deadline passes, or a keypress takes it back to the
-    /// terminal. Returns the chosen key, or null for every one of those exits.
-    /// </summary>
+    /// <summary>The chosen key, or null — a keypress, the deadline and an expired handle are one
+    /// answer as far as the caller is concerned.</summary>
     async Task<string?> AwaitChoiceAsync(
             TenantPickContext context, CliPickerPrepareResponse prepared, string secret, CancellationToken ct) {
         var interval = TimeSpan.FromSeconds(Math.Clamp(prepared.PollIntervalSeconds, 1, 10));
