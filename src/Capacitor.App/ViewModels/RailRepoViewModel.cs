@@ -39,8 +39,9 @@ public sealed class RailRepoViewModel : ReactiveObject, IDisposable {
             IObservable<string?> selectedAgentId, Action<string> open) {
         RootPath = group.Key;
         IsNoRepository = group.Key.Length == 0;
-        Label = IsNoRepository ? "No repository"
-            : System.IO.Path.GetFileName(System.IO.Path.TrimEndingDirectorySeparator(group.Key));
+        // RepoLabel.Leaf, not the raw leaf: group.Key is a resolved main root, where the two agree —
+        // and the "—" null arm can't trigger (the sentinel "" is the IsNoRepository branch).
+        Label = IsNoRepository ? "No repository" : RepoLabel.Leaf(group.Key);
 
         _countText = group.Cache.CountChanged
             .Select(c => c == 1 ? "1 session" : $"{c} sessions")

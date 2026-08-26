@@ -32,7 +32,7 @@ public class MainWindowViewModelTests {
             SessionRailViewModel? rail = null) {
         var (actions, _) = NewActions(service);
         return new MainWindowViewModel(
-            service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(),
+            service, CancellationToken.None, TestActivity.New(),
             workspaceFactory: workspaceFactory, rail: rail);
     }
 
@@ -51,7 +51,7 @@ public class MainWindowViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
             using var activation = vm.Activator.Activate();
 
             service.SnapshotsSubject.OnNext(Snap(daemon: "daemon-a", version: "1.2.3", serverUrl: "http://localhost:9999", connection: "connected"));
@@ -119,7 +119,7 @@ public class MainWindowViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
 
             foreach (var reason in new[] { "daemon_unreachable", "daemon_incompatible" }) {
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Connecting, null, null));
@@ -143,7 +143,7 @@ public class MainWindowViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
 
@@ -171,7 +171,7 @@ public class MainWindowViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
             using var activation = vm.Activator.Activate();
 
             service.SnapshotsSubject.OnNext(Snap(active: 2, max: 5));
@@ -189,28 +189,11 @@ public class MainWindowViewModelTests {
     /// GridEnabled itself survives — it now gates only the status block's AgentCountText).
     [Test]
     [NotInParallel("AvaloniaSession")]
-    public async Task GridEnabled_reflects_attach_state() {
-        await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var service = new FakeDaemonClientService();
-            var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
-            using var activation = vm.Activator.Activate();
-
-            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
-            await Assert.That(vm.GridEnabled).IsTrue();
-
-            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
-            await Assert.That(vm.GridEnabled).IsFalse();
-        });
-    }
-
-    [Test]
-    [NotInParallel("AvaloniaSession")]
     public async Task Command_enablement_matrix() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
 
             var startCanExecute = false;
             var retryCanExecute = false;
@@ -258,7 +241,7 @@ public class MainWindowViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
             using var activation = vm.Activator.Activate();
 
             var startCanExecute = false;
@@ -281,7 +264,7 @@ public class MainWindowViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
             using var activation = vm.Activator.Activate();
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
@@ -323,7 +306,7 @@ public class MainWindowViewModelTests {
             var (actions, _) = NewActions(service);
             var lifecycleStatus = new Subject<string?>();
             var vm = new MainWindowViewModel(
-                service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(),
+                service, CancellationToken.None, TestActivity.New(),
                 lifecycleStatus: lifecycleStatus);
             using var activation = vm.Activator.Activate();
 
@@ -353,7 +336,7 @@ public class MainWindowViewModelTests {
                 return Task.CompletedTask;
             }
             using var cts = new CancellationTokenSource();
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), cts.Token, TestActivity.New(), StartAction);
+            var vm = new MainWindowViewModel(service, cts.Token, TestActivity.New(), StartAction);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
             await vm.StartDaemonCommand.Execute().ToTask();
@@ -375,7 +358,7 @@ public class MainWindowViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
 
             vm.OpenSession("0123456789abcdef0123456789abcdef");
             vm.OpenSessionIfCurrent("0123456789abcdef0123456789abcdef", vm.NavigationGeneration);
@@ -395,7 +378,7 @@ public class MainWindowViewModelTests {
             var (actions, _) = NewActions(service);
             var gate = new NavigationGate();
             MainWindowViewModel Build() => new(
-                service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(), navigation: gate);
+                service, CancellationToken.None, TestActivity.New(), navigation: gate);
 
             var first = Build();
             var second = Build();
@@ -417,7 +400,7 @@ public class MainWindowViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
 
             var activation = vm.Activator.Activate();
             service.SnapshotsSubject.OnNext(Snap(daemon: "daemon-a", active: 1, max: 5));

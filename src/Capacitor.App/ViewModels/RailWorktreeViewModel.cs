@@ -28,9 +28,6 @@ public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
     readonly ObservableAsPropertyHelper<bool> _sessionsVisible;
     public bool SessionsVisible => _sessionsVisible.Value;
 
-    readonly ObservableAsPropertyHelper<int> _sessionCount;
-    public int SessionCount => _sessionCount.Value;
-
     readonly ObservableAsPropertyHelper<string> _countText;
     public string CountText => _countText.Value;
 
@@ -78,23 +75,20 @@ public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
         ToggleCommand = ReactiveCommand.Create(() => collapse.Set(path, IsExpanded));
         _disposables.Add(ToggleCommand);
 
-        // Same sharing rationale as above: CountText is projected off the count stream itself,
-        // not via this.WhenAnyValue(x => x.SessionCount, ...).
-        var count = sessionsCache.CountChanged.StartWith(sessionsCache.Count);
-        _sessionCount = count
-            .ToProperty(this, x => x.SessionCount, initialValue: sessionsCache.Count)
-            .DisposeWith(_disposables);
-        _countText = count.Select(c => c.ToString(CultureInfo.InvariantCulture))
+        _countText = sessionsCache.CountChanged
+            .Select(c => c.ToString(CultureInfo.InvariantCulture))
             .ToProperty(this, x => x.CountText, initialValue: sessionsCache.Count.ToString(CultureInfo.InvariantCulture))
             .DisposeWith(_disposables);
 
         _needsYou = sessionsCache.Connect()
-            .QueryWhenChanged(q => q.Items.Any(d => d.Status == "Failed"))
+            .QueryWhenChanged(q => q.Items.Any(d => SessionStatusDots.NeedsAttention(d.Status)))
             .ToProperty(this, x => x.NeedsYou, initialValue: false)
             .DisposeWith(_disposables);
 
-        _holdsSelected = sessionsCache.Connect().QueryWhenChanged(q => q.Keys.ToHashSet())
-            .CombineLatest(selectedAgentId, (ids, sel) => sel is not null && ids.Contains(sel))
+        // QueryWhenChanged() without a selector: a membership probe needs no materialized key set
+        // (the previous Keys.ToHashSet() allocated one per changeset just to test a single id).
+        _holdsSelected = sessionsCache.Connect().QueryWhenChanged()
+            .CombineLatest(selectedAgentId, (q, sel) => sel is not null && q.Lookup(sel).HasValue)
             .ToProperty(this, x => x.HoldsSelected, initialValue: false)
             .DisposeWith(_disposables);
 
@@ -108,14 +102,11 @@ public sealed class RailWorktreeViewModel : ReactiveObject, IDisposable {
     }
 
     internal static string LabelFor(string path, bool isMainCheckout) =>
-        isMainCheckout ? "main checkout"
-        : System.IO.Path.GetFileName(System.IO.Path.TrimEndingDirectorySeparator(path));
+        isMainCheckout ? "main checkout" : PlatformPaths.Leaf(path);
 
-    // Same platform rule HomeViewModel.PathComparer documents: case-insensitive except Linux.
     internal static bool PathEquals(string a, string b) =>
-        string.Equals(
-            System.IO.Path.TrimEndingDirectorySeparator(a), System.IO.Path.TrimEndingDirectorySeparator(b),
-            OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase);
+        PlatformPaths.Comparer.Equals(
+            System.IO.Path.TrimEndingDirectorySeparator(a), System.IO.Path.TrimEndingDirectorySeparator(b));
 
     public void Dispose() => _disposables.Dispose();
 }

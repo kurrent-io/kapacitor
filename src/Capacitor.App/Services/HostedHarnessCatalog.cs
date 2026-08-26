@@ -85,6 +85,34 @@ public static class HostedHarnessCatalog {
             ? "default"
             : ModelChoicesFor(vendor).FirstOrDefault(m => string.Equals(m.Slug, model, StringComparison.OrdinalIgnoreCase))?.Label ?? model;
 
+    /// The effort ladder the daemon passes through verbatim (codex maps max→xhigh itself); the
+    /// picker's Default entry (null on the wire) hands the choice back to the harness. Lives here
+    /// beside the model catalog so the launch vocabularies have one authority.
+    public static readonly IReadOnlyList<string> EffortLadder = ["low", "medium", "high", "xhigh"];
+
+    // Monogram + tint per vendor: the glyph is the fallback where the view layer has no brand
+    // mark (VendorIcons); the tint colors both. Monochrome brands render in the near-white text
+    // color; claude/gemini keep their brand hues. Beside the labels/families so adding a vendor
+    // means one file, not three.
+    static readonly Dictionary<string, (string Glyph, string Color)> VendorTiles = new(StringComparer.OrdinalIgnoreCase) {
+        ["claude"]      = ("✳", "#D97757"),
+        ["codex"]       = ("Cx", "#F1F3F7"),
+        ["cursor"]      = ("Cu", "#F1F3F7"),
+        ["copilot"]     = ("Cp", "#F1F3F7"),
+        ["gemini"]      = ("Ge", "#7BA7F7"),
+        ["kiro"]        = ("Ki", "#B78BF7"),
+        ["opencode"]    = ("Oc", "#F1F3F7"),
+        ["antigravity"] = ("An", "#F4B860"),
+        ["pi"]          = ("π", "#A994FF"),
+    };
+
+    /// Glyph + tint for a vendor token; an unmapped token gets its first letter in neutral grey
+    /// (the daemon is the authority on what it can host — see Build's same rule).
+    public static (string Glyph, string Color) TileFor(string vendor) =>
+        VendorTiles.TryGetValue(vendor, out var tile)
+            ? tile
+            : (vendor.Length > 0 ? vendor[..1].ToUpperInvariant() : "?", "#9299AA");
+
     /// Display label for a vendor token: the option's Label when the list carries one, the raw
     /// token otherwise (before the first daemon snapshot, or a token this build has never heard
     /// of). Shared by the harness chip and the repository menu's remembered-harness pill.

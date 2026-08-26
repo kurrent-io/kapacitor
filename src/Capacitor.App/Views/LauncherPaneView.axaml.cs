@@ -86,11 +86,9 @@ public partial class LauncherPaneView : UserControl {
         await vm.SelectRepositoryAsync(path);
     }
 
-    // Effort picker: the shared low→xhigh ladder the daemon passes through (codex maps max→xhigh
-    // itself); Default hands the choice back to the harness. A wrong value for a given vendor
-    // surfaces as that session's own launch error, same as the CLI's --effort.
-    static readonly string[] EffortLadder = ["low", "medium", "high", "xhigh"];
-
+    // Effort picker over HostedHarnessCatalog.EffortLadder; Default hands the choice back to the
+    // harness. A wrong value for a given vendor surfaces as that session's own launch error, same
+    // as the CLI's --effort.
     void OnEffortChipClick(object? sender, RoutedEventArgs e) {
         if (DataContext is not HomeViewModel vm || sender is not Control anchor) return;
 
@@ -101,7 +99,7 @@ public partial class LauncherPaneView : UserControl {
         byDefault.Click += (_, _) => vm.SelectedEffort = null;
         flyout.Items.Add(byDefault);
         flyout.Items.Add(new Separator());
-        foreach (var effort in EffortLadder) {
+        foreach (var effort in HostedHarnessCatalog.EffortLadder) {
             var item = new MenuItem {
                 Header = effort, ToggleType = MenuItemToggleType.Radio, IsChecked = vm.SelectedEffort == effort,
             };
@@ -112,30 +110,11 @@ public partial class LauncherPaneView : UserControl {
         flyout.ShowAt(anchor);
     }
 
-    // Monogram + tint per vendor: the glyph is the fallback where VendorIcons has no brand mark
-    // (kiro, antigravity, pi, unknown tokens); the tint colors both the mark and the monogram.
-    // Monochrome brands render in the near-white text color; claude/gemini keep their brand hues.
-    static readonly Dictionary<string, (string Glyph, string Color)> VendorTiles = new(StringComparer.OrdinalIgnoreCase) {
-        ["claude"]      = ("✳", "#D97757"),
-        ["codex"]       = ("Cx", "#F1F3F7"),
-        ["cursor"]      = ("Cu", "#F1F3F7"),
-        ["copilot"]     = ("Cp", "#F1F3F7"),
-        ["gemini"]      = ("Ge", "#7BA7F7"),
-        ["kiro"]        = ("Ki", "#B78BF7"),
-        ["opencode"]    = ("Oc", "#F1F3F7"),
-        ["antigravity"] = ("An", "#F4B860"),
-        ["pi"]          = ("π", "#A994FF"),
-    };
-
-    static (string Glyph, string Color) TileFor(string vendor) =>
-        VendorTiles.TryGetValue(vendor, out var tile)
-            ? tile
-            : (vendor.Length > 0 ? vendor[..1].ToUpperInvariant() : "?", "#9299AA");
-
     /// The vendor's mark at a given size: the brand path when VendorIcons carries one, the tinted
-    /// monogram otherwise. UI-thread only (constructs thread-affine Geometry/brushes).
+    /// monogram otherwise (both from HostedHarnessCatalog.TileFor). UI-thread only (constructs
+    /// thread-affine Geometry/brushes).
     internal static Control BuildGlyph(string vendor, double size) {
-        var (glyph, color) = TileFor(vendor);
+        var (glyph, color) = HostedHarnessCatalog.TileFor(vendor);
         if (VendorIcons.For(vendor) is { } geometry)
             return new Avalonia.Controls.Shapes.Path {
                 Data = geometry, Fill = new SolidColorBrush(Color.Parse(color)),

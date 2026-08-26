@@ -8,11 +8,6 @@ namespace Capacitor.App.Views;
 public partial class SessionRailView : UserControl {
     public SessionRailView() => InitializeComponent();
 
-    // The window extends its client area into the title bar, so the rail's 48px chrome row IS the
-    // title bar on this surface — empty space there must still move the window. Buttons in the row
-    // mark their presses handled, so this only fires on the blank stretch.
-    void OnChromePointerPressed(object? sender, PointerPressedEventArgs e) {
-        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed && TopLevel.GetTopLevel(this) is Window window)
-            window.BeginMoveDrag(e);
-    }
+    // The rail's 44px chrome row IS the title bar on this surface — see WindowChrome.
+    void OnChromePointerPressed(object? sender, PointerPressedEventArgs e) => WindowChrome.BeginDrag(this, e);
 }

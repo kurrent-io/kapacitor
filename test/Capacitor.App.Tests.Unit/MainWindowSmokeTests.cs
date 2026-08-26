@@ -46,7 +46,7 @@ public class MainWindowSmokeTests {
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
                 var (actions, _) = NewActions(service);
-                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(),
+                var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New(),
                     tenantName: "kurrent");
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
@@ -96,7 +96,7 @@ public class MainWindowSmokeTests {
         var (thrown, startEnabledAfter) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -151,7 +151,7 @@ public class MainWindowSmokeTests {
 
             var shutdown = new CancellationTokenSource();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), shutdown.Token, TestActivity.New());
+            var vm = new MainWindowViewModel(service, shutdown.Token, TestActivity.New());
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -203,7 +203,7 @@ public class MainWindowSmokeTests {
             await AvaloniaSession.DispatchAsync(async () => {
                 var service = new FakeDaemonClientService();
                 var (actions, _) = NewActions(service);
-                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+                var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 Dispatcher.UIThread.RunJobs();
@@ -246,7 +246,7 @@ public class MainWindowSmokeTests {
         var rendered = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+            var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
             var window = new MainWindow { DataContext = vm, Notifier = notifier };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -289,7 +289,7 @@ public class MainWindowSmokeTests {
             var activity = new ActivityViewModel(reader.Read, () => "k", new FakeTicker());
             var attach = new FakeTerminalAttachClientFactory();
             var vm = new MainWindowViewModel(
-                service, actions, new FakeTicker(), CancellationToken.None, activity,
+                service, CancellationToken.None, activity,
                 workspaceFactory: agentId => new WorkspaceViewModel(
                     agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider()));
             var window = new MainWindow { DataContext = vm };
@@ -376,7 +376,7 @@ public class MainWindowSmokeTests {
                 var (actions, _) = NewActions(service);
                 var attach = new FakeTerminalAttachClientFactory();
                 var vm = new MainWindowViewModel(
-                    service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(),
+                    service, CancellationToken.None, TestActivity.New(),
                     workspaceFactory: agentId => new WorkspaceViewModel(
                         agentId, service, actions, attach.Factory, () => new FakeTerminalSurface(), new FakeTimeProvider()));
                 var window = new MainWindow { DataContext = vm };
@@ -455,7 +455,7 @@ public class MainWindowSmokeTests {
                     p => p.Contains("/wt/", StringComparison.Ordinal)
                         ? p[..p.IndexOf("/wt/", StringComparison.Ordinal)]
                         : p);
-                vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(),
+                vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New(),
                     workspaceFactory: id => NewWorkspace(service, actions, id), rail: rail);
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
@@ -501,7 +501,7 @@ public class MainWindowSmokeTests {
                 var service = new FakeDaemonClientService();
                 service.SnapshotsSubject.OnNext(Snap());
                 var (actions, _) = NewActions(service);
-                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
+                var vm = new MainWindowViewModel(service, CancellationToken.None, TestActivity.New());
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 Dispatcher.UIThread.RunJobs();

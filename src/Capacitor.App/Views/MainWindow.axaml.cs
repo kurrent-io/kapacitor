@@ -86,12 +86,9 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
     void ShowToast(string message) =>
         _notifications?.Show(new Notification("Kurrent Capacitor", message, NotificationType.Warning, TimeSpan.FromSeconds(4)));
 
-    // The client area extends into the title bar, so the Home surface's header strip (and the
-    // bottom-most drag strip) must move the window the way the system bar used to. Buttons in the
-    // strip mark their presses handled, so this only fires on empty space.
-    void OnChromePointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e) {
-        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) BeginMoveDrag(e);
-    }
+    // The launcher header strip and the bottom-most drag strip — see WindowChrome.
+    void OnChromePointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e) =>
+        WindowChrome.BeginDrag(this, e);
 
     // IsVisible is decompile-verified to be exactly what Show()/Hide() toggle (see
     // App.ShowConfirmForceStopDialogAsync's owner check) — hide-to-tray never fires Closed/Opened

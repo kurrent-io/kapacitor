@@ -17,10 +17,7 @@
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="CornerRadius" Value="7" />
         </Style>
-        <Style Selector="Button.selected">
-            <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
-        </Style>
-        <Style Selector="Button.holdsSelected">
+        <Style Selector="Button.selected, Button.holdsSelected">
             <Setter Property="Background" Value="{StaticResource KcapSurfaceRaisedBrush}" />
         </Style>
 

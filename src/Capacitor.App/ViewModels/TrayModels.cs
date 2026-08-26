@@ -16,8 +16,23 @@ public static class RepoLabel {
         if (segments.Length >= 4 && segments[^3] == ".claude" && segments[^2] == "worktrees" && segments[^4].Length > 0)
             return segments[^4];
 
-        return Path.GetFileName(Path.TrimEndingDirectorySeparator(repoPath));
+        return PlatformPaths.Leaf(repoPath);
     }
+}
+
+/// The path primitives every surface shares, so the platform rule and the leaf expression exist
+/// once (they were drifting into per-VM copies).
+public static class PlatformPaths {
+    /// Repo paths compare the way the filesystem underneath them does: case-insensitively on
+    /// Windows and macOS, case-sensitively on Linux where two checkouts differing only in case
+    /// are genuinely different repositories.
+    public static readonly StringComparer Comparer =
+        OperatingSystem.IsLinux() ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+
+    /// The path's own last segment, verbatim — no worktree collapsing (that is RepoLabel.Leaf's
+    /// job); the rail's worktree rows need exactly the raw leaf.
+    public static string Leaf(string path) =>
+        Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
 }
 
 // StopEnabled: false while AgentActionService.StopsInFlight contains Id. Kind is the wire

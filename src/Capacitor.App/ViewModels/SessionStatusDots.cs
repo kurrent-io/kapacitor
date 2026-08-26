@@ -20,4 +20,9 @@ public static class SessionStatusDots {
         "Failed"   => FailedDot,
         _          => NeutralDot,
     };
+
+    /// The needs-you pip's status rule, held here beside the dot vocabulary so the two can never
+    /// disagree. Failure is today's only real needs-attention state; AI-2197's attention events
+    /// become another input to the same flag.
+    public static bool NeedsAttention(string status) => status == "Failed";
 }

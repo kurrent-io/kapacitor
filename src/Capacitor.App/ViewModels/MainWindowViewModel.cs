@@ -149,11 +149,6 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// the coordinator's close paths route through.
     public ReactiveCommand<Unit, Unit> CloseWorkspaceCommand { get; }
 
-    // Legacy name from the deleted Agents grid (AI-2199) — now gates only the "n of m agents"
-    // status-line text (MainWindow.axaml's AgentCountText), never a grid.
-    ObservableAsPropertyHelper<bool>? _gridEnabled;
-    public bool GridEnabled => _gridEnabled?.Value ?? false;
-
     string? _startMessage;
     // Start-daemon failure text. Cleared on every new start attempt AND on any transition to
     // Connected (spec §5); set only when a start attempt actually fails.
@@ -217,7 +212,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// caller that predates it keeps working the way it always has.
     /// </param>
     public MainWindowViewModel(
-            IDaemonClientService service, AgentActionService actions, ITicker ticker,
+            IDaemonClientService service,
             CancellationToken shutdownToken, ActivityViewModel activity, Func<CancellationToken, Task>? startAction = null,
             IObservable<string?>? lifecycleStatus = null, TimeProvider? time = null, HomeViewModel? home = null,
             NavigationGate? navigation = null, Action<Func<Task>>? trackWorkspaceTeardown = null,
@@ -270,7 +265,6 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         this.WhenActivated(disposables => {
             var status    = service.Status.ObserveOn(RxSchedulers.MainThreadScheduler);
             var snapshots = service.Snapshots.ObserveOn(RxSchedulers.MainThreadScheduler);
-            var connected = status.Select(s => s.State == AttachState.Connected);
 
             _daemonName = snapshots.Select(s => s.Daemon.Name)
                 .ToProperty(this, x => x.DaemonName, "")
@@ -330,15 +324,6 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
                 .Where(msg => msg is not null)
                 .Subscribe(msg => StartMessage = msg)
                 .DisposeWith(disposables);
-
-            _gridEnabled = connected
-                .ToProperty(this, x => x.GridEnabled, initialValue: false)
-                .DisposeWith(disposables);
-
-            // `actions` and `ticker` feed nothing here since the Agents grid's row pipeline (the
-            // sole consumer of both) was deleted (AI-2199) — kept as ctor params unchanged rather
-            // than reshaping the signature every caller passes; a future Sessions-rail row action
-            // or live uptime would consume them again.
         });
     }
 

@@ -104,6 +104,17 @@ public class HostedHarnessCatalogTests {
     }
 
     [Test]
+    public async Task Every_mapped_vendor_has_a_tile_and_unknown_tokens_get_an_initial() {
+        // Same guard shape as the TransportFamilies pin: adding a vendor means one catalog file.
+        foreach (var vendor in HostedHarnessCatalog.MappedVendors) {
+            var (glyph, color) = HostedHarnessCatalog.TileFor(vendor);
+            await Assert.That(glyph).IsNotEmpty();
+            await Assert.That(color).StartsWith("#");
+        }
+        await Assert.That(HostedHarnessCatalog.TileFor("zed").Glyph).IsEqualTo("Z");
+    }
+
+    [Test]
     public async Task Model_label_prefers_the_curated_name_and_falls_back_to_the_slug() {
         await Assert.That(HostedHarnessCatalog.ModelLabelFor("claude", "claude-fable-5")).IsEqualTo("Claude Fable 5");
         await Assert.That(HostedHarnessCatalog.ModelLabelFor("claude", "CLAUDE-FABLE-5")).IsEqualTo("Claude Fable 5");

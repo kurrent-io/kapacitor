@@ -40,7 +40,7 @@ public class RailWorktreeViewModelTests {
             using var wt = Build(cache);
             cache.AddOrUpdate(Dto("a1"));
             cache.AddOrUpdate(Dto("a2", status: "Failed"));
-            await Assert.That(wt.SessionCount).IsEqualTo(2);
+            await Assert.That(wt.Sessions.Count).IsEqualTo(2);
             await Assert.That(wt.CountText).IsEqualTo("2");
             await Assert.That(wt.NeedsYou).IsTrue();
 
@@ -111,7 +111,7 @@ public class RailWorktreeViewModelTests {
             cache.AddOrUpdate(Dto("a1"));
             wt.Dispose();
             cache.AddOrUpdate(Dto("a2"));
-            await Assert.That(wt.SessionCount).IsEqualTo(1);
+            await Assert.That(wt.CountText).IsEqualTo("1");
             await Assert.That(wt.Sessions.Count).IsEqualTo(1);
         });
     }

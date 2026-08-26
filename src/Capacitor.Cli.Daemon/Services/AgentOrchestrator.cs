@@ -46,6 +46,33 @@ internal record AgentInstance(
     /// (never a directory scan). Null until detection resolves it, and for non-Codex agents.</summary>
     public string? CodexRolloutPath { get; set; }
 
+    bool _titleComputed;
+    string? _title;
+    /// <summary>The status payload's display title, computed ONCE from the immutable Prompt
+    /// (SnapshotAgentsForStatus re-runs for every agent on every status pulse — re-parsing an
+    /// invariant there is pure waste, same reasoning as CodexRolloutPath's cache).</summary>
+    public string? Title {
+        get {
+            if (!_titleComputed) { _title = TitleFromPrompt(Prompt); _titleComputed = true; }
+            return _title;
+        }
+    }
+
+    /// First non-blank line of the launch prompt, trimmed, capped at 80 chars total (ellipsis when
+    /// cut, never splitting a surrogate pair) — the status payload is re-sent on every revision,
+    /// so the full prompt never rides it.
+    internal static string? TitleFromPrompt(string? prompt) {
+        if (prompt is null) return null;
+        foreach (var raw in prompt.Split('\n')) {
+            var line = raw.Trim();
+            if (line.Length == 0) continue;
+            if (line.Length <= 80) return line;
+            var cut = char.IsHighSurrogate(line[78]) ? 78 : 79;
+            return line[..cut] + "…";
+        }
+        return null;
+    }
+
     /// <summary>Codex turn diagnostic: monotonic per-agent round generation for the post-send
     /// rollout-growth probe. Bumped (under the send gate, BEFORE each round's input is delivered) so
     /// a later round instantly invalidates any earlier round's probe — a probe emits a verdict only

@@ -38,7 +38,7 @@ public sealed class RailSessionViewModel : ReactiveObject, IDisposable {
             ? Join(dto.Model, age)
             : Join(vendorLine, dto.Model, age);
         StatusDot = SessionStatusDots.For(dto.Status);
-        NeedsYou = dto.Status == "Failed";
+        NeedsYou = SessionStatusDots.NeedsAttention(dto.Status);
         Tooltip = Join(dto.Id, dto.Status, dto.RequesterDisplay);
 
         _isSelected = selectedAgentId.Select(sel => sel == dto.Id)

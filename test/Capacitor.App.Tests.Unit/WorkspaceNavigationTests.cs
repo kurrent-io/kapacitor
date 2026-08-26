@@ -80,7 +80,7 @@ public class WorkspaceNavigationTests {
         gate ??= new NavigationGate();
 
         var vm = new MainWindowViewModel(
-            daemon, actions, new FakeTicker(), CancellationToken.None, TestActivity.New(),
+            daemon, CancellationToken.None, TestActivity.New(),
             navigation: gate,
             trackWorkspaceTeardown: track ?? tracker.Track,
             workspaceFactory: agentId => {

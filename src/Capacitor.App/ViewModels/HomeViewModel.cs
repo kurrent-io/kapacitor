@@ -178,8 +178,7 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     /// Sets the selection and, when RememberHarness, persists it for SelectedRepoPath.
     /// RememberHarness = false skips the write only — it must never erase an existing choice.
     public async Task ChooseHarnessAsync(string vendor) {
-        if (vendor != SelectedVendor) SelectedModel = "";
-        SelectedVendor = vendor;
+        SetVendor(vendor);
         if (!RememberHarness) return;
 
         var repoPath = SelectedRepoPath;
@@ -232,7 +231,12 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
     public async Task SelectRepositoryAsync(string repoPath) {
         SelectedRepoPath = repoPath;
         var saved = await _state.LoadAsync();
-        var vendor = Lookup(saved.HarnessByRepo, repoPath) ?? DefaultVendor;
+        SetVendor(Lookup(saved.HarnessByRepo, repoPath) ?? DefaultVendor);
+    }
+
+    /// The one place a vendor change lands, so the model-reset invariant (ids are
+    /// vendor-specific) can never be forgotten by a new call site.
+    void SetVendor(string vendor) {
         if (vendor != SelectedVendor) SelectedModel = "";
         SelectedVendor = vendor;
     }
@@ -275,13 +279,9 @@ public sealed class HomeViewModel : ReactiveObject, IDisposable {
         : string.IsNullOrWhiteSpace(agentId) ? null
         : agentId;
 
-    /// Repo paths compare the way the filesystem underneath them does: case-insensitively on
-    /// Windows and macOS, case-sensitively on Linux where two checkouts differing only in case are
-    /// genuinely different repositories. Applied on READ because System.Text.Json rebuilds the
-    /// dictionary with a default (ordinal) comparer on load — a comparer set only at write time
-    /// would not survive the round-trip.
-    static readonly StringComparer PathComparer =
-        OperatingSystem.IsLinux() ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+    /// Applied on READ because System.Text.Json rebuilds the dictionary with a default (ordinal)
+    /// comparer on load — a comparer set only at write time would not survive the round-trip.
+    static readonly StringComparer PathComparer = PlatformPaths.Comparer;
 
     static string? Lookup(IReadOnlyDictionary<string, string>? byRepo, string repoPath) {
         if (byRepo is null) return null;
