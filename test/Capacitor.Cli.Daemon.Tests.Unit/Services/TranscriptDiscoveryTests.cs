@@ -68,4 +68,17 @@ public class TranscriptDiscoveryTests {
         await Assert.That(await run).IsFalse();
         await Assert.That(calls).IsEqualTo(1);
     }
+
+    [Test]
+    public async Task A_fault_in_onFound_propagates_and_is_not_reported_as_not_found() {
+        var time = new FakeTimeProvider();
+        var discovery = new TranscriptDiscovery(time, Interval, Timeout);
+
+        var run = discovery.RunAsync(
+            _ => ("sid", "/t.jsonl"),
+            _ => throw new InvalidOperationException("report failed"),
+            CancellationToken.None);
+
+        await Assert.That(async () => await run).Throws<InvalidOperationException>();
+    }
 }
