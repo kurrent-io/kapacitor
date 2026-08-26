@@ -64,9 +64,13 @@ trailing member after `Title`:
 - `TranscriptPath` — `string? TranscriptPath = null`, serialized
   `transcript_path`, always emitted (null, never omitted — the context's own
   rule). The daemon stamps `AgentInstance.TranscriptPath` in
-  `SnapshotAgentsForStatus`. `null` means any of: an older daemon, not resolved
-  yet, the 3-minute poll gave up, or a runtime with nothing to read (app-server
-  Codex, every ACP vendor). The app never distinguishes these; it waits.
+  `SnapshotAgentsForStatus`. `null` means any of: an older daemon; not resolved
+  yet; the 3-minute poll gave up; a runtime with nothing to read (app-server
+  Codex, every ACP vendor); a local passthrough launch that resumes an existing
+  Codex session (below); or an agent that exited before discovery found its
+  file or before the status push carrying the path was delivered — a 250 ms
+  debounce sits between a pulse and its snapshot, and cleanup and removal can
+  land inside it. The app never distinguishes these; it waits.
 
 Daemon side (`src/Capacitor.Cli.Daemon`):
 
@@ -93,9 +97,19 @@ Daemon side (`src/Capacitor.Cli.Daemon`):
   sets `SessionId` and `TranscriptPath` on the agent and pulses
   `_statusNotifier` **before** either awaited server report — mutation first,
   pulse second, the notifier's own contract, and the pulse must not wait behind
-  a SignalR call that can stall on a reconnect. The path resolves within a few
-  seconds of launch for both vendors (Claude writes its first record, with
-  `cwd`, before its first prompt renders).
+  a SignalR call that can stall on a reconnect. Cancellation (the agent's read
+  loop ending) ends the poll without a final locate — an agent that exits
+  between two scans keeps a null path, accepted rather than coordinated
+  against the exit path. The path resolves within a few seconds of launch for
+  both vendors (Claude writes its first record, with `cwd`, before its first
+  prompt renders).
+- **A resumed Codex session is outside discovery.** `kcap agent start codex --
+  resume …` passes through, and Codex then appends to the rollout it resumes
+  — a file stamped before this spawn. The Codex locator accepts only rollouts
+  stamped at or after spawn; that rule is what keeps a user's older session in
+  the same cwd from being claimed, and it is not weakened here. Such a launch
+  leaves `transcript_path` null and Chat in `Waiting`. Claude `--resume` is
+  discoverable by construction: its locator also accepts a fresh last write.
 
 The path is the daemon's view of the filesystem (its `CLAUDE_CONFIG_DIR` /
 `CODEX_HOME`), which is the correct one: it launched the process. Nothing else
@@ -161,14 +175,19 @@ the one registration site, so adding a vendor's transcript means a new
 `TimestampIso` when the record has a timestamp; `Seq` stays 0 — arrival order
 is the order. Every JSON read goes through `JsonElementExtensions`, so a
 wrong-typed field reads as absent rather than throwing; a line that is not a
-JSON object projects to nothing.
+JSON object projects to nothing. The extension gains one internal accessor,
+`Prop(name) → JsonElement?` — the property of any kind, null when absent — for
+the one place the typed accessors cannot serve: copying a non-object `input`
+verbatim into its wrapper. No public surface changes.
 
 Output invariants shared by both mappers:
 
 - *Joining*: when several text blocks feed one envelope they are joined with
   `"\n"`.
-- *Capping*: `ToolResult` is cut at 4096 UTF-16 characters and marked with a
-  trailing `…`; nothing else is capped.
+- *Capping*: `ToolResult` longer than 4096 UTF-16 code units is cut so that
+  the result **including** its trailing `…` marker is exactly 4096 long, and
+  the cut never lands between the halves of a surrogate pair (the high
+  surrogate goes too). Nothing else is capped.
 - *`ToolInputJson` is always a JSON object string*, as `AcpEventEnvelope`
   documents. Anything that has to be built rather than copied is written with
   `Utf8JsonWriter` — never reflection-based serialization, because Core is
@@ -242,15 +261,20 @@ before touching bound state — the client's pump is a background thread. Two
 subscriptions: `daemon.Agents.Connect()` filtered to the agent id (the path
 watch, and the footer's model/status), and `daemon.Snapshots` (the advertised
 vendor options behind the composer hint's vendor label). The first non-null
-`TranscriptPath` starts the tail; a later, different path restarts from zero
-(a re-resolution after a daemon restart).
+`TranscriptPath` starts the tail. **Path identity is part of the read
+generation**: every distinct path, on the UI thread and in one step, bumps the
+generation, clears the items and the pairing index, and installs a fresh
+`JsonlTail`; a read or projection still in flight for the old path completes
+under a stale generation and is discarded. A fresh tail starts at cursor zero
+with `Ok`, which is why the reset belongs to the switch, not to the tail.
 
 Poll: a `TimeProvider` timer every 500 ms (a tuning constant, not a contract).
 A tick with a read still in flight is skipped. The read and the projection run
 on the thread pool and never throw past the tick (the tail is total; a
 projection fault is caught, logged once, and drops that line); the apply hops
-to the UI thread through `Dispatcher.UIThread.InvokeAsync`, guarded by a
-generation `TeardownAsync` bumps so a late completion mutates nothing.
+to the UI thread through `Dispatcher.UIThread.InvokeAsync` and mutates nothing
+unless the generation it captured is still current — `TeardownAsync` and every
+path switch bump it.
 
 Items — an `AvaloniaList<ChatItemViewModel>` exposed read-only and mutated on
 the UI thread. A read's items are applied with one `AddRange` (one collection
@@ -281,19 +305,22 @@ only when it was already at the end, so a user reading history is not yanked.
 
 ### Markdown
 
-`MarkdownView` — a `Control` with a styled `Text` property and an
-`OpenLink` command property — rebuilds its content from a Markdig AST (default
-CommonMark pipeline plus auto-links) on every change. `MarkdownBlocks` maps:
-paragraphs and headings → `SelectableTextBlock` with inlines (`Bold`, `Italic`,
-monospace `Run` for code spans, `LineBreak`); fenced and indented code → a
-`Border` around a monospace `SelectableTextBlock`; bullet and ordered lists →
-marker + nested content rows; block quotes → a left rule beside the content;
-thematic breaks → a hairline. A link is an `InlineUIContainer` hosting a
-link-styled `TextBlock` (accent, underlined, hand cursor) — an inline `Run`
-takes no pointer input of its own — whose pointer-release executes `OpenLink`
-with the URL. HTML, tables, images and any other node render their literal
-source text — degraded, never dropped. User bubbles do not go through it: what
-the user typed is shown as typed.
+`MarkdownView` — a `ContentControl` with a styled `Text` property and an
+`OpenLink` command property — rebuilds its `Content` (a vertical panel of
+block controls) from a Markdig AST (default CommonMark pipeline plus
+auto-links) on every `Text` change. `MarkdownBlocks` maps: paragraphs and
+headings → `SelectableTextBlock` with inlines (`Bold`, `Italic`, monospace
+`Run` for code spans, `LineBreak`); fenced and indented code → a `Border`
+around a monospace `SelectableTextBlock`; bullet and ordered lists → marker +
+nested content rows; block quotes → a left rule beside the content; thematic
+breaks → a hairline. A link is an `InlineUIContainer` hosting a link-styled
+`HyperlinkButton` (accent, underlined, hand cursor) with **`NavigateUri` left
+unset** — set, the control opens the URI itself and would bypass the policy
+below — and `Command` bound to `OpenLink` with the URL as its parameter; a
+button brings keyboard activation (Enter/Space), focus, and automation
+semantics, which a bare inline `Run` has none of. HTML, tables, images and
+any other node render their literal source text — degraded, never dropped.
+User bubbles do not go through it: what the user typed is shown as typed.
 
 Links are agent-authored and untrusted, and `ShellUrlOpener` hands any string
 to the OS shell. The trust boundary is the item's `OpenLinkCommand` on
@@ -327,28 +354,32 @@ measured: a workspace opened on Chat would then keep the constructor's 80×24
 and, through the daemon's min-clamp across viewers, shrink the agent's terminal
 for every other attacher.
 
-Focus follows the tab, and the view enforces it rather than assuming it:
-`TerminalHost.Focusable` and `IsTabStop` are bound to `IsTerminalActive`, so a
-hidden terminal can neither hold keyboard focus nor be tabbed into; the
-existing focus-on-Model-assignment handler runs only while the Terminal tab is
-active (a reattach while Chat is up must not steal the composer's focus);
-switching to Terminal focuses the terminal, switching to Chat — and the first
-open on Chat — focuses `ComposerInput`.
+Focus follows the tab, and the view enforces it rather than assuming it. The
+**inactive surface's root** — the whole terminal grid (control, banners,
+Detach/Reattach buttons) or the whole chat surface (list, composer, Send) — is
+disabled (`IsEnabled=false`), non-hit-testable and transparent, so nothing in
+it can hold focus, be tabbed into, or be activated; a disabled control is
+still measured and arranged, which is what keeps the terminal's pane size
+real. The existing focus-on-Model-assignment handler runs only while the
+Terminal tab is active (a reattach while Chat is up must not steal the
+composer's focus); switching to Terminal focuses the terminal, switching to
+Chat — and the first open on Chat — focuses `ComposerInput`.
 
 ### Composer
 
 Lives on `ChatTabViewModel`, sends through the sibling Terminal tab:
 
-- `ComposerText`; `SendCommand` (`CreateFromTask`), executable iff the terminal
-  is `Attached`, not read-only, and the text is not blank. The send is
+- `ComposerText`; `SendCommand` (`ReactiveCommand.Create`, synchronous),
+  executable iff the terminal is `Attached`, not read-only, and the text is not
+  blank. It calls `Terminal.TrySendText(text)` and clears the text iff that
+  returns true — one synchronous step on the UI thread, no await, so
+  acceptance and the clear cannot be separated by a state change. The send is
   **accepted**, not acknowledged: the attach seam's `SendInputAsync` returns
   nothing and Core's client no-ops when it is no longer writable and folds a
   transport failure into the attach outcome — so no send can learn whether
-  its bytes landed. Acceptance (a live read-write attach at the moment of the
-  call) clears the text synchronously on the UI thread, before any await; a
-  refused send leaves the text in place and the hint already says why. A
-  transport loss surfaces the way it always does — the attach outcome flips
-  `Terminal.State`, and the hint follows.
+  its bytes landed. A refused send leaves the text in place and the hint
+  already says why. A transport loss surfaces the way it always does — the
+  attach outcome flips `Terminal.State`, and the hint follows.
 - `ComposerHint` follows `Terminal.State`: attached read-write → "Reply to
   {vendor label} · Enter sends · Shift+Enter for a new line"; attached read-only
   → "Read-only: {reason}"; `Resolving`/`Connecting` → "Connecting to the
@@ -362,25 +393,34 @@ Lives on `ChatTabViewModel`, sends through the sibling Terminal tab:
   reading or switching the mode is AI-2197's, and the transcript does not
   carry the live prompt state anyway.
 
-`TerminalTabViewModel.SendTextAsync(string text)` → `Task<bool>` — true when
-accepted. It delivers the text the way the daemon's own
-`PtyHostedAgentRuntime.SendUserInputAsync` does, and captures the client and
-attempt generation once, at acceptance: one write of
-`TerminalInputEncoder.Paste(text)` — `\r\n` normalized to `\n`, one trailing
-newline dropped, wrapped in bracketed paste (`ESC[200~` … `ESC[201~`) so the TUI
-takes it as one block — then, after a 150 ms `TimeProvider` delay, one write of
-`\r` **to the same captured client, only if the generation is still current**
-and teardown has not run. A retirement during the delay (reattach, detach,
-teardown) drops the CR: the paste already went to the old client, and the
-replacement must never receive a stray Enter. The delay is measured against
-Codex's TUI, which suppresses Enter-as-submit for 120 ms after ingesting a
-paste and turns a CR inside that window into a newline. A single CR, never a
-retry spray: an interactive launch keeps its permission prompts (Claude
-prompts unless it is an owned review-flow launch; Codex follows its posture),
-and the transcript cannot show a prompt that is up on the PTY, so every extra
-Enter is a chance to answer one. Every message takes this one path,
-single-line or not. Enter sends and Shift+Enter inserts a newline — a
-view-level key handler on the composer's `TextBox`.
+`TerminalTabViewModel.TrySendText(string text)` → `bool`, synchronous, UI
+thread. It refuses (false, nothing written) unless `State` is `Attached`
+read-write and a client is live; otherwise it captures the client and the
+current **send epoch** and starts a fault-contained background delivery, then
+returns true. The send epoch is a counter the VM bumps **synchronously, before
+any await, at the start of** `TryStartAttemptAsync` (reattach), `RunDetachAsync`
+and `TeardownAsync` — the attempt generation cannot serve, because reattach
+bumps it only after awaiting the old client's disposal, and detach never bumps
+it at all; a delayed CR must be dead the instant a detach or reattach begins,
+not when it finishes.
+
+The delivery is the daemon's own `PtyHostedAgentRuntime.SendUserInputAsync`
+shape: one write of `TerminalInputEncoder.Paste(text)` — `\r\n` normalized to
+`\n`, one trailing newline dropped, wrapped in bracketed paste (`ESC[200~` …
+`ESC[201~`) so the TUI takes it as one block — then, after a 150 ms
+`TimeProvider` delay, one write of `\r` **to the same captured client, only if
+the send epoch is unchanged**. A stale epoch drops the CR: the paste already
+went to the old client, and a replacement must never receive a stray Enter.
+A fault in either write is observed and logged once to `Console.Error`; it
+never touches VM state (the attach outcome is the transport's own reporting
+channel). The delay is measured against Codex's TUI, which suppresses
+Enter-as-submit for 120 ms after ingesting a paste and turns a CR inside that
+window into a newline. A single CR, never a retry spray: an interactive launch
+keeps its permission prompts (Claude prompts unless it is an owned review-flow
+launch; Codex follows its posture), and the transcript cannot show a prompt
+that is up on the PTY, so every extra Enter is a chance to answer one. Every
+message takes this one path, single-line or not. Enter sends and Shift+Enter
+inserts a newline — a view-level key handler on the composer's `TextBox`.
 
 ## 4. Testing
 
@@ -395,10 +435,14 @@ view-level key handler on the composer's `TextBox`.
 - `ClaudeTranscriptEventsTests` / `CodexRolloutEventsTests`: one fixture line
   per shape in §2 — including a string `tool_result.content` and a block-array
   one, a non-object `input`, non-object `arguments`, the skip lists, wrapper
-  stripping, prelude skipping, the joining separator, the 4096-character cap
-  and its marker, wrong-typed fields reading as absent, and a malformed line →
-  empty. Every `ToolInputJson` in every fixture parses as a JSON object.
-  `TranscriptProjection.For`: case-insensitive, unknown → null.
+  stripping, prelude skipping, the joining separator, the cap (final
+  `string.Length` exactly 4096 with the marker, and an astral character at the
+  boundary kept whole or dropped whole), wrong-typed fields reading as absent,
+  and a malformed line → empty. Every `ToolInputJson` in every fixture parses
+  as a JSON object; the wrapper fixtures cover an array, a scalar and a null
+  `input`. `TranscriptProjection.For`: case-insensitive, unknown → null.
+- `JsonElementExtensionsTests`: `Prop` returns an array, a scalar and a null
+  property as elements, and null for an absent one or a non-object receiver.
 - `StatusIpcJsonTests`: `transcript_path` round trip, trailing order, old JSON
   → null.
 - AOT: the Release publish of the CLI stays free of `IL2026`/`IL3050`
@@ -416,7 +460,9 @@ view-level key handler on the composer's `TextBox`.
   mutation; cancellation (agent exit) ends it cleanly.
 - `AgentOrchestrator`: `HandleLocalSpawnAsync` starts discovery for a local
   (and a `--private`) PTY launch — over a fake PTY factory and launcher, no
-  real process.
+  real process. A `codex -- resume <id>` passthrough launch against a sessions
+  tree holding only the resumed, older-stamped rollout leaves `transcript_path`
+  null — the boundary pinned, so weakening it is a deliberate change.
 - `AgentStatusSnapshotTests`: `transcript_path` null before detection, the
   value after — on the serialized payload.
 
@@ -426,37 +472,45 @@ view-level key handler on the composer's `TextBox`.
   the initial load renders items in file order; lines appended after a tick
   render; a held partial line does not render until complete; tool outcome
   pairing (Done, Error); `Reset` on length regression; `Missing` then
-  recovery; a `Failed` read keeps items and phase; a different path restarts;
-  ticks stop after teardown; a projection-less vendor → `Unavailable`; a
-  removed agent keeps its items; a dto or snapshot pushed from a pool thread
-  lands on bound state without a thread-affinity fault; both subscriptions
-  end at teardown.
+  recovery; a `Failed` read keeps items and phase; a path switch with a read
+  of the old file deliberately blocked mid-flight — switch, release, and only
+  the new file's items remain, with an empty pairing index; ticks stop after
+  teardown; a projection-less vendor → `Unavailable`; a removed agent keeps
+  its items; a dto or snapshot pushed from a pool thread lands on bound state
+  without a thread-affinity fault; both subscriptions end at teardown.
 - Batching: a 5,000-record initial transcript raises exactly one collection
   notification, and — in a headless window at a fixed size — the
   `ItemsControl` realizes a bounded number of containers.
 - Composer: `SendCommand` enablement across every terminal phase and the
   read-only case; the exact two writes via `FakeTerminalAttachClient.SentInput`
   — the bracketed paste, then `\r` only once the `FakeTimeProvider` advances
-  past the delay, on the same client; a reattach, detach or teardown during
-  the delay sends no CR to any client; the text clears on acceptance and
-  stays on refusal; every hint string; a pool-thread state flip updates the
-  hint on the UI thread.
+  past the delay, on the same client; a detach or reattach that has *begun*
+  before the send refuses it (text stays, nothing written); a reattach whose
+  old-client disposal is held open past 150 ms (`DisposeGate`), a detach, or a
+  teardown started during the delay sends no CR to any client; a faulting
+  write leaves VM state untouched; the text clears on acceptance and stays on
+  refusal; every hint string; a pool-thread state flip updates the hint on
+  the UI thread.
 - `TerminalInputEncoderTests`, `ToolDetailTests` (key priority, first line,
   80-character cut), `LinkPolicyTests` (https/http open, `file:`,
   `javascript:`, custom schemes, relative and malformed text refused).
 - `MarkdownBlocksTests` (headless): paragraph inlines, a fenced block, list
-  items, a link that executes `OpenLink` once, a disallowed link rendered as
-  plain text, and an unsupported construct degrading to literal text.
+  items, a link that executes `OpenLink` exactly once from a pointer click and
+  once from keyboard activation, a disallowed link rendered as plain text that
+  is not focusable, and an unsupported construct degrading to literal text.
 - `WorkspaceViewModelTests`: Chat is the default tab; the switch commands; `Chat`
   is built for a PTY dto only; teardown disposes it.
 - `WorkspaceViewSmokeTests`: the new names resolve (`ChatTabButton`, `ChatHost`,
   `ChatItems`, `ComposerInput`, `SendButton`); switching tabs flips which
   surface is visible while `TerminalHost` stays in the tree on both; a
   workspace opened on Chat with a **real** `XtermTerminalSurface` reports the
-  laid-out pane size to the attach client, not 80×24, while `TerminalHost` is
-  neither focusable nor hit-testable; focus lands on `ComposerInput` on open,
-  stays there through a late Model assignment, moves to the terminal on the
-  Terminal switch and back on the Chat switch.
+  laid-out pane size to the attach client, not 80×24, while the terminal
+  surface is disabled and non-hit-testable; focus lands on `ComposerInput` on
+  open, stays there through a late Model assignment, moves to the terminal on
+  the Terminal switch and back on the Chat switch; tab traversal from the
+  composer never reaches `DetachButton`/`ReattachButton` while Chat is active
+  (terminal driven to Detached/Failed first), and from the terminal never
+  reaches `ComposerInput`/`SendButton` while Terminal is active.
 
 README: the desktop app has no section yet and this slice adds no CLI surface,
 so it is unchanged. `docs/CHANGES.md` gains a "Session chat" entry.
@@ -485,6 +539,16 @@ so it is unchanged. `docs/CHANGES.md` gains a "Session chat" entry.
   cwd and spawn time; a user's own session started in the same checkout within
   the skew tolerance could win. Display-only, and the same exposure the
   daemon's session-id link already carries.
+- **A short-lived session may never get its path.** Discovery scans every
+  2 s and stops at agent exit without a final locate; and a path that lands
+  at exit still has to cross the status debounce before cleanup and removal.
+  Such a session's Chat stays in `Waiting` — its Terminal tab still has the
+  scrollback. Coordinating discovery with the exit path was judged not worth
+  its coupling for a session that ran for seconds.
+- **Codex resume is not discoverable.** A local passthrough `resume` appends
+  to an older-stamped rollout the locator will never accept; Chat stays in
+  `Waiting`. Supporting it means reading the resumed id out of the arguments,
+  which this slice leaves alone.
 - **Rendering granularity is the transcript's.** Both vendors write complete
   blocks, not tokens, so assistant text appears per block, a few hundred
   milliseconds after the vendor writes it. That is what "rendered from the
