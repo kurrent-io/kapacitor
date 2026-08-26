@@ -282,6 +282,32 @@ public class ImportVisibilityTests : IDisposable {
             .IsEqualTo("none");
     }
 
+    [Test]
+    public async Task HandleImport_forcePrivate_leaves_alone_a_session_the_run_never_sent() {
+        // The in-scope capture is bounded by classification status, which is what keeps it to sessions
+        // the server actually has — a too-short session was never uploaded, and the same gate is what
+        // keeps an excluded source out.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
+        StubAllHookEndpoints();
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        var projectsDir = Path.Combine(_tempDir, "claude-projects-short-private");
+        WriteClaudeSession(projectsDir, "vis-private-too-short", lines: 3);
+
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            filterCwd: null,
+            minLines: 500,
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
+            scope: new ImportScope.All(),
+            skipConfirmation: true,
+            forcePrivate: true
+        );
+
+        await Assert.That(_server.LogEntries.Where(e => e.RequestMessage.Method == "PUT")).IsEmpty();
+    }
+
     // =====================================================================
     // Section C — routed sources, direct-logic (ImportSessionAsync + WireMock).
     // =====================================================================

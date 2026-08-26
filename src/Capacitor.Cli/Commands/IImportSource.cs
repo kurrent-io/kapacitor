@@ -55,8 +55,11 @@ internal sealed record ImportContext(
     /// <b>An omitted stamp is not "no default"</b> — the server coalesces an absent one to
     /// <c>org_public</c> — so force-private must say <c>private</c> out loud.
     ///
-    /// <para>Asymmetric on purpose: the Step 3 default is a <i>creation</i> default, so it lands on
-    /// New alone, while <c>private</c> is a floor that a replay can only be narrowed by.</para>
+    /// <para>Asymmetric on purpose, and neither half narrows a session that already exists: the read
+    /// model's import-overlap branch omits this column, so a stamp is a creation-time value only. The
+    /// Step 3 default therefore lands on New alone, while <c>private</c> is sent on every status
+    /// because it costs nothing and the one status it can still reach is worth reaching. Privatising
+    /// an existing session is <c>HandleImport</c>'s closing pass, not this.</para>
     /// </summary>
     public string? VisibilityStampFor(ImportCommand.ClassificationStatus status) =>
         ForcePrivate                                        ? "private"

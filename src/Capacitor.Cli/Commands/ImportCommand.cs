@@ -1327,8 +1327,12 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         // deliberately a separate issue, not something this gate covers.
         var privateScopeSessionIds = new ConcurrentBag<string>();
 
-        // The chain phase's counterpart, populated before the import rather than from an outcome.
-        var chainScopeSessionIds = new ConcurrentBag<string>();
+        // Every in-scope session the server already has, captured before the import rather than
+        // from its outcome. This is what privacy actually rests on: a stamp cannot narrow a session
+        // that already exists — see the chainDefaultVisibility site — so for anything this run only
+        // revisits, the closing PUT is the sole mechanism, and an outcome must not decide whether it
+        // runs.
+        var scopedSessionIds = new ConcurrentBag<string>();
 
         // Read-only inside the parallel loops below; resolved from the sources actually in play.
         var replayChildContentVendors = byVendor.Values
@@ -1347,15 +1351,25 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
 
         // ImportContext.VisibilityStampFor's rule, for the one path that has no ImportContext. A
         // stamp and not an omission: an absent default_visibility coalesces to org_public.
+        //
+        // It only decides a session's visibility AT CREATION. The read model's import-overlap branch
+        // omits default_visibility from its update, so a stamp on a session that already exists is
+        // discarded — which is why scopedSessionIds above, and not this, is what privacy rests on
+        // for anything this run only revisits.
         var chainDefaultVisibility = forcePrivate ? "private" : defaultVisibility;
 
-        // The stamp cannot reach a resumed chain session — ImportSingleSessionAsync returns before
-        // posting session-start — and importedSessionIds only gains one on OnSessionEnded, so a
-        // resume whose session-end fails is privatized by nothing at all. Captured up front, as
-        // privateScopeSessionIds is for routed sources, so outcome cannot decide exposure.
+        // Status carries both filters by this point: the scope filter ran before classification, and
+        // an excluded source had its status flipped to Excluded — so these three statuses are exactly
+        // the sessions the user selected AND the server already has. Neither a chain resume (which
+        // posts no session-start) nor a routed replay outside the child-content scope reaches the
+        // privatize set any other way.
         if (forcePrivate) {
-            foreach (var session in chains.SelectMany(chain => chain)) {
-                chainScopeSessionIds.Add(session.SessionId);
+            foreach (var c in classifications) {
+                if (c.Status is ClassificationStatus.New
+                             or ClassificationStatus.Partial
+                             or ClassificationStatus.AlreadyLoaded) {
+                    scopedSessionIds.Add(c.SessionId);
+                }
             }
         }
 
@@ -1679,7 +1693,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         if (forcePrivate) {
             var toPrivatize = new HashSet<string>(importedSessionIds, StringComparer.Ordinal);
             toPrivatize.UnionWith(privateScopeSessionIds);
-            toPrivatize.UnionWith(chainScopeSessionIds);
+            toPrivatize.UnionWith(scopedSessionIds);
 
             if (toPrivatize.Count > 0) {
                 display.BeginPhase("Marking imported sessions private");

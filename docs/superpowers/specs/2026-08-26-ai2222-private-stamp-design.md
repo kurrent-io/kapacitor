@@ -62,8 +62,9 @@ before.
 
 **The two halves are deliberately asymmetric**, and the asymmetry is the whole reason a single
 `string?` can express both. The Step-3 default is a *creation* default and says nothing about a
-session that already exists, so it is stamped on `New` alone. `private` is a *floor*: re-asserting a
-floor on a replay can only narrow what is already there, so it does not gate on status.
+session that already exists, so it is stamped on `New` alone. `private` is sent on every status
+because it costs nothing and `New` is the one status it can still reach — see below for why it is not
+a floor.
 
 That makes the change **a widening at every site and a narrowing at none**. Pi, OpenCode and
 Antigravity stamped `private` on every status already; the other six now match them. Nothing that
@@ -80,15 +81,42 @@ Consequences worth naming:
   sessions an older CLI created without a stamp, and it is the only thing that reaches
   `explicit:none` rather than `default:private`. What changes is that privacy no longer *depends* on
   it — except on the one path below.
-- **A resumed chain session is the exception, and needs the pass.** `ImportSingleSessionAsync`
-  returns before posting session-start for a `Partial`, so no stamp can reach it; and
-  `importedSessionIds` only gains a session on `OnSessionEnded`, so a resume whose session-end POST
-  fails (`ImportCommand.cs`'s `resume session-end failed` arm) was privatised by nothing at all.
-  `chainScopeSessionIds` captures every chain session up front under `forcePrivate`, exactly as
-  `privateScopeSessionIds` does for routed sources, so an outcome cannot decide exposure. The tail
-  such a session uploads is still visible until the pass runs — that is irreducible for a session
-  created by an earlier, non-private run, and it is what the README already points at when it says
-  re-running with `--private` is the way to privatise history an earlier import made visible.
+### A stamp cannot narrow a session that already exists
+
+The read model has two branches for a `SessionStarted`, and they differ on exactly this column. The
+ordinary one writes
+
+```sql
+default_visibility = CASE
+    WHEN sessions.default_visibility = 'prestart' THEN @default_visibility
+    ELSE COALESCE(@default_visibility, sessions.default_visibility)
+END
+```
+
+so a non-null stamp wins. The `isImportOverlap` branch — which a re-import of an already-closed
+session takes — omits the column from its `SET` list entirely, and says so: *"every
+terminal/lifecycle column (…, `default_visibility`) is simply omitted from the SET list, leaving it
+exactly as stored."*
+
+**So the stamp is a creation-time value only.** It closes the window for a session this run creates,
+and does nothing for one it revisits. `private` is still sent on every status, because it costs
+nothing and `New` is the status it can still reach — but it is not a floor, and nothing should be
+written as though it were.
+
+**For a revisited session the closing pass is the only mechanism**, which is why membership in it
+cannot depend on an outcome. `importedSessionIds` gains a session only where this run did new work;
+`privateScopeSessionIds` covers only routed sources that attach child content on replay, which
+excludes Copilot, Kiro, Pi and OpenCode. So a routed `Partial` replay that failed, or a chain resume
+whose session-end POST failed, was privatised by nothing at all.
+
+`scopedSessionIds` closes that: every in-scope session the server already has, captured before the
+import. The bound is classification status — the scope filter runs before classification and an
+excluded source has its status flipped to `Excluded`, so `New | Partial | AlreadyLoaded` is exactly
+the selected-and-present set, and a too-short session is not written to.
+
+The tail such a session uploads is still visible until the pass runs. That is irreducible for a
+session an earlier non-private run created, and it is what the README already points at when it says
+re-running with `--private` is the way to privatise history an earlier import made visible.
 
 ## Tests
 
@@ -105,6 +133,10 @@ are each killed (20, 12, 1 and 1 failures respectively).
 
 ## Out of scope
 
+- **Privatising before the content, rather than after.** The closing pass guarantees a revisited
+  session ends up owner-only; it does not stop the tail being visible while it uploads. Closing that
+  would mean a PUT per session before replaying content — a round trip each and a reordering of the
+  run — and is a change worth making on its own terms.
 - **Subagent / child session-start payloads.** Whether a nested child stream carries a visibility of
   its own, or inherits the parent's server-side, is a separate question from the one this ticket
   names.
