@@ -38,4 +38,9 @@ public class TranscriptProjectionTests {
         await Assert.That(fromString).IsEqualTo("""{"arguments":"raw \u0022q\u0022"}""");
         await Assert.That(System.Text.Json.JsonDocument.Parse(fromString).RootElement.ValueKind).IsEqualTo(System.Text.Json.JsonValueKind.Object);
     }
+
+    [Test]
+    public async Task For_registers_codex() {
+        await Assert.That(TranscriptProjection.For("CODEX")).IsSameReferenceAs(Capacitor.Cli.Core.Harness.Codex.CodexRolloutEvents.Instance);
+    }
 }

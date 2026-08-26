@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Capacitor.Cli.Core.Harness.Claude;
+using Capacitor.Cli.Core.Harness.Codex;
 
 namespace Capacitor.Cli.Core;
 
@@ -15,6 +16,7 @@ public interface ITranscriptProjection {
 public static class TranscriptProjection {
     public static ITranscriptProjection? For(string vendor) => vendor.ToLowerInvariant() switch {
         "claude" => ClaudeTranscriptEvents.Instance,
+        "codex"  => CodexRolloutEvents.Instance,
         _        => null,
     };
 }
