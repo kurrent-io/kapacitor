@@ -9,10 +9,16 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// <summary>
 /// `LoginCommand`'s parity with the pre-re-plumb `HandleDiscoverLoginAsync`/
 /// `OAuthLoginFlow.LoginWithDiscoveryAsync`: same exit codes, same final banner line, same
-/// per-tenant token/profile publication, and no funnel events of the login path's own. Shares
-/// the OnboardingFacadeTests keys — it drives the same telemetry sink.
+/// per-tenant token/profile publication, and no funnel events of the login path's own.
 /// </summary>
-[NotInParallel(nameof(CliTelemetry) + "." + nameof(CliTelemetry.TestSink))]
+/// <remarks>
+/// Bare, not keyed: <c>CliTelemetry.TestSink</c> is a process-global static, and the tests that
+/// contaminate it do not touch it deliberately — they run a real <c>kcap setup</c>, whose funnel
+/// lands in whatever sink is installed. A key can only exclude tests that carry it, so the writers
+/// would each have to opt in; exclusivity is the only guard that covers a reader asserting the sink
+/// is empty.
+/// </remarks>
+[NotInParallel]
 public class LoginFacadeParityTests {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
