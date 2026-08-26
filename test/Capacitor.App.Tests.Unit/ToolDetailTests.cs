@@ -21,6 +21,15 @@ public class ToolDetailTests {
     }
 
     [Test]
+    public async Task Never_splits_a_surrogate_pair_at_the_cut() {
+        var line = new string('x', 78) + "😀" + new string('y', 20);
+        var detail = ToolDetail.From($$"""{"command":"{{line}}"}""");
+        await Assert.That(detail.Length).IsEqualTo(79);
+        await Assert.That(detail[^1]).IsEqualTo('…');
+        await Assert.That(char.IsHighSurrogate(detail[^2])).IsFalse();
+    }
+
+    [Test]
     public async Task Empty_when_nothing_applies() {
         await Assert.That(ToolDetail.From("""{"other":"x"}""")).IsEqualTo("");
         await Assert.That(ToolDetail.From("""{"command":"   "}""")).IsEqualTo("");

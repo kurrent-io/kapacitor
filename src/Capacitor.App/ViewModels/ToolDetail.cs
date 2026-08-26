@@ -29,6 +29,9 @@ public static class ToolDetail {
         var line = text.Trim();
         var newline = line.IndexOfAny(['\r', '\n']);
         if (newline >= 0) line = line[..newline].TrimEnd();
-        return line.Length <= MaxLength ? line : string.Concat(line.AsSpan(0, MaxLength - 1), "…");
+        if (line.Length <= MaxLength) return line;
+        var cut = MaxLength - 1;
+        if (char.IsHighSurrogate(line[cut - 1])) cut--;
+        return string.Concat(line.AsSpan(0, cut), "…");
     }
 }
