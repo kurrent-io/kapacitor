@@ -47,7 +47,12 @@ public sealed record AgentStatusDto(
     bool? HasTerminal = null,
     // The launch prompt's first non-blank line, truncated by the daemon (TitleFromPrompt) —
     // display text for session rows. Trailing + nullable: null = older daemon or no goal text.
-    string? Title = null);
+    string? Title = null,
+    // Where the daemon found the agent's own transcript (Claude's project .jsonl, Codex's
+    // rollout), link-resolved. Trailing + nullable: null is "older daemon", "not found yet",
+    // "no transcript for this runtime", or "found nothing before the agent exited" alike —
+    // a client waits, it never distinguishes them.
+    string? TranscriptPath = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(DaemonStatusDto))]

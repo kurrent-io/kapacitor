@@ -29,7 +29,7 @@ public class StatusIpcJsonTests {
         var json = JsonSerializer.Serialize(dto, StatusIpcJsonContext.Default.DaemonStatusDto);
 
         await Assert.That(json).IsEqualTo(
-            """{"daemon":{"name":"main","version":"0.12.3","server_url":"https://tenant.example.com","connection":"connected","max_agents":5,"active_agents":1,"pid":4242,"instance_id":"inst-abc","supported_vendors":null},"agents":[{"id":"agent-abc123","kind":"review-flow","vendor":"codex","repo_path":"/Users/x/dev/repo","status":"Live","flow_run_id":"flow_1","flow_role":"reviewer","requester":"github:12345","created_at":"2026-08-01T12:34:56.789Z","model":"gpt-5-codex","requester_display":"Ada Lovelace","has_terminal":null,"title":"Fix the flaky test"},{"id":"agent-b","kind":"agent","vendor":"claude","repo_path":null,"status":"Starting","flow_run_id":null,"flow_role":null,"requester":null,"created_at":"2026-08-01T12:35:00Z","model":null,"requester_display":null,"has_terminal":null,"title":null}]}""");
+            """{"daemon":{"name":"main","version":"0.12.3","server_url":"https://tenant.example.com","connection":"connected","max_agents":5,"active_agents":1,"pid":4242,"instance_id":"inst-abc","supported_vendors":null},"agents":[{"id":"agent-abc123","kind":"review-flow","vendor":"codex","repo_path":"/Users/x/dev/repo","status":"Live","flow_run_id":"flow_1","flow_role":"reviewer","requester":"github:12345","created_at":"2026-08-01T12:34:56.789Z","model":"gpt-5-codex","requester_display":"Ada Lovelace","has_terminal":null,"title":"Fix the flaky test","transcript_path":null},{"id":"agent-b","kind":"agent","vendor":"claude","repo_path":null,"status":"Starting","flow_run_id":null,"flow_role":null,"requester":null,"created_at":"2026-08-01T12:35:00Z","model":null,"requester_display":null,"has_terminal":null,"title":null,"transcript_path":null}]}""");
     }
 
     [Test]
@@ -94,5 +94,33 @@ public class StatusIpcJsonTests {
         var json = JsonSerializer.Serialize(dto, StatusIpcJsonContext.Default.AgentStatusDto);
 
         await Assert.That(json).Contains("\"has_terminal\":null");
+    }
+
+    [Test]
+    public async Task Transcript_path_serializes_last_and_null_is_emitted() {
+        var withPath = new AgentStatusDto(
+            "a1", "agent", "claude", "/repo", "Running",
+            null, null, null, new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc), null, null,
+            HasTerminal: true, Title: "t", TranscriptPath: "/home/u/.claude/projects/-repo/abc.jsonl");
+        var without = withPath with { TranscriptPath = null };
+
+        var json = JsonSerializer.Serialize(withPath, StatusIpcJsonContext.Default.AgentStatusDto);
+        var jsonNull = JsonSerializer.Serialize(without, StatusIpcJsonContext.Default.AgentStatusDto);
+
+        await Assert.That(json).EndsWith(""","has_terminal":true,"title":"t","transcript_path":"/home/u/.claude/projects/-repo/abc.jsonl"}""");
+        await Assert.That(jsonNull).EndsWith(""","has_terminal":true,"title":"t","transcript_path":null}""");
+    }
+
+    [Test]
+    public async Task Old_agent_json_without_transcript_path_deserializes_to_null() {
+        var dto = new AgentStatusDto(
+            "a1", "agent", "claude", "/repo", "Running",
+            null, null, null, DateTime.UtcNow, null, null, TranscriptPath: "/x.jsonl");
+        var json = JsonSerializer.Serialize(dto, StatusIpcJsonContext.Default.AgentStatusDto);
+        var stripped = System.Text.RegularExpressions.Regex.Replace(json, ",\"transcript_path\":[^,}]+", "");
+
+        var back = JsonSerializer.Deserialize(stripped, StatusIpcJsonContext.Default.AgentStatusDto);
+
+        await Assert.That(back!.TranscriptPath).IsNull();
     }
 }
