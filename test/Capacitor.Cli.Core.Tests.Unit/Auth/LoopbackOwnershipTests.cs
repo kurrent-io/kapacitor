@@ -365,11 +365,11 @@ public class LoopbackOwnershipTests {
     }
 
     /// <summary>Files under <c>src/</c> permitted to name <see cref="LoopbackBrowser"/>: the class
-    /// itself, the two flows that construct one, and two that only mention it in a comment or a
-    /// <c>see cref</c>. Adding a sixth is a deliberate edit here, and that is the point — it is the
-    /// one check no construction syntax can slip past.</summary>
+    /// itself, <c>OAuthLoginFlow</c> which holds both construction sites, and <c>SetupJoin</c> which
+    /// only mentions it in a <c>see cref</c>. Adding a fourth is a deliberate edit here, and that is
+    /// the point — it is the one check no construction syntax can slip past.</summary>
     static readonly string[] BrowserNamingFiles = [
-        "LoopbackBrowser.cs", "OAuthLoginFlow.cs", "SetupJoin.cs", "SetupCommand.cs",
+        "LoopbackBrowser.cs", "OAuthLoginFlow.cs", "SetupJoin.cs",
     ];
 
     // A using-alias inside a file that is ALREADY allowlisted defeats both other checks at once: the
