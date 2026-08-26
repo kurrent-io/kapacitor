@@ -112,11 +112,30 @@ public partial class LauncherPaneView : UserControl {
         flyout.ShowAt(anchor);
     }
 
-    // The combined harness+model picker (T3-style): one searchable surface, grouped by vendor,
-    // each group leading with the vendor-default row and following with the curated suggestions.
-    // Unavailable vendors stay listed but disabled (never withdrawn silently — HostedHarnessCatalog's
-    // rule), and a non-empty search always offers itself as a custom model id, so the curated
-    // catalog can drift without ever blocking a launch.
+    // Vendor tiles for the picker's icon rail — monogram glyphs with a brand-adjacent tint, not
+    // logos: we ship no vendor artwork, and a wrong-looking logo is worse than a clean tile.
+    static readonly Dictionary<string, (string Glyph, string Color)> VendorTiles = new(StringComparer.OrdinalIgnoreCase) {
+        ["claude"]      = ("✳", "#D97757"),
+        ["codex"]       = ("Cx", "#71C7AE"),
+        ["cursor"]      = ("Cu", "#F1F3F7"),
+        ["copilot"]     = ("Cp", "#8B8BF7"),
+        ["gemini"]      = ("Ge", "#7BA7F7"),
+        ["kiro"]        = ("Ki", "#B78BF7"),
+        ["opencode"]    = ("Oc", "#5BE0B3"),
+        ["antigravity"] = ("An", "#F4B860"),
+        ["pi"]          = ("Pi", "#A994FF"),
+    };
+
+    static (string Glyph, string Color) TileFor(string vendor) =>
+        VendorTiles.TryGetValue(vendor, out var tile)
+            ? tile
+            : (vendor.Length > 0 ? vendor[..1].ToUpperInvariant() : "?", "#9299AA");
+
+    // The combined harness+model picker, T3-shaped: a vendor icon rail on the left, an underlined
+    // search over the model rows on the right. No search term = the active vendor tab's models;
+    // typing searches ACROSS vendors and always offers the term verbatim as a custom model id, so
+    // the curated catalog can drift without ever blocking a launch. Unavailable vendors stay
+    // listed but disabled (never withdrawn silently — HostedHarnessCatalog's rule).
     void OnAgentChipClick(object? sender, RoutedEventArgs e) {
         if (DataContext is not HomeViewModel vm || sender is not Control anchor) return;
 
@@ -124,16 +143,48 @@ public partial class LauncherPaneView : UserControl {
         var muted = (IBrush)this.FindResource("KcapMutedBrush")!;
         var faint = (IBrush)this.FindResource("KcapFaintBrush")!;
         var accent = (IBrush)this.FindResource("KcapAccentBrush")!;
+        var raised = (IBrush)this.FindResource("KcapSurfaceRaisedBrush")!;
+        var border = (IBrush)this.FindResource("KcapBorderBrush")!;
 
-        var search = new TextBox { PlaceholderText = "Search models…", FontSize = 12.5 };
-        var rows = new StackPanel { Spacing = 2 };
-        var flyout = new Flyout {
-            Placement = PlacementMode.Bottom,
-            Content = new StackPanel {
-                Width = 330, Spacing = 8,
-                Children = { search, new ScrollViewer { MaxHeight = 380, Content = rows } },
-            },
+        var currentTab = vm.SelectedVendor;
+
+        var searchBox = new TextBox {
+            PlaceholderText = "Search models…", FontSize = 13.5,
+            Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+            VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Center,
         };
+        var underline = new Border { Height = 1, Background = border };
+        var magnifier = new Avalonia.Controls.Shapes.Path {
+            Data = Geometry.Parse("M13.5,13.5 L10.4,10.4 M11.5,6.75 A4.75,4.75 0 1 1 2,6.75 A4.75,4.75 0 1 1 11.5,6.75"),
+            Stroke = muted, StrokeThickness = 1.7, Width = 16, Height = 16,
+            Margin = new Thickness(14, 0, 6, 0), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+        };
+        var rows = new StackPanel { Spacing = 2, Margin = new Thickness(10, 8, 10, 10) };
+        var tabs = new StackPanel { Spacing = 6, Margin = new Thickness(9, 12, 9, 12) };
+
+        var searchRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*"), Height = 46 };
+        searchRow.Children.Add(magnifier);
+        Grid.SetColumn(searchBox, 1);
+        searchRow.Children.Add(searchBox);
+
+        var header = new StackPanel();
+        header.Children.Add(searchRow);
+        header.Children.Add(underline);
+
+        var right = new DockPanel();
+        DockPanel.SetDock(header, Avalonia.Controls.Dock.Top);
+        right.Children.Add(header);
+        right.Children.Add(new ScrollViewer { Height = 380, Content = rows });
+
+        var rail = new Border { BorderThickness = new Thickness(0, 0, 1, 0), BorderBrush = border, Child = tabs };
+
+        var root = new Grid { ColumnDefinitions = new ColumnDefinitions("52,*"), Width = 440 };
+        root.Children.Add(rail);
+        Grid.SetColumn(right, 1);
+        root.Children.Add(right);
+
+        var flyout = new Flyout { Placement = PlacementMode.Bottom, Content = root };
+        flyout.FlyoutPresenterClasses.Add("kcapPanel");
 
         async void Pick(string vendor, string slug) {
             await vm.ChooseHarnessAsync(vendor);
@@ -141,71 +192,120 @@ public partial class LauncherPaneView : UserControl {
             flyout.Hide();
         }
 
-        Button Row(string label, string? sub, bool enabled, bool selected, Action pick) {
-            var body = new StackPanel { Spacing = 1 };
+        TextBlock Monogram(string vendor, double size) {
+            var (glyph, color) = TileFor(vendor);
+            return new TextBlock {
+                Text = glyph, FontSize = size, FontWeight = FontWeight.Bold,
+                Foreground = new SolidColorBrush(Color.Parse(color)),
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+            };
+        }
+
+        Button Row(string vendor, string vendorLabel, string label, bool enabled, bool selected, Action pick) {
+            var sub = new StackPanel {
+                Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 6,
+                Margin = new Thickness(0, 2, 0, 0),
+            };
+            sub.Children.Add(Monogram(vendor, 10));
+            sub.Children.Add(new TextBlock { Text = vendorLabel, FontSize = 11.5, Foreground = muted });
+
+            var body = new StackPanel();
             body.Children.Add(new TextBlock {
-                Text = label, FontSize = 12.5,
+                Text = label, FontSize = 13.5, FontWeight = FontWeight.SemiBold,
                 Foreground = selected ? accent : enabled ? text : faint,
             });
-            if (sub is not null)
-                body.Children.Add(new TextBlock { Text = sub, FontSize = 10.5, Foreground = faint });
+            body.Children.Add(sub);
 
             var row = new Button {
                 Content = body, IsEnabled = enabled,
                 HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
                 HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Left,
                 Background = Brushes.Transparent, BorderThickness = new Thickness(0),
-                CornerRadius = new CornerRadius(6), Padding = new Thickness(8, 5),
+                CornerRadius = new CornerRadius(8), Padding = new Thickness(10, 7),
             };
             row.Click += (_, _) => pick();
             return row;
         }
 
-        void Rebuild() {
+        void AddVendorRows(HarnessOption option, Func<string, bool> matches, bool includeDefault) {
+            var vendor = option.Vendor;
+            var isCurrentVendor = string.Equals(vm.SelectedVendor, vendor, StringComparison.OrdinalIgnoreCase);
+            if (includeDefault)
+                rows.Children.Add(Row(
+                    vendor, option.Label, $"Default — {option.Label} chooses", option.Available,
+                    isCurrentVendor && vm.SelectedModel.Length == 0, () => Pick(vendor, "")));
+            foreach (var model in HostedHarnessCatalog.ModelChoicesFor(vendor)
+                         .Where(m => matches(m.Label) || matches(m.Slug)))
+                rows.Children.Add(Row(
+                    vendor, option.Label, model.Label, option.Available,
+                    isCurrentVendor && string.Equals(vm.SelectedModel, model.Slug, StringComparison.OrdinalIgnoreCase),
+                    () => Pick(vendor, model.Slug)));
+        }
+
+        void RebuildRows() {
             rows.Children.Clear();
-            var term = search.Text?.Trim() ?? "";
-            bool Matches(string s) => term.Length == 0 || s.Contains(term, StringComparison.OrdinalIgnoreCase);
+            var term = searchBox.Text?.Trim() ?? "";
 
-            foreach (var option in vm.Harnesses) {
-                var vendor = option.Vendor;
-                var vendorMatches = Matches(option.Label) || Matches(option.Vendor);
-                var models = HostedHarnessCatalog.ModelChoicesFor(vendor);
-                var visible = vendorMatches ? models : models.Where(m => Matches(m.Label) || Matches(m.Slug)).ToList();
-                var showDefault = vendorMatches || Matches("default");
-                if (!showDefault && visible.Count == 0) continue;
-
-                rows.Children.Add(new TextBlock {
-                    Text = $"{option.Label}  ·  {HostedHarnessCatalog.DescriptionFor(option)}",
-                    FontSize = 10, FontWeight = Avalonia.Media.FontWeight.Bold, Foreground = faint,
-                    Margin = new Thickness(8, 8, 8, 2),
-                });
-                var isCurrentVendor = string.Equals(vm.SelectedVendor, vendor, StringComparison.OrdinalIgnoreCase);
-                if (showDefault)
-                    rows.Children.Add(Row(
-                        "Default", $"whatever {option.Label} chooses", option.Available,
-                        isCurrentVendor && vm.SelectedModel.Length == 0, () => Pick(vendor, "")));
-                foreach (var model in visible)
-                    rows.Children.Add(Row(
-                        model.Label, model.Slug, option.Available,
-                        isCurrentVendor && string.Equals(vm.SelectedModel, model.Slug, StringComparison.OrdinalIgnoreCase),
-                        () => Pick(vendor, model.Slug)));
+            if (term.Length == 0) {
+                var option = vm.Harnesses.FirstOrDefault(
+                    o => string.Equals(o.Vendor, currentTab, StringComparison.OrdinalIgnoreCase));
+                if (option is not null) AddVendorRows(option, _ => true, includeDefault: true);
+                return;
             }
 
-            // The escape hatch: whatever was typed is offered verbatim for the CURRENT vendor,
-            // unless it already matched a curated slug above.
-            if (term.Length > 0 && !vm.Harnesses.SelectMany(o => HostedHarnessCatalog.ModelChoicesFor(o.Vendor))
+            bool Matches(string s) => s.Contains(term, StringComparison.OrdinalIgnoreCase);
+            foreach (var option in vm.Harnesses) {
+                var vendorMatches = Matches(option.Label) || Matches(option.Vendor);
+                AddVendorRows(
+                    option,
+                    vendorMatches ? _ => true : Matches,
+                    includeDefault: vendorMatches || Matches("default"));
+            }
+
+            // The escape hatch: whatever was typed, offered verbatim for the active vendor tab.
+            if (!vm.Harnesses.SelectMany(o => HostedHarnessCatalog.ModelChoicesFor(o.Vendor))
                     .Any(m => string.Equals(m.Slug, term, StringComparison.OrdinalIgnoreCase))) {
-                var current = HostedHarnessCatalog.LabelFor(vm.Harnesses, vm.SelectedVendor);
+                var tabOption = vm.Harnesses.FirstOrDefault(
+                    o => string.Equals(o.Vendor, currentTab, StringComparison.OrdinalIgnoreCase));
+                var tabLabel = tabOption?.Label ?? currentTab;
                 rows.Children.Add(Row(
-                    $"Use “{term}”", $"as the model id for {current}", enabled: true,
-                    selected: false, () => Pick(vm.SelectedVendor, term)));
+                    currentTab, tabLabel, $"Use “{term}”", tabOption?.Available ?? true,
+                    selected: false, () => Pick(currentTab, term)));
             }
         }
 
-        search.TextChanged += (_, _) => Rebuild();
-        Rebuild();
+        void RebuildTabs() {
+            tabs.Children.Clear();
+            foreach (var option in vm.Harnesses) {
+                var vendor = option.Vendor;
+                var active = string.Equals(vendor, currentTab, StringComparison.OrdinalIgnoreCase);
+                var tile = new Button {
+                    Content = Monogram(vendor, 14), IsEnabled = option.Available,
+                    Width = 34, Height = 34, Padding = new Thickness(0),
+                    HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+                    VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                    Background = active ? raised : Brushes.Transparent,
+                    BorderBrush = active ? border : Brushes.Transparent, BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(9),
+                    Opacity = option.Available ? 1 : 0.4,
+                };
+                ToolTip.SetTip(tile, $"{option.Label} — {HostedHarnessCatalog.DescriptionFor(option)}");
+                tile.Click += (_, _) => {
+                    currentTab = vendor;
+                    RebuildTabs();
+                    RebuildRows();
+                };
+                tabs.Children.Add(tile);
+            }
+        }
+
+        searchBox.TextChanged += (_, _) => RebuildRows();
+        searchBox.GotFocus += (_, _) => underline.Background = accent;
+        searchBox.LostFocus += (_, _) => underline.Background = border;
+        RebuildTabs();
+        RebuildRows();
         flyout.ShowAt(anchor);
-        search.Focus();
+        searchBox.Focus();
     }
 }
 

@@ -24,5 +24,14 @@
     </Application.Resources>
     <Application.Styles>
         <FluentTheme />
+        <!-- Popup panels drawn on our tokens: the flyout presenter IS the panel (no inner Border
+             fighting the theme's own chrome). Opted into per flyout via FlyoutPresenterClasses. -->
+        <Style Selector="FlyoutPresenter.kcapPanel">
+            <Setter Property="Background" Value="{StaticResource KcapSurfaceBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource KcapBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="Padding" Value="0" />
+        </Style>
     </Application.Styles>
 </Application>
