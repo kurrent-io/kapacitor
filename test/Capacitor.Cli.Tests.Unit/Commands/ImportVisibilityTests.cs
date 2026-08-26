@@ -21,6 +21,10 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// Topology-specific coverage for the <c>default_visibility</c> stamp on historical import and
 /// the <c>autoSkipExclusions</c> non-interactive guarantee.
 ///
+/// <para>Pooled: the orchestrator-level rows run a real <c>HandleImport</c>, whose repo resolution
+/// spawns git, and at TUnit's default width those hold slots long enough to starve this assembly's
+/// timing-sensitive tests.</para>
+///
 /// <para>The rule the rows below pin, one for all nine sources
 /// (<c>ImportContext.VisibilityStampFor</c>): <c>ForcePrivate</c> stamps <c>private</c> on every
 /// status, and the Step-3 default lands on <c>New</c> alone. Reasoning in
@@ -31,6 +35,7 @@ namespace Capacitor.Cli.Tests.Unit.Commands;
 /// testing note ("driven through the source/orchestrator entry point, not builders in
 /// isolation").
 /// </summary>
+[ParallelLimiter<SubprocessLimit>]
 public class ImportVisibilityTests : IDisposable {
     [TempConfigRoot] public required TempConfigRoot Config { get; init; }
 
