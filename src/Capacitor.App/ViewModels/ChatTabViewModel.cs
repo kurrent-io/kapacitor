@@ -33,12 +33,17 @@ public sealed class ChatTabViewModel : ReactiveObject {
     readonly Dictionary<string, ToolCallItem> _pendingTools = new(StringComparer.Ordinal);
     readonly ConcurrentDictionary<string, byte> _loggedFailures = new(StringComparer.Ordinal);
 
+    /// The tail and the generation it belongs to, taken as one reference: reading the two
+    /// separately lets a switch land between them and tag a read of the old file with the new
+    /// generation, which Apply's guard would then wave through onto the freshly cleared list.
+    sealed record TailLease(JsonlTail Tail, int Generation);
+
     int _generation;
     int _readInFlight;
     string? _path;
-    JsonlTail? _tail;
+    volatile TailLease? _lease;
     ITimer? _timer;
-    Task? _pendingRead;
+    volatile Task? _pendingRead;
 
     public IAvaloniaReadOnlyList<ChatItemViewModel> Items => _items;
 
@@ -46,6 +51,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
     public ChatTabPhase Phase {
         get => _phase;
         private set {
+            if (_phase == value) return;
             this.RaiseAndSetIfChanged(ref _phase, value);
             this.RaisePropertyChanged(nameof(PhaseNote));
         }
@@ -58,6 +64,9 @@ public sealed class ChatTabViewModel : ReactiveObject {
         _                        => "",
     };
 
+    /// Test-only seam: the read in flight, or the last one started. A switch that loses the
+    /// in-flight CAS starts no read of its own, so this still points at the previous file's read —
+    /// await that, advance one tick, then await again to see the new path's first rows.
     internal Task? PendingReadForTesting => _pendingRead;
 
     public ChatTabViewModel(
@@ -93,19 +102,21 @@ public sealed class ChatTabViewModel : ReactiveObject {
     }
 
     void SwitchPath(string path) {
-        Interlocked.Increment(ref _generation);
         _items.Clear();
         _pendingTools.Clear();
         _path = path;
-        Volatile.Write(ref _tail, new JsonlTail(path));
+        _lease = new TailLease(new JsonlTail(path), Interlocked.Increment(ref _generation));
         Phase = ChatTabPhase.Waiting;
+        // A switch re-announces the note even when it lands on the phase already showing: the rows
+        // are gone, so the view has to re-read what stands in for them.
+        this.RaisePropertyChanged(nameof(PhaseNote));
         OnTick();
     }
 
     void OnTick() {
-        if (Volatile.Read(ref _tail) is not { } tail || _projection is not { } projection) return;
+        if (_lease is not { } lease || _projection is not { } projection) return;
         if (Interlocked.CompareExchange(ref _readInFlight, 1, 0) != 0) return;
-        _pendingRead = ReadAndApplyAsync(tail, projection, Volatile.Read(ref _generation));
+        _pendingRead = ReadAndApplyAsync(lease.Tail, projection, lease.Generation);
     }
 
     async Task ReadAndApplyAsync(JsonlTail tail, ITranscriptProjection projection, int generation) {
@@ -177,6 +188,7 @@ public sealed class ChatTabViewModel : ReactiveObject {
 
     public Task TeardownAsync() {
         Interlocked.Increment(ref _generation);
+        _lease = null;
         _timer?.Dispose();
         _timer = null;
         _disposables.Dispose();

@@ -210,7 +210,10 @@ public class ChatTabViewModelTests {
         });
     }
 
-    /// Thread identity, so deliberately not under WithImmediateRxScheduler.
+    /// Thread identity, so deliberately not under WithImmediateRxScheduler. PhaseNote and the FIRST
+    /// notification are what make it discriminating: that one is raised by the path switch, on
+    /// whichever thread delivered the dto, while every later one comes from the apply, which hops
+    /// to the UI thread on its own and would pass with no ObserveOn at all.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task A_dto_pushed_from_a_pool_thread_lands_on_the_ui_thread() {
@@ -218,7 +221,10 @@ public class ChatTabViewModelTests {
             var h = Claude();
             var path = Tmp.CreateFile("t.jsonl", [UserLine]);
             bool? phaseChangedOnUi = null;
-            h.Chat.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(ChatTabViewModel.Phase)) phaseChangedOnUi = Dispatcher.UIThread.CheckAccess(); };
+            h.Chat.PropertyChanged += (_, e) => {
+                if (e.PropertyName == nameof(ChatTabViewModel.PhaseNote))
+                    phaseChangedOnUi ??= Dispatcher.UIThread.CheckAccess();
+            };
 
             await Task.Run(() => h.Daemon.Agents.AddOrUpdate(Dto(path)));
             await WaitUntilAsync(() => h.Chat.Phase == ChatTabPhase.Reading, what: "reading");
