@@ -565,6 +565,70 @@ public class ImportVisibilityTests : IDisposable {
         await Assert.That(ImportCommand.ExplicitVisibility(false, false)).IsNull();
     }
 
+    [Test]
+    public async Task HandleImport_forcePrivate_does_not_upload_into_a_session_it_could_not_make_private() {
+        // The failure path the ordering exists for. The pre-import write is best-effort, so awaiting it
+        // proves nothing; a session it could not narrow must be dropped rather than published into.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"last_line_number":2}"""));
+        StubAllHookEndpoints();
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(500));
+
+        var projectsDir = Path.Combine(_tempDir, "claude-projects-floorfail");
+        WriteClaudeSession(projectsDir, "vis-floor-failed");
+
+        ImportCommand.ImportRunOutcome? outcome = null;
+
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            filterCwd: null,
+            minLines: 1,
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
+            scope: new ImportScope.All(),
+            skipConfirmation: true,
+            forcePrivate: true,
+            onFinished: o => outcome = o
+        );
+
+        await Assert.That(exitCode).IsEqualTo(0);
+
+        // Nothing was uploaded: the transcript endpoint was never reached for this session.
+        await Assert.That(_server.LogEntries.Where(e => e.RequestMessage.Path == "/hooks/transcript"))
+                    .IsEmpty()
+                    .Because("publishing into a session that is still public is worse than not importing it");
+
+        // And the run says so, rather than reporting a clean import of nothing.
+        await Assert.That(outcome!.VisibilityFailures).IsGreaterThanOrEqualTo(1);
+        await Assert.That(outcome.AnythingFailed).IsTrue();
+    }
+
+    // Bare, not keyed: the error capture is process-global, so a concurrent writer would land in it.
+    [Test, NotInParallel]
+    public async Task HandleImport_forcePrivate_reports_a_session_it_had_to_skip() {
+        // Silently dropping it would read as a smaller history rather than as a refusal.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"last_line_number":2}"""));
+        StubAllHookEndpoints();
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(500));
+
+        var projectsDir = Path.Combine(_tempDir, "claude-projects-floorsay");
+        WriteClaudeSession(projectsDir, "vis-floor-said");
+
+        using var errors = ConsoleOutput.StartErrorCapture();
+
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            filterCwd: null,
+            minLines: 1,
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
+            scope: new ImportScope.All(),
+            skipConfirmation: true,
+            forcePrivate: true
+        );
+
+        await Assert.That(errors.GetCapturedError()).Contains("skipping vis-floor-said");
+    }
+
     // =====================================================================
     // Section C — routed sources, direct-logic (ImportSessionAsync + WireMock).
     // =====================================================================

@@ -90,6 +90,29 @@ public class RoutedPrivatizeMembershipTests : IDisposable {
         Regex.IsMatch(text, $@"(?m)^\s*{Regex.Escape(label)}\s+{value}\s*$");
 
     [Test, NotInParallel]
+    public async Task a_routed_replay_is_not_imported_when_it_could_not_be_made_private_first() {
+        // The routed half of the fail-closed preflight. The probe is an existing session, so it is
+        // narrowed before any content moves; when that write is lost it must be dropped from the run
+        // rather than replayed into while still carrying its old audience.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(500));
+
+        var stdout = await CaptureStdoutAsync(async () => {
+            await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+                filterCwd: null,
+                minLines: 0,
+                sources: [new ChildContentOutsidePrivateScopeSource()],
+                scope: new ImportScope.All(),
+                skipConfirmation: true,
+                forcePrivate: true
+            );
+        });
+
+        await Assert.That(stdout).DoesNotContain($"Loading {ProbeSessionId}")
+                    .Because("its import must not run at all once the floor could not be established");
+    }
+
+    [Test, NotInParallel]
     public async Task a_skipped_replay_outside_the_child_content_scope_is_still_privatized() {
         _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
             .RespondWith(Response.Create().WithStatusCode(200));

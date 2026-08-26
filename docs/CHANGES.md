@@ -37,7 +37,11 @@ present set and a too-short session is left alone.
 up owner-only; it does not stop what this run uploads into it being readable meanwhile, which is the
 window the defect is named after. So the in-scope `Partial` and `AlreadyLoaded` sessions are narrowed
 ahead of both import phases — `New` is excluded, having nothing to narrow and no row to name — and the
-closing pass becomes recovery for a session created during the run plus a retry for any write lost.
+closing pass becomes recovery for a session created during the run.
+
+That pass is fail-closed per session: the write logs and swallows its failures, so a session it could
+not narrow is dropped from `chains` and `routed` and counted as a failure, rather than replayed into
+while still carrying the audience the user just excluded.
 
 The 2026-07-20 unified-import spec scoped this expansion out while already arguing that post-hoc
 privatisation is unsafe for a session that fails mid-stream; this is that argument applied to the

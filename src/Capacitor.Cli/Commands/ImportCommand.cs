@@ -1411,8 +1411,12 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         // make it private FIRST. New sessions are absent on purpose: they do not exist yet, so there
         // is nothing to narrow and their creation stamp is the mechanism that works.
         //
-        // The closing pass stays, as recovery for whatever this misses — a session created during the
-        // run, and any write lost here.
+        // The closing pass stays, as recovery for a session created during the run.
+        //
+        // <b>Fail-closed per session.</b> The write is best-effort — it logs and swallows — so awaiting
+        // it does not establish that anything is private. A session whose write was lost is dropped
+        // from this run instead: uploading into it would publish new content to exactly the audience
+        // the user just excluded, which is worse than not importing it at all.
         if (forcePrivate) {
             var existing = classifications
                 .Where(c => c.Status is ClassificationStatus.Partial
@@ -1423,7 +1427,28 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
 
             if (existing.Count > 0) {
                 display.BeginPhase("Making existing sessions private");
-                await SetVisibilityNoneForAll(httpClient, baseUrl, existing);
+
+                var unprivatized = await SetVisibilityNoneForAll(httpClient, baseUrl, existing);
+
+                if (unprivatized.Count > 0) {
+                    var blocked = unprivatized.ToHashSet(StringComparer.Ordinal);
+
+                    visibilityFailures += blocked.Count;
+
+                    chains = [
+                        .. chains
+                            .Select(chain => chain.Where(c => !blocked.Contains(c.SessionId)).ToList())
+                            .Where(chain => chain.Count > 0)
+                    ];
+
+                    routed = [.. routed.Where(c => !blocked.Contains(c.SessionId))];
+
+                    foreach (var sessionId in blocked) {
+                        await Console.Error.WriteLineAsync(
+                            $"  ! skipping {sessionId}: could not make it private first, and importing "
+                          + "into it would publish new content to the audience it already has");
+                    }
+                }
             }
         }
 
@@ -1780,8 +1805,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
                 display.BeginPhase(forcePrivate
                     ? "Marking imported sessions private"
                     : "Sharing imported sessions with your workspace");
-                visibilityFailures = await SetVisibilityForAll(
-                    httpClient, baseUrl, [.. touched], explicitVisibility);
+                visibilityFailures += (await SetVisibilityForAll(
+                    httpClient, baseUrl, [.. touched], explicitVisibility)).Count;
             }
         }
 
@@ -3172,7 +3197,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     }
 
     /// <summary>PUT visibility=none for every imported session id.</summary>
-    internal static Task<int> SetVisibilityNoneForAll(
+    internal static Task<IReadOnlyList<string>> SetVisibilityNoneForAll(
             HttpClient            httpClient,
             string                baseUrl,
             IReadOnlyList<string> sessionIds
@@ -3180,17 +3205,18 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
 
     /// <summary>
     /// Failures are logged inline (one line per session) but never throw — the import already
-    /// succeeded; users can re-run `kcap hide` or `kcap share` for any that failed. <b>Returns how
-    /// many were lost</b>, because a caller reporting the run cannot call it a success while a session
-    /// the user chose a visibility for still carries the old one.
+    /// succeeded; users can re-run `kcap hide` or `kcap share` for any that failed. <b>Returns the ids
+    /// it could not write</b>, because a caller cannot report the run a success while a session the
+    /// user chose a visibility for still carries the old one — and a caller writing BEFORE the content
+    /// has to know which sessions it must now leave alone.
     /// </summary>
-    internal static async Task<int> SetVisibilityForAll(
+    internal static async Task<IReadOnlyList<string>> SetVisibilityForAll(
             HttpClient            httpClient,
             string                baseUrl,
             IReadOnlyList<string> sessionIds,
             string                visibility
         ) {
-        var lost = 0;
+        var lost = new List<string>();
 
         foreach (var sessionId in sessionIds) {
             var       payload = new JsonObject { ["visibility"] = visibility };
@@ -3203,14 +3229,14 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
                 );
 
                 if (!resp.IsSuccessStatusCode) {
-                    lost++;
+                    lost.Add(sessionId);
 
                     await Console.Error.WriteLineAsync(
                         $"  ! visibility={visibility} failed for {sessionId}: HTTP {(int)resp.StatusCode}"
                     );
                 }
             } catch (Exception ex) {
-                lost++;
+                lost.Add(sessionId);
 
                 await Console.Error.WriteLineAsync(
                     $"  ! visibility={visibility} failed for {sessionId}: {ex.Message}"

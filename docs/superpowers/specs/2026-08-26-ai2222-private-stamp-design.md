@@ -125,9 +125,16 @@ pass over the in-scope `Partial` and `AlreadyLoaded` sessions, ahead of both imp
 deliberately absent — it does not exist yet, so there is nothing to narrow and a write would name a
 session the server has never seen; its creation stamp is the mechanism that works there.
 
-The closing pass stays, and its role is now precise: recovery for a session created during the run,
-and a retry for any write this pass lost. A revisited session is therefore written twice, which is
-why the tests assert *which* sessions were privatised rather than how many writes it took.
+**And it is fail-closed per session.** The write is best-effort — it logs each failure and swallows it
+— so awaiting the pass establishes nothing on its own. A session whose write was lost is dropped from
+the run: from `chains` and from `routed`, with a line naming it, and counted into the run's
+`VisibilityFailures`. Uploading into it would publish new content to exactly the audience the user
+just excluded, which is worse than not importing it at all. Per session rather than aborting, so one
+lost write does not cost the rest of the history.
+
+The closing pass stays, and its role is now precise: recovery for a session created during the run.
+A revisited session is therefore written twice, which is why the tests assert *which* sessions were
+privatised rather than how many writes it took.
 
 **And it leaves `--private` with nothing for the in-scope capture to do.** The shared stop's
 `scopedSessionIds` (AI-2231) exists because sharing has no other mechanism: no pass ahead of it —
