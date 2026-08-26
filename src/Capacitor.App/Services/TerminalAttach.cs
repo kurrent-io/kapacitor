@@ -34,6 +34,11 @@ public sealed class CoreTerminalAttachClient(AgentAttachClient inner) : ITermina
 /// describe the daemon status subscription (spec naming note).
 public enum TerminalSessionPhase { Resolving, NoTerminal, NotFound, Connecting, Attached, Detached, Exited, Failed, SessionEnded }
 
+/// What the composer can do right now, folding the send gate into the terminal state so a hint
+/// built from it is true in every window — including the ones where State still reads Attached
+/// while a reattach or detach is under way.
+public enum SendAvailability { Ready, Sending, Transitioning, ReadOnly, Connecting, Reattach, Ended, NoTerminal }
+
 public sealed record TerminalSessionState(TerminalSessionPhase Phase, string? Detail = null, bool ReadOnly = false, int? ExitCode = null) {
     public static readonly TerminalSessionState Resolving = new(TerminalSessionPhase.Resolving);
     public static TerminalSessionState NoTerminal(string? familyNote) => new(TerminalSessionPhase.NoTerminal, familyNote);

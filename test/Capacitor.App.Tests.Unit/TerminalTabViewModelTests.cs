@@ -252,6 +252,14 @@ public class TerminalTabViewModelTests {
             await Task.WhenAll(t1, t2);
 
             await Assert.That(factory.Created.Count).IsEqualTo(before + 1);
+
+            // The losing call changed neither the token nor the gate; the winner opens on Attached.
+            var winner = factory.Created[^1];
+            var token = vm.OpeningTokenForTesting;
+            await Assert.That(vm.SendGateOpenForTesting).IsFalse();
+            await winner.TriggerAttached([]);
+            await Assert.That(vm.OpeningTokenForTesting).IsEqualTo(token);
+            await Assert.That(vm.CanAcceptText).IsTrue();
         });
     }
 

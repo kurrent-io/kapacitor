@@ -91,7 +91,12 @@ sealed class FakeTerminalAttachClient : ITerminalAttachClient {
             ? throw new ObjectDisposedException(nameof(FakeTerminalAttachClient))
             : _onOutput(bytes, _lifetime?.Token ?? CancellationToken.None);
 
+    /// When set, SendInputAsync faults instead of recording -- the transport-loss shape a
+    /// composer delivery has to contain without touching VM state.
+    public Exception? ThrowOnSendInput;
+
     public Task SendInputAsync(byte[] bytes) {
+        if (ThrowOnSendInput is { } ex) return Task.FromException(ex);
         SentInput.Add(bytes);
         return Task.CompletedTask;
     }
