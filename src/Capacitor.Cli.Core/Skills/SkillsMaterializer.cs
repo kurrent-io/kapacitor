@@ -1,21 +1,16 @@
 using System.Security.Cryptography;
 using System.Text;
-using Capacitor.Cli.Core;
-using Capacitor.Cli.Core.Skills;
 
-namespace Capacitor.Cli.Harness.Claude;
+namespace Capacitor.Cli.Core.Skills;
 
 /// <summary>
-/// The Claude half of skills materialization: where skills live for this harness, how a slug maps
-/// to a directory, and the write/prune/drift file operations. The vendor-neutral snapshot models
-/// and reconciliation planner stay in <c>Cli.Core/Skills</c>.
+/// The file half of skills materialization, harness-neutral: how a slug maps to a directory under
+/// a given skills root, and the write/prune/drift operations. Which roots exist and which vendor
+/// each fetches as is the target catalog's business.
 /// </summary>
-static class ClaudeSkillsMaterializer {
-    public static string SkillsRoot() =>
-        Path.Combine(PathHelpers.HomeDirectory, ".claude", "skills");
-
+public static class SkillsMaterializer {
     // The server's slug is already doc-id-anchored and unique; the kcap- prefix namespaces the
-    // materialized set inside the shared user-level skills root.
+    // materialized set inside a shared skills root.
     public static string SkillDirFor(string root, string slug) => Path.Combine(root, "kcap-" + slug);
 
     public static string SkillFileFor(string dir) => Path.Combine(dir, "SKILL.md");

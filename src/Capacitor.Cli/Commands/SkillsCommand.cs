@@ -1,28 +1,37 @@
 using System.Net;
 using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Harness.Antigravity;
+using Capacitor.Cli.Core.Harness.Kiro;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Skills;
-using Capacitor.Cli.Harness.Claude;
 
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
 /// <c>kcap skills sync</c> — materializes the server's versioned skill-doc snapshot for this repo
-/// into the harness's user-level skills root (Claude, the one harness with a skills mechanism).
-/// Server-canonical and centrally revocable: files land under a kcap namespace, a manifest in the
-/// kcap config root records every path kcap owns, and pruning walks the manifest — never the
-/// skills root — so user-authored skills are untouchable. Nothing is ever written into a repo.
+/// into every present harness's skills tree. Server-canonical and centrally revocable: files land
+/// under a kcap namespace, a per-(repo, target) manifest in the kcap config root records every
+/// path kcap owns, and pruning walks the manifest — never a skills root — so user-authored skills
+/// are untouchable. Nothing is ever written into a repo.
 /// </summary>
 class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
-    const string Vendor = "claude";
-
-    // The background refresh keys off the manifest's synced_at, so a burst of session starts
-    // costs one network round-trip per interval, not one per session.
+    // The background refresh keys off each manifest's synced_at, so a burst of session starts
+    // costs one network round-trip per interval per target, not one per session.
     static readonly TimeSpan AutoSyncInterval = TimeSpan.FromHours(6);
 
+    /// <summary>The harness trees skills materialize into — the same set the packaged skills
+    /// installer serves. A null vendor is a SHARED tree (several harnesses read it): its snapshot
+    /// is fetched vendor-less, so unknown-excludes keeps vendor-restricted docs out of it — those
+    /// reach their harness through a vendored tree instead.</summary>
+    internal static IReadOnlyList<SkillsTarget> Targets() => [
+        new("claude", Path.Combine(PathHelpers.HomeDirectory, ".claude", "skills"), "claude"),
+        new("agents", AgentsPaths.UserSkillsDir, null),
+        new("kiro",   KiroPaths.SkillsDir(), "kiro"),
+        new("gemini", AntigravityPaths.SkillsDir(), null),   // shared: Gemini CLI + Antigravity
+    ];
+
     public async Task<int> HandleSync(bool dryRun, bool auto = false) {
-        void Info(string line) { if (!auto) Console.WriteLine(line); }
         var baseUrl = profiles.Resolution.ServerUrl!;
         var cwd = Environment.CurrentDirectory;
 
@@ -37,10 +46,28 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
         }
         var hash = RepoHashHelper.ComputeRepoHash(repo.Owner, repo.RepoName);
 
-        var manifestName = Path.Combine("skills", hash, Vendor, "manifest.json");
+        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
+        var exitCode = 0;
+        foreach (var target in Targets()) {
+            var manifestName = Path.Combine("skills", hash, target.Key, "manifest.json");
+            // Adopt a target only while its harness is present; a target we already own keeps
+            // reconciling (revocation must reach it) even if the harness was since removed.
+            if (!File.Exists(config.Path(manifestName))
+                    && !Directory.Exists(Path.GetDirectoryName(target.Root)!))
+                continue;
+            exitCode = Math.Max(exitCode,
+                await SyncTargetAsync(client, baseUrl, hash, target, manifestName, dryRun, auto));
+        }
+        return exitCode;
+    }
+
+    async Task<int> SyncTargetAsync(
+            HttpClient client, string baseUrl, string hash, SkillsTarget target,
+            string manifestName, bool dryRun, bool auto) {
+        void Info(string line) { if (!auto) Console.WriteLine(line); }
         var manifestPath = config.Path(manifestName);
 
-        // One sync per (repo, harness) at a time, machine-wide: a burst of session starts must
+        // One sync per (repo, target) at a time, machine-wide: a burst of session starts must
         // collapse to ONE refresh — the throttle alone cannot do that, since every child of the
         // burst reads the same stale synced_at before the winner stamps it. The manifest is
         // re-read UNDER the lock, so waiters see the winner's stamp. In auto mode contention IS
@@ -50,7 +77,7 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
             syncLock = config.AcquireLock(manifestName, auto ? TimeSpan.FromMilliseconds(1) : null);
         } catch (TimeoutException) {
             if (auto) return 0;
-            await Console.Error.WriteLineAsync("Another kcap skills sync is already running for this repo.");
+            await Console.Error.WriteLineAsync($"Another kcap skills sync is already running for this repo ({target.Key}).");
             return 1;
         }
         using var heldSyncLock = syncLock;
@@ -61,11 +88,11 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
         // Metadata alone cannot prove a skill is served: a deleted or hand-edited SKILL.md must be
         // re-materialized, so local drift forfeits the conditional request — a 304 would otherwise
         // report "up to date" over a missing file forever.
-        var drifted = (manifest?.Skills ?? []).Where(ClaudeSkillsMaterializer.HasDrifted)
+        var drifted = (manifest?.Skills ?? []).Where(SkillsMaterializer.HasDrifted)
             .Select(e => e.DocId).ToHashSet();
 
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
-        var url = $"{baseUrl}/api/repositories/{hash}/skills?vendor={Vendor}"
+        var url = $"{baseUrl}/api/repositories/{hash}/skills"
+                + (target.Vendor is { } vendor ? $"?vendor={vendor}" : "?")
                 + (HostPlatform.Normalized is { } platform ? $"&platform={platform}" : "");
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         if (drifted.Count == 0 && manifest?.Etag is { Length: > 0 } etag)
@@ -81,7 +108,7 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
 
         if (resp.StatusCode == HttpStatusCode.NotModified) {
             if (!dryRun) SaveManifest(manifestPath, manifest! with { SyncedAt = DateTimeOffset.UtcNow });
-            Info($"Skills up to date ({manifest?.Skills?.Length ?? 0} materialized).");
+            Info($"[{target.Key}] skills up to date ({manifest?.Skills?.Length ?? 0} materialized).");
             return 0;
         }
         if (await HttpClientExtensions.HandleUnauthorizedAsync(resp)) return 1;
@@ -118,25 +145,25 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
             return 1;
         }
         var plan   = SkillsSyncPlanner.Plan(manifest, snapshot);
-        var root   = ClaudeSkillsMaterializer.SkillsRoot();
+        var root   = target.Root;
         var writes = plan.Writes.Concat(plan.Unchanged.Where(u => drifted.Contains(u.DocId))).ToList();
 
         if (writes.Count == 0 && plan.Prunes.Count == 0) {
             if (!dryRun) SaveManifest(manifestPath, BuildManifest(dto.Etag, snapshot, root));
-            Info($"Skills up to date ({snapshot.Length} materialized).");
+            Info($"[{target.Key}] skills up to date ({snapshot.Length} materialized).");
             return 0;
         }
 
         foreach (var w in writes)
-            Info($"{(dryRun ? "would write" : "write"),-12} {ClaudeSkillsMaterializer.SkillDirFor(root, w.Slug)} (v{w.Version})");
+            Info($"{(dryRun ? "would write" : "write"),-12} {SkillsMaterializer.SkillDirFor(root, w.Slug)} (v{w.Version})");
         foreach (var p in plan.Prunes)
             Info($"{(dryRun ? "would prune" : "prune"),-12} {p.Path}");
         if (dryRun) return 0;
 
-        foreach (var w in writes) ClaudeSkillsMaterializer.Write(root, w);
-        foreach (var p in plan.Prunes) ClaudeSkillsMaterializer.Prune(root, p);
+        foreach (var w in writes) SkillsMaterializer.Write(root, w);
+        foreach (var p in plan.Prunes) SkillsMaterializer.Prune(root, p);
         SaveManifest(manifestPath, BuildManifest(dto.Etag, snapshot, root));
-        Info($"Synced {writes.Count} skill(s), pruned {plan.Prunes.Count}; {snapshot.Length} materialized.");
+        Info($"[{target.Key}] synced {writes.Count} skill(s), pruned {plan.Prunes.Count}; {snapshot.Length} materialized.");
         return 0;
     }
 
@@ -150,8 +177,8 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
         Etag = etag, SyncedAt = DateTimeOffset.UtcNow,
         Skills = [.. snapshot.Select(s => new SkillsManifestEntry {
             DocId = s.DocId, Slug = s.Slug, Version = s.Version, ContentHash = s.ContentHash,
-            Path = ClaudeSkillsMaterializer.SkillDirFor(root, s.Slug),
-            FileHash = ClaudeSkillsMaterializer.FileHash(SkillsSyncPlanner.RenderSkillFile(s)),
+            Path = SkillsMaterializer.SkillDirFor(root, s.Slug),
+            FileHash = SkillsMaterializer.FileHash(SkillsSyncPlanner.RenderSkillFile(s)),
         })],
     };
 

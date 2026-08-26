@@ -38,6 +38,11 @@ public sealed record SkillsManifestEntry {
     [JsonPropertyName("file_hash")]    public string?         FileHash    { get; init; }
 }
 
+/// <summary>One harness tree skills materialize into. A null <see cref="Vendor"/> marks a tree
+/// several harnesses read: the snapshot is fetched WITHOUT a vendor, so unknown-excludes keeps
+/// every vendor-restricted doc out of it — such docs reach their harness via a vendored tree.</summary>
+public sealed record SkillsTarget(string Key, string Root, string? Vendor);
+
 public sealed record SkillsSyncPlan(
     IReadOnlyList<SkillSnapshotItem>   Writes,
     IReadOnlyList<SkillsManifestEntry> Prunes,

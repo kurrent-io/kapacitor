@@ -39,3 +39,22 @@ public class SkillsAutoSyncTests {
         }
     }
 }
+
+public class SkillsTargetCatalogTests {
+    [Test]
+    public async Task Shared_trees_carry_no_vendor_and_vendored_trees_match_their_harness() {
+        var targets = SkillsCommand.Targets().ToDictionary(t => t.Key);
+        await Assert.That(targets.Keys.Order().ToArray())
+            .IsEquivalentTo(new[] { "agents", "claude", "gemini", "kiro" });
+
+        await Assert.That(targets["claude"].Vendor).IsEqualTo("claude");
+        await Assert.That(targets["kiro"].Vendor).IsEqualTo("kiro");
+        // Several harnesses read these trees, so a vendor-restricted doc must never land in
+        // them: no vendor ⇒ unknown-excludes drops every vendor-restricted doc server-side.
+        await Assert.That(targets["agents"].Vendor).IsNull();
+        await Assert.That(targets["gemini"].Vendor).IsNull();
+
+        foreach (var t in targets.Values)
+            await Assert.That(Path.GetFileName(t.Root)).IsEqualTo("skills");
+    }
+}
