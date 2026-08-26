@@ -154,17 +154,22 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
         }
         try {
             manifest = JsonSerializer.Deserialize(text, CapacitorJsonContext.Default.SkillsManifest);
-            return true;
         } catch (JsonException) {
-            try {
-                File.Move(path, path + ".corrupt", overwrite: true);
-            } catch (Exception ex) {
-                Console.Error.WriteLine($"Corrupt skills manifest could not be preserved ({ex.Message}); aborting sync.");
-                return false;
-            }
-            Console.Error.WriteLine($"Warning: corrupt skills manifest moved aside ({path}.corrupt); re-syncing from scratch.");
-            return true;
+            manifest = null;
         }
+        // A parseable `null` or a missing skills collection is no ledger either — under a stored
+        // etag it would 304 forever with zero owned paths, stranding every prior directory. Same
+        // recovery route as unparseable content.
+        if (manifest?.Skills is not null) return true;
+        manifest = null;
+        try {
+            File.Move(path, path + ".corrupt", overwrite: true);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"Corrupt skills manifest could not be preserved ({ex.Message}); aborting sync.");
+            return false;
+        }
+        Console.Error.WriteLine($"Warning: corrupt skills manifest moved aside ({path}.corrupt); re-syncing from scratch.");
+        return true;
     }
 
     static void SaveManifest(string path, SkillsManifest manifest) {
