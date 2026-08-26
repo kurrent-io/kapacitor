@@ -49,6 +49,9 @@ internal static class SessionTranscriptLocator {
     /// session id, or null when no candidate matches yet. Best-effort: unreadable or
     /// malformed candidates are skipped, never thrown.
     /// </summary>
+    public static string? TryLocate(string projectDir, string worktreePath, DateTime spawnedAtUtc, ISet<string>? ruledOut = null) =>
+        TryLocateWinner(projectDir, worktreePath, spawnedAtUtc, ruledOut)?.SessionId;
+
     /// <param name="ruledOut">
     /// Optional set of file paths already confirmed to belong to another session (or to not be a
     /// transcript at all). Since the caller polls every few seconds over a shared project dir,
@@ -58,7 +61,10 @@ internal static class SessionTranscriptLocator {
     /// Files with no <c>cwd</c> yet (still being written) are left out so the agent's own
     /// freshly-created transcript is always re-checked.
     /// </param>
-    public static string? TryLocate(string projectDir, string worktreePath, DateTime spawnedAtUtc, ISet<string>? ruledOut = null) {
+    /// The matched transcript's id AND its path, link-resolved: the per-worktree project dir is
+    /// a symlink the launcher deletes at cleanup, and a path through it would die with the
+    /// process while the file lives on in the source repo's project dir.
+    internal static (string SessionId, string Path)? TryLocateWinner(string projectDir, string worktreePath, DateTime spawnedAtUtc, ISet<string>? ruledOut = null) {
         if (!Directory.Exists(projectDir)) return null;
 
         foreach (var file in Directory.EnumerateFiles(projectDir, "*.jsonl")) {
@@ -73,7 +79,7 @@ internal static class SessionTranscriptLocator {
                 if (!IsNewEnough(File.GetCreationTimeUtc(file), File.GetLastWriteTimeUtc(file), spawnedAtUtc)) continue;
 
                 switch (MatchTranscript(ReadFirstLines(file), worktreePath, DefaultPathComparison)) {
-                    case CwdMatch.Yes: return sessionId;
+                    case CwdMatch.Yes: return (sessionId, Path.Combine(ResolveDirectory(projectDir), Path.GetFileName(file)));
                     case CwdMatch.No:  ruledOut?.Add(file); break; // another session's transcript — cwd is fixed
                     // CwdMatch.Unknown: no cwd yet (file still being written) — leave uncached, re-check next tick.
                 }
@@ -84,6 +90,15 @@ internal static class SessionTranscriptLocator {
         }
 
         return null;
+    }
+
+    /// <summary>The directory a symlinked project dir points at (final target), or the directory itself.</summary>
+    internal static string ResolveDirectory(string projectDir) {
+        try {
+            return new DirectoryInfo(projectDir).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? projectDir;
+        } catch (IOException) {
+            return projectDir;
+        }
     }
 
     /// <summary>
