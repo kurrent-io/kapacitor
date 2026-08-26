@@ -66,6 +66,11 @@ public class BrowserFirstRunFlowTests {
                 : outcome);
         }
 
+        public List<ReportFirstRunImportRequest> ImportReports { get; } = [];
+
+        /// <summary>Status for each import report in turn; the last one repeats.</summary>
+        public Queue<int> ImportReportStatuses { get; } = new();
+
         public Task<FirstRunActionReportOutcome> ReportMachineActionAsync(
                 string serverUrl, string flowId, ReportFirstRunMachineActionRequest report, CancellationToken ct) {
             log.Add("report");
@@ -73,6 +78,15 @@ public class BrowserFirstRunFlowTests {
 
             return Task.FromResult(new FirstRunActionReportOutcome(
                 ReportStatuses.Count > 0 ? ReportStatuses.Dequeue() : 200));
+        }
+
+        public Task<FirstRunImportReportOutcome> ReportImportAsync(
+                string serverUrl, string flowId, ReportFirstRunImportRequest report, CancellationToken ct) {
+            log.Add("import-report");
+            ImportReports.Add(report);
+
+            return Task.FromResult(new FirstRunImportReportOutcome(
+                ImportReportStatuses.Count > 0 ? ImportReportStatuses.Dequeue() : 200));
         }
     }
 
@@ -88,6 +102,11 @@ public class BrowserFirstRunFlowTests {
             log.Add("open");
         }
 
+        public int Discoveries { get; private set; }
+        public int ImportEnds   { get; private set; }
+
+        public List<(int Repos, int? Sessions)> Imports { get; } = [];
+
         public void PollTick()  => Ticks++;
         public void WaitEnded() => WaitEnds++;
 
@@ -95,6 +114,75 @@ public class BrowserFirstRunFlowTests {
             log.Add("warn");
             Performing.Add(capability);
         }
+
+        public void Discovering() {
+            log.Add("discovering");
+            Discoveries++;
+        }
+
+        public void Importing(int repos, int? sessions) {
+            log.Add("importing");
+            Imports.Add((repos, sessions));
+        }
+
+        public void ImportEnded() => ImportEnds++;
+    }
+
+    /// <summary>A host that can scan and import. <c>Found</c> is what the scan returns; null models a
+    /// scan that produced nothing usable.</summary>
+    sealed class FakeImportLane(Log log) : IFirstRunImportLane {
+        public ReportFirstRunImportRequest? Found { get; set; } = Report();
+
+        public List<IReadOnlyList<string>?> Scans   { get; } = [];
+        public List<FirstRunImportAnswer>   Imports { get; } = [];
+
+        /// <summary>Set to throw out of the scan, which must leave the screen waiting rather than
+        /// reporting an empty disk.</summary>
+        public Exception? ScanThrows { get; set; }
+
+        /// <summary>Set to throw out of the import, which must not end the leg.</summary>
+        public Exception? ImportThrows { get; set; }
+
+        /// <summary>Run at the start of each half, to model one that takes real time. The loop's clock
+        /// only moves from outside, so a lane that should look slow has to move it itself.</summary>
+        public Action? Advance { get; set; }
+
+        public Task<ReportFirstRunImportRequest?> DiscoverAsync(
+                IReadOnlyList<string>? vendors, CancellationToken ct) {
+            log.Add("scan");
+            Advance?.Invoke();
+            Scans.Add(vendors);
+
+            if (ScanThrows is { } boom) throw boom;
+
+            return Task.FromResult(Found);
+        }
+
+        public Task ImportAsync(FirstRunImportAnswer answer, CancellationToken ct) {
+            log.Add("import");
+            Advance?.Invoke();
+            Imports.Add(answer);
+
+            if (ImportThrows is { } boom) throw boom;
+
+            return Task.CompletedTask;
+        }
+
+        public static ReportFirstRunImportRequest Report(int sessions = 12) => new() {
+            Repos = [
+                new FirstRunImportRepoReport {
+                    Owner    = "kurrent-io",
+                    Name     = "kcap-server",
+                    Sessions = new Dictionary<string, int> {
+                        [FirstRunImportWindows.Last30]     = sessions,
+                        [FirstRunImportWindows.Last90]     = sessions,
+                        [FirstRunImportWindows.Everything] = sessions
+                    }
+                }
+            ],
+            Unmatched = new Dictionary<string, int>(),
+            RepoTotal = 1
+        };
     }
 
     /// <summary>A host that can act on the machine. <c>Results</c> is consumed in turn so a retry can be
@@ -178,25 +266,27 @@ public class BrowserFirstRunFlowTests {
         Log                 Log,
         List<string>        Opened,
         FakeKeys            Keys,
-        FakeActions?        Actions);
+        FakeActions?        Actions,
+        FakeImportLane?     Importing);
 
     // No keyboard by default: the escape hatch is one test's subject, and left live it would read the
     // host's own console, where a stray keypress during a CI run would end an unrelated test's wait.
     /// <param name="capabilities">Non-null gives the flow a host that can act, advertising exactly these.
     /// The fake shares the harness's log, so "performed before reported" is assertable rather than inferred.</param>
-    static Harness Build(FakeKeys? keys = null, string[]? capabilities = null) {
+    static Harness Build(FakeKeys? keys = null, string[]? capabilities = null, bool importing = false) {
         var log      = new Log();
         var clock    = new FakeTimeProvider(ClockBase);
         var channel  = new FakeChannel(log, clock);
         var progress = new RecordingProgress(log);
         var browser  = new RecordingBrowser();
         var actions  = capabilities is null ? null : new FakeActions(log, capabilities);
+        var lane     = importing ? new FakeImportLane(log) : null;
 
         keys ??= new FakeKeys(canWatch: false);
 
         return new(
-            new BrowserFirstRunFlow(channel, progress, browser, clock, keys, actions),
-            channel, progress, clock, log, browser.Urls, keys, actions);
+            new BrowserFirstRunFlow(channel, progress, browser, clock, keys, actions, lane),
+            channel, progress, clock, log, browser.Urls, keys, actions, lane);
     }
 
     static readonly string[] PathShimOnly = [FirstRunMachineCapabilities.PathShim];
@@ -218,10 +308,13 @@ public class BrowserFirstRunFlowTests {
         return await running;
     }
 
+    // codex is reported present-in-the-map and absent-on-the-machine, which is what makes "reported"
+    // and "detected" two different sets — the distinction the refusal rule turns on.
     static readonly FirstRunMachineReport Report = new(
         "nostromo", "machine-1",
         new Dictionary<string, FirstRunHarnessReport> {
-            ["claude"] = new() { BinaryOnPath = true, ConfigFound = false, AlreadyWired = false }
+            ["claude"] = new() { BinaryOnPath = true,  ConfigFound = false, AlreadyWired = false },
+            ["codex"]  = new() { BinaryOnPath = false, ConfigFound = false, AlreadyWired = false }
         },
         ["cursor"], LoginShellFindsCli: false);
 
@@ -853,5 +946,301 @@ public class BrowserFirstRunFlowTests {
             .Throws<OperationCanceledException>();
 
         await Assert.That(h.Channel.ActionReports).IsEmpty();
+    }
+
+    // =====================================================================
+    // The Import lane: a scan gated on the Agents answer, a report retried
+    // until it lands, and a decision run once per distinct answer.
+    // =====================================================================
+
+    static readonly DateTimeOffset Decided = new(2026, 8, 21, 12, 5, 0, TimeSpan.Zero);
+
+    /// <summary>A view whose Agents step has settled, carrying <paramref name="records"/> as the
+    /// vendors something was turned on for.</summary>
+    static FirstRunFlowResponse AgentsAnswered(params string[] records) => new() {
+        FlowId          = "",
+        Step            = "Import",
+        CanFinish       = true,
+        Steps           = new() {
+            ["SignIn"] = "Completed", ["Agents"] = "Completed", ["Import"] = "Active", ["Done"] = "Pending"
+        },
+        Agents          = [.. records.Select(v => new FirstRunAgentChoiceResponse { Vendor = v, Record = true, Tools = true })],
+        AgentsDecidedAt = ClockBase
+    };
+
+    static FirstRunFlowResponse ImportAnswered(
+            string?         window   = null,
+            string          titles   = "Server",
+            string          level    = "Shared",
+            DateTimeOffset? decidedAt = null,
+            bool            noRepos  = false) {
+        var view = AgentsAnswered("claude");
+
+        return view with {
+            Steps = new() {
+                ["SignIn"] = "Completed", ["Agents"] = "Completed", ["Import"] = "Completed", ["Done"] = "Pending"
+            },
+            Import = new FirstRunImportDecisionResponse {
+                Window = window ?? FirstRunImportWindows.Last90,
+                Titles = titles,
+                Repos  = noRepos
+                    ? []
+                    : [new FirstRunImportRepoChoiceResponse { Owner = "kurrent-io", Name = "kcap-server", Level = level }]
+            },
+            ImportDecidedAt = decidedAt ?? Decided
+        };
+    }
+
+    [Test]
+    public async Task Waits_for_the_Agents_answer_before_scanning_because_it_is_the_vendor_filter() {
+        // Scanning on the first poll would find no answer to filter by and so scan everything —
+        // reporting figures for agents the user was about to decline. The screen's whole job is to
+        // state what a selection will import, so the count and the selection have to agree.
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, Running()));
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Importing!.Scans.Single()).DoesNotContain("claude");
+    }
+
+    [Test]
+    public async Task Scans_every_vendor_except_one_this_machine_offered_and_the_user_declined() {
+        // Only an EXPLICIT refusal drops a vendor. The report detects claude alone, so declining
+        // everything refuses claude and nothing else — a vendor with history on disk but nothing
+        // installed now was never offered, and its absence is not a refusal.
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        var scanned = h.Importing!.Scans.Single()!;
+
+        await Assert.That(scanned).DoesNotContain("claude");
+        await Assert.That(scanned).Contains("gemini").Because("never reported, so never offered");
+        await Assert.That(scanned).Contains("cursor").Because("declined locally is not offered, so not refused here");
+    }
+
+    [Test]
+    public async Task A_vendor_this_machine_reported_but_did_not_find_was_never_offered_to_refuse() {
+        // History on disk with nothing installed now: the screen had no row for it, so its absence
+        // from the answer says nothing, and dropping it would silently discard that history.
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Importing!.Scans.Single()!).Contains("codex");
+    }
+
+    [Test]
+    public async Task Keeps_a_vendor_the_user_did_turn_on() {
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Importing!.Scans.Single()!).Contains("claude");
+    }
+
+    [Test]
+    public async Task Retries_the_report_until_it_lands_without_scanning_again() {
+        // The scan costs minutes; the POST costs a round trip. Only one of them is worth repeating.
+        var h = Build(importing: true);
+        h.Channel.ImportReportStatuses.Enqueue(500);
+        h.Channel.ImportReportStatuses.Enqueue(200);
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Importing!.Scans.Count).IsEqualTo(1);
+        await Assert.That(h.Channel.ImportReports.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Stops_reporting_once_the_server_has_taken_it() {
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Channel.ImportReports.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task A_scan_that_throws_leaves_the_screen_waiting_rather_than_claiming_an_empty_disk() {
+        var h = Build(importing: true);
+        h.Importing!.ScanThrows = new IOException("disk went away");
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        var result = await Run(h);
+
+        await Assert.That(h.Channel.ImportReports).IsEmpty();
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>()
+                    .Because("a failed scan is not a failed setup");
+    }
+
+    [Test]
+    public async Task A_scan_that_finds_nothing_usable_reports_nothing_and_is_not_retried() {
+        // Distinct from a throw only in how it got there; both mean nothing was learned.
+        var h = Build(importing: true);
+        h.Importing!.Found = null;
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Importing!.Scans.Count).IsEqualTo(1);
+        await Assert.That(h.Channel.ImportReports).IsEmpty();
+    }
+
+    [Test]
+    public async Task Runs_the_import_once_the_decision_lands() {
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        var ran = h.Importing!.Imports.Single();
+
+        await Assert.That(ran.Window).IsEqualTo(FirstRunImportWindows.Last90);
+        await Assert.That(ran.Choices.Single().Slug).IsEqualTo("kurrent-io/kcap-server");
+        await Assert.That(ran.Choices.Single().Level).IsEqualTo(FirstRunImportLevel.Shared);
+    }
+
+    [Test]
+    public async Task Does_not_run_the_same_answer_twice() {
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Importing!.Imports.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Runs_again_when_the_answer_changes() {
+        // Going Back and widening the window has real work in it, and the server moves the stamp only
+        // when the answer changed — so the stamp is the cursor rather than a "done" flag.
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered(FirstRunImportWindows.Last30)));
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered(FirstRunImportWindows.Everything, decidedAt: Decided.AddMinutes(1))));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Importing!.Imports.Select(i => i.Window))
+                    .IsEquivalentTo([FirstRunImportWindows.Last30, FirstRunImportWindows.Everything]);
+    }
+
+    [Test]
+    public async Task Import_nothing_runs_nothing_but_still_counts_as_answered() {
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered(noRepos: true)));
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered(noRepos: true)));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Importing!.Imports).IsEmpty();
+        await Assert.That(h.Progress.Imports).IsEmpty().Because("there is nothing to announce");
+    }
+
+    [Test]
+    public async Task Runs_nothing_when_it_could_read_no_vendor_the_decision_named() {
+        // Scanning nothing would import nothing while the summary claimed a successful import.
+        var h = Build(importing: true);
+        var view = ImportAnswered();
+        h.Channel.Polls.Enqueue(new(200, view with {
+            Import = view.Import! with { Vendors = ["telepathy"] }
+        }));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Importing!.Imports).IsEmpty();
+        await Assert.That(h.Progress.Imports).IsEmpty();
+    }
+
+    [Test]
+    public async Task An_import_that_throws_does_not_end_the_leg() {
+        var h = Build(importing: true);
+        h.Importing!.ImportThrows = new HttpRequestException("server went away");
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
+        await Assert.That(h.Progress.ImportEnds).IsEqualTo(1).Because("the wait has to reopen either way");
+    }
+
+    [Test]
+    public async Task Announces_the_import_with_the_sessions_the_report_counted_for_that_window() {
+        var h = Build(importing: true);
+        h.Importing!.Found = FakeImportLane.Report(sessions: 41);
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Progress.Imports.Single()).IsEqualTo((1, (int?)41));
+    }
+
+    [Test]
+    public async Task Announces_no_session_count_when_a_chosen_repo_reported_none_for_that_window() {
+        // A total that quietly omitted a repository would be the wrong number stated confidently.
+        var h = Build(importing: true);
+        h.Importing!.Found = new ReportFirstRunImportRequest {
+            Repos     = [new FirstRunImportRepoReport {
+                Owner    = "kurrent-io",
+                Name     = "kcap-server",
+                Sessions = new Dictionary<string, int> { [FirstRunImportWindows.Last30] = 3 }
+            }],
+            Unmatched = new Dictionary<string, int>(),
+            RepoTotal = 1
+        };
+        h.Channel.Polls.Enqueue(new(200, AgentsAnswered("claude")));
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered(FirstRunImportWindows.Last90)));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Progress.Imports.Single().Sessions).IsNull();
+    }
+
+    [Test]
+    public async Task Neither_lane_spends_the_backstop_it_was_not_waiting_through() {
+        // The budget catches a terminal nobody is sitting at. A disk scan and an upload are work, and
+        // letting them eat it would abandon a flow that is progressing.
+        var h = Build(importing: true);
+        var slow = TimeSpan.FromMinutes(20);
+
+        h.Importing!.Found = FakeImportLane.Report();
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        // Both lanes run inside one tick, and the clock only moves from outside, so the advance is
+        // driven from the lane itself.
+        h.Importing.Advance = () => h.Clock.Advance(slow);
+
+        var result = await Run(h);
+
+        await Assert.That(result).IsTypeOf<FirstRunFlowResult.Finished>();
     }
 }

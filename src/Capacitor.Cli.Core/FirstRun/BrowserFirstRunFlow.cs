@@ -9,13 +9,16 @@ namespace Capacitor.Cli.Core.FirstRun;
 /// <param name="actions">What this host can do to the machine when the browser asks. Null performs
 /// nothing, which is the honest state for a host with no such capability — the request stays outstanding
 /// and the screen goes on saying it is waiting.</param>
+/// <param name="importing">The Import step's scan and run. Null leaves the screen waiting on a report
+/// that never comes, so a host that renders the flow at all should supply one.</param>
 public sealed class BrowserFirstRunFlow(
         IFirstRunFlowChannel     channel,
         IFirstRunFlowProgress    progress,
         IBrowserLauncher         launcher,
-        TimeProvider?            clock   = null,
-        IKeyWatcher?             keys    = null,
-        IFirstRunMachineActions? actions = null) {
+        TimeProvider?            clock     = null,
+        IKeyWatcher?             keys      = null,
+        IFirstRunMachineActions? actions   = null,
+        IFirstRunImportLane?     importing = null) {
     readonly TimeProvider _clock = clock ?? TimeProvider.System;
     readonly IKeyWatcher  _keys  = keys ?? ConsoleKeyWatcher.Instance;
 
@@ -116,13 +119,14 @@ public sealed class BrowserFirstRunFlow(
         launcher.TryOpen(setupUrl);
 
         try {
-            return await PollAsync(serverUrl, flowId, ct);
+            return await PollAsync(serverUrl, flowId, report, ct);
         } finally {
             progress.WaitEnded();
         }
     }
 
-    async Task<FirstRunFlowResult> PollAsync(string serverUrl, string flowId, CancellationToken ct) {
+    async Task<FirstRunFlowResult> PollAsync(
+            string serverUrl, string flowId, FirstRunMachineReport report, CancellationToken ct) {
         var interval = PollInterval;
         var deadline = _clock.GetUtcNow() + PollBudget;
         var first    = true;
@@ -134,6 +138,8 @@ public sealed class BrowserFirstRunFlow(
         // a report must keep being retried until it lands.
         var performed = new Dictionary<FirstRunMachineActionRequest, FirstRunMachineActionResult>();
         var reported  = new HashSet<FirstRunMachineActionRequest>();
+
+        var import = new ImportLaneState();
 
         while (_clock.GetUtcNow() < deadline) {
             // Polled before the first sleep: a flow the browser has already finished — a resumed link,
@@ -174,6 +180,13 @@ public sealed class BrowserFirstRunFlow(
                     // because the budget can pass while the user answers an admin prompt.
                     await PerformRequestedAsync(serverUrl, flowId, last!, performed, reported, ct);
 
+                    // Both lanes can outlast a poll interval by minutes, so the budget is measured
+                    // against time spent WAITING: a disk scan or an upload is work, not a terminal
+                    // nobody is sitting at, and letting it eat the backstop would abandon a flow that
+                    // is progressing.
+                    deadline += await RunImportLaneAsync(serverUrl, flowId, last!, report, import, ct);
+                    deadline += await ActOnImportDecisionAsync(last!, import, ct);
+
                     if (FirstRunFlowOutcomes.IsFinished(last!)) {
                         await FlushReportsAsync(serverUrl, flowId, performed, reported, ct);
 
@@ -212,6 +225,134 @@ public sealed class BrowserFirstRunFlow(
         }
 
         return new FirstRunFlowResult.Abandoned(last);
+    }
+
+    /// <summary>
+    /// Scans for importable history once the Agents step has settled, and keeps trying to deliver the
+    /// report until the server takes it.
+    ///
+    /// <para><b>Gated on the Agents step, because its answer is the vendor filter.</b> Scanning first
+    /// and subtracting afterwards would report figures for agents the user had just declined, and the
+    /// screen's whole job is to state what a selection will import.</para>
+    /// </summary>
+    /// <returns>How long this took, for the caller to add back to the budget.</returns>
+    async Task<TimeSpan> RunImportLaneAsync(
+            string                serverUrl,
+            string                flowId,
+            FirstRunFlowResponse  view,
+            FirstRunMachineReport report,
+            ImportLaneState       state,
+            CancellationToken     ct) {
+        if (importing is null || state.Delivered) return TimeSpan.Zero;
+
+        var began = _clock.GetUtcNow();
+
+        if (!state.Scanned && FirstRunFlowOutcomes.IsSettled(view, FirstRunFlowStep.Agents)) {
+            state.Scanned = true;
+
+            progress.Discovering();
+
+            var vendors = FirstRunFlowOutcomes.VendorsToImportFrom(report, FirstRunFlowOutcomes.Agents(view));
+
+            // A scan that throws leaves the screen waiting, which is what it should say: nothing was
+            // learned about this disk, and claiming an empty one would be a failure reported as a result.
+            try {
+                state.Discovered = await importing.DiscoverAsync(vendors, ct);
+            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                throw;
+            } catch (Exception) {
+                state.Discovered = null;
+            }
+        }
+
+        if (state.Discovered is { } found) {
+            state.Delivered = (await channel.ReportImportAsync(serverUrl, flowId, found, ct)).Recorded;
+        }
+
+        return _clock.GetUtcNow() - began;
+    }
+
+    /// <summary>
+    /// Runs the decision, once per distinct answer.
+    ///
+    /// <para><b>Polling stops for the duration.</b> The import writes its own progress, and two live
+    /// renderables cannot share a terminal — so this blocks rather than running alongside. Nothing is
+    /// lost by it: the only thing left to notice is the flow finishing, and the next tick sees that.</para>
+    /// </summary>
+    /// <returns>How long this took, for the caller to add back to the budget.</returns>
+    async Task<TimeSpan> ActOnImportDecisionAsync(
+            FirstRunFlowResponse view, ImportLaneState state, CancellationToken ct) {
+        if (importing is null) return TimeSpan.Zero;
+        if (!FirstRunFlowOutcomes.IsSettled(view, FirstRunFlowStep.Import)) return TimeSpan.Zero;
+        if (FirstRunFlowOutcomes.Import(view) is not { } answer) return TimeSpan.Zero;
+        if (state.ImportedThrough == answer.DecidedAt) return TimeSpan.Zero;
+
+        // Stamped before the run, not after: a throw must not leave the same answer to be run again on
+        // the next tick, which would repeat an upload rather than retry a failed one.
+        state.ImportedThrough = answer.DecidedAt;
+
+        // "Import nothing" is an answer, and there is nothing to run for it — but it is still answered,
+        // so the cursor above has moved and the screen is not left waiting on this machine.
+        if (answer.Choices.Count == 0) return TimeSpan.Zero;
+
+        // Nothing to scan, so nothing to run: the caller says why instead of announcing an import of
+        // history that could not move.
+        if (answer.NoReadableVendors) return TimeSpan.Zero;
+
+        var began = _clock.GetUtcNow();
+
+        progress.Importing(answer.Choices.Count, SessionsInScope(state.Discovered, answer));
+
+        try {
+            await importing.ImportAsync(answer, ct);
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            throw;
+        } catch (Exception) {
+            // Best-effort, as setup's own import step is: the flow is not the place a failed backfill
+            // ends a run, and `kcap import` remains the way to retry it.
+        } finally {
+            progress.ImportEnded();
+        }
+
+        return _clock.GetUtcNow() - began;
+    }
+
+    /// <summary>The import lane's state across polls, in one object because an async method cannot
+    /// take it by reference.</summary>
+    sealed class ImportLaneState {
+        /// <summary>What the scan produced, held until the server takes it.</summary>
+        public ReportFirstRunImportRequest? Discovered { get; set; }
+
+        /// <summary>The scan has been attempted. It runs once: a browser tab does not outlive the
+        /// disk changing under it by enough to matter, and rescanning would cost minutes per tick.</summary>
+        public bool Scanned { get; set; }
+
+        /// <summary>The report reached the server. Until it does, every tick tries again.</summary>
+        public bool Delivered { get; set; }
+
+        /// <summary>The answer already run, as a cursor rather than a flag. The server advances the
+        /// stamp only when the answer CHANGES, so going Back and widening the window runs the wider
+        /// import, while re-confirming the same answer runs nothing.</summary>
+        public DateTimeOffset? ImportedThrough { get; set; }
+    }
+
+    /// <summary>Sessions the chosen window holds across the chosen repositories, or null when any of
+    /// them reported no count for it — a total that quietly omitted a repository would be the wrong
+    /// number stated confidently.</summary>
+    static int? SessionsInScope(ReportFirstRunImportRequest? report, FirstRunImportAnswer answer) {
+        if (report is null) return null;
+
+        var chosen = answer.Choices.Select(c => c.Slug).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var total  = 0;
+
+        foreach (var repo in report.Repos) {
+            if (!chosen.Contains($"{repo.Owner}/{repo.Name}")) continue;
+            if (!repo.Sessions.TryGetValue(answer.Window, out var found)) return null;
+
+            total += found;
+        }
+
+        return total;
     }
 
     /// <summary>Performs the actions the browser is asking for, and reports each one back. <b>Nothing here

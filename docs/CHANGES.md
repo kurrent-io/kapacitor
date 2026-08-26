@@ -7,6 +7,33 @@ Not release notes. Each entry is written as of the change that produced it and i
 code moves on; where an entry disagrees with the code, the code wins.
 
 
+## The first-run flow's import lane
+
+`kcap setup`'s browser leg now feeds and reads the Import screen. Discovery reports per repository AND
+per window, because "how many sessions will this selection import" is a cell and neither margin of a
+table gives you one; `ImportDiscoverySummary` buckets both from one pass, and windows are keyed off the
+same constant the report travels under, so `--discover`'s own windows and the screen's picker are one
+list.
+
+The vendor filter is applied to the sources scanned rather than to the counts afterwards, which is what
+makes every reported figure already scoped. **Only an explicit refusal drops a vendor:** the server
+normalises an untouched harness out of the decision, so refused and never-offered look identical on the
+wire, but this machine knows what it reported — `FirstRunMachineReport.Detected` is the set the screen
+could offer, and anything outside it was never offered to refuse.
+
+The scan is gated on the Agents step settling, since its answer is the filter. It runs once; the POST
+is retried until the server takes it. The decision then runs two passes, because `--private` is per
+invocation, with the shared one followed by an explicit `visibility=org` write — the profile default
+produces `default:org`, which is admitted only where the repository owner matches the configured org,
+so the default route promises a team can read this and delivers owner-only nearly everywhere.
+
+Polling stops while the import runs, because two live Spectre renderables cannot share a terminal, and
+both lanes add their elapsed time back to the poll budget: that budget catches a terminal nobody is
+sitting at, and a scan or an upload is work. The decision's timestamp is a cursor rather than a flag,
+so widening the window on a second answer runs the wider import while re-confirming runs nothing.
+`FirstRunImportAnswer.NoReadableVendors` covers the one otherwise-silent failure — repositories chosen
+but no vendor this build can read, where running would report success for history that never moved.
+
 ## Claude SessionEnd hand-off
 
 Claude Code computes the grace it gives SessionEnd hooks from `settings.json` timeouts only; a

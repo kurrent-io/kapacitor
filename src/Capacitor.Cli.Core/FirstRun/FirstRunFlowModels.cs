@@ -94,6 +94,55 @@ public sealed record ReportFirstRunMachineActionRequest {
     [JsonPropertyName("reason")]       public          string?        Reason      { get; init; }
 }
 
+/// <summary>One repository discovery found, as the report carries it.</summary>
+/// <remarks><c>sessions</c> is keyed by window rather than positional: an array aligned by index goes
+/// wrong silently. An absent key reads as "not counted", never as zero.</remarks>
+public sealed record FirstRunImportRepoReport {
+    [JsonPropertyName("owner")]           public required string                     Owner         { get; init; }
+    [JsonPropertyName("name")]            public required string                     Name          { get; init; }
+    [JsonPropertyName("sessions")]        public required Dictionary<string, int>    Sessions      { get; init; }
+    [JsonPropertyName("last_session_at")] public          DateTimeOffset?            LastSessionAt { get; init; }
+}
+
+/// <summary>
+/// POST /api/first-run/flows/{id}/import — what this machine has on disk, once discovery has finished.
+/// The screen renders its waiting state until this lands.
+/// </summary>
+/// <remarks>
+/// Every figure is already scoped to <see cref="Vendors"/>: this machine holds each session's vendor
+/// while it scans, so it filters its own session set. Filtering server-side would need counts per
+/// repository per window per vendor.
+/// </remarks>
+public sealed record ReportFirstRunImportRequest {
+    /// <summary>Bounded to <see cref="MaxRepos"/>, ordered by last activity so the cap keeps the
+    /// repositories someone is working in.</summary>
+    [JsonPropertyName("repos")] public required List<FirstRunImportRepoReport> Repos { get; init; }
+
+    /// <summary>Sessions no repository could be attributed to, per window. <c>--all</c> includes them
+    /// and any repo selection drops them, so the number is both honest and how <c>kcap remap</c> gets
+    /// found.</summary>
+    [JsonPropertyName("unmatched")] public required Dictionary<string, int> Unmatched { get; init; }
+
+    /// <summary>How many repositories this machine has before the cap, so the screen can disclose
+    /// the remainder rather than hiding it.</summary>
+    [JsonPropertyName("repo_total")] public required int RepoTotal { get; init; }
+
+    /// <summary>The agents scanned, in catalogue order. <b>Absent and empty differ</b>: absent means
+    /// this CLI does not report agents and no vendor filter applied, empty means none were scanned
+    /// because none were kept.</summary>
+    [JsonPropertyName("vendors")] public List<string>? Vendors { get; init; }
+
+    /// <summary>The server's own cap. Reaching it is disclosed through
+    /// <see cref="RepoTotal"/>; a repository past it is still reachable by hand.</summary>
+    public const int MaxRepos = 200;
+
+    /// <summary>GitHub's own limits. The server DROPS an over-long identity rather than truncating
+    /// it, because owner and name are what resolve back to <c>--repo owner/name</c>, so sending one
+    /// costs the repository its row.</summary>
+    public const int MaxOwnerLength = 39;
+    public const int MaxNameLength  = 100;
+}
+
 /// <summary>One harness the user turned something on for, as the wire carries it.</summary>
 public sealed record FirstRunAgentChoiceResponse {
     [JsonPropertyName("vendor")] public string Vendor { get; init; } = "";
@@ -138,6 +187,18 @@ public sealed record FirstRunFlowResponse {
     [JsonPropertyName("agents")] public List<FirstRunAgentChoiceResponse>? Agents { get; init; }
 
     /// <summary>
+    /// The Import step's choice, once made. <b>Null is "not yet answered"; a decision whose
+    /// <see cref="FirstRunImportDecisionResponse.Repos"/> is empty is "import nothing"</b>, which is
+    /// an answer.
+    /// </summary>
+    [JsonPropertyName("import")] public FirstRunImportDecisionResponse? Import { get; init; }
+
+    /// <summary>When the import choice was made, on the server's clock. Null exactly when
+    /// <see cref="Import"/> is, and carried rather than compared — see
+    /// <see cref="AgentsDecidedAt"/>.</summary>
+    [JsonPropertyName("import_decided_at")] public DateTimeOffset? ImportDecidedAt { get; init; }
+
+    /// <summary>
     /// When that choice was made, on the server's clock. Null exactly when <see cref="Agents"/> is.
     ///
     /// <para>The server's identity for the decision: it advances when the answer changes and not when
@@ -161,4 +222,30 @@ public sealed record FirstRunFlowResponse {
     /// state for a CLI too old to perform it.</para>
     /// </summary>
     [JsonPropertyName("machine_actions")] public List<FirstRunMachineActionResponse>? MachineActions { get; init; }
+}
+
+/// <summary>
+/// What to import and how far it travels.
+///
+/// <para><b>Three closed sets and a repository identity, and no dates.</b> The window crosses as its
+/// key: a date computed server-side would be the server's, against a machine whose clock and timezone
+/// are its own.</para>
+/// </summary>
+public sealed record FirstRunImportDecisionResponse {
+    [JsonPropertyName("window")] public string Window { get; init; } = "";
+    [JsonPropertyName("titles")] public string Titles { get; init; } = "";
+
+    [JsonPropertyName("repos")] public List<FirstRunImportRepoChoiceResponse>? Repos { get; init; }
+
+    /// <summary>Which agents to import from. <b>Null means no filter</b>, so it must not be read as
+    /// an empty selection; empty genuinely means import from nothing.</summary>
+    [JsonPropertyName("vendors")] public List<string>? Vendors { get; init; }
+}
+
+/// <summary>One repository to import. <c>level</c> is a closed set; a member this build does not know
+/// is a repository to leave alone, never one to guess at.</summary>
+public sealed record FirstRunImportRepoChoiceResponse {
+    [JsonPropertyName("owner")] public string Owner { get; init; } = "";
+    [JsonPropertyName("name")]  public string Name  { get; init; } = "";
+    [JsonPropertyName("level")] public string Level { get; init; } = "";
 }

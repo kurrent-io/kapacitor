@@ -97,6 +97,63 @@ public class SetupCommandTests {
         await Assert.That(lines.Count).IsEqualTo(1);
     }
 
+    static FirstRunImportAnswer ImportAnswer(
+            int unreadable = 0, string window = FirstRunImportWindows.Last90, params string[] repos) =>
+        new([.. repos.Select(r => new FirstRunImportChoice("kurrent-io", r, FirstRunImportLevel.Shared))],
+            window,
+            FirstRunImportTitles.Server,
+            null,
+            new DateTimeOffset(2026, 8, 25, 9, 30, 0, TimeSpan.Zero),
+            unreadable);
+
+    [Test]
+    public async Task BrowserImportSummary_reports_what_ran_rather_than_offering_to_run_it_again() {
+        // Step 6 can only offer the current repository, and the screen just chose several — so
+        // re-prompting would offer to redo a subset of what already happened.
+        var lines = SetupCommand.BrowserImportSummary(ImportAnswer(repos: ["kcap-server", "kcap-cli"]));
+
+        await Assert.That(string.Join("\n", lines)).Contains("2 repositories");
+    }
+
+    [Test]
+    public async Task BrowserImportSummary_names_the_window_so_the_figure_can_be_reconciled() {
+        var lines = SetupCommand.BrowserImportSummary(ImportAnswer(window: FirstRunImportWindows.Last30, repos: "kcap"));
+
+        await Assert.That(string.Join("\n", lines)).Contains("last 30 days");
+    }
+
+    [Test]
+    public async Task BrowserImportSummary_says_a_decline_imported_nothing() {
+        var lines = SetupCommand.BrowserImportSummary(ImportAnswer());
+
+        await Assert.That(string.Join("\n", lines)).Contains("chose not to import");
+    }
+
+    // Without this a repository the user selected simply never arrives, with no reason anywhere.
+    [Test]
+    public async Task BrowserImportSummary_says_when_this_build_could_not_read_part_of_the_answer() {
+        var lines = SetupCommand.BrowserImportSummary(ImportAnswer(unreadable: 1, repos: "kcap"));
+
+        await Assert.That(string.Join("\n", lines)).Contains("kcap update");
+    }
+
+    // The failure that would otherwise be silent: repositories chosen, nothing scanned, and a line
+    // saying it imported them.
+    [Test]
+    public async Task BrowserImportSummary_says_nothing_was_imported_when_it_knew_none_of_the_agents() {
+        var answer = ImportAnswer(repos: "kcap") with { Vendors = [] };
+
+        var lines = SetupCommand.BrowserImportSummary(answer);
+
+        await Assert.That(string.Join("\n", lines)).Contains("Nothing was imported");
+        await Assert.That(string.Join("\n", lines)).Contains("kcap update");
+    }
+
+    [Test]
+    public async Task BrowserImportSummary_an_answer_it_read_whole_gets_one_line() {
+        await Assert.That(SetupCommand.BrowserImportSummary(ImportAnswer(repos: "kcap")).Count).IsEqualTo(1);
+    }
+
     // --- Step 6 import auth-eligibility probe (IsAuthSatisfiedAsync) ---
 
     [Test]

@@ -19,6 +19,20 @@ public interface IFirstRunFlowProgress {
     /// </summary>
     void PerformingAction(string capability);
 
+    /// <summary>Discovery is about to scan this machine for importable history. Said out loud
+    /// because it is the one pause long enough to read as a hang, and the screen is waiting on it.</summary>
+    void Discovering();
+
+    /// <summary>The import is about to run over <paramref name="repos"/> repositories, holding
+    /// <paramref name="sessions"/> sessions where that is known — null where a selected repository
+    /// reported no count for the chosen window, since a total that quietly omitted one would be the
+    /// wrong number stated confidently. Its own output follows, so a host rendering the wait inline
+    /// has to close it here rather than at <see cref="WaitEnded"/>.</summary>
+    void Importing(int repos, int? sessions);
+
+    /// <summary>The import finished and polling resumes, so an inline wait has to reopen.</summary>
+    void ImportEnded();
+
     /// <summary>The wait is over, however it ended. A host that rendered the wait inline needs this to
     /// close it; one that did not can ignore it.</summary>
     void WaitEnded();

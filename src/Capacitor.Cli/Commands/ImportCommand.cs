@@ -5,7 +5,9 @@ using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.FirstRun;
 using Capacitor.Cli.Core.RepoEvidence;
+using Capacitor.Cli.Core.Setup;
 using Capacitor.Cli.Harness.Claude;
 using Capacitor.Cli.Harness.Cursor;
 using Spectre.Console;
@@ -598,15 +600,33 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     }
 
     /// <summary>
+    /// What a discovery run produced.
+    /// </summary>
+    /// <param name="ScannedVendors">The sources actually walked — what was asked for, intersected with
+    /// what this machine has. A caller reporting figures upstream needs this rather than its own
+    /// request, or it claims to have looked somewhere it did not.</param>
+    internal sealed record ImportDiscoveryResult(
+        ImportDiscoverySummary Summary,
+        IReadOnlyList<string>  ScannedVendors);
+
+    /// <summary>
     /// Every "found nothing" exit still reports. Zero sessions is an answer; no output at all is
     /// indistinguishable from the process having died.
     /// </summary>
-    static int WriteEmptyDiscoveryReport(bool asJson) {
-        WriteDiscoveryReport(
+    static int WriteEmptyDiscoveryReport(
+            Action<ImportDiscoveryResult> sink, IReadOnlyList<string> scanned) {
+        sink(new ImportDiscoveryResult(
             ImportDiscoverySummary.Build([], new Dictionary<string, (string, string)?>(), DiscoveryWindows()),
-            asJson);
+            scanned));
 
         return 0;
+    }
+
+    /// <summary>In catalogue order, so two runs of an unchanged machine report the same list.</summary>
+    static IReadOnlyList<string> ScannedVendors(IReadOnlyList<IImportSource> sources) {
+        var walked = sources.Select(s => s.Vendor).ToHashSet(StringComparer.Ordinal);
+
+        return [.. HarnessCatalog.All.Select(h => h.VendorId).Where(walked.Contains)];
     }
 
     static void WriteDiscoveryReport(ImportDiscoverySummary summary, bool asJson) =>
@@ -616,13 +636,14 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
 
     /// <summary>
     /// The <c>--since</c> windows discovery reports totals for, newest first, ending in "everything".
-    /// Callers that offer a different set pass their own to
-    /// <see cref="ImportDiscoverySummary.Build"/> — these are the defaults the CLI itself offers.
+    /// The same keys the first-run flow reports under, so the picker there and this command's own
+    /// output cannot offer different windows.
     /// </summary>
-    internal static IReadOnlyList<DateOnly?> DiscoveryWindows(DateTimeOffset? now = null) {
+    internal static IReadOnlyList<ImportDiscoveryWindow> DiscoveryWindows(DateTimeOffset? now = null) {
         var today = DateOnly.FromDateTime((now ?? DateTimeOffset.UtcNow).UtcDateTime);
 
-        return [today.AddDays(-30), today.AddDays(-90), null];
+        return [.. FirstRunImportWindows.All.Select(
+            key => new ImportDiscoveryWindow(key, FirstRunImportWindows.Since(key, today)))];
     }
 
     /// <summary>
@@ -664,8 +685,12 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             bool                          reimport                = false,
             bool                          skipTitle               = false,
             bool                          discoverOnly            = false,
-            bool                          discoverJson            = false
+            bool                          discoverJson            = false,
+            Action<ImportDiscoveryResult>? onDiscovered           = null
         ) {
+        // A caller that wants the figures rather than the rendering says so by handing one over; the
+        // console is the default consumer, not the only one.
+        var discoverySink = onDiscovered ?? (result => WriteDiscoveryReport(result.Summary, discoverJson));
         // Discovery never calls the server and is reached with none configured.
         var baseUrl = profiles.Resolution.ServerUrl ?? "";
 
@@ -697,7 +722,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
                 return 1;
             }
 
-            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, []);
 
             display.Line("No coding-agent sessions found. Install Claude, Codex, or Cursor and try again.");
 
@@ -742,14 +767,14 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             // Keep the message aligned with the dead branch lower in this method
             // (cleanup follow-up) so downstream tooling sees consistent output.
             if (filterSession is not null) {
-                if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+                if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, ScannedVendors(sources));
 
                 await Console.Error.WriteLineAsync($"Session not found: {NormalizeGuid(filterSession)}");
 
                 return 1;
             }
 
-            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverJson);
+            if (discoverOnly) return WriteEmptyDiscoveryReport(discoverySink, ScannedVendors(sources));
 
             display.Line("No transcript files found.");
 
@@ -863,7 +888,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
         ReportMissingCwds(sessionCwds, cwdRemap, display);
 
         if (discoverOnly) {
-            WriteDiscoveryReport(
+            discoverySink(new ImportDiscoveryResult(
                 ImportDiscoverySummary.Build(
                     // Each source dates its own sessions: the rule differs per vendor and only the
                     // source knows which one its --since applies.
@@ -871,7 +896,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
                         discoveriesPerSource[i].Select(d => (d.SessionId, src.DiscoveryAge(d)))),
                     resolved,
                     DiscoveryWindows()),
-                discoverJson);
+                ScannedVendors(sources)));
 
             return 0;
         }
@@ -3044,17 +3069,39 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     }
 
     /// <summary>
+    /// PUT visibility=org for every session id — what makes "everyone in your workspace" true.
+    ///
+    /// <para><b>An explicit write, not the profile default.</b> Leaning on <c>org_public</c> produces
+    /// the <c>default:org</c> class, which the visibility predicate admits only where the repository's
+    /// owner matches the tenant's configured org — empty on every provider but <c>GitHubApp</c>. So the
+    /// default route promises a team can read this and delivers owner-only on most tenants;
+    /// <c>explicit:org</c> is admitted unconditionally.</para>
+    /// </summary>
+    internal static Task SetVisibilityForAll(
+            HttpClient            httpClient,
+            string                baseUrl,
+            IReadOnlyList<string> sessionIds
+        ) => SetVisibilityForAll(httpClient, baseUrl, sessionIds, "org");
+
+    /// <summary>
     /// PUT visibility=none for every imported session id. Failures are logged
     /// inline (one line per session) but never throw — the import already
     /// succeeded; users can re-run `kcap hide` for any that failed.
     /// </summary>
-    internal static async Task SetVisibilityNoneForAll(
+    internal static Task SetVisibilityNoneForAll(
             HttpClient            httpClient,
             string                baseUrl,
             IReadOnlyList<string> sessionIds
+        ) => SetVisibilityForAll(httpClient, baseUrl, sessionIds, "none");
+
+    static async Task SetVisibilityForAll(
+            HttpClient            httpClient,
+            string                baseUrl,
+            IReadOnlyList<string> sessionIds,
+            string                visibility
         ) {
         foreach (var sessionId in sessionIds) {
-            var       payload = new JsonObject { ["visibility"] = "none" };
+            var       payload = new JsonObject { ["visibility"] = visibility };
             using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
 
             try {
@@ -3065,12 +3112,12 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
 
                 if (!resp.IsSuccessStatusCode) {
                     await Console.Error.WriteLineAsync(
-                        $"  ! visibility=none failed for {sessionId}: HTTP {(int)resp.StatusCode}"
+                        $"  ! visibility={visibility} failed for {sessionId}: HTTP {(int)resp.StatusCode}"
                     );
                 }
             } catch (Exception ex) {
                 await Console.Error.WriteLineAsync(
-                    $"  ! visibility=none failed for {sessionId}: {ex.Message}"
+                    $"  ! visibility={visibility} failed for {sessionId}: {ex.Message}"
                 );
             }
         }

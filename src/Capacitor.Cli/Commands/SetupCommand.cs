@@ -99,11 +99,115 @@ sealed class SpectreFirstRunFlowProgress : IFirstRunFlowProgress {
         AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
     }
 
+    public void Discovering() {
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine(SetupAuthProgress.Indent("Looking for past sessions on this machine…"));
+        AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
+    }
+
+    public void Importing(int repos, int? sessions) {
+        // Closes the wait outright: the import prints its own phases, and a dotted line left open
+        // above them would be appended to by the next tick after they finish.
+        _waiting = false;
+        AnsiConsole.WriteLine();
+
+        var what = sessions is { } n
+            ? $"{n} session{(n == 1 ? "" : "s")} from {repos} repositor{(repos == 1 ? "y" : "ies")}"
+            : $"{repos} repositor{(repos == 1 ? "y" : "ies")}";
+
+        AnsiConsole.MarkupLine(SetupAuthProgress.Indent($"Importing {what}, as chosen in the browser."));
+    }
+
+    public void ImportEnded() {
+        _waiting = true;
+        AnsiConsole.WriteLine();
+        AnsiConsole.Markup(SetupAuthProgress.Indent("Waiting…"));
+    }
+
     public void WaitEnded() {
         if (!_waiting) return;
 
         _waiting = false;
         AnsiConsole.WriteLine();
+    }
+}
+
+/// <summary>
+/// The Import step's two halves, over the same <c>kcap import</c> the terminal step runs.
+/// </summary>
+/// <remarks>
+/// Both go through <see cref="ImportCommand.HandleImport"/> rather than reimplementing anything: the
+/// screen's job is to choose the arguments a person would otherwise have typed.
+/// </remarks>
+sealed class SetupImportLane(ConfigRoot config, ProfileContext profiles) : IFirstRunImportLane {
+    public async Task<ReportFirstRunImportRequest?> DiscoverAsync(
+            IReadOnlyList<string>? vendors, CancellationToken ct) {
+        ImportCommand.ImportDiscoveryResult? found = null;
+
+        // Quiet, because the caller owns the terminal for the duration and the figures go to a screen.
+        var exit = await new ImportCommand(config, profiles).HandleImport(
+            filterCwd:    null,
+            sources:      SetupCommand.BuildImportSources(config, vendors),
+            discoverOnly: true,
+            discoverJson: true,
+            onDiscovered: result => found = result);
+
+        if (exit != 0 || found is null) return null;
+
+        return Report(found);
+    }
+
+    /// <summary>
+    /// The summary as the flow's report, capped and disclosed.
+    /// </summary>
+    /// <remarks>
+    /// The cap keeps the newest repositories because the summary already orders them that way. What it
+    /// hid is the difference against <c>repo_total</c>, which is what makes the bound disclosable
+    /// rather than silent — and an over-long identity is DROPPED rather than truncated, since owner and
+    /// name are what resolve back to <c>--repo owner/name</c>.
+    /// </remarks>
+    internal static ReportFirstRunImportRequest Report(ImportCommand.ImportDiscoveryResult found) {
+        var named = found.Summary.Repos
+            .Where(r => r.Owner.Length <= ReportFirstRunImportRequest.MaxOwnerLength
+                     && r.Name.Length  <= ReportFirstRunImportRequest.MaxNameLength)
+            .ToList();
+
+        return new ReportFirstRunImportRequest {
+            Repos = [.. named
+                .Take(ReportFirstRunImportRequest.MaxRepos)
+                .Select(r => new FirstRunImportRepoReport {
+                    Owner         = r.Owner,
+                    Name          = r.Name,
+                    Sessions      = new Dictionary<string, int>(r.SessionsByWindow, StringComparer.Ordinal),
+                    LastSessionAt = r.LastSessionAt
+                })],
+            Unmatched = new Dictionary<string, int>(found.Summary.UnmatchedByWindow, StringComparer.Ordinal),
+            RepoTotal = found.Summary.Repos.Count,
+            Vendors   = [.. found.ScannedVendors]
+        };
+    }
+
+    public async Task ImportAsync(FirstRunImportAnswer answer, CancellationToken ct) {
+        // One pass per level, because --private is per invocation. Ordered narrowest first so a run
+        // interrupted between them has uploaded the private history rather than the shared.
+        foreach (var level in (FirstRunImportLevel[])[FirstRunImportLevel.OnlyMe, FirstRunImportLevel.Shared]) {
+            if (answer.At(level) is not { Count: > 0 } chosen) continue;
+
+            var exit = await new ImportCommand(config, profiles).HandleImport(
+                filterCwd:          null,
+                sources:            SetupCommand.BuildImportSources(config, answer.Vendors),
+                since:              answer.Since(DateOnly.FromDateTime(DateTime.UtcNow)),
+                scope:              new ImportScope.Repo([.. chosen.Select(c => (c.Owner, c.Name))]),
+                skipConfirmation:   true,
+                forcePrivate:       level is FirstRunImportLevel.OnlyMe,
+                autoSkipExclusions: true,
+                skipTitle:          answer.SkipTitle);
+
+            if (exit != 0) {
+                AnsiConsole.MarkupLine(
+                    "  [yellow]![/] Some of that history did not import. Run [cyan]kcap import[/] to retry it.");
+            }
+        }
     }
 }
 
@@ -271,7 +375,8 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         // The browser leg, where the tenant serves one. Unnumbered because it is not a step: the
         // steps below run either way, and on every tenant that has not turned the flow on this
         // returns without a word. It has to sit after login — both routes are authenticated.
-        var browserAgents = await RunBrowserFlowStepAsync(serverUrl, provider, noPrompt);
+        var browserAnswers = await RunBrowserFlowStepAsync(serverUrl, provider, noPrompt);
+        var browserAgents  = browserAnswers.Agents;
 
         await Console.Out.WriteLineAsync();
 
@@ -630,7 +735,8 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             currentRepo, authSatisfied, skipImport, noPrompt,
             () => AnsiConsole.Prompt(new ConfirmationPrompt("Import past sessions from this repository?") { DefaultValue = true }),
             saved,
-            defaultVisibility);
+            defaultVisibility,
+            browserAnswers.Import);
 
         await Console.Out.WriteLineAsync();
 
@@ -827,7 +933,17 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             bool                          noPrompt,
             Func<bool>                    promptYesNo,
             ProfileContext                profiles,
-            string                        defaultVisibility) {
+            string                        defaultVisibility,
+            FirstRunImportAnswer?         browserImport = null) {
+        // Asked and answered in the browser, over a repository selection this step cannot express —
+        // so it reports rather than prompting. Re-prompting would offer to import one repository
+        // again, right after a screen that chose several.
+        if (browserImport is { } browser) {
+            foreach (var line in BrowserImportSummary(browser)) AnsiConsole.MarkupLine(line);
+
+            return;
+        }
+
         var decision = SetupDecisions.DecideImport(
             currentRepo is not null, authSatisfied, skipImport, noPrompt, promptYesNo);
 
@@ -885,7 +1001,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             filterSession:           null,
             minLines:                15,
             generateSummaries:       false,
-            sources:                 BuildImportSources(),
+            sources:                 BuildImportSources(config),
             explicitVendorSelection: false,
             since:                   null,
             scope:                   new ImportScope.Repo(inv.Repo.Owner, inv.Repo.Name),
@@ -897,18 +1013,32 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             autoSkipExclusions:      inv.AutoSkipExclusions,
             defaultVisibility:       inv.DefaultVisibility);
 
-    /// <summary>The nine supported import sources — mirrors Program.cs's `kcap import` construction.</summary>
-    IReadOnlyList<IImportSource> BuildImportSources() => [
-        new ClaudeImportSource(config),
-        new CodexImportSource(config),
-        new CursorImportSource(config),
-        new CopilotImportSource(config),
-        new GeminiImportSource(),
-        new KiroImportSource(config),
-        new PiImportSource(config),
-        new OpenCodeImportSource(),
-        new AntigravityImportSource()
-    ];
+    /// <summary>
+    /// The nine supported import sources — mirrors Program.cs's `kcap import` construction.
+    /// </summary>
+    /// <param name="vendors">Restricts which are built. <b>Null is no filter</b>, never filter-to-
+    /// nothing. Filtering the sources rather than the counts afterwards is what makes a reported figure
+    /// already scoped to what the user kept.</param>
+    internal static IReadOnlyList<IImportSource> BuildImportSources(
+            ConfigRoot config, IReadOnlyList<string>? vendors = null) {
+        IReadOnlyList<IImportSource> all = [
+            new ClaudeImportSource(config),
+            new CodexImportSource(config),
+            new CursorImportSource(config),
+            new CopilotImportSource(config),
+            new GeminiImportSource(),
+            new KiroImportSource(config),
+            new PiImportSource(config),
+            new OpenCodeImportSource(),
+            new AntigravityImportSource()
+        ];
+
+        if (vendors is null) return all;
+
+        var wanted = vendors.ToHashSet(StringComparer.Ordinal);
+
+        return [.. all.Where(s => wanted.Contains(s.Vendor))];
+    }
 
     /// <summary>
     /// Normalizes a user-supplied server (a full URL, or a bare slug already expanded by
@@ -1033,13 +1163,13 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
     /// vendor keys and booleans, and the install runs through the same one place the terminal prompt
     /// does. Every outcome leaves setup running: sign-in has already happened, so nothing in this leg
     /// can strand a machine.</summary>
-    async Task<FirstRunAgentsAnswer?> RunBrowserFlowStepAsync(string serverUrl, string provider, bool noPrompt) {
+    async Task<BrowserFlowAnswers> RunBrowserFlowStepAsync(string serverUrl, string provider, bool noPrompt) {
         // --no-prompt is a scripted run and this waits on a human. None has no identity for a flow to
         // be owned by, and its routes are authenticated. Headless is deliberately NOT a skip: a
         // machine with no browser of its own is exactly the one whose user is sitting at another, and
         // the URL is printed for them to carry across — the device path keeps the screens rather than
         // designing that population out of them.
-        if (noPrompt || provider == AuthProvider.None) return null;
+        if (noPrompt || provider == AuthProvider.None) return BrowserFlowAnswers.None;
 
         await Console.Out.WriteLineAsync();
 
@@ -1063,7 +1193,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
                         AnsiConsole.MarkupLine(
                             "  [dim]Skipped browser setup: the stored token is not usable. Run 'kcap login' to re-authenticate.[/]");
 
-                    return null;
+                    return BrowserFlowAnswers.None;
                 }
 
                 // Said out loud because it is the one part of this leg that takes noticeable time: the
@@ -1076,18 +1206,19 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
                 result = await new BrowserFirstRunFlow(
                         new FirstRunFlowClient(http), new SpectreFirstRunFlowProgress(), browser,
-                        actions: new SetupMachineActions())
+                        actions:   new SetupMachineActions(),
+                        importing: new SetupImportLane(config, profiles))
                     .RunAsync(serverUrl, report, CancellationToken.None);
             }
         } catch (Exception ex) when (ex is not OperationCanceledException) {
             AnsiConsole.MarkupLine($"  [yellow]![/] Could not start browser setup: {Markup.Escape(ex.Message)}");
 
-            return null;
+            return BrowserFlowAnswers.None;
         }
 
         // Silent: this tenant does not serve the flow, which is every tenant that has not turned it
         // on. Announcing it would report our rollout as though it were the user's problem.
-        if (result is FirstRunFlowResult.Unavailable) return null;
+        if (result is FirstRunFlowResult.Unavailable) return BrowserFlowAnswers.None;
 
         AnsiConsole.MarkupLine(BrowserFlowOutcome(result));
 
@@ -1096,7 +1227,20 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         if (result is not (FirstRunFlowResult.Finished or FirstRunFlowResult.Dismissed))
             AnsiConsole.MarkupLine("  [dim]Carrying on here.[/]");
 
-        return FirstRunFlowOutcomes.Agents(result);
+        return new BrowserFlowAnswers(
+            FirstRunFlowOutcomes.Agents(result), FirstRunFlowOutcomes.Import(result));
+    }
+
+    /// <summary>
+    /// What the browser leg answered, for the steps below to spend instead of asking again.
+    /// </summary>
+    /// <param name="Import">The import ran inside the leg, so this is a record of what happened
+    /// rather than work to do — Step 6 reports it instead of prompting.</param>
+    internal sealed record BrowserFlowAnswers(
+            FirstRunAgentsAnswer? Agents,
+            FirstRunImportAnswer? Import) {
+        /// <summary>No browser leg ran, or it ended with nothing to spend.</summary>
+        public static BrowserFlowAnswers None { get; } = new(null, null);
     }
 
     /// <summary>Whether the login shell resolves the CLI — see <see cref="ILoginShellProbe"/> for why
@@ -1111,6 +1255,35 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         } catch (Exception) {
             return null;
         }
+    }
+
+    /// <summary>What Step 6 says instead of prompting, when the browser already answered it. Split
+    /// from the write so the copy is testable.</summary>
+    internal static IReadOnlyList<string> BrowserImportSummary(FirstRunImportAnswer answer) {
+        if (answer.IsDecline) return ["  [dim]· You chose not to import past sessions in the browser.[/]"];
+
+        if (answer.NoReadableVendors)
+            return [
+                "  [yellow]![/] Nothing was imported: those sessions come from agents this version of kcap "
+              + "does not know. Run 'kcap update', then 'kcap import' to bring them in."
+            ];
+
+        var lines = new List<string>();
+
+        if (answer.Choices.Count > 0) {
+            var repos = answer.Choices.Count;
+
+            lines.Add(
+                $"  [green]✓[/] Imported {repos} repositor{(repos == 1 ? "y" : "ies")} as chosen in the browser "
+              + $"[dim]({Markup.Escape(FirstRunImportWindows.Label(answer.Window))})[/]");
+        }
+
+        if (answer.Unreadable > 0)
+            lines.Add(
+                $"  [yellow]![/] {answer.Unreadable} of those repositories asked for something this version of "
+              + "kcap does not know, and were left alone. Run 'kcap update' and import them with 'kcap import'.");
+
+        return lines;
     }
 
     /// <summary>What Step 4 says instead of prompting, when the browser already answered it. Split
