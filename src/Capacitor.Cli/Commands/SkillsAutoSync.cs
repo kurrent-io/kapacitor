@@ -26,7 +26,15 @@ static class SkillsAutoSync {
             psi.ArgumentList.Add("skills");
             psi.ArgumentList.Add("sync");
             psi.ArgumentList.Add("--auto");
-            _ = ProcessStarterForTesting is { } fake ? fake(psi) : Process.Start(psi);
+            var child = ProcessStarterForTesting is { } fake ? fake(psi) : Process.Start(psi);
+            if (child is not null) {
+                // Redirected pipes must not wedge the child once their buffers fill: drain both
+                // to null while this process lives (the child itself also silences its streams
+                // in --auto, which covers the window after this hook exits).
+                child.StandardInput.Close();
+                _ = child.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
+                _ = child.StandardError.BaseStream.CopyToAsync(Stream.Null);
+            }
         } catch {
             // best effort — never break a hook
         }

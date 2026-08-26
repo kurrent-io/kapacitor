@@ -457,7 +457,15 @@ switch (command) {
             Console.Error.WriteLine("Usage: kcap skills sync [--dry-run] [--auto]");
             return 1;
         }
-        return await new SkillsCommand(config, profiles).HandleSync(args.Contains("--dry-run"), args.Contains("--auto"));
+        var skillsAuto = args.Contains("--auto");
+        if (skillsAuto) {
+            // The auto spawn's parent (a hook) exits long before this process does, closing the
+            // pipe read ends — a later write would then throw on a dead fd. Null writers never
+            // touch an fd, so the background sync can outlive its parent safely.
+            Console.SetOut(TextWriter.Null);
+            Console.SetError(TextWriter.Null);
+        }
+        return await new SkillsCommand(config, profiles).HandleSync(args.Contains("--dry-run"), skillsAuto);
     }
     case "curate": {
         if (args.Length < 2) {

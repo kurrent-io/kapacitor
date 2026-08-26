@@ -37,7 +37,24 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
         }
         var hash = RepoHashHelper.ComputeRepoHash(repo.Owner, repo.RepoName);
 
-        var manifestPath = config.Path("skills", hash, Vendor, "manifest.json");
+        var manifestName = Path.Combine("skills", hash, Vendor, "manifest.json");
+        var manifestPath = config.Path(manifestName);
+
+        // One sync per (repo, harness) at a time, machine-wide: a burst of session starts must
+        // collapse to ONE refresh — the throttle alone cannot do that, since every child of the
+        // burst reads the same stale synced_at before the winner stamps it. The manifest is
+        // re-read UNDER the lock, so waiters see the winner's stamp. In auto mode contention IS
+        // the answer (someone else is refreshing); a manual sync reports it instead.
+        IDisposable syncLock;
+        try {
+            syncLock = config.AcquireLock(manifestName, auto ? TimeSpan.FromMilliseconds(1) : null);
+        } catch (TimeoutException) {
+            if (auto) return 0;
+            await Console.Error.WriteLineAsync("Another kcap skills sync is already running for this repo.");
+            return 1;
+        }
+        using var heldSyncLock = syncLock;
+
         if (!TryLoadManifest(manifestPath, out var manifest)) return 1;
         if (auto && AutoThrottled(manifest, DateTimeOffset.UtcNow)) return 0;
 
