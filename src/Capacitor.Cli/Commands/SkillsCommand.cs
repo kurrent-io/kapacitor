@@ -3,6 +3,7 @@ using System.Text.Json;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Skills;
+using Capacitor.Cli.Harness.Claude;
 
 namespace Capacitor.Cli.Commands;
 
@@ -34,11 +35,17 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
         var manifestPath = config.Path("skills", hash, Vendor, "manifest.json");
         if (!TryLoadManifest(manifestPath, out var manifest)) return 1;
 
+        // Metadata alone cannot prove a skill is served: a deleted or hand-edited SKILL.md must be
+        // re-materialized, so local drift forfeits the conditional request — a 304 would otherwise
+        // report "up to date" over a missing file forever.
+        var drifted = (manifest?.Skills ?? []).Where(ClaudeSkillsMaterializer.HasDrifted)
+            .Select(e => e.DocId).ToHashSet();
+
         using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(config, profiles, baseUrl);
         var url = $"{baseUrl}/api/repositories/{hash}/skills?vendor={Vendor}"
                 + (HostPlatform.Normalized is { } platform ? $"&platform={platform}" : "");
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        if (manifest?.Etag is { Length: > 0 } etag)
+        if (drifted.Count == 0 && manifest?.Etag is { Length: > 0 } etag)
             request.Headers.TryAddWithoutValidation("If-None-Match", $"\"{etag}\"");
 
         HttpResponseMessage resp;
@@ -87,54 +94,35 @@ class SkillsCommand(ConfigRoot config, ProfileContext profiles) {
                 await Console.Error.WriteLineAsync($"Refusing snapshot: unsafe slug '{u.Slug}'.");
             return 1;
         }
-        var plan = SkillsSyncPlanner.Plan(manifest, snapshot);
-        var root = SkillsRoot();
+        var plan   = SkillsSyncPlanner.Plan(manifest, snapshot);
+        var root   = ClaudeSkillsMaterializer.SkillsRoot();
+        var writes = plan.Writes.Concat(plan.Unchanged.Where(u => drifted.Contains(u.DocId))).ToList();
 
-        if (plan.Writes.Count == 0 && plan.Prunes.Count == 0) {
+        if (writes.Count == 0 && plan.Prunes.Count == 0) {
             if (!dryRun) SaveManifest(manifestPath, BuildManifest(dto.Etag, snapshot, root));
             Console.WriteLine($"Skills up to date ({snapshot.Length} materialized).");
             return 0;
         }
 
-        foreach (var w in plan.Writes)
-            Console.WriteLine($"{(dryRun ? "would write" : "write"),-12} {SkillDirFor(root, w.Slug)} (v{w.Version})");
+        foreach (var w in writes)
+            Console.WriteLine($"{(dryRun ? "would write" : "write"),-12} {ClaudeSkillsMaterializer.SkillDirFor(root, w.Slug)} (v{w.Version})");
         foreach (var p in plan.Prunes)
             Console.WriteLine($"{(dryRun ? "would prune" : "prune"),-12} {p.Path}");
         if (dryRun) return 0;
 
-        foreach (var w in plan.Writes) {
-            var dir = SkillDirFor(root, w.Slug);
-            Directory.CreateDirectory(dir);
-            File.WriteAllText(Path.Combine(dir, "SKILL.md"), SkillsSyncPlanner.RenderSkillFile(w));
-        }
-        foreach (var p in plan.Prunes) {
-            // Only ever a manifest-recorded path, and only a DIRECT kcap-* child of the skills
-            // root — a manifest edited by hand must not aim the delete anywhere else (prefix
-            // checks admit siblings like skills-backup/ and nested user directories; parent
-            // EQUALITY does not).
-            var full = Path.GetFullPath(p.Path);
-            if (string.Equals(Path.GetDirectoryName(full), Path.GetFullPath(root), StringComparison.Ordinal)
-                    && Path.GetFileName(full).StartsWith("kcap-", StringComparison.Ordinal)
-                    && Directory.Exists(full))
-                Directory.Delete(full, recursive: true);
-        }
+        foreach (var w in writes) ClaudeSkillsMaterializer.Write(root, w);
+        foreach (var p in plan.Prunes) ClaudeSkillsMaterializer.Prune(root, p);
         SaveManifest(manifestPath, BuildManifest(dto.Etag, snapshot, root));
-        Console.WriteLine($"Synced {plan.Writes.Count} skill(s), pruned {plan.Prunes.Count}; {snapshot.Length} materialized.");
+        Console.WriteLine($"Synced {writes.Count} skill(s), pruned {plan.Prunes.Count}; {snapshot.Length} materialized.");
         return 0;
     }
-
-    static string SkillsRoot() =>
-        Path.Combine(PathHelpers.HomeDirectory, ".claude", "skills");
-
-    // The server's slug is already doc-id-anchored and unique; the kcap- prefix namespaces the
-    // materialized set inside the shared user-level skills root.
-    static string SkillDirFor(string root, string slug) => Path.Combine(root, "kcap-" + slug);
 
     static SkillsManifest BuildManifest(string? etag, SkillSnapshotItem[] snapshot, string root) => new() {
         Etag = etag, SyncedAt = DateTimeOffset.UtcNow,
         Skills = [.. snapshot.Select(s => new SkillsManifestEntry {
             DocId = s.DocId, Slug = s.Slug, Version = s.Version, ContentHash = s.ContentHash,
-            Path = SkillDirFor(root, s.Slug),
+            Path = ClaudeSkillsMaterializer.SkillDirFor(root, s.Slug),
+            FileHash = ClaudeSkillsMaterializer.FileHash(SkillsSyncPlanner.RenderSkillFile(s)),
         })],
     };
 

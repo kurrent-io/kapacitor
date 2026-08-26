@@ -33,6 +33,9 @@ public sealed record SkillsManifestEntry {
     [JsonPropertyName("version")]      public required int    Version     { get; init; }
     [JsonPropertyName("content_hash")] public required string ContentHash { get; init; }
     [JsonPropertyName("path")]         public required string Path        { get; init; }
+    // Hash of the rendered file as written, so a later sync can tell an edited or deleted
+    // materialization from a served one. Null (an older manifest) reads as drifted.
+    [JsonPropertyName("file_hash")]    public string?         FileHash    { get; init; }
 }
 
 public sealed record SkillsSyncPlan(

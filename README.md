@@ -276,6 +276,7 @@ At a glance — each links to its section below:
 | [`kcap review`](#pr-review-with-full-context) | Launch a PR review with full transcript context |
 | [`kcap mcp <server>`](#sessions-mcp-server-for-agents) | Run an MCP server (sessions / flows / memory / …) for agents |
 | [`kcap curate apply`](#curate-guidelines) | Sync promoted guidelines into `CLAUDE.md` / `AGENTS.md` |
+| [`kcap skills sync`](#skills-sync) | Materialize the repo's approved skill docs into Claude's skills directory |
 | [`kcap daemon …`](#daemon) | Run and manage the agent daemon |
 | [`kcap agent`](#local-agents-kcap-agent) | Start, list, attach to, and stop daemon-hosted agents |
 | [`kcap repos`](#repository-paths) | Manage known repo paths for the launch dialog |
@@ -625,6 +626,21 @@ kcap curate apply             # preview changes and confirm interactively
 kcap curate apply --dry-run   # print what would change without writing anything
 kcap curate apply --yes       # apply without prompting (CI / scripted)
 kcap curate apply -y          # shorthand for --yes
+```
+
+### Skills sync
+
+Materialize the current repo's approved, skill-targeted guidance docs into Claude Code's
+user-level skills directory (`~/.claude/skills/kcap-<slug>/SKILL.md`). The server is the canonical
+source: each sync fetches the repo's versioned snapshot, writes new or re-approved skills, and
+prunes ones revoked centrally — a manifest under `~/.config/kcap/skills/` records exactly which
+directories kcap owns, and nothing outside it is ever touched. Skills are never written into the
+repository itself. Requires `kcap login` and a repo checkout (the repo is detected from the
+working directory).
+
+```bash
+kcap skills sync              # fetch, write and prune this repo's skills
+kcap skills sync --dry-run    # print what would change without writing anything
 ```
 
 

@@ -6,8 +6,8 @@ using Capacitor.Cli.Core.Setup;
 namespace Capacitor.Cli;
 
 /// <summary>
-/// Surface 3 hook carrier: stamps this machine's harness inventory and platform onto a SessionStart
-/// body, so a daemonless machine still reports them. The inventory is serialized through the same
+/// Stamps this machine's harness inventory and platform onto a SessionStart body, so a daemonless
+/// machine still reports them through the hook carrier. The inventory is serialized through the same
 /// <see cref="CapacitorJsonContext"/> as the daemon's copy, so both carriers are byte-identical.
 /// Never throws — a probe failure just omits the field (must never break a hook).
 /// </summary>

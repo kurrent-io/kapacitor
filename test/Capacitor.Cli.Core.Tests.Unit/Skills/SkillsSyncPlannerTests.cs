@@ -1,6 +1,6 @@
 using Capacitor.Cli.Core.Skills;
 
-namespace Capacitor.Cli.Core.Tests.Unit;
+namespace Capacitor.Cli.Core.Tests.Unit.Skills;
 
 public class SkillsSyncPlannerTests {
     static SkillSnapshotItem Item(Guid doc, string slug = "s-1", int version = 1, string hash = "h1") => new() {

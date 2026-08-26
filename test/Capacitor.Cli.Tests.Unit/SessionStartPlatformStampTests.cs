@@ -9,12 +9,8 @@ public class SessionStartPlatformStampTests {
         // The field feeds the server's live applicability gate; the vocabulary is closed
         // (macos/linux/windows) and every CI host is one of them.
         var body = new JsonObject();
-        var tmp  = Directory.CreateTempSubdirectory("kcap-stamp-test-");
-        try {
-            SessionStartInventory.Stamp(body, new ConfigRoot(tmp.FullName));
-        } finally {
-            tmp.Delete(recursive: true);
-        }
+        using var tmp = new TempDir();
+        SessionStartInventory.Stamp(body, new ConfigRoot(tmp.Path));
 
         var platform = (string?)body["platform"];
         await Assert.That(platform).IsEqualTo(HostPlatform.Normalized);
