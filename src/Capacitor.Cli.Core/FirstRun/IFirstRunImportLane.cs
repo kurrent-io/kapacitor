@@ -26,5 +26,7 @@ public interface IFirstRunImportLane {
     /// <para><b>Writes to the console.</b> The caller stops its own progress output first — two live
     /// Spectre renderables cannot share a terminal.</para>
     /// </summary>
-    Task ImportAsync(FirstRunImportAnswer answer, CancellationToken ct);
+    /// <param name="today">The date the window's <c>--since</c> resolves against, handed in rather
+    /// than read here so both passes share one boundary however long the first takes.</param>
+    Task ImportAsync(FirstRunImportAnswer answer, DateOnly today, CancellationToken ct);
 }

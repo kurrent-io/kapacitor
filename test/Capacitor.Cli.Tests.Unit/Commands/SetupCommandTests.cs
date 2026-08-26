@@ -149,6 +149,15 @@ public class SetupCommandTests {
         await Assert.That(string.Join("\n", lines)).Contains("kcap update");
     }
 
+    // The closing summary must not contradict the warning the import itself printed while running.
+    [Test]
+    public async Task BrowserImportSummary_says_partly_imported_when_a_pass_returned_non_zero() {
+        var lines = SetupCommand.BrowserImportSummary(ImportAnswer(repos: "kcap"), failed: true);
+
+        await Assert.That(string.Join("\n", lines)).Contains("Partly imported");
+        await Assert.That(string.Join("\n", lines)).DoesNotContain("[green]");
+    }
+
     [Test]
     public async Task BrowserImportSummary_an_answer_it_read_whole_gets_one_line() {
         await Assert.That(SetupCommand.BrowserImportSummary(ImportAnswer(repos: "kcap")).Count).IsEqualTo(1);

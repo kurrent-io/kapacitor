@@ -187,7 +187,13 @@ sealed class SetupImportLane(ConfigRoot config, ProfileContext profiles) : IFirs
         };
     }
 
-    public async Task ImportAsync(FirstRunImportAnswer answer, CancellationToken ct) {
+    /// <summary>Whether every pass this lane ran landed. False is what stops the closing summary
+    /// reporting a backfill that did not happen.</summary>
+    public bool Failed { get; private set; }
+
+    public async Task ImportAsync(FirstRunImportAnswer answer, DateOnly today, CancellationToken ct) {
+        var since = answer.Since(today);
+
         // One pass per level, because --private is per invocation. Ordered narrowest first so a run
         // interrupted between them has uploaded the private history rather than the shared.
         foreach (var level in (FirstRunImportLevel[])[FirstRunImportLevel.OnlyMe, FirstRunImportLevel.Shared]) {
@@ -196,14 +202,19 @@ sealed class SetupImportLane(ConfigRoot config, ProfileContext profiles) : IFirs
             var exit = await new ImportCommand(config, profiles).HandleImport(
                 filterCwd:          null,
                 sources:            SetupCommand.BuildImportSources(config, answer.Vendors),
-                since:              answer.Since(DateOnly.FromDateTime(DateTime.UtcNow)),
+                since:              since,
                 scope:              new ImportScope.Repo([.. chosen.Select(c => (c.Owner, c.Name))]),
                 skipConfirmation:   true,
                 forcePrivate:       level is FirstRunImportLevel.OnlyMe,
                 autoSkipExclusions: true,
-                skipTitle:          answer.SkipTitle);
+                skipTitle:          answer.SkipTitle,
+                // What makes the shared stop honest, since the profile default cannot reach the class
+                // the visibility predicate admits unconditionally.
+                shareWithOrg:       level is FirstRunImportLevel.Shared);
 
             if (exit != 0) {
+                Failed = true;
+
                 AnsiConsole.MarkupLine(
                     "  [yellow]![/] Some of that history did not import. Run [cyan]kcap import[/] to retry it.");
             }
@@ -736,7 +747,8 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             () => AnsiConsole.Prompt(new ConfirmationPrompt("Import past sessions from this repository?") { DefaultValue = true }),
             saved,
             defaultVisibility,
-            browserAnswers.Import);
+            browserAnswers.Import,
+            browserAnswers.ImportFailed);
 
         await Console.Out.WriteLineAsync();
 
@@ -934,12 +946,13 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             Func<bool>                    promptYesNo,
             ProfileContext                profiles,
             string                        defaultVisibility,
-            FirstRunImportAnswer?         browserImport = null) {
+            FirstRunImportAnswer?         browserImport = null,
+            bool                          browserImportFailed = false) {
         // Asked and answered in the browser, over a repository selection this step cannot express —
         // so it reports rather than prompting. Re-prompting would offer to import one repository
         // again, right after a screen that chose several.
         if (browserImport is { } browser) {
-            foreach (var line in BrowserImportSummary(browser)) AnsiConsole.MarkupLine(line);
+            foreach (var line in BrowserImportSummary(browser, browserImportFailed)) AnsiConsole.MarkupLine(line);
 
             return;
         }
@@ -1014,7 +1027,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             defaultVisibility:       inv.DefaultVisibility);
 
     /// <summary>
-    /// The nine supported import sources — mirrors Program.cs's `kcap import` construction.
+    /// Every import source, one per catalogue vendor.
     /// </summary>
     /// <param name="vendors">Restricts which are built. <b>Null is no filter</b>, never filter-to-
     /// nothing. Filtering the sources rather than the counts afterwards is what makes a reported figure
@@ -1174,6 +1187,7 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         await Console.Out.WriteLineAsync();
 
         FirstRunFlowResult result;
+        SetupImportLane?   importing = null;
 
         // Through the ONE authenticated-client choke point, so the bearer refreshes and a 401 is
         // recovered rather than ending a wait that can outlive a short-lived WorkOS token. The try
@@ -1204,10 +1218,12 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
                 var report = FirstRunMachineReport.EvaluateCurrent(
                     config, Environment.MachineName, await LoginShellFindsCliAsync());
 
+                importing = new SetupImportLane(config, profiles);
+
                 result = await new BrowserFirstRunFlow(
                         new FirstRunFlowClient(http), new SpectreFirstRunFlowProgress(), browser,
                         actions:   new SetupMachineActions(),
-                        importing: new SetupImportLane(config, profiles))
+                        importing: importing)
                     .RunAsync(serverUrl, report, CancellationToken.None);
             }
         } catch (Exception ex) when (ex is not OperationCanceledException) {
@@ -1228,7 +1244,9 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
             AnsiConsole.MarkupLine("  [dim]Carrying on here.[/]");
 
         return new BrowserFlowAnswers(
-            FirstRunFlowOutcomes.Agents(result), FirstRunFlowOutcomes.Import(result));
+            FirstRunFlowOutcomes.Agents(result),
+            FirstRunFlowOutcomes.Import(result),
+            importing?.Failed == true);
     }
 
     /// <summary>
@@ -1236,9 +1254,12 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
     /// </summary>
     /// <param name="Import">The import ran inside the leg, so this is a record of what happened
     /// rather than work to do — Step 6 reports it instead of prompting.</param>
+    /// <param name="ImportFailed">A pass returned non-zero, so the closing summary must not report a
+    /// backfill that did not happen.</param>
     internal sealed record BrowserFlowAnswers(
             FirstRunAgentsAnswer? Agents,
-            FirstRunImportAnswer? Import) {
+            FirstRunImportAnswer? Import,
+            bool                  ImportFailed = false) {
         /// <summary>No browser leg ran, or it ended with nothing to spend.</summary>
         public static BrowserFlowAnswers None { get; } = new(null, null);
     }
@@ -1259,7 +1280,9 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
 
     /// <summary>What Step 6 says instead of prompting, when the browser already answered it. Split
     /// from the write so the copy is testable.</summary>
-    internal static IReadOnlyList<string> BrowserImportSummary(FirstRunImportAnswer answer) {
+    /// <param name="failed">A pass returned non-zero. The line then says so rather than showing a
+    /// tick, or the closing summary contradicts the warning the import itself already printed.</param>
+    internal static IReadOnlyList<string> BrowserImportSummary(FirstRunImportAnswer answer, bool failed = false) {
         if (answer.IsDecline) return ["  [dim]· You chose not to import past sessions in the browser.[/]"];
 
         if (answer.NoReadableVendors)
@@ -1271,11 +1294,13 @@ public sealed class SetupCommand(ConfigRoot config, ProfileContext profiles, IBr
         var lines = new List<string>();
 
         if (answer.Choices.Count > 0) {
-            var repos = answer.Choices.Count;
+            var repos  = answer.Choices.Count;
+            var subject = $"{repos} repositor{(repos == 1 ? "y" : "ies")} as chosen in the browser "
+                        + $"[dim]({Markup.Escape(FirstRunImportWindows.Label(answer.Window))})[/]";
 
-            lines.Add(
-                $"  [green]✓[/] Imported {repos} repositor{(repos == 1 ? "y" : "ies")} as chosen in the browser "
-              + $"[dim]({Markup.Escape(FirstRunImportWindows.Label(answer.Window))})[/]");
+            lines.Add(failed
+                ? $"  [yellow]![/] Partly imported {subject}. Run [cyan]kcap import[/] to finish it."
+                : $"  [green]✓[/] Imported {subject}");
         }
 
         if (answer.Unreadable > 0)

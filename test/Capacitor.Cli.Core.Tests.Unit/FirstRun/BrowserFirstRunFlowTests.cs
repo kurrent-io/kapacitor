@@ -158,10 +158,13 @@ public class BrowserFirstRunFlowTests {
             return Task.FromResult(Found);
         }
 
-        public Task ImportAsync(FirstRunImportAnswer answer, CancellationToken ct) {
+        public List<DateOnly> Dates { get; } = [];
+
+        public Task ImportAsync(FirstRunImportAnswer answer, DateOnly today, CancellationToken ct) {
             log.Add("import");
             Advance?.Invoke();
             Imports.Add(answer);
+            Dates.Add(today);
 
             if (ImportThrows is { } boom) throw boom;
 
@@ -1174,6 +1177,20 @@ public class BrowserFirstRunFlowTests {
 
         await Assert.That(h.Importing!.Imports).IsEmpty();
         await Assert.That(h.Progress.Imports).IsEmpty();
+    }
+
+    [Test]
+    public async Task Resolves_the_since_boundary_from_the_flows_own_clock() {
+        // One date for the whole decision, taken from the injected clock rather than read inside the
+        // lane — so two passes either side of UTC midnight cannot import against different windows.
+        var h = Build(importing: true);
+        h.Channel.Polls.Enqueue(new(200, ImportAnswered()));
+        h.Channel.Polls.Enqueue(new(200, Done()));
+
+        await Run(h);
+
+        await Assert.That(h.Importing!.Dates.Single())
+                    .IsEqualTo(DateOnly.FromDateTime(ClockBase.UtcDateTime));
     }
 
     [Test]

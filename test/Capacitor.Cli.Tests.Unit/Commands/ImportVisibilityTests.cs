@@ -237,6 +237,76 @@ public class ImportVisibilityTests : IDisposable {
         await Assert.That(body.ContainsKey("default_visibility")).IsFalse();
     }
 
+    [Test]
+    public async Task HandleImport_shareWithOrg_writes_an_explicit_org_visibility() {
+        // The whole reason the shared stop can be offered honestly: the profile default produces
+        // `default:org`, which is admitted only where the repo owner matches the configured org.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
+        StubAllHookEndpoints();
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        var projectsDir = Path.Combine(_tempDir, "claude-projects-shared");
+        WriteClaudeSession(projectsDir, "vis-chain-shared");
+
+        var exitCode = await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            filterCwd: null,
+            minLines: 1,
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
+            scope: new ImportScope.All(),
+            skipConfirmation: true,
+            forcePrivate: false,
+            shareWithOrg: true
+        );
+
+        await Assert.That(exitCode).IsEqualTo(0);
+
+        var put = _server.LogEntries.Single(e =>
+            e.RequestMessage.Method == "PUT"
+         && e.RequestMessage.Path == "/api/sessions/vis-chain-shared/visibility");
+
+        await Assert.That(JsonNode.Parse(put.RequestMessage.Body!)!["visibility"]?.GetValue<string>())
+                    .IsEqualTo("org");
+    }
+
+    [Test]
+    public async Task HandleImport_writes_no_explicit_visibility_when_neither_stop_was_asked_for() {
+        // A plain `kcap import` leaves each session on whatever its default_visibility resolved to.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
+        StubAllHookEndpoints();
+        _server.Given(Request.Create().WithPath("/api/sessions/*/visibility").UsingPut())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        var projectsDir = Path.Combine(_tempDir, "claude-projects-plain");
+        WriteClaudeSession(projectsDir, "vis-chain-plain");
+
+        await new ImportCommand(Config.Root, Resolutions.At(_server.Url!, Config.Root)).HandleImport(
+            filterCwd: null,
+            minLines: 1,
+            sources: [new ClaudeImportSource(Config.Root, projectsDir)],
+            scope: new ImportScope.All(),
+            skipConfirmation: true
+        );
+
+        await Assert.That(_server.LogEntries.Where(e => e.RequestMessage.Method == "PUT")).IsEmpty();
+    }
+
+    [Test]
+    public async Task ExplicitVisibility_refuses_both_stops_at_once() {
+        // Opposite promises. Silently picking one would hide the caller's bug.
+        await Assert.That(() => ImportCommand.ExplicitVisibility(forcePrivate: true, shareWithOrg: true))
+                    .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task ExplicitVisibility_maps_each_stop_to_the_value_that_reaches_its_class() {
+        await Assert.That(ImportCommand.ExplicitVisibility(true, false)).IsEqualTo("none");
+        await Assert.That(ImportCommand.ExplicitVisibility(false, true)).IsEqualTo("org");
+        await Assert.That(ImportCommand.ExplicitVisibility(false, false)).IsNull();
+    }
+
     // =====================================================================
     // Section C — routed sources, direct-logic (ImportSessionAsync + WireMock).
     // =====================================================================

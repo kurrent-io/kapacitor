@@ -304,7 +304,7 @@ public sealed class BrowserFirstRunFlow(
         progress.Importing(answer.Choices.Count, SessionsInScope(state.Discovered, answer));
 
         try {
-            await importing.ImportAsync(answer, ct);
+            await importing.ImportAsync(answer, DateOnly.FromDateTime(_clock.GetUtcNow().UtcDateTime), ct);
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             throw;
         } catch (Exception) {

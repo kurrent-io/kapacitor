@@ -684,6 +684,7 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             string?                       defaultVisibility       = null,
             bool                          reimport                = false,
             bool                          skipTitle               = false,
+            bool                          shareWithOrg            = false,
             bool                          discoverOnly            = false,
             bool                          discoverJson            = false,
             Action<ImportDiscoveryResult>? onDiscovered           = null
@@ -1684,22 +1685,30 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             }
         }
 
-        // --- --private: mark all imported sessions owner-only ---
+        // --- An explicit visibility for everything this run touched ---
         //
-        // the privatize set is importedSessionIds (chain-phase +
+        // Both stops need one, and for the same reason: the profile default cannot express either.
+        // `none` because an omitted default_visibility coalesces to org-public; `org` because the
+        // default's own `default:org` class is admitted only where the repository's owner matches the
+        // tenant's configured org, which is empty on every provider but GitHubApp — so leaning on it
+        // promises a workspace can read this and delivers owner-only nearly everywhere.
+        //
+        // the set is importedSessionIds (chain-phase +
         // routed-phase "real new work") UNIONED with privateScopeSessionIds (every routed
         // classification touched this run under --private whose source can attach child content
         // on a replay, regardless of outcome — see its declaration above). The union — not a
         // replacement — keeps chain-phase and other routed privatization exactly as before; it
         // only widens what those sources contribute so privacy no longer depends on the
         // Loaded/Failed/AlreadyLoaded/SentChildContent accounting used for import counts.
-        if (forcePrivate) {
-            var toPrivatize = new HashSet<string>(importedSessionIds, StringComparer.Ordinal);
-            toPrivatize.UnionWith(privateScopeSessionIds);
+        if (ExplicitVisibility(forcePrivate, shareWithOrg) is { } explicitVisibility) {
+            var touched = new HashSet<string>(importedSessionIds, StringComparer.Ordinal);
+            touched.UnionWith(privateScopeSessionIds);
 
-            if (toPrivatize.Count > 0) {
-                display.BeginPhase("Marking imported sessions private");
-                await SetVisibilityNoneForAll(httpClient, baseUrl, [.. toPrivatize]);
+            if (touched.Count > 0) {
+                display.BeginPhase(forcePrivate
+                    ? "Marking imported sessions private"
+                    : "Sharing imported sessions with your workspace");
+                await SetVisibilityForAll(httpClient, baseUrl, [.. touched], explicitVisibility);
             }
         }
 
@@ -3069,6 +3078,19 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     }
 
     /// <summary>
+    /// The visibility to write explicitly over what this run imported, or null to leave each session
+    /// on whatever its <c>default_visibility</c> resolved to.
+    /// </summary>
+    /// <remarks>Refuses both at once rather than picking: they are opposite promises, and a caller
+    /// asking for both has a bug that silently choosing one would hide.</remarks>
+    internal static string? ExplicitVisibility(bool forcePrivate, bool shareWithOrg) {
+        if (forcePrivate && shareWithOrg)
+            throw new ArgumentException("An import cannot be both private and shared with the org.", nameof(shareWithOrg));
+
+        return forcePrivate ? "none" : shareWithOrg ? "org" : null;
+    }
+
+    /// <summary>
     /// PUT visibility=org for every session id — what makes "everyone in your workspace" true.
     ///
     /// <para><b>An explicit write, not the profile default.</b> Leaning on <c>org_public</c> produces
@@ -3077,16 +3099,8 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
     /// default route promises a team can read this and delivers owner-only on most tenants;
     /// <c>explicit:org</c> is admitted unconditionally.</para>
     /// </summary>
-    internal static Task SetVisibilityForAll(
-            HttpClient            httpClient,
-            string                baseUrl,
-            IReadOnlyList<string> sessionIds
-        ) => SetVisibilityForAll(httpClient, baseUrl, sessionIds, "org");
-
     /// <summary>
-    /// PUT visibility=none for every imported session id. Failures are logged
-    /// inline (one line per session) but never throw — the import already
-    /// succeeded; users can re-run `kcap hide` for any that failed.
+    /// PUT visibility=none for every imported session id.
     /// </summary>
     internal static Task SetVisibilityNoneForAll(
             HttpClient            httpClient,
@@ -3094,7 +3108,9 @@ class ImportCommand(ConfigRoot config, ProfileContext profiles) {
             IReadOnlyList<string> sessionIds
         ) => SetVisibilityForAll(httpClient, baseUrl, sessionIds, "none");
 
-    static async Task SetVisibilityForAll(
+    /// <summary>Failures are logged inline (one line per session) but never throw — the import already
+    /// succeeded; users can re-run `kcap hide` or `kcap share` for any that failed.</summary>
+    internal static async Task SetVisibilityForAll(
             HttpClient            httpClient,
             string                baseUrl,
             IReadOnlyList<string> sessionIds,

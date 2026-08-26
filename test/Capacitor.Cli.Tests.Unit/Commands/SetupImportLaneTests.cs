@@ -1,5 +1,6 @@
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.FirstRun;
+using Capacitor.Cli.Core.Setup;
 
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
@@ -90,10 +91,11 @@ public class SetupImportLaneTests {
     }
 
     [Test]
-    public async Task Every_source_is_built_when_nothing_filters_them() {
+    public async Task Every_catalogue_vendor_has_a_source_when_nothing_filters_them() {
         var built = SetupCommand.BuildImportSources(Config.Root);
 
-        await Assert.That(built.Count).IsEqualTo(9);
+        await Assert.That(built.Select(b => b.Vendor))
+                    .IsEquivalentTo(HarnessCatalog.All.Select(h => h.VendorId));
     }
 
     [Test]
